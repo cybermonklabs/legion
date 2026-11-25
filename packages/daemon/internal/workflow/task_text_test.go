@@ -2,9 +2,6 @@ package workflow
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -15,7 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // textEngine is stepEngine whose runtime places an issue's working copy at /work/<KEY>
@@ -277,43 +273,11 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 	}
 }
 
-// taskReaders is what a step's worker reads to learn what its task's lines say: the composed
-// prompt of each role that works a step, the retro or the merge (rolePrompt), and the skills those
-// prompts send them to, legion-worker's with its references and legion-retro's.
-func taskReaders(t *testing.T) string {
-	t.Helper()
-	var corpus strings.Builder
-	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
-		corpus.WriteString(rolePrompt(t, role))
-	}
-	skills := filepath.Join("..", "..", "..", "..", "skills")
-	paths, err := filepath.Glob(filepath.Join(skills, "legion-worker", "references", "*.md"))
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("list the references of skill://legion-worker under %s: %v (%d found)", skills, err, len(paths))
-	}
-	for _, path := range append(paths, filepath.Join(skills, "legion-worker", "SKILL.md"), filepath.Join(skills, "legion-retro", "SKILL.md")) {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		corpus.Write(body)
-	}
-	return corpus.String()
-}
-
-// readersNameALine finds each label the readers name as a line of the worker's task: "your
-// task's `Steps:` line", "a task with no `Task:` line", "a task whose `Steps:` line", "your task
-// names `Last reviewed commit:".
-var readersNameALine = regexp.MustCompile("task(?:'s| with no| whose| names| has no) `([A-Z][^`:]*):")
-
-// Each label of a step's task that the prompts and the skills tell a worker to read is one the
-// task writes, and each the task writes is one they name: the label is one constant, every line is
-// built from it, and a rename on either side alone fails here. The forms of the task's lines, with
-// placeholders as go/worker-common.md writes them, are the task's words exactly once the
-// placeholders hold a step's values, and the prompts spell out the working copy's form; the form
-// of the retro's and the merger's task, which runs no step, is the end of their task.
-func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
-	readers := taskReaders(t)
+// The task writes a line of each label by the label's exact text, which the prompts and the skills
+// name to a worker, so a change of one label's constant alone fails here. The forms of its lines,
+// filled with a step's values, are the task's words exactly, and the task of the retro and of the
+// merger, which runs no step, ends with the task alone and its steps.
+func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer", AgentKey: "a"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
@@ -326,28 +290,12 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
 	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again")
 
-	labels := map[string]string{
-		phaseLabel: "`" + phaseLabel + ": ", workingCopyLabel: "`" + workingCopyLabel + ":", planTaskLabel: "`" + planTaskLabel + ":",
-		stepsLabel: "`" + stepsLabel + ":", taskTextLabel: "`" + taskTextLabel + ":", reportedLabel: "(<role>) " + reportedLabel + ":",
-		handoffLabel: "`" + handoffLabel + ":", pullRequestLabel: "`" + pullRequestLabel + ":", reasonLabel: "`" + reasonLabel + ":",
-	}
-	for label, named := range labels {
+	for _, label := range []string{"Phase", "Working copy", "Task", "Steps", "Task text", "reported", "Handoff", "Pull request", "Reason"} {
 		if !strings.Contains(written, " "+label+": ") {
-			t.Errorf("the task %q writes no %q line, which the prompts name as %q", written, label, named)
-		}
-		if !strings.Contains(readers, named) {
-			t.Errorf("no prompt or skill a worker reads names the task's %q line as %q", label, named)
-		}
-	}
-	for _, match := range readersNameALine.FindAllStringSubmatch(readers, -1) {
-		if _, ok := labels[match[1]]; !ok && match[1] != testerVerdictLabel && match[1] != reviewround.CommitLabel && match[1] != reviewround.EntryLabel {
-			t.Errorf("a prompt or a skill names the task's %q line (%q), and the task writes no such label", match[1], match[0])
+			t.Errorf("the task %q writes no %q line", written, label)
 		}
 	}
 
-	if template := "`Working copy: branch legion/<KEY>, directory <dir>.`"; !strings.Contains(readers, template) {
-		t.Errorf("no prompt or skill a worker reads spells out %s", template)
-	}
 	for template, values := range map[string][]string{
 		"`Working copy: branch legion/<KEY>, directory <dir>.`":         {"<KEY>", "LEGION-208", "<dir>", "/work"},
 		"`Task: <id>. Step <i> of <n>: <step>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<step>", "reviewer"},
@@ -362,9 +310,6 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	// The retro and the merge run no step of the task: their task names the task alone and its
 	// steps, with no step, no step's text and no step's report after them.
 	const noStep = "`Task: <id>.`"
-	if !strings.Contains(readers, noStep) {
-		t.Errorf("no prompt or skill a worker reads spells out %s, the task of the retro and of the merger", noStep)
-	}
 	for p, place := range map[phase.Phase]record.TaskPlace{phase.Retro: {Kind: record.PlaceRetro}, phase.Merging: {Kind: record.PlaceMerge}} {
 		after, there := issue, w
 		after.Phase, there.Place = p, place

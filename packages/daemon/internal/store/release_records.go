@@ -34,6 +34,10 @@ type PodRelease struct {
 	// now, so every release this daemon records writes zero; the column stays because the release
 	// before still writes it, and a rollback runs that release over this table.
 	BundleBytes int
+	// Release is the id of the release's mark (issue_releases.id) the record stands for,
+	// pod_releases.issue_release_id; zero for a record that names no mark. A release is recorded
+	// once per mark (RecordPodRelease), and a record read back names the mark it was written with.
+	Release int64
 }
 
 // PodResume is one wake of a released pod and what it cost: which wake brought it back, when the
@@ -116,24 +120,37 @@ type PodReleaseRecords struct {
 // of releases is complete without reading any resume. It ends every hold streak of that pod: the
 // pod is gone, so whatever was keeping it is over, and a pod held again after it comes back is
 // a streak of its own.
-func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
+//
+// A record that names its release's mark (rel.Release) is written once per mark
+// (pod_releases_one_per_issue_release): the teardown records the release and clears the mark in
+// transactions of their own, so a teardown that failed, or whose daemon died, between the two runs
+// again and records the release again. That second write takes the record the first one wrote,
+// answers its id with wrote false and ends no streak, since the first one ended them. wrote is
+// true where this call wrote the row, which a record that names no mark always does.
+func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64, wrote bool, err error) {
 	if rel.Project == "" || rel.Issue == "" {
-		return 0, errors.New("a pod release record needs its project and issue")
+		return 0, false, errors.New("a pod release record needs its project and issue")
 	}
-	var id int64
-	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, claims, at, bundle_bytes)
-			values ($1, $2, $3, $4, $5, $6, $7) returning id`,
+	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		wrote = false
+		err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, claims, at, bundle_bytes, issue_release_id)
+			values ($1, $2, $3, $4, $5, $6, $7, nullif($8::bigint, 0))
+			on conflict (issue_release_id) where issue_release_id is not null do nothing returning id`,
 			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), strings.Join(rel.Claims, ","),
-			rel.At, rel.BundleBytes).Scan(&id); err != nil {
+			rel.At, rel.BundleBytes, rel.Release).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, rel.Release).Scan(&id)
+		}
+		if err != nil {
 			return err
 		}
+		wrote = true
 		return endPodHoldStreaks(ctx, tx, rel.Project, rel.Issue, "")
 	})
 	if err != nil {
-		return 0, fmt.Errorf("record the release of %s: %w", rel.Issue, err)
+		return 0, false, fmt.Errorf("record the release of %s: %w", rel.Issue, err)
 	}
-	return id, nil
+	return id, wrote, nil
 }
 
 // MarkPodResumeReady stamps when the replacement pod was Ready. It is written once, by the first
@@ -382,7 +399,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 
 func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since time.Time) (PodReleaseRecords, error) {
 	var out PodReleaseRecords
-	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, claims, at, bundle_bytes
+	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, claims, at, bundle_bytes, coalesce(issue_release_id, 0)
 		from pod_releases where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the release records of %s: %w", project, err)
@@ -391,7 +408,7 @@ func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since tim
 		var r PodRelease
 		var generation int64
 		var roles, claims string
-		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &claims, &r.At, &r.BundleBytes); err != nil {
+		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &claims, &r.At, &r.BundleBytes, &r.Release); err != nil {
 			releases.Close()
 			return out, fmt.Errorf("read the release records of %s: %w", project, err)
 		}

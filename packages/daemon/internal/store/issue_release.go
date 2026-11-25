@@ -104,12 +104,17 @@ func (c ReleaseCause) String() string {
 // release of a pod no role can use suspends none and reads no workspace, so its rows must be able
 // to tell what release they belong to. A decision that holds no mark — a row of a release that
 // is over — carries the zero of it, as it carries the zero of every other field.
+//
+// Teardown is what the mark notes of the release's teardown (issue_releases.teardown,
+// ReleaseTeardown). Every decision that holds a mark carries all of the mark's half of it
+// (releaseMark.decision), so no reader gets the zero note, which is a real state, by accident.
 type ReleaseDecision struct {
 	Act            ReleaseAct
 	Cause          ReleaseCause
 	Release        int64
 	Suspended      []ReleasedClaim
 	SuspendsNoRole bool
+	Teardown       ReleaseTeardown
 }
 
 // ReleasedClaim is one claim of a release, by its token beside its role: a live claim the idle
@@ -123,6 +128,42 @@ type ReleasedClaim struct {
 	Token claim.Token
 	Role  claim.Role
 }
+
+// ReleaseTeardown is whether the teardown of the release of a pod no role can use may have taken
+// the pod, as its mark notes it (issue_releases.teardown, NoteReleaseTeardown).
+//
+// The rule: that release records a pod release when the runtime took a Sandbox (its own answer,
+// runtime.IssueReleaser's true) or the mark says TeardownReached, and otherwise records none — the
+// Sandbox was deleted by another hand, or by an earlier teardown of this daemon's, and nothing of
+// this release took it. The idle release reads no note: it records its release whatever the
+// runtime answered, since its stops suspended the roles a wake pairs with its record.
+//
+// The protocol: this release's mark starts at TeardownNotReached (ReleaseIdleIssue writes it), and
+// the teardown writes TeardownReached from the runtime's callback, under the pod lock, just before
+// the runtime's first write to the issue's Sandbox, so an attempt that took the pod and then
+// failed, or whose daemon died, before its record leaves its retry the note, and the
+// retry, which finds no Sandbox, still records the release. An attempt that fails before that
+// first write, or finds no Sandbox at all, leaves the note unset, and its retry decides afresh. A
+// teardown that records its release whatever the runtime answers, the idle release's or one whose
+// mark already says TeardownReached, gives the runtime no callback, since it has nothing to note.
+// The outbox's count of a row's attempts cannot stand in for the note: a run the daemon died in is
+// counted as no attempt (record.QueuedSupervise.Attempts), and a retry of a release that took
+// nothing and then failed is counted as one. A mark this release did not write — one standing when
+// the column was added, or one an earlier release writes, which names no teardown — reads the
+// column's default, TeardownReached: the daemon that wrote it records a release whatever its
+// teardown found, and so does this release's teardown of it.
+//
+// The window it leaves: a note written just before a first write that then failed or never ran,
+// its daemon dead or its write refused, over a Sandbox another hand deleted before the retry —
+// that retry finds no Sandbox, reads the note and records a release that no attempt made.
+type ReleaseTeardown string
+
+const (
+	// TeardownNotReached: no attempt of the teardown has come to the runtime's first write.
+	TeardownNotReached ReleaseTeardown = ""
+	// TeardownReached: an attempt came to the runtime's first write; the pod may have been taken.
+	TeardownReached ReleaseTeardown = "reached"
+)
 
 // releaseMark is the mark one release in flight left, as every row of that release reads it.
 type releaseMark struct {
@@ -143,12 +184,21 @@ type releaseMark struct {
 	// kind is the release rule that wrote this mark, releaseKindIdle or releaseKindUnowned: the
 	// release of a quiet pod, or the release of a pod no role can use, which suspends no role.
 	kind string
+	// teardown is the mark's note of whether an attempt of the release's teardown came to the
+	// runtime's first write (ReleaseTeardown).
+	teardown ReleaseTeardown
 }
 
 // holds is whether row is one of the rows this mark's release queued. Every row of a release was
 // written in the mark's own transaction, so its id lies between the release's first row and its
 // last; a row outside that range belongs to a release this mark is not.
 func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.last }
+
+// decision is the mark's half of a ReleaseDecision — the release's id, the claims its stops have
+// suspended, its rule and its teardown's note — which every row of the release reads alike.
+func (m releaseMark) decision() ReleaseDecision {
+	return ReleaseDecision{Release: m.id, Suspended: m.claims(), SuspendsNoRole: m.suspendsNoRole(), Teardown: m.teardown}
+}
 
 // readReleaseMark reads the mark of issue's release and places row in it: held is false for a
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
@@ -157,8 +207,8 @@ func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row 
 	err = tx.QueryRow(ctx, `select m.id, m.first_row, m.boundary_row, m.last_row, m.started_row, m.wake_row, m.suspended,
 		array(select coalesce(c.role, '') from unnest(m.suspended) with ordinality t(token, n)
 			left join claims c on c.token = t.token order by t.n),
-		m.kind, m.turn_start from issue_releases m where m.project = $1 and m.issue = $2`, project, issue).Scan(&mark.id, &mark.first,
-		&mark.boundary, &mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.roles, &mark.kind, &mark.turn)
+		m.kind, m.turn_start, m.teardown from issue_releases m where m.project = $1 and m.issue = $2`, project, issue).Scan(&mark.id, &mark.first,
+		&mark.boundary, &mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.roles, &mark.kind, &mark.turn, &mark.teardown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return releaseMark{}, false, nil
 	}
@@ -279,7 +329,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.claims(), mark.suspendsNoRole()
+		decision = mark.decision()
 		overtaken, err := releaseOvertaken(ctx, tx, project, issue, mark)
 		if err != nil {
 			return err
@@ -361,8 +411,8 @@ func (s *Store) IssueReleaseCheck(ctx context.Context, project, issue string, ro
 		if err != nil || !held {
 			return err
 		}
-		decision.Act, decision.Release = ReleaseActs, mark.id
-		decision.Suspended, decision.SuspendsNoRole = mark.claims(), mark.suspendsNoRole()
+		decision = mark.decision()
+		decision.Act = ReleaseActs
 		_, paused, err := readOpenPauseByToken(ctx, tx, project, "")
 		if err != nil {
 			return err
@@ -428,7 +478,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.claims(), mark.suspendsNoRole()
+		decision = mark.decision()
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status, rootPhase, rootStatus string

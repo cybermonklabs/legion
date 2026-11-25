@@ -7,7 +7,6 @@ description: "Use when you are a Legion root or child architect, before any life
 
 You own one issue and every issue under it while you hold your role.
 The daemon starts every worker and moves every phase; you write no code.
-Your role prompt holds the lifecycle rules, this skill the procedures.
 
 ## Every turn
 
@@ -94,13 +93,12 @@ A retro that cannot write the body: `skill://legion-architect/references/accepta
 ## 6. Acceptance and the merge
 
 In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase:
-read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
+read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting", and its finding asks, refusals and what follows.
 
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
-Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check.
-Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
+Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
 
 ## 7. Close
 

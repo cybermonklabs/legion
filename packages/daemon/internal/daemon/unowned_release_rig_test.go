@@ -31,6 +31,10 @@ const idleRigGateTooOld = "idle release: the Envoy listener's newest report is t
 // taken that pod (outbox.releaseIssue).
 const idleRigUnownedTeardown = "outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake"
 
+// idleRigUnownedFoundNothing is what the daemon logs in its place when the runtime found no
+// Sandbox of the issue to release, and the teardown took nothing (outbox.releaseIssue).
+const idleRigUnownedFoundNothing = "outbox: the release found no Sandbox of the issue to release and released nothing"
+
 // idleRigSessionForgotten is what the daemon logs when a fresh session drops the session its
 // claim recorded, before the start that brings that claim back in a new one (api's
 // forgetRecordedSession). The rig's role process derives its session id from its pod and its

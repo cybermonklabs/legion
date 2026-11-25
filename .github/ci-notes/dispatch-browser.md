@@ -1210,13 +1210,14 @@ Go test TestTheVisualShotReadsWriteOnlyTheirCaches (visual_shot_reads_test.go) s
 that list names as the dashboard does, signed in with a session cookie, runs what GET /auth/whoami
 runs (the cookie's identity and the event feed's head, on a server whose event horizon nothing has
 built yet, as the page's first read finds it), and subscribes every view kind it names on GET
-/ws/live; it reads every statement each read, each view and the work they detach run, through the
-tracer TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with. A read may write the
-display-tree cache, the sign-in read nothing, and a live view the event horizon and a deploy run's
-warning record, each a table that test sees written on that channel; any other write fails it by
-the read or view and the table. It opens and closes a document's room as a page does and holds the
-room to writing nothing. And the seed waits, before any row draws, until the document service owes
-no document a settlement, and holds that the corpus records no check result and no pull request's
+/ws/live; it reads every statement each read, each view and the work they detach run, through
+read_only_token_test.go's tracer of a request's statements (markedStatements, writesOf). A read
+may write the display-tree cache, the sign-in read nothing, and a live view the event horizon and a
+deploy run's warning record, each a table that test sees written on that channel; any other write
+fails it by the read or view and the table. It opens and closes a document's room as a page does
+and holds the room to writing nothing. And the seed waits, before any row draws, until the
+document service owes no document a settlement, and holds that the corpus records no check result
+and no pull request's
 head (`awaitNothingOwed`, e2e/review-seed.ts): an owed settlement runs when a page opens the room
 and writes a version the shot would draw, and a result's commit is one the Verification tab's read
 asks GitHub the pull request of, writing what it learns.

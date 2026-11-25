@@ -700,7 +700,7 @@ func TestPodUpdateReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testin
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times, want none: the pause owes the %s a launch", len(calls), woken)
 	}
-	rig.wantRefusedUnderTurn(backgroundNotDueLine, fmt.Sprintf("%s has not answered it", woken))
+	rig.wantRefusedUnderTurn(backgroundNotDueLine, fmt.Sprintf("%s has not answered it, or its machine was deciding something", woken))
 	rig.wantPodKept(fmt.Sprintf("the answer of the %s", woken))
 }
 

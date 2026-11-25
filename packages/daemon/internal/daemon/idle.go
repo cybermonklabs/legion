@@ -603,11 +603,16 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // counting it here would charge this release with a claim it never touched and the hours that
 // claim's pod was gone a second time. Two claims of one role are two claims and one role.
 //
-// A record that cannot be written is logged: the pod is already released, and nothing undoes
-// that for want of a row.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []store.ReleasedClaim) {
+// The record names the release's mark (release, issue_releases.id), so a teardown that runs again
+// after its record and before the mark's clear writes no second record (store.RecordPodRelease).
+// The release line follows the record's first write. A retry whose record was already written
+// logs no second line.
+//
+// If the write fails, the teardown logs the release line beside the warning: the pod is already
+// released, and nothing undoes that for want of a row.
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []store.ReleasedClaim) bool {
 	if r.supervisor == nil || r.supervisor.store == nil {
-		return
+		return true
 	}
 	roles := make([]string, 0, len(suspended))
 	claims := make([]string, 0, len(suspended))
@@ -619,12 +624,15 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation 
 	}
 	slices.Sort(roles)
 	slices.Sort(claims)
-	if _, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
+	_, wrote, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
 		Project: r.project, Issue: issue, Generation: generation, Roles: roles, Claims: claims,
-		At: time.Now().UTC(),
-	}); err != nil {
+		At: time.Now().UTC(), Release: release,
+	})
+	if err != nil {
 		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)
+		return true
 	}
+	return wrote
 }
 
 // releaseHold is the hold a cancel the store decided is recorded under, and the sentence the

@@ -8469,7 +8469,7 @@
     },
     "/api/v1/me/agent-tokens": {
       "get": {
-        "description": "List the caller's personal agent tokens, each with the scopes it holds.",
+        "description": "List the caller's personal agent tokens, newest first, each with the scopes it holds: a read-only token's scopes hold read.",
         "operationId": "getApiV1MeAgentTokens",
         "parameters": [
           {
@@ -8512,7 +8512,7 @@
         ]
       },
       "post": {
-        "description": "Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. The answer is the one time the token's plaintext is shown.",
+        "description": "Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A set holding read mints a read-only token, which Dispatch answers on the GET routes it classes as reads and refuses every other route, 403 READ_ONLY_TOKEN: read alone, or read beside person. A scope this deployment does not know, approve without person, or read beside approve, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED, and read needs none. The answer is the one time the token's plaintext is shown.",
         "operationId": "postApiV1MeAgentTokens",
         "parameters": [
           {
@@ -8566,7 +8566,7 @@
     },
     "/api/v1/me/agent-tokens/{id}": {
       "delete": {
-        "description": "Revoke a personal agent token.",
+        "description": "Revoke a personal agent token, read-only or not; a revoked token answers 401 TOKEN_REVOKED.",
         "operationId": "deleteApiV1MeAgentTokensById",
         "parameters": [
           {
@@ -8609,7 +8609,7 @@
         "x-write-scope": "session"
       },
       "patch": {
-        "description": "Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. A token of another person's, or none, is 404 NOT_FOUND.",
+        "description": "Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. No token changes to or from read only: a set holding read, and any set for a read-only token, is 400 TOKEN_SCOPES_INPUT, since a person makes a new token for that. A token of another person's, or none, is 404 NOT_FOUND.",
         "operationId": "patchApiV1MeAgentTokensById",
         "parameters": [
           {
@@ -9923,7 +9923,7 @@
     },
     "/api/v1/near-copy-checks": {
       "get": {
-        "description": "List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged.",
+        "description": "List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit, read_ms, read_stage}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build; read_ms is how long the create waited on the gate's read, in milliseconds, its rollback included, and read_stage the step the read was in when it answered or ended (connect, terms, keys, or score, which every answered read ends in), both null on a row written before they were recorded. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged.",
         "operationId": "getApiV1NearCopyChecks",
         "parameters": [
           {
@@ -13112,7 +13112,7 @@
     },
     "/api/v1/whoami": {
       "get": {
-        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, an exchange entry's token naming its account among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none.",
+        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, cut, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, an exchange entry's token naming its account and every read-only credential among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A read-only token that carries a cut is answered here, and refused 403 AS_OF_TOKEN_NOT_SERVED on every other read. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none.",
         "operationId": "getApiV1Whoami",
         "parameters": [
           {
@@ -18018,6 +18018,11 @@
           },
           "scopes": {
             "items": {
+              "enum": [
+                "person",
+                "approve",
+                "read"
+              ],
               "type": "string"
             },
             "type": [
@@ -25857,6 +25862,25 @@
           "project": {
             "type": "string"
           },
+          "read_ms": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "read_stage": {
+            "enum": [
+              "connect",
+              "terms",
+              "keys",
+              "score",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "reason": {
             "enum": [
               "bound",
@@ -25899,7 +25923,9 @@
           "candidates",
           "refuse_score",
           "nudge_score",
-          "build_commit"
+          "build_commit",
+          "read_ms",
+          "read_stage"
         ],
         "type": "object"
       },
@@ -29764,6 +29790,10 @@
         "properties": {
           "scopes": {
             "items": {
+              "enum": [
+                "person",
+                "approve"
+              ],
               "type": "string"
             },
             "type": [
@@ -30182,6 +30212,12 @@
       },
       "WhoamiAgent": {
         "properties": {
+          "cut": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "kind": {
             "enum": [
               "agent"
@@ -30226,6 +30262,7 @@
           }
         },
         "required": [
+          "cut",
           "kind",
           "owner",
           "project",

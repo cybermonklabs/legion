@@ -1877,9 +1877,10 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 //
 // Its one reader, keptRepository, asks it of an issue the workflow does not record. IssueSandbox
 // answers a Sandbox its store holds absent only where a release kept it with the issue's volume
-// (ReleaseIssue), and the store authorizes neither the release nor the close of an issue it holds
-// no row of (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers
-// present for as long as it lives.
+// (ReleaseIssue) or where it is going: being deleted, or taken by the runtime's own delete. The
+// store authorizes neither the release nor the close of an issue it holds no row of
+// (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers present for as
+// long as it lives, until a delete takes it with the workspace on it.
 func workspaceHeldBy(rt runtime.Runtime, stateDir string) func(issue string, repo ghrepo.Repository) bool {
 	if pods, ok := rt.(issuePods); ok {
 		return func(issue string, _ ghrepo.Repository) bool {

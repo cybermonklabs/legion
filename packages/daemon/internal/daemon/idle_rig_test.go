@@ -1090,8 +1090,7 @@ func (r *idleWakeRig) loggedEntries(msg string) []map[string]any {
 
 // idleRigDeadlineMargin is how long before the test binary's own deadline a wait of the rig
 // gives up, so a failure names what it waited for rather than arriving as the binary's panic. It
-// is the second testwait.Eventually leaves (internal/testwait), widened for the launchers' log
-// and the daemon's, which this rig prints on its way out.
+// leaves time for the launchers' log and the daemon's, which this rig prints on its way out.
 const idleRigDeadlineMargin = 5 * time.Second
 
 // Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting
@@ -1140,7 +1139,7 @@ const idleRigPoll = idleRigTick
 
 // idleRigWaiting waits for condition until it holds or the wait gives up, asking it once every
 // pace, and fails naming what it waited for. The bound is within from now, or the test binary's
-// own deadline less the margin above when that is sooner, which is the clamp testwait.Eventually
+// own deadline less the margin above when that is sooner, which is the clamp testwait.Bounded
 // makes (internal/testwait). A run whose remaining deadline is shorter than the span — a package
 // `-timeout` smaller than it, or a run far enough in that less than the span is left — fails the
 // wait rather than the binary, and a run with no deadline at all (`go test -timeout 0`) fails it

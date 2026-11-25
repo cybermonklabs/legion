@@ -223,8 +223,8 @@ func TestTheReleaseOfAKeptVolumeDeletesEachDeploymentRolesSecret(t *testing.T) {
 			t.Fatalf("the running pod's Sandbox has no Secret %s", secret)
 		}
 	}
-	if err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil {
-		t.Fatalf("ReleaseIssue: %v", err)
+	if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
+		t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
 	}
 	if s := g.sandbox(name); s == nil || !ownsKeptVolume(s) {
 		t.Fatalf("after the release the issue's Sandbox is %+v, want it kept with its volume", s)
@@ -263,8 +263,8 @@ func TestTheReleaseOfAKeptVolumeDeletesTheSecretOfARoleTheDeploymentLost(t *test
 		t.Fatalf("the restarted runtime's issue roles %v hold the checker, want it gone with the setting", restarted.issueRoles)
 	}
 
-	if err := restarted.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil {
-		t.Fatalf("ReleaseIssue: %v", err)
+	if released, err := restarted.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
+		t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
 	}
 
 	if s := g.sandbox(name); s == nil || !ownsKeptVolume(s) {

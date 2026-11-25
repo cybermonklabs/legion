@@ -289,7 +289,7 @@ func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+	release, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 		Generation: 1, Roles: []string{"implementer"}, At: at.Add(-time.Hour)})
 	if err != nil {
 		t.Fatalf("record the release: %v", err)
@@ -340,7 +340,7 @@ func TestClosingAResumeWritesNoFirstTurnAndFreesTheRole(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	if _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+	if _, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 		Generation: 1, Roles: []string{"implementer"}, At: at.Add(-time.Hour)}); err != nil {
 		t.Fatalf("record the release: %v", err)
 	}

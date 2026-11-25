@@ -393,6 +393,20 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 		}
 	})
 
+	t.Run("a claim that has answered its round is published nothing and marked nothing", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		h.signalUpdate("c0ffee")
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAnswered {
+			t.Fatalf("the ask to a claim that answered = %v, %v; want UpdateAskAnswered", outcome, err)
+		}
+		if c, stored := h.claim(), h.store.load(h.token); reached.calls != 0 || c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+			t.Fatalf("the ask to a claim that answered published %d times and marked %v, stored %v; want neither", reached.calls, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+		}
+	})
+
 	t.Run("a publish that fails marks nothing and answers the publisher's error", func(t *testing.T) {
 		h := updateHarness(t, PodUpdateContract)
 		h.reach(StateReady)

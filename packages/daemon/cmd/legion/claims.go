@@ -608,7 +608,7 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		}
 		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
 			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
+				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, c.waited)
 			return nil, false
 		}
 		select {

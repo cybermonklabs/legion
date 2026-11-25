@@ -404,6 +404,18 @@ type Machine struct {
 	// broker with sign-in on left or leaves pending (denyUndecidable); every name the policy
 	// grants at once is granted as ever.
 	SignInOff bool
+	// GitHubAppFieldOff is BROKER_GITHUB_APP_FIELD=off: the github_app field of an earlier
+	// agent-secrets is refused (ErrGitHubAppFieldRefused) rather than answered (github_app.go).
+	GitHubAppFieldOff bool
+	// GitHubAppFieldRequesters is BROKER_GITHUB_APP_FIELD_REQUESTERS: the services and people the
+	// github_app field is answered for, beside a person asking for their own App
+	// (gitHubAppFieldServes). Empty answers no service at all: only that person is answered, so a
+	// deployment's own value is what turns the answer on for its pods.
+	GitHubAppFieldRequesters string
+	// GitHubAppFieldSecrets is BROKER_GITHUB_APP_FIELD_SECRETS: the stored github-app secrets
+	// whose release the field hands over outside the airlock (gitHubAppFieldSecret). Empty names
+	// none, so the field is answered for no secret at all.
+	GitHubAppFieldSecrets string
 	// Groups is the broker's group reader (groups.Reader), the one the policy's sets carry
 	// (policy.Loader.Groups): who is a member of a group approver, for a decision
 	// (ApplyDecision), a revoke (RevokeByApprover) and the lists of a member's pending records
@@ -725,6 +737,11 @@ func (m *Machine) restrictedOperator(ctx context.Context, e enrollmentRow) (bool
 // told what the profile names. A live grant is handed back, and a pending request joined, only for
 // the same names and the same target, since each grant releases its own request's scope.
 func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sessionID string) (Request, error) {
+	return m.create(ctx, enrollmentID, compactRequest, sessionID, nil)
+}
+
+// create is Create, and with narrowing, a body's github_app field, CreateNarrowed (github_app.go).
+func (m *Machine) create(ctx context.Context, enrollmentID, compactRequest, sessionID string, narrowing *GitHubAppNarrowing) (Request, error) {
 	if !validSessionID(sessionID) {
 		return Request{}, ErrSessionIDInvalid
 	}
@@ -764,6 +781,11 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, err
 		}
 	}
+	if narrowing != nil {
+		if err := checkNarrowedObject(obj, names); err != nil {
+			return Request{}, err
+		}
+	}
 	fresh, err := m.Replay(ctx, obj.JTI, obj.Expires.Add(m.Skew+jtiRetentionMargin))
 	if err != nil {
 		return Request{}, err
@@ -771,7 +793,15 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if !fresh {
 		return Request{}, fmt.Errorf("%w: replayed jti", record.ErrRequestInvalid)
 	}
-	return m.createChecked(ctx, enr, enrollmentID, sessionID, obj, names)
+	req, err := m.createChecked(ctx, enr, enrollmentID, sessionID, obj, names, narrowing)
+	if narrowing != nil && err == nil {
+		profile := names[0]
+		if len(req.Secrets) > 0 {
+			profile = req.Secrets[0].Name
+		}
+		logGitHubAppAnswer(ctx, "request", names[0], profile, enr, *narrowing, "request", req.ID, "state", req.State, "grant", deref(req.GrantID))
+	}
+	return req, err
 }
 
 // createChecked is Create past the rules a new request object alone is held to — its issuer, no
@@ -779,7 +809,10 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 // broker that holds a project-access client, a fresh jti — and writes the request as Create's doc
 // says. Those rules stay in Create, where a request is new, and createChecked holds the rest, so a
 // test can write through it the request a broker from before one of them would have stored.
-func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollmentID, sessionID string, obj record.RequestObject, names []string) (Request, error) {
+// With narrowing, a body's github_app field, the request is served as the profile
+// gitHubAppProfile chooses, with narrowing's target, and one that would wait for a person or the
+// judge is refused before it is written.
+func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollmentID, sessionID string, obj record.RequestObject, names []string, narrowing *GitHubAppNarrowing) (Request, error) {
 	// Whether the session's person is a restricted member, asked here, on no transaction and
 	// before a live grant is looked for, so every read below — the reuse's re-check, the judge's
 	// lifetime, the profile check before a person is asked and the transaction's own evaluation —
@@ -823,6 +856,25 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 	if err != nil {
 		return Request{}, err
 	}
+	if narrowing != nil {
+		// The facts above were read for the stored secret the body names, which the policy
+		// serves under no name of its own where the profiles file gives it none
+		// (policy.Profiles.apply), so they hold no state for a project that secret is tagged
+		// with. The profiles of it carry the tag (policy.Secret.Project), so the choice and
+		// every evaluation after it read the facts of the candidates instead: without them such
+		// a request is refused policy.ErrNoProjectState, the case this choice exists to serve.
+		candidateFacts, err := m.projectFacts(ctx, enr, append([]string{names[0]}, set.ProfilesOf(names[0])...), set)
+		if err != nil {
+			return Request{}, err
+		}
+		chosen, err := m.gitHubAppProfile(ctx, enr, set, candidateFacts, names[0], *narrowing, obj.Reason)
+		if err != nil {
+			return Request{}, err
+		}
+		names, target, facts = []string{chosen}, narrowing.target(), candidateFacts
+		lifetime = defaultLifetime(set, names, obj.LifetimeSeconds)
+		answer.FromContext(ctx).NoteSecrets(chosen)
+	}
 	judgeBounded := false
 	if m.Judge != nil && m.namesAJudgeKey(set, names) {
 		requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
@@ -846,7 +898,7 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 		}
 	}
 	sorted := sortedCopy(names)
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set, target, facts); err != nil {
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set, target, facts, narrowing); err != nil {
 		return Request{}, err
 	} else if ok {
 		if err := m.endBesideReusedGrant(ctx, enrollmentID, sorted, existing.ID); err != nil {
@@ -857,8 +909,11 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 	// The check mint of each GitHub profile the request names, before a row is written and
 	// before anybody is asked (checkProfiles, profile_check.go): a refusal returns here, so the
 	// approval a profile the broker cannot mint would have spent is never asked for.
-	if err := m.checkProfiles(ctx, enr, names, set, facts, obj.Reason, target); err != nil {
-		return Request{}, err
+	// A request narrowed by a github_app field is never put to a person (below), so it needs none.
+	if narrowing == nil {
+		if err := m.checkProfiles(ctx, enr, names, set, facts, obj.Reason, target); err != nil {
+			return Request{}, err
+		}
 	}
 	assignee := m.claimAssignee(ctx, enr, set, names, obj.Reason, facts)
 	tx, err := m.Store.Pool.Begin(ctx)
@@ -879,6 +934,9 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 	e, err := m.evaluate(set, names, requester, obj.Reason)
 	if err != nil {
 		return Request{}, err
+	}
+	if narrowing != nil && e.state == "pending" {
+		return Request{}, gitHubAppFieldRefused(names[0] + " needs a person's decision for this requester, and the record a person decides names neither the profile nor the github_app target")
 	}
 	// A target the profile of a name the policy does not deny cannot serve, and none on a
 	// value-token profile of several accounts, is refused here, before anybody is asked
@@ -952,6 +1010,10 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 		id: uuid.NewString(), enrollmentID: enrollmentID, reason: obj.Reason, state: e.state,
 		approver: e.approver, rulesVersion: set.Version, sessionID: sessionID, lifetime: lifetime, decisions: e.decisions,
 		requester: requester, denials: e.denials, unexplained: e.unexplained, projectMissing: e.projectMissing,
+	}
+	if narrowing != nil {
+		readOnly := narrowing.ReadOnly
+		r.gitHubAppField, r.gitHubAppReadOnly = true, &readOnly
 	}
 	if e.state == "pending" && e.approver == record.AnyoneApprover {
 		r.notify = m.responsiblePerson(enr, requester, assignee)
@@ -1335,6 +1397,12 @@ type newRequest struct {
 	id, enrollmentID, reason, state, approver, rulesVersion, sessionID, recordID string
 	lifetime                                                                     *int
 	decisions                                                                    []SecretDecision
+	// gitHubAppField marks a request an earlier agent-secrets made with a github_app field
+	// (CreateNarrowed), and gitHubAppReadOnly what that field's read_only said, nil for every
+	// other request. Each name of the request records both (insertRequest), so a release and a
+	// reuse read how the request was made (requestedSecret).
+	gitHubAppField    bool
+	gitHubAppReadOnly *bool
 	// denials are the denied names a reason was named for (evaluation.denials), which
 	// decisionDetail turns into the row's decision_detail, as it does unexplained: whether some
 	// other name was denied with no reason to name.
@@ -1458,8 +1526,8 @@ func (m *Machine) insertRequest(ctx context.Context, tx pgx.Tx, r newRequest) er
 		return err
 	}
 	for _, d := range r.decisions {
-		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest, target_account, target_repositories) values ($1,$2,$3,$4,$5,$6,$7)`,
-			r.id, d.Name, d.Decision, d.Source, d.ProfileDigest, nullable(d.Target.Account), d.Target.Repositories); err != nil {
+		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest, target_account, target_repositories, github_app_field, github_app_read_only) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			r.id, d.Name, d.Decision, d.Source, d.ProfileDigest, nullable(d.Target.Account), d.Target.Repositories, r.gitHubAppField, r.gitHubAppReadOnly); err != nil {
 			return err
 		}
 	}
