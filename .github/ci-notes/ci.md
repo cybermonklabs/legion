@@ -364,11 +364,12 @@ The Go copies its tests hold the TypeScript to: src/dispatch-href.test.ts's "the
 reader's table is the same table" and src/dispatch-text-references.test.ts's "the Go
 reader's text table is the same table" read the Go reader's JSON tables,
 src/dispatch-block-ref.test.ts reads pmdoc's block pointer and typed block id
-tables, and scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
-Go contract, pmdoc's generated block schema and contracts' own generated TypeScript
-- is current. Not pmdoc/schema, the block schema those generated types are the
-shape of: this job generates that Go from packages/contracts/schemas, and reads no
-file of pmdoc/schema itself.
+tables, scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
+Go contract, the Go copy of the tool specs, pmdoc's generated block schema and contracts'
+own generated TypeScript - is current, and src/dispatch-tools.test.ts reads that Go copy
+of the tool specs for the rule and the bounds each tool states. Not pmdoc/schema, the
+block schema those generated types are the shape of: this job generates that Go from
+packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 
 ## contracts: `bun run check:api` renders schemas/dispatch-openapi.json into
 
@@ -1187,8 +1188,11 @@ older than the architecture in the key restores by go-notices-<os>-, which an <o
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
 go-envoy, go-envoy-test and go-envoy-darwin-vet are filled on every push to main: the fill
 restores the newest entry
-of the family, runs on it the build the job runs, which compiles only what changed since, and
-saves the result under the job's key followed by the commit (`-${{ github.sha }}`). No entry
+of the family, runs on it the build the job runs, which compiles only what changed since, deletes
+from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
+without it an entry grew with each fill, go-envoy-test from 690 MB to 2,039 MB in a day, and every
+job that restores it downloaded the growth), and saves the result under the job's key followed by
+the commit (`-${{ github.sha }}`). No entry
 carries the job's key itself, so GitHub's matching gives each job the newest entry whose key
 starts with it, the last fill's, and ci-caches.yaml's refill-superseded job then deletes every
 other entry of the family, so each family keeps one entry per runner, as before. A job that is
@@ -1931,7 +1935,8 @@ a harness outlives the step that queued it and the job's timeout-minutes still b
 A harness belongs in the pool when nothing else in the job writes what it reads and it reads
 nothing of its parents. One that needs an earlier step is queued after it
 (release-push.test.sh after install-changie, disk_watch.test.sh after the user-namespace
-sysctl, check-ci-filters.test.sh after setup-go, and it and ci-router-outputs.test.sh after the
+sysctl, check-ci-filters.test.sh and go-cache-working-set.test.sh after setup-go, and the first
+of them and ci-router-outputs.test.sh after the
 step that fetches the filters the run's changes job computed, whose path each takes in its step's
 env). In envoy-go-checks they are queued right after the Go cache restore and the helm install
 (the cluster test's nats.yaml render runs that helm, and a pooled harness takes the PATH of the
