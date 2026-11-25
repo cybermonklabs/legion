@@ -230,7 +230,7 @@ import {
   type TestInfo,
   type WebSocketRoute,
 } from "./test";
-import { expectLoadSettled, watchApiRequests } from "./traffic";
+import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertFitsItsBox, assertPageFits, assertWhole, assertWholeAcross } from "./unclipped";
 import { asUser } from "./users";
 
@@ -2370,14 +2370,76 @@ async function expectTheSeedIsDrawn(page: Page, seeded: BaselineSeed): Promise<v
     .toBeGreaterThanOrEqual(seeded.requirements.length);
 }
 
+/** A document of an issue, by its id and its name. */
+interface SeededDocument {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** How many typed blocks the row's document that no view reads holds (part N's R8). */
+const LONG_DOCUMENT_BLOCKS = 500;
+
+/** Writes `key` a document of `LONG_DOCUMENT_BLOCKS` requirements that is none of the spec, the
+ *  Verification, the plan and the decisions documents, whose blocks no load may read until the
+ *  reader opens it from Documents (part N's R8). A typed block is what the tree draws a node of,
+ *  so a page that built its tree out of every document's blocks would read these on every first
+ *  load, as the checkpoint did: 25 of its 47 reads on the recipe's copy of INFRA-1196 were one
+ *  document's blocks each (the tester's finding F17). */
+async function seedLongDocument(key: string): Promise<SeededDocument> {
+  const blocks = Array.from(
+    { length: LONG_DOCUMENT_BLOCKS },
+    (_, index) =>
+      `:::requirement{#r-inventory-${index + 1}}\nEntry ${index + 1} of the inventory.\n:::`
+  );
+  const { artifact } = await createIssueArtifact(key, {
+    content: `# Inventory\n\n${blocks.join("\n\n")}\n`,
+    name: "inventory.md",
+  });
+  const issue = await getIssue(key);
+  expect(
+    [
+      issue.primary_artifact_id,
+      issue.plan_artifact_id,
+      issue.verification_artifact_id,
+      issue.decisions_artifact_id,
+    ],
+    `${artifact.name} is a document a view reads, so its blocks prove nothing of R8`
+  ).not.toContain(artifact.id);
+  expect(
+    (await getArtifactBlocks(artifact.id)).filter((block) => block.type === "requirement"),
+    `${artifact.name} does not hold ${LONG_DOCUMENT_BLOCKS} typed blocks`
+  ).toHaveLength(LONG_DOCUMENT_BLOCKS);
+  return { id: artifact.id, name: artifact.name };
+}
+
+/** `seed`'s issue, with the document of 500 typed blocks beside its own (`seedLongDocument`). */
+function withLongDocument(
+  seed: () => Promise<BaselineSeed>
+): () => Promise<BaselineSeed & { readonly long: SeededDocument }> {
+  return async () => {
+    const seeded = await seed();
+    return { ...seeded, long: await seedLongDocument(seeded.key) };
+  };
+}
+
+/** Each read of `document`'s blocks (`GET /api/v1/artifacts/{id}/blocks`) that `traffic` holds. */
+function blocksReadsOf(traffic: ApiRequests, document: SeededDocument): string[] {
+  const blocks = `/api/v1/artifacts/${document.id}/blocks`;
+  return traffic.requests
+    .filter((request) => request.path.split("?")[0] === blocks)
+    .map((request) => `${request.method} ${request.path}`);
+}
+
 // c-requests.
 test("the first load stays inside its request budget", async ({ browser }) => {
   let baseline: { byRoute: string; total: number } | null = null;
 
-  await phase(browser, seedRequestBaseline, async (page, seeded) => {
+  await phase(browser, withLongDocument(seedRequestBaseline), async (page, seeded) => {
     const traffic = watchApiRequests(page);
     traffic.reset();
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    // The bare address's load (at most 40, Dashboard's) is read once dispatch://INFRA-5702 is on
+    // this part's stack: until then the bare address draws Conversation, the load read here.
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expectTheSeedIsDrawn(page, seeded);
     await expectLoadSettled(traffic);
@@ -2407,6 +2469,14 @@ test("the first load stays inside its request budget", async ({ browser }) => {
         .map((request) => request.path);
     expect(textReads(), "the first load read the stored text of a document").toEqual([]);
 
+    // The tree is built from the blocks of the spec, the Verification, the plan and the
+    // decisions documents alone (`treeDocumentIds`), so the 500 blocks of a document none of
+    // them is are read once the reader opens it, and on no load before.
+    expect(
+      blocksReadsOf(traffic, seeded.long),
+      `the first load of /conversation read the blocks of ${seeded.long.name}, a document of ${LONG_DOCUMENT_BLOCKS} typed blocks, before it was opened from Documents`
+    ).toEqual([]);
+
     // The ceiling and a floor together, because a ceiling alone passes a page that read
     // nothing: the baseline's own load is 37 reads, so a count in single figures is a page
     // that failed rather than a page that improved, and it has to be looked at either way.
@@ -2420,21 +2490,42 @@ test("the first load stays inside its request budget", async ({ browser }) => {
     ).toBeGreaterThanOrEqual(20);
     baseline = { byRoute, total: traffic.total() };
 
-    // Opening a document reads its text: the spec, opened from the node menu.
-    const specName = (await getArtifact(seeded.specArtifactId)).name;
-    await nodeMenuButton(page).click();
-    await openMenu(page).getByRole("button", { exact: true, name: specName }).click();
+    // The Spec view's own cold load, within the same ceiling.
+    traffic.reset();
+    await gotoIssue(page, presetPath(seeded.key, "spec"));
+    await expectIssuePageDrawn(page);
+    await expectTheSeedIsDrawn(page, seeded);
+    await expectLoadSettled(traffic);
+    const specByRoute = JSON.stringify(traffic.byRoute());
+    expect(
+      blocksReadsOf(traffic, seeded.long),
+      `the first load of /spec read the blocks of ${seeded.long.name}, a document of ${LONG_DOCUMENT_BLOCKS} typed blocks, before it was opened from Documents`
+    ).toEqual([]);
+    expect(
+      traffic.total(),
+      `the first load of /spec sent ${traffic.total()} requests under /api/: ${specByRoute}`
+    ).toBeLessThanOrEqual(40);
+
+    // Opening the document from Documents reads its text and its blocks.
+    await pickPreset(page, PRESET_NAMES.documents);
+    await documentsList(page).getByRole("link", { exact: true, name: seeded.long.name }).click();
     await expect(openedEditor(page)).toBeVisible();
     await expect
-      .poll(textReads, { message: "opening the spec read no text of it" })
-      .toContainEqual(expect.stringContaining(seeded.specArtifactId));
+      .poll(textReads, { message: `opening ${seeded.long.name} read no text of it` })
+      .toContainEqual(expect.stringContaining(seeded.long.id));
+    await expect
+      .poll(() => blocksReadsOf(traffic, seeded.long).length, {
+        message: `opening ${seeded.long.name} from Documents read none of its blocks`,
+      })
+      .toBeGreaterThan(0);
   });
 
-  // No request for each node: twice the nodes, the same count.
-  await phase(browser, seedTwiceTheNodes, async (page, seeded) => {
+  // No request for each node: twice the nodes, the same count. The issue carries the same
+  // document of 500 typed blocks, so the nodes are all that differs.
+  await phase(browser, withLongDocument(seedTwiceTheNodes), async (page, seeded) => {
     const traffic = watchApiRequests(page);
     traffic.reset();
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expectTheSeedIsDrawn(page, seeded);
     await expectLoadSettled(traffic);
@@ -3963,10 +4054,17 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // of its documents - this issue carries one, whose nodes the tree draws - and the one batched
   // read of every `dispatch://` address the tree holds. That read is one request and not one
   // per read that lands: the tree grows as each of its reads answers, so the batch waits until
-  // all of them have (`features/issue/useIssueTree.ts`), where before it asked for the
+  // all of them have (`features/issue-page/useIssueTree.ts`), where before it asked for the
   // addresses known so far and asked again for the rest. The tree's asks, comments and messages
   // are read under the keys the margin already owns, so they are shared rather than asked twice
   // and are the entries already here.
+  //
+  // It is the source's set (`750e2716`'s `e2e/live.e2e.ts`) less four addresses, and no part on
+  // `main` adds one to this load. Three of the four are part L's, which follows this part (part
+  // N's R11: `slots/foot.tsx` draws nothing, `AWAITING_THE_BOX`), and L's pull request puts
+  // them back: the head read and the reader's state, which the read mark writes, and the
+  // active-sessions read, which the box makes. The fourth, the repository mappings, `main`'s
+  // page no longer reads. Each is named where it stood.
   const firstLoad = [
     "/auth/whoami",
     // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
@@ -3980,8 +4078,11 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     "/api/v1/me/state",
     // The issue's detail.
     `/api/v1/issues/${issue.key}`,
-    // The active-sessions read.
-    "/api/v1/agents",
+    // No active-sessions read (`/api/v1/agents`): on this address the source made it for the
+    // box at the outline's foot, whose mention picker lists the live agents
+    // (`conversation/MentionComposer.tsx`'s `useAgents`). That box is part L's (R11). Nothing
+    // else on this load names an agent's session: the issue has no claim, and its messages are
+    // a person's.
     // The primary artifact's comments, which the margin and the tree share rather than fetching
     // again.
     `/api/v1/issues/${issue.key}/comments`,
@@ -4001,9 +4102,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
     // load, which is why it is absent from this set.
     "/api/v1/projects/CORE/architecture-sources",
-    // The header's read of the repository mappings: an issue that resolves to no repository,
-    // as this one does, shows the `Repository:` item only when its project maps one.
-    "/api/v1/settings/repo-projects",
+    // No read of the repository mappings (`/api/v1/settings/repo-projects`): `main` dropped them
+    // at #4457 (85f90626), and the header's `Repository:` item reads the project's default
+    // repository from the Projects query above.
     // me/agents/state, whose unread replies the Agents badge counts on every page (the
     // sidebar's on desktop, the compact header's on phone).
     "/api/v1/me/agents/state",
@@ -4015,14 +4116,16 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
     // No list of the issue's phase handoffs: the list drew them beside the messages, and they
     // are lines of the history now, read with its log.
-    // The reader's own state on this issue, which the unread mark and the pin read.
-    `/api/v1/me/issues/${issue.key}/state`,
+    // No write of the reader's own state on this issue (`PUT /api/v1/me/issues/<key>/state`):
+    // in the source it was the read mark's, sent once the outline's end had been on screen for
+    // a second, through the head read above (`IssueReadMark.tsx`'s `last_read_seq`). The read
+    // mark is part L's (R11).
     // The tree's own reads, and the blocks of the one document the issue carries, which are
     // the nodes the tree draws of it. The document's *text* is no read of a first load:
     // nothing on load parses stored markdown any more (dispatch://INFRA-1196 R20). The head's
     // three sentences were read out of the spec's own text at the summary block's span, and
     // R20 replaced both reads with the summary node the tree already carries
-    // (`features/issue/IssueThreeThings.tsx`); the editor that reads a document's text is
+    // (`features/issue-page/IssueThreeThings.tsx`); the editor that reads a document's text is
     // mounted only where a document preset is open, which this address is not. The issue's
     // own reference closure (`references?own=1`) is no read either: it placed a document under
     // the block citing it, and a document is no row of the outline (R1, be70b3383a).
@@ -4051,12 +4154,15 @@ test("live: a fresh page load opens the socket at the current head and stays wit
 
   // The batch is one request, which the set above cannot say: it holds the address once
   // however many times the page asked for it. The tree waits for all of its reads before it
-  // asks (`features/issue/useIssueTree.ts`), where before it asked for the addresses known so
-  // far and asked again for the rest, so the count is the assertion that rule needs. It is
+  // asks (`features/issue-page/useIssueTree.ts`), where before it asked for the addresses known
+  // so far and asked again for the rest, so the count is the assertion that rule needs. It is
   // counted once the page has gone quiet, not at the moment the set above first matched: that
   // moment is the first batch's own, so a second batch sent after the reads answer would land
   // after it and never be counted.
   await expectLoadSettled(settling);
+  // The set again, once quiet: an address first read after the set above matched is no less a
+  // read of the first load.
+  expect(seen(), "the first load read another address once its set had matched").toEqual(firstLoad);
   expect(
     apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/reference-targets"),
     "the page read /api/v1/reference-targets more than once on a first load"
