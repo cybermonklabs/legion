@@ -2841,8 +2841,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // (workflow's taskStopped), whose notice names the architect that made the call (StoppedBy) and
 // reaches the issue's architect only when that is another claim (the daemon's deliverNotice);
 // or by a failed step that no step before it of the type implementation can take the work back
-// from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
-// architect, in its reason.
+// from (workflow's stopUnreturned); or by a stop that ends a fix of the task, told to the owner
+// with no StoppedBy, so it reaches an owner that made the stop too (workflow's fixStopped), its
+// reason naming the fix and the branches where the work beside it stands. The task's owner reads
+// which task, and which step, fix or architect, in its reason.
 //
 // `retro-held` is a task held before its retro, each such notice written by workflow's
 // retroHeldFor; it carries one of two meanings. A parent whose task's last step is not the
