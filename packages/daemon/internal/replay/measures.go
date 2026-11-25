@@ -344,10 +344,14 @@ func (c *Course) waitingSince(at time.Time, runs []int) time.Time {
 
 // median is the median of values, the mean of the two middle ones for an even count, 0 for none.
 func median(values []float64) float64 {
-	if len(values) == 0 {
+	return sortedMedian(slices.Sorted(slices.Values(values)))
+}
+
+// sortedMedian is the median of sorted, values in order, as median gives it.
+func sortedMedian(sorted []float64) float64 {
+	if len(sorted) == 0 {
 		return 0
 	}
-	sorted := slices.Sorted(slices.Values(values))
 	mid := len(sorted) / 2
 	if len(sorted)%2 == 1 {
 		return sorted[mid]

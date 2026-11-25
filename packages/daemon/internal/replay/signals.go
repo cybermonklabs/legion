@@ -419,11 +419,21 @@ func (r *SignalRecord) minuteBefore(at time.Time) (ProviderMinute, bool) {
 // record's span: there the headroom binds nothing (assumption 47).
 func providerAt(r *SignalRecord, at time.Time) SignalValue {
 	minute, held := r.minuteBefore(at)
-	if !held || !r.window.Recorded(SignalProvider, minute.Minute) || minute.Limit == nil || *minute.Limit <= 0 ||
-		minute.LimitScope != nil && *minute.LimitScope != projectLimitScope {
+	limit, limited := minute.projectLimit()
+	if !held || !r.window.Recorded(SignalProvider, minute.Minute) || !limited {
 		return SignalValue{}
 	}
-	return SignalValue{Recorded: true, Value: float64(minute.Uncached) / float64(*minute.Limit)}
+	return SignalValue{Recorded: true, Value: float64(minute.Uncached) / float64(limit)}
+}
+
+// projectLimit is the limit of the project's own in force in m, and whether one is: a limit above
+// 0 whose scope is the project's (projectLimitScope) or names none. None, a limit of 0 (the limit
+// taken away) and a limit of one model's own are no limit on the project's tokens.
+func (m ProviderMinute) projectLimit() (int64, bool) {
+	if m.Limit == nil || *m.Limit <= 0 || m.LimitScope != nil && *m.LimitScope != projectLimitScope {
+		return 0, false
+	}
+	return *m.Limit, true
 }
 
 // providerNext is the headroom's next crossing of limit after at: the first minute boundary at

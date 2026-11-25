@@ -194,7 +194,8 @@ func TestValidationPrintsEveryMeasureAndIssueError(t *testing.T) {
 }
 
 // A branch whose replay of the recorded rule fails a test of R5 gives no comparison, and a window
-// whose main branch fails gives none at all; the validation names each such branch (spec R5).
+// whose main branch fails gives none at all; the validation names each such branch, and says
+// whether the main branch passes every test of R5 or how many of them it fails (spec R5).
 func TestBranchThatFailsGivesNoComparison(t *testing.T) {
 	recorded := sampleCard(compareHours)
 	good := sampleCard(compareHours)
@@ -253,8 +254,10 @@ func TestBranchThatFailsGivesNoComparison(t *testing.T) {
 		if err := v.Write(&out, 1, nil); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out.String(), "So the window gives no comparison at all") {
-			t.Errorf("the validation does not say the window gives no comparison at all:\n%s", out.String())
+		for _, line := range []string{"The window's main branch (main@1) fails 1 of R5's tests.", "So the window gives no comparison at all"} {
+			if !strings.Contains(out.String(), line) {
+				t.Errorf("the validation prints no %q:\n%s", line, out.String())
+			}
 		}
 	})
 }

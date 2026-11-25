@@ -215,6 +215,11 @@ Each is optional: a window collected without one holds no record of its signal.
 - `--default-assignee <login>` gives the project's default assignee at the start of the reach.
   Give it where no settings event before the reach names the default assignee.
 
+Under a directory that `--launcher-log` or `--memory` names, `collect` reads only the files whose names end in `.jsonl`, `.jsonl.gz`, `.json` or `.json.gz`, at any depth.
+So an export's other files beside its hour objects, such as its `manifest-<day>.sha256` of their hashes, are left out.
+A file that a flag names itself is read whatever its name.
+`--log` reads every file under a directory that it names.
+
 ### Run `collect`
 
 `collect` reads from Dispatch the events of each issue that the lines name.
@@ -620,6 +625,55 @@ Where the window holds the launcher's lines, `signals` then prints how many of t
 | `--at <time>` | A moment, in RFC 3339, given once for each (required). |
 | `--limit <signal>=<value>` | A limit of `idle`, `queue`, `provider`, `refusals`, `kills` or `approvals`, at or above zero, given once for each. |
 | `--idle-after <duration>` | d, how long a holder has been idle before the idle signal counts it (1 hour by default). |
+
+### `legion replay models`
+
+```sh
+legion replay models --window windows/acme-2026-10-05
+```
+
+`models` fits the three load models of R11 on a window's record alone, with no replay and no database, and tests each one by R11's daily test.
+A replay keeps each work segment's recorded length, so it cannot show a refusal, a memory kill or a longer merge queue that more work in flight would have caused.
+So a replay under another rule takes the provider's signal, the kills and the merge queue's wait from these models, each a function of the work in flight alone (assumption 45).
+The work in flight is the record's issues in flight at each moment, as the scorecard counts them (`inFlight`).
+Each model is fitted and tested only where the window holds its record (assumption 47), and the output names each span that it skips, with the reason.
+
+- **`tokens`**, of the signal `provider`: the project's uncached input tokens a minute.
+  Form: the tokens of a minute are its issues in flight times X, and X is drawn from the record's own tokens a minute per issue in flight, one draw for each minute of the provider's record with work in flight.
+  A minute whose modelled tokens pass the project's own limit in force is a refused minute, and it counts the record's own refusals per refused minute, or 1 where the record holds no refused minute.
+  So a day's modelled refusals by the project's own limit are the sum, over its minutes with that limit, of the share of the draws above the limit over the minute's issues in flight, times that count.
+  The provider's refusals are kept as recorded (assumption 46).
+  The model is fitted on every minute of the provider's record, with a limit or without one.
+  Its test of the project's own refusals reads only the minutes where the window holds a record of the provider's headroom: a limit of the project's own, from its first observation on (assumption 48).
+  A day with no such minute has no test of the project's own refusals, never a pass.
+  Parameters: the minutes fitted; the mean, the median, and the 90th and 99th percentiles of the tokens a minute per issue in flight; the refused minutes recorded; and the refusals per refused minute.
+
+- **`memory`**, of the signal `kills`: the memory guard's kills and the pods' memory.
+  Form: the kills over a span are the kills per issue-hour in flight times the span's issue-hours in flight, a rate fitted as the record's kills over its issue-hours in flight.
+  The pods' memory in a minute is the bytes per issue in flight times the issues in flight, fitted as the ratio of the record's memory to its issues in flight over the minutes of the memory's record.
+  The model is fitted and tested only where the window holds the record of the kills, the launcher's lines, so only where the memory guard ran.
+  R11 tests the kills; the memory is shown beside them and tests nothing.
+  Parameters: the kills recorded, the issue-hours in flight, the kills per issue-hour in flight, the minutes of the pods' memory fitted, and the bytes per issue in flight.
+
+- **`queue`**, of the signal `queue`: the merge queue's wait.
+  Form: a pull request's wait is its issues in flight when it entered the queue times X, and X is drawn from the record's own waits per issue in flight, one draw for each wait that left the queue in the record with work in flight at its start.
+  A day's modelled median wait is the median, over every draw, of the waits that the model gives the pull requests that left the queue that day, each at its recorded work in flight.
+  A day on which no pull request left the queue has no test.
+  Parameters: the waits fitted, and the median and the 90th percentile of the wait per issue in flight, in hours.
+
+R11's daily test: on a day with at least 10 refusals or kills recorded, the model gives within 30% of the record, and on each other day it gives at most 10; the merge queue's model gives its median wait within 30% of the record on each day.
+A model passes where it passes on each day that it tests, fails where it fails on one, and gives no test where no day tests it.
+A model gives a limit for its signal only where it passes, and the output says so of each model.
+
+`models` prints, for each model, its form, its parameters, its verdict, each span of the window's span that it skips with the reason, and a table of the days.
+A day is a UTC day of the window's span.
+Each row gives the day's issues in flight, the hours of record that its test reads, the recorded and the modelled value with the test, and the load beside it: the tokens a minute and the provider's refusals for `tokens`, and the pods' memory in GiB for `memory`.
+`--json` prints the same as JSON (`LoadModels` in `internal/replay/models.go`), which the limit test reads.
+
+| Flag | What it gives |
+| --- | --- |
+| `--window <dir>` | The window (required). |
+| `--json` | The models as JSON. |
 
 ### `legion replay validate`
 
@@ -1440,6 +1494,7 @@ It is the moment at which a rule that admits by the signals needs its next admis
 
 A replay keeps each work segment's recorded length, so it cannot show the load that more work in flight would cause.
 So a replay under another rule takes the merge queue's wait, the provider's headroom and refusals, and the kills from a model fitted on the window, as functions of the work in flight (assumption 45).
+[`legion replay models`](#legion-replay-models) fits the three models and tests each one by R11's daily test.
 The idle share and the approvals come from the replay itself.
 The definitions below read the record, and [`legion replay signals`](#legion-replay-signals) prints them.
 

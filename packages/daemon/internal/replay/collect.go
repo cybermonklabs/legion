@@ -241,11 +241,14 @@ type CollectConfig struct {
 	// LauncherLogs is each file or directory of the launcher's lines of the project's issue pods:
 	// rows of {timestamp, pod, text} (t25's export), Cloud Logging entries with timestamp,
 	// resource.labels.pod_name and textPayload, or a window's own lines, as JSON lines or as one
-	// JSON array, gzipped or not (ParseLauncherEntry).
+	// JSON array, gzipped or not (ParseLauncherEntry). Under a directory, only the files named
+	// *.jsonl, *.jsonl.gz, *.json and *.json.gz are read (signalInputFile), so an export's manifest
+	// beside them is not; a file named here is read whatever its name.
 	LauncherLogs []string
 	// Memory is each file or directory of the pods' memory: rows of {minute, pod, memory_type,
 	// bytes} (t25's export, a series for each memory type), or a window's own {minute, pod,
-	// bytes}, as JSON lines or as one JSON array, gzipped or not.
+	// bytes}, as JSON lines or as one JSON array, gzipped or not, a directory read as
+	// LauncherLogs's is.
 	Memory []string
 	// DefaultAssignee is the project's default assignee at the start of the inputs' reach, which
 	// the deployment gives where no settings event before that start names it; "" where it gives
@@ -630,8 +633,9 @@ type logCounts struct {
 }
 
 // filesOf is every file paths names, in the order paths gives and, under a directory, every
-// regular file beneath it by file name.
-func filesOf(paths []string) ([]string, error) {
+// regular file beneath it by file name whose name keep keeps, or every one where keep is nil. A
+// file paths names itself is read whatever its name.
+func filesOf(paths []string, keep func(name string) bool) ([]string, error) {
 	var files []string
 	for _, path := range paths {
 		info, err := os.Stat(path)
@@ -643,7 +647,7 @@ func filesOf(paths []string) ([]string, error) {
 			continue
 		}
 		err = filepath.WalkDir(path, func(file string, entry fs.DirEntry, err error) error {
-			if err == nil && entry.Type().IsRegular() {
+			if err == nil && entry.Type().IsRegular() && (keep == nil || keep(entry.Name())) {
 				files = append(files, file)
 			}
 			return err
@@ -653,6 +657,17 @@ func filesOf(paths []string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// signalInputSuffixes is the ends of the names of the files a directory of a signal's record
+// holds that collect reads (signalInputFile): JSON lines or one JSON array, gzipped or not. An
+// export's other files beside them, its manifest of their hashes among them, are no record.
+var signalInputSuffixes = []string{".jsonl", ".jsonl.gz", ".json", ".json.gz"}
+
+// signalInputFile says whether name is the name of a file collect reads under a directory of a
+// signal's record (signalInputSuffixes).
+func signalInputFile(name string) bool {
+	return slices.ContainsFunc(signalInputSuffixes, func(suffix string) bool { return strings.HasSuffix(name, suffix) })
 }
 
 // readProvider is the provider's minutes of file in [from, to), in time order, each read by
@@ -680,12 +695,12 @@ func readProvider(file string, from, to time.Time) ([]ProviderMinute, error) {
 	return minutes, err
 }
 
-// readLauncherLogs is the launcher's lines of the files and directories paths name (filesOf),
-// each read by ParseLauncherEntry, written in [from, to), each once, as the window's rows, ordered
-// by their time (two of one time in the order read). It refuses an element that is no launcher
-// line, naming the file and its place.
+// readLauncherLogs is the launcher's lines of the files and directories paths name (filesOf, a
+// directory's JSON files alone: signalInputFile), each read by ParseLauncherEntry, written in
+// [from, to), each once, as the window's rows, ordered by their time (two of one time in the order
+// read). It refuses an element that is no launcher line, naming the file and its place.
 func readLauncherLogs(paths []string, from, to time.Time) ([]LauncherLine, error) {
-	files, err := filesOf(paths)
+	files, err := filesOf(paths, signalInputFile)
 	if err != nil {
 		return nil, err
 	}
@@ -718,15 +733,16 @@ type memorySeries struct {
 	pod, kind string
 }
 
-// readMemory is the pods' memory of the files and directories paths name (filesOf) in [from,
-// to): each pod's bytes in each minute, the sum of its series that minute (t25's export gives a
-// pod two, its evictable and its non-evictable memory, whose sum is the container's use; a minute
-// with one alone counts that one), ordered by minute and then pod. A row of a window's own form,
-// with no memory_type, is the pod's whole use. A series a file gives twice in one minute is read
-// once where both give it the same bytes, and refused where they differ, as is a row with no
-// minute or pod, or bytes that are no whole number at or above zero.
+// readMemory is the pods' memory of the files and directories paths name (filesOf, a directory's
+// JSON files alone: signalInputFile) in [from, to): each pod's bytes in each minute, the sum of its
+// series that minute (t25's export gives a pod two, its evictable and its non-evictable memory,
+// whose sum is the container's use; a minute with one alone counts that one), ordered by minute
+// and then pod. A row of a window's own form, with no memory_type, is the pod's whole use. A series
+// a file gives twice in one minute is read once where both give it the same bytes, and refused
+// where they differ, as is a row with no minute or pod, or bytes that are no whole number at or
+// above zero.
 func readMemory(paths []string, from, to time.Time) ([]MemorySample, error) {
-	files, err := filesOf(paths)
+	files, err := filesOf(paths, signalInputFile)
 	if err != nil {
 		return nil, err
 	}
@@ -785,11 +801,11 @@ func readMemory(paths []string, from, to time.Time) ([]MemorySample, error) {
 	return samples, nil
 }
 
-// readLogs reads every daemon line of the files and directories paths name (filesOf), and keeps
-// the lines of a kind the trace reads written in [from, to), each once, ordered by the time the
-// line carries (two lines of one time in the order read).
+// readLogs reads every daemon line of the files and directories paths name (filesOf, every file
+// under a directory), and keeps the lines of a kind the trace reads written in [from, to), each
+// once, ordered by the time the line carries (two lines of one time in the order read).
 func readLogs(paths []string, from, to time.Time) ([]keptLine, logCounts, error) {
-	files, err := filesOf(paths)
+	files, err := filesOf(paths, nil)
 	if err != nil {
 		return nil, logCounts{}, err
 	}

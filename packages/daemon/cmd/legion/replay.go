@@ -28,10 +28,10 @@ import (
 // slot rule (internal/replay), so a rule is judged by the daemon's own decisions over a window it
 // lived through. Its commands collect a window (collect, collect-merges, collect-queue), neutralize
 // one for the repository's test data (neutralize), replay one (run), read the measures of a
-// window's record (scorecard), read R11's signals of a window at a moment (signals), check the
-// replay against the record (validate) and against a recorded change of the rule (forecast),
-// compare the rules on two windows (compare) and name the rules a replay can run (rules). None of
-// them reaches a daemon.
+// window's record (scorecard), read R11's signals of a window at a moment (signals), fit R11's load
+// models on a window's record (models), check the replay against the record (validate) and against
+// a recorded change of the rule (forecast), compare the rules on two windows (compare) and name the
+// rules a replay can run (rules). None of them reaches a daemon.
 func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "replay", Short: "replay a recorded window of a daemon's project through the daemon's own admission pass under a named slot rule (a developer's tool)"},
 		newReplayCollectCommand(stdout, stderr),
@@ -41,6 +41,7 @@ func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 		newReplayRunCommand(stdout, stderr),
 		newReplayScorecardCommand(stdout, stderr),
 		newReplaySignalsCommand(stdout, stderr),
+		newReplayModelsCommand(stdout, stderr),
 		newReplayValidateCommand(stdout, stderr),
 		newReplayForecastCommand(stdout, stderr),
 		newReplayCompareCommand(stdout, stderr),
@@ -73,8 +74,10 @@ the model provider's record, one line a minute; --launcher-log, the launcher's l
 project's issue pods (an export's {timestamp, pod, text} rows or a Cloud Logging read of
 {timestamp, resource.labels.pod_name, textPayload} entries), whose memory guard lines are the
 record of its kills; --memory, the pods' memory ({minute, pod, memory_type, bytes} rows, each
-pod's series summed a minute). --default-assignee is the project's default assignee at the
-reach's start, where no settings event before it names one.
+pod's series summed a minute). Under a directory --launcher-log or --memory names, only the files
+named *.jsonl, *.jsonl.gz, *.json and *.json.gz are read, so an export's manifest beside them is
+left out; a file named on the command line is read whatever its name. --default-assignee is the
+project's default assignee at the reach's start, where no settings event before it names one.
 
 --after is the window's run-out: a replay runs on past --to through it, so the work the record
 shows after --to runs where the replay moves it, and every measure reads [--from, --to) alone.
@@ -103,8 +106,8 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 	after := flags.Duration("after", 0, "the run-out: how far past --to the inputs reach, so a replay runs the work recorded after --to")
 	logs := flags.StringArray("log", nil, "a file or a directory of files of the daemon's lines; repeat for more (required)")
 	provider := flags.String("provider", "", "the file of the deployment's record of the model provider, one line a minute")
-	launcherLogs := flags.StringArray("launcher-log", nil, "a file or a directory of files of the launcher's lines of the project's issue pods; repeat for more")
-	memory := flags.StringArray("memory", nil, "a file or a directory of files of the pods' memory series; repeat for more")
+	launcherLogs := flags.StringArray("launcher-log", nil, "a file, or a directory whose *.jsonl, *.jsonl.gz, *.json and *.json.gz files are read, of the launcher's lines of the project's issue pods; repeat for more")
+	memory := flags.StringArray("memory", nil, "a file, or a directory whose *.jsonl, *.jsonl.gz, *.json and *.json.gz files are read, of the pods' memory series; repeat for more")
 	defaultAssignee := flags.String("default-assignee", "", "the project's default assignee at the start of the reach, where no settings event before it names one")
 	out := flags.String("out", "", "the directory the window is written to, missing or empty (required)")
 	tokenFile := flags.String("dispatch-token-file", "", "the file holding the Dispatch token (else DISPATCH_TOKEN_FILE, else DISPATCH_TOKEN)")
@@ -649,6 +652,60 @@ func printReplaySignal(stdout io.Writer, name, text string, limits []float64, ne
 			fmt.Fprintf(stdout, "    limit %s: no crossing due\n", shown)
 		}
 	}
+}
+
+// replayModelsLong is `legion replay models --help`'s description.
+const replayModelsLong = `Fit R11's three load models on a recorded window's record alone, with no replay, and print
+each day's recorded and modelled values with R11's daily test.
+
+Each model is a function of the work in flight, the issues in flight at each moment as the
+scorecard counts them (inFlight): tokens, the project's uncached input tokens a minute, from which
+a minute over the project's own limit is a refused minute, the provider's refusals kept as
+recorded; memory, the pods' memory and the memory guard's kills; queue, the merge queue's wait.
+R11's daily test: on a day with at least 10 refusals or kills recorded, the model within 30% of
+the record; on each other day, at most 10; the merge queue's median wait within 30% on each day.
+
+A model is fitted and tested only where the window holds its record, and the output names each
+span it skips and why. A day of the tokens model with no limit of the project's own recorded has
+no test of the project's own refusals, never a pass. A model that fails, or that gives no test,
+gives no limit for its signal. --json prints the same as JSON.`
+
+// newReplayModelsCommand is `legion replay models` (replay.FitLoadModels): R11's load models fitted
+// on a recorded window's record with no replay, each day tested by R11's daily test.
+func newReplayModelsCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "models --window <dir> [--json]",
+		Short: "fit R11's load models on a recorded window's record and print each day's test, with no replay",
+		Long:  replayModelsLong,
+		Args:  noArguments,
+	}
+	flags := cmd.Flags()
+	windowDir := flags.String("window", "", "the directory of the recorded window (required)")
+	asJSON := flags.Bool("json", false, "print the models as JSON")
+	cmd.RunE = runs(func(context.Context, []string) int {
+		if missing := missingFlag(cmd, "window"); missing != "" {
+			return refuse(cmd, "--%s is required", missing)
+		}
+		window, err := replay.ReadWindow(*windowDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay models: %v\n", err)
+			return 1
+		}
+		models, err := replay.FitLoadModels(window)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay models: %v\n", err)
+			return 1
+		}
+		if *asJSON {
+			return printReplayJSON(stdout, models)
+		}
+		if err := models.Write(stdout); err != nil {
+			fmt.Fprintf(stderr, "legion replay models: %v\n", err)
+			return 1
+		}
+		return 0
+	})
+	return cmd
 }
 
 // replayValidateLong is `legion replay validate --help`'s description.

@@ -384,10 +384,14 @@ var collectIssues = []string{"ACME-27", "ACME-29", "ACME-32", "ACME-55", "ACME-5
 // The deployment's records of the signals a collect is given beside the daemon's lines. The
 // provider's record is a minute with no limit in force, then the captured minutes, after a minute
 // before the reach; its captured minutes of 2026-11-23 are after the reach. The launcher's lines
-// are t25's export rows of an hour, gzipped under a directory of its own, with a line before the
+// are t25's export rows of an hour, gzipped under a directory of their own, with a line before the
 // reach and one at its end, and a Cloud Logging read of two entries, one the export holds too. The
-// pods' memory is the export's rows, two series of each pod, before the reach and in it.
+// pods' memory is the export's rows of an hour, two series of each pod, before the reach and in
+// it, under a directory of their own. Each export directory holds, beside its hour objects, the
+// export's manifest of their hashes (collectManifest), which is no record, so collect reads the
+// hour objects alone.
 const (
+	collectManifest     = "0000000000000000000000000000000000000000000000000000000000000000  2026-11-20/00.jsonl\n"
 	collectProviderHead = `{"minute": "2026-11-15T23:59:00Z", "uncached": 1, "limit": 6000000, "limit_source": "gateway-log", "limit_scope": "Claude", "own": 0, "provider": 0}` + "\n" +
 		`{"minute": "2026-11-16T14:29:00Z", "uncached": 10, "limit": null, "limit_source": null, "limit_scope": null, "own": 0, "provider": 0}` + "\n"
 	collectGuardEnded   = `launcher: memory guard: ended pid=41 role=tester size=1048576 reading=7000000000 counter=7100000000 shmem=0 limit=8589934592 executable="go"`
@@ -502,13 +506,16 @@ func collectCaptured(t *testing.T) collectRun {
 	}
 	inputs := t.TempDir()
 	for name, data := range map[string][]byte{
-		filepath.Join(logs, "a-export.jsonl.gz"):                       export.Bytes(),
-		filepath.Join(logs, "b-export-array.json"):                     []byte(array),
-		filepath.Join(logs, "c", "kubectl.log"):                        kubectl.Bytes(),
-		filepath.Join(inputs, "provider.jsonl"):                        append([]byte(collectProviderHead), signalsFixture(t, "provider/minutes.jsonl")...),
-		filepath.Join(inputs, "launcher", "2026-11-20", "01.jsonl.gz"): launcherExport.Bytes(),
-		filepath.Join(inputs, "launcher-read.json"):                    entries,
-		filepath.Join(inputs, "memory.jsonl"):                          []byte(collectMemory),
+		filepath.Join(logs, "a-export.jsonl.gz"):                         export.Bytes(),
+		filepath.Join(logs, "b-export-array.json"):                       []byte(array),
+		filepath.Join(logs, "c", "kubectl.log"):                          kubectl.Bytes(),
+		filepath.Join(inputs, "provider.jsonl"):                          append([]byte(collectProviderHead), signalsFixture(t, "provider/minutes.jsonl")...),
+		filepath.Join(inputs, "launcher", "2026-11-20", "01.jsonl.gz"):   launcherExport.Bytes(),
+		filepath.Join(inputs, "launcher", "manifest-2026-11-20.sha256"):  []byte(collectManifest),
+		filepath.Join(inputs, "launcher-read.out"):                       entries,
+		filepath.Join(inputs, "memory", "2026-11-20", "00.jsonl"):        []byte(collectMemory),
+		filepath.Join(inputs, "memory", "2026-11-20", "manifest.sha256"): []byte(collectManifest),
+		filepath.Join(inputs, "memory", "manifest-2026-11-20.sha256"):    []byte(collectManifest),
 	} {
 		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 			t.Fatal(err)
@@ -580,8 +587,8 @@ func collectCaptured(t *testing.T) collectRun {
 	run.out = filepath.Join(t.TempDir(), "window")
 	run.collected, err = Collect(context.Background(), CollectConfig{
 		Project: "ACME", From: collectFrom, To: collectTo, Before: collectBefore, Logs: []string{logs},
-		Provider: filepath.Join(inputs, "provider.jsonl"), LauncherLogs: []string{filepath.Join(inputs, "launcher"), filepath.Join(inputs, "launcher-read.json")},
-		Memory: []string{filepath.Join(inputs, "memory.jsonl")}, DefaultAssignee: "person-1@example.invalid",
+		Provider: filepath.Join(inputs, "provider.jsonl"), LauncherLogs: []string{filepath.Join(inputs, "launcher"), filepath.Join(inputs, "launcher-read.out")},
+		Memory: []string{filepath.Join(inputs, "memory")}, DefaultAssignee: "person-1@example.invalid",
 		Dispatch: NewDispatchReader(dispatchServer.URL, stubDispatchToken), Concurrency: 3, Settings: settings, Parts: run.parts,
 		Collector: "0123456789abcdef0123456789abcdef01234567", Out: run.out, Wait: wait,
 	})
@@ -617,17 +624,18 @@ func collectCaptured(t *testing.T) collectRun {
 // first-parent commits, read over two pages with the commit below it, which the walk passes and
 // does not keep.
 // The signals' records are each one's lines in the reach: the provider's minutes, the launcher's
-// lines of both its forms as the window's rows, each line once, in time order, and the pods'
-// memory as each pod's two series summed a minute; the settings events are the project's own,
-// read from the event log from its start to the reach's end, the one before the reach included;
-// and the signals map holds a record of the idle share, the kills and the approvals over the
-// reach (the default assignee is known from the reach's start), of the provider where a limit is
-// in force (each run of minutes with one), and, once collect-queue ran, of the queue over the
-// reach. collect-queue reads the timeline of each pull request of cybermonklabs/legion that an
-// attribution event of the window's issues or a line of its log names, #4910 over two pages and
-// #5150, and writes their merge queue events as GitHub serves them; it reads no pull request of
-// another repository, and none a line names of an issue whose repository the window does not
-// give, which it names.
+// lines of both its forms as the window's rows, each line once, in time order, the Cloud Logging
+// read named on its own though its name is no JSON file's, and the pods' memory as each pod's two
+// series summed a minute, each export's manifest beside its hour objects read as no record; the
+// settings events are the project's own, read from the event log from its start to the reach's
+// end, the one before the reach included; and the signals map holds a record of the idle share,
+// the kills and the approvals over the reach (the default assignee is known from the reach's
+// start), of the provider where a limit is in force (each run of minutes with one), and, once
+// collect-queue ran, of the queue over the reach. collect-queue reads the timeline of each pull
+// request of cybermonklabs/legion that an attribution event of the window's issues or a line of
+// its log names, #4910 over two pages and #5150, and writes their merge queue events as GitHub
+// serves them; it reads no pull request of another repository, and none a line names of an issue
+// whose repository the window does not give, which it names.
 // Every request the collect, the collect-merges and the collect-queue send is a GET: the stubs'
 // record of what each served holds no other method, and holds requests (a collect that read
 // nothing would pass a check of its methods alone).

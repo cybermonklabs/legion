@@ -392,10 +392,14 @@ func summarize(values []float64) ErrorSummary {
 // percentile is the p-th quantile of values by the nearest rank, the value at place ⌈p·n⌉ of
 // their sorted order; 0 for none.
 func percentile(values []float64, p float64) float64 {
-	if len(values) == 0 {
+	return nearestRank(slices.Sorted(slices.Values(values)), p)
+}
+
+// nearestRank is the p-th quantile of sorted, values in order, as percentile gives it.
+func nearestRank(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
 		return 0
 	}
-	sorted := slices.Sorted(slices.Values(values))
 	rank := int(math.Ceil(p * float64(len(sorted))))
 	return sorted[min(max(rank, 1), len(sorted))-1]
 }
@@ -455,20 +459,28 @@ func (v Validation) NoComparison() []BranchAt {
 }
 
 // Write prints v as Markdown, its headings at depth (2 for "##"): whether the window's main branch
-// passes and which branches give no comparison, a line for each branch with its verdict, the tests
-// it fails and its issues' errors, each branch's and each diagnostic branch's first starts that
-// only one side made, seed by seed, and then each branch's every measure — recorded, replayed with
-// its lowest and highest seed, the gap, R5's allowance and the test — the trees whose design gate
-// it holds closed otherwise than the record and, for each branch issuesOf names, each issue's
-// error. Each diagnostic branch follows, in a section of its own that says it tests nothing.
+// passes every test of R5, or how many of them it fails, and which branches give no comparison, a
+// line for each branch with its verdict, the tests it fails and its issues' errors, each branch's
+// and each diagnostic branch's first starts that only one side made, seed by seed, and then each
+// branch's every measure — recorded, replayed with its lowest and highest seed, the gap, R5's
+// allowance and the test — the trees whose design gate it holds closed otherwise than the record
+// and, for each branch issuesOf names, each issue's error. Each diagnostic branch follows, in a
+// section of its own that says it tests nothing.
 func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) error {
 	p := &printer{w: w}
 	heading := strings.Repeat("#", depth)
 	p.line("%s %s under `%s`", heading, v.Window, v.Rule)
 	p.line("")
-	mainPasses := v.MainPasses()
-	p.line("The window's main branch (%s) %s every test of R5.", MainBranchAt.Label(), passWord(mainPasses))
-	if !mainPasses {
+	main, ran := v.branch(MainBranchAt)
+	switch {
+	case !ran:
+		p.line("The window's main branch (%s) did not run.", MainBranchAt.Label())
+	case main.Pass():
+		p.line("The window's main branch (%s) passes every test of R5.", MainBranchAt.Label())
+	default:
+		p.line("The window's main branch (%s) fails %d of R5's tests.", MainBranchAt.Label(), len(main.Failed))
+	}
+	if !v.MainPasses() {
 		p.line("So the window gives no comparison at all: every branch of it gives none.")
 	}
 	none := v.NoComparison()
