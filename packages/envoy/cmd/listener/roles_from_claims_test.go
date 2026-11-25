@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -183,15 +184,17 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 	if err := client.JS().DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
-	// The longest wait of this package, about 20 s measured under load: the view keeps answering
-	// until its watcher has noticed the bucket is gone, which is a sequence of the watcher's own
-	// bounds (internal/kvwatch: a stream probe every streamProbeInterval, the confirm it waits for
-	// at streamConfirmMaxAge, the reread after it at rereadDelay, and the scan's ScanIdleTimeout,
-	// about 21 s together). All but the last are unexported, so this row cannot state the sum and
-	// takes the package's bound (listenerWaitBound), which leaves it roughly three times its need.
-	waitFor(t, "the role claim view to stop answering", func() bool {
+	// The longest wait of this package, measured at 20.03 s and 19.98 s over two whole-package runs
+	// under load: the view keeps answering until its watcher has noticed the bucket is gone, which
+	// is a sequence of the watcher's own bounds (internal/kvwatch: a stream probe every
+	// streamProbeInterval, the confirm it waits for at streamConfirmMaxAge, the reread after it at
+	// rereadDelay, and the scan's ScanIdleTimeout, about 21 s together). Three of those four are
+	// unexported, so this row cannot state the sum; and since what it waits out is a third of the
+	// package's minute cap rather than the few seconds every other wait takes, it waits to the test
+	// binary's deadline instead of taking that cap (testwait.Until).
+	testwait.Until(t, "the role claim view to stop answering", func() (error, bool) {
 		_, err := registry.RolesHeldBy(sender)
-		return err != nil
+		return err, err != nil
 	})
 
 	for _, route := range []struct {
