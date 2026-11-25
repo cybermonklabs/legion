@@ -21,9 +21,9 @@ package daemon
 // while no claim records a pod (replaceIssuePodForRound). Every end that replaces P reads the
 // workspace first (readPodWorkspace), through the tester where it is replaced through the tester's
 // process and through P's launcher otherwise, and the runtime is scripted to find work there. The
-// round is opened over a drift that breaks the pod beside the exchange drift (orderDrifts), so
-// each such end replaces P whatever the read found (roundKeeps), and tells the issue's architect
-// what it took.
+// round is opened over a drift that breaks the pod and over the exchange drift, which breaks it as
+// well (orderDrifts), so each such end replaces P whatever the read found (roundKeeps), and tells
+// the issue's architect what it took.
 //
 // The members (memberKind): an agent of it registered in P and it answered; an agent of it
 // registered in P and it did not answer; an agent of it registered in P, and it lost that
@@ -574,11 +574,14 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 	}
 }
 
-// orderDrifts is the drift the order table opens its round over P for: P's exchange drift
-// (podUpdateExchangeDrift), behind a drift that breaks the pod (roundBreakingDrift). The runtime
-// is scripted to find work in the workspace, and a read that finds work keeps a pod over a drift
-// its roles can keep working under (roundKeeps, R7 of #5285), so the breaking drift is what lets
-// each end that replaces P replace it, and tell the issue's architect whom the replacement may
+// orderDrifts is the drift the order table opens its round over P for: a drift that breaks the pod
+// (roundBreakingDrift), and P's exchange drift (podUpdateExchangeDrift), which breaks it as well.
+// The table's claims wait on P because a launch into it is refused: the deployment sets
+// dispatch_token_broker, names no transition file, and P carries no identity the exchange trades,
+// the one case in which a drift of the exchange identity breaks the pod (R7 of #5285, spec v26).
+// The runtime is scripted to find work in the workspace, and a read that finds work keeps a pod
+// only over a drift its roles can keep working under (roundKeeps), so each end that replaces P
+// replaces it whatever the read found, and tells the issue's architect whom the replacement may
 // have taken work from.
 var orderDrifts = []string{roundBreakingDrift, podUpdateExchangeDrift}
 

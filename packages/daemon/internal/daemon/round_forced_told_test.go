@@ -6,8 +6,9 @@ package daemon
 // over a drift that breaks the pod where the reasons it recorded open on the mark
 // runtime.BreakingDrift ("[breaks the pod] "), which the runtime puts at the start of the reason of
 // a drift that breaks the pod (runtime.Breaks): today a drift of the pod's service account (spec
-// v23) or of its exchange identity (spec v25), and the kinds a later change declares. This test
-// scripts such a reason of the image.
+// v23), one of its exchange identity where a launch into the pod is refused until its round
+// replaces it (spec v26), and the kinds a later change declares. This test scripts such a reason
+// of the image.
 
 import (
 	"strings"
