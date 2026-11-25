@@ -1043,6 +1043,17 @@ test("a code handed to the poll that lapses no later than its first poll is refu
         { ...started, intervalSeconds: 4.5, expiresAt: new Date(now + 4_200) },
         /^lapses in 4\.2 s, no later than its first poll, 4\.5 s on/,
       ],
+      // The first poll is named by the wait the test decided on: 4.9997 s waits 5 s, which a code
+      // that lapses in 5 s does not outlast. An interval with no digits past the millisecond is
+      // printed in its own digits, however long, not as milliseconds a number cannot hold.
+      [
+        { ...started, intervalSeconds: 4.9997, expiresAt: new Date(now + 5_000) },
+        /^lapses in 5 s, no later than its first poll, 5 s on/,
+      ],
+      [
+        { ...started, intervalSeconds: Number.MAX_VALUE },
+        /^lapses in 600 s, no later than its first poll, 17976931348623157\d{292} s on/,
+      ],
       [
         { ...started, expiresAt: new Date(now - 1_000) },
         /^had lapsed before its first poll, 1 s on/,

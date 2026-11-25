@@ -738,7 +738,10 @@ export async function finishDeviceLogin(
   // pass, and with it a timer's range; its end is kept on the monotonic clock.
   const { named, left: leftAtStart, reached } = codeLeft(started.expiresAt, interval, Date.now());
   if (!reached) {
-    const first = `its first poll, ${seconds(interval)} s on`;
+    // The wait the test decided on: an interval with digits past the millisecond waits them
+    // counted up (4.9997 s waits 5 s); any other waits its own digits, printed from the interval,
+    // since a huge one's milliseconds can pass what a number holds.
+    const first = `its first poll, ${seconds(pastTheMillisecond(interval) ? waitMs / 1000 : interval)} s on`;
     const lapse =
       leftAtStart <= 0
         ? `had lapsed before ${first}`
