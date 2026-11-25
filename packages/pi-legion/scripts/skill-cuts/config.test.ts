@@ -46,6 +46,7 @@ test("a configuration with every required key loads", () => {
 
 /** The keys a configuration may leave out. */
 const OPTIONAL_KEYS = [
+  "transcriptStore",
   "devboxClaudeConfigDir",
   "devboxHome",
   "sets",
@@ -119,6 +120,47 @@ test("registries and deploymentImages are optional; a host with its token comman
   expect(
     refusal({ ...valid(), deploymentImages: [{ ...deployed, dockerfile: "../Dockerfile" }] })
   ).toContain("deploymentImages[0].dockerfile:");
+});
+
+// Catches: a reading of a deployment image's RUN step stated in a shape rule 4 cannot match (a
+// hash that is not a step text's SHA-256 as 64 lower-case hex digits, no reason a person gave)
+// loaded as if it could, or one step listed twice in an entry, so with two reasons.
+test("a deploymentImages entry's readSteps is optional; a step's SHA-256 as 64 lower-case hex digits with a reason loads, once in the entry, and any other is refused by name", () => {
+  const deployed = {
+    repository: "registry.example.test/acme/deploy/worker-lean",
+    dockerfile: "images/worker-lean.Dockerfile",
+  };
+  const step = {
+    sha256: "0a".repeat(32),
+    reason:
+      "RUN tar -xzf sdk.tar.gz -C /opt unpacks into /opt/sdk alone, no path under /opt/legion",
+  };
+  const readSteps = [step, { ...step, sha256: "1b".repeat(32) }];
+  const entry = (steps: unknown) => ({
+    ...valid(),
+    deploymentImages: [{ ...deployed, readSteps: steps }],
+  });
+  expect(
+    parseConfig({ ...valid(), deploymentImages: [deployed] }).deploymentImages?.[0]?.readSteps
+  ).toBeUndefined();
+  expect(parseConfig(entry(readSteps)).deploymentImages).toEqual([{ ...deployed, readSteps }]);
+  for (const sha256 of ["0A".repeat(32), "0a".repeat(31), `${"0a".repeat(32)}0`, "g".repeat(64)]) {
+    expect(refusal(entry([{ ...step, sha256 }]))).toContain(
+      "deploymentImages[0].readSteps[0].sha256: the SHA-256 of a step's text as 64 lower-case hex digits"
+    );
+  }
+  expect(refusal(entry([{ ...step, reason: "" }]))).toContain(
+    "deploymentImages[0].readSteps[0].reason: what a person read in the step, not empty"
+  );
+  expect(refusal(entry([{ sha256: step.sha256 }]))).toContain(
+    "deploymentImages[0].readSteps[0].reason: missing"
+  );
+  expect(refusal(entry([...readSteps, { ...step, reason: "another reading" }]))).toContain(
+    "deploymentImages[0].readSteps[2].sha256: a step hash listed twice"
+  );
+  expect(refusal(entry([{ ...step, text: "RUN tar -xzf sdk.tar.gz -C /opt" }]))).toContain(
+    'deploymentImages[0].readSteps[0]: unknown key "text"'
+  );
 });
 
 // Catches: a dev box's Oh My Pi pin the pool version rule cannot read (a file outside the
@@ -318,4 +360,31 @@ test("storeNamed finds a store the configuration names and refuses any other", (
   expect(() => storeNamed(config, "store_c")).toThrow(
     'names no store "store_c"; it names store_a, store_b'
   );
+});
+
+test("transcriptStore is optional and holds an absolute program path and unique host contexts", () => {
+  expect(parseConfig(valid()).transcriptStore).toBeUndefined();
+  const transcriptStore = {
+    command: "/home/dev/bin/query-transcripts",
+    hosts: [
+      { host: "host-a", context: "devbox" },
+      { host: "host-b", context: "legion:ACME" },
+    ],
+  };
+  expect(parseConfig({ ...valid(), transcriptStore }).transcriptStore).toEqual(transcriptStore);
+  expect(() =>
+    parseConfig({
+      ...valid(),
+      transcriptStore: { ...transcriptStore, command: "query-transcripts" },
+    })
+  ).toThrow("transcriptStore.command: an absolute path");
+  expect(() =>
+    parseConfig({
+      ...valid(),
+      transcriptStore: {
+        ...transcriptStore,
+        hosts: [...transcriptStore.hosts, transcriptStore.hosts[0]],
+      },
+    })
+  ).toThrow("transcriptStore.hosts[2].host: a host listed twice");
 });

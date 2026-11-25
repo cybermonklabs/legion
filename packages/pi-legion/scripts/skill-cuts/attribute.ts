@@ -18,6 +18,9 @@
  *              query that has no `.txt` has no output: it failed, or it has not run yet.
  *              Each store with count output needs `<store>/roots.txt` from `count-sql --query
  *              roots`. It names each session's Oh My Pi profile by hash, without paths.
+ *              With transcriptStore, `transcripts/coverage.txt` supplies the host spans,
+ *              profiles and file hashes. Its daily files contain count rows keyed by host.
+ *              Each Postgres store's `hashes.txt` establishes its file ownership.
  *              `run.log` lists every query run, `<time>\t<store>\t<day or hour>\trc=<status>\tseconds=<n>\t
  *              <its stderr>`, a `FAILED ...` line for each query given up, and `END <time>` when
  *              the run ended.
@@ -49,6 +52,9 @@
  *   row counts in `sessions`, and a `reference` row (a read of `skill://<name>/<other>` or of
  *   `<name>/references/...`) in `reference_sessions`. A call that has no result in its file is
  *   not a read: the report counts such sessions per store, and no copy counts them.
+ *   Transcript files that Postgres holds stay with Postgres. Of the rest, a hash imported by
+ *   several transcript hosts is kept on the first host in byte order. The read-key rule applies
+ *   across all of those hosts, but their placement groups and coverage are separate.
  *   The copy of a count row is decided in this order:
  *   1. The prefix table. When every prefix-table.tsv row whose pattern matches the row's copy path
  *      maps to the same copy, the row goes to that copy. The match is `prefixRegExp`, the one
@@ -108,13 +114,11 @@
  *   skill-copies.tsv `loaded_by` is not empty, an installers.tsv row loads it (action `loads`: an
  *   agent definition's autoloadSkills, a Python loader's list), a loaders.tsv row of its name
  *   matches `code-load`, or INJECTED_SKILLS holds its name.
- *   Oh My Pi installs a copy when an Oh My Pi session read it (every store holds Oh My Pi
- *   sessions), when a store's context installs it (step 3), or when an installers.tsv row of host
- *   `omp` installs it (an installer script that installs into Oh My Pi, an Oh My Pi plugins
- *   package.json, a package.json with `omp.skills`, the prepack script). Claude Code installs a
- *   copy when an installers.tsv row of host `claude-code` installs it. Status: `read` when the copy
- *   has a session; else `not countable yet` when only Claude Code installs it; else `no Oh My Pi
- *   read; Claude Code not counted yet` when both hosts install it; else `no read`.
+ *   An Oh My Pi read, a context's installed unit, or an `omp` installer row indicates an Oh My Pi
+ *   install. A `claude-code` installer row indicates a Claude Code install. A copy with a read
+ *   session is `read`. A copy with no such session is `no read` if Claude Code is counted or has
+ *   no install of the copy. Without Claude Code coverage, the two legacy statuses distinguish
+ *   the copies installed only for Claude Code and those also installed for Oh My Pi.
  *   With --models, each read session's model is its file's row of the models queries (a file in
  *   two queries takes the model one names; two models keep the first day's and are counted), the
  *   thinking suffix dropped and a Claude Code model id written `anthropic/<id>` (`sessionModel`).
@@ -129,11 +133,14 @@
  *                          those that read it under a former name, step 1 and 3),
  *                          reference_sessions, unattributed_sessions (of the name), tie (each copy
  *                          of the name it ties with, `<repository> <path>`, joined by `; `), loaded
- *                          (yes or no), status.
+ *                          (yes or no), status, transcript_store_sessions (added read sessions)
+ *                          and partial_coverage_hosts (contributing hosts when most added read
+ *                          sessions came from partially covered host/format pairs).
  *   skill-read-count.md    The end time and the window; the stores with their spans, earliest
  *                          record and earliest read, and the call keys two files hold (in one
  *                          query, and across queries with the pairs of files that hold them);
  *                          each failed, split or missing query; the attribution rule with the
+ *                          transcript-host coverage, sessions added and sessions with reads;
  *                          units each store's context installs; the unmapped prefixes with their
  *                          sessions and the rule that placed them;
  *                          the mapped prefixes with their copies; each copy read under a former
@@ -174,7 +181,14 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { Refused, schemaFaults, sha256 } from "./common";
-import { cutOrSet, loadConfig, type SkillCutsConfig } from "./config";
+import {
+  cutOrSet,
+  loadConfig,
+  type SkillCutsConfig,
+  TRANSCRIPT_SOURCE,
+  TranscriptHost,
+  transcriptStoreName,
+} from "./config";
 import {
   FORMER_STAGES_COLUMNS,
   IMAGE_ROOT,
@@ -194,6 +208,7 @@ import { rankSkills } from "./score";
 // ---------------------------------------------------------------------------------------------
 // the count's output
 
+const TRANSCRIPT_PREFIX = `${TRANSCRIPT_SOURCE}@`;
 const Hash = z.string().regex(/^[0-9a-f]{16}$/, { error: "a file hash of 16 hex characters" });
 const Key = z.string().regex(/^[0-9a-f]{16}$/, { error: "a call key of 16 hex characters" });
 /** Each file of a count row, by its hash, with the keys of its reads that put it in the row. */
@@ -308,6 +323,10 @@ function queryRows<Row extends { readonly row: string; readonly store: string }>
  *  `unpaired_calls`. */
 export function parseQueryOutput(store: string, name: string, text: string): QueryOutput {
   const values = psqlRows(text);
+  return parseCountRows(store, name, values);
+}
+
+function parseCountRows(store: string, name: string, values: readonly unknown[]): QueryOutput {
   for (const [index, value] of values.entries()) {
     if (typeof value !== "object" || value === null || !("row" in value)) continue;
     if (value.row !== "count") continue;
@@ -389,12 +408,194 @@ export interface QueryDir<O> {
   readonly digests: ReadonlyMap<string, string>;
 }
 export type SessionProfiles = ReadonlyMap<string, string>;
-export type CountRead = QueryDir<QueryOutput> & { readonly profiles: SessionProfiles };
+export type CountRead = QueryDir<QueryOutput> & {
+  readonly profiles: SessionProfiles;
+  readonly transcript?: TranscriptRead;
+};
 
 const RootRow = z.strictObject({
   hash: Hash,
   profile: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
 });
+
+const TranscriptStore = z
+  .string()
+  .refine(
+    (store) =>
+      store.startsWith(TRANSCRIPT_PREFIX) &&
+      TranscriptHost.safeParse(store.slice(TRANSCRIPT_PREFIX.length)).success,
+    { error: "a transcript store and host label" }
+  );
+const TranscriptTool = z.strictObject({
+  row: z.literal("tool"),
+  store: TranscriptStore,
+  format: z.string().min(1),
+  tool: z.enum(["read", "Read", "Skill"]),
+  calls: Count,
+});
+const CoverageRow = z.strictObject({
+  row: z.literal("coverage"),
+  store: TranscriptStore,
+  format: z.string().min(1),
+  profile: RootRow.shape.profile,
+  first: z.number().int(),
+  last: z.number().int(),
+  days: z.array(CountRow.shape.day).min(1),
+  hashes: z.array(Hash).min(1),
+});
+const TranscriptEnd = z.strictObject({
+  row: z.literal("end"),
+  store: z.literal(TRANSCRIPT_SOURCE),
+});
+
+/** Only complete ClickHouse results, with the end row required even for empty days. */
+function transcriptRows(text: string): unknown[] {
+  const rows = text
+    .trimEnd()
+    .split("\n")
+    .map((line, index): unknown => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        throw new Error(`transcript output line ${index + 1} is not JSON`);
+      }
+    });
+  if (!TranscriptEnd.safeParse(rows.pop()).success)
+    throw new Error("no end row: the transcript query did not finish");
+  return rows;
+}
+
+export interface TranscriptDay {
+  readonly store: typeof TRANSCRIPT_SOURCE;
+  readonly name: string;
+  readonly outputs: readonly QueryOutput[];
+  readonly tools: readonly z.infer<typeof TranscriptTool>[];
+}
+
+/** Parse one ClickHouse day into count.sql query outputs, one per host. */
+export function parseTranscriptDay(_store: string, name: string, text: string): TranscriptDay {
+  const tools: z.infer<typeof TranscriptTool>[] = [];
+  const stores = new Map<string, unknown[]>();
+  for (const value of transcriptRows(text)) {
+    const parsed = z.object({ row: z.string(), store: TranscriptStore }).parse(value);
+    if (parsed.row === "tool") tools.push(TranscriptTool.parse(value));
+    else entry(stores, parsed.store, () => []).push(value);
+  }
+  for (const { store } of tools) {
+    if (!stores.has(store)) throw new Error(`no summary for ${store}`);
+  }
+  return {
+    store: TRANSCRIPT_SOURCE,
+    name,
+    outputs: [...stores].map(([store, rows]) => parseCountRows(store, name, rows)),
+    tools,
+  };
+}
+
+interface HostFormat {
+  readonly store: string;
+  readonly format: string;
+  first: number;
+  last: number;
+  readonly days: Set<string>;
+  readonly hashes: Set<string>;
+  added: number;
+}
+
+interface TranscriptRead {
+  readonly queries: QueryDir<TranscriptDay>;
+  readonly coverage: readonly HostFormat[];
+  readonly owners: ReadonlyMap<string, string>;
+  readonly formats: ReadonlyMap<string, string>;
+  readonly coverageRead: boolean;
+}
+
+/** Exclude Postgres-owned files before `countOnce`, so a fork can keep reads when its only
+ *  competing transcript row was excluded. A file imported by several hosts has one owner. */
+function readTranscriptCount(
+  dir: string,
+  stores: readonly string[],
+  profiles: Map<string, string>
+): TranscriptRead {
+  const queries = readQueryDir(dir, [TRANSCRIPT_SOURCE], parseTranscriptDay);
+  const coverageFile = path.join(dir, TRANSCRIPT_SOURCE, "coverage.txt");
+  const coverageRead = existsSync(coverageFile);
+  const coverage = new Map<string, HostFormat>();
+  const formats = new Map<string, string>();
+  const owners = new Map<string, string>();
+  const pg = new Set<string>();
+  if (queries.outputs.length > 0 && !coverageRead)
+    throw new Error(`${coverageFile} is missing: run count-sql --query transcript-coverage first`);
+  if (coverageRead) {
+    for (const store of stores) {
+      const file = path.join(dir, store, "hashes.txt");
+      if (!existsSync(file))
+        throw new Error(`${file} is missing: run count-sql --query hashes for ${store}`);
+      const schema = z.strictObject({ hash: Hash });
+      for (const value of psqlRows(readFileSync(file, "utf8"))) {
+        const parsed = schema.safeParse(value);
+        if (!parsed.success) throw new Error(`${file}: ${schemaFaults(parsed.error)}`);
+        pg.add(parsed.data.hash);
+      }
+    }
+    const rows = transcriptRows(readFileSync(coverageFile, "utf8")).map((value) => {
+      const parsed = CoverageRow.safeParse(value);
+      if (!parsed.success) throw new Error(`${coverageFile}: ${schemaFaults(parsed.error)}`);
+      if (parsed.data.first > parsed.data.last) throw new Error(`${coverageFile}: reversed span`);
+      return parsed.data;
+    });
+    rows.sort((a, b) => (a.store < b.store ? -1 : Number(a.store > b.store)));
+    for (const row of rows) {
+      const item = entry(coverage, sessionKey(row.store, row.format), () => ({
+        store: row.store,
+        format: row.format,
+        first: row.first,
+        last: row.last,
+        days: new Set<string>(),
+        hashes: new Set<string>(),
+        added: 0,
+      }));
+      item.first = Math.min(item.first, row.first);
+      item.last = Math.max(item.last, row.last);
+      for (const day of row.days) item.days.add(day);
+      for (const hash of row.hashes) {
+        item.hashes.add(hash);
+        if (pg.has(hash) || owners.has(hash)) continue;
+        owners.set(hash, row.store);
+        const key = sessionKey(row.store, hash);
+        formats.set(key, row.format);
+        profiles.set(key, row.profile);
+        item.added++;
+      }
+    }
+  }
+  return { queries, coverage: [...coverage.values()], owners, formats, coverageRead };
+}
+
+function transcriptOutputs(transcript: TranscriptRead): QueryOutput[] {
+  return transcript.queries.outputs.flatMap((day) =>
+    day.outputs.map((output) => ({
+      ...output,
+      rows: output.rows.map((row) => {
+        const hashes = row.hashes.filter((hash) => transcript.owners.get(hash) === row.store);
+        const unpaired = row.unpaired_hashes.filter(
+          (hash) => transcript.owners.get(hash) === row.store
+        );
+        return {
+          ...row,
+          hashes,
+          files: hashes.length,
+          calls: Object.fromEntries(hashes.map((hash) => [hash, row.calls[hash] ?? []])),
+          unpaired_hashes: unpaired,
+          unpaired: unpaired.length,
+          unpaired_calls: Object.fromEntries(
+            unpaired.map((hash) => [hash, row.unpaired_calls[hash] ?? []])
+          ),
+        };
+      }),
+    }))
+  );
+}
 
 /** Reads the query directory `dir` for the stores `stores`, each `.txt` read once and parsed by
  *  `parse`. A `.txt` that `parse` throws on is listed as unreadable, but for an EarlierCount,
@@ -434,7 +635,11 @@ export function readQueryDir<O>(
 }
 
 /** Reads the count directory `dir` for the stores `stores`. */
-export function readCount(dir: string, stores: readonly string[]): CountRead {
+export function readCount(
+  dir: string,
+  stores: readonly string[],
+  config?: SkillCutsConfig
+): CountRead {
   const count = readQueryDir(dir, stores, parseQueryOutput);
   const profiles = new Map<string, string>();
   for (const store of new Set(count.outputs.map((output) => output.store))) {
@@ -452,6 +657,16 @@ export function readCount(dir: string, stores: readonly string[]): CountRead {
       if (profiles.has(key)) throw new Error(`${file}: duplicate file hash ${hash}`);
       profiles.set(key, profile);
     }
+  }
+  if (config?.transcriptStore !== undefined) {
+    const transcript = readTranscriptCount(dir, stores, profiles);
+    return {
+      ...count,
+      outputs: [...count.outputs, ...transcriptOutputs(transcript)],
+      profiles,
+      transcript,
+      otherStores: count.otherStores.filter((store) => store !== TRANSCRIPT_SOURCE),
+    };
   }
   return { ...count, profiles };
 }
@@ -489,10 +704,13 @@ export interface CountedOnce {
  * returned as they are.
  */
 export function countOnce(outputs: readonly QueryOutput[]): CountedOnce {
+  // Host labels separate placement contexts, not the ownership of a shared read key.
+  const source = (store: string) =>
+    store.startsWith(TRANSCRIPT_PREFIX) ? TRANSCRIPT_SOURCE : store;
   // Per store: each key's first holder, and every holder of a key that more than one holds.
   const stores = new Map<string, { first: Map<string, Holder>; more: Map<string, Holder[]> }>();
   for (const output of outputs) {
-    const store = entry(stores, output.store, () => ({
+    const store = entry(stores, source(output.store), () => ({
       first: new Map<string, Holder>(),
       more: new Map<string, Holder[]>(),
     }));
@@ -541,7 +759,7 @@ export function countOnce(outputs: readonly QueryOutput[]): CountedOnce {
     acrossQueries.set(store, { keys, pairs: pairs.size });
   }
   const counted = outputs.map((output) => {
-    const owner = owners.get(output.store);
+    const owner = owners.get(source(output.store));
     if (owner === undefined || owner.size === 0) return output;
     /** The files of `hashes` one of whose keys in `calls` counts in them. */
     const kept = (calls: CountRow["calls"], hashes: readonly string[]) =>
@@ -598,7 +816,8 @@ export function daysFrom(first: number, last: number): string[] {
  */
 export function queryIssues(
   config: SkillCutsConfig,
-  count: QueryDir<{ readonly store: string; readonly name: string }>
+  count: QueryDir<{ readonly store: string; readonly name: string }>,
+  transcript?: QueryDir<TranscriptDay>
 ): QueryIssue[] {
   const issues: QueryIssue[] = [];
   const log = count.log;
@@ -621,9 +840,14 @@ export function queryIssues(
     for (const day of daysFrom(windowEnd, Date.parse(log.ended)))
       if (!expected.includes(day)) expected.push(day);
   }
-  for (const { name: store } of config.stores) {
+  const stores = config.stores.map(({ name }) => name);
+  if (transcript !== undefined) stores.push(TRANSCRIPT_SOURCE);
+  for (const store of stores) {
+    const input = store === TRANSCRIPT_SOURCE && transcript !== undefined ? transcript : count;
+    const days =
+      input === transcript ? daysFrom(Date.parse(config.windowStart), windowEnd - 1) : expected;
     const names = new Set(
-      count.outputs.filter((output) => output.store === store).map((output) => output.name)
+      input.outputs.filter((output) => output.store === store).map(({ name }) => name)
     );
     const hoursOf = (day: string) => HOURS.filter((hour) => names.has(`${day}T${twoDigits(hour)}`));
     const listed = new Set<string>();
@@ -653,11 +877,18 @@ export function queryIssues(
       const name = failed[3] === undefined ? day : `${day}T${twoDigits(Number(failed[3]))}`;
       if (!listed.has(name)) add(name, "failed", `the run log says: ${line}`);
     }
-    for (const unreadable of count.unreadable.filter((item) => item.store === store)) {
+    for (const unreadable of input.unreadable.filter((item) => item.store === store)) {
       add(unreadable.name, "unreadable", `its output is not a whole result: ${unreadable.why}`);
     }
-    for (const day of expected) {
-      if (names.has(day) || hoursOf(day).length > 0 || listed.has(day)) continue;
+    for (const day of days) {
+      if (names.has(day) || listed.has(day)) continue;
+      const hours = hoursOf(day);
+      if (input !== transcript && hours.length > 0) continue;
+      if (hours.length === 24) continue;
+      if (hours.length > 0) {
+        add(day, "split", `${hours.length} of 24 hour queries have output`);
+        continue;
+      }
       const entry = last.get(`${store}\t${day}`);
       add(
         day,
@@ -1003,6 +1234,8 @@ export const READ_COUNT_COLUMNS = [
   "tie",
   "loaded",
   "status",
+  "transcript_store_sessions",
+  "partial_coverage_hosts",
 ] as const;
 
 /**
@@ -1084,6 +1317,8 @@ export interface CopyCount {
   readonly path: string;
   readonly name: string;
   readonly sessions: number;
+  readonly transcriptSessions: number;
+  readonly partialCoverageHosts: readonly string[];
   /** The read sessions (`sessionKey`) that `sessions` counts. */
   readonly readSessions: ReadonlySet<string>;
   /** Of `sessions`, those that read it under a former name (`Placement.formerName`). */
@@ -1148,12 +1383,25 @@ export interface NameWithoutCopy {
   readonly referenceSessions: number;
 }
 
+interface TranscriptCoverage {
+  readonly store: string;
+  readonly format: string;
+  readonly first: number;
+  readonly last: number;
+  readonly gaps: readonly string[];
+  readonly sessions: number;
+  readonly added: number;
+  readonly reads: number;
+}
+
 export interface Attribution {
   readonly copies: readonly CopyCount[];
   readonly unmapped: readonly UnmappedPrefix[];
   /** Each prefix the table maps, with the copies (`<repository> <path>`) it maps to. */
   readonly mappedPrefixes: ReadonlyMap<string, ReadonlySet<string>>;
   readonly stores: readonly StoreCount[];
+  readonly transcriptCoverage: readonly TranscriptCoverage[];
+  readonly claudeCounted: boolean;
   readonly namesWithoutCopy: readonly NameWithoutCopy[];
   /** The distinct (store, file) sessions with a read. */
   readonly readSessions: number;
@@ -1424,7 +1672,8 @@ export function placer(
   outputs: readonly QueryOutput[],
   r4: R4Tables,
   profiles: SessionProfiles,
-  devboxStores: ReadonlySet<string> = new Set()
+  devboxStores: ReadonlySet<string> = new Set(),
+  pathOnlyStores: ReadonlySet<string> = new Set()
 ): Placer {
   const counted = countOnce(outputs);
   const copies = new Map<string, SkillCopiesRow>();
@@ -1498,7 +1747,7 @@ export function placer(
         for (const hash of row.hashes) {
           sessions.add(hash);
           const profile = profiles.get(sessionKey(row.store, hash));
-          if (profile !== undefined && profile !== "unknown")
+          if (profile !== undefined && profile !== "unknown" && !pathOnlyStores.has(row.store))
             entry(profileUnits, sessionKey(row.store, profile), () => new Set<string>()).add(unit);
         }
       }
@@ -1570,7 +1819,7 @@ export function placer(
         prefix,
         copy: undefined,
         rule: undefined,
-        outcome: `unattributed: ${reasons.join("; ")}; only the prefix table places reads under the worker image's install location ${IMAGE_ROOT}`,
+        outcome: `unattributed: ${reasons.join("; ")}; only the prefix table places reads under the worker image's install location ${IMAGE_ROOT}${pathOnlyStores.has(store) ? "; the host's context is not known" : ""}`,
         formerName: undefined,
       };
     }
@@ -1583,6 +1832,15 @@ export function placer(
         copy: byCheckout.copy,
         rule: "checkout",
         outcome: `checkout: ${byCheckout.why}`,
+        formerName: undefined,
+      };
+    }
+    if (pathOnlyStores.has(store)) {
+      return {
+        prefix,
+        copy: undefined,
+        rule: undefined,
+        outcome: `unattributed: ${table}${byCheckout?.why ?? "no copy's skill directory ends the path"}; the host's context is not known`,
         formerName: undefined,
       };
     }
@@ -1670,16 +1928,47 @@ export function attribute(
   config: SkillCutsConfig,
   outputs: readonly QueryOutput[],
   r4: R4Tables,
-  profiles: SessionProfiles
+  profiles: SessionProfiles,
+  transcript?: TranscriptRead
 ): Attribution {
+  const hostContexts = new Map(
+    config.transcriptStore?.hosts.map(({ host, context }) => [transcriptStoreName(host), context])
+  );
+  const hosts = new Set(transcript?.coverage.map(({ store }) => store));
+  const stores = [
+    ...config.stores,
+    ...[...hosts].map((name) => ({ name, context: hostContexts.get(name) ?? "unknown" })),
+  ];
+  const windowStart = Date.parse(config.windowStart);
+  const windowLast = Date.parse(config.windowEnd) - 1;
+  const coverage = (transcript?.coverage ?? []).map((item) => ({
+    store: item.store,
+    format: item.format,
+    first: item.first,
+    last: item.last,
+    gaps: daysFrom(item.first, item.last).filter((day) => !item.days.has(day)),
+    sessions: item.hashes.size,
+    added: item.added,
+  }));
+  const partial = new Set(
+    coverage
+      .filter((item) => item.first > windowStart || item.last < windowLast || item.gaps.length > 0)
+      .map((item) => sessionKey(item.store, item.format))
+  );
+  const queriedDays = new Set(transcript?.queries.outputs.map(({ name }) => name.slice(0, 10)));
+  const claudeCounted =
+    transcript?.coverage.some(
+      ({ format, days }) => format === "claude" && [...days].some((day) => queriedDays.has(day))
+    ) ?? false;
   const devboxStores = new Set(
-    config.stores.filter((store) => store.context === "devbox").map((store) => store.name)
+    stores.filter((store) => store.context === "devbox").map((store) => store.name)
   );
   const { place, storeUnits, members, installedInContext, counted } = placer(
     outputs,
     r4,
     profiles,
-    devboxStores
+    devboxStores,
+    new Set([...hosts].filter((store) => !hostContexts.has(store)))
   );
 
   // Each copy's sessions, and each skill name's sessions no copy got, by the row's kind.
@@ -1703,6 +1992,7 @@ export function attribute(
     }
   >();
   const mappedPrefixes = new Map<string, Set<string>>();
+  const transcriptReads = new Set<string>();
   const allReads = new Set<string>();
   const stats = new Map<
     string,
@@ -1737,6 +2027,9 @@ export function attribute(
       for (const hash of row.unpaired_hashes) store.unpaired.add(hash);
       if (row.hashes.length === 0) continue;
       const sessions = row.hashes.map((hash) => sessionKey(row.store, hash));
+      if (hosts.has(row.store)) {
+        for (const session of sessions) transcriptReads.add(session);
+      }
       if (row.kind === "read") {
         for (const hash of row.hashes) store.read.add(hash);
         for (const session of sessions) allReads.add(session);
@@ -1826,15 +2119,36 @@ export function attribute(
     ]);
     const injected = INJECTED_SKILLS[row.name];
     if (injected !== undefined) loaders.add(injected);
-    const ompInstalls =
-      sessions + referenceSessions > 0 || installedInContext.has(key) || ompInstalled.has(key);
+    let transcriptSessions = 0;
+    let partialSessions = 0;
+    const partialHosts = new Set<string>();
+    let ompRead = false;
+    for (const session of readSessions) {
+      const format = transcript?.formats.get(session);
+      if (format === undefined || format === "omp") ompRead = true;
+      if (format === undefined) continue;
+      transcriptSessions++;
+      const store = session.slice(0, session.indexOf("\t"));
+      if (partial.has(sessionKey(store, format))) {
+        partialSessions++;
+        partialHosts.add(store.slice(TRANSCRIPT_PREFIX.length));
+      }
+    }
+    for (const session of copySessions.reference.get(key) ?? []) {
+      const format = transcript?.formats.get(session);
+      if (format === undefined || format === "omp") ompRead = true;
+    }
+    const ompInstalls = ompRead || installedInContext.has(key) || ompInstalled.has(key);
     const claudeInstalls = claudeInstalled.has(key);
-    const status = copyStatus(sessions, ompInstalls, claudeInstalls);
+    const status = copyStatus(sessions, ompInstalls, claudeInstalls && !claudeCounted);
     return {
       repository: row.repository,
       path: row.path,
       name: row.name,
       sessions,
+      transcriptSessions,
+      partialCoverageHosts:
+        partialSessions * 2 > transcriptSessions ? [...partialHosts].sort() : [],
       readSessions,
       formerNameSessions: formerSessions.get(key)?.size ?? 0,
       formerNames: [...(formerNames.get(key) ?? [])].sort(),
@@ -1857,6 +2171,14 @@ export function attribute(
       referenceSessions: unplaced.reference.get(name)?.size ?? 0,
     }));
   const unattributedSessions = new Set([...unplaced.read.values()].flatMap((set) => [...set])).size;
+  const readsByFormat = new Map<string, number>();
+  for (const session of transcriptReads) {
+    const store = session.slice(0, session.indexOf("\t"));
+    const format = transcript?.formats.get(session);
+    if (format === undefined) continue;
+    const key = sessionKey(store, format);
+    readsByFormat.set(key, (readsByFormat.get(key) ?? 0) + 1);
+  }
   return {
     copies: counts,
     unmapped: [...unmapped]
@@ -1876,7 +2198,12 @@ export function attribute(
           a.prefix.localeCompare(b.prefix)
       ),
     mappedPrefixes,
-    stores: config.stores.map((store): StoreCount => {
+    transcriptCoverage: coverage.map((item) => ({
+      ...item,
+      reads: readsByFormat.get(sessionKey(item.store, item.format)) ?? 0,
+    })),
+    claudeCounted,
+    stores: stores.map((store): StoreCount => {
       const stat = stats.get(store.name);
       return {
         store: store.name,
@@ -2156,7 +2483,11 @@ function filedSkills(
       skipped.push(`${row.skill} (${row.path})`);
       continue;
     }
-    rows.push(row);
+    // build-cases can pull only from the Postgres stores. Rankings still use all reads.
+    rows.push({
+      ...row,
+      sessions: new Set([...row.sessions].filter((key) => !key.startsWith(TRANSCRIPT_PREFIX))),
+    });
   }
   return { rows, skipped };
 }
@@ -2232,6 +2563,8 @@ export function readCountTsv(attribution: Attribution): string {
       count.ties.join("; "),
       count.loadedBy.length > 0 ? "yes" : "no",
       count.status,
+      count.transcriptSessions,
+      count.partialCoverageHosts.join("; "),
     ])
   );
 }
@@ -2344,6 +2677,87 @@ function modelsMarkdown(report: Report): string[] {
   return lines;
 }
 
+function transcriptMarkdown(report: Report): string[] {
+  const { config, count, attribution } = report;
+  const transcript = count.transcript;
+  if (config.transcriptStore === undefined)
+    return ["- The transcript store is not read: no transcriptStore is configured."];
+  if (!transcript?.coverageRead)
+    return ["- The transcript store is not read: the count holds no transcript coverage output."];
+  const coverage = attribution.transcriptCoverage;
+  const lines = [
+    "",
+    "### Transcript store",
+    "",
+    "A session is in the window when its recorded span overlaps it. The first and last record below are clipped to the window. Postgres owns every file listed by its hashes query, including files with no skill read. Of the remaining files, when several hosts hold the same hash, the first host label in byte order owns it. Added sessions with a read include successful reference reads, but not unpaired calls.",
+    "",
+    "| Store | Context | Format | First record | Last record | Coverage | Sessions in window | Added sessions | Added sessions with a skill read |",
+    "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: |",
+  ];
+  const observed = new Set(
+    transcript.queries.outputs.flatMap(({ tools }) => tools.map(({ format }) => format))
+  );
+  for (const store of attribution.stores) {
+    if (!store.store.startsWith(TRANSCRIPT_PREFIX)) continue;
+    const formats = coverage.filter((item) => item.store === store.store);
+    if (formats.length > 1) {
+      const hostRows = transcript.coverage.filter((item) => item.store === store.store);
+      const hashes = new Set(hostRows.flatMap((item) => [...item.hashes]));
+      const days = new Set(hostRows.flatMap((item) => [...item.days]));
+      const first = Math.min(...formats.map((item) => item.first));
+      const last = Math.max(...formats.map((item) => item.last));
+      formats.unshift({
+        store: store.store,
+        format: "all",
+        first,
+        last,
+        gaps: daysFrom(first, last).filter((day) => !days.has(day)),
+        sessions: hashes.size,
+        added: formats.reduce((sum, item) => sum + item.added, 0),
+        reads: formats.reduce((sum, item) => sum + item.reads, 0),
+      });
+    }
+    for (const item of formats) {
+      const limits = [];
+      if (item.first > Date.parse(config.windowStart))
+        limits.push("starts after the window's start");
+      if (item.last < Date.parse(config.windowEnd) - 1) limits.push("ends before the window's end");
+      if (item.gaps.length > 0) limits.push(`gap days: ${item.gaps.join(", ")}`);
+      lines.push(
+        `| ${cell(store.store)} | ${cell(store.context)} | ${cell(item.format)} | ${iso(item.first)} | ${iso(item.last)} | ${limits.join("; ") || "no gap"} | ${item.sessions} | ${item.added} | ${item.reads} |`
+      );
+    }
+  }
+  const resultDays = transcript.queries.outputs.length;
+  lines.push("", `Transcript-store count: ${counted(resultDays, "query")} with output.`);
+  if (resultDays === 0) lines.push("No transcript-store read queries have output.");
+  for (const format of [...new Set(coverage.map((item) => item.format))].sort()) {
+    const reads = coverage
+      .filter((item) => item.format === format)
+      .reduce((sum, item) => sum + item.reads, 0);
+    lines.push(
+      `- ${code(format)}: ${counted(reads, "added session")} with a skill read.` +
+        (resultDays > 0 && !observed.has(format)
+          ? " The queries found no read, Read or Skill calls in this format."
+          : "")
+    );
+  }
+  const marked = attribution.copies.filter((copy) => copy.partialCoverageHosts.length > 0);
+  if (marked.length > 0) {
+    lines.push(
+      "",
+      "#### Partial coverage",
+      "",
+      "Most of the transcript-store sessions added to each of these copies came from the listed hosts in formats that miss part of the window. The same hosts appear in `partial_coverage_hosts` in the TSV."
+    );
+    for (const copy of marked)
+      lines.push(
+        `- ${copy.name} (${copy.repository} ${copy.path}): ${copy.partialCoverageHosts.join(", ")}.`
+      );
+  }
+  return lines;
+}
+
 /** skill-read-count.md's text. */
 export function readCountMarkdown(report: Report): string {
   const { config, attribution, count, issues, spans, r4, rankings } = report;
@@ -2359,10 +2773,12 @@ export function readCountMarkdown(report: Report): string {
   say(
     "# Skill read count",
     "",
-    `End time ${config.windowEnd}. The window is [${config.windowStart}, ${config.windowEnd}), ${windowDays} days. Each query read the files of one store whose mtime is in one UTC day (or one hour of a day whose query timed out), from the window's start on; a read counts when its call's timestamp is in the window. A session is one transcript file, so a subagent's file is a session of its own, and a file that two queries hold is one session. A read whose call id and timestamp two files hold (a forked session copies its parent's lines) counts in one of them, whichever queries hold the two.`,
+    `End time ${config.windowEnd}. The window is [${config.windowStart}, ${config.windowEnd}), ${windowDays} days. Postgres queries read one UTC day (or one hour) of file mtime from the window's start on. Transcript-store queries read one UTC day (or one hour) of call times. A read counts when its call's timestamp is in the window. A session is one transcript file, so a subagent's file is a session of its own, and a file that two queries hold is one session. A read whose call id and timestamp two files hold (a forked session copies its parent's lines) counts in one of them, whichever queries in the source hold the two.`,
     "",
     `${attribution.copies.length} copies of ${names.size} names in ${repositories.length} repositories: ` +
-      STATUSES.map((status) => `${of(status).length} ${status}`).join(", ") +
+      (attribution.claudeCounted ? STATUSES.slice(0, 2) : STATUSES)
+        .map((status) => `${of(status).length} ${status}`)
+        .join(", ") +
       `. ${counted(attribution.readSessions, "session")} read a skill; ${attribution.unattributedSessions} of them read a skill that no copy got.`,
     "",
     "## Stores",
@@ -2371,6 +2787,7 @@ export function readCountMarkdown(report: Report): string {
     "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
   );
   for (const store of attribution.stores) {
+    if (store.store.startsWith(TRANSCRIPT_PREFIX)) continue;
     const span = spans.find((candidate) => candidate.store === store.store);
     const earliest =
       span === undefined
@@ -2384,16 +2801,18 @@ export function readCountMarkdown(report: Report): string {
   }
   say("");
   for (const store of attribution.stores) {
-    const span = spans.find((candidate) => candidate.store === store.store);
-    if (span === undefined) {
-      say(
-        `- ${store.store}: the spans file has no line for it, so its earliest record is not known.`
-      );
-    } else if (span.earliest_mtime_ms !== null && span.earliest_mtime_ms > windowStart) {
-      const days = Math.round(((windowEnd - span.earliest_mtime_ms) / DAY_MS) * 10) / 10;
-      say(
-        `- ${store.store} starts after the window's start: its records span ${iso(span.earliest_mtime_ms)} to the end time, ${days} of the window's ${windowDays} days.`
-      );
+    if (!store.store.startsWith(TRANSCRIPT_PREFIX)) {
+      const span = spans.find((candidate) => candidate.store === store.store);
+      if (span === undefined) {
+        say(
+          `- ${store.store}: the spans file has no line for it, so its earliest record is not known.`
+        );
+      } else if (span.earliest_mtime_ms !== null && span.earliest_mtime_ms > windowStart) {
+        const days = Math.round(((windowEnd - span.earliest_mtime_ms) / DAY_MS) * 10) / 10;
+        say(
+          `- ${store.store} starts after the window's start: its records span ${iso(span.earliest_mtime_ms)} to the end time, ${days} of the window's ${windowDays} days.`
+        );
+      }
     }
     if (store.unpairedSessions > 0) {
       say(
@@ -2401,9 +2820,7 @@ export function readCountMarkdown(report: Report): string {
       );
     }
   }
-  say(
-    '- The transcript store is not read: the cluster store that a pod reads holds no Claude Code transcript until the Claude Code transcripts are moved into it, so this count holds no Claude Code session. "Claude Code" below lists the skills that leaves out.'
-  );
+  say(...transcriptMarkdown(report));
   for (const dir of count.otherStores) {
     say(
       `- The count directory holds ${code(dir)}, which the configuration names no store for; it is not read.`
@@ -2435,6 +2852,7 @@ export function readCountMarkdown(report: Report): string {
     "4. Otherwise the read is unattributed for its skill name.",
     "",
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",
+    "A transcript-store host with a configured context uses the same rules. A host with no configured context uses only the prefix table and the checkout rule.",
     "",
     "### Units read from in each store, across profiles",
     "",
@@ -2562,21 +2980,23 @@ export function readCountMarkdown(report: Report): string {
     say("");
   }
 
-  say(
-    "## Claude Code",
-    "",
-    "This count reads no Claude Code session (see \"Stores\"). Oh My Pi installs a copy when an Oh My Pi session read it (every store holds Oh My Pi sessions), when a store's context installs it (the units read from above, and in a devbox store's default profile the units the dev box's own installers install), or when an installers.tsv row of host omp installs it (an installer script into Oh My Pi, an Oh My Pi plugins package.json, a package.json with omp.skills, the prepack script). Claude Code installs it when an installers.tsv row of host claude-code does.",
-    "",
-    "### Not countable yet: only Claude Code installs them, and no Oh My Pi session read them",
-    ""
-  );
-  const notCountable = of("not countable yet");
-  if (notCountable.length === 0) say("None.");
-  for (const copy of notCountable) say(`- ${copy.name} (${copy.repository} ${copy.path})`);
-  say("", "### No Oh My Pi read; Claude Code not counted yet: both hosts install them", "");
-  const both = of("no Oh My Pi read; Claude Code not counted yet");
-  if (both.length === 0) say("None.");
-  for (const copy of both) say(`- ${copy.name} (${copy.repository} ${copy.path})`);
+  if (!attribution.claudeCounted) {
+    say(
+      "## Claude Code",
+      "",
+      "See Stores for the coverage of the count. These statuses distinguish copies installed by Claude Code when its reads cannot be measured.",
+      "",
+      "### Not countable yet: only Claude Code installs them, and no Oh My Pi session read them",
+      ""
+    );
+    const notCountable = of("not countable yet");
+    if (notCountable.length === 0) say("None.");
+    for (const copy of notCountable) say(`- ${copy.name} (${copy.repository} ${copy.path})`);
+    say("", "### No Oh My Pi read; Claude Code not counted yet: both hosts install them", "");
+    const both = of("no Oh My Pi read; Claude Code not counted yet");
+    if (both.length === 0) say("None.");
+    for (const copy of both) say(`- ${copy.name} (${copy.repository} ${copy.path})`);
+  }
 
   say(
     "",
@@ -2599,6 +3019,10 @@ export function readCountMarkdown(report: Report): string {
 
   say("", "## Rankings", "");
   if (rankings.length === 0) say("None: no --changed file was given.");
+  if (rankings.length > 0 && count.transcript?.queries.outputs.length)
+    say(
+      "Rankings include transcript-store sessions. The sessions files list only Postgres sessions, which build-cases can pull."
+    );
   for (const ranking of rankings) {
     const top = ranking.rows
       .slice(0, 5)
@@ -2737,11 +3161,11 @@ export function main(argv: readonly string[], io: Output): number {
   }
   try {
     const stores = config.stores.map((store) => store.name);
-    const count = readCount(countDir, stores);
+    const count = readCount(countDir, stores, config);
     const r4 = readR4(copiesDir);
     const spans = parseSpans(readFileSync(spansFile, "utf8"), spansFile);
-    const attribution = attribute(config, count.outputs, r4, count.profiles);
-    const issues = queryIssues(config, count);
+    const attribution = attribute(config, count.outputs, r4, count.profiles, count.transcript);
+    const issues = queryIssues(config, count, count.transcript?.queries);
     let models: ModelsRead | undefined;
     if (modelsDir !== undefined) {
       const dir = readQueryDir(modelsDir, stores, parseModelOutput);

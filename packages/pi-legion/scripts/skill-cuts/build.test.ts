@@ -1419,6 +1419,19 @@ const SLOT_RULE =
  *  evidence says it. */
 const CHECKOUT_RULE =
   "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing; where the tree does not hold that path and the working directory is directly inside that parent, the working directory is a workspace of that repository (a jj or git worktree) and the checkout's root when a file the session read by an absolute path under the working directory is a file of the tree at its path below the working directory";
+/** The extension of a dev box's repository that feeds each pool its skills-sources.json names to
+ *  Oh My Pi through resources_discover. */
+const POOLS_EXTENSION = [
+  'import * as fs from "node:fs";',
+  "export default function (pi) {",
+  '  pi.on("resources_discover", async () => ({',
+  '    skillPaths: JSON.parse(fs.readFileSync("skills-sources.json", "utf8")).sources.map(',
+  '      (source) => source.root + "/skills"',
+  "    ),",
+  "  }));",
+  "}",
+  "",
+].join("\n");
 /** The made-up repositories as each was at the commit SHA: every file's path and text. acme/skills
  *  holds `older` and no `newer`; its installer links each skill of skills/ into Oh My Pi's user
  *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme; it holds
@@ -1617,17 +1630,7 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "skills-sources.json": JSON.stringify({ sources: [{ root: "vendor/acme-pack" }] }),
     // The Oh My Pi build the dev box pins (the configuration's ompPin names this file and key).
     "mise.toml": '[tools]\n"acme:omp" = "18.13.3-acme.1"  # the dev box\'s Oh My Pi\n',
-    "omp/extensions/skill-pools.ts": [
-      'import * as fs from "node:fs";',
-      "export default function (pi) {",
-      '  pi.on("resources_discover", async () => ({',
-      '    skillPaths: JSON.parse(fs.readFileSync("skills-sources.json", "utf8")).sources.map(',
-      '      (source) => source.root + "/skills"',
-      "    ),",
-      "  }));",
-      "}",
-      "",
-    ].join("\n"),
+    "omp/extensions/skill-pools.ts": POOLS_EXTENSION,
     "installers/omp.sh": [
       "#!/usr/bin/env bash",
       'REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"',
@@ -1644,6 +1647,54 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "package.json": JSON.stringify({ name: "alpha-set", pi: { skills: ["./skills"] } }),
     "skills/alpha/SKILL.md": skillMd("alpha"),
     "skills/alpha/references/x.md": "Step notes.\n",
+  },
+  // A second dev box's repository in acme/dots's shape, for the twin-pool subagents: its
+  // installer clones acme/twin-pack into vendor/twin-pack, a pool its skills-sources.json feeds to
+  // Oh My Pi through its extension, and its plugin list installs acme/twin-powers as twin-powers.
+  "acme/twin-dots": {
+    "omp/plugins/package.json": JSON.stringify({
+      name: "omp-plugins",
+      dependencies: { "twin-powers": "github:acme/twin-powers#v1.0.0" },
+    }),
+    "skills-sources.json": JSON.stringify({ sources: [{ root: "vendor/twin-pack" }] }),
+    "omp/extensions/skill-pools.ts": POOLS_EXTENSION,
+    "installers/omp.sh": [
+      "#!/usr/bin/env bash",
+      'REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"',
+      'ln -sfn "$REPO_DIR/omp/extensions/skill-pools.ts" "$HOME/.omp/agent/extensions/skill-pools.ts"',
+      "ensure_vendor https://github.com/acme/twin-pack.git twin-pack v1.0.0",
+      "",
+    ].join("\n"),
+  },
+  "acme/twin-pack": {
+    "skills/pack-one/SKILL.md": skillMd("pack-one"),
+    "skills/pack-two/SKILL.md": skillMd("pack-two"),
+    "skills/twin-only/SKILL.md": skillMd("twin-only"),
+  },
+  // A package of pack-one and pack-two of other text than the pool's, and power-solo.
+  "acme/twin-powers": {
+    "package.json": JSON.stringify({ name: "twin-powers", pi: { skills: ["./skills"] } }),
+    "skills/pack-one/SKILL.md":
+      "---\nname: pack-one\ndescription: Use for the twin powers' own pack-one.\n---\n\n# pack-one of twin-powers\n",
+    "skills/pack-two/SKILL.md":
+      "---\nname: pack-two\ndescription: Use for the twin powers' own pack-two.\n---\n\n# pack-two of twin-powers\n",
+    "skills/power-solo/SKILL.md": skillMd("power-solo"),
+  },
+  // A checkout whose Claude Code settings turn on the plugin twin-tools of the marketplace
+  // acme-twins (acme/twins), which ships pack-one and pack-two of the pool's text, and a
+  // power-solo of other text than the package's.
+  "acme/twin": {
+    ".claude/settings.json": JSON.stringify({ enabledPlugins: { "twin-tools@acme-twins": true } }),
+  },
+  "acme/twins": {
+    ".claude-plugin/marketplace.json": JSON.stringify({
+      name: "acme-twins",
+      plugins: [{ name: "twin-tools", source: "./plugins/twin-tools" }],
+    }),
+    "plugins/twin-tools/skills/pack-one/SKILL.md": skillMd("pack-one"),
+    "plugins/twin-tools/skills/pack-two/SKILL.md": skillMd("pack-two"),
+    "plugins/twin-tools/skills/power-solo/SKILL.md":
+      "---\nname: power-solo\ndescription: Use for the twin tools' own power-solo.\n---\n\n# power-solo of twin-tools\n",
   },
   // Two packages: kit tags each release; gone tags none, and the registry's tarball of gone
   // 3.0.0 ships gone-one alone.
@@ -8196,13 +8247,15 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
   // profile is built (sessionQueries 2); one query of their store after both was counted before.
   // The profiles summary quotes LEGION_IMAGE_RULE, which now states the deployment-built image's
   // steps: the stage its final stage copies the worker's packages from (by COPY, an ADD into one
-  // a write of it too), else the base it is on.
+  // a write of it too, a later RUN that names one too unless readSteps lists its text's hash),
+  // else the base it is on; the packages it names are those the profile uses (the prefix rows
+  // under /opt/legion/ that an Oh My Pi unit places), not a row only Claude Code units place.
   expect(digests).toEqual({
     "model tasks": "7065771b7768b39f531ae513e501837a0837349affe5672950558cdaf8230f9e",
     "model summary": "830ba5a3c2d161a489386c91ee25396de33d21df9deabfb10e8e915059c49c48",
     "model printed": "8d8a65fe70015b199ecc51a86a5803ef39c5cacbddbe124b22460e6d36a2971b",
     "profiles tasks": "c29cedaadf7a508a1449548b98da93ab14b079a002eb834365c81cc2f70e79f6",
-    "profiles summary": "d6e16579467c56a74bd8d04d3fbb19db0a1858cba24f75ab84e2964594a7ab25",
+    "profiles summary": "ff7c38df75e14f47f36df06b063050adfcc9a61995c9ddc87d2a718f20c83873",
     "profiles printed": "9ceae9fd265f889f404904ada8fe26a18ca2cbde3e9141337bd67b87b1aa1b0b",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -9267,6 +9320,231 @@ test("a dev-box subagent whose recorded listing names no skill of a pool its roo
   expect(measure.fromRecorded).toBeUndefined();
 }, 120_000);
 
+// The architect's ruling of 2026-11-25 (17:06Z): Oh My Pi lists a copy as <namespace>/<name> only
+// where it admitted another copy of the name first, and it admits a pool's before every unit's
+// outside the pools. So a recorded <namespace>/<name> whose bare name a pool the listing leaves out
+// holds is direct proof of that pool, where no installed unit outside the pools that Oh My Pi
+// admits before the unit of that namespace ships another copy of the name.
+
+/** The root of the twin-pool subagents, which the store does not hold. Each runs on the dev box
+ *  of acme/twin-dots in a checkout of acme/twin, so its profile can install the pool
+ *  vendor/twin-pack (pack-one, pack-two and twin-only), the package twin-powers (pack-one and
+ *  pack-two of other text, and power-solo) and the Claude Code plugin twin-tools that acme/twin's
+ *  settings turn on (pack-one and pack-two of the pool's text, and power-solo of other text). */
+const TWIN_ROOT = `${DEV_SESSIONS}/2026-11-19T00-00-00-000Z_0a1b2c3d-0000-4000-8000-0000000000b3`;
+/** Each twin-pool subagent, and the names its recorded listing adds to SUBAGENT_PROMPT's. */
+const TWIN_LISTINGS: Record<string, readonly string[]> = {
+  "twin-proof": ["twin-powers/pack-one", "twin-powers/pack-two"],
+  "twin-later": ["twin-tools/pack-one"],
+  "twin-unheld": ["twin-powers/power-solo"],
+  "twin-named": ["twin-only", "twin-powers/pack-one"],
+};
+/** The units of the twin-pool subagents' profiles, as the evidence names them. */
+const TWIN_POOL = "pool:vendor/twin-pack (acme/twin-dots:skills-sources.json)";
+const TWIN_PACKAGE = "package:twin-powers (acme/twin-dots:omp/plugins/package.json)";
+const TWIN_PLUGIN = "plugin:twin-tools@acme-twins (acme/twins:.claude-plugin/marketplace.json)";
+
+/** The case of the twin-pool subagent `name` (TWIN_LISTINGS), all built once: the names its
+ *  profile lists from acme/twin-pack, acme/twin-powers and acme/twins, each with its repository,
+ *  its evidence by item and its listing measure. */
+async function twinPool(name: string) {
+  const pathOf = (each: string) => `${TWIN_ROOT}/${each}.jsonl`;
+  const out = path.join(scratch, "pool-twin", "cases.jsonl");
+  if (!existsSync(out)) {
+    const store = changedStore("pool-twin", (files) => {
+      for (const [each, names] of Object.entries(TWIN_LISTINGS)) {
+        const lines = f1Lines();
+        setText(lines, 5, () => `Step 3 (case ${each}).`);
+        SESSIONS.subagent?.change?.(lines);
+        workingDirectory("/home/dev/src/twin")(lines);
+        const init = lines.find((line) => line.type === "session_init");
+        if (init !== undefined) {
+          const listed = names.map((skill) => `- ${skill}: Use for the ${skill} steps.\n`).join("");
+          init.systemPrompt = [
+            (SUBAGENT_PROMPT[0] ?? "").replace("</skills>", `${listed}</skills>`),
+            ...SUBAGENT_PROMPT.slice(1),
+          ];
+        }
+        (files.store_a ?? {})[pathOf(each)] = lines
+          .map((line) => `${JSON.stringify(line)}\n`)
+          .join("");
+      }
+    });
+    // As copies.ts gives them: acme/twin-dots is the dev box's repository, acme/twin's settings
+    // turn twin-tools on, and the marketplace acme-twins (acme/twins) ships its skills.
+    const plugin = (
+      repo: string,
+      manifest: string,
+      kind: string,
+      action: string,
+      skill: string
+    ) => [
+      repo,
+      manifest,
+      kind,
+      action,
+      "plugin:twin-tools@acme-twins",
+      "claude-code",
+      skill,
+      "acme/twins",
+      `plugins/twin-tools/skills/${skill}`,
+      "",
+    ];
+    const shipped = ["pack-one", "pack-two", "power-solo"];
+    const copies = copiesWith("copies-pool-twin", {
+      "manifests.tsv": [
+        ["acme/twin-dots", "installers/omp.sh", "installer-script", "tree", 1, "clones", ""],
+        ["acme/twin-dots", ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+      ],
+      "repositories.tsv": ["acme/twin", "acme/twins"].map((repo) => [
+        repo,
+        "main",
+        SHA,
+        "no",
+        "no",
+        "",
+        3,
+        "whole",
+        0,
+        "",
+      ]),
+      "installers.tsv": [
+        ...shipped.map((skill) =>
+          plugin("acme/twin", ".claude/settings.json", "claude-settings", "enables", skill)
+        ),
+        ...shipped.map((skill) =>
+          plugin(
+            "acme/twins",
+            ".claude-plugin/marketplace.json",
+            "claude-marketplace",
+            "ships",
+            skill
+          )
+        ),
+      ],
+      "skill-copies.tsv": shipped.map((skill) => [
+        "acme/twins",
+        `plugins/twin-tools/skills/${skill}`,
+        skill,
+        10,
+        "no",
+        "no",
+        "",
+        "",
+        "",
+      ]),
+    });
+    const file = sessionsFile(
+      "pool-twin.jsonl",
+      [],
+      [],
+      Object.keys(TWIN_LISTINGS).map((each) => ({
+        store: "store_a",
+        hash: fileHash(pathOf(each)),
+        path: pathOf(each),
+      }))
+    );
+    const args = buildArgs(file, out, "1", "--copies", copies);
+    args[args.indexOf("--config") + 1] = store;
+    const lines: string[] = [];
+    const code = await main(args, io(lines));
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+  }
+  const c = loadCases(out, old).find((each) => each.source.pathHash === pathHash(pathOf(name)));
+  expect(c?.context).toBe("subagent:task");
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  return {
+    listed: (c?.profile.skills ?? [])
+      .filter((skill) => skill.repo.startsWith("acme/twin"))
+      .map((skill) => `${listedName(skill)} ${skill.repo}`)
+      .sort(),
+    evidence,
+    measure: ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE_ITEM] ?? "{}")),
+  };
+}
+
+// Catches: a pool left out though the recorded listing names its skills as the namespaced copies
+// of a package, which Oh My Pi lists so only where a copy it admitted before the package's came
+// first, and no unit outside the pools gives one.
+test("a dev-box subagent whose recorded listing names a pool's skills only as an installed package's <namespace>/<name>, and no installed unit Oh My Pi admits before the package ships them, gets the pool as direct proof: its names bare, the package's namespaced, the plugin's of the same text dropped, none marked fromRecorded, and the measure misses neither namespaced name", async () => {
+  const { listed, evidence, measure } = await twinPool("twin-proof");
+  expect(listed).toEqual([
+    "pack-one acme/twin-pack",
+    "pack-two acme/twin-pack",
+    "power-solo acme/twin-powers",
+    "twin-only acme/twin-pack",
+    "twin-powers/pack-one acme/twin-powers",
+    "twin-powers/pack-two acme/twin-powers",
+    "twin-tools/power-solo acme/twins",
+  ]);
+  const proofs = ["pack-one", "pack-two"]
+    .map(
+      (skill) =>
+        `twin-powers/${skill}: ${TWIN_PACKAGE} ships ${skill} under that namespace, and no installed unit outside the pools that Oh My Pi admits before it ships another copy of it`
+    )
+    .join("; ");
+  expect(evidence[`unit ${TWIN_POOL}`]).toContain(
+    `; the session's recorded listing names none of the 3 skills it holds at the session's start (named: none; unnamed: pack-one, pack-two, twin-only); the session's recorded listing names twin-powers/pack-one, twin-powers/pack-two (${proofs}), and Oh My Pi lists a copy as <namespace>/<name> only where it admitted another copy of the name first (NAMESPACE_RULE), so the copy it admitted first was this pool's, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: `
+  );
+  expect(evidence[`left out: the pool ${TWIN_POOL}`]).toBeUndefined();
+  for (const skill of ["pack-one", "pack-two"]) {
+    expect(
+      evidence[`left out: skill ${skill} from acme/twins plugins/twin-tools/skills/${skill}`]
+    ).toContain("its SKILL.md is the same, and Oh My Pi drops such a copy");
+  }
+  expect(measure.missing.filter((each) => each.includes("pack-"))).toEqual([]);
+  expect(measure.fromRecorded).toBeUndefined();
+}, 120_000);
+
+// Catches: a pool installed on a recorded <namespace>/<name> that a unit outside the pools
+// explains: Oh My Pi admits that unit's copy before the namespace's unit's.
+test("a dev-box subagent whose recorded listing names a pool's skill only as a Claude Code plugin's <namespace>/<name>, which an installed package Oh My Pi admits before the plugin also ships, gets none of the pool, and the evidence says why that name proves nothing", async () => {
+  const { listed, evidence, measure } = await twinPool("twin-later");
+  expect(listed.filter((each) => each.endsWith(" acme/twin-pack"))).toEqual([]);
+  expect(evidence[`unit ${TWIN_POOL}`]).toBeUndefined();
+  expect(evidence[`left out: the pool ${TWIN_POOL}`]).toContain(
+    `; the session's recorded listing names none of the 3 skills it holds at the session's start (pack-one, pack-two, twin-only); the session's recorded listing names twin-tools/pack-one, which proves nothing for this pool (twin-tools/pack-one: ${TWIN_PACKAGE}, which Oh My Pi admits before ${TWIN_PLUGIN}, ships another copy of pack-one), so it is not installed; ${POOL_INFERENCE}: `
+  );
+  // The package's pack-one keeps the bare name, and the plugin's is the listed twin-tools/pack-one.
+  expect(listed).toContain("pack-one acme/twin-powers");
+  expect(listed).toContain("twin-tools/pack-one acme/twins");
+  expect(measure.missing).not.toContain("twin-tools/pack-one");
+}, 120_000);
+
+// Catches: a pool installed on a recorded <namespace>/<name> of a name it does not hold, here one
+// that the package ships and no unit Oh My Pi admits before the package ships another copy of.
+test("a dev-box subagent whose recorded listing names under a namespace only a skill the pool does not hold gets none of the pool, and its evidence names no namespaced name", async () => {
+  const { listed, evidence } = await twinPool("twin-unheld");
+  expect(listed.filter((each) => each.endsWith(" acme/twin-pack"))).toEqual([]);
+  expect(evidence[`unit ${TWIN_POOL}`]).toBeUndefined();
+  const leftOut = evidence[`left out: the pool ${TWIN_POOL}`];
+  expect(leftOut).toContain(
+    `; the session's recorded listing names none of the 3 skills it holds at the session's start (pack-one, pack-two, twin-only), so it is not installed; ${POOL_INFERENCE}: `
+  );
+  expect(leftOut).not.toContain("twin-powers/power-solo");
+}, 120_000);
+
+// Catches: a pool the listing installs on a named skill that no unit outside the pools ships,
+// taken instead as installed on a recorded <namespace>/<name> of it, which loses its fromRecorded
+// marks.
+test("a dev-box subagent whose recorded listing names a skill of a pool that no unit outside the pools ships, and another of its skills under a namespace, gets the pool on the named skill as before, its names marked fromRecorded", async () => {
+  const { listed, evidence, measure } = await twinPool("twin-named");
+  expect(listed.filter((each) => each.endsWith(" acme/twin-pack"))).toEqual([
+    "pack-one acme/twin-pack",
+    "pack-two acme/twin-pack",
+    "twin-only acme/twin-pack",
+  ]);
+  const unit = evidence[`unit ${TWIN_POOL}`] ?? "";
+  expect(unit).toContain(
+    `; the session's recorded listing names 1 of the 3 skills it holds at the session's start (named: twin-only; unnamed: pack-one, pack-two), so it is installed; ${POOL_INFERENCE}, and the listing measure counts its unnamed skills as added names: `
+  );
+  expect(unit).not.toContain("so the copy it admitted first was this pool's");
+  expect(measure.fromRecorded).toEqual(["pack-one", "pack-two", "twin-only"]);
+}, 120_000);
+
 /** The case of the top-level dev-box session `name` (`pool-plain`, which reads alpha alone, or
  *  `pool-read`, which reads skill://pack-one of the pool first), built under a configuration whose
  *  ompPin names acme/dots's mise.toml, which pins 18.13.3-acme.1, and `first` as the first build
@@ -9697,6 +9975,7 @@ async function reprofiledLegion(
     readonly deploymentImages?: readonly {
       readonly repository: string;
       readonly dockerfile: string;
+      readonly readSteps?: readonly { readonly sha256: string; readonly reason: string }[];
     }[];
     readonly copies?: string;
     readonly gh?: (route: string, args: readonly string[]) => GhResult | undefined;
@@ -10086,22 +10365,60 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     "COPY --from=legion --chown=0:0 /opt/legion/pi-acme /opt/legion/pi-acme",
     "COPY --from=legion /opt/legion/bin/ /opt/legion/bin/",
   ];
-  /** The suite's copies output with one more prefix-table.tsv row under /opt/legion/, of a unit no
-   *  installer installs (a copy of alpha that no read of the suite is under): the profile's
-   *  packages in the worker image are pi-acme and pi-legion. */
+  /** The unit of the suite's prefix-table.tsv rows under /opt/legion/pi-acme/, an Oh My Pi unit:
+   *  installers.tsv installs it for host omp. */
+  const PI_ACME = "package:@acme/pi-acme (acme/skills:packages/pi-acme/package.json)";
+  /** The prefix-table.tsv row of pi-legion: a copy of alpha that no read of the suite is under,
+   *  placed by PI_ACME. */
+  const PI_LEGION_ROW = [
+    "/opt/legion/pi-legion/dist/skills/alpha/",
+    "acme/skills",
+    "skills/alpha",
+    "alpha",
+    PI_ACME,
+  ];
+  /** The suite's copies output with PI_LEGION_ROW added: the profile's packages in the worker
+   *  image are pi-acme and pi-legion. */
   const copies = path.join(scratch, "copies-pi-legion");
   beforeAll(() => {
     cpSync(copiesDir, copies, { recursive: true });
     const table = path.join(copies, "prefix-table.tsv");
-    const row = [
-      "/opt/legion/pi-legion/dist/skills/alpha/",
-      "acme/skills",
-      "skills/alpha",
-      "alpha",
-      "package:@acme/pi-legion (acme/skills:packages/pi-legion/package.json)",
-    ];
-    writeFileSync(table, `${readFileSync(table, "utf8")}${row.join("\t")}\n`);
+    writeFileSync(table, `${readFileSync(table, "utf8")}${PI_LEGION_ROW.join("\t")}\n`);
   });
+  /** A Claude Code plugin's unit, as copies.ts gives the plugin a build script generates from a
+   *  package's staged skills. */
+  const CLAUDE_ACME = "plugin:claude-acme (acme/skills:packages/claude-acme/scripts/build.ts)";
+  /** The copies output `copies-copied-<name>`: the suite's with PI_LEGION_ROW, a prefix-table.tsv
+   *  row under /opt/legion/claude-acme/ (a copy of alpha that no read of the suite is under)
+   *  placed by the units `via`, and the installers.tsv row by which CLAUDE_ACME ships alpha for
+   *  Claude Code (host claude-code). */
+  const withClaudeAcme = (name: string, via: string) =>
+    copiesWith(`copies-copied-${name}`, {
+      "prefix-table.tsv": [
+        PI_LEGION_ROW,
+        [
+          "/opt/legion/claude-acme/claude-acme/skills/alpha/",
+          "acme/skills",
+          "skills/alpha",
+          "alpha",
+          via,
+        ],
+      ],
+      "installers.tsv": [
+        [
+          "acme/skills",
+          "packages/claude-acme/scripts/build.ts",
+          "build-script",
+          "ships",
+          "plugin:claude-acme",
+          "claude-code",
+          "alpha",
+          "acme/skills",
+          "skills/alpha",
+          "",
+        ],
+      ],
+    });
   const imaged = [`alpha ${IMAGE_SHA}`, `beta ${IMAGE_SHA}`, `omicron ${IMAGE_SHA}`];
   /** The image's own step, whose labels (the version label `version`) name no commit of
    *  acme/skills. */
@@ -10130,8 +10447,9 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
    *  IMAGE's config (its version label `version`, none when undefined), WORKER's and OLDER's, each
    *  with the image's first 3 diff ids, and refusing TOOLCHAIN's read; WORKER's digest's build
    *  provenance naming IMAGE_SHA and OLDER's SHA; acme/infra holding REVISION and at it the
-   *  Dockerfile whose final stage is FROM `final` and holds `copyLines`, then `later`; and the
-   *  configuration's deploymentImages naming REPOSITORY. */
+   *  Dockerfile whose final stage is FROM `final` and holds `copyLines`, then `later`; the
+   *  configuration's deploymentImages naming REPOSITORY, with `readSteps` where given; and the
+   *  copies output `output` (`copies` when undefined). */
   const copied = (
     name: string,
     {
@@ -10139,13 +10457,17 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       final = `\${TOOLCHAIN}`,
       copyLines = COPIES,
       later = [],
+      readSteps,
       refused,
+      output = copies,
     }: {
       version?: string;
       final?: string;
       copyLines?: readonly string[];
       later?: readonly string[];
+      readSteps?: readonly { readonly sha256: string; readonly reason: string }[];
       refused?: true;
+      output?: string;
     }
   ) =>
     reprofiledLegion(`copied-${name}`, {
@@ -10165,8 +10487,14 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
         [OLDER]: { env: [], labels: {}, diffIds: LAYERS.slice(0, 3) },
       },
       refusing: [TOOLCHAIN],
-      deploymentImages: [{ repository: REPOSITORY, dockerfile: DOCKERFILE }],
-      copies,
+      deploymentImages: [
+        {
+          repository: REPOSITORY,
+          dockerfile: DOCKERFILE,
+          ...(readSteps === undefined ? {} : { readSteps }),
+        },
+      ],
+      copies: output,
       gh: (route, args) => {
         const ok = (stdout: string): GhResult => ({ code: 0, stdout, stderr: "" });
         if (route.startsWith(`repos/acme/infra/commits?sha=${REVISION}&`))
@@ -10285,6 +10613,58 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     120_000
   );
 
+  // Catches: a package of the worker image that the profile does not use, one that only a Claude
+  // Code unit places (a Claude Code plugin's package, which installs nothing in a pod's Oh My Pi
+  // profile), required of the COPY step: an image whose final stage copies the Oh My Pi packages
+  // from the stage and the Claude Code plugin's package not at all was left out, naming it.
+  test("an image whose final stage copies the profile's packages from one stage and does not copy a package that only a Claude Code unit places takes that stage's commit: that package is no package of the profile", async () => {
+    const result = await copied("claude-only", {
+      version: "20.25.1",
+      output: withClaudeAcme("claude-only", CLAUDE_ACME),
+    });
+    expect(result.skills).toEqual(imaged);
+    expect(result.worker).toStartWith(`${own("20.25.1")}; ${labelled}`);
+    expect(result.worker).toContain(`${fromLegion()}; ${release("skills-v20.25.1")}`);
+    expect(result.worker).toContain(
+      ` is ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+    );
+  }, 120_000);
+
+  test("a package that an Oh My Pi unit places as well as a Claude Code unit is one of the profile's: a final stage that does not copy it leaves the case out, naming it", async () => {
+    const result = await copied("claude-and-omp", {
+      version: "20.25.1",
+      output: withClaudeAcme("claude-and-omp", `${CLAUDE_ACME}; ${PI_ACME}`),
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+    expect(result.said).toContain(
+      `${copying()}the final stage does not copy each of ${packages} from one stage: /opt/legion/claude-acme not at all, /opt/legion/pi-acme from the stage legion, /opt/legion/pi-legion from the stage legion${rule}`
+    );
+  }, 120_000);
+
+  test("a package of the profile that the final stage copies from another stage leaves the case out beside a package that only a Claude Code unit places, naming the profile's packages alone", async () => {
+    const result = await copied("claude-only-another-stage", {
+      version: "20.25.1",
+      copyLines: COPIES.map((line) =>
+        line.includes("pi-acme") ? line.replace("--from=legion", "--from=chrome") : line
+      ),
+      output: withClaudeAcme("claude-only-another-stage", CLAUDE_ACME),
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+    expect(result.said).toContain(
+      `${copying()}the final stage does not copy each of ${packages} from one stage: /opt/legion/pi-acme from the stage chrome, /opt/legion/pi-legion from the stage legion${rule}`
+    );
+  }, 120_000);
+
   test("an image whose final stage is FROM an older worker image, which the image is built on, and copies the profile's packages from a stage FROM a newer one takes the newer one's commit: the COPY step decides, and the base is not read", async () => {
     const result = await copied("built-on-and-copied", { version: "20.25.1", final: OLDER });
     expect(result.skills).toEqual(imaged);
@@ -10328,6 +10708,12 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     );
   }, 120_000);
 
+  /** The hash a `readSteps` entry lists for a step of the text `text`: its SHA-256 in hex. */
+  const stepSha = (text: string) => createHash("sha256").update(text).digest("hex");
+  /** The COPY step's words where the RUN whose text is `text` (`shown` in the evidence), after the
+   *  final stage's last COPY of `pkg`, names a path of it and leaves the case out. */
+  const laterRefusal = (text: string, shown: string, pkg: string) =>
+    `${copying()}${fromStage}, but its step "${shown}", after its last COPY of ${pkg}, names it, a path in it or a directory above it, so the image's ${pkg} need not be the stage's; the SHA-256 of the step's text is ${stepSha(text)}, which the readSteps of the image's deploymentImages entry do not list${rule}`;
   /** A RUN longer than the evidence shows of a step. */
   const LONG_RUN =
     "RUN set -eux; apt-get update; apt-get install -y --no-install-recommends jq ripgrep; rm -rf /var/lib/apt/lists/* /opt/legion/pi-legion/dist/skills/alpha";
@@ -10357,7 +10743,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       "/opt/legion/pi-acme",
     ],
   ] as const)(
-    "%s after the final stage's COPY lines leaves the case out, naming the step, cut short, and the package",
+    "%s after the final stage's COPY lines leaves the case out, naming the step, cut short, the package and the step's hash",
     async (name, step, shown, pkg) => {
       const result = await copied(`later-${name.replaceAll(" ", "-")}`, {
         version: "20.25.1",
@@ -10369,9 +10755,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
         written: false,
       });
       expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
-      expect(result.said).toContain(
-        `${copying()}${fromStage}, but its step "${shown}", after its last COPY of ${pkg}, names it, a path in it or a directory above it, so the image's ${pkg} need not be the stage's${rule}`
-      );
+      expect(result.said).toContain(laterRefusal(step, shown, pkg));
     },
     120_000
   );
@@ -10389,6 +10773,60 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       ` is ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
     );
   }, 120_000);
+
+  /** A RUN that unpacks an archive into /opt, a directory above the copied packages, continued on
+   *  a second line, and its text as pod-image.ts's dockerfileStages gives it, the one a
+   *  `readSteps` hash is of: the lines joined, each run of white space one space. */
+  const UNPACK = "RUN tar -xzf sdk.tar.gz \\\n    -C /opt";
+  const UNPACKED = "RUN tar -xzf sdk.tar.gz -C /opt";
+  const READ =
+    "unpacks sdk.tar.gz into /opt/sdk, a directory of its own; it writes no path under /opt/legion";
+
+  // Catches: a RUN a person read and found to write no copied package (one that unpacks an
+  // archive into a directory above the packages) leaving out the image even once the
+  // configuration lists its text's hash, or a case kept by such a listing whose evidence does not
+  // say which step the listing cleared and why.
+  test("a RUN after the final stage's COPY lines that names a directory above the copied packages, whose text's SHA-256 the image's deploymentImages entry lists in readSteps, changes nothing: the case takes the stage's commit, and the evidence names the step, its hash and the reason", async () => {
+    const result = await copied("read-step-listed", {
+      version: "20.25.1",
+      later: [UNPACK],
+      readSteps: [{ sha256: stepSha(UNPACKED), reason: READ }],
+    });
+    expect(result.skills).toEqual(imaged);
+    expect(result.worker).toContain(
+      `${copying()}${fromStage}; its step "${UNPACKED}", after its last COPY of /opt/legion/pi-acme and /opt/legion/pi-legion, names a path of each, but a person read it: the readSteps of the image's deploymentImages entry list the SHA-256 of the step's text, ${stepSha(UNPACKED)}, with the reason "${READ}"; gh api repos/acme/skills/attestations/sha256:${B} names git+https://github.com/acme/skills@refs/heads/main at ${IMAGE_SHA}; ${release("skills-v20.25.1")}`
+    );
+    expect(result.worker).toContain(
+      ` is ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+    );
+  }, 120_000);
+
+  // Catches: a listed hash taken for a step it is not of (a step edited since a person read it),
+  // or a refusal that does not print the hash a person would list once they read the step.
+  test.each([
+    ["lists no hash", undefined],
+    [
+      "lists the hash of the step edited by one character",
+      [{ sha256: stepSha("RUN tar -xzf sdk.tar.xz -C /opt"), reason: READ }],
+    ],
+  ] as const)(
+    "a RUN after the final stage's COPY lines that names a directory above the copied packages leaves the case out where readSteps %s, naming the step, the package and the step's hash",
+    async (name, readSteps) => {
+      const result = await copied(`read-step-${name.replaceAll(" ", "-")}`, {
+        version: "20.25.1",
+        later: [UNPACK],
+        ...(readSteps === undefined ? {} : { readSteps }),
+        refused: true,
+      });
+      expect({ code: result.code, written: result.written }).toEqual({
+        code: EXIT.failed,
+        written: false,
+      });
+      expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+      expect(result.said).toContain(laterRefusal(UNPACKED, UNPACKED, "/opt/legion/pi-acme"));
+    },
+    120_000
+  );
 
   test.each([
     [

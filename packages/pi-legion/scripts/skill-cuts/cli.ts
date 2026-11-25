@@ -51,7 +51,10 @@
  *       --list <text>...
  *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --day <YYYY-MM-DD>
  *       [--hour <0-23>] [--query count|models]
- *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --query roots
+ *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --query roots|hashes
+ *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --query transcript --day <YYYY-MM-DD>
+ *       [--hour <0-23>] [--run]
+ *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --query transcript-coverage [--run]
  *   bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
  *       [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir>
  *       [--runs <n>] [--model <model>] [--thinking <level>] [--budget-usd <n>]
@@ -340,8 +343,8 @@
  * the unchanged skill has none that does (none at all, with none). It writes every input and
  * answer under `--out`.
  *
- * **`count-sql`** prints count.sql (or, with `--query models`, models.sql) filled for one store
- * and day, or, with `--query roots` and no day, roots.sql filled for one store.
+ * **`count-sql`** fills the count, models, roots and hashes SQL for Postgres, or the count and
+ * coverage SQL for ClickHouse. With `--run` it sends a ClickHouse query to `transcriptStore.command`.
  *
  * **`load`** is load.ts's load test: per task, the host's first request captured once
  * and sent `--runs` times (LOAD_RUNS by default), the runs of a profile's tasks in one seeded
@@ -5672,7 +5675,9 @@ const USAGE = [
   `  proposals ${PROPOSALS_FLAGS} ...`,
   `  proposals ${PROPOSALS_DRY_RUN}`,
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]",
-  "  count-sql --config <skill-cuts.json> --store <db> --query roots",
+  "  count-sql --config <skill-cuts.json> --store <db> --query roots|hashes",
+  "  count-sql --config <skill-cuts.json> --query transcript --day <YYYY-MM-DD> [--hour <0-23>] [--run]",
+  "  count-sql --config <skill-cuts.json> --query transcript-coverage [--run]",
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut or set id>=<file>]... [--models <dir>]",

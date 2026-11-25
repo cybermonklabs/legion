@@ -1,0 +1,34 @@
+-- Coverage and dedupe inputs for the count's window, one JSON row per host, format and Oh My Pi
+-- profile (roots.sql's named_root and default_root). No session paths leave the store. A session
+-- is in the window if its recorded span overlaps it. Each row carries the first and last record
+-- clipped to the window (epoch ms), the UTC days those sessions touched, and their file hashes.
+-- The end row closes the result even for an empty store.
+WITH
+  parseDateTime64BestEffort({{window_start}}, 3, 'UTC') AS from_ts,
+  parseDateTime64BestEffort({{window_end}}, 3, 'UTC') AS to_ts,
+  clipped AS (
+    SELECT host, format, substring(lower(hex(MD5(path))), 1, 16) AS hash,
+      if(format = 'omp', coalesce(nullIf(extract(path, {{named_root}}), ''),
+        if(match(path, {{default_root}}), 'default', 'unknown')), 'unknown') AS profile,
+      greatest(assumeNotNull(started_at), from_ts) AS first_ts,
+      least(greatest(assumeNotNull(started_at), ifNull(ended_at, assumeNotNull(started_at))),
+        to_ts - INTERVAL 1 MILLISECOND) AS last_ts
+    FROM transcripts.sessions FINAL
+    WHERE path != '' AND started_at < to_ts AND greatest(started_at, ifNull(ended_at, started_at)) >= from_ts
+  ),
+  by_day AS (
+    SELECT host, format, profile, toDate(first_ts) AS day, min(first_ts) AS day_first,
+      max(last_ts) AS day_last, groupUniqArray(hash) AS day_hashes
+    FROM clipped GROUP BY host, format, profile, day
+  )
+SELECT line FROM (
+  SELECT 0 AS pos, formatRowNoNewline('JSONEachRow', 'coverage' AS row, concat({{store}}, '@', host) AS store,
+    format, profile, toUnixTimestamp64Milli(min(day_first)) AS first, toUnixTimestamp64Milli(max(day_last)) AS last,
+    arraySort(groupUniqArrayArray(arrayMap(n -> toString(day + n), range(toUInt32(dateDiff('day', day, toDate(day_last)) + 1))))) AS days,
+    arraySort(groupUniqArrayArray(day_hashes)) AS hashes) AS line
+  FROM by_day GROUP BY host, format, profile
+  UNION ALL
+  SELECT 1, formatRowNoNewline('JSONEachRow', 'end' AS row, {{store}} AS store)
+)
+ORDER BY pos, line
+FORMAT TSVRaw

@@ -12,6 +12,9 @@
  *                   name, `context` `devbox` or `legion:<PROJECT>` (whose sessions the store holds)
  *   psqlCommand     absolute path of a program that runs the store's read command for the database
  *                   its first argument names, with the query on its standard input
+ *   transcriptStore (optional) `{command, hosts}`: an absolute program path that reads a
+ *                   ClickHouse query on stdin and prints its rows on stdout, and the
+ *                   `{host, context}` pairs for the hosts whose contexts are known.
  *   gatewayBaseUrl  the model gateway's base URL
  *   servedModels    the models the gateway serves, each `provider/model` (`anthropic/claude-x`);
  *                   the read count's models tables mark a session's model served when its id
@@ -71,13 +74,24 @@
  *                  program runs once per process, ended past a minute
  *                  (REGISTRY_TOKEN_TIMEOUT_MS), and the token is kept in memory alone, never
  *                  printed.
- *   deploymentImages  (optional) `{repository, dockerfile}`: an image the deployment repository
- *                  builds on a worker image: `repository` the image's reference without tag or
- *                  digest, `dockerfile` the path in the deployment repository of the Dockerfile it
- *                  is built from. build.ts takes such an image's worker commit from the stage
- *                  that Dockerfile's final stage copies the worker's packages from, once the
- *                  image's version label names that stage's commit, else, where it copies none,
+ *   deploymentImages  (optional) `{repository, dockerfile, readSteps}`: an image the deployment
+ *                  repository builds on a worker image: `repository` the image's reference without
+ *                  tag or digest, `dockerfile` the path in the deployment repository of the
+ *                  Dockerfile it is built from. build.ts takes such an image's worker commit from
+ *                  the stage that Dockerfile's final stage copies the worker's packages from, once
+ *                  the image's version label names that stage's commit, else, where it copies none,
  *                  from the base it names, once the images confirm it (LEGION_IMAGE_RULE).
+ *                  `readSteps` (optional) `{sha256, reason}`: a RUN step of that final stage that a
+ *                  person read and found to write no copied package: `sha256` the SHA-256, as 64
+ *                  lower-case hex digits, of the step's text in UTF-8 as pod-image.ts's
+ *                  `dockerfileStages` gives it in `steps` (the instruction from its `RUN` on, its
+ *                  comment lines left out, a line continued with `\` joined to the next, a
+ *                  heredoc's lines read with it, each run of white space one space, none at its
+ *                  ends), at the Dockerfile revision the image's label names; `reason` what the
+ *                  person read in the step and why it writes no copied package. A RUN after a
+ *                  package's last COPY that names a path of it is not taken as a write of it where
+ *                  its hash is listed; a step whose text changed has another hash. Each hash is
+ *                  listed once in an entry.
  *
  * A file that is not JSON, or that misses a key, holds a key not above or holds a value of the
  * wrong shape, is refused with one line per fault, each naming the key.
@@ -115,15 +129,23 @@ const SetId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, {
  *  `18.16.0-fork.20261104-021732`. build.ts reads a pinned Oh My Pi version by it. */
 export const OMP_VERSION = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+const StoreContext = z.string().regex(/^(devbox|legion:[A-Z][A-Z0-9]*)$/, {
+  error: "devbox or legion:<PROJECT>",
+});
+export const TranscriptHost = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, {
+  error: "a host of letters, digits, dots, hyphens or underscores",
+});
+/** Transcript query directory and the prefix of each host's store label. Not a database name. */
+export const TRANSCRIPT_SOURCE = "transcripts";
+export const transcriptStoreName = (host: string) => `${TRANSCRIPT_SOURCE}@${host}`;
+
 /** A session store: its database name, which a query names only as a value, so it is held to the
  *  letters a database identifier needs, and whose sessions it holds. */
 export const Store = z.strictObject({
   name: z.string().regex(/^[a-z_][a-z0-9_]*$/, {
     error: "a database name of small letters, digits and _",
   }),
-  context: z.string().regex(/^(devbox|legion:[A-Z][A-Z0-9]*)$/, {
-    error: "devbox or legion:<PROJECT>",
-  }),
+  context: StoreContext,
 });
 export type Store = z.infer<typeof Store>;
 
@@ -146,13 +168,26 @@ export const Registry = z.strictObject({
 });
 export type Registry = z.infer<typeof Registry>;
 
+/** A RUN step of a deployment image's final stage that a person read and found to write no copied
+ *  package (the key `readSteps` of a `deploymentImages` entry): the SHA-256 of its text, as 64
+ *  lower-case hex digits, and what the person read in it. */
+export const ReadStep = z.strictObject({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/, {
+    error: "the SHA-256 of a step's text as 64 lower-case hex digits",
+  }),
+  reason: z.string().min(1, { error: "what a person read in the step, not empty" }),
+});
+export type ReadStep = z.infer<typeof ReadStep>;
+
 /** An image the deployment repository builds on a worker image (the key `deploymentImages`): its
- *  reference without tag or digest, and its Dockerfile's path in the deployment repository. */
+ *  reference without tag or digest, its Dockerfile's path in the deployment repository, and the
+ *  RUN steps of its final stage that a person read (`ReadStep`). */
 export const DeploymentImage = z.strictObject({
   repository: z.string().regex(/^[a-z0-9.-]+(?::\d+)?(?:\/[a-z0-9._-]+)+$/, {
     error: "an image reference without tag or digest, such as registry.example.test/acme/worker",
   }),
   dockerfile: RepositoryFile,
+  readSteps: z.array(ReadStep).optional(),
 });
 export type DeploymentImage = z.infer<typeof DeploymentImage>;
 
@@ -166,6 +201,14 @@ export const SkillCutsConfig = z
       .string()
       .refine((value) => path.isAbsolute(value), { error: "an absolute path" }),
     gatewayBaseUrl: z.url({ protocol: /^https?$/, error: "an http or https URL" }),
+    transcriptStore: z
+      .strictObject({
+        command: z
+          .string()
+          .refine((value) => path.isAbsolute(value), { error: "an absolute path" }),
+        hosts: z.array(z.strictObject({ host: TranscriptHost, context: StoreContext })),
+      })
+      .optional(),
     servedModels: z.array(
       z.string().regex(/^[^\s/]+(\/[^\s/]+)+$/, { error: "a model as provider/model" })
     ),
@@ -244,6 +287,27 @@ export const SkillCutsConfig = z
     }
   })
   .superRefine((config, context) => {
+    const hosts = new Set<string>();
+    for (const [index, { host }] of (config.transcriptStore?.hosts ?? []).entries()) {
+      if (hosts.has(host)) {
+        context.addIssue({
+          code: "custom",
+          message: "a host listed twice",
+          path: ["transcriptStore", "hosts", index, "host"],
+        });
+      }
+      hosts.add(host);
+    }
+    if (
+      config.transcriptStore !== undefined &&
+      config.stores.some(({ name }) => name === TRANSCRIPT_SOURCE)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: `${TRANSCRIPT_SOURCE} is reserved for the transcript store`,
+        path: ["stores"],
+      });
+    }
     // A clone's repositories are read from the owners' listings, so each is of an owner in
     // `owners`; GitHub reads an owner's name in any case.
     const owners = new Set(config.owners.map((owner) => owner.toLowerCase()));
@@ -256,6 +320,19 @@ export const SkillCutsConfig = z
           message: `${clone[key]} is not a repository of an owner in owners`,
           path: ["clones", index, key],
         });
+      }
+    }
+    for (const [image, { readSteps }] of (config.deploymentImages ?? []).entries()) {
+      const hashes = new Set<string>();
+      for (const [index, { sha256 }] of (readSteps ?? []).entries()) {
+        if (hashes.has(sha256)) {
+          context.addIssue({
+            code: "custom",
+            message: "a step hash listed twice",
+            path: ["deploymentImages", image, "readSteps", index, "sha256"],
+          });
+        }
+        hashes.add(sha256);
       }
     }
   });

@@ -1058,7 +1058,9 @@ reader's control, `control craft`, takes its own flags (below).
 
 ```
 bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]
-bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --query roots
+bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --query roots|hashes
+bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --query transcript-coverage [--run]
+bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --query transcript --day <YYYY-MM-DD> [--hour <0-23>] [--run]
 ```
 
 Prints `count.sql` filled for one store and one UTC day (or hour), the same as
@@ -1077,6 +1079,46 @@ and `unpaired_calls` for calls with no result). A key is md5 of the call's id, a
 call line's UTC timestamp to the microsecond, cut to 16 hex characters. Inside one query, a key
 that two files hold counts in the file whose file hash (md5 of its path, 16 hex characters) sorts
 first in byte order, and `shared_call_ids` counts such keys.
+
+To include the ClickHouse transcript store, add this optional key to the private configuration:
+
+```json
+{
+  "transcriptStore": {
+    "command": "/home/dev/bin/query-transcripts",
+    "hosts": [
+      { "host": "host-a", "context": "devbox" },
+      { "host": "host-b", "context": "legion:ACME" }
+    ]
+  }
+}
+```
+
+`command` is an executable at an absolute path. It receives the SQL on stdin with no arguments,
+prints results on stdout, puts diagnostics on stderr, and exits nonzero on failure. `--run`
+uses it for either transcript query. Without `--run`, `count-sql` prints the SQL as for Postgres.
+The config's `hosts` lists context mappings, not a filter: the queries include unlisted hosts.
+
+1. For each configured Postgres store, run `--query hashes` with no day through
+   `psqlCommand <db>` and save its output as `<count>/<db>/hashes.txt`. It returns the same file
+   hashes as the count, for files whose mtime is at or after the window start, even if the file
+   does not contain a skill read.
+2. Run `--query transcript-coverage --run` once, saving stdout as
+   `<count>/transcripts/coverage.txt`. It returns per-host and per-format coverage and the hashes
+   needed to decide which sessions are new.
+3. Run `--query transcript --day <YYYY-MM-DD> --run` once per UTC day in the window, saving stdout
+   as `<count>/transcripts/<YYYY-MM-DD>.txt`. If you split a day into hours, save the 24 outputs as
+   `<count>/transcripts/<YYYY-MM-DD>T<HH>.txt` instead. Use `transcripts` as the store label in
+   `run.log`. Save output files only on success.
+
+The daily query aggregates call-time reads in ClickHouse, tagged `transcripts@<host>`. It emits
+the same count rows as Postgres, with file hashes and call keys, plus tool counts per format. It
+does not return tool calls or messages. An Oh My Pi read uses the answer's skill-file header
+when present. A Claude Code `Skill` read uses its base-directory message when the import can
+pair it with the call; otherwise it uses the input. The import may omit the source tool-use id
+on the base-directory message. In that case the query uses the meta line immediately after the
+result in the same file, provided the line identifies only one Skill call. Failed answers are
+excluded. Calls with no result in their file are listed apart and are not reads.
 
 ### `load`
 
@@ -1421,6 +1463,9 @@ It infers which units each group installed from those reads. It places a new rea
 that group supplies one copy of the name. It does not borrow copies from another profile
 in the same store. If `roots.txt` does not identify the session's profile, this step cannot
 place the read. `attribute` refuses a count output without the corresponding `roots.txt`.
+The transcript-store coverage query supplies the Oh My Pi profiles for transcript hosts. A host
+with no configured context uses only the two path rules; if neither decides, its read stays
+unattributed because the host's context is not known.
 The default profile of a `devbox` store also has each unit that the dev box's own installers
 install into Oh My Pi, whether or not the session read from it. The dev box's repository is the
 one repository of `manifests.tsv` that holds both an installer script (`installers/*.sh`) and
@@ -1482,6 +1527,22 @@ one of its reads of it counts in it. `build-cases` reads the count by the same r
 by an earlier `count.sql`, whose rows have no `calls`, fails the command (exit 1). The report's
 store table gives the call ids two files of one query hold, the call ids files of two queries
 hold, and the pairs of files of two queries that hold one.
+
+`attribute` keeps a file already owned by Postgres out of the transcript-store count. If more
+than one transcript host imports another file, the first host label in byte order owns it. The
+same shared-call-key rule applies across the remaining transcript files, including across hosts.
+The Stores section gives first and last records and gap days per host and format. It reports
+the number of sessions in the window, the number added after dedupe, and how many added sessions
+read a skill or reference. Formats with no `read`, `Read` or `Skill` calls in the query results
+give no reads. A copy's `transcript_store_sessions` is its number of added read sessions.
+`partial_coverage_hosts` lists the contributing partial hosts when more than half of those
+sessions come from host/format pairs with a gap or an incomplete start or end. A gap is a UTC
+day with no active session between days that have sessions.
+
+With Claude Code coverage, a Claude-only install has a read count like any other copy. Without
+`transcriptStore`, the count reports that it did not query ClickHouse. Rankings include added
+sessions; the ranked skills' sessions and corresponding model files for `build-cases` and
+`behaviour` still use Postgres sessions, which the case builder can pull.
 
 ### `set-count`
 
@@ -1979,6 +2040,11 @@ A 404 is no such image, and on GHCR's anonymous read a 401 or 403 is an image th
 Set `deploymentImages` to name the images that the deployment repository builds on a worker image.
 Each entry is `{"repository": "registry.example.test/acme/deploy/worker", "dockerfile": "images/worker.Dockerfile"}`: the image's reference without tag or digest, and the path of its Dockerfile in the deployment repository.
 A Legion pod's image of such a repository takes the commit of the stage its final stage copies the worker's packages from, or, where it copies none of them, of the worker image it is built on (below).
+An entry may list `readSteps`: each `{"sha256": "<hash>", "reason": "<what a person read in the step>"}`, a `RUN` step of the Dockerfile's final stage that a person read and found to write no copied package.
+`sha256` is the SHA-256, as 64 lower-case hex digits, of the step's text in UTF-8 as `pod-image.ts`'s `dockerfileStages` gives it in `steps`, at the Dockerfile revision the image's label names: the instruction from its `RUN` on, its comment lines left out, a line continued with `\` joined to the next, a heredoc's lines read with it, each run of white space one space, none at its ends.
+`reason` is not empty, and a hash is listed once in an entry.
+For example, the final stage's lines `RUN tar -xzf sdk.tar.gz \` and `    -C /opt` are the step `RUN tar -xzf sdk.tar.gz -C /opt`, and `printf '%s' 'RUN tar -xzf sdk.tar.gz -C /opt' | sha256sum` prints its hash; its entry is `{"sha256": "<that hash>", "reason": "unpacks sdk.tar.gz into /opt/sdk, a directory of its own; it writes no path under /opt/legion"}`.
+The evidence of a case such a step leaves out prints the step's hash, so a person who reads the step there can list it.
 
 `build-tasks --profiles-out` and `build-tasks --reprofile` use the same rule. A task whose pod
 image cannot be identified is not measurable. Case and task `context` labels keep their existing
@@ -2169,9 +2235,22 @@ measure counts the names that the profile lists but the recording does not as ad
 
 A `[Skill file: …]` read in the session's own messages also keeps the pool. If only the read
 justifies keeping it, the evidence quotes `message N reads [Skill file: …]` as direct proof that
-Oh My Pi loaded the pool. The measure does not mark its names `fromRecorded` in that case. If
-neither the listing nor a read supports installing the pool, the builder leaves it out. Its
+Oh My Pi loaded the pool. The measure does not mark its names `fromRecorded` in that case.
+
+A name the listing gives as `<namespace>/<name>` is direct proof too, where the pool holds
+`<name>`. Oh My Pi lists a copy under its namespace only when it admitted another copy of the name
+first, and it admits a pool's copy before any copy from a unit outside the pools. So the builder
+installs the pool when an installed unit outside the pools ships `<name>` under that namespace,
+and, of the copies of `<name>` that installed units outside the pools ship, the first (the lowest
+rank, then the earliest unit) is that unit's copy. The evidence names the listed name and the
+unit. The measure does not mark the pool's names `fromRecorded`, since the listing names them bare
+or not at all and the measure compares them.
+
+If neither the listing nor a read supports installing the pool, the builder leaves it out. Its
 `left out: the pool …` evidence names any shared skills and says why those names do not count.
+It also names each `<namespace>/<name>` of the pool's names that the listing gives, with the
+reason it proves nothing: no installed unit outside the pools ships the name under that
+namespace, or a unit that Oh My Pi admits earlier ships another copy of it.
 
 Without a recorded listing from the session or a subagent, the builder uses the Oh My Pi build
 that the dev box pinned at the session's start. The optional `ompPin` configuration gives
@@ -2213,13 +2292,17 @@ Failing that, an image of a repository that the configuration's `deploymentImage
 Its `org.opencontainers.image.source` label must name the deployment, and its `org.opencontainers.image.revision` label a commit the deployment holds at or before its read.
 The Dockerfile the entry names, read at that commit, decides.
 A `COPY` writes the copied files over whatever the final stage's base holds at those paths.
-So where the final stage copies any `/opt/legion/<package>` of the prefix rows under `/opt/legion/` (a `COPY` or `ADD` line whose destination is the package, a path in it, or a directory above it), the stage it copies them from decides, and the base is not read.
+So where the final stage copies any `/opt/legion/<package>` the profile uses (a `COPY` or `ADD` line whose destination is the package, a path in it, or a directory above it), the stage it copies them from decides, and the base is not read.
+The profile uses the package of a prefix row under `/opt/legion/` where at least one unit of the row's `via` is an Oh My Pi unit, one that an `installers.tsv` row of host `omp` installs.
+A row that only Claude Code units place, such as one of a Claude Code plugin's package, installs nothing in the pod's Oh My Pi profile, so it adds no package.
 Each such package must be copied in the final stage from that one stage alone: every `COPY --from=<stage> <src>... <dest>` line (`--chown` and other flags allowed) that writes into the package must name that stage.
 An `ADD` that writes into the package adds it from the build context or a URL, not from the stage.
 A package copied from elsewhere, added by `ADD`, or not copied, leaves the image's commit not known, and the evidence names the package and where the final stage copies it from.
 No later step of the final stage may write into a copied package: a `COPY` or `ADD` into it is one of its copies above, and a `RUN` after the package's last `COPY` may not name a path that is the package, a path in it, or a directory above it other than `/`.
 Paths are compared name by name, and a name with a glob, a brace or a `$` stands for any name, so `rm -rf /opt/legion/*` names `/opt/legion`, and `/opt/legion/pi-acme.bak` is no path in `/opt/legion/pi-acme`.
-Such a step leaves the image's commit not known, and the evidence names the step (its first 120 characters) and the package.
+Such a step leaves the image's commit not known, and the evidence names the step (its first 120 characters), the package and the SHA-256 of the step's text.
+A step whose hash the entry's `readSteps` lists (above) is one a person read, and does not leave it so; the evidence of the case that is kept names the step, its hash and the reason listed.
+Any other such step still leaves the image's commit not known, and a step whose text changed since it was read has another hash, so it does again.
 The stage must be `FROM` a digest-pinned image (a literal reference, or the default of the `ARG` it names), and its commit is that image's: the one its digest's build provenance in the repository names, else the one its labels name.
 A build can pass the stage another image than its `ARG` default, so the image's own `org.opencontainers.image.version` label must name that commit: the COPY is confirmed by that label, not by layer content.
 The label names the commit as `<version>`, whose release tag is at that commit: `<name>-v<version>` of the repository's own name (`legion-v20.25.1` for the label `20.25.1` of a repository named `legion`), or a tag the labels step above reads the label as.

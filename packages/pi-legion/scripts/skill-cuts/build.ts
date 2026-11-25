@@ -312,13 +312,20 @@
  *   not the pool is there, and the evidence names those names. The pool is left out where the
  *   listing names no such skill. A pool that a `[Skill file: …]` read of the session places is
  *   installed whatever the listing names: that read shows Oh My Pi loaded it, which is direct
- *   proof and no inference from the listing. A pool the listing names in part is installed whole:
+ *   proof and no inference from the listing. So is a pool where the listing names, as
+ *   `<namespace>/<name>`, a name it holds that an installed unit outside the pools ships under
+ *   that namespace, and that unit's copy is the first Oh My Pi admits of the copies the installed
+ *   units outside the pools ship (`unitRank`): Oh My Pi lists a copy under its namespace only
+ *   where it admitted another copy of the name first, and it admits a pool's before them all.
+ *   The evidence names that listed name and the unit, or, for a pool left out, why each such
+ *   listed name of its names proves nothing. A pool the listing names in part is installed whole:
  *   the evidence gives how many of its skills the listing names and how many it does not, and the
  *   listing measure counts those it does not as added names. The measure marks each name of a
- *   pool installed on the listing (`fromRecorded`), and no name of a pool installed on a read
- *   alone. The listing's decision is an inference: dev-box sessions that ran one Oh My Pi build
- *   list these pools in some sessions and not in others, and no file records why. A session with
- *   no listing (no recorded prompt, and no subagent the measure can use) has its pools decided by
+ *   pool installed on a named skill (`fromRecorded`), and no name of a pool installed on a read or
+ *   on a listed `<namespace>/<name>` alone. The listing's decision is an inference: dev-box
+ *   sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and
+ *   no file records why. A session with no listing (no recorded prompt, and no subagent the
+ *   measure can use) has its pools decided by
  *   the Oh My Pi build its dev box pinned at its start (POOL_VERSION_RULE): the version the
  *   configuration's `ompPin` names (a TOML file of the dev box's repository and the keys to the
  *   version in it, read at the repository's last commit at or before the session's start), set
@@ -751,6 +758,7 @@ import {
   cutOrSet,
   type DeploymentImage,
   OMP_VERSION,
+  type ReadStep,
   type SkillCutsConfig,
   storeNamed,
 } from "./config";
@@ -3399,7 +3407,7 @@ const IGNORED_RULE =
 /** Which pools an extension's resources_discover gives a profile installs, where the session
  *  records a listing. */
 const POOL_LISTING_RULE =
-  "Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover (a pool of the dev box's skills-sources.json) only where it loaded that extension's pools and the pool's clone was there then: a top-level session as it starts and on each reload that rebuilds its prompt, a subagent as it starts, merging what it gets into the snapshot its parent gave it (session/session-tools.ts, lines 2321-2337, 2466-2506 and 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420); dev-box sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and no file records why, nor which clones the host had then. So where the session records a listing (its own recorded prompt's, or that of the subagent its listing measure uses), that listing decides each pool, an inference from the listing: the profile installs a pool where the listing names at least one of the skills the pool holds at the session's start that no installed unit outside the pools also ships (a name such a unit ships is no evidence for the pool, since the session lists it whether or not the pool is there), and leaves it out where the listing names no such skill; a pool the listing names in part is installed whole, and the listing measure counts its unnamed skills as added names. A pool that a [Skill file: …] read of the session places is installed whatever the listing names, since that read shows Oh My Pi loaded it, which is direct proof and no inference from the listing. The measure marks each name of a pool installed on the listing (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against; it marks no name of a pool installed on a read alone";
+  "Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover (a pool of the dev box's skills-sources.json) only where it loaded that extension's pools and the pool's clone was there then: a top-level session as it starts and on each reload that rebuilds its prompt, a subagent as it starts, merging what it gets into the snapshot its parent gave it (session/session-tools.ts, lines 2321-2337, 2466-2506 and 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420); dev-box sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and no file records why, nor which clones the host had then. So where the session records a listing (its own recorded prompt's, or that of the subagent its listing measure uses), that listing decides each pool, an inference from the listing: the profile installs a pool where the listing names at least one of the skills the pool holds at the session's start that no installed unit outside the pools also ships (a name such a unit ships is no evidence for the pool, since the session lists it whether or not the pool is there), and leaves it out where the listing names no such skill; a pool the listing names in part is installed whole, and the listing measure counts its unnamed skills as added names. A pool that a [Skill file: …] read of the session places is installed whatever the listing names, since that read shows Oh My Pi loaded it, which is direct proof and no inference from the listing. So is a pool the listing names no such skill of where the listing names, as <namespace>/<name>, a name the pool holds that an installed unit outside the pools ships under that namespace, and of the copies of it the installed units outside the pools ship, the one Oh My Pi admits first (a lower rank first: ~/.omp/agent/skills, then an extension package, ~/.claude/skills and a Claude Code plugin; of one rank, an earlier unit's) is the one each unit of that namespace ships: Oh My Pi lists a copy under its namespace only where it admitted another copy of the name first (NAMESPACE_RULE), and it admits a pool's before every unit's outside the pools, so the copy it admitted first was the pool's. The measure marks each name of a pool installed on a named skill no unit outside the pools ships (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against; it marks no name of a pool installed on a read or on a listed <namespace>/<name> alone, which leaves the pool's own names for the measure to compare";
 /** Which pools a profile installs where the session records no listing. */
 const POOL_VERSION_RULE =
   "where the session records no listing and no subagent's listing measures it, the Oh My Pi build its dev box ran decides the pools: the version the dev box's own repository pins (the configuration's ompPin: a TOML file of that repository and the keys to the version in it), read at its last commit at or before the session's start, set against ompPin's firstPoolVersion, the first build that loads an extension's resources_discover pools on a fresh start (an earlier build deferred an extension whose only registration is resources_discover, so a fresh session listed none of its pools); a pin before that version installs no pool but one a [Skill file: …] read of the session places, which shows Oh My Pi loaded it, and a pin at or after it installs each pool, both inferences from the pinned build. The Oh My Pi version the session's file records (the runtime.version of its first model_change line; a fork's build gives its release alone) is set beside the pin as a cross-check and decides nothing. With no ompPin, or no version the file holds at those keys, each pool is installed as the dev box's installers install it";
@@ -3565,7 +3573,7 @@ function legionCatalog(
 }
 
 /** Which commit of its repository a Legion pod's worker image carries. */
-const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the image itself decides, by the labels of its OCI config (read from the registry by digest, the config blob alone and no layer: org.opencontainers.image.revision, a commit of the repository, else org.opencontainers.image.version, mapped to the release tag v<version> or <name>-v<version> that the repository has); failing that, for an image of a repository that the configuration's deploymentImages names (an image the deployment builds on a worker image), the Dockerfile it was built from decides: its OCI config's org.opencontainers.image.source label names the deployment and its org.opencontainers.image.revision label a commit of the deployment at or before its read, at which the Dockerfile the entry names is read; a COPY writes the copied files over whatever the final stage's base holds at those paths, so where the final stage copies any ${IMAGE_ROOT}<package> of those prefix-table.tsv rows (a COPY or ADD line whose destination is the package, a path in it or a directory above it), the stage it copies them from decides and the base is not read: the final stage copies each such package from that one stage alone (every COPY --from=<stage> <src>... <dest> line that writes into it names that stage, and no ADD, which adds from the build context or a URL, writes into it), no later step of the final stage writes into a copied package (a COPY or ADD into it is one of those copies, and no RUN after the package's last COPY names a path that is the package, a path in it or a directory above it other than /), the stage is FROM a digest-pinned image (or the default of the ARG it names), and that image's commit, by the build provenance of its digest, else by its labels, is the image's only where the image's own org.opencontainers.image.version label names it: <version>, whose release tag <name>-v<version> of the repository's own name (legion-v<version> for a repository named legion), or v<version> or <name>-v<version> of the image's name as the labels read it, is at that commit, or sha-<hex>, whose hex starts that commit; the COPY is confirmed by that label, not by layer content, since a build can pass the stage another image than its ARG default, and a label that is absent, names no commit or names another commit leaves the image's commit not known, as a package copied from elsewhere, added by ADD, not copied, or written into by a later step does; where the final stage copies none of those packages, by COPY or ADD, the base it was built on decides: the Dockerfile builds its final stage on a digest-pinned base, and that base's rootfs.diff_ids are the first of the image's (a Dockerfile's ARG default is no proof of the base, since a build can pass another; the diff ids are the digests of the layers uncompressed, and the manifests' layer digests are not compared, since they differ where the build compressed a base layer again); the image's commit is then the base's, by the build provenance of its digest, else by its labels; where any of these steps fails the image's commit is not known; for any other image, failing the labels, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the image's commit is not known, the repository's default branch is a guess that no profile is built on, and the case or task is not measurable`;
+const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the image itself decides, by the labels of its OCI config (read from the registry by digest, the config blob alone and no layer: org.opencontainers.image.revision, a commit of the repository, else org.opencontainers.image.version, mapped to the release tag v<version> or <name>-v<version> that the repository has); failing that, for an image of a repository that the configuration's deploymentImages names (an image the deployment builds on a worker image), the Dockerfile it was built from decides: its OCI config's org.opencontainers.image.source label names the deployment and its org.opencontainers.image.revision label a commit of the deployment at or before its read, at which the Dockerfile the entry names is read; a COPY writes the copied files over whatever the final stage's base holds at those paths, so where the final stage copies any ${IMAGE_ROOT}<package> the profile uses, that of one of those prefix-table.tsv rows at least one of whose via units is an Oh My Pi unit (an installers.tsv row of host omp installs it; a row that only Claude Code units place, as a Claude Code plugin's package, adds none), by a COPY or ADD line whose destination is the package, a path in it or a directory above it, the stage it copies them from decides and the base is not read: the final stage copies each such package from that one stage alone (every COPY --from=<stage> <src>... <dest> line that writes into it names that stage, and no ADD, which adds from the build context or a URL, writes into it), no later step of the final stage writes into a copied package (a COPY or ADD into it is one of those copies, and no RUN after the package's last COPY names a path that is the package, a path in it or a directory above it other than /, but a RUN whose text's SHA-256 the entry's readSteps list, a step a person read and found to write no copied package), the stage is FROM a digest-pinned image (or the default of the ARG it names), and that image's commit, by the build provenance of its digest, else by its labels, is the image's only where the image's own org.opencontainers.image.version label names it: <version>, whose release tag <name>-v<version> of the repository's own name (legion-v<version> for a repository named legion), or v<version> or <name>-v<version> of the image's name as the labels read it, is at that commit, or sha-<hex>, whose hex starts that commit; the COPY is confirmed by that label, not by layer content, since a build can pass the stage another image than its ARG default, and a label that is absent, names no commit or names another commit leaves the image's commit not known, as a package copied from elsewhere, added by ADD, not copied, or written into by a later step does; where the final stage copies none of those packages, by COPY or ADD, the base it was built on decides: the Dockerfile builds its final stage on a digest-pinned base, and that base's rootfs.diff_ids are the first of the image's (a Dockerfile's ARG default is no proof of the base, since a build can pass another; the diff ids are the digests of the layers uncompressed, and the manifests' layer digests are not compared, since they differ where the build compressed a base layer again); the image's commit is then the base's, by the build provenance of its digest, else by its labels; where any of these steps fails the image's commit is not known; for any other image, failing the labels, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the image's commit is not known, the repository's default branch is a guess that no profile is built on, and the case or task is not measurable`;
 
 /** At which commit of the worker image's repository a Legion pod's daemon composed its role
  *  prompt (context.ts reads the item DAEMON_IMAGE_ITEM that names it). */
@@ -3742,6 +3750,14 @@ const COPY_OVER =
 /** How many characters of a step the evidence shows before `…`. */
 const STEP_SHOWN = 120;
 
+/** The hash a `readSteps` entry of the configuration's `deploymentImages` lists for a step whose
+ *  text is `text`: the SHA-256, as 64 lower-case hex digits, of the text in UTF-8 as pod-image.ts's
+ *  `dockerfileStages` gives it in `steps` (the instruction from its keyword on, its comment lines
+ *  left out, a line continued with `\` joined to the next, a heredoc's lines read with it, each
+ *  run of white space one space, none at its ends), read at the Dockerfile revision the image's
+ *  label names. */
+const stepHash = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+
 /** Whether a `COPY` or `ADD` to `dest` writes into the package `pkg`: `dest` is the package, a
  *  path in it, or a directory above it. */
 function writesInto(dest: string, pkg: string): boolean {
@@ -3883,6 +3899,7 @@ async function deploymentCommit(
     stages: dockerfile.stages,
     steps: dockerfile.steps,
     sources,
+    readSteps: built.readSteps ?? [],
     imageRepo,
     when,
   });
@@ -3958,14 +3975,17 @@ async function baseCommit(
  * that stage, and no ADD writing into it (from the build context or a URL); no later step of the
  * final stage writes into a copied package: a COPY or ADD into it is one of those writes, and no
  * RUN after the package's last COPY names a path of it (`namesPath`: the package, a path in it,
- * or a directory above it other than `/`); the stage is FROM a digest-pinned image, directly or
- * by the default of the ARG it names; that image's commit is the one its build provenance in
- * `imageRepo` names, else the one its labels name (`labelCommit`); and the image's version label
- * names that commit (`versionNames`), since a build can pass the stage another image than its ARG
- * default: the COPY is confirmed by that label, not by layer content. The final stage's base is
- * not read. `how` names each read, or, with no `sha`, the step that failed and why: each package
- * and where the final stage copies it from, the later RUN (its first STEP_SHOWN characters) and
- * the package it names, or the label and the stage's commit.
+ * or a directory above it other than `/`), a RUN whose text's hash (`stepHash`) is in
+ * `readSteps` (the image's deploymentImages entry's: a step a person read and found to write no
+ * copied package) aside; the stage is FROM a digest-pinned image, directly or by the default of
+ * the ARG it names; that image's commit is the one its build provenance in `imageRepo` names,
+ * else the one its labels name (`labelCommit`); and the image's version label names that commit
+ * (`versionNames`), since a build can pass the stage another image than its ARG default: the COPY
+ * is confirmed by that label, not by layer content. The final stage's base is not read. `how`
+ * names each read, each later RUN that `readSteps` clears (its first STEP_SHOWN characters, the
+ * packages it names, its hash and the reason listed), or, with no `sha`, the step that failed and
+ * why: each package and where the final stage copies it from, the later RUN (its first
+ * STEP_SHOWN characters), the package it names and its hash, or the label and the stage's commit.
  */
 async function copiedCommit(
   github: GithubReads,
@@ -3975,6 +3995,7 @@ async function copiedCommit(
     readonly stages: readonly DockerfileStage[];
     readonly steps: readonly FinalStep[];
     readonly sources: readonly PackageCopies[];
+    readonly readSteps: readonly ReadStep[];
     readonly imageRepo: string;
     readonly when: { readonly at: string; readonly words: string };
   }
@@ -4015,18 +4036,38 @@ async function copiedCommit(
   }
   const copied = `the final stage copies ${sources.map(({ pkg }) => pkg).join(", ")}, ${packages}, from the stage ${name}, FROM ${stageWords(stage)}`;
   // A RUN after a package's last COPY that names a path of it leaves the image's files there not
-  // the stage's; a COPY or ADD into it is one of the writes above.
+  // the stage's, unless the configuration lists its text's hash as a step a person read; a COPY
+  // or ADD into it is one of the writes above.
+  const reasons = new Map(read.readSteps.map(({ sha256, reason }) => [sha256, reason]));
+  /** Each later RUN that names a path of a copied package and whose hash `readSteps` lists, by
+   *  its index in the steps: the text the evidence shows, its hash, and the packages it names. */
+  const cleared = new Map<number, { shown: string; sha256: string; pkgs: string[] }>();
   for (const { pkg, last } of sources) {
-    const later = read.steps
-      .slice(last + 1)
-      .find((step) => step.keyword === "RUN" && namesPath(step.text, pkg));
-    if (later === undefined) continue;
-    const shown =
-      later.text.length > STEP_SHOWN ? `${later.text.slice(0, STEP_SHOWN)}…` : later.text;
-    return {
-      how: `${copied}, but its step "${shown}", after its last COPY of ${pkg}, names it, a path in it or a directory above it, so the image's ${pkg} need not be the stage's`,
-    };
+    for (const [at, later] of read.steps.entries()) {
+      if (at <= last || later.keyword !== "RUN" || !namesPath(later.text, pkg)) continue;
+      const seen = cleared.get(at);
+      if (seen !== undefined) {
+        seen.pkgs.push(pkg);
+        continue;
+      }
+      const shown =
+        later.text.length > STEP_SHOWN ? `${later.text.slice(0, STEP_SHOWN)}…` : later.text;
+      const sha256 = stepHash(later.text);
+      if (!reasons.has(sha256)) {
+        return {
+          how: `${copied}, but its step "${shown}", after its last COPY of ${pkg}, names it, a path in it or a directory above it, so the image's ${pkg} need not be the stage's; the SHA-256 of the step's text is ${sha256}, which the readSteps of the image's deploymentImages entry do not list`,
+        };
+      }
+      cleared.set(at, { shown, sha256, pkgs: [pkg] });
+    }
   }
+  const kept = [...cleared]
+    .sort(([a], [b]) => a - b)
+    .reduce(
+      (words, [, { shown, sha256, pkgs }]) =>
+        `${words}; its step "${shown}", after its last COPY of ${pkgs.join(" and ")}, names a path of ${pkgs.length === 1 ? "it" : "each"}, but a person read it: the readSteps of the image's deploymentImages entry list the SHA-256 of the step's text, ${sha256}, with the reason "${reasons.get(sha256)}"`,
+      copied
+    );
   const base = stage.base;
   const digest = /@sha256:([0-9a-f]{64})$/.exec(base ?? "")?.[1];
   if (base === undefined || digest === undefined) return { how: `${copied}, which pins no digest` };
@@ -4036,7 +4077,7 @@ async function copiedCommit(
   let named: string;
   if (found !== undefined) {
     commit = found.commit;
-    named = `${copied}; ${provenance} names ${found.uri} at ${found.commit}`;
+    named = `${kept}; ${provenance} names ${found.uri} at ${found.commit}`;
   } else {
     const without = `its digest has no build provenance that names a commit (${provenance})`;
     const labels = await labelCommit(github, { image: base, imageRepo, when });
@@ -4045,7 +4086,7 @@ async function copiedCommit(
       return { how: `${copied}, but ${without}, and ${none}` };
     }
     commit = labels.sha;
-    named = `${copied}; ${without}; ${labels.how}`;
+    named = `${kept}; ${without}; ${labels.how}`;
   }
   const label = await versionNames(github, {
     image: read.image,
@@ -4137,7 +4178,8 @@ async function imageCommit(
     /** The configuration's deploymentImages. */
     readonly deploymentImages: readonly DeploymentImage[];
     /** The profile's packages in the worker image: `/opt/legion/<package>` of each prefix-table.tsv
-     *  row under IMAGE_ROOT. */
+     *  row under IMAGE_ROOT at least one of whose units is an Oh My Pi unit (an installers.tsv row
+     *  of host omp installs it); a row that only Claude Code units place gives none. */
     readonly imagePackages: readonly string[];
   }
 ): Promise<{ readonly sha?: string; readonly how: string }> {
@@ -5429,9 +5471,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   // The repositories the worker image's packages come from: a plugin list (omp-plugins) is the
   // pod's only when one of them holds it; another's (a dev box's own) installs nothing in a pod.
-  // Their units are read at the image's commit (LEGION_IMAGE_RULE, below). The packages are each
-  // `/opt/legion/<package>` of those rows, which an image that copies them must copy from one
-  // stage.
+  // Their units are read at the image's commit (LEGION_IMAGE_RULE, below). The packages are the
+  // profile's: each `/opt/legion/<package>` of those rows at least one of whose units is an Oh My
+  // Pi unit (`ompUnits`, the test by which this loop installs a unit), which an image that copies
+  // them must copy from one stage. A row that only Claude Code units place (a Claude Code
+  // plugin's package) installs nothing in the pod's Oh My Pi profile, so it adds no package.
   const imageRepositories = new Set<string>();
   const imagePackages = new Set<string>();
   if (legion) {
@@ -5444,8 +5488,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const prefix = row.prefix ?? "";
       if (!prefix.startsWith(IMAGE_ROOT)) continue;
       const [name = ""] = prefix.slice(IMAGE_ROOT.length).split("/");
-      if (name !== "") imagePackages.add(`${IMAGE_ROOT}${name}`);
-      for (const via of vias(row.via ?? "")) {
+      const rowVias = vias(row.via ?? "");
+      if (name !== "" && rowVias.some((via) => ompUnits.has(viaKey(via)))) {
+        imagePackages.add(`${IMAGE_ROOT}${name}`);
+      }
+      for (const via of rowVias) {
         imageRepositories.add(via.repository);
         if (units.has(viaKey(via)) || !ompUnits.has(viaKey(via))) continue;
         units.set(viaKey(via), {
@@ -6177,8 +6224,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // (POOL_VERSION_RULE), and kept as it came where neither decides or the caller asks for every
   // pool (`poolsUndecided`). The names of a pool the listing decides are marked as taken from it.
   // A name an installed unit outside the pools also ships is no evidence for a pool (the session
-  // lists it with or without the pool): a pool needs a named skill that no such unit ships, or a
-  // `[Skill file: …]` read of the session that shows Oh My Pi loaded it.
+  // lists it with or without the pool): a pool needs a named skill that no such unit ships, a
+  // `[Skill file: …]` read of the session that shows Oh My Pi loaded it, or a listed
+  // `<namespace>/<name>` of a name it holds whose first copy no such unit gives.
   const fromListing = new Set<string>();
   const pools =
     input.poolsUndecided === true
@@ -6190,14 +6238,66 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     const inference =
       "this is an inference from the listing, since no file records why some sessions of one Oh My Pi build list such a pool and others do not";
     const nonPoolNames = new Set<string>();
-    for (const { via } of units.values()) {
+    /** Each copy of a name that an installed unit outside the pools ships, in the order of the
+     *  units: its unit, its rank among the copies of the name (`unitRank`), the namespace Oh My Pi
+     *  lists it under where an earlier copy keeps the bare name (`unitNamespace`), and the copy. */
+    const shippedBy = new Map<
+      string,
+      { key: string; rank: number; namespace: string | undefined; copy: string }[]
+    >();
+    for (const [key, { via }] of units) {
       if (via.unit.startsWith("pool:")) continue;
-      for (const row of installedFrom(via, versions.get(via.unit))) nonPoolNames.add(row.skill);
+      for (const row of installedFrom(via, versions.get(via.unit))) {
+        nonPoolNames.add(row.skill);
+        const copies = shippedBy.get(row.skill) ?? [];
+        copies.push({
+          key,
+          rank: unitRank(via.unit) ?? Number.POSITIVE_INFINITY,
+          namespace: unitNamespace(via.unit),
+          copy: `${row.copyRepository}\0${row.copyPath ?? ""}`,
+        });
+        shippedBy.set(row.skill, copies);
+      }
     }
     for (const copy of alone.values()) {
       const found = held.get(copy.repo)?.copies.find((each) => each.path === copy.path);
       if (found !== undefined) nonPoolNames.add(found.name);
     }
+    /** Each name the listing lists under a namespace, as `<namespace>/<name>` (NAMESPACE_RULE). */
+    const namespacedNames = listing.names.flatMap((listed) => {
+      const at = listed.indexOf("/");
+      return at <= 0
+        ? []
+        : [{ listed, namespace: listed.slice(0, at), name: listed.slice(at + 1) }];
+    });
+    /** Whether a listed `<namespace>/<name>` proves that a pool holding `<name>` gave the copy of
+     *  it Oh My Pi admitted first (POOL_LISTING_RULE), and why: it does where the installed units
+     *  outside the pools that ship `<name>` under that namespace ship the copy Oh My Pi admits
+     *  first of every such unit's (a lower rank first, of one rank the first unit's, as the profile
+     *  orders them below), since a pool comes before them all. */
+    const namespaceProof = ({ namespace, name }: (typeof namespacedNames)[number]) => {
+      const copies = shippedBy.get(name) ?? [];
+      const own = copies.filter((each) => each.namespace === namespace);
+      if (own.length === 0) {
+        return {
+          proves: false,
+          why: `no installed unit outside the pools ships ${name} under the namespace ${namespace}`,
+        };
+      }
+      const first = copies.reduce((a, b) => (b.rank < a.rank ? b : a));
+      const later = own.find((each) => each.copy !== first.copy);
+      if (later !== undefined) {
+        return {
+          proves: false,
+          why: `${first.key}, which Oh My Pi admits before ${later.key}, ships another copy of ${name}`,
+        };
+      }
+      const by = [...new Set(own.map((each) => each.key))];
+      return {
+        proves: true,
+        why: `${by.join(" and ")} ship${by.length === 1 ? "s" : ""} ${name} under that namespace, and no installed unit outside the pools that Oh My Pi admits before ${by.length === 1 ? "it" : "them"} ships another copy of it`,
+      };
+    };
     for (const [key, { via, why }] of pools) {
       const skills = [...new Set(shipsAtStart(via).map((row) => row.skill))];
       const named = skills.filter((name) => listing.names.includes(name));
@@ -6220,10 +6320,25 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
       const read = shownBy.get(key);
       if (read === undefined) {
+        const tried = namespacedNames
+          .filter(({ name }) => skills.includes(name))
+          .map((each) => ({ listed: each.listed, ...namespaceProof(each) }));
+        const proofs = tried.filter((each) => each.proves);
+        if (proofs.length > 0) {
+          units.set(key, {
+            via,
+            why: `${why}; ${counted} (${split})${sharedNote}; ${listing.from} names ${proofs.map((each) => each.listed).join(", ")} (${proofs.map((each) => `${each.listed}: ${each.why}`).join("; ")}), and Oh My Pi lists a copy as <namespace>/<name> only where it admitted another copy of the name first (NAMESPACE_RULE), so the copy it admitted first was this pool's, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: ${POOL_LISTING_RULE}`,
+          });
+          continue;
+        }
+        const unproved =
+          tried.length === 0
+            ? ""
+            : `; ${listing.from} names ${tried.map((each) => each.listed).join(", ")}, which prove${tried.length === 1 ? "s" : ""} nothing for this pool (${tried.map((each) => `${each.listed}: ${each.why}`).join("; ")})`;
         units.delete(key);
         evidence.push({
           item: `left out: the pool ${key}`,
-          source: `${why}; ${counted} (${skills.join(", ") || "none"})${sharedNote}, so it is not installed; ${inference}: ${POOL_LISTING_RULE}`,
+          source: `${why}; ${counted} (${skills.join(", ") || "none"})${sharedNote}${unproved}, so it is not installed; ${inference}: ${POOL_LISTING_RULE}`,
         });
         continue;
       }

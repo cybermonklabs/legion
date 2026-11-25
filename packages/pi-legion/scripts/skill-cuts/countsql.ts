@@ -28,13 +28,16 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { loadConfig, type SkillCutsConfig, storeNamed } from "./config";
+import { loadConfig, type SkillCutsConfig, storeNamed, TRANSCRIPT_SOURCE } from "./config";
 import type { PullKey } from "./psql-rows";
 import { DEFAULT_ROOT, NAMED_ROOT } from "./session-root";
 
 /** The SQL files of the runner, beside this file. */
 type Template =
   | "count.sql"
+  | "transcript-count.clickhouse"
+  | "transcript-coverage.clickhouse"
+  | "hashes.sql"
   | "models.sql"
   | "pull.sql"
   | "tasks.sql"
@@ -136,6 +139,47 @@ export function countSql(
   hour?: number
 ): string {
   return countSqlFor(config, store, mtimeRange(day, hour));
+}
+
+/** ClickHouse interprets backslash escapes inside quoted strings, unlike Postgres. */
+function clickHouseString(value: string): string {
+  return sqlString(value.replaceAll("\\", "\\\\"));
+}
+
+function transcriptWindow(config: SkillCutsConfig) {
+  if (config.transcriptStore === undefined) throw new Error("no transcriptStore is configured");
+  return {
+    store: clickHouseString(TRANSCRIPT_SOURCE),
+    window_start: instant(config.windowStart),
+    window_end: instant(config.windowEnd),
+  };
+}
+
+/** The aggregate ClickHouse read count, for all hosts on one UTC day or hour of call time. */
+export function transcriptSql(config: SkillCutsConfig, day: string, hour?: number): string {
+  const range = mtimeRange(day, hour);
+  return fillTemplate(readTemplate("transcript-count.clickhouse"), {
+    ...transcriptWindow(config),
+    day_start: String(range.from),
+    day_end: String(range.to),
+  });
+}
+
+/** Per-host coverage and file hashes, once per count window. */
+export function transcriptCoverageSql(config: SkillCutsConfig): string {
+  return fillTemplate(readTemplate("transcript-coverage.clickhouse"), {
+    ...transcriptWindow(config),
+    named_root: clickHouseString(NAMED_ROOT),
+    default_root: clickHouseString(DEFAULT_ROOT),
+  });
+}
+
+/** Postgres file hashes for ownership, including files the count found no reads in. */
+export function hashesSql(config: SkillCutsConfig, store: string): string {
+  storeNamed(config, store);
+  return fillTemplate(readTemplate("hashes.sql"), {
+    window_start: String(Date.parse(config.windowStart)),
+  });
 }
 
 /** models.sql filled for the store `store`, which the configuration must name, and the UTC day
@@ -267,7 +311,7 @@ export function rootsSql(config: SkillCutsConfig, store: string): string {
 }
 
 const USAGE =
-  "usage: countsql.ts --config <skill-cuts.json> --store <db> (--day <YYYY-MM-DD> [--hour <0-23>] [--query count|models] | --query roots)";
+  "usage: countsql.ts --config <skill-cuts.json> [--store <db>] (--day <YYYY-MM-DD> [--hour <0-23>] [--query count|models|transcript] | --query roots|hashes|transcript-coverage) [--run]";
 
 /** What `main` writes to. */
 export interface Output {
@@ -275,13 +319,20 @@ export interface Output {
   err(text: string): void;
 }
 
-/** The command. Returns the exit status: 0 (the query is printed) or 2 (refused). */
+/** Print a query, or run a transcript query with the configured program. */
 export function main(argv: readonly string[], io: Output): number {
   const refuse = (why: string) => {
     io.err(`countsql: ${why}`);
     return 2;
   };
-  let values: { config?: string; store?: string; day?: string; hour?: string; query?: string };
+  let values: {
+    config?: string;
+    store?: string;
+    day?: string;
+    hour?: string;
+    query?: string;
+    run?: boolean;
+  };
   try {
     ({ values } = parseArgs({
       args: [...argv],
@@ -291,6 +342,7 @@ export function main(argv: readonly string[], io: Output): number {
         day: { type: "string" },
         hour: { type: "string" },
         query: { type: "string" },
+        run: { type: "boolean" },
       },
       strict: true,
       allowPositionals: false,
@@ -298,15 +350,53 @@ export function main(argv: readonly string[], io: Output): number {
   } catch (error) {
     return refuse(`${(error as Error).message}. ${USAGE}`);
   }
-  if (values.query === "roots") {
-    if (values.config === undefined || values.store === undefined)
-      return refuse("--query roots requires --config and --store");
-    if (values.day !== undefined || values.hour !== undefined)
-      return refuse(
-        "--query roots reads all paths in the store and takes neither --day nor --hour"
-      );
+  const query = values.query ?? "count";
+  if (query === "transcript" || query === "transcript-coverage") {
+    if (values.config === undefined || values.store !== undefined)
+      return refuse(`--query ${query} requires --config and takes no --store`);
+    if (query === "transcript-coverage" && (values.day !== undefined || values.hour !== undefined))
+      return refuse("--query transcript-coverage takes neither --day nor --hour");
+    if (query === "transcript" && values.day === undefined)
+      return refuse("--query transcript requires --day");
+    if (values.hour !== undefined && !/^\d{1,2}$/.test(values.hour))
+      return refuse(`--hour ${JSON.stringify(values.hour)} is not an hour from 0 to 23`);
     try {
-      io.out(rootsSql(loadConfig(values.config), values.store));
+      const config = loadConfig(values.config);
+      const hour = values.hour === undefined ? undefined : Number(values.hour);
+      const sql =
+        values.day === undefined
+          ? transcriptCoverageSql(config)
+          : transcriptSql(config, values.day, hour);
+      if (!values.run) {
+        io.out(sql);
+        return 0;
+      }
+      const command = config.transcriptStore?.command;
+      if (command === undefined) return refuse("no transcriptStore is configured");
+      const result = Bun.spawnSync([command], { stdin: Buffer.from(sql), stderr: "inherit" });
+      if (!result.success) {
+        io.err(`countsql: ${query} command failed (exit ${result.exitCode})`);
+        return 1;
+      }
+      io.out(result.stdout.toString("utf8"));
+      return 0;
+    } catch (error) {
+      return refuse((error as Error).message);
+    }
+  }
+  if (values.run) return refuse("--run is only for transcript and transcript-coverage queries");
+  if (query === "roots" || query === "hashes") {
+    if (values.config === undefined || values.store === undefined)
+      return refuse(`--query ${query} requires --config and --store`);
+    if (values.day !== undefined || values.hour !== undefined) {
+      return refuse(
+        query === "roots"
+          ? "--query roots reads all paths in the store and takes neither --day nor --hour"
+          : "--query hashes takes neither --day nor --hour"
+      );
+    }
+    try {
+      io.out((query === "roots" ? rootsSql : hashesSql)(loadConfig(values.config), values.store));
       return 0;
     } catch (error) {
       return refuse((error as Error).message);
@@ -318,9 +408,10 @@ export function main(argv: readonly string[], io: Output): number {
   if (values.hour !== undefined && !/^\d{1,2}$/.test(values.hour)) {
     return refuse(`--hour ${JSON.stringify(values.hour)} is not an hour from 0 to 23`);
   }
-  const query = values.query ?? "count";
   if (query !== "count" && query !== "models") {
-    return refuse(`--query ${JSON.stringify(query)} is none of count, models and roots`);
+    return refuse(
+      `--query ${JSON.stringify(query)} is none of count, models, roots, hashes, transcript and transcript-coverage`
+    );
   }
   try {
     const config = loadConfig(values.config);
