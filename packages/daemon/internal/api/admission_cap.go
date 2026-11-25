@@ -24,14 +24,6 @@ import (
 // LEGION_ADMISSION_CEILING, else the starting cap) is the most a set may name, and a cap above it
 // is refused, so raising the ceiling stays the operator's change of legion.yaml.
 
-// admissionCapContract is version.go's entry for dispatch://INFRA-5616: the four cap routes, the
-// controller's answer (AnswerAdmissionCap), and the state's `admission.ceiling`,
-// `admission.override` and `admission.capChanges`, which a caller below it is served without
-// (shaping.go's withoutAdmissionCap). Its constant rather than its number stands in
-// SupportedContracts, as OwnerPlanContract's does, so a renumber of the entry moves the two
-// together.
-const admissionCapContract = 307
-
 // ProjectAdmissionCapRequest is the controller's POST /legion/v1/project/admission-cap: its grant,
 // the cap to set, a whole number from 1 to the ceiling, and why: the person's words that ask for
 // the change (dispatch://INFRA-5616/spec#b-r8-who-sets).
