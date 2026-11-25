@@ -1766,11 +1766,11 @@ func TestASwitchOffWhoseBoundPanicsSendsNoOlderReportInItsPlace(t *testing.T) {
 	var up atomic.Bool
 	tr := f.trimmer()
 	previous := tr.boundReport
-	tr.boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	tr.boundReport = func(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		if report.SwitchedOff {
 			panic(fell)
 		}
-		return previous(trim, report)
+		return previous(report)
 	}
 	tr.send = func(report shimwire.LauncherVolumeReport) error {
 		if !up.Load() {

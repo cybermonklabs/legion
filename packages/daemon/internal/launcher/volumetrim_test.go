@@ -5454,11 +5454,11 @@ func TestASweepThatReachedTheLowMarkNeitherAnchorsNorPairs(t *testing.T) {
 // A sweep whose report panics while it is being made has been read for a rise all the same: tick
 // reads its start before it makes its report (riseAt), so its start anchors or pairs as a sent
 // report's does, and the panic is a fault the next report carries. The sweeps start at 86%, 91%
-// and 92%, and the bound of the first two reports panics (boundReport): the 86% anchors episode
-// 1, the 91% pairs with the 92%, and the third sweep's report, the one sent, carries the rise and
-// the two faults. The negative control is a copy that reads a sweep's start only once its report
-// is made: the first two are never read, the 92% anchors the episode, and its report carries
-// episode 1.
+// and 92%, and the bound of the first two reports panics (trimmer.boundReport): the 86% anchors
+// episode 1, the 91% pairs with the 92%, and the third sweep's report, the one sent, carries the
+// rise and the two faults. The negative control is a copy that reads a sweep's start only once its
+// report is made: the first two are never read, the 92% anchors the episode, and its report
+// carries episode 1.
 func TestASweepWhoseReportPanicsHasBeenReadForARise(t *testing.T) {
 	t.Parallel()
 	const fell = "the report's bound fell over"
@@ -5468,11 +5468,11 @@ func TestASweepWhoseReportPanicsHasBeenReadForARise(t *testing.T) {
 	tr := f.trimmer()
 	var bounds atomic.Int32
 	previous := tr.boundReport
-	tr.boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	tr.boundReport = func(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		if bounds.Add(1) <= 2 {
 			panic(fell)
 		}
-		return previous(trim, report)
+		return previous(report)
 	}
 	f.start(tr)
 
@@ -6379,7 +6379,7 @@ func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
 	tr.carryRefused([]string{refused})
 
 	previous := tr.boundReport
-	tr.boundReport = func(*trimmer, shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	tr.boundReport = func(shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		panic("the bound fell over")
 	}
 	if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
@@ -6440,11 +6440,11 @@ func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T)
 
 	calls := 0
 	previous := tr.boundReport
-	tr.boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	tr.boundReport = func(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		if calls++; calls == 2 {
 			panic("the merge fell over")
 		}
-		return previous(trim, report)
+		return previous(report)
 	}
 	if _, ending := tr.tick(ctx, &set); ending != trimGoesOn {
 		t.Fatalf("the interval whose merge panicked ended the trimmer (%v), want it passed over", ending)

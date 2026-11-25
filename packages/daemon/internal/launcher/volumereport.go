@@ -97,7 +97,7 @@ func (t *trimmer) deliver(report shimwire.LauncherVolumeReport) {
 // deliver, which gives what report carried back to the trimmer (takeBack), since report is then
 // neither sent nor held, and in switchOff, whose panic ends the trimmer (run).
 func (t *trimmer) replace(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
-	return t.boundReport(t, carryHeld(held, report))
+	return t.boundReport(carryHeld(held, report))
 }
 
 // takeBack puts what a report that was neither sent nor held carried back on the trimmer, for the
@@ -191,7 +191,7 @@ func (t *trimmer) switchOff() {
 		// the first thing the daemon hears of this trimmer.
 		report.RaisedBy = shimwire.VolumeEpisodeFirst
 	}
-	report = t.boundReport(t, report)
+	report = t.boundReport(report)
 	t.faults, t.faultsDropped = nil, 0
 	t.refusedReads, t.refusedDropped = nil, 0
 	if t.held != nil {
@@ -281,7 +281,7 @@ func (t *trimmer) carryRefused(refused []string) {
 // and a report neither sent nor held gives them back (deliver).
 func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.LauncherVolumeReport {
 	walk := t.sizes(ctx)
-	report := t.boundReport(t, shimwire.LauncherVolumeReport{
+	report := t.boundReport(shimwire.LauncherVolumeReport{
 		Trimmer:             t.id,
 		Episode:             t.episode,
 		RaisedBy:            t.raisedBy,
