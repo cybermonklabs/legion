@@ -98,8 +98,8 @@ const (
 	// CheckStateFail is Dispatch's computed fail (no, for the reason fail): the one state that
 	// starts the next change.
 	CheckStateFail CheckState = "fail"
-	// CheckStateNoResult is a check no result decides yet (no, for the reason no_result): it waits
-	// for evidence.
+	// CheckStateNoResult is a check no result decides yet: no for the reason no_result, and a live
+	// check's unknown for a reason of its deploy (liveWaitsForResult). It waits for evidence.
 	CheckStateNoResult CheckState = "no_result"
 	// CheckStateUnknown is every other answer: a pass and a fail at one commit, a result Dispatch
 	// could not place, a read Dispatch could not make, and an answer the close does not know.
@@ -219,6 +219,9 @@ func (w CloseWait) Done() bool {
 //   - no for the reason fail is a fail, with results[0] as its deciding result and commit as its
 //     commit. It starts the next change.
 //   - no for the reason no_result is no result yet.
+//   - unknown for a reason of a live check's deploy (program_not_named, no_deploy,
+//     deploy_not_merged or no_result_from_deploy) is no result yet from the live system. The
+//     daily notice names the reason.
 //   - Every other answer is unknown: a pass and a fail at one commit (unknown, pass_and_fail),
 //     which the owner is told of at once; a result Dispatch could not place or a read it could not
 //     make (unknown, not_placed or read_failed), read again on the backoff; and an answer with no
@@ -234,10 +237,25 @@ func CloseCheckOf(check dispatch.CheckBlock) CheckWait {
 		if len(stands.Results) > 0 {
 			state.Result = stands.Results[0]
 		}
-	case stands.Answer == dispatch.PassStandsNo && stands.Reason == dispatch.PassStandsReasonNoResult:
+	case stands.Answer == dispatch.PassStandsNo && stands.Reason == dispatch.PassStandsReasonNoResult,
+		stands.Answer == dispatch.PassStandsUnknown && liveWaitsForResult(stands.Reason):
 		state.State = CheckStateNoResult
 	}
 	return state
+}
+
+// liveWaitsForResult says whether reason is one Dispatch gives a live check (subject production
+// or graph) that no result from the live system decides yet: it names no program and Dispatch
+// holds the current deploys of several, no current deploy of its program is recorded, the
+// current deploy's commit does not hold the merge, or no result was recorded from that deploy.
+// Each waits for evidence, or for the check's author to name its program.
+func liveWaitsForResult(reason string) bool {
+	switch reason {
+	case dispatch.PassStandsReasonProgramNotNamed, dispatch.PassStandsReasonNoDeploy, dispatch.PassStandsReasonDeployNotMerged,
+		dispatch.PassStandsReasonNoResultFromDeploy:
+		return true
+	}
+	return false
 }
 
 // freshAnswer is the newest read's answer where it counts for the close: the read answered, it
@@ -379,17 +397,22 @@ func productionTerm(f CloseFacts) string {
 }
 
 // unapprovedSince says whether a check block of the approved version was removed or reworded in
-// the current version. A block the current version holds as it was approved is the approved
-// check. So is a block whose only difference is the attributes subject and program, where the
-// approved block held neither: the comparison takes the two out of both blocks, and reads equal
-// blocks as the approved check only where the approved block holds neither. Every other difference
-// is a rewording: a changed value, a removed value, and a mark gained where the approved block held
-// one of the two. A check added after the approval is no rewording: it holds the close like any
-// other check. Where no version is approved, no approved set exists to weaken, and nothing is
-// unapproved.
-func unapprovedSince(approval *CheckApproval) bool {
+// the current version (UnapprovedChecks).
+func unapprovedSince(approval *CheckApproval) bool { return len(UnapprovedChecks(approval)) > 0 }
+
+// UnapprovedChecks is the id of each check block of the approved version that the current version
+// removed or reworded, in the approved version's order: the checks the stored wait names as
+// waiting for a person's approval. A block the current version holds as it was approved is the
+// approved check. So is a block whose only difference is the attributes subject and program,
+// where the approved block held neither: the comparison takes the two out of both blocks, and
+// reads equal blocks as the approved check only where the approved block holds neither. Every
+// other difference is a rewording: a changed value, a removed value, and a mark gained where the
+// approved block held one of the two. A check added after the approval is no rewording: it holds
+// the close like any other check. Where no version is approved, no approved set exists to
+// weaken, and it is nil.
+func UnapprovedChecks(approval *CheckApproval) []string {
 	if approval == nil || approval.Version == 0 {
-		return false
+		return nil
 	}
 	current := make(map[string]dispatch.DocumentBlock, len(approval.Current))
 	for _, block := range approval.Current {
@@ -397,16 +420,16 @@ func unapprovedSince(approval *CheckApproval) bool {
 			current[block.ID] = block
 		}
 	}
+	var unapproved []string
 	for _, approved := range approval.Approved {
 		if approved.Type != checkBlockType {
 			continue
 		}
-		now, kept := current[approved.ID]
-		if !kept || !sameCheckBlock(approved, now) {
-			return true
+		if now, kept := current[approved.ID]; !kept || !sameCheckBlock(approved, now) {
+			unapproved = append(unapproved, approved.ID)
 		}
 	}
-	return false
+	return unapproved
 }
 
 // sameCheckBlock says whether now is the check approved approved: the same text and attributes,
