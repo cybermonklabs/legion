@@ -389,7 +389,7 @@ func poll(t testing.TB, what string, holds func() bool, reading func() string) {
 // end (bounded false) it asks until holds reports true.
 func asked(end time.Time, bounded bool, holds func() bool) bool {
 	for !holds() {
-		if bounded && !clock.Now().Before(end) {
+		if bounded && !currentClock().Now().Before(end) {
 			return false
 		}
 		time.Sleep(pace)
@@ -409,7 +409,7 @@ func expiryAt(end time.Time, bounded bool) (<-chan time.Time, func() bool) {
 	if !bounded {
 		return nil, func() bool { return false }
 	}
-	return clock.Timer(end)
+	return currentClock().Timer(end)
 }
 
 // mainGiveUpAt is the moment a wait in TestMain gives up: the -timeout flag's deadline less

@@ -343,19 +343,26 @@ const (
 	unansweredBucketGuard = 2 * time.Minute
 
 	// accountInfoDelay is how late the child's stand-in for JetStream answers the account
-	// information a bucket's create reads first, on the clock the waits read (testwait.Pause).
+	// information a bucket's create reads first, on the clock the waits read (testwait.Pause),
+	// when the stand-in reads that request before the send's bound has passed on the child's step
+	// clock.
 	accountInfoDelay = 8 * time.Second
 )
 
 // A bucket create that nothing answers fails the test naming its sends before the test binary's
-// deadline, though one send of it makes two requests, and the first is answered late: a send under
-// way as the shared wait gives up is its last. The child sets up the stand-in and the creating
-// client on the wall clock, under the shared wait's own bound, and then takes the give-up as a
-// step of its own (testwait.SetUpDone), so the create's wait asks once and its one send runs on
-// the child's step clock: the stand-in's account information comes accountInfoDelay into it, the
-// create of the bucket's stream never, and the send ends createSendWait into it with nats.go's
-// timeout (sendOnTheWaitsClock), 20 s before the deadline on that clock. A send held past the 30 s
-// margin would end the child at the deadline, as go test's alarm does, and the row fails. The
+// deadline: a send under way as the shared wait gives up is its last, and ends inside the margin.
+// The child sets up the stand-in and the creating client on the wall clock, under the shared
+// wait's own bound, and then takes the give-up as a step of its own (testwait.SetUpDone), so the
+// create's wait asks once and its one send runs on the child's step clock, bounded there as a
+// whole by createSendWait (sendOnTheWaitsClock). The step clock fires that bound's timer once a
+// wait is blocked on it and no earlier timer is armed, and the send's first request reaches the
+// stand-in over a socket, so the bound can pass before the stand-in has read the request: the
+// send then ends createSendWait into the step with nats.go's timeout, 20 s before the deadline on
+// that clock, and the stand-in's late answer never comes. When the stand-in reads the request
+// first, its answer comes accountInfoDelay into the step, the create of the bucket's stream never,
+// and the send ends at the same moment. Either way nothing answers the create, and the row reads
+// only the give-up's text. A send held past the 30 s margin would end the child at the deadline,
+// as go test's alarm does, and the row fails. The
 // parent starts the server under its own deadline and passes its URL to the child, so a server
 // whose start is slow costs the parent time and not the child. Under a fixed -timeout of 48 s the
 // child's waits gave up 18 s in, and a setup still running then failed the child with a wait of
@@ -378,8 +385,9 @@ func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *test
 
 // createUnansweredBucket is the child of
 // TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline: a bucket create on the server
-// without JetStream the parent started at uri, whose stand-in answers each read of the account's
-// JetStream information accountInfoDelay late and never answers the create of the bucket's stream.
+// without JetStream the parent started at uri, whose stand-in answers a read of the account's
+// JetStream information accountInfoDelay late when it reads that request in time, and never
+// answers the create of the bucket's stream.
 // Everything before the create is its setup, and the give-up is its next step (testwait.SetUpDone).
 func createUnansweredBucket(t *testing.T, uri string) {
 	standIn := connectWithoutJetStream(t, uri, "the stand-in for JetStream")

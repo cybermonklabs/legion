@@ -6,24 +6,42 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// clock is the time the waits here read and arm their timer by: the wall clock, until a child test
-// binary gives them a clock it moves itself (stepClock). testwait's own tests give theirs one from
-// the start (useStepClock); a child another package's row runs takes one once its setup has
+// waitsClock is the time the waits here read and arm their timer by: the wall clock, until a child
+// test binary gives them a clock it moves itself (stepClock). testwait's own tests give theirs one
+// from the start (useStepClock); a child another package's row runs takes one once its setup has
 // reported done (SetUpDone). A wait's margin then passes at a step the child takes, never at a
 // moment a loaded machine moves, and the child's verdict follows from what its waits did, not from
 // how long the machine took to do it.
-var clock interface {
+type waitsClock interface {
 	// Now is the time now.
 	Now() time.Time
 	// Timer returns a channel that receives once at has come, and the function that releases it.
 	Timer(at time.Time) (<-chan time.Time, func() bool)
 	// wall is the wall clock's moment at which at comes.
 	wall(at time.Time) time.Time
-} = wallClock{}
+}
+
+// clockBox holds a waitsClock, so that one atomic pointer can hold the wall clock and a step clock
+// alike (clock).
+type clockBox struct{ waitsClock }
+
+// clock holds the waitsClock of this binary: the wall clock from the package's init, and a step
+// clock while a test holds one (useStepClock), which SetUpDone gives a child and testwait's own
+// child rows take from their start. Goroutines a fixture started before a test took its step clock
+// read the clock beside the goroutine that stores it, and beside the cleanup that stores the wall
+// clock back, and the package cannot count on anything of the caller's to order the two, so every
+// read loads it (currentClock) and every change stores it.
+var clock atomic.Pointer[clockBox]
+
+func init() { clock.Store(&clockBox{wallClock{}}) }
+
+// currentClock is the clock the waits of this binary read now.
+func currentClock() waitsClock { return clock.Load().waitsClock }
 
 // wallClock is the time as the machine keeps it.
 type wallClock struct{}
@@ -41,21 +59,21 @@ func (wallClock) wall(at time.Time) time.Time { return at }
 // took SetUpDone, its step clock's, which stands at the waits' give-up and moves only at the
 // child's own steps. A fixture that keeps a span or a deadline of its own reads its start here
 // (Within, WallTime).
-func Now() time.Time { return clock.Now() }
+func Now() time.Time { return currentClock().Now() }
 
 // WallTime is the wall clock's moment at which at, a moment on the clock the waits read (Now),
 // comes: at itself on the wall clock, and on a child's step clock, which does not follow the wall
 // clock, the wall clock's now plus what is left until at on the step clock, or now once at has come
 // there. It is for a deadline only the kernel keeps, such as a socket's, which a fixture takes from
 // the waits' clock.
-func WallTime(at time.Time) time.Time { return clock.wall(at) }
+func WallTime(at time.Time) time.Time { return currentClock().wall(at) }
 
 // Stepped reports whether the waits of this binary read a step clock (SetUpDone), on which nothing
 // the machine does moves the time. A fixture whose span another library keeps for it on the wall
 // clock, such as nats.go's bound on a request, keeps that span on the waits' clock instead
 // (Within) while they read one.
 func Stepped() bool {
-	_, stepped := clock.(*stepClock)
+	_, stepped := currentClock().(*stepClock)
 	return stepped
 }
 
@@ -67,7 +85,8 @@ func Stepped() bool {
 // would end past the test binary's deadline on a step clock ends the binary there, as go test's
 // alarm would.
 func Within[T any](ch <-chan T, d time.Duration) (T, bool) {
-	expired, stop := clock.Timer(clock.Now().Add(d))
+	waits := currentClock()
+	expired, stop := waits.Timer(waits.Now().Add(d))
 	defer stop()
 	return received(ch, expired)
 }
@@ -76,11 +95,11 @@ func Within[T any](ch <-chan T, d time.Duration) (T, bool) {
 // answers late on purpose.
 func Pause(d time.Duration) { Within[struct{}](nil, d) }
 
-// stepClock is the clock a child test binary gives the waits here (clock). Its time moves only when
-// the child sets it (set), or when a timer armed on it fires, which moves it to the timer's moment
-// when that is later. A timer fires only once a wait is blocked waiting on a timer and no timer
-// still pending is due before it (fireOnceWaited): timers fire in the order of their moments, as
-// the wall clock's do, so a stand-in that answers on this clock answers before a bound due after
+// stepClock is the clock a child test binary gives the waits here (waitsClock). Its time moves only
+// when the child sets it (set), or when a timer armed on it fires, which moves it to the timer's
+// moment when that is later. A timer fires only once a wait is blocked waiting on a timer and no
+// timer still pending is due before it (fireOnceWaited): timers fire in the order of their moments,
+// as the wall clock's do, so a stand-in that answers on this clock answers before a bound due after
 // it ends; a wait that gives up without waiting never gets its tick, and a value that came before
 // the wait blocked is taken first. A clock with a deadline, the test binary's own (SetUpDone), ends
 // the binary as go test's alarm would once the next timer to fire is due past it. The child reads
@@ -239,8 +258,8 @@ func (c *stepClock) armedTimers() []armedTimer {
 // useStepClock gives the waits of this test binary a stepClock whose time is now, until t ends.
 func useStepClock(t testing.TB, now time.Time) *stepClock {
 	stepped := &stepClock{now: now}
-	clock = stepped
-	t.Cleanup(func() { clock = wallClock{} })
+	clock.Store(&clockBox{stepped})
+	t.Cleanup(func() { clock.Store(&clockBox{wallClock{}}) })
 	return stepped
 }
 
