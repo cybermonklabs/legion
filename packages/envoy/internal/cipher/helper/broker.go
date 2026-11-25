@@ -223,8 +223,9 @@ type Broker struct {
 	testLoginWait func(wait time.Duration, da *oauth2.DeviceAuthResponse)
 	// testLoginNow, when set, takes the place of the clock readings Login makes around the device
 	// authorization's request: the moment it asks, and the two after the answer arrives. A test
-	// hands it the moments, so the round trip it measures is the one the test names, not the time
-	// the runner took. No production caller sets it.
+	// hands it the moments, so the round trip Login measures is the one the test names, not the
+	// time the runner took; the code's end is still x/oauth2's own reading of the real clock. No
+	// production caller sets it.
 	testLoginNow func() time.Time
 
 	// unsaved is the held login whose save failed, while no save has landed since. The failed
@@ -608,11 +609,14 @@ func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool)
 		rest = fmt.Sprintf("%.3f s of it: %s", left.Seconds(), lapses)
 	}
 	// An answer in less than the time the code's end leaves over the interval works: lived less the
-	// interval, to the millisecond, or the lifetime's whole seconds over it where lived holds as
-	// many, so the line never names more time than lived holds (a lifetime x/oauth2 wraps forward by
-	// half a second or more reads as the next whole second). lived is off the whole seconds by the
-	// moments between Login's and x/oauth2's clock readings (lifetime, above), so one within a
-	// millisecond of them holds them.
+	// interval, to the millisecond, or the lifetime's whole seconds over it where lived is within a
+	// millisecond of holding as many (a lifetime x/oauth2 wraps forward by half a second or more
+	// reads as the next whole second, which lived does not hold). So the line names at most a
+	// millisecond more than lived holds, and lived is the broker's whole seconds less the gap
+	// between x/oauth2's own two clock readings, which no bound limits (a pause between them is
+	// the shortfall the unit rows pin): the figure can read a little under the whole seconds, as
+	// "less than 0.998 s" for a 6 s code, true and that much conservative. The millisecond of
+	// tolerance only absorbs readings a microsecond or so apart.
 	over := lifetime - interval
 	within := fmt.Sprintf("%d s", over/time.Second)
 	if held := (lived - interval).Truncate(time.Millisecond); held < over-time.Millisecond {
@@ -809,8 +813,9 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 //     dated less the device authorization's round trip, as x/oauth2 dates it, and there
 //     from when the answer arrived, so on a slow path this helper refuses an answer that login
 //     shows: an interval of 599 s against a 600 s code, with a round trip over a second. There the
-//     test counts whole milliseconds, so it refuses an interval less than one shorter than its
-//     code, as 5 s against 5.0005 s, where this helper reads only whole seconds.
+//     test counts the poll's wait up and the code's end down to a whole millisecond, so it refuses
+//     an interval less than two milliseconds shorter than its code, as 5 s against 5.0005 s or
+//     4.9997 s against 5 s, where this helper reads only whole seconds.
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	client := b.tokenClient(key)
 	ctx, cancel := context.WithDeadline(context.Background(), da.Expiry)

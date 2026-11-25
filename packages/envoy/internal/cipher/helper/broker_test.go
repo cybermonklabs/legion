@@ -187,9 +187,6 @@ type fakeBroker struct {
 	// deviceAuthFields, when set, replaces the device authorization answer's own pairs with its
 	// own, a nil value removing its pair: a broker naming another interval or lifetime, or none.
 	deviceAuthFields map[string]any
-	// deviceAuthDelay, when set, holds each device authorization's answer that long: a slow path,
-	// whose round trip x/oauth2 takes off the code's lifetime.
-	deviceAuthDelay time.Duration
 	// oauthErrorStatus, when set, is the status of every OAuth error the token endpoint answers, in
 	// place of its own: a broker, or a proxy before it, answering 5xx, 408 or 429 with a body that
 	// still names access_denied, expired_token or invalid_grant, or another refusal status.
@@ -411,11 +408,6 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		writeJSON(w, 200, map[string]string{"lease_expires_at": lease.UTC().Format(time.RFC3339Nano)})
 	})
 	mux.HandleFunc("POST /v1/oauth/device_authorization", func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		delay := f.deviceAuthDelay
-		f.mu.Unlock()
-		// Outside the lock, so nothing else the fake answers waits on a slow path's answer.
-		time.Sleep(delay)
 		f.mu.Lock()
 		if f.deviceAuthHold {
 			f.mu.Unlock()

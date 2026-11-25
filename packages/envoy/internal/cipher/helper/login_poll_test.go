@@ -405,7 +405,7 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		fields map[string]any
-		delay  time.Duration // how long the fake holds the device authorization's answer
+		trip   time.Duration // the round trip Login measures: it asks at t0 and reads the clock at t0 plus this after the answer
 		answer string        // what the line says the broker answered and what must change, a regular expression
 	}{
 		{"an interval as long as the code", map[string]any{"interval": 900}, 0, `a device code that lives 900 s, with a poll interval of 900 s` + lapses + `its poll interval is shorter than its codes' lifetime` + outlive},
@@ -452,10 +452,31 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeBroker(t)
 			f.mu.Lock()
-			f.deviceAuthFields, f.deviceAuthDelay = c.fields, c.delay
+			f.deviceAuthFields = c.fields
 			f.mu.Unlock()
 			b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 			t.Cleanup(b.Close)
+			if c.trip > 0 {
+				// Not the time the runner took: the rows' lines name the round trip the row says.
+				// Login asks slack before the clock reads (at its first reading, so nothing Login
+				// does before it counts), so the code's end, which x/oauth2 dates from its own
+				// readings a little after, is never short of the broker's whole seconds by the gap
+				// between those readings; a row that read "less than 1 s" through a 2 ms shortfall
+				// would otherwise read "less than 0.998 s" on a loaded runner (checked by shifting
+				// the reading 2 and 100 ms later in Login: the rows pass; 300 ms: they fail). The
+				// lifetime still rounds to the broker's whole seconds.
+				const slack = 250 * time.Millisecond
+				var t0 time.Time
+				reads := 0
+				b.testLoginNow = func() time.Time {
+					reads++
+					if reads == 1 {
+						t0 = time.Now().Add(-slack)
+						return t0
+					}
+					return t0.Add(c.trip)
+				}
+			}
 			code, err := b.Login(context.Background(), "host-a")
 			if err == nil {
 				t.Fatalf("Login answered the code %q, want a refusal", code)
@@ -483,11 +504,12 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 		}
 	})
 	// 18446744075 s wraps forward to about 1.29 s. The round trip Login measures is the one the
-	// subtest hands it (testLoginNow: Login asks at t0 and reads the clock at t0 plus the round
-	// trip after the answer), not the time the runner took. A round trip of 0.5 s leaves the 1 s
-	// interval 0.79 s of the code: refused, reading "lives 1 s", and its cure is no lifetime the
-	// code already has (a pause of 0.21 s or more before x/oauth2's start makes it 2 s); answered
-	// at once the code leaves it 1.29 s and is polled.
+	// subtest hands it (testLoginNow: Login asks at its first clock reading, t0, and reads the
+	// clock at t0 plus the round trip after the answer), not the time the runner took. A round trip
+	// of 0.5 s leaves the 1 s interval 0.79 s of the code: refused, reading "lives 1 s", and its
+	// cure is no lifetime the code already has; answered at once the code leaves it 1.29 s and is
+	// polled. The code's end is still x/oauth2's own reading, microseconds after t0, so the fast
+	// row is polled whatever that gap is, and the slow row is refused unless the gap passes 0.21 s.
 	wrapped := func(t *testing.T, roundTrip time.Duration) (string, error) {
 		t.Helper()
 		f := newFakeBroker(t)
@@ -496,10 +518,12 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 		f.mu.Unlock()
 		b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 		t.Cleanup(b.Close)
-		t0, reads := time.Now(), 0
+		var t0 time.Time
+		reads := 0
 		b.testLoginNow = func() time.Time {
 			reads++
 			if reads == 1 {
+				t0 = time.Now()
 				return t0
 			}
 			return t0.Add(roundTrip)
@@ -511,7 +535,7 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 		if err == nil {
 			t.Fatalf("Login answered the code %q, want a refusal", code)
 		}
-		want := regexp.MustCompile(`^the broker answered a device code that lives (1 s, with a poll interval of 1 s` + lapses + `its codes live longer than 1 s, the least poll interval this machine keeps` + outlive + `|2 s, with a poll interval of 1 s, but its answer took 0\.500 s to arrive, which left \d\.\d{3} s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than (1 s|\d\.\d{3} s), or once its codes outlive its poll interval by more than its answers take to arrive)$`)
+		want := regexp.MustCompile(`^the broker answered a device code that lives 1 s, with a poll interval of 1 s` + lapses + `its codes live longer than 1 s, the least poll interval this machine keeps` + outlive + `$`)
 		if !want.MatchString(err.Error()) {
 			t.Fatalf("Login refused with %q, want it to match %s", err, want)
 		}
@@ -529,7 +553,10 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 // between x/oauth2's two readings, as a preemption or a collection gives, leaves the time Login
 // measures short of the broker's whole seconds, and a pause before x/oauth2's start leaves it
 // over them. Neither, a few hundred milliseconds long, changes the lifetime the line names, nor
-// which cause it names: the round trip, where the broker's numbers alone leave a poll.
+// which cause it names: the round trip, where the broker's numbers alone leave a poll. The time
+// an answer must beat, where it is under the whole seconds, follows what the code's end leaves
+// (the pause between the readings is part of the shortfall), and a shortfall of a millisecond or
+// less keeps the whole seconds: the last two rows hold that edge.
 func TestTheRefusalReadsTheBrokersWholeSecondsThoughAClockReadingIsLate(t *testing.T) {
 	const s, pause = time.Second, 300 * time.Millisecond
 	for _, c := range []struct {
@@ -541,6 +568,15 @@ func TestTheRefusalReadsTheBrokersWholeSecondsThoughAClockReadingIsLate(t *testi
 		{"a pause between x/oauth2's readings", 900*s - pause, 900*s - pause - 5*time.Millisecond, 900, `a device code that lives 900 s, with a poll interval of 900 s: the code would lapse before its first poll; no machine login works at that broker until its poll interval is shorter than its codes' lifetime, and then only once its codes outlive its poll interval by more than its answers take to arrive`},
 		{"a pause before x/oauth2's start", 900*s + pause, 900*s - 5*time.Millisecond, 900, `a device code that lives 900 s, with a poll interval of 900 s: the code would lapse before its first poll; no machine login works at that broker until its poll interval is shorter than its codes' lifetime, and then only once its codes outlive its poll interval by more than its answers take to arrive`},
 		{"a pause between x/oauth2's readings, the round trip taking the margin", 2*s - pause, 200 * time.Millisecond, 1, `a device code that lives 2 s, with a poll interval of 1 s, but its answer took 1.500 s to arrive, which left 0.200 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 0.700 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
+		// A pause of 2 ms between x/oauth2's readings leaves a 6 s code 5.998 s, so the 1.5 s answer
+		// against a 5 s interval names what the code leaves, not the whole second: a row on the real
+		// clock would meet this on a loaded runner, so it is handed the readings here.
+		{"a pause between x/oauth2's readings, a 6 s code and a 1.5 s round trip", 6*s - 2*time.Millisecond, 6*s - 2*time.Millisecond - 1500*time.Millisecond, 5, `a device code that lives 6 s, with a poll interval of 5 s, but its answer took 1.500 s to arrive, which left 4.498 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 0.998 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
+		// A shortfall of half a millisecond keeps the whole second; one of a millisecond and a half
+		// names what the code leaves. The tolerance is one millisecond: these rows fail if it is 0,
+		// or 50 ms.
+		{"a pause of half a millisecond between x/oauth2's readings", 2*s - 500*time.Microsecond, 400 * time.Millisecond, 1, fmt.Sprintf(`a device code that lives 2 s, with a poll interval of 1 s, but its answer took %.3f s to arrive, which left 0.400 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 1 s, or once its codes outlive its poll interval by more than its answers take to arrive`, (2*s - 500*time.Microsecond - 400*time.Millisecond).Seconds())},
+		{"a pause of a millisecond and a half between x/oauth2's readings", 2*s - 1500*time.Microsecond, 400 * time.Millisecond, 1, fmt.Sprintf(`a device code that lives 2 s, with a poll interval of 1 s, but its answer took %.3f s to arrive, which left 0.400 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 0.998 s, or once its codes outlive its poll interval by more than its answers take to arrive`, (2*s - 1500*time.Microsecond - 400*time.Millisecond).Seconds())},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			err := unpollableCode(c.lived, c.left, c.interval, c.interval, false)
