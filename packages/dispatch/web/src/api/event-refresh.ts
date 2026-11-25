@@ -1201,12 +1201,14 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (
     event.type === "issue.claimed" ||
     event.type === "issue.released" ||
-    event.type === "issue.deployed"
+    event.type === "issue.deployed" ||
+    event.type === "issue.role_holders_changed"
   ) {
     // A claim changes who holds the issue, and its holder is a collaborator from then on: the
     // detail, the log, the project lists that render the claim, and the collaborators and the
     // steps the branches above named. No rollup, ask count or component attachment moves with it.
-    // A deploy is a line in the issue's log and nothing the lists or rollups read.
+    // A deploy, and a change of the sessions the Legion daemon gave the issue's roles, is a line in
+    // the issue's log and nothing the lists or rollups read.
     return targets;
   }
   if (event.type === "artifact.human_edited") {

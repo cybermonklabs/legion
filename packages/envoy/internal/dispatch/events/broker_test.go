@@ -68,6 +68,7 @@ func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
 		{name: "an anchor refresh", event: model.Event{Type: "comment.anchor_refreshed", Actor: person}, quiet: true},
 		{name: "per-viewer bookkeeping", event: model.Event{Type: "user_state.updated", Actor: person}, quiet: true},
 		{name: "a priority's write", event: model.Event{Type: "priority.updated", Actor: person, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}}, quiet: true},
+		{name: "the daemon's change of an issue's role holders", event: model.Event{Type: "issue.role_holders_changed", Actor: model.Actor{Kind: "session", ID: "legion-daemon:ACME"}}, quiet: true},
 		{
 			name: "a targeted message its session already had",
 			event: model.Event{Type: "message.created", Actor: person, Payload: model.MessageEventPayload{

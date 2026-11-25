@@ -112,6 +112,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     }
     case "issue.deployed":
       return `deployed ${event.payload.repo}#${event.payload.number} to production (run ${event.payload.run_id})`;
+    case "issue.role_holders_changed":
+      return event.payload.holders.length === 0
+        ? "cleared the role holders"
+        : `gave the roles to ${event.payload.holders.map((holder) => `${holder.role} ${holder.session}`).join(", ")}`;
     case "handoff.recorded":
       return `recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":

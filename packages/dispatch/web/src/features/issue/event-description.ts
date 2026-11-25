@@ -168,6 +168,10 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return event.payload.reason === "closed" ? "Claim released on close" : "Claim released";
     case "issue.deployed":
       return `Deployed by run ${event.payload.run_id}`;
+    case "issue.role_holders_changed":
+      return event.payload.holders.length === 0
+        ? "Role holders cleared"
+        : `Roles given: ${event.payload.holders.map((holder) => `${holder.role} ${holder.session}`).join(", ")}`;
     case "handoff.recorded":
       return `Recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":

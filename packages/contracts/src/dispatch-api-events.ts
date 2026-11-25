@@ -38,6 +38,7 @@ import type {
   IssueEventPayload,
   IssuePullRequestAttributionEventPayload,
   IssueReleasedEventPayload,
+  IssueRoleHoldersChangedEventPayload,
 } from "./dispatch-api-issues";
 import type {
   MessageAcceptedEventPayload,
@@ -166,6 +167,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "issue.released";
       readonly payload: IssueReleasedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "issue.role_holders_changed";
+      readonly payload: IssueRoleHoldersChangedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "issue.deployed";
@@ -407,6 +412,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "issue.deployed": true,
   "issue.pull_request_attribution_changed": true,
   "issue.released": true,
+  "issue.role_holders_changed": true,
   "issue.updated": true,
   "message.accepted": true,
   "message.answered": true,

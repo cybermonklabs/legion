@@ -758,6 +758,17 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail", "log"],
     spares: ["steps", "collaborators"],
   },
+  "a change of the role holders refreshes the issue's log and no step or collaborator": {
+    event: event("issue.role_holders_changed", {
+      holders: [{ recorded_at: "2026-11-25T18:06:17Z", role: "architect", session: "session-b" }],
+      key: "CORE-1",
+      previous_holders: [
+        { recorded_at: "2026-11-25T00:34:14Z", role: "architect", session: "session-a" },
+      ],
+    }),
+    refreshes: ["detail", "log", "projectList"],
+    spares: ["steps", "collaborators", "summary", "pinned", "inbox", "projects"],
+  },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":
     {
       event: event("artifact.human_edited", {
@@ -1942,6 +1953,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "issue.created": event("issue.created", issue()),
   "issue.deployed": event("issue.deployed", { number: 1, repo: "acme/widgets" }),
   "issue.released": event("issue.released", { key: "CORE-1" }),
+  "issue.role_holders_changed": event("issue.role_holders_changed", {
+    holders: [],
+    key: "CORE-1",
+    previous_holders: [],
+  }),
   "issue.updated": event("issue.updated", issue()),
   "message.accepted": event("message.accepted", { target: "session:planner" }),
   "message.answered": event("message.answered", { id: "message-2" }),

@@ -3,6 +3,7 @@ import type { IssueCollaboratorPerson } from "./dispatch-api.generated";
 import { ActorSchema, ExternalLinkSchema } from "./dispatch-api-core";
 import { referenceChangesFields } from "./dispatch-api-refs";
 import { ISSUE_COMPONENTS_MODES, type ISSUE_ROUTE_STATUSES } from "./dispatch-tools";
+import { LEGION_ROLES } from "./legion-roles";
 
 /**
  * The issue: the row, what resolves on each read of it, and the payloads of every `issue.*` and
@@ -288,6 +289,34 @@ export const IssueReleasedEventPayloadSchema = z
   .readonly();
 
 export type IssueReleasedEventPayload = z.output<typeof IssueReleasedEventPayloadSchema>;
+
+/** One pair of an issue's role holders as Dispatch stores it: a Legion role, the session that
+ *  holds it, and the RFC3339 time Dispatch first stored the pair. */
+const RoleHolderRecordSchema = z
+  .strictObject({ role: z.enum(LEGION_ROLES), session: z.string(), recorded_at: z.string() })
+  .readonly();
+
+/**
+ * `issue.role_holders_changed`: the Legion daemon's publication of an issue's role holders
+ * (`PUT /api/v1/issues/{key}/role-holders`) changed the set. `holders` is the set it stored and
+ * `previous_holders` the set it replaced, each in workflow order; the event's actor is the
+ * daemon's session and its `created_at` the time of the write, so the issue's log says which
+ * session held each role at a past time. A publication that stores the set already stored appends
+ * none, and the log holds no change made before the release that writes the event. Quiet: it
+ * wakes nobody. Strict: the Go writer (`issueRoleHoldersChange` in
+ * `packages/envoy/internal/dispatch/api/issue_role_holders.go`) emits exactly these three fields.
+ */
+export const IssueRoleHoldersChangedEventPayloadSchema = z
+  .strictObject({
+    key: z.string(),
+    holders: z.array(RoleHolderRecordSchema),
+    previous_holders: z.array(RoleHolderRecordSchema),
+  })
+  .readonly();
+
+export type IssueRoleHoldersChangedEventPayload = z.output<
+  typeof IssueRoleHoldersChangedEventPayloadSchema
+>;
 
 /**
  * `issue.deployed`: the delivery timeline's word that the issue's pull request reached production,

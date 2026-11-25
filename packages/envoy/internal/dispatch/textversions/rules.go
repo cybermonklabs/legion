@@ -97,6 +97,7 @@ var unchangingTypes = map[string]string{
 	"issue.released":                            "an issue's claim is its state, not its text",
 	"issue.deployed":                            "an issue's deploy is its state, not its text",
 	"issue.pull_request_attribution_changed":    "an issue's pull request is its state, not its text",
+	"issue.role_holders_changed":                "an issue's role holders are its state, not its text",
 	"child.added":                               "a child issue is its parent's state, not its text",
 	"child.removed":                             "a child issue is its parent's state, not its text",
 	"child.status":                              "a child's status is its parent's state, not its text",
