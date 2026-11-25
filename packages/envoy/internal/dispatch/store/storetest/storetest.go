@@ -21,9 +21,9 @@
 // outlives the run.
 //
 // A test's database is dropped in the background once the test ends, and Main waits for the
-// drops. Dropping a database forces a checkpoint and waits for it, and every package testing
-// against the same server queues on its one checkpointer: a test that waited for its own drop
-// spent that queue's time on its clock.
+// drops, up to a bound (Run). Dropping a database forces a checkpoint and waits for it, and every
+// package testing against the same server queues on its one checkpointer: a test that waited for
+// its own drop spent that queue's time on its clock.
 package storetest
 
 import (
@@ -32,8 +32,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -64,6 +66,9 @@ var shared struct {
 	drops     sync.WaitGroup
 	dropMu    sync.Mutex
 	dropFails []string
+	// dropping is each drop not yet ended, by its database, with the statement it runs or last
+	// ran (goDrop, teardownExec): what Run names at its bound.
+	dropping map[string]string
 }
 
 // openKey is the key of the template Open clones, which this tree's runner migrates
@@ -230,20 +235,24 @@ func cloneStatement(name, template string) string {
 }
 
 // adminExec runs statement, one a test makes (clone, Empty, OpenFrom), on the admin pool. Its wait
-// for one of the pool's connections, and that connection's connect where the pool has none idle,
-// ends by the connect end (testdb.ConnectEnd), or a second from now where less than one is left:
-// testdb.TimeoutUntil, the rule each new connection's connect bound follows (openAdmin). A drop
-// holds a connection for up to testdb.NoDeadlineConnectTimeout while the server holds its login,
-// and the pool has four (MaxConns), so a statement whose wait had no bound waited for four such
-// drops past the connect end, into go test's alarm
-// (TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool). The statement itself then
-// runs with no bound of this package's, so a test that makes one after its connect end, on a
-// server that answers, still gets its database (TestATestsAdminStatementPastTheConnectEndStillRuns):
-// a deadline on the statement failed docs' leak-check child, whose template, under load, was
-// still being made 5 s past its connect end. So a statement that hangs once it has its
-// connection, on a server that accepted it and never answers, is bounded only by go test's alarm,
-// as at main: the connect end is too short a bound for it, and this package names no other. Where
-// t names no deadline the wait has none.
+// for one of the pool's connections ends by the connect end (testdb.ConnectEnd), or a second from
+// now where less than one is left: testdb.TimeoutUntil, the rule each new connection's connect
+// bound follows (openAdmin). That one bound ends the wait whatever it waits for: the pool's
+// semaphore, while drops or other statements hold all four of its connections (MaxConns); a new
+// connection's connect, where the pool has none idle; and pgxpool's ping of a connection idle more
+// than a second. So past the connect end the wait for a busy pool and that ping get one second,
+// and a new connection's connect has a second of its own. A drop holds a connection for up to
+// testdb.NoDeadlineConnectTimeout while the server holds its login, so a statement whose wait had
+// no bound waited for four such drops past the connect end, into go test's alarm
+// (TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool, and in CI
+// TestATestsAdminStatementEndsByTheConnectEndWhileEveryAdminConnectionIsHeld). The statement
+// itself then runs with no bound of this package's, so a test that makes one after its connect
+// end, on a server that answers, still gets its database once its wait has a connection within
+// that second (TestATestsAdminStatementPastTheConnectEndStillRuns): a deadline on the statement
+// failed docs' leak-check child, whose template, under load, was still being made 5 s past its
+// connect end. So a statement that hangs once it has its connection, on a server that accepted it
+// and never answers, is bounded only by go test's alarm, as at main: the connect end is too short
+// a bound for it, and this package names no other. Where t names no deadline the wait has none.
 func adminExec(t testing.TB, statement string) error {
 	ctx, cancel := context.Background(), func() {}
 	if end, bounded := testdb.ConnectEnd(t); bounded {
@@ -268,19 +277,29 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // itself: run runs the package's tests through that Main, and Run then does what Main does after
 // them. internal/dispatch/delivery shares one NATS server across its tests (testnats.Main):
 // func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }.
+//
+// Its wait for the drops is bounded, as testdb.Run's is and for its reasons
+// (testdb.TeardownDeadline: testdb.TeardownGrace past the -timeout, counted from the start of the
+// tests, and five minutes from their end under -timeout 0). go test's alarm stops when the tests
+// return, so a wait with no bound for a drop the server never answers held the binary until
+// cmd/go's kill ("ran too long", which names no drop and no database), and for ever under
+// -timeout 0 (TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered). No drop has a deadline of its
+// own: a cancelled drop leaves its database on the server, as testdb.Run says. At the bound Run
+// names each drop still in flight with its database and the statement it ran, reads once what the
+// server's backends wait on (testdb.WaitingOn), and returns the tests' exit code with the failures
+// of the drops that ended, since every test has reported by then. It leaves the admin pool open,
+// because closing it waits for the connections those drops hold; the process's exit closes them,
+// and a database whose drop the server never read stays on the server under the name Run printed.
 func Run(run func() int) int {
 	shared.main = true
+	started := time.Now()
 	code := run()
 	if shared.admin == nil {
 		return code
 	}
-	defer shared.admin.Close()
-	shared.drops.Wait()
-	for _, failure := range shared.dropFails {
-		fmt.Fprintf(os.Stderr, "storetest: %s\n", failure)
-		if code == 0 {
-			code = 1
-		}
+	bound := testdb.TeardownDeadline(started)
+	if !awaitDrops(started, bound) {
+		return withDropFails(code)
 	}
 	templates.Lock()
 	names := make([]string, 0, len(templates.byKey))
@@ -291,14 +310,68 @@ func Run(run func() int) int {
 	}
 	templates.Unlock()
 	for _, name := range names {
-		if _, err := shared.admin.Exec(teardown, "drop database "+name); err != nil {
-			fmt.Fprintf(os.Stderr, "storetest: drop template database %s: %v\n", name, err)
-			if code == 0 {
-				code = 1
+		goDrop(name, func() string {
+			if err := teardownExec(name, "drop database "+name); err != nil {
+				return fmt.Sprintf("drop template database %s: %v", name, err)
 			}
+			return ""
+		})
+	}
+	if !awaitDrops(started, bound) {
+		return withDropFails(code)
+	}
+	shared.admin.Close()
+	return withDropFails(code)
+}
+
+// withDropFails prints each drop that failed and answers code, or 1 where code is 0 and one did.
+func withDropFails(code int) int {
+	shared.dropMu.Lock()
+	defer shared.dropMu.Unlock()
+	for _, failure := range shared.dropFails {
+		fmt.Fprintf(os.Stderr, "storetest: %s\n", failure)
+		if code == 0 {
+			code = 1
 		}
 	}
 	return code
+}
+
+// awaitDrops waits for every drop started so far until bound, and answers whether they ended. At
+// bound it names each drop still in flight and the statement it ran, and what the server's
+// backends wait on, read once (testdb.WaitingOn): those drops keep their connections.
+func awaitDrops(started, bound time.Time) bool {
+	ended := make(chan struct{})
+	go func() {
+		shared.drops.Wait()
+		close(ended)
+	}()
+	timer := time.NewTimer(time.Until(bound))
+	defer timer.Stop()
+	select {
+	case <-ended:
+		return true
+	case <-timer.C:
+	}
+	shared.dropMu.Lock()
+	databases := slices.Sorted(maps.Keys(shared.dropping))
+	statements := make([]string, 0, len(databases))
+	for _, database := range databases {
+		statements = append(statements, shared.dropping[database])
+	}
+	shared.dropMu.Unlock()
+	if len(databases) == 0 {
+		// Each drop ended as the bound came; Wait returns as their goroutines do, and Run's next
+		// drops are added only after it has.
+		<-ended
+		return true
+	}
+	after := time.Since(started).Round(time.Second)
+	for i, database := range databases {
+		fmt.Fprintf(os.Stderr, "storetest: drop database %s: still waiting at the teardown's bound, %s after the tests began, so the drop is left to the server (%q)\n", database, after, statements[i])
+	}
+	fmt.Fprintf(os.Stderr, "storetest: at the teardown's bound: %s\n", testdb.WaitingOn(databaseURL(shared.server, "postgres"), statements...))
+	return false
 }
 
 // dropWindow and dropPause bound the plain drop's retry: how long a drop is tried again while
@@ -317,8 +390,39 @@ type teardownKey struct{}
 
 var teardown = context.WithValue(context.Background(), teardownKey{}, true)
 
-// dropDatabase drops name without waiting for it; Main waits for every drop. Drops in flight
-// together share one checkpoint.
+// goDrop runs drop, the drop of database, in the background, as one of the drops Run waits for:
+// what it answers is a failure Run prints ("" for none), and until it returns Run names database
+// at its bound (shared.dropping).
+func goDrop(database string, drop func() (failure string)) {
+	shared.dropMu.Lock()
+	if shared.dropping == nil {
+		shared.dropping = map[string]string{}
+	}
+	shared.dropping[database] = "drop database " + database
+	shared.dropMu.Unlock()
+	shared.drops.Go(func() {
+		failure := drop()
+		shared.dropMu.Lock()
+		defer shared.dropMu.Unlock()
+		delete(shared.dropping, database)
+		if failure != "" {
+			shared.dropFails = append(shared.dropFails, failure)
+		}
+	})
+}
+
+// teardownExec runs statement, a drop of database, on the admin pool under teardown, and keeps it
+// as the statement database's drop runs (shared.dropping).
+func teardownExec(database, statement string) error {
+	shared.dropMu.Lock()
+	shared.dropping[database] = statement
+	shared.dropMu.Unlock()
+	_, err := shared.admin.Exec(teardown, statement)
+	return err
+}
+
+// dropDatabase drops name without waiting for it; Main waits for every drop, up to its bound.
+// Drops in flight together share one checkpoint.
 //
 // `with (force)` terminates whatever is still connected, which needs pg_signal_backend: a login
 // that is only the database's owner is refused `permission denied to terminate process`. The
@@ -329,12 +433,12 @@ var teardown = context.WithValue(context.Background(), teardownKey{}, true)
 // whatever words it puts on the message, up to dropWindow; `force` is the last attempt, for a
 // connection that really is somebody else's.
 func dropDatabase(name string) {
-	shared.drops.Go(func() {
+	goDrop(name, func() string {
 		deadline := time.Now().Add(dropWindow)
 		var err error
 		for {
-			if _, err = shared.admin.Exec(teardown, "drop database "+name); err == nil {
-				return
+			if err = teardownExec(name, "drop database "+name); err == nil {
+				return ""
 			}
 			var pgError *pgconn.PgError
 			if !errors.As(err, &pgError) || pgError.Code != "55006" || time.Now().After(deadline) {
@@ -342,16 +446,13 @@ func dropDatabase(name string) {
 			}
 			time.Sleep(dropPause)
 		}
-		_, forced := shared.admin.Exec(teardown, "drop database "+name+" with (force)")
+		forced := teardownExec(name, "drop database "+name+" with (force)")
 		if forced == nil {
-			return
+			return ""
 		}
 		// The forced drop is what ended the cleanup, so its error is the one reported; the
 		// plain drop's says what the force was for.
-		shared.dropMu.Lock()
-		shared.dropFails = append(shared.dropFails,
-			fmt.Sprintf("drop isolated database %s: %v, after the plain drop answered: %v", name, forced, err))
-		shared.dropMu.Unlock()
+		return fmt.Sprintf("drop isolated database %s: %v, after the plain drop answered: %v", name, forced, err)
 	})
 }
 
@@ -368,9 +469,11 @@ func dropDatabase(name string) {
 // follow. A drop holds a pool connection for up to two minutes while its login is held, so drops
 // a test's cleanups start can fill the pool's four; a test's own statement then fails by name at
 // end (adminExec), as it did when the drops had the tests' bound, and no drop leaks. And a drop
-// after the tests can take up to two minutes to connect, so a run whose tests end near end can
-// pass cmd/go's kill, one minute after -timeout ("ran too long"), as at main. Without bounded (no
-// deadline) raw's bound stands, pgxpool's two minutes where raw names none.
+// that starts late, where the tests end near -timeout, can take longer than Run waits: Run's wait
+// ends at its bound, testdb.TeardownGrace past -timeout from the tests' start, before cmd/go's
+// kill (testdb.TeardownGrace says when that comes), and names each drop still in flight, so a
+// database such a drop leaves on the server is named. Without bounded (no deadline) raw's bound
+// stands, pgxpool's two minutes where raw names none.
 func openAdmin(raw string, end time.Time, bounded bool) error {
 	server, err := url.Parse(raw)
 	if err != nil {
