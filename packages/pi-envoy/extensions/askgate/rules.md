@@ -43,8 +43,8 @@ it is access 7.) These shapes fail it:
    your approval and nothing more", or `Done`/`Can't` under "Merge the two
    open pull requests". Agents approve and merge pull requests.
    The person is not a step in a merge.
-   Fix: for a review with no CODEOWNERS read in the transcript, read the
-   base branch's CODEOWNERS file, and resend the ask unchanged when the
+   Fix: for a review with no read of the base branch's CODEOWNERS file in
+   the transcript, read that file, and resend the ask unchanged when the
    review meets the code-owner case below.
    `blocker` when `kind` is `action`. (Not this: a real risk question about
    *whether* to merge on the evidence in hand — "merge now on the test
@@ -338,10 +338,10 @@ We invented these examples. Each one shows a shape that passes.
 - "Will you approve the pull request that rewords the release checklist,
   at head 4f2a91c? It changes three steps of `docs/release.md`… If you do
   not approve, the old steps stay." with options `Approved on GitHub` /
-  `Not approved`, and the transcript shows the agent's read of CODEOWNERS,
-  which gives `docs/` to the person and to no agent identity. A review
-  CODEOWNERS requires of them: passes authority 1, and the ask need not say
-  that they own `docs/`.
+  `Not approved`, and the transcript shows the agent's read of the base
+  branch's CODEOWNERS, which gives `docs/` to the person and to no agent
+  identity. A review that file requires of them: passes authority 1, and
+  the ask need not say that they own `docs/`.
 
 ## Asks that fail — examples
 
@@ -349,9 +349,10 @@ We invented these examples. Each one shows a shape that fails, and the
 failure it shows.
 
 - "Approve the pull request that adds the retry button… The only step left
-  is your approval." `Done`/`Can't`, and the transcript's read of
-  CODEOWNERS gives the path to an agent identity → authority 1, `blocker`. Agents
-  approve and merge pull requests, and the person is not a step in that.
+  is your approval." `Done`/`Can't`, and the transcript's read of the base
+  branch's CODEOWNERS gives the path to an agent identity → authority 1,
+  `blocker`. Agents approve and merge pull requests, and the person is not
+  a step in that.
 - "Your approval is needed to turn on versioning for the test bucket…
   Command: `AWS_PROFILE=test aws s3api put-bucket-versioning …`" →
   authority 2, `blocker`. The command runs under a profile the ask names
@@ -387,7 +388,8 @@ failure it shows.
   and gives the ask without them.
 - "This needs you: CODEOWNERS gives `docs/` to you, your own login, and no
   agent identity owns it. Will you approve the pull request that rewords
-  the release checklist?…" → content 12. The reason names "CODEOWNERS
+  the release checklist?…", and the transcript shows the agent's read of
+  the base branch's CODEOWNERS → content 12. The reason names "CODEOWNERS
   gives `docs/` to you, your own login, and no agent identity owns it", a
   fact about the person's own role that they know, and gives the ask
   without it.
