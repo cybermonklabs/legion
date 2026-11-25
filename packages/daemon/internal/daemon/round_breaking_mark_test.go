@@ -6,10 +6,15 @@ package daemon
 // Sol's non-blocking point on #5285 at 0259f8af asks that the classification come from a trusted
 // mark rather than from a search of the displayed reasons: the runtime marks a reason as breaking
 // where it decides the drift (runtime.BreakingDrift at the reason's start, the Sandbox runtime's
-// PodDrift for the account), and the round's recorded reasons carry the mark at their start where
-// any reason does. A value that a reason displays can hold the mark's words without making the
-// round break its pod. And the Legion reviewer's point 8: an earlier round's keep of the pod holds
-// no round over a drift that breaks the pod, which no role can keep working under.
+// PodDrift for the account and for the exchange identity), and the round's recorded reasons carry
+// the mark at their start where any reason does. A value that a reason displays can hold the
+// mark's words without making the round break its pod. And the Legion reviewer's point 8: an
+// earlier round's keep of the pod holds no round over a drift that breaks the pod, which no role
+// can keep working under. Spec v25 adds a drift of the pod's exchange identity (the Sandbox
+// runtime's movedExchangeIdentity) to the drifts that break the pod, for the account's reason: a
+// launch into a pod built before the exchange identity is refused until the pod's round replaces
+// it, so a round that kept such a pod would leave an issue whose only claim waits on it unable to
+// run again. Its row scripts the reason as PodDrift gives it (podUpdateExchangeDrift).
 //
 // Each round here is over a working copy that holds a change. A round over a drift that breaks the
 // pod replaces the pod after the read and tells the issue's architect what it took; any other
@@ -63,6 +68,7 @@ func TestOnlyAReasonThatOpensOnTheMarkMakesARoundBreakItsPod(t *testing.T) {
 	}{
 		{name: "a_drift_of_the_account", reasons: []string{podUpdateAccountDrift}, breaks: true},
 		{name: "a_drift_of_the_account_after_a_drift_of_the_image", reasons: []string{imageDrift, podUpdateAccountDrift}, breaks: true},
+		{name: "a_drift_of_the_exchange_identity", reasons: []string{podUpdateExchangeDrift}, breaks: true},
 		{name: "control:_a_value_that_holds_the_mark's_words", reasons: []string{"image legion-worker:" + runtime.BreakingDrift + "v22.16.2, now legion-worker:v22.17.0"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

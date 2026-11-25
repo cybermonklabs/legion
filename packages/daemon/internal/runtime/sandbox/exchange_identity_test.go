@@ -154,7 +154,10 @@ func TestNoIdentityWithoutTheKey(t *testing.T) {
 // that pod was built: the pod mounts no exchange token, so its role is told neither variable, and
 // trades nothing until the update round replaces the pod — a broker client told a token file that
 // is not there would fail every trade it tries, where one told of no identity keeps the credential
-// it had. The enrollment it does carry it is still told of.
+// it had. The enrollment it does carry it is still told of. PodDrift names the missing token as a
+// drift that breaks the pod (runtime.BreakingDrift at the reason's start, R7 of #5285, spec v25):
+// a launch into such a pod is refused until its round replaces it, so a round that kept the pod
+// for work on its disk would leave an issue whose only claim waits on that pod unable to run again.
 func TestAKeptPodWithoutTheExchangeTokenIsToldNoIdentity(t *testing.T) {
 	g := newRig(t, nil, withOptions(enrolledWith(keptBrokerURL)))
 	spec := workerSpec(t)
@@ -187,8 +190,11 @@ func TestAKeptPodWithoutTheExchangeTokenIsToldNoIdentity(t *testing.T) {
 	if env["AGENT_SECRETS_URL"] != keptBrokerURL {
 		t.Errorf("the role's generation is told AGENT_SECRETS_URL=%q, want the enrollment its pod carries, %s", env["AGENT_SECRETS_URL"], keptBrokerURL)
 	}
-	if drifted := driftOf(t, g, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
-		t.Errorf("PodDrift = %q, want the missing exchange token among it, so the update round replaces the pod", drifted)
+	if drifted := driftOf(t, g, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool {
+		return strings.HasPrefix(d, runtime.BreakingDrift+agentSecretsExchangeVolume+" ")
+	}) {
+		t.Errorf("PodDrift = %q, want the missing exchange token among it, opening on %q, so the update round replaces the pod whatever the read of its workspace finds",
+			drifted, runtime.BreakingDrift)
 	}
 }
 
