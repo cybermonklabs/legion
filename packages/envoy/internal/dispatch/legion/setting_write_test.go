@@ -143,12 +143,12 @@ func TestAWriteBackToTheDaemonOfTheStoreASettingNamedBeforeAppliesItsMessages(t 
 // keeps the first daemon's store recorded with the URL it followed (previous_state_id,
 // previous_state_url). A minute on, the setting names the first daemon again, which does not
 // answer either, so the write's starting read is due at once and fails. The write back clears the
-// record, so the cursor holds no store, owes the read for retry and records no store. The first
-// daemon's own messages are then the setting's daemon's, as every message is: its next message
-// arrives left before the read is due, holds the owed read and goes back to the stream until the
-// read is due, and its redelivery makes the read. The read is good and gives the cursor the
-// daemon's store, and the daemon's later messages are applied, each in turn. None of its messages
-// is dropped as one of the daemon the setting named before.
+// record, and the failed read leaves the read owed for retry: the cursor holds no store, records no
+// store and owes the read for retry. The first daemon's own messages are then the setting's
+// daemon's, as every message is: its next message arrives left before the read is due, holds the
+// owed read and goes back to the stream until the read is due, and its redelivery makes the read.
+// The read is good and gives the cursor the daemon's store, and the daemon's next event, at 13, is
+// applied. No message of the daemon is dropped as one of the daemon the setting named before.
 func TestAWriteBackWhoseFirstReadFailsIsReadAgainAtItsDaemonsNextMessage(t *testing.T) {
 	const left = 3 * time.Second
 	rig := newIntakeRig(t)
@@ -533,11 +533,12 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForNoReadBeforeTheOwedReadIsD
 
 // TestAWriteOfTheSameURLDeletesTheHeldPartsOfASplitTransaction: R3 applies a transaction the daemon
 // split over several messages whole, once every part has arrived, and a write of the project's
-// setting leaves the project no starting point. INFRA's daemon is read at 10, and the first part of
-// a transaction of 11 and 12 is held (legion_event_parts). A write of the same URL, while no
-// message holds a read, resets the cursor and deletes the held part, and its wake reads the daemon
-// whole. A minute later on the intake's clock, so that a read the last part calls for is due at
-// once, the transaction's last part arrives and writes nothing of the transaction:
+// setting that no message's hold keeps leaves the project no starting point (resetCursor). INFRA's
+// daemon is read at 10, and the first part of a transaction of 11 and 12 is held
+// (legion_event_parts). A write of the same URL, while no message holds a read, resets the cursor
+// and deletes the held part, and its wake reads the daemon whole. A minute later on the intake's
+// clock, so that a read the last part calls for is due at once, the transaction's last part
+// arrives and writes nothing of the transaction:
 //   - where the write's read holds the transaction (it serves 12), the last part is at or below the
 //     read's snapshot, and no read follows;
 //   - where the write's read is older than the transaction (it serves 10), the last part is past
@@ -594,6 +595,85 @@ func TestAWriteOfTheSameURLDeletesTheHeldPartsOfASplitTransaction(t *testing.T) 
 				t.Errorf("%d parts held after the last part, want none", held)
 			}
 		})
+	}
+}
+
+// TestAWriteOfTheSameURLWhileAReadOfItIsInFlightTakesThatReadAsItsStartingPoint: read-rule-cases
+// row 6.2b, the architect's ruling of 2026-11-25T22:52Z. INFRA's starting read is good at 10, and a
+// minute later on the intake's clock its message at 12 shows a gap and makes the gap read, whose
+// answer the daemon holds. While that read is in flight on INFRA's runner, a write of INFRA's own
+// URL finds no message holding a read, so it resets the cursor (resetCursor, row 6.2). The read
+// then lands and is recorded as any good read of the URL the setting names (recordWhole): it gives
+// the cursor its store and its 12, owes nothing and names no holder (cursor.afterRead). The
+// write's wake, which waited on the runner behind the read, finds the cursor following the
+// setting's URL again, so it makes no starting read and defers no call (Intake.startingPoint): the
+// daemon serves no read after the write, a minute on included, and INFRA's next event, at 13, past
+// the read's snapshot, is applied. So the read that answers the write began before the write. An
+// operator who needs a read made after the write writes the setting once more (docs/kubernetes.md,
+// on an edit of the daemon's database by SQL).
+func TestAWriteOfTheSameURLWhileAReadOfItIsInFlightTakesThatReadAsItsStartingPoint(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	release := daemon.holds(t)
+	daemon.serves(daemonState("INFRA", 12, inPhase("testing")))
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "testing")))
+	rig.waitFor(10*time.Second, func() bool { return daemon.served() >= 2 }, func() string {
+		return "INFRA's gap read never began"
+	})
+	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", daemon.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+		t.Fatalf("write INFRA's setting again with its own URL: %v", err)
+	}
+	wrote := rig.clock.now()
+	if c := cursorOf(t, rig.database, "INFRA"); c.stateURL != "" || c.lastSeq != nil || c.stateID != nil || c.readOwed || c.readHolder != nil {
+		t.Fatalf("INFRA's cursor after the write of its own URL during the gap read is %s, want it reset: following no daemon, no sequence, no store, nothing owed and no holder", c)
+	}
+	rig.wake <- struct{}{}
+	// A second for the wake to queue INFRA's starting point on its runner, behind the read.
+	if testwait.Holds(time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 2 }) {
+		t.Fatalf("INFRA's daemon served %d reads while the gap read was in flight, want that read alone: the write's wake read beside it", daemon.served())
+	}
+	release()
+	rig.settled()
+
+	reads := wholeReadsOf(t, rig.database, "INFRA")
+	if len(reads) != 2 {
+		t.Fatalf("INFRA's whole reads are %v, want the starting read and the gap read", reads)
+	}
+	requireWholeRead(t, reads[1], ReadReasonGap, true)
+	if started := lastReadStartedAt(t, rig, "INFRA"); !started.Before(wrote) {
+		t.Errorf("INFRA's newest whole read began at %s on the intake's clock, want before the write at %s: the gap read answers the write", started, wrote)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); c.stateURL != daemon.URL || c.stateID == nil || *c.stateID != rigStateID || c.lastSeq == nil || *c.lastSeq != 12 ||
+		c.readOwed || c.readHolder != nil || c.readHolds != 0 {
+		t.Errorf("INFRA's cursor after the gap read is %s, want it following %s in the store %s at the read's 12, with nothing owed and no holder", c, daemon.URL, rigStateID)
+	}
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool {
+		deferred, _ := rig.clock.deferrals()
+		return daemon.served() > 2 || deferred > 0
+	}) {
+		deferred, _ := rig.clock.deferrals()
+		t.Errorf("after the gap read INFRA's daemon served %d reads and the intake deferred %d calls, want 2 and none: the write's wake read the daemon or deferred a call", daemon.served(), deferred)
+	}
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 2 }) {
+		t.Errorf("INFRA's daemon served %d reads a minute after the gap read, want 2: a call the write's wake deferred read it", daemon.served())
+	}
+	if deferred, made := rig.clock.deferrals(); deferred != 0 || made != 0 {
+		t.Errorf("the intake deferred %d calls and made %d of them, want none", deferred, made)
+	}
+
+	rig.publish("INFRA", change(13, "INFRA-1", moved("phase", "reviewing")))
+	rig.settled()
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"testing"`, `"reviewing"`}) {
+		t.Errorf("the phase's history is %v, want the starting read's planning, the gap read's testing and the event's reviewing", got)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 13)
+	if served := daemon.served(); served != 2 {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read and the gap read: the event past the read's snapshot made a read", served)
 	}
 }
 

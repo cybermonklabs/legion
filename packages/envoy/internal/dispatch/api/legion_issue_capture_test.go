@@ -182,14 +182,15 @@ func compareCapturedIssue(report *captureDisagreements, key string, issue captur
 
 // TestTheLegionReadMatchesACapturedDaemonState is a-c-real-state. It seeds the capture's project
 // and one Dispatch issue for every captured key, names a server of the file's bytes as the
-// project's daemon, and reads it whole through the Legion intake's own whole read
-// (legion.ReadWhole), which records the rows the route reads as production records them. The
-// capture must carry `daemon.stateSeq`, `daemon.stateId` and `settings.dispatch_url`: a whole read
-// of a state without one of them is a failed read (ErrNoStateSeq, ErrNoStateID, ErrNoDispatchURL),
-// and the test stops there. Then for every captured issue it compares the route's answer with the
-// capture (C-1 to C-6), and each card of one board answer with that issue's answer (C-7). It
-// prints how many issues it compared, which is how many the file holds, the file's size, how many
-// issues carry a waitingOn, and the median and largest time of one GET.
+// project's daemon through the settings API, and reads it whole, at the URL that API stored
+// (legion.GetSettings), through the Legion intake's own whole read (legion.ReadWhole), which
+// records the rows the route reads as production records them. The capture must carry
+// `daemon.stateSeq`, `daemon.stateId` and `settings.dispatch_url`: a whole read of a state without
+// one of them is a failed read (ErrNoStateSeq, ErrNoStateID, ErrNoDispatchURL), and the test stops
+// there. Then for every captured issue it compares the route's answer with the capture (C-1 to
+// C-6), and each card of one board answer with that issue's answer (C-7). It prints how many
+// issues it compared, which is how many the file holds, the file's size, how many issues carry a
+// waitingOn, and the median and largest time of one GET.
 func TestTheLegionReadMatchesACapturedDaemonState(t *testing.T) {
 	t.Parallel()
 	path := os.Getenv("LEGION_STATE_CAPTURE")
@@ -232,7 +233,10 @@ func TestTheLegionReadMatchesACapturedDaemonState(t *testing.T) {
 	}))
 	t.Cleanup(daemon.Close)
 	nameLegionDaemon(t, handler, project, daemon.URL)
-	setting := legion.Settings{Project: project, StateURL: daemon.URL}
+	setting, err := legion.GetSettings(t.Context(), database.Pool, project)
+	if err != nil {
+		t.Fatalf("read the Legion setting of %s: %v", project, err)
+	}
 	if err := legion.ReadWhole(t.Context(), database.Pool, setting, legion.ReadReasonStart); err != nil {
 		t.Fatalf("read the capture's daemon whole: %v", err)
 	}

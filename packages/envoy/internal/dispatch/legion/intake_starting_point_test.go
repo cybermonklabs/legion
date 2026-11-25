@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,9 +38,10 @@ func TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler(t *testing.T) 
 // project whole when its Legion setting names another daemon, so that the observations follow
 // the daemon the setting names from that read on. A message the daemon named before published
 // while the setting still named it reaches Dispatch after the move, as one does that was in
-// flight, held back by a take-over, or redelivered. That daemon's counter is its own, far above
-// the new daemon's, whose database is new. The message is no event of the daemon the setting names
-// and writes nothing that daemon did, and the events the named daemon publishes after it are
+// flight, held back by a take-over, or redelivered. Both URLs serve the rig's store and run, the
+// one named before at 2000000 and the named one at 5; the message, at 2000001, carries a run
+// neither serves, so it is of another store (publishOf). It is no event of the daemon the setting
+// names and writes nothing that daemon did, and the events the named daemon publishes after it are
 // applied, each one in turn, with no event skipped.
 func TestAMessageOfADaemonTheSettingNoLongerNamesLeavesTheNamedDaemonsEventsApplied(t *testing.T) {
 	rig := newIntakeRig(t)
@@ -49,7 +51,7 @@ func TestAMessageOfADaemonTheSettingNoLongerNamesLeavesTheNamedDaemonsEventsAppl
 	rig.awaitStartingRead("INFRA")
 	requireLastSeq(t, rig.database, "INFRA", 2000000)
 
-	// The setting moves to a daemon on a database of its own, five events in.
+	// The setting moves to a daemon that serves the rig's store and run at 5.
 	named := newFakeDaemon(t, daemonState("INFRA", 5, strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)))
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("point INFRA at the named daemon: %v", err)
@@ -57,10 +59,11 @@ func TestAMessageOfADaemonTheSettingNoLongerNamesLeavesTheNamedDaemonsEventsAppl
 	rig.wake <- struct{}{}
 	rig.awaitWholeReads(2)
 	requireLastSeq(t, rig.database, "INFRA", 5)
-	// The write's read starts a minute that the old daemon's message would otherwise wait out (read-rule-cases v11, rule 1).
+	// The write's read starts a minute that the old daemon's message would otherwise wait out
+	// (read-rule-cases v11, rule 1).
 	rig.clock.advance(ReadRetryAfter + time.Second)
 
-	// A message of the daemon the setting no longer names, under that daemon's run.
+	// A message of the daemon the setting no longer names, under a run neither URL serves.
 	rig.publishOf("INFRA", "0b6f2d1e-7c4a-4e93-a8d5-3f1b9e6c2a70", time.Now().UTC().Truncate(time.Microsecond),
 		change(2000001, "INFRA-1", moved("phase", "merging")))
 	rig.settled()
@@ -82,10 +85,10 @@ func TestAMessageOfADaemonTheSettingNoLongerNamesLeavesTheNamedDaemonsEventsAppl
 }
 
 // TestAWholeReadOfADaemonThatRunsNoWorkflowNamesThatReason: R2's last sentence. A daemon with no
-// dispatch_url runs no outbox, so it never commits a state row and serves daemon.stateSeq 0, as
-// the daemon's state route does for a project with no state row (records' StateSeq). Dispatch
-// records each whole read of such a daemon as a failed read that names that reason: its settings
-// carry no dispatch_url, so it runs no workflow.
+// dispatch_url runs no outbox, so it commits no state row, and serves the daemon.stateSeq of the
+// newest state row its store committed before: 0 for a store that never published, as here (the
+// daemon's DaemonInfo.StateSeq). Dispatch records each whole read of such a daemon as a failed read
+// that names that reason: its settings carry no dispatch_url, so it runs no workflow.
 func TestAWholeReadOfADaemonThatRunsNoWorkflowNamesThatReason(t *testing.T) {
 	rig := newIntakeRig(t)
 	noWorkflow := strings.Replace(daemonState("INFRA", 0, planning("INFRA")), `"dispatch_url":"http://dispatch.internal.example",`, ``, 1)
@@ -301,7 +304,9 @@ func lastReadStartedAt(t *testing.T, rig *intakeRig, project string) time.Time {
 // the starting point once more for the end of the minute (startLater). B is not read before the
 // intake's clock is a minute past the start of A's second read; it is read then, with no message,
 // and its read starts at least a minute after A's. At d69f92b6, a starting read was always due, so
-// B was read at its write's wake, ten seconds after A.
+// B was read at its write's wake, ten seconds after A. No timer recurs: the intake defers the one
+// call of the second write's wake (intakeClock.deferrals), and that call, which reads B, defers
+// none.
 func TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart(t *testing.T) {
 	rig := newIntakeRig(t)
 	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -326,6 +331,9 @@ func TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart(t *test
 	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
 		t.Fatalf("the write naming B read B about 10 s after the read of A began, on the intake's clock: want no read before a minute has passed")
 	}
+	if deferred, _ := rig.clock.deferrals(); deferred != 1 {
+		t.Fatalf("the intake deferred %d calls by the write naming B, want the one call of that write's wake: the take-over and the first write found the starting read due", deferred)
+	}
 	rig.clock.advance(45 * time.Second)
 	if testwait.Holds(time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
 		t.Fatalf("B was read before a minute had passed since the read of A began, on the intake's clock")
@@ -340,6 +348,9 @@ func TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart(t *test
 		t.Fatalf("INFRA's whole reads are %v, and A served %d and B %d, want the take-over's read and the first write's of A and the second write's of B", reads, a.served(), b.served())
 	}
 	requireWholeRead(t, reads[2], ReadReasonStart, true)
+	if deferred, made := rig.clock.deferrals(); deferred != 1 || made != 1 {
+		t.Errorf("the intake deferred %d calls and made %d of them, want the second write's one call, made: the call that read B deferred none", deferred, made)
+	}
 	if apart := lastReadStartedAt(t, rig, "INFRA").Sub(first); apart < ReadRetryAfter {
 		t.Errorf("the read of B started %s after the read of A on the intake's clock, want at least %s", apart, ReadRetryAfter)
 	}
@@ -358,7 +369,8 @@ func TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart(t *test
 // (startLater). B is read once, a starting read of B's URL, when the intake's clock is a minute
 // past the start of A's read, and its read starts at least a minute after A's. At cdc5fd84 the
 // delete deleted the cursor, and the start of A's read with it, so B was read at its write's
-// wake: the second read began 10 s after the first.
+// wake: the second read began 10 s after the first. No timer recurs: the intake defers the one
+// call of the write's wake (intakeClock.deferrals), and that call, which reads B, defers none.
 func TestADeleteAndAWriteOfTheSettingWithinAMinuteStartTheirReadsAMinuteApart(t *testing.T) {
 	rig := newIntakeRig(t)
 	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -380,6 +392,9 @@ func TestADeleteAndAWriteOfTheSettingWithinAMinuteStartTheirReadsAMinuteApart(t 
 	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
 		t.Fatalf("the write naming B after the delete read B about 10 s after the read of A began, on the intake's clock: want no read before a minute has passed")
 	}
+	if deferred, _ := rig.clock.deferrals(); deferred != 1 {
+		t.Fatalf("the intake deferred %d calls by the write naming B after the delete, want the one call of its wake: the take-over found the starting read due", deferred)
+	}
 	rig.clock.advance(50 * time.Second)
 	rig.waitFor(10*time.Second, func() bool { return b.served() >= 1 && len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, func() string {
 		return fmt.Sprintf("B was not read once a minute had passed since the read of A began: it served %d reads, and INFRA's whole reads are %v",
@@ -390,11 +405,158 @@ func TestADeleteAndAWriteOfTheSettingWithinAMinuteStartTheirReadsAMinuteApart(t 
 		t.Fatalf("INFRA's whole reads are %v, and A served %d and B %d, want the take-over's read of A and the write's read of B", reads, a.served(), b.served())
 	}
 	requireWholeRead(t, reads[1], ReadReasonStart, true)
+	if deferred, made := rig.clock.deferrals(); deferred != 1 || made != 1 {
+		t.Errorf("the intake deferred %d calls and made %d of them, want the write's one call, made: the call that read B deferred none", deferred, made)
+	}
 	if apart := lastReadStartedAt(t, rig, "INFRA").Sub(first); apart < ReadRetryAfter {
 		t.Errorf("the read of B started %s after the read of A on the intake's clock, want at least %s", apart, ReadRetryAfter)
 	}
 	if c := cursorOf(t, rig.database, "INFRA"); c.stateURL != b.URL || c.stateID == nil || *c.stateID != bStore || c.lastSeq == nil || *c.lastSeq != 20 {
 		t.Errorf("INFRA's cursor is %s, want it following B's URL %s in B's store %s at 20", c, b.URL, bStore)
+	}
+}
+
+// TestATakeOverThatFindsTheStartingReadNotDueDefersOneCallThatMakesIt: R3 starts the whole reads
+// of one project at least 60 seconds apart, and no timer recurs. INFRA's take-over read of its
+// daemon A is good. Ten seconds later on the intake's clock, the intake stops, and a write names a
+// daemon B while no intake holds the durable, so no wake reaches one. A second intake then takes
+// the durable over. Its starting point finds the starting read not due and held by no message: it
+// reads nothing and defers one call for the end of the minute (Intake.startLater,
+// intakeClock.deferrals). That call makes the starting read of B a minute after A's read began, and
+// defers none.
+func TestATakeOverThatFindsTheStartingReadNotDueDefersOneCallThatMakesIt(t *testing.T) {
+	rig := newIntakeRig(t)
+	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", a.URL)
+	rig.start()
+	rig.awaitWholeReads(1)
+	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[0], ReadReasonStart, true)
+	first := lastReadStartedAt(t, rig, "INFRA")
+	if deferred, _ := rig.clock.deferrals(); deferred != 0 {
+		t.Fatalf("the intake deferred %d calls by the first take-over, want none: it found the starting read due", deferred)
+	}
+
+	b := newFakeDaemon(t, daemonStateIn("INFRA", 20, inPhase("implementing"), bStore, bRun))
+	rig.clock.advance(10 * time.Second)
+	rig.stop()
+	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", b.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+		t.Fatalf("write INFRA's setting naming B: %v", err)
+	}
+	rig.start()
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
+		t.Fatalf("the second take-over read B about 10 s after the read of A began, on the intake's clock: want no read before a minute has passed")
+	}
+	if deferred, made := rig.clock.deferrals(); deferred != 1 || made != 0 {
+		t.Fatalf("the intake deferred %d calls and made %d of them by the second take-over, want the one call that take-over defers, not made yet", deferred, made)
+	}
+	rig.clock.advance(50 * time.Second)
+	rig.waitFor(10*time.Second, func() bool { return b.served() >= 1 && len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, func() string {
+		return fmt.Sprintf("B was not read once a minute had passed since the read of A began: it served %d reads, and INFRA's whole reads are %v",
+			b.served(), wholeReadsOf(t, rig.database, "INFRA"))
+	})
+	reads := wholeReadsOf(t, rig.database, "INFRA")
+	if len(reads) != 2 || a.served() != 1 || b.served() != 1 {
+		t.Fatalf("INFRA's whole reads are %v, and A served %d and B %d, want the first take-over's read of A and the deferred call's read of B", reads, a.served(), b.served())
+	}
+	requireWholeRead(t, reads[1], ReadReasonStart, true)
+	if apart := lastReadStartedAt(t, rig, "INFRA").Sub(first); apart < ReadRetryAfter {
+		t.Errorf("the read of B started %s after the read of A on the intake's clock, want at least %s", apart, ReadRetryAfter)
+	}
+	if deferred, made := rig.clock.deferrals(); deferred != 1 || made != 1 {
+		t.Errorf("the intake deferred %d calls and made %d of them, want the second take-over's one call, made: the call that read B deferred none", deferred, made)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); c.stateURL != b.URL || c.stateID == nil || *c.stateID != bStore || c.lastSeq == nil || *c.lastSeq != 20 {
+		t.Errorf("INFRA's cursor is %s, want it following B's URL %s in B's store %s at 20", c, b.URL, bStore)
+	}
+}
+
+// TestADeferredCallThatFindsTheStartingReadNotDueDefersNoOtherCall: no timer recurs (R3). The
+// call that a write's wake or a take-over defers to the end of the minute (Intake.startLater)
+// defers no call of its own, even where it finds the starting read not due and held by no message.
+// INFRA's take-over read of its daemon A is good. Ten seconds later on the intake's clock, a write
+// names a daemon B: its wake finds the starting read not due and defers one call. At the end of
+// the minute, a moment before that call runs, a second write of B's URL is read at its wake, and a
+// third write of B's URL resets the cursor (read-rule-cases row 6.2), whose wake comes only after
+// the deferred call has run. The deferred call finds the starting read not due, since the second
+// write's read began a moment before, and held by no message: it reads nothing and defers none, so
+// the intake has deferred one call. The third write's wake then finds the starting read so too,
+// and defers its own call.
+//
+// The intake's clock runs ahead of the rig's clock, which runs the deferred call
+// (intakeClock.after), while the second write's wake makes its read and the third write resets the
+// cursor, so both come before the deferred call runs. The test catches a deferred call that runs
+// the starting point as a wake does (startLater passing true to startingPoint): that call then
+// defers a second call. A whole read, good or failed, leaves the cursor following the read's URL
+// (cursor.afterRead), so without the third write the deferred call would find a read owed for
+// another reason than ReadReasonStart, or none, and defer nothing either way (readAnswer.later).
+func TestADeferredCallThatFindsTheStartingReadNotDueDefersNoOtherCall(t *testing.T) {
+	rig := newIntakeRig(t)
+	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", a.URL)
+	// ahead is how far the intake's clock runs ahead of the rig's clock.
+	var ahead atomic.Int64
+	rig.startOn(func() time.Time { return rig.clock.now().Add(time.Duration(ahead.Load())) })
+	rig.awaitWholeReads(1)
+	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[0], ReadReasonStart, true)
+	due := lastReadStartedAt(t, rig, "INFRA").Add(ReadRetryAfter)
+	b := newFakeDaemon(t, daemonStateIn("INFRA", 20, inPhase("implementing"), bStore, bRun))
+	write := func() {
+		t.Helper()
+		if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", b.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+			t.Fatalf("write INFRA's setting naming B: %v", err)
+		}
+	}
+	deferred := func() int {
+		n, _ := rig.clock.deferrals()
+		return n
+	}
+
+	rig.clock.advance(10 * time.Second)
+	write()
+	rig.wake <- struct{}{}
+	rig.waitFor(5*time.Second, func() bool { return deferred() >= 1 }, func() string {
+		return "the write naming B 10 s after the read of A began, on the intake's clock, deferred no call"
+	})
+	if served := b.served(); served != 0 {
+		t.Fatalf("B served %d reads at the first write's wake, want none: the starting read was not due", served)
+	}
+
+	// The end of the minute on the intake's clock, and not yet on the rig's clock.
+	ahead.Store(int64(due.Add(time.Second).Sub(rig.clock.peek())))
+	write()
+	rig.wake <- struct{}{}
+	rig.waitFor(10*time.Second, func() bool { return len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, func() string {
+		return fmt.Sprintf("the second write's wake did not read B once the minute had ended: B served %d reads, and INFRA's cursor is %s",
+			b.served(), cursorOf(t, rig.database, "INFRA"))
+	})
+	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[1], ReadReasonStart, true)
+	write()
+	if c := cursorOf(t, rig.database, "INFRA"); c.stateURL != "" || c.lastSeq != nil || c.readOwed || c.readHolder != nil {
+		t.Fatalf("INFRA's cursor after the third write is %s, want it reset: following no daemon, nothing owed and no holder", c)
+	}
+	if got, made := rig.clock.deferrals(); got != 1 || made != 0 {
+		t.Fatalf("the intake deferred %d calls and made %d of them by the third write, want the first write's one call, not made yet", got, made)
+	}
+
+	// The rig's clock catches up with the intake's, and the deferred call runs.
+	rig.clock.advance(time.Duration(ahead.Swap(0)))
+	rig.waitFor(5*time.Second, func() bool { _, made := rig.clock.deferrals(); return made >= 1 }, func() string {
+		return "the first write's deferred call was not made once the minute had ended on the rig's clock"
+	})
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return deferred() > 1 }) {
+		t.Errorf("the intake deferred %d calls, want the first write's 1: the deferred call found the starting read not due and deferred another", deferred())
+	}
+	if served := b.served(); served != 1 {
+		t.Errorf("B served %d reads, want the second write's alone: the deferred call read B", served)
+	}
+
+	// The third write's wake.
+	rig.wake <- struct{}{}
+	rig.waitFor(5*time.Second, func() bool { return deferred() >= 2 }, func() string {
+		return fmt.Sprintf("the intake deferred %d calls after the third write's wake, want 2: that wake found the starting read not due and deferred none", deferred())
+	})
+	if testwait.Holds(time.Second, 25*time.Millisecond, func() bool { return b.served() > 1 || deferred() > 2 }) {
+		t.Errorf("after the third write's wake B served %d reads and the intake deferred %d calls, want 1 and 2: that wake read B or deferred more than its one call", b.served(), deferred())
 	}
 }
 

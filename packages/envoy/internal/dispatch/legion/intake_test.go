@@ -64,6 +64,9 @@ type intakeClock struct {
 	mu     sync.Mutex
 	offset time.Duration
 	jump   time.Duration
+	// deferred counts the calls after has deferred, every intake of the test's included, and made
+	// those of them it has begun to make (deferrals).
+	deferred, made int
 	// done ends with the test (testing.T.Context), and with it every call after still waits to make.
 	done <-chan struct{}
 }
@@ -95,8 +98,12 @@ func (c *intakeClock) jumps(jump time.Duration) {
 // clock and the test's advances together have moved it that far. It is the rig's Intake.after, so
 // a starting point a wake deferred (Intake.startLater) runs when the test moves the clock past the
 // minute. It reads the clock without its jump, so it moves nothing. A call still waiting when the
-// test ends (done) is never made, so no deferred call reaches an intake its test stopped.
+// test ends (done) is never made, so no deferred call reaches an intake its test stopped. It counts
+// each call it defers, and each it makes as it begins to make it (deferrals).
 func (c *intakeClock) after(d time.Duration, f func()) {
+	c.mu.Lock()
+	c.deferred++
+	c.mu.Unlock()
 	at := c.peek().Add(d)
 	go func() {
 		for c.peek().Before(at) {
@@ -106,8 +113,21 @@ func (c *intakeClock) after(d time.Duration, f func()) {
 			case <-time.After(10 * time.Millisecond):
 			}
 		}
+		c.mu.Lock()
+		c.made++
+		c.mu.Unlock()
 		f()
 	}()
+}
+
+// deferrals is how many calls the clock has deferred (after), and how many of them it has begun to
+// make. A call made queues its starting point on the project's runner, where its intake still
+// delivers from the durable (Intake.startLater), so whatever that starting point does follows the
+// count of made calls.
+func (c *intakeClock) deferrals() (deferred, made int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.deferred, c.made
 }
 
 // peek is the clock's reading without the jump (jumps).
@@ -597,9 +617,9 @@ func (r *intakeRig) requireWholeReadLines(project string, reasons ...string) []m
 	return lines
 }
 
-// TestAnEventLeavesEveryFieldItDoesNotNameAsItWas: a whole read observes every field of the state
-// and writes `null` for a field it no longer carries; an event names only what moved, and every
-// field it does not name keeps the value Dispatch observed last, `null` row or not.
+// TestAnEventLeavesEveryFieldItDoesNotNameAsItWas: an event names only what moved and writes a row
+// for each field it names, `null` for a claim it takes away; every field it does not name keeps
+// the value Dispatch observed last, the starting read's or an earlier event's.
 func TestAnEventLeavesEveryFieldItDoesNotNameAsItWas(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -637,8 +657,8 @@ func TestAnEventLeavesEveryFieldItDoesNotNameAsItWas(t *testing.T) {
 
 // TestEachAppliedBatchRecordsAReadAtItsNewestEvent: each message the intake applies records one
 // legion_reads row of kind `events`, at the message's `at` (the time its events committed, which
-// they share), with the bytes it carried and no reason, and its observations are observed at that
-// moment.
+// they share), with the bytes it carried and no reason. Its observations are observed at that
+// `at` where it is past the field's newest row (recordEvents), as it is for the slot here.
 func TestEachAppliedBatchRecordsAReadAtItsNewestEvent(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -766,13 +786,14 @@ func TestAGapTheStreamNoLongerHoldsMakesOneWholeRead(t *testing.T) {
 }
 
 // TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState: an event's rows are observed at
-// the daemon's commit time, and the daemon's clock can run ahead of Dispatch's. A whole read made
-// after such events is the newer state all the same, so each row it writes, a `null` for a field
-// it no longer carries included, lands after the field's newest row, and legion_current (what
-// ReadCurrent answers) holds the read's values rather than the older events'. Every row the read
-// writes is at one moment, 1 µs after the project's newest row, though some of its fields have
-// older newest rows than others: that one moment is how the metrics tell an issue a read dropped
-// from a slot released (metrics' slotSpans). The read's own legion_reads row keeps the read's time.
+// the daemon's commit time where that is past the field's newest row (recordEvents), and the
+// daemon's clock can run ahead of Dispatch's. A whole read made after such events is the newer
+// state all the same, so each row it writes, a `null` for a field it no longer carries included,
+// lands after the field's newest row, and legion_current (what ReadCurrent answers) holds the
+// read's values rather than the older events'. Every row the read writes is at one moment, 1 µs
+// after the project's newest row, though some of its fields have older newest rows than others:
+// that one moment is how the metrics tell an issue a read dropped from a slot released (metrics'
+// slotSpans). The read's own legion_reads row keeps the read's time.
 func TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -2403,17 +2424,16 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 // ReadRetryAfter apart, whatever calls for them, and its messages are not held behind reads. 300
 // messages of INFRA that each start past the cursor's next sequence (gaps, in the daemon's own store
 // and run, as forged messages or a bug's would), and a boot among them that does not follow, make
-// one whole read in the first minute after the starting read's: the first message's, made at once
-// since the starting read's minute is over (awaitStartingRead). INFRA's daemon answers it late and
-// holds it, and LINUX's messages are delivered and applied while it is in flight. The first
-// message past stateMaxWaiting since that read began is the first that holds the next read
-// (read-rule-cases row 8.1): it goes back to the stream until
-// the read is due, the one message of the durable's window INFRA holds. Each later message of the
-// burst is finished as soon as the cursor records its reason, so none waits on more than that one
-// read and none is applied: 300 reads at the daemon's 200 ms would take a minute, past what
-// rig.settledHolding waits. LINUX's message behind the burst is applied too. A minute on, INFRA's
-// daemon's own next event makes the owed read, logged with both reasons and the first as its
-// reason, and is applied after it: one read more.
+// one whole read in a minute: the first message's, made at once since the test moves the intake's
+// clock past the minute of INFRA's starting read. INFRA's daemon answers it late and holds it, and
+// LINUX's messages are delivered and applied while it is in flight. The first message past
+// stateMaxWaiting since that read began is the first that holds the next read (read-rule-cases row
+// 8.1): it goes back to the stream until the read is due, the one message of the durable's window
+// INFRA holds. Each later message of the burst is finished as soon as the cursor records its
+// reason, so none waits on more than that one read and none is applied: 300 reads at the daemon's
+// 200 ms would take a minute, past what rig.settledHolding waits. LINUX's message behind the burst
+// is applied too. A minute on, INFRA's daemon's own next event makes the owed read, logged with
+// both reasons and the first as its reason, and is applied after it: one read more.
 func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 	const burst = 300
 	rig := newIntakeRig(t)
@@ -3081,11 +3101,11 @@ func TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes(t *testing.T) {
 	}
 }
 
-// TestAMessageThatGoesBackToTheStreamIsLoggedAsHeldAlone: a message that holds its project's owed
-// read is not applied, and the delivery that sends it back to the stream logs that hand-back alone
-// (heldLine, naming the read the message calls for as its reason): not the line of a message
-// acknowledged unapplied that it would log otherwise, a gap's, a message of another store's or
-// one of a cursor with no store, and not the refusal of a message the database refuses for good.
+// TestAMessageThatGoesBackToTheStreamIsLoggedAsHeldAlone: the delivery that sends a message
+// holding its project's owed read back to the stream logs that hand-back alone (heldLine, naming
+// the read the message calls for as its reason): not the line of a message acknowledged unapplied
+// that it would log otherwise, a gap's, a message of another store's or one of a cursor with no
+// store, and not the refusal of a message the database refuses for good.
 func TestAMessageThatGoesBackToTheStreamIsLoggedAsHeldAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -108,8 +108,8 @@ func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *
 //   - naming the same daemon, once or three times. R3 says a project has at most one whole read in
 //     flight and at most one owed, and a reason that arrives while one is in flight or owed joins
 //     it. So each write's read joins the held read, as a take-over's does, and the count goes on:
-//     the message is acknowledged after stateMaxHolds hand-backs in all, and on the intake's clock
-//     it held the floor for less than its 11 reads and a minute.
+//     the message is acknowledged after stateMaxHolds hand-backs at the most in all, and on the
+//     intake's clock it held the floor for less than 11 times RequestTimeout and a minute.
 //   - naming another daemon, which does not answer either. R3 applies no message of the daemon the
 //     setting named before once the setting names another, so the held message, the old daemon's,
 //     is finished at its next delivery after the write, unapplied, and goes back no more: its
@@ -215,13 +215,15 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 // rig, INFRA's daemon, the holder's stream sequence, the intake's clock as the holder was published,
 // and the moment the starting read is due on that clock. INFRA's take-over read is good at 10. A
 // write of INFRA's own URL a moment later finds no message holding a read, so it resets the cursor
-// (row 6.2), and its wake finds the starting read not due: the good read began less than a minute
-// before. From then on the daemon stalls every read, moving the intake's clock RequestTimeout on at
-// each, as in TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes. With left of that minute to
-// go, INFRA's message at 12 calls for the starting read, which is not due (row 3.2): it holds the
-// read and goes back to the stream for what is left of the minute. startingReadHeld fails unless
-// the message went back so, once, and the cursor then follows no daemon, owes the starting read
-// alone and names that message as the holder, gone back once.
+// (row 6.2), and its wake finds the starting read not due, since the good read began less than a
+// minute before, and held by no message: it defers one call for the end of that minute
+// (Intake.startLater). From then on the daemon stalls every read, moving the intake's clock
+// RequestTimeout on at each, as in TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes. With
+// left of that minute to go, INFRA's message at 12 calls for the starting read, which is not due
+// (row 3.2): it holds the read and goes back to the stream for what is left of the minute.
+// startingReadHeld fails unless the intake deferred that one call (intakeClock.deferrals), the
+// message went back so, once, and the cursor then follows no daemon, owes the starting read alone
+// and names that message as the holder, gone back once.
 func startingReadHeld(t *testing.T, left time.Duration) (rig *intakeRig, daemon *fakeDaemon, holder uint64, from, due time.Time) {
 	t.Helper()
 	windowed(t, 200*time.Millisecond)
@@ -239,6 +241,12 @@ func startingReadHeld(t *testing.T, left time.Duration) (rig *intakeRig, daemon 
 	rig.wake <- struct{}{}
 	if c := cursorOf(t, rig.database, "INFRA"); c.lastSeq != nil || c.stateID != nil || c.readOwed || c.readHolder != nil {
 		t.Fatalf("INFRA's cursor after a write of its own URL that found no holder is %s, want it reset: no sequence, no store, nothing owed and no holder", c)
+	}
+	rig.waitFor(5*time.Second, func() bool { deferred, _ := rig.clock.deferrals(); return deferred >= 1 }, func() string {
+		return "the wake of the write of INFRA's own URL deferred no call: it found the starting read due, or held"
+	})
+	if deferred, _ := rig.clock.deferrals(); deferred != 1 {
+		t.Fatalf("the intake deferred %d calls by the write of INFRA's own URL, want the one call of its wake: the take-over found the starting read due", deferred)
 	}
 
 	daemon.stalls(func() { rig.clock.advance(RequestTimeout) })
@@ -283,16 +291,17 @@ func requireStartingReadHeld(t *testing.T, rig *intakeRig, holder uint64, holds 
 // own URL again, each write with its wake:
 //   - once, a second after the starting read became due on the intake's clock, while the message
 //     waits out its hand-back and before its redelivery first makes the read;
-//   - in the second case also once before the starting read is due, and twice once the message's
-//     redeliveries have made reads that failed, as in
-//     TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes.
+//   - in the second case also once before the starting read is due, with a second for its wake to
+//     run before the clock moves on, and twice once the message's redeliveries have made reads that
+//     failed, as in TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes.
 //
 // Each write leaves the cursor as it was, so the holder and its count go on, and no wake makes a
-// read of its own: each joins the held read. The message's next delivery makes the starting read,
-// each delivery after it makes one more, and the message is acknowledged after stateMaxHolds
-// hand-backs, counted 1 to 10 with no restart. On the intake's clock it held the floor for less
-// than its stateMaxHolds+1 reads of RequestTimeout and a minute, and INFRA's daemon served the good
-// starting read and the message's stateMaxHolds reads, and no other.
+// read of its own or defers a call: each joins the held read. The message's next delivery makes
+// the starting read, each delivery after it makes one more, and the message is acknowledged after
+// stateMaxHolds hand-backs, counted 1 to 10 with no restart, within the time
+// requireHoldEndedWithinElevenMinutes bounds. INFRA's daemon served the good starting read and the
+// message's stateMaxHolds reads, and no other, and the intake deferred the one call of
+// startingReadHeld's write alone (intakeClock.deferrals).
 //
 // The test catches a revert of the rule that a write of the same URL keeps the hold
 // (settingWritten, resetCursor), which fails at the first write of the test, and a revert of the
@@ -301,8 +310,8 @@ func requireStartingReadHeld(t *testing.T, rig *intakeRig, holder uint64, holds 
 // rest of its hand-back, left in the rig, so that wake, or the call that the wake of
 // startingReadHeld's write deferred to the same moment (a call of the same kind), reads the daemon
 // first, and the daemon serves one read too many. A revert of the rule that such a call defers no
-// call (Intake.startingPoint) alone only adds a deferred call for the write made before the read is
-// due, which then joins the held read too: this test does not catch it.
+// call (Intake.startingPoint, readAnswer.later) alone adds a deferred call for the write made
+// before the read is due, which then joins the held read: the second case counts it.
 //
 // At 0a0ea48a a write of the same URL reset the cursor that followed no daemon yet, dropping the
 // holder and its count (resetCursor kept the cursor only where it followed the write's URL), so the
@@ -336,6 +345,12 @@ func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutEleve
 				write()
 				requireStartingReadHeld(t, rig, holder, 1, "a write of its own URL before the starting read was due")
 				rig.wake <- struct{}{}
+				// A second for the wake to run before the clock moves on, so it finds the starting
+				// read not due.
+				if testwait.Holds(time.Second, 25*time.Millisecond, func() bool { deferred, _ := rig.clock.deferrals(); return deferred > 1 }) {
+					deferred, _ := rig.clock.deferrals()
+					t.Errorf("the intake deferred %d calls by the write before the starting read was due, want the one of startingReadHeld's write: the write's wake deferred a call while the message held the starting read", deferred)
+				}
 			}
 			rig.clock.advance(due.Add(time.Second).Sub(rig.clock.now()))
 			write()
@@ -358,6 +373,9 @@ func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutEleve
 				t.Errorf("INFRA's daemon served %d reads, want the good starting read and the message's %d: a wake read while the message held the starting read",
 					served, stateMaxHolds)
 			}
+			if deferred, _ := rig.clock.deferrals(); deferred != 1 {
+				t.Errorf("the intake deferred %d calls, want the one of startingReadHeld's write: a write while the message held the starting read deferred a call", deferred)
+			}
 		})
 	}
 }
@@ -370,12 +388,13 @@ func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutEleve
 // yet (startingReadHeld), and the daemon stalls every read. The intake stops, the intake's clock
 // moves a second past the moment the starting read is due, and a second intake takes the durable
 // over. The take-over redelivers the message at once, and the message goes back once more (see
-// below). The take-over's starting point makes no read: it joins the held read. The message's next
-// delivery makes the starting read, each delivery after it makes one more, and the message is
-// acknowledged after stateMaxHolds hand-backs, counted 1 to 10 across the take-over. On the
-// intake's clock it held the floor for less than its stateMaxHolds+1 reads of RequestTimeout and a
-// minute, and INFRA's daemon served the good starting read and the message's stateMaxHolds-1 reads
-// (its first two deliveries found the starting read not due), and no other.
+// below). The take-over's starting point makes no read and defers no call: it joins the held read.
+// The message's next delivery makes the starting read, each delivery after it makes one more, and
+// the message is acknowledged after stateMaxHolds hand-backs, counted 1 to 10 across the
+// take-over, within the time requireHoldEndedWithinElevenMinutes bounds. INFRA's daemon served the
+// good starting read and the message's stateMaxHolds-1 reads (its first two deliveries found the
+// starting read not due), and no other, and the intake deferred the one call of startingReadHeld's
+// write alone (intakeClock.deferrals).
 //
 // The order on the project's runner is forced, not left to the race the fix would win by chance.
 // The take-over's starting point (takenOver, SettingsChanged) and the message's redelivery reach the
@@ -393,9 +412,10 @@ func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutEleve
 // The test catches a revert of the rule that a call no message makes joins a held starting read
 // (cursor.readFor): the take-over's starting point then reads the daemon, at once, and the daemon
 // serves one read too many. A revert of the rule that such a call defers no call
-// (Intake.startingPoint) alone changes nothing here: the take-over's call finds the starting read
-// due, and that rule only keeps a call that finds it held and not due from deferring one more call,
-// which would join the held read too.
+// (Intake.startingPoint, readAnswer.later) alone changes nothing here: the take-over's call finds
+// the starting read due, and that rule only keeps a call that finds it held and not due from
+// deferring one more call, which would join the held read too.
+// TestATakeOverWhileAMessageHoldsTheStartingReadBeforeItIsDueDefersNoCall catches that revert.
 //
 // At 0a0ea48a the take-over's starting point read the daemon while the message held the starting
 // read, since readFor made a due starting read for any call no message makes: the hold took one
@@ -461,12 +481,46 @@ func TestATakeOverWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinut
 		t.Errorf("INFRA's daemon served %d reads, want the good starting read and the message's %d: the take-over's starting point read while the message held the starting read",
 			served, stateMaxHolds-1)
 	}
+	if deferred, _ := rig.clock.deferrals(); deferred != 1 {
+		t.Errorf("the intake deferred %d calls, want the one of startingReadHeld's write: the take-over's starting point deferred a call while the message held the starting read", deferred)
+	}
+}
+
+// TestATakeOverWhileAMessageHoldsTheStartingReadBeforeItIsDueDefersNoCall: no timer recurs (R3),
+// and the redelivery of the message that holds an owed read makes it, a starting read included
+// (read-rule-cases row 7.5, state S0h). INFRA's message holds its starting read while the cursor
+// follows no daemon yet (startingReadHeld, whose write deferred one call). With about 20 s of the
+// starting read's minute left on the intake's clock, a second intake takes the durable over. The
+// take-over redelivers the message, which holds the read again for its second hand-back, and the
+// take-over's starting point finds the starting read not due and held: it joins the held read and
+// defers no call (Intake.startingPoint, readAnswer.later). So the intake has deferred the one call
+// of startingReadHeld's write alone (intakeClock.deferrals).
+//
+// The test catches a revert of the rule that a call no message makes answers the time left until
+// the starting read is due only where no message holds that read (cursor.readFor): the take-over's
+// starting point then defers a second call.
+func TestATakeOverWhileAMessageHoldsTheStartingReadBeforeItIsDueDefersNoCall(t *testing.T) {
+	const left = 20 * time.Second
+	rig, _, holder, _, _ := startingReadHeld(t, left)
+
+	rig.stop()
+	away := len(rig.logRecords(heldLine))
+	rig.start()
+	held := rig.awaitLogRecords(heldLine, away+1)[away]
+	if held["streamSeq"] != float64(holder) || held["reason"] != ReadReasonStart || held["handBack"] != float64(2) {
+		t.Fatalf("the take-over's redelivery went back as %v, want the message at stream sequence %d holding the starting read for its second hand-back", held, holder)
+	}
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { deferred, _ := rig.clock.deferrals(); return deferred > 1 }) {
+		deferred, _ := rig.clock.deferrals()
+		t.Errorf("the intake deferred %d calls, want the one of startingReadHeld's write: the take-over's starting point deferred a call while the message held the starting read", deferred)
+	}
+	requireStartingReadHeld(t, rig, holder, 2, "the take-over")
 }
 
 // requireHoldEndedWithinElevenMinutes waits up to two minutes for the intake to acknowledge the
 // message at stream sequence holder and to hold no message, then fails the test unless the cursor
 // counted the message's hand-backs 1 to stateMaxHolds with no restart and, on the intake's clock
-// from from, the message held the durable's ack floor for less than its stateMaxHolds+1 reads of
+// from from, the message held the durable's ack floor for less than stateMaxHolds+1 times
 // RequestTimeout and a minute. why names what may not start the count again.
 func requireHoldEndedWithinElevenMinutes(t *testing.T, rig *intakeRig, holder uint64, from time.Time, why string) {
 	t.Helper()
@@ -885,10 +939,11 @@ func TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNo
 // read is in flight. Where its store is one the read is about to verify, it is no message of a
 // store that is no daemon of the project, and its events, past the read's snapshot, are applied.
 //
-// Each case holds the read that will verify the store, publishes stateMaxWaiting messages of that
-// store, which wait on the runner, and then three more past the cap, the last moving INFRA-1 to
-// reviewing. The read is let go and verifies the store at its snapshot. INFRA then goes quiet; a
-// minute on, on the intake's clock, INFRA-1's phase reaches reviewing within 75 s.
+// Each case holds the read that will verify the store, fills the runner with stateMaxWaiting
+// messages of that store, the boot that makes the read among them where a boot makes it, and then
+// publishes three more past the cap, the last moving INFRA-1 to reviewing. The read is let go and
+// verifies the store at its snapshot. INFRA then goes quiet; a minute on, on the intake's clock,
+// INFRA-1's phase reaches reviewing within 75 s.
 //   - the same store behind a new URL: a write names a URL that serves INFRA's own store (the
 //     daemon moved), and the write's starting read of it is the read held.
 //   - a marked store whose boot finds it: A, then B, whose reads all fail and whose store is
@@ -903,8 +958,9 @@ func TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNo
 func TestEventsPastTheCapDuringTheReadThatFindsAForgottenStoreAreApplied(t *testing.T) {
 	const bootRun = "7e1c4a92-3b5d-4f68-9c0a-5d2e8b1f6a47"
 	// heldRead is where a case leaves INFRA: the daemon whose answer to the verifying read is held,
-	// the release of that answer, the store and run of the daemon's messages, the first sequence
-	// past the read's snapshot, and how many of INFRA's messages already wait on its runner.
+	// the release of that answer, the store and run of the daemon's messages, the sequence the
+	// test's messages start at, above the read's snapshot and above the boot's where a boot makes
+	// the read, and how many of INFRA's messages already wait on its runner.
 	type heldRead struct {
 		daemon     *fakeDaemon
 		release    func()
@@ -1018,8 +1074,8 @@ func TestABootOfTheOldStoreWhileTheNewURLIsUnverifiedHoldsNoRead(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		due  bool
-		// served is how many reads the URL the write named serves: the write's failed starting
-		// read, and the owed read where it is due.
+		// served is how many reads the URL the write named serves at the most: the write's failed
+		// starting read, and the owed read where it is due.
 		served int
 	}{
 		{"before the owed read is due", false, 1},
@@ -1143,10 +1199,8 @@ func TestEventsPastTheCapBehindAHeldMessageOfADroppedStoreAreAppliedWhenTheReadF
 // the cap owe the read its position calls for, "which the read in flight does not clear, since its
 // events may be past that read's snapshot". The read in flight here is a gap read the cursor owed
 // before it began: its holder's redelivery makes it, so the cursor still owes gap while it is in
-// flight. A message past the cap that calls for gap then adds no reason (cursor.readFor adds a
-// reason only where the cursor does not owe it), and the read's record clears the reasons owed
-// when it was decided (recordWhole, owedSince), gap among them, and with them the holder. So
-// nothing owes the read that would take the events past its snapshot.
+// flight. What the messages past the cap leave owed once the read lands is judgeCrowded's and
+// cursor.afterRead's rule.
 //
 // INFRA's daemon serves 15 and INFRA's message at 12 makes a gap read of it. Near the end of that
 // read's minute, the message at 17 calls for a gap read that is not due: the cursor owes it and the
@@ -1154,8 +1208,13 @@ func TestEventsPastTheCapBehindAHeldMessageOfADroppedStoreAreAppliedWhenTheReadF
 // holds; the read serves 40. Meanwhile INFRA publishes messages at or below 40, which wait on the
 // runner behind the read, and 41 to 43, past the read's snapshot and past the cap, the last moving
 // INFRA-1 to reviewing. The read is let go, INFRA goes quiet, and a minute on, on the intake's
-// clock, INFRA-1 reaches reviewing within 75 s. At b4600876, and at d1e22ece, INFRA stays at 40's
-// testing with nothing owed.
+// clock, INFRA-1 reaches reviewing within 75 s.
+//
+// At b4600876, and at d1e22ece, INFRA stayed at 40's testing with nothing owed: a message past the
+// cap that called for gap added no reason (cursor.readFor added a reason only where the cursor did
+// not owe it), and the read's record cleared the reasons owed when it was decided (recordWhole,
+// owedSince), gap among them, and with them the holder, so nothing owed the read that would take
+// the events past its snapshot.
 func TestEventsPastTheCapDuringAnOwedGapReadAreAppliedOnceTheProjectGoesQuiet(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
