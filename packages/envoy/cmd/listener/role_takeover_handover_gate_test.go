@@ -487,20 +487,21 @@ func TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal(t *testi
 }
 
 // A pass holds each copy to the rule as well, not only its start: a registration as another
-// principal that lands while the pass runs ends it before its next copy (handoverStillStands). The
-// replaced session has two unread messages and stops; the sweep's pass copies the first, and just
-// before that copy the claimant registers again, as another person in the case row and as the
-// same person in the control. In the case the second message is copied nowhere and stays unread on
-// the replaced session; in the control both reach the claimant. The case fails where the rule is
-// read only at the pass's start.
+// principal that lands while the pass runs ends it before the next copy (handoverStillStands, read
+// from the bucket's leader as the last step before each copy). The replaced session has two unread
+// messages and stops; the sweep's pass begins, and just before its first copy the claimant
+// registers again, as another person in the case row and as the same person in the control. In
+// the case no message is copied after that registration, and both stay unread on the replaced
+// session; in the control both reach the claimant. The case fails where the rule is read only at
+// the pass's start, or before a step that can still let a registration land ahead of the copy.
 func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *testing.T) {
 	for _, row := range []struct {
 		name       string
 		registered string
 		both       bool
 	}{
-		{name: "case: the claimant registers again as another person between two copies", registered: gateOther},
-		{name: "control: the claimant registers again as the same person between two copies", registered: gatePerson, both: true},
+		{name: "case: the claimant registers again as another person just before the pass's first copy", registered: gateOther},
+		{name: "control: the claimant registers again as the same person just before the pass's first copy", registered: gatePerson, both: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newGateRig(t)
@@ -538,20 +539,22 @@ func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *
 			rig.sessionClock.advance(session.LiveWindow + 30*time.Second)
 			rig.sweepPass()
 			if !registered {
-				t.Fatalf("the sweep's pass made no copy of %s's messages", gateReplaced)
+				t.Fatalf("the sweep's pass reached no copy of %s's messages", gateReplaced)
 			}
-			received := rig.watch(t, taker, gateClaimant, gateRole, append([]string{first}, wantIf(row.both, second)...)...)
+			want := wantIf(row.both, first, second)
+			received := rig.watch(t, taker, gateClaimant, gateRole, want...)
 
-			copiesRequireEach(t, received, gateClaimant, first)
 			if row.both {
-				copiesRequireEach(t, received, gateClaimant, second)
+				copiesRequireEach(t, received, gateClaimant, first, second)
 				return
 			}
-			copiesRequireNone(t, received, gateClaimant, second)
-			if n := rig.handedOverCopies(t, gateClaimant, second); n != 0 {
-				t.Errorf("%s's own subject holds %d copies of %s; want none", gateClaimant, n, second)
+			copiesRequireNone(t, received, gateClaimant, first, second)
+			for _, eventID := range []string{first, second} {
+				if n := rig.handedOverCopies(t, gateClaimant, eventID); n != 0 {
+					t.Errorf("%s's own subject holds %d copies of %s after it registered as another person; want none", gateClaimant, n, eventID)
+				}
 			}
-			rig.requireUnacknowledged(t, gateReplaced, seqs, second)
+			rig.requireUnacknowledged(t, gateReplaced, seqs, first, second)
 		})
 	}
 }

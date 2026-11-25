@@ -3678,9 +3678,10 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// refused a broker token naming any other session, so a principal is recorded only from
 		// this session's own credential or from one that acts for every session. A failed write is
 		// a WARN and nothing else, and the registration is answered whatever it did
-		// (session.KnownSessions), with one exception: a failed write that leaves the record naming
-		// another principal than this registration's (session.ErrPrincipalUnrecorded), which the
-		// handover gate would read as the principal this session last registered as. That one is
+		// (session.KnownSessions), with one exception: a failed write after which the bucket's
+		// leader does not confirm the record names this registration's principal, none recorded, or
+		// nothing (session.ErrPrincipalUnrecorded), since the handover gate would read another
+		// principal as the one this session last registered as. That one is
 		// answered 503 with Retry-After: 1, so the client registers again until the record names
 		// the principal it registers as; everything this registration wrote before it stands, and
 		// its next attempt writes the same again.

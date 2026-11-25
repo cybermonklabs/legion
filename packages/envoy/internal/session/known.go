@@ -827,13 +827,13 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // registration of the session as another principal through another listener, and a skip on that
 // copy alone would leave the other principal standing as the one the session last registered as.
 //
-// A write that failed is ErrPrincipalUnrecorded where the record the bucket holds names another
-// principal, recorded, than this registration's - read from the bucket's leader, or, where the
-// leader does not answer, from this listener's copy (principalMayDiffer) - since the handover gate
-// would read that other principal as the one the session last registered as. Any other failed
-// write is the plain error: the record the bucket holds names this registration's principal, which
-// the gate reads rightly, or it names none recorded, or there is none, which the gate refuses or
-// cannot judge, so the failure costs only the record's topics and last_seen.
+// A write that failed is ErrPrincipalUnrecorded unless the bucket's leader confirms the record it
+// holds is one the handover gate reads rightly (principalMayDiffer): one naming this
+// registration's principal, recorded, one naming none recorded, or none at all, which the gate
+// refuses or cannot judge, so that failure costs only the record's topics and last_seen and is
+// the plain error. A record naming another principal, and a leader that did not answer, leave the
+// gate reading a principal this session did not last register as, or one nobody confirmed it
+// did, so the registration route answers 503 and the client registers again.
 func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, record KnownSession) error {
 	record.PrincipalRecorded = true
 	err := s.writeWithin(ctx, record, true, false)
@@ -844,20 +844,20 @@ func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, record Kno
 }
 
 // ErrPrincipalUnrecorded wraps a registration's write that failed (RecordRegistrationWithin) while
-// the record the bucket holds names another principal, recorded, than the one the session just
-// registered as. The registration route answers it 503 with Retry-After: 1 rather than 200, so the
-// client registers again until the record names its principal.
-var ErrPrincipalUnrecorded = errors.New("session: the registration's principal is not recorded, and the known-session record names another")
+// the bucket's leader names another principal, recorded, than the one the session just registered
+// as, or did not answer. The registration route answers it 503 with Retry-After: 1 rather than
+// 200, so the client registers again until the record names its principal.
+var ErrPrincipalUnrecorded = errors.New("session: the registration's principal is not recorded, and the known-session record may name another")
 
 // principalMayDiffer reports whether sessionID's record, as the bucket's leader holds it, names a
-// recorded principal other than principal; where the leader does not answer within ctx, whether
-// this listener's copy does. A record past the retention, a key that holds none, and a record
-// whose principal no registration of this build recorded name none.
+// recorded principal other than principal, and whether the leader did not answer within ctx,
+// which confirms nothing: this listener's copy can be behind the leader, so it is not asked. A
+// record past the retention, a key that holds none, and a record whose principal no registration
+// of this build recorded name none.
 func (s *KnownSessions) principalMayDiffer(ctx context.Context, sessionID, principal string) bool {
 	stored, found, err := s.Read(ctx, sessionID)
 	if err != nil {
-		held, ok := s.cached(sessionID)
-		stored, found = held.KnownSession, ok
+		return true
 	}
 	return found && stored.PrincipalRecorded && stored.Principal != principal
 }
@@ -873,9 +873,9 @@ func (s *KnownSessions) principalMayDiffer(ctx context.Context, sessionID, princ
 // can be behind a registration of the session as another principal through another listener a
 // moment ago, and skipping on it would leave that principal recorded as the one the session last
 // registered as. That costs each heartbeat the copy throttles one leader read. A leader read that
-// did not answer keeps the skip: the handover gate reads the leader too and judges nothing while
-// it does not answer, and the session's next heartbeat confirms the skip again. A write that keeps
-// the stored principal skips on the copy alone, since it changes no principal.
+// did not answer confirms nothing, so the record is written, and a write that fails then is
+// RecordRegistrationWithin's to judge. A write that keeps the stored principal skips on the copy
+// alone, since it changes no principal.
 //
 // No caller but the registration route fails its request over what this answers: a subscription
 // change (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the
@@ -974,12 +974,12 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 
 // leaderRecords reports whether the bucket's leader holds record's principal, recorded, for its
 // session, the confirmation a skip of a registration's unchanged record needs (writeWithin). A
-// leader read that did not answer within ctx reports true, which keeps the skip.
+// leader read that did not answer within ctx confirms nothing, and reports false.
 func (s *KnownSessions) leaderRecords(ctx context.Context, watcher *kvwatch.Watcher, record KnownSession) bool {
 	kv, _ := watcher.Handle()
 	stored, err := kv.ReadFromLeader(ctx, record.SessionID)
 	if err != nil {
-		return true
+		return false
 	}
 	principal, recorded := leaderPrincipal(stored)
 	return recorded && principal == record.Principal

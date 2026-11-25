@@ -261,14 +261,16 @@ func behindCopy(t *testing.T, known *KnownSessions, sessionID string, topics []s
 	return revision
 }
 
-// No write puts a principal back that the bucket's leader did not confirm. A registration whose
-// record this listener's copy holds unchanged is still written where the leader holds another
-// principal, since the copy can be behind a registration through another listener; a write that
-// keeps the stored principal writes nothing where the leader does not answer, rather than the
-// principal the copy names; and a registration whose write failed while the bucket names another
-// principal says so (ErrPrincipalUnrecorded), for the registration route's 503. Each case fails
-// where the store decides on its copy alone; each control is the same write where the copy is
-// not behind, or the leader answers, or the bucket names the registration's own principal.
+// No write puts a principal back that the bucket's leader did not confirm, and nothing the leader
+// did not answer counts as its confirmation. A registration whose record this listener's copy
+// holds unchanged is still written where the leader holds another principal, or does not answer,
+// since the copy can be behind a registration through another listener; a write that keeps the
+// stored principal writes nothing where the leader does not answer, rather than the principal the
+// copy names; and a registration whose write failed says so (ErrPrincipalUnrecorded), for the
+// registration route's 503, unless the leader confirms it names the registration's own
+// principal. Each case fails where the store decides on its copy alone; each control is the same
+// write where the copy is not behind, or the leader answers, or confirms the registration's own
+// principal.
 func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 	const (
 		person  = "ada@example.com"
@@ -309,6 +311,19 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 			t.Errorf("the record is at revision %d after a registration of unchanged content; want it left at %d", got, revision)
 		}
 	})
+	t.Run("case: a registration the copy holds unchanged is written where the leader does not answer", func(t *testing.T) {
+		known := openKnown(t, now)
+		useKnownKV(t, known, leaderSilent{known.watch().KV().Legacy()})
+		const sessionID = "ses_confirm_registration_silent"
+		topics := []string{"notifications.team.confirm"}
+		behindCopy(t, known, sessionID, topics, clock.UnixMilli(), service, person)
+		if err := known.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: topics, Principal: person}); err != nil {
+			t.Fatalf("record the registration: %v", err)
+		}
+		if stored := storedPrincipal(t, known, sessionID); stored != person {
+			t.Errorf("the bucket's record names %q after the session registered as %q while the leader was silent; want the registration's", stored, person)
+		}
+	})
 
 	t.Run("case: a keep whose leader read does not answer writes nothing", func(t *testing.T) {
 		known := openKnown(t, now)
@@ -344,6 +359,8 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 			func(kv nats.KeyValue) nats.KeyValue { return writesRefused{kv} }, person, true},
 		{"case: a registration's write fails while the leader is silent and the copy names another principal", "ses_confirm_unrecorded_copy",
 			func(kv nats.KeyValue) nats.KeyValue { return leaderSilent{writesRefused{kv}} }, person, true},
+		{"case: a registration's write fails while the leader is silent and the copy names the registration's own principal", "ses_confirm_unrecorded_copy_same",
+			func(kv nats.KeyValue) nats.KeyValue { return leaderSilent{writesRefused{kv}} }, service, true},
 		{"control: a registration's write fails while the leader names the registration's own principal", "ses_confirm_unrecorded_same",
 			func(kv nats.KeyValue) nats.KeyValue { return writesRefused{kv} }, service, false},
 	} {

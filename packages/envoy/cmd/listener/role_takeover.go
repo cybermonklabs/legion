@@ -545,27 +545,24 @@ func handoverStands(ctx context.Context, known *session.KnownSessions, previous,
 }
 
 // handoverStillStands is the fence a handover pass holds each copy to once handoverStands read,
-// at the pass's start, that both sessions last registered as principal: this listener's copy of
-// each session's known-session record (session.KnownSessions.Get, no bucket call) still names
-// principal, recorded. A registration of either session through this listener writes its record
-// through to the copy, and one through another listener reaches it through the copy's watcher, so
-// a registration as another principal that lands while the pass runs ends the pass before its
-// next copy, as a registration that makes the replaced session live does (runTakeoverPass). A
-// copy that holds no record of a session - its watcher behind, or a store that does not answer -
-// cannot say, so that session's record is read from the bucket's leader instead
-// (recordedPrincipal), and a read that did not answer is the error, which ends the pass for the
-// next one to judge again.
+// at the pass's start, that both sessions last registered as principal: each session's record,
+// read again from the known-session bucket's leader as the last step before the copy
+// (recordedPrincipal), still names principal, recorded. A registration of either session as
+// another principal, through any listener, that lands before that read ends the pass before the
+// copy, as a registration that makes the replaced session live does (runTakeoverPass); this
+// listener's own copy of the records is not asked, since it can be behind a registration through
+// another listener. A read that did not answer is the error, which ends the pass for the next one
+// to judge again. What no read can fence is a registration that lands between this read and the
+// copy's publish, a stream write the bucket's write is not ordered with: that one copy reaches the
+// session, which is no more than the session already holds, since a principal that resumes a
+// session reads every message that session was handed before.
 func handoverStillStands(ctx context.Context, known *session.KnownSessions, principal string, sessions ...string) (bool, error) {
 	for _, sessionID := range sessions {
-		record, ok := known.Get(sessionID)
-		if !ok {
-			held, recorded, err := recordedPrincipal(ctx, known, sessionID)
-			if err != nil {
-				return false, err
-			}
-			record = session.KnownSession{Principal: held, PrincipalRecorded: recorded}
+		held, recorded, err := recordedPrincipal(ctx, known, sessionID)
+		if err != nil {
+			return false, err
 		}
-		if !record.PrincipalRecorded || record.Principal != principal {
+		if !recorded || held != principal {
 			return false, nil
 		}
 	}
@@ -737,9 +734,9 @@ const takeoverRecordRefresh = 15 * time.Minute
 // nothing copied. It copies nothing either, and sets the record back the same way, while the two
 // sessions' last registrations do not name one principal (handoverStands), the rule the claim
 // route wrote the record under: a session that registered as another principal since is handed
-// nothing more. That is read from the bucket's leader at the start, and again from this listener's
-// copy of the known-session records before each copy (handoverStillStands), so a registration as
-// another principal that lands while the pass runs ends it too. And it copies more of the replaced
+// nothing more. That is read from the bucket's leader at the start, and again from the leader as
+// the last step before each copy (handoverStillStands), so a registration as another principal
+// that lands while the pass runs ends it too. And it copies more of the replaced
 // session's subject (takenFrame): a role message of any role goes to that role's kept lane, for
 // the role's next live holder, a drain of each such lane starting once the pass ends; and a
 // message to the session itself goes to the successor's own agent subject (handOverDirectFrame),
@@ -870,15 +867,26 @@ scan:
 		if kind == takenRoleCopy && message.Time.Before(since) {
 			kind = takenNone
 		}
-		if kind != takenNone && handover {
-			// The pass read the replaced session not live, and both sessions registered as
-			// principal, before it started; this listener's caches of the session bucket and of the
-			// known-session records, read again before each copy with no bucket call, fence a
-			// registration that lands while the pass runs.
+		if kind == takenNone {
+			next = message.Sequence + 1
+			continue
+		}
+		// The pass read the replaced session not live before it started; this listener's cache of
+		// the session bucket, read again before each copy with no bucket call, fences a
+		// registration that lands while the pass runs.
+		if handover {
 			if _, state := cfg.sessions.Lookup(record.Previous); sessionIsLive(state) {
 				liveAgain = true
 				break scan
 			}
+		}
+		if err := beforeCopy(message.Sequence); err != nil {
+			return stop(err)
+		}
+		// The pass read both sessions registered as principal before it started; the bucket's
+		// leader, read again as the last step before each copy, fences a registration as another
+		// principal that lands while the pass runs, through any listener.
+		if handover {
 			stands, err := handoverStillStands(ctx, cfg.known, principal, record.Previous, successor)
 			if err != nil {
 				return stop(err)
@@ -890,9 +898,6 @@ scan:
 		}
 		switch kind {
 		case takenRoleCopy:
-			if err := beforeCopy(message.Sequence); err != nil {
-				return stop(err)
-			}
 			if err := keepTakenRoleFrame(ctx, cfg, frame.role, frame.envelope(), message.Sequence); err != nil {
 				return stop(err)
 			}
@@ -901,9 +906,6 @@ scan:
 				others = append(others, frame.role)
 			}
 		case takenDirectCopy:
-			if err := beforeCopy(message.Sequence); err != nil {
-				return stop(err)
-			}
 			if err := handOverDirectFrame(ctx, cfg, record.Previous, successor, frame, message.Sequence); err != nil {
 				return stop(err)
 			}

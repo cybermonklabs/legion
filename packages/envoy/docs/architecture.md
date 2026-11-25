@@ -664,7 +664,7 @@ session answers. A pass reads the session's state before it starts and again fro
 cache before each copy, so a registration that lands while it runs ends it, and a session that
 stays live through the record's hour is not handed over. They copy nothing either, and set the
 record back the same way, while the two sessions' last registrations, read from the known-session
-bucket's leader before the pass and from the listener's copy of the records before each copy
+bucket's leader before the pass and again as the last step before each copy
 (`handoverStands`, `handoverStillStands`), do not name one principal: a session that registered
 as another principal since the claim, or while the pass runs, is handed nothing more. And they
 copy more of the replaced
@@ -697,10 +697,11 @@ principal the bucket's stream leader holds, writing over the revision they read 
 listener whose copy has not applied another listener's registration yet never writes the
 principal that registration replaced back over it; where the leader does not answer they write
 nothing. A registration whose record a listener's copy holds unchanged inside the refresh age is
-skipped only where the leader holds its principal too, and a registration whose write failed
-while the record names another principal is answered `503` with `Retry-After: 1`
-(`session.ErrPrincipalUnrecorded`), so the session registers again until the record names the
-principal it registers as. The claim route writes the handover record
+skipped only where the leader confirms it holds its principal too, and a registration whose
+write failed is answered `503` with `Retry-After: 1` (`session.ErrPrincipalUnrecorded`) unless
+the leader confirms the record names its principal, none recorded, or nothing, so the session
+registers again until the record names the principal it registers as. The claim route writes
+the handover record
 only when the claim's credential, the claimant's last registration and the replaced session's
 last registration name one principal, none equal to none, each registration read from the
 bucket's leader (`session.KnownSessions.Read`). A replaced session with no record, one whose
