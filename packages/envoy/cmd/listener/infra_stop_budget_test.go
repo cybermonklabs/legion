@@ -46,6 +46,7 @@ var (
 // that name, and a constant whose expression is no longer a constant expression each fail by
 // name: each is this check losing its other side, and a lost side must red rather than pass.
 func TestTheInfraCopyOfTheStopBudgetIsTheStopBudget(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, infraStopBudgetRead, nil, parser.SkipObjectResolution)
 	if err != nil {

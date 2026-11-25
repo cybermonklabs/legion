@@ -313,12 +313,15 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 	if _, err := legacyJS.Publish("notifications.role.legion-replay", []byte("legacy role message")); err != nil {
 		t.Fatalf("publish legacy role message: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for legacyDelivery.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if legacyDelivery.Load() != 1 {
-		t.Fatal("legacy durable consumer did not receive the role message")
+	// The delivery and, below, the server's release of the binding each end their wait, bounded
+	// only by the test binary's deadline (testwait.Until): a loaded machine delays both without
+	// anything being wrong, and a fixed span (5 s and 10 s, before) failed the row when they came
+	// late.
+	if delivered := testwait.Until(t, "the legacy durable consumer to receive the role message", func() (int32, bool) {
+		delivered := legacyDelivery.Load()
+		return delivered, delivered != 0
+	}); delivered != 1 {
+		t.Fatalf("the legacy durable consumer received the role message %d times, want once", delivered)
 	}
 	_ = legacySub
 	legacyConn.Close()
@@ -339,18 +342,13 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 	// nats-server releases a push binding on the consumer's own goroutine, after the client's
 	// Close is answered, so only the consumer's own report tells this test that the durable may
 	// be bound again; Client.Subscribe does not retry a "consumer is already bound" refusal.
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the server to report the legacy durable consumer unbound after the legacy connection closed", func() (bool, bool) {
 		consumer, err := client.JS().ConsumerInfo(Stream, "legacy-role-replay")
 		if err != nil {
 			t.Fatalf("read the legacy durable consumer: %v", err)
 		}
-		if !consumer.PushBound {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the server still reports the legacy durable consumer bound 10s after the legacy connection closed")
-		}
-	}
+		return consumer.PushBound, !consumer.PushBound
+	})
 
 	redelivered := make(chan struct{}, 1)
 	restartedSub, err := client.Subscribe("notifications.>", func(*nats.Msg) {

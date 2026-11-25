@@ -394,14 +394,15 @@ Each item below names a script, then what it proves.
 
 - `refusal-fallback-omp.sh`
 
-  a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1), measured on three real Legion panes of the pinned Oh My Pi, each the root architect of an issue of its own, each with this checkout's two plugins, an OpenAI-shaped model stand-in of its own and a chain that carries `retry.fallbackRevertPolicy: never`:
-  one pane is refused by a content filter with no content, one by the same filter after streamed text, and one is rate-limited with HTTP 429 and `retry-after: 60`;
+  a Legion worker a provider refused stays off that model for the plugin's cooldown and returns when it ends, measured on four real panes of the pinned Oh My Pi:
+  two panes get content-filter refusals, before and after streamed text, and two get HTTP 429 with `retry-after: 60`, one retried by the transport and one with `x-should-retry: false`;
   each pane's first request goes to the refused model and the next to the chain's next one;
   the arming the pane recorded carries the cause and the due time that fallback calls for;
   no request at all reaches the refused model between the fifth minute and the cooldown's end at the tenth, which is the window a restore of Oh My Pi's own would show in;
   the first request after the cooldown goes to that model again;
-  and the rate-limited pane comes back on the host's own suppression instead, about three minutes after its fallback.
-  Needs an Oh My Pi (`LEGION_OMP_PATH`), `go` for the one NATS server it builds and starts, and about fifteen minutes of wall clock, longer than any job of `ci.yaml` holds
+  the retried 429 ends as a timeout after ten minutes, and its return waits on the host's five-minute suppression;
+  the final 429 returns after its sixty-second suppression, with requests ten seconds apart so an early return is observable.
+  Needs an Oh My Pi (`LEGION_OMP_PATH`), `go` for its NATS server, `bun` with the checkout's dependencies and twenty-one minutes of driving time.
 
 - `handoff-records.sh`
 
@@ -5070,15 +5071,16 @@ the run's work directory, the driver binary among it, is under `TMPDIR` too.
 LEGION_OMP_PATH=/opt/omp/bin/omp bash scripts/e2e/refusal-fallback-omp.sh     # → "refusal fallback e2e: PASS in <n>s", exit 0
 ```
 
-dispatch://INFRA-956's live proof that a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (its R1).
-It is a script of its own because the window it measures is a quarter of an hour:
-Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes and the plugin's cooldown here is ten, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
-The pi-legion job that runs the plugin's suite (`.github/workflows/ci-job-pi-legion.yaml`) has `timeout-minutes: 28`, but its test step lasts as long as its slowest worker, and it took at most 296.7 s in the three runs of 2026-11-22 that file's comment measures, while a whole run of this proof takes 798 s (below): as a file of that suite it would be the slowest worker, and every run of the job would wait on it.
+A content-filter refusal must move the same session to the next model until the plugin's cooldown ends, so this proof measures both switches in a long turn.
+A rate limit instead waits only for the host's suppression.
+Its four panes run together for twenty-one minutes, outside the plugin's unit-test suite.
+The retried-429 pane needs the transport's ten-minute first-event budget, the host's five-minute suppression and the request after the return within that span.
 It runs on any Linux host with `bash`, `bun` (after `bun install` at the checkout's root) and `go`, which builds the one server it starts — no PostgreSQL, no Docker, no kube context and no tmux, so a Legion pod, a devbox and a runner holding the pinned binary all run it.
 `LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable, as for [`provider-error-retry.sh`](#provider-error-retrysh), and the script prints which build it ran.
 It reaches no network:
 each pane's model gateway, the stand-in daemon and the stand-in Envoy listener are loopback servers of the driver's, and the NATS server the Envoy extension connects to is one the run builds and starts itself (`packages/envoy/internal/testnats/cmd/natsd`, on a port the kernel picks, logged to the evidence directory), since a session a listener can give no consumer receives nothing and its claim boot ends it.
-A whole run took 798 s measured in a Legion worker pod (omp/18.16.0), and a pane that never gets its model back holds one to about eighteen minutes.
+A pane that does not settle is bounded by the driving span and two allowances of 150 seconds for its last return and shutdown.
+The inventory allows thirty minutes, including setup, so the proof can report those failures itself.
 
 | check | what it holds |
 | :--- | :--- |
@@ -5086,25 +5088,34 @@ A whole run took 798 s measured in a Legion worker pod (omp/18.16.0), and a pane
 | `nats` | the JetStream server the run builds and starts (`packages/envoy/internal/testnats/cmd/natsd`), whose URL the driver is given as `REFUSAL_FALLBACK_NATS_URL` |
 | `runs` | the driver (`packages/pi-legion/scripts/refusal-fallback-pane.ts`, run with `bun`), which prints one section per expectation of its own |
 
-Three Legion panes run at the same time, each the root architect of an issue of its own, each one real `omp --mode rpc` child of the pinned Oh My Pi with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` loaded and an OpenAI-shaped model stand-in of its own, under a profile whose chain steps from `standin/strong-model` to `standin/weak-model` with `retry.fallbackRevertPolicy: never`, the shape a deployment's own operator overlay carries, and `retry.rateLimitWalksChain: true`, which Oh My Pi has off:
-on, a rate limit is admitted to the chain consult rather than deferred to another attempt on the same model.
-Each pane is driven about once a minute for about twelve and a half minutes — the stand-in answers every turn with a `bash sleep`, so one long turn asks again each minute — and the model of each request says where that session stood at that minute.
-The three differ in the one answer that refuses:
+Four Legion panes run together, each the root architect of its own issue, each one real `omp --mode rpc` child with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` loaded and its own OpenAI-shaped stand-in.
+The profile walks from `standin/strong-model` to `standin/weak-model`, with `retry.fallbackRevertPolicy: never` and `retry.rateLimitWalksChain: true`.
+The stand-in answers each request with a `bash sleep`, which keeps the turn running and makes the next request another reading of the model.
+The final-429 pane sleeps ten seconds; the other panes keep their 58-second sleeps even when the driving span grows.
+The panes differ in the answer that refuses:
 
 - `filtered-clean`: `finish_reason: content_filter` with no content, which Oh My Pi may replay, so the host walks its own chain and the plugin arms the return from the host's own reason;
 
 - `filtered-after-text`: the same after streamed text, which is replay-unsafe, so the host leaves the session where it is and the plugin walks the chain itself;
 
-- `rate-limited`: HTTP 429 with `retry-after: 60`, which is no content filter, so the host notes a suppression of that model for the 60 s the provider asked for, the arming's cause is `other`, and the return waits on that suppression, which is a different clock from the cooldown.
+- `rate-limited`: HTTP 429 with `retry-after: 60`, retried inside the transport until its first-event budget ends.
+  The host then sees a timeout with no retry-after, walks the chain and suppresses the model for its five-minute floor.
+  The plugin returns within one request's cadence after that suppression, before the ten-minute plugin cooldown would end.
+
+- `rate-limited-final`: the same 429 with `x-should-retry: false`, which the transport surfaces.
+  The host walks the chain and suppresses the model for sixty seconds.
+  This pane requests every ten seconds, so a plugin that ignores suppression produces a request before it ends.
 
 What the run holds each pane to:
 the first request goes to the refused model and the next to the chain's next one (`<pane>-walks-the-chain`);
 the arming the pane recorded in its own transcript has the cause and the due time that fallback calls for (`<pane>-arms-the-return`);
 no request at all goes to the refused model between the fifth minute and the end of the ten-minute cooldown (`<pane>-quiet-between-five-and-ten`), which is the window a restore of Oh My Pi's own would show in, since five minutes is its own floor for a suppression it cannot time;
 the first request after the cooldown goes to that model again (`<pane>-comes-back-after-ten`);
-and the rate-limited pane goes back about three minutes after its fallback, the 60 s suppression plus the gap between readings, rather than waiting the cooldown out (`rate-limited-comes-back-on-the-suppression`).
+and each rate-limited pane returns after its host suppression, with the transcript's `model_change` timestamp within one request's cadence after that suppression (`<pane>-comes-back-on-the-suppression`).
+The first request on the strong model must also precede the plugin cooldown's end.
+The transcript is needed because the host chooses a request's model before the plugin's context hook switches it: a request alone reads the switch one request late.
 Unlike a stage proof, a failed expectation does not stop the driver:
-the twelve minutes are already spent and every other measurement is evidence about the same run, so every expectation is reported and the run exits non-zero naming the first that failed.
+every measurement is reported and any failed expectation makes the run exit non-zero.
 `REFUSAL_FALLBACK_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) holds the transcript, `logs/nats.log` of the JetStream server the run starts, and a copy of every pane's Oh My Pi transcript;
 each pane's scratch root is under `TMPDIR` too, since a pod's own disk is small and its `TMPDIR` names the issue's volume.
 The run's own scratch directory, which holds the natsd it built and that server's JetStream store, is removed at the end with the server, however the run ended; the evidence directory is never touched.
