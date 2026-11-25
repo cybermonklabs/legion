@@ -4924,6 +4924,9 @@ READS = (
      "`scripts/third-party-notices.test.ts#lists the typeface the Dispatch web app ships, with the SIL Open Font License's text` "
      "(thirdPartyNotices over the font file's path)"),
     ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
+    ("daemon_go_tests", "packages/contracts/fixtures/dispatch-results/code-pass.json",
+     "`packages/daemon/internal/dispatch/client_results_test.go#TestIssueResultsReadsEachCheckState`, through its //ci:reads line, "
+     "and `packages/daemon/internal/record/close_wait_test.go`, which reads the same captured answers"),
 )
 
 # Every JSON file a test of one of these packages imports from outside the package by a
