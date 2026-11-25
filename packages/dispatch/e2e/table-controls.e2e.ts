@@ -11405,3 +11405,122 @@ test("a Tab onto the moving card's own link while a Board move's dry run is out 
   // start their next Tab from the top of the page.
   expect(got, got.join("; ")).toEqual(want);
 });
+
+// INFRA-3135, round 27 (the tester's), by the architect's rulings of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll, the marked row's checkbox
+// wherever it stands) and 13:01Z. Measured at 7deb75af in builds Jobs infra-3135-f-h1-qgpz2 and
+// infra-3135-f-hx-dl7bw, and at 5ae79d88 in infra-3135-f-b1-q7ttr and infra-3135-f-bx-hxjsw: on the
+// project List, with the row marked last near the end of a 90-row list and the table's box
+// scrolled back to its top, so the table's window does not draw that row, Clear selection lands
+// the focus on its checkbox at top 737 to bottom 750 in a box whose visible bottom is 736 at
+// 1440x900, and at 499 to 512 under a visible bottom of 494 at 390x664, in Chromium and Firefox,
+// at both heads: wholly out of sight. In those Jobs' Epic-filtered view WebKit centred it at 1440
+// and varied at 390; in this row's own view it failed every run of infra-3135-f-red3-8hflf at
+// 7deb75af (746 to 758 under 736, 510 to 522 under 460), six of six. The return goes to the table's own focus of a row it has not drawn
+// (features/project/IssuesTable.tsx:324, `model.focusRow`), which scrolls the virtualizer to the
+// row with `align: "auto"` (components/table-keys.ts:107, components/DataTable.tsx:304) and focuses
+// the checkbox with no scroll once the row is drawn (components/table-keys.ts:134). The
+// virtualizer measures its rows from the box's top (DataTable.tsx:286-294, no `scrollMargin`),
+// while the box draws the sticky header row above them (:651), so a row aligned to the box's end
+// stands one header row below it.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): ninety seeded issues, and two Clear selection presses read once the box settles.
+test("Clear selection with the row marked last below the view and not drawn by the project List's table hands the focus to its checkbox wholly inside the box under the sticky header, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "LONG", name: "Long list" });
+  for (let index = 0; index < 90; index++) {
+    await createIssue({ project: "LONG", title: `Long row ${index}` });
+  }
+  const box = page.getByTestId("issues-table-scroll");
+  const rows = page.locator("[data-issue-row]");
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  /** How the focused element stands against the window, the table's box and the box's sticky
+   *  header row: its name, its rect, the part of the box the reader sees under the header, and
+   *  whether it lies wholly inside that part. */
+  const standing = () =>
+    page.evaluate(() => {
+      const round = (value: number) => Math.round(value * 10) / 10;
+      const focused = document.activeElement;
+      const scroller = document.querySelector('[data-testid="issues-table-scroll"]');
+      if (!(focused instanceof HTMLElement) || focused === document.body || scroller === null) {
+        return { text: "the focus is on the body", whole: false };
+      }
+      const own = focused.getBoundingClientRect();
+      const frame = scroller.getBoundingClientRect();
+      const head = scroller.querySelector("thead th")?.getBoundingClientRect().bottom ?? frame.top;
+      const top = Math.max(0, frame.top, head);
+      const bottom = Math.min(window.innerHeight, frame.bottom);
+      const name = focused.getAttribute("aria-label") || focused.tagName.toLowerCase();
+      return {
+        text:
+          `the focus is on "${name}" at top ${round(own.top)} to bottom ${round(own.bottom)}, ` +
+          `where the box's visible part under its header runs from ${round(top)} to ${round(bottom)}`,
+        whole: own.top >= top - 0.5 && own.bottom <= bottom + 0.5,
+      };
+    });
+  const landings: { text: string; whole: boolean }[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `project List at ${size.width}x${size.height}`;
+    await openIssuesTab(page, "LONG", "List");
+    await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(12);
+    // The window brings the table's box to just below the app's header where the page is taller
+    // than the window, and the box scrolls to its end, where the row marked last is drawn.
+    await box.evaluate((node) => {
+      window.scrollBy(0, node.getBoundingClientRect().top - 60);
+      node.scrollTop = node.scrollHeight;
+    });
+    await settledScrollTop(page);
+    await settledScrollTop(box);
+    // The rows read once the box has held still at its end; they only name the row marked.
+    const order = await rows.evaluateAll((nodes) =>
+      nodes
+        .map((node) => ({
+          key: node.getAttribute("data-issue-row") ?? "",
+          top: node.getBoundingClientRect().top,
+        }))
+        .sort((one, other) => one.top - other.top)
+        .map((row) => row.key)
+    );
+    const marked = order[order.length - 4] ?? "";
+    const mark = page.getByRole("checkbox", { exact: true, name: `Select ${marked}` });
+    await mark.focus();
+    await page.keyboard.press("Space");
+    await expect(mark).toBeChecked();
+    await expect(bar).toContainText("1 selected");
+    // Back to the box's top: the table's window no longer draws the row marked last.
+    await box.evaluate((node) => {
+      node.scrollTop = 0;
+    });
+    await settledScrollTop(box);
+    await expect(
+      page.locator(`[data-issue-row="${marked}"]`),
+      `${where}: the table still draws the row marked last`
+    ).toHaveCount(0);
+    await bar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(bar).toHaveCount(0);
+    await expect(
+      mark,
+      `${where}: the focus is not on the checkbox of the row marked last`
+    ).toBeFocused();
+    await settledScrollTop(box);
+    await nextFrames(page);
+    // One read is the answer: the bar has gone, the focus has landed on the row's checkbox and
+    // the box has held still, so nothing moves the focus or the box after this.
+    const landing = await standing();
+    landings.push({ text: `${where}: ${landing.text}`, whole: landing.whole });
+  }
+  // A checkbox below the box's visible bottom is a landing the reader cannot see: the focus is
+  // on the row they marked, out of their sight, with no scroll that shows it.
+  expect(
+    landings.map((landing) => landing.whole),
+    landings.map((landing) => landing.text).join("; ")
+  ).toEqual(landings.map(() => true));
+});
