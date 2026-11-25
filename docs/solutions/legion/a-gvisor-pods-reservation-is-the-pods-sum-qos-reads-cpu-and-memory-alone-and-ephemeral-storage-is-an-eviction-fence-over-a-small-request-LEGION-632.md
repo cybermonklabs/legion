@@ -64,7 +64,8 @@ related_issues:
 - A harness that asserts the daemon's defaults must read them from the daemon, not transcribe
   them: `scripts/e2e/lib/stage4b-reservations.ts` carries the table by hand and drifts the moment
   `defaultResources` moves — a golden the Go test writes and the e2e lib reads (as
-  `packages/contracts/fixtures/daemon-api/version.json` is) is the fix, named in #1842's fast-follow.
+  `packages/contracts/fixtures/daemon-api/version.json` was until dispatch://INFRA-1569) is the
+  fix, named in #1842's fast-follow.
 
 ## Evidence
 

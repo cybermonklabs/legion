@@ -152,7 +152,7 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	cache := newSettingsCache(pool, nil)
+	cache := newSettingsCache(pool, nil, nil)
 	if !cache.reload(ctx) || cache.Load() != nil {
 		t.Fatalf("a read with no row = %+v, want nothing held", cache.Load())
 	}
