@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The Dispatch HTTP API document says that a personal token's `PATCH /api/v1/me/agent-tokens/{id}`
+  changes only a token whose every project the calling token sees, and keeps a list only where the
+  calling token could mint it: any other edit by a personal token is `400 TOKEN_PROJECTS_INPUT`,
+  naming no project, writing nothing.
+time: 2026-11-23T21:21:52Z
+custom:
+    Issue: token-edit-scope

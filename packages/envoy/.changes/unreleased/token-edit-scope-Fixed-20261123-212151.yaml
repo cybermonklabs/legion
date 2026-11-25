@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  A personal token's edit of another token (`PATCH /api/v1/me/agent-tokens/{id}`) is held to what
+  its mint is held to. Before this, an edit that named no `projects` kept the token's list unchecked,
+  so a token listing nothing could give the scopes it holds, `approve` among them, to a sibling token
+  listing a private project it does not see, a token neither of them was, or set that sibling's list
+  to none. Now a personal token changes a token only where it sees every project that token lists,
+  whether the edit keeps the list or replaces it, and a kept list must pass the mint's rules, so a
+  token whose own list holds its writes keeps no list of none: any other edit is
+  `400 TOKEN_PROJECTS_INPUT`, naming no project, writing nothing. That refusal tells the token that
+  the sibling lists a project it does not see, which the token list hides from it. The person's
+  browser changes any of their tokens as before.
+time: 2026-11-23T21:21:51Z
+custom:
+    Issue: token-edit-scope

@@ -321,6 +321,132 @@ func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) 
 	}
 }
 
+// tokenRow is what the row of the token id holds, read from the table.
+func tokenRow(t *testing.T, database *store.Store, id string) heldToken {
+	t.Helper()
+	held := heldToken{ID: id}
+	if err := database.Pool.QueryRow(context.Background(), `select scopes, projects from agent_tokens where id = $1`, id).Scan(&held.Scopes, &held.Projects); err != nil {
+		t.Fatalf("read token %s: %v", id, err)
+	}
+	return held
+}
+
+// TestATokenChangesOnlyATokenWhoseProjectsItSees (R3): a personal token's edit is held to the
+// lists a mint is held to. carol, a full member, holds open, a token listing nothing and holding
+// person and approve, and priv, a token listing PRIV and holding person alone. Once PRIV is
+// private, open does not see PRIV, so it changes nothing of priv: an edit giving priv approve and
+// keeping its list, and an edit setting its list to none, are each 400 TOKEN_PROJECTS_INPUT naming
+// no PRIV, and priv's row is as it was. Before the check the first left priv holding approve beside
+// PRIV, which neither token held, and the second took PRIV off priv's list. A token whose writes
+// its list holds keeps a token's empty list no more than it mints one: priv-approve, listing PRIV
+// and holding both scopes, giving approve to plain, which lists nothing, is refused the same way.
+//
+// Controls, in the same run: priv-approve, which sees PRIV, gives priv approve, and carol's browser
+// sets priv's list to none, each 200; open edits pub, listing PUB, which it sees, keeping its list
+// and naming it, each 200; open, whose writes no list holds, gives plain approve, 200. The person's
+// browser keeps any list: alice's browser changes the scopes of alice-priv, a token she minted
+// listing PRIV while it was public and no longer sees, keeping its list, and then names it PUB,
+// each 200, as Settings sends both (heldTokenEdit holds a personal token's edit alone).
+func TestATokenChangesOnlyATokenWhoseProjectsItSees(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	seedCredentialProjects(t, handler, database)
+	alicePriv := mintListed(t, handler, "alice", "alice-priv", []string{privateProject})
+	makePrivate(t, database, privateProject)
+	both := []string{model.ScopePerson, model.ScopeApprove}
+	person := []string{model.ScopePerson}
+	mint := func(name string, projects, scopes []string) listedToken {
+		t.Helper()
+		body := mintBody(name, projects)
+		body["scopes"] = scopes
+		minted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", body, accessCarol)
+		if minted.Code != http.StatusCreated {
+			t.Fatalf("carol mints %s listing %v holding %v: status=%d body=%s", name, projects, scopes, minted.Code, minted.Body.String())
+		}
+		return decodeBody[listedToken](t, minted)
+	}
+	open := mint("open", nil, both)
+	priv := mint("priv", []string{privateProject}, person)
+	privApprove := mint("priv-approve", []string{privateProject}, both)
+	pub := mint("pub", []string{publicProject}, person)
+	plain := mint("plain", nil, person)
+	edit := func(token, id string, body map[string]any) *httptest.ResponseRecorder {
+		return agentRequest(t, handler, http.MethodPatch, "/api/v1/me/agent-tokens/"+id, body, token)
+	}
+	wantRow := func(t *testing.T, call, id string, scopes, projects []string) {
+		t.Helper()
+		if row := tokenRow(t, database, id); !slices.Equal(row.Scopes, scopes) || !slices.Equal(row.Projects, projects) {
+			t.Fatalf("after %s the token's row holds %v listing %v, want %v listing %v", call, row.Scopes, row.Projects, scopes, projects)
+		}
+	}
+
+	for _, row := range []struct {
+		call, token, id string
+		body            map[string]any
+	}{
+		{"open's edit giving priv approve, keeping its list", open.Token, priv.ID, map[string]any{"scopes": both}},
+		{"open's edit setting priv's list to none", open.Token, priv.ID, map[string]any{"scopes": person, "projects": []string{}}},
+		{"priv-approve's edit giving plain approve, keeping its list of none", privApprove.Token, plain.ID, map[string]any{"scopes": both}},
+	} {
+		t.Run("refuses "+row.call, func(t *testing.T) {
+			before := tokenRow(t, database, row.id)
+			refused := edit(row.token, row.id, row.body)
+			wantRefusal(t, refused, http.StatusBadRequest, codeTokenProjectsInput, "carol's token", row.call)
+			if strings.Contains(refused.Body.String(), privateProject) {
+				t.Fatalf("%s = %s, which names PRIV to a credential that may not see it", row.call, refused.Body.String())
+			}
+			wantRow(t, row.call, row.id, before.Scopes, before.Projects)
+		})
+	}
+
+	for _, row := range []struct {
+		call             string
+		answer           func() *httptest.ResponseRecorder
+		id               string
+		scopes, projects []string
+	}{
+		{"priv-approve's edit giving priv approve, keeping its list", func() *httptest.ResponseRecorder {
+			return edit(privApprove.Token, priv.ID, map[string]any{"scopes": both})
+		}, priv.ID, both, []string{privateProject}},
+		{"carol's browser's edit setting priv's list to none", func() *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/me/agent-tokens/"+priv.ID,
+				map[string]any{"scopes": person, "projects": []string{}}, accessCarol)
+		}, priv.ID, person, []string{}},
+		{"open's edit giving pub approve, keeping its list", func() *httptest.ResponseRecorder {
+			return edit(open.Token, pub.ID, map[string]any{"scopes": both})
+		}, pub.ID, both, []string{publicProject}},
+		{"open's edit naming pub's list", func() *httptest.ResponseRecorder {
+			return edit(open.Token, pub.ID, map[string]any{"scopes": person, "projects": []string{publicProject}})
+		}, pub.ID, person, []string{publicProject}},
+		{"open's edit giving plain approve, keeping its list of none", func() *httptest.ResponseRecorder {
+			return edit(open.Token, plain.ID, map[string]any{"scopes": both})
+		}, plain.ID, both, []string{}},
+	} {
+		t.Run("makes "+row.call, func(t *testing.T) {
+			if answer := row.answer(); answer.Code != http.StatusOK {
+				t.Fatalf("%s: status=%d body=%s, want 200", row.call, answer.Code, answer.Body.String())
+			}
+			wantRow(t, row.call, row.id, row.scopes, row.projects)
+		})
+	}
+
+	for _, row := range []struct {
+		call             string
+		body             map[string]any
+		scopes, projects []string
+	}{
+		{"alice's browser's edit of alice-priv keeping its list", map[string]any{"scopes": person}, person, []string{privateProject}},
+		{"alice's browser's edit naming alice-priv's list PUB", map[string]any{"scopes": person, "projects": []string{publicProject}}, person, []string{publicProject}},
+	} {
+		t.Run("makes "+row.call, func(t *testing.T) {
+			if answer := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/me/agent-tokens/"+alicePriv.ID, row.body, "alice"); answer.Code != http.StatusOK {
+				t.Fatalf("%s: status=%d body=%s, want 200", row.call, answer.Code, answer.Body.String())
+			}
+			wantRow(t, row.call, alicePriv.ID, row.scopes, row.projects)
+		})
+	}
+}
+
 // TestANamedTokenUsesTheProjectItNames: a broker token an operator's entry named, whose person is
 // carol and whose project is PUB, reads PUB and not PRIV, writes a comment on a PUB issue, answers
 // PRIV's issue as an issue nobody holds for a read and a write (404, exactly as for a missing one:
@@ -402,12 +528,13 @@ func namedTokenReads(t *testing.T, projects []string) {
 }
 
 // TestATokenListShowsOnlyTheProjectsItsReaderSees: each token's list, in GET
-// /api/v1/me/agent-tokens and in the PATCH answer, holds only the projects the reading credential
-// sees, so a credential that sees only public projects learns no private project's key from a
-// sibling token (R3). Carol's browser, whose person sees PRIV, still reads every list whole, and
-// so does carol's token listing PRIV, which sees PRIV and PUB, the public project its list does not
-// name included; what a token lists is unchanged by who reads it. With no private project, a token
-// reads the list byte for byte as the browser does (R9).
+// /api/v1/me/agent-tokens, holds only the projects the reading credential sees, so a credential
+// that sees only public projects learns no private project's key from a sibling token (R3), and its
+// PATCH of a sibling listing such a project is refused naming none of it (heldTokenEdit). Carol's
+// browser, whose person sees PRIV, still reads every list whole, and so does carol's token listing
+// PRIV, which sees PRIV and PUB, the public project its list does not name included; what a token
+// lists is unchanged by who reads it. With no private project, a token reads the list byte for byte
+// as the browser does (R9).
 func TestATokenListShowsOnlyTheProjectsItsReaderSees(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -460,15 +587,18 @@ func TestATokenListShowsOnlyTheProjectsItsReaderSees(t *testing.T) {
 		})
 	}
 
-	t.Run("the PATCH answer leaves it out, and the token keeps its list", func(t *testing.T) {
+	// Before heldTokenEdit this edit was made, 200 with PRIV cut from its answer, and left first
+	// holding the scopes of a token that does not see PRIV beside PRIV.
+	t.Run("the PATCH refusal leaves it out, and the token keeps its list", func(t *testing.T) {
 		edited := agentRequest(t, handler, http.MethodPatch, "/api/v1/me/agent-tokens/"+first.ID,
 			map[string]any{"scopes": model.Scopes}, open.Token)
-		if edited.Code != http.StatusOK || strings.Contains(edited.Body.String(), privateProject) {
-			t.Fatalf("PATCH /api/v1/me/agent-tokens/{id} under carol's token listing nothing = %d %s, want 200 naming no PRIV",
-				edited.Code, edited.Body.String())
+		if edited.Code != http.StatusBadRequest || !strings.Contains(edited.Body.String(), `"code":"`+codeTokenProjectsInput+`"`) ||
+			strings.Contains(edited.Body.String(), privateProject) {
+			t.Fatalf("PATCH /api/v1/me/agent-tokens/{id} under carol's token listing nothing = %d %s, want 400 %s naming no PRIV",
+				edited.Code, edited.Body.String(), codeTokenProjectsInput)
 		}
 		if got, present := tokenListOf(t, handler, accessCarol, first.ID); !present || !slices.Equal(got, []string{privateProject}) {
-			t.Fatalf("first lists %v (present %v) after the edit, want [PRIV]: a reader's cut never reaches the row", got, present)
+			t.Fatalf("first lists %v (present %v) after the refused edit, want [PRIV]", got, present)
 		}
 	})
 }
@@ -547,8 +677,10 @@ func hiddenFlagOf(t *testing.T, call, body, id string) (hidden, present bool) {
 // TestABrowserIsToldItsTokenListsProjectsItCannotSee: a token answer cuts each list to what its
 // reader sees (seeToken), so a token whose every project is hidden reads as one that lists
 // none. The person's own browser is told so (projects_hidden), so Settings never shows such a token
-// as one of the public projects only, nor offers to widen it. A credential reading its person's
-// list is never told, since that would say a project exists it cannot see (R3). And with no private
+// as one of the public projects only, nor offers to widen it, and still changes such a token's
+// scopes keeping its list. A credential reading its person's list is never told, since that would
+// say a project exists it cannot see (R3); its edit of such a token is refused naming no key, which
+// says only that the token lists a project it does not see (tokenListUnseen). And with no private
 // project, every answer is byte for byte the answer before the field (R9).
 func TestABrowserIsToldItsTokenListsProjectsItCannotSee(t *testing.T) {
 	t.Parallel()
@@ -629,17 +761,27 @@ func TestABrowserIsToldItsTokenListsProjectsItCannotSee(t *testing.T) {
 		}
 	})
 
-	t.Run("no credential is told a sibling token lists a project it cannot see", func(t *testing.T) {
-		for _, reader := range readers[2:] {
+	// carol's token listing nothing does not see carol-priv's PRIV, so its edit of carol-priv is
+	// refused (heldTokenEdit): before that check it was made, 200, and left carol-priv holding the
+	// scopes the token gave beside PRIV. The refusal tells that token the one thing the list hides
+	// from it, that carol-priv lists a project it does not see, and names no key.
+	t.Run("no credential is told a sibling token lists a project it cannot see, but by a refused edit", func(t *testing.T) {
+		for i, reader := range readers[2:] {
 			listed := reader.read(http.MethodGet, list, nil)
 			patched := reader.read(http.MethodPatch, list+"/"+reader.editedID, keepScopes)
-			for call, answer := range map[string]*httptest.ResponseRecorder{
-				"GET " + list + " under " + reader.name:        listed,
-				"PATCH " + list + "/{id} under " + reader.name: patched,
-			} {
-				if answer.Code != http.StatusOK || strings.Contains(answer.Body.String(), "projects_hidden") {
-					t.Fatalf("%s = %d %s, want 200 with no projects_hidden on any token", call, answer.Code, answer.Body.String())
+			if answer, call := listed, "GET "+list+" under "+reader.name; answer.Code != http.StatusOK || strings.Contains(answer.Body.String(), "projects_hidden") {
+				t.Fatalf("%s = %d %s, want 200 with no projects_hidden on any token", call, answer.Code, answer.Body.String())
+			}
+			call := "PATCH " + list + "/{id} under " + reader.name
+			if i == 0 {
+				if patched.Code != http.StatusBadRequest || !strings.Contains(patched.Body.String(), `"code":"`+codeTokenProjectsInput+`"`) ||
+					strings.Contains(patched.Body.String(), "projects_hidden") || strings.Contains(patched.Body.String(), privateProject) {
+					t.Fatalf("%s = %d %s, want 400 %s naming no PRIV", call, patched.Code, patched.Body.String(), codeTokenProjectsInput)
 				}
+				continue
+			}
+			if patched.Code != http.StatusOK || strings.Contains(patched.Body.String(), "projects_hidden") {
+				t.Fatalf("%s = %d %s, want 200 with no projects_hidden on any token", call, patched.Code, patched.Body.String())
 			}
 		}
 	})

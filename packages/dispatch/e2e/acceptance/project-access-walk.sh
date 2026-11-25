@@ -314,6 +314,8 @@ seed_scenario() {
   # carol's second token is a row of carol's, a no-project object; only its list names PRIV, and
   # that list is what a reader who does not see PRIV may not read. So the twin holds the same token,
   # listing nothing, used once as main's is used, and carol's list of her tokens compares alike.
+  # One answer tells a reader that does not see PRIV that this token lists some project it does not
+  # see: carol's token's edit of it, which main refuses and the twin makes (token_edit_refused).
   mint_token twin carol carol-priv-token
   send twin carol-priv-token GET /api/v1/whoami
   expect_status 200 "twin: carol's second token reads whoami"
@@ -373,6 +375,32 @@ compare_twin() {
   else
     same_answers "$caller $method $path (beside the twin)" main twin "$main_header" "$twin_header"
   fi
+}
+
+# token_edit_refused PATH BODY holds the one write whose answer beside the twin differs, on purpose:
+# carol's token, which lists no project, edits carol's PRIV token (PATCH
+# /api/v1/me/agent-tokens/{id}, PATH as the walk filled it). A personal token changes only a token
+# whose every project it sees (api.heldTokenEdit), else it could give its scopes to a token that
+# reaches PRIV, which neither held. So main refuses it, 400 TOKEN_PROJECTS_INPUT, and the twin,
+# where that token lists nothing, makes it, 200. The refusal says that the token lists a project
+# carol's token does not see, the cost of refusing the edit at all; it must name nothing of PRIV,
+# and each server must answer as said, or the run fails. token_edits_refused counts the calls, so
+# the writes section fails a walk that never sent it.
+token_edits_refused=0
+token_edit_refused() {
+  local problem=''
+  send main carol-token PATCH "$(resolve main "$1")" "$2"
+  if [ "$status" != 400 ] || [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != TOKEN_PROJECTS_INPUT ] ||
+    grep -q PRIV "$work/body"; then
+    problem="carol-token PATCH /api/v1/me/agent-tokens/{id} on main: HTTP $status, want 400 TOKEN_PROJECTS_INPUT naming nothing of PRIV: $(head -c 300 "$work/body")"
+  fi
+  judge "$status" "$problem"
+  problem=''
+  send twin carol-token PATCH "$(resolve twin "$1")" "$2"
+  [ "$status" = 200 ] ||
+    problem="carol-token PATCH /api/v1/me/agent-tokens/{id} on the twin, where carol's PRIV token lists nothing: HTTP $status, want 200: $(head -c 300 "$work/body")"
+  judge "$status" "$problem"
+  token_edits_refused=$((token_edits_refused + 1))
 }
 
 # Each server's delivery loop reconciles on its own timer once delivery is configured (every second
@@ -550,6 +578,10 @@ walk_rows() {
       # Every wildcard is a no-project node, so the path is the same on both servers; or the row
       # reads no row a caller's access decides, and both servers are read with PRIV's objects.
       for caller in "${unseeing_callers[@]}"; do
+        if [ "$caller $method $pattern" = "carol-token PATCH /api/v1/me/agent-tokens/{id}" ]; then
+          token_edit_refused "$hidden" "$body"
+          continue
+        fi
         compare_twin "$caller" "$hidden" "$method" "$body"
       done
       lists=$((lists + 1))

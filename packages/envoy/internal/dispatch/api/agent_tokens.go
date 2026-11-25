@@ -88,7 +88,8 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 // person's own browser (the reader access.Resolve reads as one, Kind "user") is told the cut
 // removed some (ProjectsHidden): Settings must not show such a token as one of the public projects
 // only. No other reader is told, since telling a credential that a sibling lists a project it
-// cannot see says that project exists. A cut that removed nothing leaves the answer as it was.
+// cannot see says that project exists; only a personal token's refused edit of that sibling says
+// it (tokenListUnseen). A cut that removed nothing leaves the answer as it was.
 func seeToken(reader model.Actor, token *model.AgentToken) {
 	listed := len(token.Projects)
 	token.Projects = slices.DeleteFunc(token.Projects, func(project string) bool {
@@ -372,7 +373,8 @@ func errTokenRevoked() error {
 type updateAgentTokenScopesInput struct {
 	Scopes *[]string `json:"scopes" required:"true"`
 	// Projects is the whole list the token is to use, with the mint's refusals. A body that names
-	// none leaves the token's list as it stands.
+	// none leaves the token's list as it stands, which a personal token's edit is held to as a list
+	// it names (heldTokenEdit).
 	Projects *[]string `json:"projects"`
 }
 
@@ -384,6 +386,16 @@ type updateAgentTokenScopesInput struct {
 // does: the commit step marks the request's key committed with the write itself
 // (markRequestKeyCommitted). The mint's hold of a person at their browser under IAP refuses it the
 // same way (browserDeciderHeld), so a held person widens no token there.
+//
+// A personal token's edit leaves no token holding what the mint would not give it (R3): the token's
+// list as it stands, kept or replaced, is one the caller sees whole, and a kept one is held to the
+// mint's rules for a list as a named one is (heldTokenEdit), each refused 400 TOKEN_PROJECTS_INPUT
+// writing nothing. Else a token that lists nothing could give the scopes it holds to a sibling
+// listing a private project it does not see, a token neither held, or take that project off the
+// sibling's list. The person's browser keeps any list: it sees what its person sees, and a
+// project its person does not see is one no token of theirs reaches (access.Credential.Sees), so
+// Settings changes the scopes of a token listing a project its person lost, and a restricted
+// member names the one project of a token whose list they no longer see.
 //
 // A restricted member's edit leaves the token in the mint's shape (R16): no scope, and exactly one
 // project they see. A body asking for a scope or naming a list of other than one project is the
@@ -417,12 +429,24 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	// What the caller sees and the list that holds its writes decide a list the body names, and the
+	// list a personal token's edit finds the token holding; a browser's edit keeping the list reads
+	// neither. These are resolved here, before the transaction holds a connection, as the viewer of
+	// the answer's cut (seeToken) is.
+	byToken := actor.Act != nil
+	var viewer *model.Viewer
+	var own []string
+	if byToken || input.Projects != nil {
+		if viewer, own, ok = s.tokenListCaller(w, r); !ok {
+			return
+		}
+	}
 	// Nil keeps the token's list: the update below reads it as null. A list the body names is one
-	// the caller sees (tokenProjects); a kept one is cut to what the caller sees in the answer
-	// (seeToken), whose viewer is resolved here, before the transaction holds a connection.
+	// the caller sees (giveTokenProjects); a kept one is one a personal token sees too
+	// (heldTokenEdit), and is cut to what a browser sees in the answer (seeToken).
 	var projects []string
 	if input.Projects != nil {
-		if projects, ok = s.tokenProjects(w, r, input.Projects); !ok {
+		if projects, ok = giveTokenProjects(w, viewer, own, input.Projects); !ok {
 			return
 		}
 	}
@@ -437,6 +461,31 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if byToken {
+		// The row is locked first, so no edit changes the list read next before the update below
+		// writes what this edit was decided on. The lock's statement names no column: a lock clause
+		// beside the word projects reads as a lock on the projects table to the owner-row guard
+		// (lock_level_test.go's TestNoForUpdateOnOwnerTables).
+		var held bool
+		err := tx.QueryRow(r.Context(), `select true from agent_tokens where id = $1 and owner = $2 for update`,
+			r.PathValue("id"), actor.ID).Scan(&held)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
+			return
+		}
+		if err != nil {
+			s.writeHandlerError(w, fmt.Errorf("update agent token scopes: lock the token: %w", err))
+			return
+		}
+		var standing []string
+		if err := tx.QueryRow(r.Context(), `select projects from agent_tokens where id = $1`, r.PathValue("id")).Scan(&standing); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("update agent token scopes: read the token's list: %w", err))
+			return
+		}
+		if !heldTokenEdit(w, viewer, own, standing, input.Projects == nil) {
+			return
+		}
+	}
 	token, err := scanAgentToken(tx.QueryRow(r.Context(), `
 		update agent_tokens
 		set scopes = $3, projects = coalesce($4::text[], projects)
@@ -631,45 +680,117 @@ func projectCount(n int) string {
 // the caller may not see. So the list a mint answers, and the one an edit names, is one its caller
 // sees whole, and needs no cut (seeToken).
 func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested *[]string) ([]string, bool) {
-	caller, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
-		return nil, false
-	}
-	reader, ok := s.readerOf(w, r)
+	viewer, own, ok := s.tokenListCaller(w, r)
 	if !ok {
 		return nil, false
 	}
-	if reader.Viewer != nil && reader.Viewer.Restricted {
-		return restrictedTokenProjects(w, reader.Viewer.Sees, requested)
+	return giveTokenProjects(w, viewer, own, requested)
+}
+
+// tokenListCaller is what decides the list a mint or an edit gives a token (tokenProjects): what
+// the request's credential sees, its write's reader's viewer, and the list that holds its writes
+// (writesHeldTo). It writes its own refusal and answers false where the caller does not resolve.
+func (s *server) tokenListCaller(w http.ResponseWriter, r *http.Request) (*model.Viewer, []string, bool) {
+	caller, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return nil, nil, false
 	}
-	own := writesHeldTo(reader, caller.Credential)
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return nil, nil, false
+	}
+	return reader.Viewer, writesHeldTo(reader, caller.Credential), true
+}
+
+// giveTokenProjects is tokenProjects' list for a caller that sees viewer's projects and whose
+// writes own holds (tokenListCaller).
+func giveTokenProjects(w http.ResponseWriter, viewer *model.Viewer, own []string, requested *[]string) ([]string, bool) {
+	if viewer != nil && viewer.Restricted {
+		return restrictedTokenProjects(w, viewer.Sees, requested)
+	}
 	named := own
 	if requested != nil {
 		named = *requested
 	}
 	projects := slices.Compact(slices.Sorted(slices.Values(named)))
+	if !heldTokenList(w, viewer, own, projects, true) {
+		return nil, false
+	}
+	if len(projects) == 0 {
+		// Not nil: agent_tokens.projects is not null, and its empty list is a token listing none.
+		return []string{}, true
+	}
+	return projects, true
+}
+
+// heldTokenList is whether a caller that sees viewer's projects, and whose writes own holds, may
+// leave a token listing projects (sorted, each key once): at most contracts.MaxTokenProjects keys,
+// some where own lists some, and none the caller does not see (unseenProject), the mint's rules
+// (tokenProjects). It writes its own refusal, 400 TOKEN_PROJECTS_INPUT, and answers false where the
+// caller may not. known is whether the caller knows each key: its body named it, or its own list
+// holds it. The refusal of a key it knows names the key, in the same words whether a hidden project
+// holds it or none does; that of a key it does not know, of a token's own list that an edit keeps,
+// names none (tokenListUnseen), since that key is of a project the caller does not see.
+func heldTokenList(w http.ResponseWriter, viewer *model.Viewer, own, projects []string, known bool) bool {
 	switch {
 	case len(projects) > contracts.MaxTokenProjects:
 		writeError(w, codeTokenProjectsInput, http.StatusBadRequest, fmt.Sprintf(
 			"a token lists at most %d projects; this one names %d", contracts.MaxTokenProjects, len(projects)))
-		return nil, false
+		return false
 	case len(projects) == 0 && len(own) > 0:
 		writeError(w, codeTokenProjectsInput, http.StatusBadRequest,
 			"this request's credential lists projects, so a token it gives lists some of them: a token listing none reaches what that list does not")
-		return nil, false
-	case len(projects) == 0:
-		// Not nil: agent_tokens.projects is not null, and its empty list is a token listing none.
-		return []string{}, true
+		return false
 	}
+	project, unseen := unseenProject(viewer, projects)
+	switch {
+	case !unseen:
+		return true
+	case known:
+		writeError(w, codeTokenProjectsInput, http.StatusBadRequest, fmt.Sprintf(
+			"%q is no project this request's credential sees", project))
+	default:
+		writeError(w, codeTokenProjectsInput, http.StatusBadRequest, tokenListUnseen)
+	}
+	return false
+}
+
+// unseenProject is the first of projects that viewer does not see, and whether there is one: a
+// token takes no project its caller does not reach.
+func unseenProject(viewer *model.Viewer, projects []string) (string, bool) {
 	for _, project := range projects {
-		if reader.Viewer == nil || !slices.Contains(reader.Viewer.Sees, project) {
-			writeError(w, codeTokenProjectsInput, http.StatusBadRequest, fmt.Sprintf(
-				"%q is no project this request's credential sees", project))
-			return nil, false
+		if viewer == nil || !slices.Contains(viewer.Sees, project) {
+			return project, true
 		}
 	}
-	return projects, true
+	return "", false
+}
+
+// tokenListUnseen refuses a personal token's edit of a token listing a project the token does not
+// see. It names no key. It does tell the caller that the token lists a project it does not see,
+// which seeToken tells no credential (R3): every refusal of the edit says that much, since the
+// same edit of a token listing nothing is made, so a token learning that another token of its
+// person's lists a project it does not see is the cost of refusing the edit at all.
+const tokenListUnseen = "this token lists a project this request's credential does not see, so this credential changes nothing of it: " +
+	"change it at its owner's browser, or with a token that sees every project it lists"
+
+// heldTokenEdit is whether a personal token's edit may change a token listing standing, the list
+// the token holds as the edit runs, keep being whether the edit keeps it (updateAgentTokenScopes).
+// The caller must see the whole of standing, kept or replaced, and a kept list is held to every
+// rule of the mint's for a list (heldTokenList), so the edit leaves no token holding scopes it
+// gave beside a project it does not see, nor a list of none where a list holds its writes; a list
+// the body names was held to them already (giveTokenProjects). It writes its own refusal, 400
+// TOKEN_PROJECTS_INPUT naming no key (tokenListUnseen), and answers false where it may not.
+func heldTokenEdit(w http.ResponseWriter, viewer *model.Viewer, own, standing []string, keep bool) bool {
+	if keep {
+		return heldTokenList(w, viewer, own, standing, false)
+	}
+	if _, unseen := unseenProject(viewer, standing); unseen {
+		writeError(w, codeTokenProjectsInput, http.StatusBadRequest, tokenListUnseen)
+		return false
+	}
+	return true
 }
 
 func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {

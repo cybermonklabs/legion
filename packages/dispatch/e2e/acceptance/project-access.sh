@@ -66,7 +66,9 @@
 #   proxy       the dashboard's GitHub proxy answers an unseeing person for PRIV's repository
 #               what it answers for a repository the App is not installed on.
 #   writes      last, since a write that is not hidden changes what every section above reads:
-#               every write row whose path names an object, walked as walk walks the GET rows.
+#               every write row whose path names an object, walked as walk walks the GET rows,
+#               but for one write held to differ: carol's token's edit of carol's PRIV token,
+#               refused on main and made on the twin (project-access-walk.sh's token_edit_refused).
 # The Probes are read from the server's own table (`go run ./internal/dispatch/api/cmd/routeprobes`),
 # never from a list here. Answers are compared after access-lib.sh's mask, headers and body, and an
 # answer to a filled path also with the ids it was filled with masked as the wildcard they fill,
@@ -568,6 +570,8 @@ if [ "$priv_private" = 1 ]; then
     walk_rows 'select(.method != "GET")'
     note "walked $walked write rows that name an object, as each unseeing caller; $refused calls of rows whose object no project owns, each refused to a caller that is not open or whose writes a list holds"
     [ "$walked" -gt 0 ] || unrun "the write walk compared no write row that names an object: the route index carol read, or the Probes, held none"
+    [ "$token_edits_refused" -gt 0 ] ||
+      unrun "the write walk never sent carol's token's edit of carol's PRIV token (token_edit_refused), the one write it holds to differ beside the twin"
   fi
   pass
 elif [ "$all_public" = 1 ]; then

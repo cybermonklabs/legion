@@ -90,11 +90,7 @@ func (r restrictedMintRig) tokenIDOf(t *testing.T, plaintext string) string {
 // rowOf is what the row of the token id holds, read from the table.
 func (r restrictedMintRig) rowOf(t *testing.T, id string) heldToken {
 	t.Helper()
-	held := heldToken{ID: id}
-	if err := r.database.Pool.QueryRow(context.Background(), `select scopes, projects from agent_tokens where id = $1`, id).Scan(&held.Scopes, &held.Projects); err != nil {
-		t.Fatalf("read token %s: %v", id, err)
-	}
-	return held
+	return tokenRow(t, r.database, id)
 }
 
 // wantRestrictedRefusal fails the test unless response is 403 RESTRICTED_MEMBER saying saying.
