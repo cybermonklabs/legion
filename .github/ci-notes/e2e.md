@@ -7,7 +7,7 @@ in the workflow file, or, for a value the proof job's matrix carries, in the com
 
 ## The proof step's own limit
 
-`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and fourteen of the twenty hosted scripts
+`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and fifteen of the twenty-one hosted scripts
 source `scripts/e2e/lib/live-daemon-proof.sh`, whose `live_daemon_proof` installs nats-server with
 `go install` through `.github/scripts/ci-retry.sh` at the 180 s module bound,
 5 x 180 + 150 = 1050 s; `scripts/e2e/dispatch-session-settings.sh` retries the same install the
@@ -22,16 +22,16 @@ neither gets its own measured figure as its limit all the same, as the next whol
 it, so a proof that hangs ends on its own step.
 
 The measured figure is the one each row's `timeout_minutes` adds its slowest retried step to (the
-comment of `.github/e2e-scripts.json`): 25 minutes for every hosted script but five, 30 for
-owner-steps-client.sh, 35 for nats-callout-sessions.sh, and 20 for phase-entry-converge.sh,
-stage1-skeleton.sh and verification-results.sh.
+comment of `.github/e2e-scripts.json`): 25 minutes for every hosted script but six, 30 for
+owner-steps-client.sh and look-names-its-check.sh, 35 for nats-callout-sessions.sh, and 20 for
+phase-entry-converge.sh, stage1-skeleton.sh and verification-results.sh.
 
 - Sourcing `lib/live-daemon-proof.sh`, and calling `live_daemon_proof` once: behind-entry-fence.sh,
   child-adoption.sh, conflict-merger.sh, conflict-no-takeover.sh, experiment.sh,
   handoff-records.sh, merge-wait-readable.sh, owner-steps.sh, plan-ratings.sh, review-range.sh,
   step-records.sh and sub-architect.sh at 25 minutes, 1500 + 1050 = 2550 s -> 43 min,
-  owner-steps-client.sh at 30 minutes, 1800 + 1050 = 2850 s -> 48 min, and
-  phase-entry-converge.sh at 20 minutes, 1200 + 1050 = 2250 s -> 38 min.
+  owner-steps-client.sh and look-names-its-check.sh at 30 minutes, 1800 + 1050 = 2850 s -> 48 min,
+  and phase-entry-converge.sh at 20 minutes, 1200 + 1050 = 2250 s -> 38 min.
 - Sourcing neither file, directly or through `lib/rig.sh`, through `lib/codex-host.sh`, through
   `lib/model-endpoint.sh` or through the libraries those source: dispatch-claimant-delivery.sh
   and dispatch-broker.sh, 1500 s -> 26 min; nats-callout-sessions.sh, 2100 s -> 36 min; and
@@ -67,7 +67,10 @@ with its `jj` false and its `bun` true, now carries setup-bun's 1500 + 3416 = 49
 over 26 (dispatch://INFRA-1545, round 66). Main's #5385's shared-clone-kind.sh row, added the
 same way with 75 minutes, a `dispatch_only` row whose `jj`, `bun` and `apt` select none of those
 three steps, now carries its proof step's three retried downloads and the steps before that step:
-82 + 4500 + 1350 = 5932 s -> 99 min over 98 (dispatch://INFRA-1545, round 68).
+82 + 4500 + 1350 = 5932 s -> 99 min over 98 (dispatch://INFRA-1545, round 68). Main's #5463's
+look-names-its-check.sh row, added with its measured 30 minutes alone and no
+`run_timeout_minutes`, with its `jj` and `bun` true, now carries owner-steps-client.sh's
+1800 + 3866 = 5666 s -> 95 min over 48 (dispatch://INFRA-1545, round 68).
 
 `.github/scripts/check-download-retry.sh` reads no script outside `.github/scripts/` and no number
 out of an expression (A CEILING WRITTEN AS AN EXPRESSION, under its rule 8), so it prices neither

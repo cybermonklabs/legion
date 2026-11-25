@@ -24,12 +24,14 @@ jobs:
   contracts:
     runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 37 s
-    # measured maximum, plus its slowest retried step alone — the setup-bun step's two
-    # `ci_tools_fetch` calls, 3416 s, above the workspace install's 5 x 180 + 150 = 1050 s and
-    # the ci-ok report's 2460 s. 600 + 3416 = 4016 s -> 67 min.
-    timeout-minutes: 67
+    # measured maximum, plus its slowest retried step alone — install-jj, which main's #5319 added,
+    # whose two `ci_tools_fetch` calls and whose `mise install` of the jj release are
+    # 3416 + 450 = 3866 s, above the setup-bun step's two `ci_tools_fetch` calls at 3416 s, the
+    # ci-ok report's 2460 s and the workspace install's 5 x 180 + 150 = 1050 s.
+    # 600 + 3866 = 4466 s -> 75 min.
+    timeout-minutes: 75
     env:
-      JOB_TIMEOUT_MINUTES: 67 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 75 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,7 +52,10 @@ jobs:
         working-directory: packages/contracts
       # scripts/adopt-api-layout.test.ts runs the real jj in scratch repositories for two cases, and
       # refuses on GitHub Actions without one.
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
+        timeout-minutes: 65
       - name: Test contracts
         run: bun run test
         working-directory: packages/contracts
