@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { joinUrl } from "../../packages/contracts/src/url-join";
 import { CannotRunError, pool } from "./corpus-io";
 
 /**
@@ -166,7 +167,7 @@ export async function dispatchConfig(): Promise<DispatchConfig> {
   if (token === "") {
     throw new DispatchConfigError("the file DISPATCH_TOKEN_FILE names holds no token");
   }
-  return { baseUrl: baseUrl.replace(/\/+$/, ""), token };
+  return { baseUrl, token };
 }
 
 /**
@@ -197,7 +198,14 @@ async function read<T>(
   body: (answer: Response) => Promise<T>
 ): Promise<T> {
   const resolved = config ?? (await dispatchConfig());
-  const url = `${resolved.baseUrl}${path}`;
+  let url: string;
+  try {
+    url = joinUrl(resolved.baseUrl, path).href;
+  } catch {
+    // An API path is a relative reference, so what is refused is the server's URL, named by its
+    // setting: it can carry a credential in its user information or its query.
+    throw new DispatchConfigError("DISPATCH_URL is not an absolute URL with a host (not printed)");
+  }
   let lastFailure = "no try was made";
   for (let attempt = 0; ; attempt += 1) {
     try {
