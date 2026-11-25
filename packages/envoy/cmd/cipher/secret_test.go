@@ -1584,20 +1584,6 @@ func TestSecretShowOfADeletedSecretNamesTheEarliestPurge(t *testing.T) {
 	}
 }
 
-// TestEarliestPurgeIsTheOnePlaceDeletedDateIsRead pins earliestPurge's reading of DeletedDate: the
-// moment the delete ran (measured against Secrets Manager) plus AWS's 7-day minimum recovery
-// window, the earliest the secret can be purged whatever window its delete used; never plus 30.
-func TestEarliestPurgeIsTheOnePlaceDeletedDateIsRead(t *testing.T) {
-	t.Parallel()
-	if earliestPurge(nil) != nil {
-		t.Fatal("earliestPurge(nil) must be nil: the secret is not scheduled for deletion")
-	}
-	deletedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	if got := earliestPurge(&deletedAt); !got.Equal(time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)) {
-		t.Fatalf("earliestPurge = %v, want the delete's time plus 7 days", got)
-	}
-}
-
 // TestSecretShowNeverPrintsTheValue: show prints a secret's name, secret name, owner, tier,
 // requesters, created and last-changed times and versions, a field the secret holds none of as
 // "-", no deletion for a secret not scheduled for one, and never the value, as text or as JSON.

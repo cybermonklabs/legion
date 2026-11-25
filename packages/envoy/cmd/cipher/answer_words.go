@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // reportPending says, once, before the exec form's wait, who decides the request — a person, or
@@ -139,7 +140,7 @@ func statusHint(base cipheraddr.Address, requestID string) string {
 	shown := idWords(base, requestID)
 	switch {
 	case shown == requestID:
-		return "Check it with: agent-secrets status " + shellWord(requestID)
+		return "Check it with: agent-secrets status " + secretstore.ShellWord(requestID)
 	case base.Clean():
 		return "Check it with: agent-secrets status " + shown
 	}

@@ -140,6 +140,23 @@ func TestAWSReadReturnsErrNotFoundForASecretScheduledForDeletion(t *testing.T) {
 	}
 }
 
+// TestEarliestPurgeIsTheOnePlaceDeletedDateIsRead pins Listing.EarliestPurge's reading of
+// DeletedDate: the moment the delete ran (measured against Secrets Manager) plus AWS's 7-day
+// minimum recovery window, the earliest the secret can be purged whatever window its delete used;
+// never plus 30. A secret not scheduled for deletion has none.
+func TestEarliestPurgeIsTheOnePlaceDeletedDateIsRead(t *testing.T) {
+	live := awstest.LocalSecret{Name: "dev/agent-secrets/live", Value: "v"}
+	deleting := awstest.LocalSecret{Name: "dev/agent-secrets/deleting", Value: "v", DeletedAt: new(time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC))}
+	store := Store{Client: awstest.NewLocal(live, deleting)}
+	if ls, err := store.Describe(context.Background(), live.Name, secretstore.ReadOptions{}); err != nil || !ls.EarliestPurge.IsZero() {
+		t.Fatalf("Describe(live) EarliestPurge = %v, %v; want none: the secret is not scheduled for deletion", ls.EarliestPurge, err)
+	}
+	ls, err := store.Describe(context.Background(), deleting.Name, secretstore.ReadOptions{IncludeDeleted: true})
+	if err != nil || !ls.EarliestPurge.Equal(time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("Describe(deleting) EarliestPurge = %v, %v; want the delete's time plus 7 days", ls.EarliestPurge, err)
+	}
+}
+
 // TestAWSReadOfAValueThatIsNotTextIsErrValueNotText: a secret whose current value is SecretBinary
 // alone, or an empty SecretString, holds nothing the broker can hand a command, and Read answers
 // it as ErrValueNotText, never as a secret the store does not hold.

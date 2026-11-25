@@ -21,6 +21,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // printedRenewCommand is the command the enrolment named, taken out of its stderr line.
@@ -37,7 +39,7 @@ func TestThePrintedRenewalCommandRunsFromAnOutDirectory(t *testing.T) {
 	tokenFile := writePodToken(t, token)
 	broker, calls := servePodBroker(t, "enrollment-of-the-pod")
 	// A directory a shell would split without quoting, and whose apostrophe a single-quoted
-	// word has to close, escape and reopen (shellWord): a command that pasted the path raw, or
+	// word has to close, escape and reopen (secretstore.ShellWord): a command that pasted the path raw, or
 	// quoted it naively, names another directory and finds no key.
 	out := filepath.Join(t.TempDir(), "key d'ir")
 
@@ -107,7 +109,7 @@ func TestThePrintedRenewalCommandRunsFromAnOutDirectory(t *testing.T) {
 	// forever would hang the package rather than name what went wrong.
 	bareCtx, cancelBare := context.WithTimeout(context.Background(), untilGiveUp(t))
 	defer cancelBare()
-	bare := exec.CommandContext(bareCtx, "/bin/sh", "-c", "agent-secrets renew --pod-token-file "+shellWord(tokenFile))
+	bare := exec.CommandContext(bareCtx, "/bin/sh", "-c", "agent-secrets renew --pod-token-file "+secretstore.ShellWord(tokenFile))
 	bare.Env = environment()
 	bare.Cancel = func() error { return syscall.Kill(-bare.Process.Pid, syscall.SIGKILL) }
 	bare.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

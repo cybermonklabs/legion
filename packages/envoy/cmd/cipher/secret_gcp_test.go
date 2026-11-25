@@ -41,6 +41,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 )
@@ -95,6 +96,9 @@ type fakeSecretManager struct {
 	// ...), the code every call of that method is refused with, as IAM refuses an identity one
 	// permission it does not grant while granting it the others.
 	refuseMethods map[string]codes.Code
+	// refuseText is added to the text of a refusal refuseMethods makes, as the service's own words,
+	// which no line agent-secrets prints may carry.
+	refuseText string
 	// answerAfter is, for each method it names, the code every call of that method is answered
 	// with once the fake has applied it, as a call the server carried out and whose answer was lost
 	// (DeadlineExceeded, Unavailable) reaches the caller. beforeCall, when set, runs with each
@@ -136,7 +140,7 @@ func (f *fakeSecretManager) recordAuthorization(ctx context.Context, req any, in
 	f.authorizations = append(f.authorizations, authorization)
 	f.methods = append(f.methods, method)
 	refused := f.refuse != "" && authorization == f.refuse
-	code, after, before := f.refuseMethods[method], f.answerAfter[method], f.beforeCall
+	code, after, before, text := f.refuseMethods[method], f.answerAfter[method], f.beforeCall, f.refuseText
 	f.mu.Unlock()
 	if before != nil {
 		before(method)
@@ -145,7 +149,7 @@ func (f *fakeSecretManager) recordAuthorization(ctx context.Context, req any, in
 		return nil, status.Errorf(codes.PermissionDenied, "Permission denied on %s for the caller", info.FullMethod)
 	}
 	if code != codes.OK {
-		return nil, status.Errorf(code, "the fake refuses %s", info.FullMethod)
+		return nil, status.Errorf(code, "the fake refuses %s%s", info.FullMethod, text)
 	}
 	resp, err := handler(ctx, req)
 	if f.afterCall != nil {
@@ -649,16 +653,16 @@ func useGcloud(t *testing.T, accounts ...string) gcloudStub {
 	dir := t.TempDir()
 	words := make([]string, len(accounts))
 	for i, account := range accounts {
-		words[i] = shellWord(account)
+		words[i] = secretstore.ShellWord(account)
 	}
 	first := ""
 	if len(accounts) > 0 {
-		first = shellWord(accounts[0])
+		first = secretstore.ShellWord(accounts[0])
 	}
-	environments := shellWord(filepath.Join(dir, "environments"))
+	environments := secretstore.ShellWord(filepath.Join(dir, "environments"))
 	script := strings.Join([]string{
 		"#!/bin/sh",
-		`printf '%s\n' "$*" >>` + shellWord(filepath.Join(dir, "commands")),
+		`printf '%s\n' "$*" >>` + secretstore.ShellWord(filepath.Join(dir, "commands")),
 		`for name in ` + strings.Join(gcloudVariables, " ") + `; do eval "value=\${$name-unset}"; printf '%s=%s\n' "$name" "$value"; done >>` + environments,
 		`printf '%s\n' -- >>` + environments,
 		`case "$1 $2" in`,
@@ -1289,7 +1293,7 @@ func TestGCPSecretPipeCommandKeepsTheGcloudAccountChoice(t *testing.T) {
 // TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline: an expired gcloud token is
 // refreshed through gcloudToken.Token, which runs `gcloud auth print-access-token`. A gcloud that
 // never answers - here a script whose child holds its output open, as the real gcloud's Python does
-// under its shell wrapper - ends at the deadline on each store call (storeCallDeadline), so a stalled
+// under its shell wrapper - ends at the deadline on each store call (secretstore.CallDeadline), so a stalled
 // refresh cannot outlast the store call it serves; the error names the account and the deadline.
 // The refresh is timed against that deadline, less the time this process was held up
 // (endsByItsDeadline).
@@ -1333,16 +1337,16 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 		case "fail":
 			return `echo 'ERROR: (gcloud.` + command + `) the test fails it' >&2; exit 1`
 		case "hang":
-			return "exec " + shellWord(sleep) + " 30"
+			return "exec " + secretstore.ShellWord(sleep) + " 30"
 		}
-		return "printf '%s\\n' " + shellWord(answer)
+		return "printf '%s\\n' " + secretstore.ShellWord(answer)
 	}
 	script := strings.Join([]string{
 		"#!/bin/sh",
 		`case "$1 $2" in`,
 		`"auth list") ` + behave("auth.list", `[{"account":"`+account+`","status":"ACTIVE"}]`, authList) + ` ;;`,
 		`"config list") ` + behave("config.list", `{"auth":{}}`, configList) + ` ;;`,
-		`"auth print-access-token") printf '%s\n' ` + shellWord(stubTokenPrefix+account) + ` ;;`,
+		`"auth print-access-token") printf '%s\n' ` + secretstore.ShellWord(stubTokenPrefix+account) + ` ;;`,
 		`*) printf 'stub gcloud: unexpected command: %s\n' "$*" >&2; exit 2 ;;`,
 		"esac",
 		"",
@@ -1391,7 +1395,7 @@ func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 }
 
 // TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline: `gcloud auth list`, which
-// decides whether the gcloud source is present, runs under storeCallDeadline as the token's
+// decides whether the gcloud source is present, runs under secretstore.CallDeadline as the token's
 // refresh does, so a gcloud that never answers stops the command at the deadline, naming it,
 // before any Secret Manager call, timed against that deadline (requireOnTime).
 func TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {

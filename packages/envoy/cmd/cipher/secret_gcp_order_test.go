@@ -29,6 +29,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -172,14 +173,14 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 		account, file := configs[name], "[core]\n"
 		if account != "" {
 			file += "account = " + account + "\n"
-			if !slices.Contains(accounts, shellWord(account)) {
-				accounts = append(accounts, shellWord(account))
+			if !slices.Contains(accounts, secretstore.ShellWord(account)) {
+				accounts = append(accounts, secretstore.ShellWord(account))
 			}
 		}
 		if err := os.WriteFile(filepath.Join(dir, "configurations", "config_"+name), []byte(file), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		cases = append(cases, shellWord(name)+") account="+shellWord(account)+" ;;")
+		cases = append(cases, secretstore.ShellWord(name)+") account="+secretstore.ShellWord(account)+" ;;")
 	}
 	if active != "" {
 		if err := os.WriteFile(filepath.Join(dir, "active_config"), []byte(active), 0o600); err != nil {
@@ -192,7 +193,7 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 		`config=`,
 		`for word; do case "$word" in --configuration=*) config=${word#--configuration=} ;; esac; done`,
 		`[ -n "$config" ] || config=$CLOUDSDK_ACTIVE_CONFIG_NAME`,
-		`[ -n "$config" ] || { [ -f ` + shellWord(filepath.Join(dir, "active_config")) + ` ] && read -r config <` + shellWord(filepath.Join(dir, "active_config")) + `; }`,
+		`[ -n "$config" ] || { [ -f ` + secretstore.ShellWord(filepath.Join(dir, "active_config")) + ` ] && read -r config <` + secretstore.ShellWord(filepath.Join(dir, "active_config")) + `; }`,
 		`account=`,
 		`case "$config" in ` + strings.Join(cases, " ") + ` *) ;; esac`,
 		`[ -n "$account" ] || case "` + active + `" in ` + strings.Join(cases, " ") + ` *) ;; esac`,

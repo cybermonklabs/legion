@@ -21,7 +21,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -36,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -375,34 +375,12 @@ func (e promptControlByteError) name() string {
 	return "Ctrl-" + string(rune('@'+e.c))
 }
 
-// shellUnsafe is any character outside the set a POSIX shell reads literally in a bare word.
-var shellUnsafe = regexp.MustCompile(`[^A-Za-z0-9_./:@-]`)
-
-// shellWord is s as one shell word: bare when every character is literal, else single-quoted with
-// each `'` closed, escaped and reopened.
-func shellWord(s string) string {
-	if s != "" && !shellUnsafe.MatchString(s) {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// pipeCommand is the command line a form names for piping a value in: prefix (the backend's
-// signInPrefix), agent-secrets, then words, each shell-quoted, so running it signs in the same way.
-func pipeCommand(prefix string, words ...string) string {
-	quoted := make([]string, len(words))
-	for i, w := range words {
-		quoted[i] = shellWord(w)
-	}
-	return prefix + "agent-secrets " + strings.Join(quoted, " ")
-}
-
 // readSecretValue reads the value of the secret name for a form, giving up with
 // errValueTimedOut at deadline, or never where deadline is the zero time; a value read whole only
 // after deadline is refused the same way. At a terminal it prompts on stderr, once it holds the
 // terminal with echo off, naming deadline where there is one, and reads one line (readHidden),
 // as `gh secret set` does, so the value never shows on the screen; a value of more than one line
-// is refused there, naming pipeTo, the form's own command line (pipeCommand) with the value piped
+// is refused there, naming pipeTo, the form's own command line (secretstore.Command) with the value piped
 // in. Otherwise it reads all of secretStdin.
 //
 // Both arms then meet one tail: it refuses a value that is not valid UTF-8, whichever arm read
@@ -579,24 +557,9 @@ func withArticle(secretType string) string {
 	return "a " + secretType
 }
 
-// minRecoveryWindowDays is the shortest recovery window Secrets Manager allows a deletion, 7 days.
+// minRecoveryWindowDays is the shortest recovery window Secrets Manager allows a deletion, 7 days,
+// which the AWS store adds to a deletion for a listing's EarliestPurge and the lines here name.
 const minRecoveryWindowDays = 7
-
-// earliestPurge is the earliest moment Secrets Manager can purge a secret scheduled for deletion,
-// read back from the DeletedDate it answers for it (DescribeSecret's and ListSecrets'); nil while
-// it is not scheduled. DeletedDate is the moment the delete ran (measured against Secrets
-// Manager), and neither call answers the recovery window the delete used, which can be anything
-// from 7 to 30 days, so the earliest the secret can be gone is DeletedDate plus the 7-day minimum:
-// a reader told this date never waits past the purge to restore it. It is the one place that reads
-// DeletedDate. delete itself prints DeleteSecret's own DeletionDate, the exact end of the window it
-// scheduled.
-func earliestPurge(deletedDate *time.Time) *time.Time {
-	if deletedDate == nil {
-		return nil
-	}
-	t := deletedDate.AddDate(0, 0, minRecoveryWindowDays)
-	return &t
-}
 
 // formatTime is t in UTC as RFC 3339, or "-" when Secrets Manager answered none.
 func formatTime(t *time.Time) string {
@@ -614,124 +577,14 @@ func orDash(s string) string {
 	return s
 }
 
-// secretBackend is the per-store backend the secret forms call: AWS Secrets Manager
-// (aws.Name, or "" from a broker that predates the `store` setting) or GCP Secret
-// Manager (gcp.Name), chosen from the broker's GET /v1/settings `store` field. Every
-// method takes the secret's name under the prefix (secretName's slug); the full store-side name
-// (each backend's own id) is each backend's own concern.
-type secretBackend interface {
-	// requireAccount refuses, before any read or write, a sign-in whose account does not hold the
-	// agent secrets: a read there would list another account's secrets as if they were the agent
-	// secrets. AWS only: GCP needs no equivalent (gcpBackend.requireAccount says why). AWS keeps
-	// the sign-in it read for personEmail and identity.
-	requireAccount(ctx context.Context) error
-	// personEmail answers, for --owner me alone, the lowercased email of the person the sign-in
-	// names: AWS reads an Identity Center sign-in's session name, GCP asks Google's userinfo
-	// endpoint. It refuses a sign-in that names no person - a machine's role, a service account, a
-	// token without an email scope - which reads and writes all the same: the store's IAM, not
-	// this CLI, decides what any sign-in may do.
-	personEmail(ctx context.Context) (string, error)
-	// identity names the sign-in, as `<source>: <principal>`, for the line every form prints
-	// before its first store call (openSession) and a refusal of the store's
-	// (secretSession.refusedAs): the source the backend took the credential from (a
-	// variable, a file, gcloud, the machine) and who it acts as - AWS's ARN, a Google account's
-	// email - or that the principal is unknown.
-	identity() string
-	// chooseAnother is how a refusal of the store's tells the caller to sign in with another
-	// credential, as one clause that starts "choose another": built from the source that signed
-	// in, it names the variables that can choose another from there - never one that source
-	// outranks without saying so - and on Google Cloud the gcloud configurations
-	// CLOUDSDK_ACTIVE_CONFIG_NAME can name.
-	chooseAnother() string
-	// signInPrefix is the shell assignments a command line the form prints for running again
-	// (pipeCommand) needs to sign in as this one did when the sign-in came from a variable that
-	// may have been set for this command alone: GCP's GOOGLE_APPLICATION_CREDENTIALS when that
-	// chose the source, and CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT when they chose
-	// the gcloud login; AWS's AWS_PROFILE or AWS_DEFAULT_PROFILE when that profile signed in, and
-	// AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN for a web identity; else "", and never a key or
-	// a token. It ends in a space when it is not empty.
-	signInPrefix() string
-
-	list(ctx context.Context) ([]secretView, error)
-	show(ctx context.Context, slug string) (secretView, error)
-	// prepareCreate builds the create's state without writing. begin makes the value-free store
-	// call, where the backend has one, after the form has installed its signal cleanup.
-	prepareCreate(slug string, tags map[string]string) newSecret
-	set(ctx context.Context, slug, value string) error
-	// currentTags answers the secret's tags as one read holds them (AWS tags, or Secret Manager
-	// annotations with that read's etag), from which retag builds the tags the secret will hold once
-	// its write lands, and against which it makes that write.
-	currentTags(ctx context.Context, slug string) (heldTags, error)
-	// tagReadPermission names the store permission currentTags needs, for the refusal a set
-	// prints when the store refuses that read (secretSession.tagReadRefusal).
-	tagReadPermission() string
-	// readValue answers the secret's current value, as the broker's own store reads it: a
-	// non-empty string, and on Secret Manager valid UTF-8. Only retag reads it, to decode it under
-	// the type it is about to write (checkRetagValue), and nothing prints it.
-	readValue(ctx context.Context, slug string) (string, error)
-	// valueReadPermission names the store permissions readValue needs, for the line retag prints
-	// when the store refuses that read (checkRetagValue).
-	valueReadPermission() string
-	// setTags writes tags onto the secret in one call and leaves every other tag as it is.
-	// removeTags removes keys from it in one call and leaves every other tag as it is. Each writes
-	// against held, and answers errTagsChanged when another write raced it: GCP sends held's
-	// annotations, changed, with held's etag, which a raced write fails, so nothing is written;
-	// AWS's tag calls take no condition, so its write lands first and is read back after
-	// (awsBackend.raceCheck), and an error from that read-back comes with the write in the store
-	// and nothing put back (tagsLanded, writeLanded). On either store, a call whose error is no
-	// definite refusal (a service fault, an outage, a lost connection) leaves open whether the
-	// write landed (tagsUnknown, writeUnknown).
-	setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error
-	removeTags(ctx context.Context, slug string, held heldTags, keys []string) error
-	// checkTagValues refuses, before any write, a tag value the store itself would refuse, naming
-	// the tag and the store's limit (awsBackend's: 256 characters of a fixed set; Secret Manager's
-	// annotations take any value the tag rules allow). tags is every tag the write sends.
-	checkTagValues(tags map[string]string) error
-	// delete schedules the secret's deletion and answers the moment it happens (AWS:
-	// DeleteSecret's own recovery window end; GCP: the expire_time it sets), nil only on error.
-	delete(ctx context.Context, slug string) (deletion *time.Time, err error)
-	restore(ctx context.Context, slug string) error
-
-	// isAccessDenied reports whether err is the store's own access-denied refusal and only that
-	// (AWS's AccessDeniedException, Secret Manager's PERMISSION_DENIED), used by retag's
-	// shared-secret message, by its value read (checkRetagValue) and by every refusal's identity
-	// (secretSession.refusedAs).
-	isAccessDenied(err error) bool
-
-	// close releases the backend's own connection (GCP's gRPC client; AWS's HTTP-based SDK
-	// clients need no release). A short CLI process would reclaim it on exit regardless, but a
-	// test building many backends in one process leaks goroutines without it.
-	close() error
-}
-
-// newSecret is a prepared secret create. begin makes any value-free store call before the value
-// is read; on failure it answers what its recovery left, so the form can reread after a deletion.
-// store writes the first value. discard, called when no value will be stored, checks creation
-// identity and versions before deleting an empty GCP secret; AWS makes nothing until store and
-// discards nothing. Its error names what stays and the command that clears or settles it, and is
-// nil when nothing stays. Each store call of begin, store and discard runs under
-// storeCallDeadline. unsettled names, for a form that ends without waiting on the call in flight,
-// what the store may be left holding and the command that clears or settles it; a second signal
-// calls it while begin, store or discard may be running, so it reads only what is safe then.
-// madeBeforeValue reports whether begin makes a secret that waits in the store for its value (GCP),
-// which the broker holds as pending for policy.PendingValueWindow, so the form's read of the value
-// ends with that window; AWS makes nothing before the value, and its read has no bound.
-type newSecret interface {
-	begin(ctx context.Context) (discardOutcome, error)
-	store(ctx context.Context, value string) error
-	discard(ctx context.Context) (discardOutcome, error)
-	unsettled() string
-	madeBeforeValue() bool
-}
-
-// secretSession is one secret form's connection: the broker and the backend (requireAccount)
+// secretSession is one secret form's connection: the broker and the store's writer (backend)
 // opened for it; src, the store those reads and writes go to, which every answer and every
 // refusal of the form names (source.go); and readsTypeTag, whether the broker's settings say it
 // reads a secret's type from the type tag (Settings.SecretTypeTag, requireTypeTag).
 type secretSession struct {
 	ctx          context.Context
 	broker       *client
-	backend      secretBackend
+	backend      secretstore.Writer
 	src          source
 	readsTypeTag bool
 	// settings are the broker's GET /v1/settings, whose judge_keys `secret show` reads.
@@ -854,7 +707,10 @@ func whoDecides(view secretView, settings Settings) string {
 }
 
 // Close releases the session's backend connection.
-func (s *secretSession) Close() error { return s.backend.close() }
+func (s *secretSession) Close() error { return s.backend.Close() }
+
+// id is the store's name of the secret whose name under the prefix is slug.
+func (s *secretSession) id(slug string) string { return s.settings.SecretsPrefix + slug }
 
 // storeName is the store this session reads and writes, for a line that names where an answer
 // came from: the secret forms call the store directly under the environment's cloud credential,
@@ -862,25 +718,43 @@ func (s *secretSession) Close() error { return s.backend.close() }
 func (s *secretSession) storeName() string { return s.src.storeName() }
 
 // refusedAs is err, and where err is the store's own access-denied refusal, the sign-in the form
-// called the store as (backend.identity) beside it, so a refusal of IAM's names whom IAM refused,
-// and how to choose another (backend.chooseAnother).
+// called the store as (backend.Identity) beside it, so a refusal of IAM's names whom IAM refused,
+// and how to choose another (backend.ChooseAnother).
 func (s *secretSession) refusedAs(err error) error {
-	if !s.backend.isAccessDenied(err) {
+	if !s.backend.AccessDenied(err) {
 		return err
 	}
-	return fmt.Errorf("%w; the store refused %s; %s", err, s.backend.identity(), s.backend.chooseAnother())
+	return fmt.Errorf("%w; the store refused %s; %s", err, s.backend.Identity(), s.backend.ChooseAnother())
 }
 
 // tagReadRefusal is err, the failure of a form's read of the secret name's tags, said as the
 // form must say it: a store that refused the read names the permission that read needs
-// (backend.tagReadPermission), since whoever may store a value may read that secret's tags, and
+// (backend.TagReadPermission), since whoever may store a value may read that secret's tags, and
 // a person whose grant predates that rule is refused here with nothing written. Any other
 // failure is said as it is.
 func (s *secretSession) tagReadRefusal(name string, err error) error {
-	if !s.backend.isAccessDenied(err) {
+	if !s.backend.AccessDenied(err) {
 		return fmt.Errorf("read %s's tags for its type: %w", name, err)
 	}
-	return fmt.Errorf("read %s's tags for its type, which needs %s: %w", name, s.backend.tagReadPermission(), err)
+	return fmt.Errorf("read %s's tags for its type, which needs %s: %w", name, s.backend.TagReadPermission(), err)
+}
+
+// tagValueChecker is a writer that refuses, before any write, a tag value its store would refuse
+// (AWS: 256 characters of a fixed set). A store with no such limit implements none: Secret
+// Manager's annotations take any value the tag rules allow, within one 16 KiB budget for the
+// whole map, which the longest tag this client writes (guidance, policy.MaxGuidanceRunes) stays
+// under.
+type tagValueChecker interface {
+	CheckTagValues(tags map[string]string) error
+}
+
+// checkTagValues refuses, before any write, a tag value w's store would refuse, naming the tag
+// and the store's limit; tags is every tag the write sends.
+func checkTagValues(w secretstore.Writer, tags map[string]string) error {
+	if checker, ok := w.(tagValueChecker); ok {
+		return checker.CheckTagValues(tags)
+	}
+	return nil
 }
 
 // requireTypeTag refuses a write after which the secret name holds the type secretType ("" for
@@ -906,14 +780,14 @@ func (s *secretSession) requireTypeTag(name, secretType string) error {
 
 // ownerTag is the owner tag --owner names, as checkOwnerTier answered it: shared, a person's
 // email, a group's group: form, or, for me, the email of the person the sign-in names
-// (backend.personEmail), which only --owner me asks for. A sign-in that names no person, or names
+// (backend.PersonEmail), which only --owner me asks for. A sign-in that names no person, or names
 // one by an email the broker does not accept as an owner, is refused naming --owner <email>,
 // which names the owner instead.
 func (s *secretSession) ownerTag(owner string) (string, error) {
 	if owner != ownerMe {
 		return owner, nil
 	}
-	email, err := s.backend.personEmail(s.ctx)
+	email, err := s.backend.PersonEmail(s.ctx)
 	if err == nil && !policy.ValidPersonOwner(email) {
 		err = fmt.Errorf("the sign-in's email %q is not an email the broker accepts as an owner", email)
 	}
@@ -933,11 +807,12 @@ func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) in
 }
 
 // openSession reads the broker's settings from AGENT_SECRETS_URL, opens the backend its `store`
-// field names (openSecretBackend) and, on AWS, refuses a sign-in in another account
-// (backend.requireAccount), whose secrets are not the agent secrets; GCP needs no equivalent. It
+// field names (openSecretBackend) and, where the backend can tell (secretstore.AccountGuard,
+// AWS's), refuses a sign-in in another account, whose secrets are not the agent secrets; GCP needs
+// no equivalent: every call it makes names projects/<gcp_project>/... in the resource. It
 // refuses no sign-in for the kind of identity it is, a read's or a write's: the store's IAM
 // decides what it may do. Once the backend is open, and before any store call, it prints on
-// stderr the one line that names the sign-in form's calls run under (backend.identity).
+// stderr the one line that names the sign-in form's calls run under (backend.Identity).
 func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSession, error) {
 	base := brokerBaseURL()
 	if base.Empty() {
@@ -956,11 +831,13 @@ func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSes
 		return nil, err
 	}
 	s := &secretSession{ctx: ctx, broker: broker, backend: backend, src: brokerSource(base).withSettings(settings), readsTypeTag: settings.SecretTypeTag, settings: settings}
-	if err := backend.requireAccount(ctx); err != nil {
-		s.Close()
-		return nil, err
+	if guard, ok := backend.(secretstore.AccountGuard); ok {
+		if err := guard.RequireAccount(ctx); err != nil {
+			s.Close()
+			return nil, err
+		}
 	}
-	fmt.Fprintf(stderr, "agent-secrets %s: using %s\n", form, backend.identity())
+	fmt.Fprintf(stderr, "agent-secrets %s: using %s\n", form, backend.Identity())
 	return s, nil
 }
 
@@ -970,7 +847,7 @@ func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSes
 // secrets_prefix and kms_key_name's own shape agree on (checkSettingsKMSKeyName), for
 // gcp.Name. The store credential comes from the environment, not a flag. Any other store
 // is refused before any cloud call.
-func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, error) {
+func openSecretBackend(ctx context.Context, settings Settings) (secretstore.Writer, error) {
 	switch settings.Store {
 	case "", aws.Name:
 		if err := checkSettingsKeyARN(settings); err != nil {
@@ -980,7 +857,7 @@ func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, e
 		if err != nil {
 			return nil, err
 		}
-		return &awsBackend{settings: settings, sm: awsStore{sm}, st: st, source: awsSourceOf(sources)}, nil
+		return newAWSBackend(settings, sm, st, sources), nil
 	case gcp.Name:
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
@@ -1041,7 +918,7 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 	}
 	fmt.Fprintf(stderr, "agent-secrets %s: the value of %s in %s stands, but %s serves %s as %s, not %s%s. Run `%s` to write the type again and ask it to reread %s, until that exits 0\n",
 		form, name, s.storeName(), s.src.brokerAt(), name, servedTypeName(s, r.Type), typeName(secretType), releases,
-		pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", retag), name)
+		secretstore.Command(s.backend.RerunPrefix(), "secret", "retag", name, "--type", retag), name)
 	return 1
 }
 
@@ -1092,9 +969,9 @@ func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType s
 // broker that reads it, releasing what it stores as it is.
 func typeTagHolds(s *secretSession, stderr io.Writer, form, name, secretType string) bool {
 	slug, err := policy.NameToSlug(name)
-	var held heldTags
+	var held secretstore.HeldTags
 	if err == nil {
-		held, err = s.backend.currentTags(s.ctx, slug)
+		held, err = s.backend.CurrentTags(s.ctx, s.id(slug))
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: the write to %s stands, but reading %s's type tag back failed, so whether the store kept the type %s is unknown: %v\n",
@@ -1103,7 +980,7 @@ func typeTagHolds(s *secretSession, stderr io.Writer, form, name, secretType str
 	}
 	// The type the store holds is the type tag, else the old kind tag a secret from before it may
 	// still carry, as the broker reads it (policy.TypeFromTags).
-	found := policy.TypeFromTags(held.tags)
+	found := policy.TypeFromTags(held.Tags)
 	if found == secretType {
 		return true
 	}
@@ -1111,7 +988,7 @@ func typeTagHolds(s *secretSession, stderr io.Writer, form, name, secretType str
 		found = tagNone
 	}
 	fmt.Fprintf(stderr, "agent-secrets %s: the write to %s stands, but %s's type tag there is %s, not %s. Run `%s` to write the type again, until that exits 0\n",
-		form, s.storeName(), name, found, secretType, pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", secretType))
+		form, s.storeName(), name, found, secretType, secretstore.Command(s.backend.RerunPrefix(), "secret", "retag", name, "--type", secretType))
 	return false
 }
 
@@ -1125,7 +1002,7 @@ func sayUnchecked(s *secretSession, stderr io.Writer, form, name, secretType str
 	if secretType != "" {
 		fmt.Fprintf(stderr, "agent-secrets %s: %s carries the type tag %s in %s, but whether %s serves it as %s was not checked (%v), so this exit 0 says only that the store holds the tag. Store no key or login in %s until `%s`, run where this command has a broker identity (`%s`), prints `broker: serving %s from … (type %s)`\n",
 			form, name, secretType, s.storeName(), s.src.brokerAt(), secretType, unsigned, name,
-			pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", secretType), cipherclient.SignInCommand, name, secretType)
+			secretstore.Command(s.backend.RerunPrefix(), "secret", "retag", name, "--type", secretType), cipherclient.SignInCommand, name, secretType)
 		return
 	}
 	route := s.broker.baseURL.Call(s.broker.route("/v1/secrets/" + name + "/reread"))
@@ -1152,7 +1029,7 @@ func printReread(s *secretSession, stdout io.Writer, name string, r Reread, dele
 }
 
 // rereadOpen asks the broker to reread name after a write whose answer left open whether it
-// landed (writeUnknown), as every reread is asked (askReread), and prints the broker's answer
+// landed (secretstore.Unknown), as every reread is asked (askReread), and prints the broker's answer
 // without judging it, since either outcome is possible. When the broker cannot be asked, it says
 // so and names the reread to ask for once the store holds what the person wants, and nothing of
 // when the broker would serve a change on its own: that depends on the write, which may not have
@@ -1184,7 +1061,7 @@ func rereadCommand(name string) string {
 // secretShowCommand is the `secret show` that reads name's tags and versions under the sign-in
 // this session used: the command every line names that sends a person to read what a write left.
 func secretShowCommand(s *secretSession, name string) string {
-	return pipeCommand(s.backend.signInPrefix(), "secret", "show", name)
+	return secretstore.Command(s.backend.RerunPrefix(), "secret", "show", name)
 }
 
 // secretView is what list and show print of one secret: never its value.
@@ -1267,7 +1144,7 @@ type secretView struct {
 	// scheduling moment to report, so this is not "when its deletion was scheduled" there).
 	Deleted *time.Time `json:"deleted,omitempty"`
 	// EarliestPurge is the earliest Secrets Manager can purge it, set while it is scheduled for
-	// deletion (earliestPurge): restorable at least until then, perhaps longer.
+	// deletion (secretstore.Listing.EarliestPurge): restorable at least until then, perhaps longer.
 	EarliestPurge *time.Time `json:"earliest_purge,omitempty"`
 	// Versions maps each version id to its AWS staging labels, or each GCP version number to its
 	// one-element state (ENABLED, DISABLED, DESTROYED). Only show answers it.
@@ -1289,6 +1166,25 @@ func (v secretView) withTags(tags map[string]string) secretView {
 		v.ProjectChannels = &channels
 	}
 	return v
+}
+
+// viewOf is what list and show print of l, a listing of a secret under prefix: each time only
+// where the store answered one, and the versions as listed, which only show asks for.
+func viewOf(l secretstore.Listing, prefix string) secretView {
+	return secretView{
+		Name: displayName(prefix, l.ID), SecretName: l.ID, HasValue: l.HasCurrentValue,
+		Created: timeOrNil(l.Created), LastChanged: timeOrNil(l.LastChanged),
+		Deleted: timeOrNil(l.Deleted), EarliestPurge: timeOrNil(l.EarliestPurge),
+		Versions: l.Versions,
+	}.withTags(l.Tags)
+}
+
+// timeOrNil is t, or nil for the zero time a store answers where it holds no such time.
+func timeOrNil(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // writeIndentedJSON writes v as indented JSON.
@@ -1318,9 +1214,13 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	views, err := s.backend.list(s.ctx)
+	listings, err := s.backend.List(s.ctx, s.settings.SecretsPrefix, secretstore.ReadOptions{IncludeDeleted: true})
 	if err != nil {
-		return secretFailIn(stderr, form, s, err)
+		return secretFailIn(stderr, form, s, fmt.Errorf("list the agent secrets: %w", err))
+	}
+	views := make([]secretView, 0, len(listings))
+	for _, l := range listings {
+		views = append(views, viewOf(l, s.settings.SecretsPrefix))
 	}
 	// sort.Slice's less answers a bool: an int-returning comparator would be read by broker-refgen
 	// as an exit code, which every int-returning function in this package is.
@@ -1380,10 +1280,11 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	view, err := s.backend.show(s.ctx, slug)
+	listing, err := s.backend.Describe(s.ctx, s.id(slug), secretstore.ReadOptions{IncludeDeleted: true, Versions: true})
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
+	view := viewOf(listing, s.settings.SecretsPrefix)
 	view.Store = s.storeName()
 
 	if *asJSON {
@@ -1530,16 +1431,16 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	// The store's own limit on a tag value, which on AWS is shorter and narrower than the tag
-	// rules' (awsBackend.checkTagValues), checked over every tag the create sends.
-	if err := s.backend.checkTagValues(tags); err != nil {
+	// rules' (checkTagValues), checked over every tag the create sends.
+	if err := checkTagValues(s.backend, tags); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
 	command := createCommand(name, *owner, *tier, f)
 	// Install cleanup before the first store call: a signal can arrive after the store has
 	// created the empty secret but before its answer reaches the form.
-	pending := &pendingCreate{s: s, form: form, name: name, secretType: policy.TypeFromTags(tags), owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
+	pending := &pendingCreate{s: s, form: form, name: name, secretType: policy.TypeFromTags(tags), owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.PrepareCreate(s.id(slug), tags)}
 	return runCreate(pending, func(deadline time.Time) (string, error) {
-		value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), command...), deadline, stderr)
+		value, err := readSecretValue(name, secretstore.Command(s.backend.RerunPrefix(), command...), deadline, stderr)
 		if err == nil && policy.ValidType(f.Type) {
 			err = checkValueFor(f.Type, value)
 		}
@@ -1573,25 +1474,25 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	// the broker does not say it reads the type tag (requireTypeTag). Whoever stores a value may
 	// therefore read that secret's tags, and a store that refuses the read says which permission
 	// it needs (tagReadRefusal).
-	held, err := s.backend.currentTags(s.ctx, slug)
+	held, err := s.backend.CurrentTags(s.ctx, s.id(slug))
 	if err != nil {
 		return secretFailIn(stderr, form, s, s.tagReadRefusal(name, err))
 	}
-	secretType := policy.TypeFromTags(held.tags)
+	secretType := policy.TypeFromTags(held.Tags)
 	if secretType != "" && !policy.ValidType(secretType) {
 		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s's type tag %q names no type the broker mints, and it refuses the secret as %s: retag it --type %s or %s before setting its value", name, secretType, policy.ReasonTypeUnknown, strings.Join(policy.Types, ", "), tagNone)})
 	}
 	if err := s.requireTypeTag(name, secretType); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), "secret", "set", name), time.Time{}, stderr)
+	value, err := readSecretValue(name, secretstore.Command(s.backend.RerunPrefix(), "secret", "set", name), time.Time{}, stderr)
 	if err == nil && secretType != "" {
 		err = checkValueFor(secretType, value)
 	}
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
-	if err := s.backend.set(s.ctx, slug, value); err != nil {
+	if err := s.backend.Set(s.ctx, s.id(slug), value); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
 	fmt.Fprintf(stdout, "set a new value of %s in %s\n", name, s.storeName())
@@ -1622,12 +1523,12 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	deletion, err := s.backend.delete(s.ctx, slug)
+	deletion, err := s.backend.Delete(s.ctx, s.id(slug))
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
 	fmt.Fprintf(stdout, "deleted %s in %s\n", name, s.storeName())
-	return rereadAfter(s, stdout, stderr, form, name, false, deletion)
+	return rereadAfter(s, stdout, stderr, form, name, false, timeOrNil(deletion))
 }
 
 func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
@@ -1646,7 +1547,7 @@ func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	if err := s.backend.restore(s.ctx, slug); err != nil {
+	if err := s.backend.Restore(s.ctx, s.id(slug)); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
 	fmt.Fprintf(stdout, "restored %s in %s\n", name, s.storeName())

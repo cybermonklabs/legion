@@ -90,6 +90,29 @@ type Store struct {
 	// KeyARN is the agent-secrets key's ARN (BROKER_SECRETS_KMS_KEY_ARN); a secret encrypted with
 	// any other key is not OnKey.
 	KeyARN string
+	// ClientErrors answers each failure of Client as Client returned it, with no prefix of the
+	// store's, a not-found one still matching ErrNotFound (secretstore.NotFound): for a client
+	// that words its own failures and never prints the service's text, the agent-secrets CLI's.
+	// The broker's store leaves it false.
+	ClientErrors bool
+}
+
+// failed is err, Client's failure, as the store answers it: under prefix, or as the client
+// returned it with ClientErrors.
+func (a Store) failed(prefix string, err error) error {
+	if a.ClientErrors {
+		return err
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
+}
+
+// missing is err, Client's failure saying the store holds no such secret, as ErrNotFound: itself,
+// or printing as the client worded it with ClientErrors.
+func (a Store) missing(err error) error {
+	if a.ClientErrors {
+		return secretstore.NotFound(err)
+	}
+	return secretstore.ErrNotFound
 }
 
 // awsListLag is how stale ListSecrets may be: AWS documents that it "might not reflect changes from
@@ -134,7 +157,7 @@ func (a Store) List(ctx context.Context, prefix string, opts secretstore.ReadOpt
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list secrets under %s: %w", prefix, err)
+			return nil, a.failed("list secrets under "+prefix, err)
 		}
 		for _, e := range page.SecretList {
 			if !strings.HasPrefix(aws.ToString(e.Name), prefix) {
@@ -159,9 +182,9 @@ func (a Store) Describe(ctx context.Context, id string, opts secretstore.ReadOpt
 	var notFound *types.ResourceNotFoundException
 	switch {
 	case errors.As(err, &notFound):
-		return secretstore.Listing{}, secretstore.ErrNotFound
+		return secretstore.Listing{}, a.missing(err)
 	case err != nil:
-		return secretstore.Listing{}, fmt.Errorf("describe %s: %w", id, err)
+		return secretstore.Listing{}, a.failed("describe "+id, err)
 	case out.DeletedDate != nil && !opts.IncludeDeleted:
 		return secretstore.Listing{}, secretstore.ErrNotFound
 	}
@@ -292,10 +315,10 @@ func (a Store) Read(ctx context.Context, source string) (string, error) {
 	var notFound *types.ResourceNotFoundException
 	var deleting *types.InvalidRequestException
 	if errors.As(err, &notFound) || errors.As(err, &deleting) {
-		return "", secretstore.ErrNotFound
+		return "", a.missing(err)
 	}
 	if err != nil {
-		return "", fmt.Errorf("secrets manager %s: %w", source, err)
+		return "", a.failed("secrets manager "+source, err)
 	}
 	if out.SecretString == nil || *out.SecretString == "" {
 		return "", fmt.Errorf("secrets manager %s: %w", source, secretstore.ErrValueNotText)

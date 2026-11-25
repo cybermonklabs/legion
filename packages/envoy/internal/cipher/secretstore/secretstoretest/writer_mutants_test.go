@@ -307,7 +307,7 @@ func TestWriterContractOnMutants(t *testing.T) {
 	for mutant, breaks := range map[string]string{
 		"none":                "",
 		"create-twice":        "a create of a held name is refused and changes nothing",
-		"lost-create-twice":   "a create whose answer is lost makes one secret",
+		"lost-create-twice":   "a create whose answer is lost makes no second secret",
 		"race-silent":         "a raced tag write says so",
 		"prints-service-text": "an access denial prints no service text",
 		"restore-noop":        "a delete hides the secret and a restore brings it back",

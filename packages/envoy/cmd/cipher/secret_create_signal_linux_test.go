@@ -26,6 +26,7 @@ import (
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
@@ -39,7 +40,7 @@ import (
 // (self-INT, self-HUP) sends this process that signal as the call begins and holds the call until
 // the signal is received and from then on, never answering it, so the call ends only at its own
 // deadline, which the signal is sure to come before. AGENT_SECRETS_CREATE_DEADLINE
-// is the deadline on each store call (storeCallDeadline). It prints READING at its first read of
+// is the deadline on each store call (secretstore.CallDeadline). It prints READING at its first read of
 // the value, CALL <method> at each store call (on AWS, CreateSecret alone), CREATED once a held GCP
 // CreateSecret has made the secret, SIGNALLED <signal> each time it receives a signal it does not
 // ignore, REREAD <name> at each broker reread, and RETURNED <exit code> when the create returns.
@@ -53,7 +54,7 @@ func TestCreateSignalHelper(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		storeCallDeadline = deadline
+		secretstore.CallDeadline = deadline
 	}
 	signalled := acknowledgeSignals()
 	held, holdFor, _ := strings.Cut(os.Getenv("AGENT_SECRETS_CREATE_HOLD"), ":")
@@ -447,7 +448,7 @@ func TestCreateFirstSignalDuringAnAWSCreateSaysWhatTheStoreMayHold(t *testing.T)
 
 // TestCreateSignalWaitsOnAnAddTheStoreNeverAnswersNoLongerThanItsDeadline: a signal that comes
 // while the store holds the add of the value without answering waits for that add no longer than
-// the deadline on each store call (storeCallDeadline, here five seconds): the add then ends as one
+// the deadline on each store call (secretstore.CallDeadline, here five seconds): the add then ends as one
 // that ran out of time, which may have stored the value or may still, so the create lists the
 // secret's versions, finds none, keeps the secret, says a late add may still land, asks the broker
 // to reread the name, and ends by the signal, though the store never answers the add. The helper
