@@ -88,8 +88,8 @@
         "test": "print-agent-secrets.apiError"
       },
       {
-        "holder": "(*github.com/sjawhar/envoy/cmd/cipher.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}",
-        "test": "print-agent-secrets.client.doStatus.envelope"
+        "holder": "(*github.com/sjawhar/envoy/cmd/cipher.client).send struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}",
+        "test": "print-agent-secrets.client.send.envelope"
       },
       {
         "holder": "github.com/sjawhar/envoy/cmd/cipher.RequestResult",
@@ -134,6 +134,10 @@
       {
         "holder": "github.com/sjawhar/envoy/cmd/cipher.GrantValues",
         "test": "print-agent-secrets.GrantValues"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.leftOut",
+        "test": "print-agent-secrets.leftOut"
       },
       {
         "holder": "github.com/sjawhar/envoy/cmd/cipher.Reread",
@@ -6863,14 +6867,14 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/502-page-echoes-body",
-      "production": "agent-secrets client.doStatus: a page that is no envelope, through the record (redact.Carried)"
+      "production": "agent-secrets client.send: a page that is no envelope, through the record (redact.Carried)"
     },
     {
       "id": "agentsecrets-answer-echo-proof",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/401-envelope-echoes-proof",
-      "production": "agent-secrets client.doStatus and apiError: the envelope's words, through the record (redact.Carried)"
+      "production": "agent-secrets client.send and apiError: the envelope's words, through the record (redact.Carried)"
     },
     {
       "id": "agentsecrets-answer-echo-terminal-proof",
@@ -7073,7 +7077,7 @@
       "requirement": "r1-fail-closed",
       "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide",
-      "production": "redact.Remote's step 0 (decodeSeparators) through agent-secrets client.doStatus's page, apiError and renewLoop"
+      "production": "redact.Remote's step 0 (decodeSeparators) through agent-secrets client.send's page, apiError and renewLoop"
     },
     {
       "id": "record-interleaved",
@@ -7270,13 +7274,6 @@
       "package": "./cmd/cipher",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.apiError",
       "production": "github.com/sjawhar/envoy/cmd/cipher.apiError: every printer at every placement"
-    },
-    {
-      "id": "print-agent-secrets.client.doStatus.envelope",
-      "requirement": "r2-held",
-      "package": "./cmd/cipher",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.client.doStatus.envelope",
-      "production": "(*github.com/sjawhar/envoy/cmd/cipher.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}: every printer at every placement"
     },
     {
       "id": "redact-answer-decode-box-member",
@@ -7535,7 +7532,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/grant-list",
-      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record; a cell of one field printed through fieldCell (cipheraddr.Address.WordsOf), the grant id through idWordsOf, and a cell of several fields (the secrets, the session) and the expiry through cipheraddr.Address.Words of their readings joined"
+      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record; a cell of one field printed through fieldCell (cipheraddr.Address.WordsOf), the grant id through idWordsOf, and a cell of several fields (the secrets, the session) through cipheraddr.Address.Words of their readings joined; the expiry, this CLI's own words, as grantExpiry writes it"
     },
     {
       "id": "agentsecrets-answer-words-machine-list",
@@ -17964,6 +17961,83 @@
       "package": "./loadtest",
       "test": "TestAListingNamesEachArtifactByAnIDInDispatchsShape/no-id-absent",
       "production": "loadtest readListing: a listing whose entry has no id member is refused for naming an artifact by no id"
+    },
+    {
+      "id": "agentsecrets-grant-cells-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean/twin",
+      "production": "the probe of the grant-cells rows: the address, a token in its path after '=', is not clean, and a field holding that token reads as the token (RemoteText.String), so the rows can see it printed"
+    },
+    {
+      "id": "agentsecrets-grant-cells-secrets",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean/secrets",
+      "production": "agent-secrets grantRow: the SECRETS cell, the readings of the grant's names joined, prints through cipheraddr.Address.Words, so beside an address that is not clean it is cipheraddr.WordsNotPrinted, never a name that echoes a credential the address carries where no request's record lists it (a token in its path)",
+      "function": "github.com/sjawhar/envoy/cmd/cipher.grantRow",
+      "capture": "agent-secrets.grant-cells/secrets",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipher/grant.go",
+        "preimage": "base.Words(strings.Join(names, \",\"))",
+        "replacement": "strings.Join(names, \",\")"
+      }
+    },
+    {
+      "id": "agentsecrets-grant-cells-session",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean/session",
+      "production": "agent-secrets grantRow: the SESSION cell, the readings of the enrollment's kind, runtime id and slot joined, prints through cipheraddr.Address.Words, so beside an address that is not clean it is cipheraddr.WordsNotPrinted, never a field that echoes a credential the address carries where no request's record lists it",
+      "function": "github.com/sjawhar/envoy/cmd/cipher.grantRow",
+      "capture": "agent-secrets.grant-cells/session",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipher/grant.go",
+        "preimage": "base.Words(session)",
+        "replacement": "session"
+      }
+    },
+    {
+      "id": "agentsecrets-grant-cells-expires",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean/expires",
+      "production": "agent-secrets grantRow: the EXPIRES cell is this CLI's own words (grantExpiry: a time the answer decoded into, formatted here, or session-end) and prints whatever the address, as machineRow's times do, where it was read by the rule for the broker's words and printed cipheraddr.WordsNotPrinted beside an address that is not clean"
+    },
+    {
+      "id": "helper-broker-request-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestABrokerRequestWhoseJoinedURLDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the reparsed broker-request row: url.Parse takes the address, and http.NewRequest's error for the URL joined from it quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "helper-broker-request-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestABrokerRequestWhoseJoinedURLDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "agent-secrets-helper Broker.request: an address url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails in http.NewRequestWithContext and prints through the Address's Error, the URL as redact.NotPrinted and the class, never net/http's error, which quotes that URL whole, its user information and query included",
+      "function": "(*github.com/sjawhar/envoy/internal/cipher/helper.Broker).request",
+      "capture": "helper.broker-request/reparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/helper/broker.go",
+        "preimage": "return nil, \"\", b.URL.Error(err)",
+        "replacement": "return nil, \"\", err"
+      }
+    },
+    {
+      "id": "print-agent-secrets.client.send.envelope",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.client.send.envelope",
+      "production": "(*github.com/sjawhar/envoy/cmd/cipher.client).send struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.leftOut",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.leftOut",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.leftOut: every printer at every placement"
     }
   ],
   "bun": [
