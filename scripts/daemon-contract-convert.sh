@@ -79,7 +79,12 @@
 #                 took as a squash, which GitHub retargets to main, still carries that branch's
 #                 entries, and main holds them as entry files: an entry whose text opens an entry
 #                 file of the ref is refused, naming that file; run this with --base naming the base
-#                 branch's last commit before the squash, then merge main.
+#                 branch's last commit before the squash, then merge main. A branch with more than
+#                 one merge base with the ref, which merged a commit of the ref's history apart
+#                 from the ref, is refused, naming them: which entries are the branch's own would
+#                 hang on the one git picks. Merge into the branch the ref as it was before it
+#                 merged the cutover, or rebase the branch's own commits onto that commit, so that
+#                 the two have one merge base.
 #   --report      steps 1 to 4 read and nothing done: no file written, no merge, no Go toolchain,
 #                 and no git read but of commits, trees, the blobs of the files the branch changed
 #                 and those of the ref's entry files, so it runs in a blobless clone. It prints, for
@@ -132,7 +137,14 @@ root=$(git rev-parse --show-toplevel) || die "not in a git checkout"
 cd "$root"
 onto_sha=$(git rev-parse --verify -q "$onto^{commit}") || die "cannot read $onto"
 head_sha=$(git rev-parse --verify -q "${rev:-HEAD}^{commit}") || die "cannot read ${rev:-HEAD}"
-base=$(git merge-base "$head_sha" "$onto_sha") || die "${rev:-HEAD} and $onto_name share no commit"
+mapfile -t bases < <(git merge-base --all "$head_sha" "$onto_sha")
+[ "${#bases[@]}" -gt 0 ] || die "${rev:-HEAD} and $onto_name share no commit"
+if [ "${#bases[@]}" -gt 1 ]; then
+  list=
+  for b in "${bases[@]}"; do list+="${list:+, }${b:0:10}"; done
+  die "${rev:-HEAD} and $onto_name have ${#bases[@]} merge bases, $list: the branch merged a commit of the history of $onto_name apart from $onto_name itself, and which entries are its own would hang on the one git picks. Merge into the branch $onto_name as it was before it merged the cutover (the first parent of the commit that took \`const DaemonAPIVersion\` out of its version.go), so that the two have one merge base (where they still have more than one, rebase the branch's own commits onto that commit), then run this again"
+fi
+base=${bases[0]}
 
 # convert_py runs the conversion's reading and writing, one phase per call:
 #   analyze report|convert BASE HEAD MAIN NAME STATE REQUESTS REQUESTS_AT
