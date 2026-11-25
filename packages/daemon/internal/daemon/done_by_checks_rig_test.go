@@ -165,8 +165,9 @@ func (r *doneByChecksRig) merge() string {
 
 // publishPullRequest publishes GitHub's pull_request event of action on the issue's pull request,
 // as the stand-in holds it now, on notifications.github.acme.widgets.pr.<n>: the subject Dispatch's
-// intake and the daemon's both read. It carries what each reads, the head repository Dispatch
-// holds the attribution to among them, and it answers the envelope's event id.
+// intake and the daemon's both read. It carries the fields Envoy's listener relays
+// (contracts.githubPayload), the head repository Dispatch holds the attribution to among them, and
+// a merge's commit, time and author. It answers the envelope's event id.
 func (r *doneByChecksRig) publishPullRequest(action string) string {
 	r.t.Helper()
 	pull := r.standIn.pullRequest()
@@ -177,7 +178,8 @@ func (r *doneByChecksRig) publishPullRequest(action string) string {
 		"updated_at": pull.updatedAt.UTC().Format(time.RFC3339),
 	}
 	if pull.merged {
-		fields["merge_commit_sha"] = pull.merge
+		fields["merge_commit_sha"], fields["merged_by"] = pull.merge, stepRecordsPerson
+		fields["merged_at"] = pull.mergedAt.UTC().Format(time.RFC3339)
 	}
 	payload, err := json.Marshal(fields)
 	if err != nil {
