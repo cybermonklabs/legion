@@ -155,6 +155,81 @@ function firstMarkInSight(page: Page): Promise<string | undefined> {
   });
 }
 
+/** How far a landing checkbox stands cut by the list column's edge before a press. */
+const CUT_PX = 4;
+
+/** The slack of every read here of an edge or of a scroll: a layout in fractions of a pixel
+ *  scrolls by whole ones. */
+const EDGE_SLACK_PX = 1;
+
+/** Where a row's checkbox stands against the list column's visible box, the list's own box cut
+ *  to the window's, in viewport pixels. */
+interface MarkSight {
+  /** The checkbox's bottom edge. */
+  readonly bottom: number;
+  /** Whether the checkbox's centre lies inside the visible box. */
+  readonly centreInside: boolean;
+  /** How far the visible box's top edge cuts into the checkbox; 0 where it does not. */
+  readonly cutAbove: number;
+  /** How far the visible box's bottom edge cuts into the checkbox; 0 where it does not. */
+  readonly cutBelow: number;
+  /** The visible box's bottom edge. */
+  readonly seenBottom: number;
+  /** The visible box's top edge. */
+  readonly seenTop: number;
+  /** The checkbox's top edge. */
+  readonly top: number;
+}
+
+/** Where row `id`'s checkbox stands against the list column's visible box, or, with `up`, where
+ *  it will stand once its row has moved up by that much: once the rows a press takes away above
+ *  it have gone. */
+async function markSight(page: Page, id: string, up = 0): Promise<MarkSight> {
+  const { bottom, seenBottom, seenTop, top } = await mark(page, id).evaluate((box, by) => {
+    const list = box.closest('[data-testid="inbox-list"]');
+    if (list === null) throw new Error("the checkbox is not in the Inbox list");
+    const seen = list.getBoundingClientRect();
+    const drawn = box.getBoundingClientRect();
+    return {
+      bottom: drawn.bottom - by,
+      seenBottom: Math.min(seen.bottom, window.innerHeight),
+      seenTop: Math.max(seen.top, 0),
+      top: drawn.top - by,
+    };
+  }, up);
+  const centre = (top + bottom) / 2;
+  return {
+    bottom,
+    centreInside: centre > seenTop && centre < seenBottom,
+    cutAbove: Math.max(0, seenTop - top),
+    cutBelow: Math.max(0, bottom - seenBottom),
+    seenBottom,
+    seenTop,
+    top,
+  };
+}
+
+/** Whether the checkbox `sight` reads stands whole in the list column's visible box. */
+function wholeInSight(sight: MarkSight): boolean {
+  return sight.cutAbove <= EDGE_SLACK_PX && sight.cutBelow <= EDGE_SLACK_PX;
+}
+
+/** What `sight` read, in words, for a failure. */
+function sightWords(sight: MarkSight): string {
+  return `the checkbox stands from ${sight.top} to ${sight.bottom} px in the list's visible box from ${sight.seenTop} to ${sight.seenBottom} px, cut by ${sight.cutAbove} px at the top and by ${sight.cutBelow} px at the bottom, its centre ${sight.centreInside ? "inside" : "outside"} the box`;
+}
+
+/** The ids of the drawn rows that stand wholly below the list column's visible box, in the order
+ *  the list draws them. */
+function rowsBelowSight(page: Page): Promise<string[]> {
+  return inboxList(page).evaluate((list) => {
+    const bottom = Math.min(list.getBoundingClientRect().bottom, window.innerHeight);
+    return [...list.querySelectorAll<HTMLElement>("[data-inbox-row]")]
+      .filter((node) => node.getBoundingClientRect().top >= bottom)
+      .map((node) => node.dataset.inboxRow ?? "");
+  });
+}
+
 /** Moves the selection to the row at `to` among `ids` with `j` and `k`, from the row it is on. */
 async function selectWithKeys(page: Page, ids: readonly string[], to: number): Promise<void> {
   // Each caller reads this once the selection stands on one row, and nothing moves it before
@@ -830,8 +905,9 @@ test("a range action whose rows stood above the view hands the focus to the firs
     const drawn = await drawnIds(box);
     expect(drawn.length, "the Dismissed window draws at least ten rows").toBeGreaterThanOrEqual(10);
     // The reading pane shows the first row, and the range holds it: the press takes the selected
-    // row away with the others, the selection moves to a row that stays, and neither that move
-    // nor the bar's return scrolls the list or the window.
+    // row away with the others, and the selection moves to a row that stays with no scroll. The
+    // bar's return scrolls the list by the 4 px that show the landing checkbox whole, and the
+    // window not at all.
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[0] ?? "");
     const range = drawn.slice(0, 4);
     await mark(page, range[0] ?? "").click();
@@ -839,13 +915,32 @@ test("a range action whose rows stood above the view hands the focus to the firs
     await expectCount(page, 4);
     expect(await markedIds(page)).toEqual(range);
 
-    // Leave the tenth row just inside the top edge. The range, the selected row among it, and the
-    // row after it stay drawn above the edge, so only the forward search can reach a row in sight.
-    await row(page, drawn[9] ?? "").evaluate((node) => {
-      const list = node.closest<HTMLElement>('[data-testid="inbox-list"]');
-      if (list === null) throw new Error("the tenth row is not in the Inbox list");
-      list.scrollTop += node.getBoundingClientRect().top - list.getBoundingClientRect().top - 2;
-    });
+    // The tenth row lands. Each row after the four moves up by the space the four take, from the
+    // first one's top to the top of the row after them, once they have gone. The list is scrolled
+    // so that the tenth row's checkbox will stand cut by the list's top edge by 4 px then, its
+    // centre inside the list's visible box, where the bar's return still reads a row's mark as in
+    // sight (`markShown`). The range, the selected row among it, and the row after it stand wholly
+    // above the edge now, so only the search forward from the row at the place reaches a row in
+    // sight.
+    const landing = drawn[9] ?? "";
+    const space = await box.evaluate(
+      (list, ids) => {
+        const top = (id: string) =>
+          list.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect().top ?? Number.NaN;
+        return top(ids.after) - top(ids.first);
+      },
+      { after: drawn[4] ?? "", first: range[0] ?? "" }
+    );
+    expect(space, `the four marks take ${space} px of the list`).toBeGreaterThan(0);
+    await mark(page, landing).evaluate(
+      (node, place) => {
+        const list = node.closest<HTMLElement>('[data-testid="inbox-list"]');
+        if (list === null) throw new Error("the tenth row is not in the Inbox list");
+        const seenTop = Math.max(list.getBoundingClientRect().top, 0);
+        list.scrollTop += node.getBoundingClientRect().top - place.up - (seenTop - place.cut);
+      },
+      { cut: CUT_PX, up: space }
+    );
     await frameAndTask(page);
     const above = await box.evaluate((list) => {
       const top = list.getBoundingClientRect().top;
@@ -857,12 +952,22 @@ test("a range action whose rows stood above the view hands the focus to the firs
       above.slice(0, 5),
       "the four marks, the selected row among them, and the row after them stand wholly above sight"
     ).toEqual(drawn.slice(0, 5));
+    const coming = await markSight(page, landing, space);
+    expect(
+      Math.abs(coming.cutAbove - CUT_PX),
+      `once the four have gone, the tenth row's checkbox stands cut by the list's top edge by ${CUT_PX} px; ${sightWords(coming)}`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
+    expect(
+      coming.centreInside,
+      `once the four have gone, the tenth row's checkbox has its centre inside the list's visible box; ${sightWords(coming)}`
+    ).toBe(true);
     const before = await scrollPositions(page);
     await bar(page).getByRole("button", { name: "Move to Inbox selected threads" }).click();
     for (const id of range) await expect(row(page, id)).toHaveCount(0);
     await frameAndTask(page);
     // The selection moved to a row that stays and stood above sight, so a scroll to it would have
-    // moved the list: the read of the scroll positions below holds the move to scrolling nothing.
+    // moved the list: the read below of the list's scroll, 4 px and no more, holds the move to
+    // scrolling nothing.
     await expect(selectedRow(page)).toHaveCount(1);
     const selected = await selectedRow(page).getAttribute("data-inbox-row");
     expect(
@@ -870,13 +975,184 @@ test("a range action whose rows stood above the view hands the focus to the firs
       "the selection moved to a row that stays, above sight"
     ).toContain(selected);
 
-    const first = await firstMarkInSight(page);
-    expect(first, "there is a surviving row in sight").toBeDefined();
+    // The focus is on the tenth row's checkbox, and the bar's return has shown it whole at the
+    // list's top edge: the list scrolled up by the 4 px of its cut and no more.
     expect(
-      await holdsFocus(mark(page, first ?? "")),
-      `the focus is on the first row's checkbox in sight (${first}); it is on ${await describeFocus(page)}`
+      await holdsFocus(mark(page, landing)),
+      `the focus is on the tenth row's checkbox (${landing}), the first after the four in sight; it is on ${await describeFocus(page)}`
     ).toBe(true);
-    expect(await scrollPositions(page)).toEqual(before);
+    const shown = await markSight(page, landing);
+    expect(
+      wholeInSight(shown),
+      `the tenth row's checkbox stands whole in the list's visible box; ${sightWords(shown)}`
+    ).toBe(true);
+    expect(
+      await firstMarkInSight(page),
+      "the tenth row is the first row after the four whose checkbox is in sight"
+    ).toBe(landing);
+    const after = await scrollPositions(page);
+    expect(
+      Math.abs(before.list - after.list - CUT_PX),
+      `the list scrolled up by ${before.list - after.list} px, from ${before.list} to ${after.list}; want ${CUT_PX} px`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
+    expect(after.window, `the window's scroll, ${before.window} before the press`).toBe(
+      before.window
+    );
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): twenty-four seeded rows, the last three marked, the list scrolled and one Dismiss
+// pressed.
+test("a range action that lands on a checkbox partly in sight with nothing taken away above it shows that checkbox whole", async ({
+  browser,
+}) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  const count = 24;
+  await seedBulkReplyThreads({ count, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice);
+    await expect(rows(page)).toHaveCount(count);
+    // The count above waited for every row, and nothing moves them before the marks do.
+    const drawn = await drawnIds(inboxList(page));
+
+    // The list's last three rows, the last one marked first: the row marked last without the
+    // shift key is the list's last, so no row stands after it, at its place. The press takes
+    // nothing away above the row before the three, which lands as the nearest row in sight
+    // before that place.
+    const range = drawn.slice(-3);
+    const landing = drawn.at(-4) ?? "";
+    await mark(page, range[2] ?? "").click();
+    await mark(page, range[0] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 3);
+    expect(await markedIds(page)).toEqual(range);
+
+    // The list is scrolled back up until the three stand wholly below the view and the landing
+    // row's checkbox stands cut by the list's bottom edge by 4 px, its centre inside the list's
+    // visible box, where the bar's return still reads a row's mark as in sight (`markShown`). The
+    // row after the landing, the first of the three, stands wholly below the view, so it cannot
+    // take the focus. Once the three have gone, the landing row itself still reaches below the
+    // view, so the list's scroll range still holds the scroll.
+    await mark(page, landing).evaluate((node, cut) => {
+      const list = node.closest<HTMLElement>('[data-testid="inbox-list"]');
+      if (list === null) throw new Error("the landing row is not in the Inbox list");
+      const seenBottom = Math.min(list.getBoundingClientRect().bottom, window.innerHeight);
+      list.scrollTop += node.getBoundingClientRect().bottom - (seenBottom + cut);
+    }, CUT_PX);
+    await frameAndTask(page);
+    const cut = await markSight(page, landing);
+    expect(
+      Math.abs(cut.cutBelow - CUT_PX),
+      `the landing checkbox stands cut by the list's bottom edge by ${CUT_PX} px; ${sightWords(cut)}`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
+    expect(
+      cut.centreInside,
+      `the landing checkbox has its centre inside the list's visible box; ${sightWords(cut)}`
+    ).toBe(true);
+    expect(
+      await rowsBelowSight(page),
+      "the three marks, the row after the landing first, and no other row stand wholly below the view"
+    ).toEqual(range);
+    const before = await scrollPositions(page);
+    await bar(page).getByRole("button", { name: "Dismiss selected threads" }).click();
+    for (const id of range) await expect(row(page, id)).toHaveCount(0);
+    await frameAndTask(page);
+
+    // The focus is on the landing checkbox, and the bar's return has shown it whole at the list's
+    // bottom edge: the list scrolled down by the 4 px of its cut and no more.
+    expect(
+      await drawnIds(inboxList(page)),
+      "the press took the three marks away and no other row"
+    ).toEqual(drawn.slice(0, -3));
+    expect(
+      await holdsFocus(mark(page, landing)),
+      `the focus is on the checkbox of the row before the three (${landing}); it is on ${await describeFocus(page)}`
+    ).toBe(true);
+    const shown = await markSight(page, landing);
+    expect(
+      wholeInSight(shown),
+      `the landing checkbox stands whole in the list's visible box; ${sightWords(shown)}`
+    ).toBe(true);
+    const after = await scrollPositions(page);
+    expect(
+      Math.abs(after.list - before.list - CUT_PX),
+      `the list scrolled down by ${after.list - before.list} px, from ${before.list} to ${after.list}; want ${CUT_PX} px`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
+    expect(after.window, `the window's scroll, ${before.window} before the press`).toBe(
+      before.window
+    );
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): forty seeded rows, one marked, the list scrolled back to its top and Clear
+// selection pressed.
+test("the return to the row marked last takes the least scroll to its checkbox", async ({
+  browser,
+}) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  const count = 40;
+  await seedBulkReplyThreads({ count, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice);
+    await expect(rows(page)).toHaveCount(count);
+    // The count above waited for every row, and nothing moves them before the mark does.
+    const drawn = await drawnIds(inboxList(page));
+
+    // A mark on row 21, then the list scrolled back to its top: row 21 stands wholly below the
+    // view, with the list's last rows below it.
+    const marked = drawn[20] ?? "";
+    await mark(page, marked).click();
+    await expectCount(page, 1);
+    await inboxList(page).evaluate((list) => {
+      list.scrollTop = 0;
+    });
+    await frameAndTask(page);
+    const below = await rowsBelowSight(page);
+    expect(
+      drawn.slice(20).filter((id) => !below.includes(id)),
+      "row 21 and every row after it stand wholly below the view; these do not"
+    ).toEqual([]);
+
+    // The press is Clear selection, which takes no row away. The bar goes with the focus in it,
+    // and its return puts the focus on row 21's checkbox, the row marked last, which the list
+    // still draws, and shows it whole with the least scroll: its bottom edge at the view's bottom
+    // edge, the nearest. A browser that centres the focused control puts it far from that edge.
+    const standing = await drawnIds(inboxList(page));
+    const before = await scrollPositions(page);
+    await bar(page).getByRole("button", { name: "Clear selection" }).click();
+    await expect(bar(page)).toHaveCount(0);
+    await frameAndTask(page);
+    expect(await drawnIds(inboxList(page)), "Clear selection took no row away").toEqual(standing);
+    expect(
+      await holdsFocus(mark(page, marked)),
+      `the focus is on row 21's checkbox, the row marked last; it is on ${await describeFocus(page)}`
+    ).toBe(true);
+    const shown = await markSight(page, marked);
+    expect(
+      wholeInSight(shown),
+      `row 21's checkbox stands whole in the list's visible box; ${sightWords(shown)}`
+    ).toBe(true);
+    expect(
+      Math.abs(shown.bottom - shown.seenBottom),
+      `row 21's checkbox stands with its bottom edge at the view's bottom edge; ${sightWords(shown)}`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
+    const after = await scrollPositions(page);
+    expect(after.window, `the window's scroll, ${before.window} before the press`).toBe(
+      before.window
+    );
   } finally {
     await alice.close();
   }
