@@ -222,3 +222,52 @@ func TestAPublishWithNoSourceSessionReadsTheHolderFromTheLeaderWhileACopyIsBehin
 		requireDeliveredTo(t, d, frames, role, holder, noSessionPublish(role, "the leader holds my registration"))
 	})
 }
+
+// The holder of a publish that names no source session is never judged from the session cache:
+// a cached registration live when it is looked up can pass its live deadline before the
+// resolution judges it, which would refuse the send as holder_lapsed though the leader holds a
+// fresh registration. The cache keeps a registration one millisecond inside its live window, the
+// leader holds a fresh one, and the clock moves two milliseconds between the cache's look and the
+// resolution's judgement. The resolution reads the holder from the leader and finds it live.
+// Controls: the cache reads the old registration live before the clock moves, and the leader's
+// registration is live at the resolution's time.
+func TestANoSessionResolutionNeverJudgesTheCachedHolder(t *testing.T) {
+	var armed atomic.Bool
+	var reads atomic.Int64
+	start := time.Now().Truncate(time.Millisecond)
+	cachedAt := start.Add(-session.LiveWindow + time.Millisecond)
+	clock := func() time.Time {
+		if !armed.Load() {
+			return cachedAt
+		}
+		if reads.Add(1) == 1 {
+			return start
+		}
+		return start.Add(2 * time.Millisecond)
+	}
+	harness := newListenerDeliveryHarnessOn(t, setupPublishTestClient(t), session.WithSessionClock(clock))
+	const holder, role = "ses_cache_lapse", "cache-lapse"
+	claimRoleFor(t, harness.registry, harness.sessions, holder, role, nil)
+	harness.sessions.StopWatch()
+	storeSessionHeartbeat(t, harness.client, holder, start)
+	if entry, state := harness.sessions.Lookup(holder); entry.UpdatedAt != cachedAt.UnixMilli() || state != session.Live {
+		t.Fatalf("UNKNOWN: the cache holds %+v in state %s, not the old registration live, so the row tests nothing", entry, state)
+	}
+	armed.Store(true)
+	result, err := roles.ResolveHolder(context.Background(), leaderRoleClaims{harness.registry}, leaderHolderSessions{harness.sessions}, role)
+	armed.Store(false)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", role, err)
+	}
+	leader, err := bucketSessionEntry(context.Background(), harness.sessions, holder, roleHolderReadTimeout)
+	if err != nil {
+		t.Fatalf("read %s from the leader: %v", holder, err)
+	}
+	if state := session.StateOf(leader, start.Add(2*time.Millisecond), session.LiveWindow, session.GoneHorizon); state != session.Live {
+		t.Fatalf("UNKNOWN: the leader's registration of %s reads %s, not live, so the row tests nothing", holder, state)
+	}
+	if result.State != roles.Live {
+		t.Fatalf("the resolution of %s is %s/%s from registration %d, want live from the leader's %d",
+			role, result.State, result.HolderState, result.Entry.UpdatedAt, leader.UpdatedAt)
+	}
+}
