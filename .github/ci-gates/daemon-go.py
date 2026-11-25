@@ -78,6 +78,7 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
                                            f"const HubImage"),
     (f"{DAEMON}/internal/ompsessions/searchpath_test.go", f"{at('daemon-go', 'Pull the NATS and PgBouncer test container images')} const PoolImage"),
 ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP) + ceiling_reads("daemon-go-race", job_file("daemon-go"))
+  + crash_safety_reads("daemon-go") + crash_safety_reads("daemon-go-race", job_file("daemon-go"))
   + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
   + go_modules("daemon-go"))
 GATE = with_reads(GATE, [

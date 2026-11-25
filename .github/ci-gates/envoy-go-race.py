@@ -10,7 +10,7 @@ GATE = gate("envoy_go_race", "envoy-go-race",
      + [forced_order_run("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP, ENVOY, ENVOY_FORCED_ORDER_TEST_PKGS)]
      + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS)
         for server in ENVOY_FORCED_ORDER_SERVERS],
-     reads=ceiling_reads("envoy-go-race")
+     reads=ceiling_reads("envoy-go-race") + crash_safety_reads("envoy-go-race")
      + reads((FORCED_ORDER_TEST, f"{at('envoy-go-race', ENVOY_FORCED_ORDER_TEST_STEP)} runs it"))
      + forced_order_reads("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP)
      + [read for server in ENVOY_FORCED_ORDER_SERVERS

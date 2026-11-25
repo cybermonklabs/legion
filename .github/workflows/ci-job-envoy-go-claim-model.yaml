@@ -93,6 +93,11 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # The mention sender's claim model (TestTheMentionSenderClaimModel): every order, within
       # three claim-refresh periods, of the real sender's locked sections, statements and timers
       # with two comments' attempt rows, the delivery sweep and the outbox, the sender as built

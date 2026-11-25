@@ -50,6 +50,7 @@ on:
       - '.github/scripts/ci-log-guard.sh'
       - '.github/scripts/ci-retry.sh'
       - '.github/scripts/ci-tools.sh'
+      - '.github/scripts/pg-crash-safety-off.sh'
       - '.github/scripts/repo-paths.sh'
       - '.github/workflows/ci.yaml'
       - '.github/workflows/docs-pages.yaml'

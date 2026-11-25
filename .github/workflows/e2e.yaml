@@ -244,6 +244,12 @@ jobs:
           . .github/scripts/ci-retry.sh
           retry_fetch "the workspace's Go modules" 180 -- go mod download
 
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+
       - name: Run the proof
         # why: .github/ci-notes/e2e.md#the-proof-steps-own-limit
         timeout-minutes: ${{ matrix.run_timeout_minutes }}

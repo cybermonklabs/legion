@@ -213,34 +213,15 @@ jobs:
           . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
           retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
         working-directory: docs/site
-      # The service with crash safety off (fsync, full_page_writes, synchronous_commit), as the
-      # e2e harness's own Postgres runs (packages/dispatch/e2e/harness-postgres.ts), so no commit
-      # waits for the runner's disk. With them on, a write a closed page left in flight can hold a
+      # The service with crash safety off (.github/scripts/pg-crash-safety-off.sh), as the e2e
+      # harness's own Postgres runs (packages/dispatch/e2e/harness-postgres.ts), so no commit
+      # waits for the runner's disk. With it on, a write a closed page left in flight can hold a
       # table past the reset each shot set starts with (docs/site/media/shot-runner.ts), which
       # waits at most 5 s for it: dispatch-browser.yaml's multiprocess job failed so, a read mark
-      # holding user_document_reads while the disk was slow. A service container takes no server
-      # arguments, so `alter system` writes the three, as .github/scripts/pg-connection-ceiling.sh
-      # writes max_connections on a service, and a reload applies them: max_connections needs that
-      # script's restart, and these three need only the reload, synchronous_commit reaching every
-      # session that starts after it. The step reads them back from a new session and fails unless
-      # each is off.
+      # holding user_document_reads while the disk was slow.
       - name: Turn crash safety off on the screenshots' Postgres
         timeout-minutes: 2
-        run: |
-          container="${{ job.services.postgres.id }}"
-          docker exec "$container" psql -U postgres -v ON_ERROR_STOP=1 -q \
-            -c 'alter system set fsync = off' \
-            -c 'alter system set full_page_writes = off' \
-            -c 'alter system set synchronous_commit = off' \
-            -c 'select pg_reload_conf()'
-          for _ in $(seq 1 20); do
-            settings=$(docker exec "$container" psql -U postgres -Atc \
-              "select current_setting('fsync') || ' ' || current_setting('full_page_writes') || ' ' || current_setting('synchronous_commit')")
-            [ "$settings" = "off off off" ] && break
-            sleep 0.5
-          done
-          echo "fsync, full_page_writes, synchronous_commit: $settings"
-          [ "$settings" = "off off off" ] || { echo "::error::the service's fsync, full_page_writes and synchronous_commit read '$settings' after the reload, not 'off off off'"; exit 1; }
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       - name: Take the screenshots
         run: bun run docs:media
         # A step of the run that hangs fails it within two minutes (STEP_TIMEOUT_MS in
