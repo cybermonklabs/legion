@@ -100,16 +100,18 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	// The pre-handler check judged the result's own issue alone, and the check's issue, which the
 	// retraction is appended to, can be of another project, reached through a parent of another
-	// project. A scoped caller is asked about it here (access.CredentialCovers), before it takes
-	// that issue's owner lock.
+	// project. A scoped caller is asked about it here (access.CredentialCovers), with the
+	// visibility of its project read in the same statement, before it takes that issue's owner
+	// lock. A check of a private project that the credential does not name gets the answer of a
+	// result that does not exist, which the pre-handler check gives (refuseWriteOutsideProjectScope).
 	if callerProject != "" {
-		project, err := checkIssueProject(r.Context(), tx, callerProject, result.CheckIssueKey)
+		project, private, err := checkIssueProject(r.Context(), tx, callerProject, result.CheckIssueKey)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, project, false) {
-			s.writeHandlerError(w, refuseUncoveredProject(callerProject, "the check's issue "+result.CheckIssueKey, project))
+		if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, project, private) {
+			refuseWriteOutsideProjectScope(w, callerProject)
 			return
 		}
 	}

@@ -45,23 +45,27 @@ package api
 //
 // A credential that names one project writes every project's objects that a credential naming
 // none may write. The one exception is a private project that the credential does not name.
-// access.CredentialCovers holds that test. Every caller passes private as false while Dispatch
-// holds no private project, so a target of another project reaches the handler. A target that
-// resolves to no project at all, or to nothing at all — no such row, or an id Postgres will not
-// read as a uuid — is still refused, so the check fails closed. Each resolver sends Postgres the
-// value the prefix layer resolved, the one the handler behind it sends too: an id written as a
-// unique prefix is the whole id by the time either reads it, and anything else is the path
-// value as written (resolveIDPrefixes, which register wraps outside this check for exactly that
-// reason). So the parser that decides what this check resolved is the parser the handler then
-// addresses its row by, and the two cannot disagree about which object a path names: Go's
-// uuid.Parse refuses spellings Postgres accepts (a hyphen after any group of four digits), and
-// a check that resolved nothing where the handler resolves a row would be a write nothing
-// judged.
+// access.CredentialCovers holds that test. Each resolver reads the visibility of the target's
+// project in the statement that reads that project, and the check passes it to the test. A
+// target of a private project that the credential does not name gets the refusal of a target
+// that resolves to nothing: an object that the caller cannot see answers as one that does not
+// exist. A target that resolves to no project at all, or to nothing at all — no such row, or an
+// id Postgres will not read as a uuid — is refused, so the check fails closed. Each resolver sends
+// Postgres the value the prefix layer resolved, the one the handler behind it sends too: an id
+// written as a unique prefix is the whole id by the time either reads it, and anything else is
+// the path value as written (resolveIDPrefixes, which register wraps outside this check for
+// exactly that reason). So the parser that decides what this check resolved is the parser the
+// handler then addresses its row by, and the two cannot disagree about which object a path
+// names: Go's uuid.Parse refuses spellings Postgres accepts (a hyphen after any group of four
+// digits), and a check that resolved nothing where the handler resolves a row would be a write
+// nothing judged.
 //
 // Failing closed does not hide which ids exist, and does not claim to. A target of another
-// project reaches its handler. A target that resolves to nothing gets this refusal. So a scoped
-// caller can tell an object that exists from an id nobody holds. Nothing is read out that way:
-// no GET route is project-scoped, so the caller reads every project's objects already.
+// project that the credential covers reaches its handler. A target that resolves to nothing gets
+// this refusal, and so does an object of a private project that the credential does not name. So
+// a scoped caller can tell an object it may write from an id nobody holds, but not an id nobody
+// holds from an object it cannot see. Nothing is read out that way: no GET route is
+// project-scoped.
 
 import (
 	"context"
@@ -80,9 +84,9 @@ import (
 )
 
 const (
-	// codeProjectScope refuses a write the caller's credential does not cover. That is a target
-	// that resolves to no project or to nothing, or an object of a private project that the
-	// credential does not name.
+	// codeProjectScope refuses a project-scoped caller a write whose target resolves to no
+	// project or to nothing. An object of a private project that the credential does not name
+	// gets the same refusal, as an object that does not exist.
 	codeProjectScope = "PROJECT_SCOPE"
 	// codeProjectScopeDeployment refuses a project-scoped caller a write that belongs to the
 	// deployment rather than to any one project.
@@ -135,10 +139,11 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 	return actor.ID, true
 }
 
-// projectResolver answers the project a request's addressed object belongs to. An empty project
-// with no error means the address resolved to no project: an object that belongs to none, a
-// target that does not exist, or an id Postgres will not read as a uuid.
-type projectResolver func(ctx context.Context, q queryer, r *http.Request) (string, error)
+// projectResolver answers the project a request's addressed object belongs to, and whether that
+// project is private, read in one statement. An empty project with no error means the address
+// resolved to no project: an object that belongs to none, a target that does not exist, or an id
+// Postgres will not read as a uuid.
+type projectResolver func(ctx context.Context, q queryer, r *http.Request) (project string, private bool, err error)
 
 // projectResolverFor is the resolver a route's address calls for, read from the shape of its
 // pattern, and whether the pattern names an object at all. Every row the table classes
@@ -171,49 +176,60 @@ func addresses(pattern, prefix string) bool {
 }
 
 // projectOfIssue reads the project column of the issue the path names, the same one-row read
-// every handler that needs an issue's project makes (issue_patch.go, issue_parent.go).
-func (s *server) projectOfIssue(ctx context.Context, q queryer, r *http.Request) (string, error) {
-	return scanProjectKey(q.QueryRow(ctx, `select project_key from issues where key = $1`, r.PathValue("key")))
+// every handler that needs an issue's project makes (issue_patch.go, issue_parent.go), and that
+// project's visibility.
+func (s *server) projectOfIssue(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
+	return scanProjectKey(q.QueryRow(ctx, `
+		select i.project_key, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = $1
+	`, r.PathValue("key")))
 }
 
 // projectOfProject is the one-row read the other resolvers make, against the projects table
 // itself: a project's own key is the project it belongs to, and a key no project has resolves
-// to none. It reads the key alone rather than going through loadProject, whose 404 this would
-// only have to undo.
-func (s *server) projectOfProject(ctx context.Context, q queryer, r *http.Request) (string, error) {
-	return scanProjectKey(q.QueryRow(ctx, `select key from projects where key = $1`, r.PathValue("key")))
+// to none. It reads the key and the visibility alone rather than going through loadProject, whose
+// 404 this would only have to undo.
+func (s *server) projectOfProject(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
+	return scanProjectKey(q.QueryRow(ctx, `select key, visibility = 'private' from projects where key = $1`, r.PathValue("key")))
 }
 
 // projectOfArtifact reads the project_key every artifact carries (artifactColumns), which is
 // its issue's for an issue document and its own for a project document. An agent conversation's
 // artifact carries none, so it resolves to no project and a project-scoped caller is refused
 // it.
-func (s *server) projectOfArtifact(ctx context.Context, q queryer, r *http.Request) (string, error) {
+func (s *server) projectOfArtifact(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(project_key, '') from artifacts where id = $1
+		select coalesce(a.project_key, ''), coalesce(p.visibility = 'private', false)
+		from artifacts a
+		left join projects p on p.key = a.project_key
+		where a.id = $1
 	`, r.PathValue("id")))
 }
 
 // projectOfAsk resolves an ask through the join askSnoozeEvent already makes: an ask hangs from
 // an issue or from a document, and takes that owner's project.
-func (s *server) projectOfAsk(ctx context.Context, q queryer, r *http.Request) (string, error) {
+func (s *server) projectOfAsk(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(i.project_key, ar.project_key, '')
+		select coalesce(i.project_key, ar.project_key, ''), coalesce(p.visibility = 'private', false)
 		from asks a
 		left join issues i on i.key = a.issue_key
 		left join artifacts ar on ar.id = a.artifact_id
+		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
 		where a.id = $1
 	`, r.PathValue("id")))
 }
 
 // projectOfComment is one hop to the comment's issue or document, since the comments table holds
 // no project of its own (store/migrations/0001_init.up.sql, 0009_project_artifacts.up.sql).
-func (s *server) projectOfComment(ctx context.Context, q queryer, r *http.Request) (string, error) {
+func (s *server) projectOfComment(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(i.project_key, ar.project_key, '')
+		select coalesce(i.project_key, ar.project_key, ''), coalesce(p.visibility = 'private', false)
 		from comments c
 		left join issues i on i.key = c.issue_key
 		left join artifacts ar on ar.id = c.artifact_id
+		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
 		where c.id = $1
 	`, r.PathValue("id")))
 }
@@ -222,11 +238,12 @@ func (s *server) projectOfComment(ctx context.Context, q queryer, r *http.Reques
 // at all: a direct message between a person and a session belongs to no project, so it resolves
 // to none here, and the two routes a session answers its own delivery on are classed
 // scopeSession rather than this.
-func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Request) (string, error) {
+func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(i.project_key, '')
+		select coalesce(i.project_key, ''), coalesce(p.visibility = 'private', false)
 		from messages m
 		left join issues i on i.key = m.issue_key
+		left join projects p on p.key = i.project_key
 		where m.id = $1
 	`, r.PathValue("id")))
 }
@@ -238,44 +255,65 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 // The two issues can be of different projects, since an issue's parent may be of another
 // project, so a retraction asks access.CredentialCovers about a check of another project itself
 // (retractCheckResult), as the record route does (readResultRequest).
-func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
+func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(i.project_key, '')
+		select coalesce(i.project_key, ''), coalesce(p.visibility = 'private', false)
 		from check_results c
 		left join issues i on i.key = c.issue_key
+		left join projects p on p.key = i.project_key
 		where c.id = $1
 	`, r.PathValue("id")))
 }
 
-// checkIssueProject reads the project of a check's issue, checkIssue, for a caller whose
-// credential names one project, caller. An issue with no row resolves to no project and is
-// refused, failing closed as the pre-handler check does.
-func checkIssueProject(ctx context.Context, q queryer, caller, checkIssue string) (string, error) {
-	project, err := scanProjectKey(q.QueryRow(ctx, `select project_key from issues where key = $1`, checkIssue))
+// checkIssueProject reads the project of a check's issue, checkIssue, and whether that project is
+// private, for a caller whose credential names one project, caller. An issue with no row resolves
+// to no project and is refused, failing closed as the pre-handler check does.
+func checkIssueProject(ctx context.Context, q queryer, caller, checkIssue string) (string, bool, error) {
+	project, private, err := scanProjectKey(q.QueryRow(ctx, `
+		select i.project_key, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = $1
+	`, checkIssue))
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if project == "" {
-		return "", errorf(http.StatusForbidden, codeProjectScope,
+		return "", false, errorf(http.StatusForbidden, codeProjectScope,
 			"this request's credential names project %s, and the check's issue %s belongs to no project", caller, checkIssue)
 	}
-	return project, nil
+	return project, private, nil
 }
 
-// scanProjectKey reads a resolver's one column, answering no project for a target that does not
-// resolve rather than an error: no such row, or a path value Postgres will not read as a uuid
-// (SQLSTATE 22P02, which it reports as it binds the parameter). Those are the ids a handler
-// answers 404 or 400 for, and withinProjectScope refuses them to a project-scoped caller
-// rather than letting that answer out.
-func scanProjectKey(row pgx.Row) (string, error) {
-	var project string
-	if err := row.Scan(&project); err != nil {
-		if unaddressed(err) {
-			return "", nil
-		}
-		return "", err
+// projectVisibility reads whether the project key is private, and whether any project has that
+// key: the one-statement read of a write whose project its body names (createIssue,
+// createGoingRequest).
+func projectVisibility(ctx context.Context, q queryer, key string) (private, found bool, err error) {
+	err = q.QueryRow(ctx, `select visibility = 'private' from projects where key = $1`, key).Scan(&private)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
 	}
-	return project, nil
+	if err != nil {
+		return false, false, err
+	}
+	return private, true, nil
+}
+
+// scanProjectKey reads a resolver's two columns, the project and whether it is private, answering
+// no project for a target that does not resolve rather than an error: no such row, or a path
+// value Postgres will not read as a uuid (SQLSTATE 22P02, which it reports as it binds the
+// parameter). Those are the ids a handler answers 404 or 400 for, and withinProjectScope refuses
+// them to a project-scoped caller rather than letting that answer out.
+func scanProjectKey(row pgx.Row) (string, bool, error) {
+	var project string
+	var private bool
+	if err := row.Scan(&project, &private); err != nil {
+		if unaddressed(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return project, private, nil
 }
 
 // unaddressed answers whether err means the target resolves to no row at all, which is the
@@ -295,10 +333,11 @@ func unaddressed(err error) bool {
 // check does not cover returns the handler unchanged, so no route it leaves alone pays for it.
 //
 // For a caller whose credential names no project, a covered route costs one header read and
-// calls the handler. For one that names a project, the check resolves the target's project. A
-// target of a project that access.CredentialCovers covers reaches the handler, whichever
-// project the credential names. A target that resolves to no project or to nothing is refused,
-// so the check fails closed.
+// calls the handler. For one that names a project, the check resolves the target's project and
+// that project's visibility. A target of a project that access.CredentialCovers covers reaches
+// the handler, whichever project the credential names. A target that resolves to no project or
+// to nothing is refused, so the check fails closed, and an object of a private project that the
+// credential does not name gets that same refusal.
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	switch route.Scope {
 	case scopeProject:
@@ -314,7 +353,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 					handler(w, r)
 					return
 				}
-				refuseWriteOutsideProjectScope(w, covers, "")
+				refuseWriteOutsideProjectScope(w, covers)
 			}
 		}
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +362,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 				handler(w, r)
 				return
 			}
-			belongsTo, err := resolve(r.Context(), s.deps.Store.Pool, r)
+			belongsTo, private, err := resolve(r.Context(), s.deps.Store.Pool, r)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
@@ -332,11 +371,13 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 				// An object that belongs to no project, a row that is not there, or an id
 				// Postgres will not read. Refusing these is what makes the check fail closed. It
 				// does not hide which ids exist, and it does not claim to (the file comment).
-				refuseWriteOutsideProjectScope(w, covers, "")
+				refuseWriteOutsideProjectScope(w, covers)
 				return
 			}
-			if !access.CredentialCovers(access.Credential{Listed: []string{covers}}, belongsTo, false) {
-				refuseWriteOutsideProjectScope(w, covers, belongsTo)
+			if !access.CredentialCovers(access.Credential{Listed: []string{covers}}, belongsTo, private) {
+				// The answer of a target that does not exist, so the caller cannot tell the
+				// object of a private project from an id nobody holds.
+				refuseWriteOutsideProjectScope(w, covers)
 				return
 			}
 			handler(w, r)
@@ -361,19 +402,17 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 	}
 }
 
-// refuseWriteOutsideProjectScope names the project the caller's credential names and the
-// project the write belongs to where one resolved, and nothing of the credential itself. It
-// names no project at all for a write that resolved to none, since there is none to name and
-// an invented one would say something about what exists.
-func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers, belongsTo string) {
-	if belongsTo == "" {
-		writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
-			"this request's credential names project %s, and this write resolves to no project",
-			covers))
-		return
-	}
+// refuseWriteOutsideProjectScope is the refusal of a write whose target resolves to no project or
+// to nothing, to a caller whose credential names the one project covers. It names that project
+// and nothing of the credential itself. It names no project of the target, since there is none to
+// name and an invented one would say something about what exists. withinProjectScope answers it
+// also for an object of a private project that the credential does not name, and
+// retractCheckResult for a check of such a project, so each answers as for a target that does not
+// exist, and the three answers cannot drift.
+func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers string) {
 	writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
-		"this request's credential names project %s, and this write belongs to project %s, a private project that the credential does not name", covers, belongsTo))
+		"this request's credential names project %s, and this write resolves to no project",
+		covers))
 }
 
 // withinSessionScope runs the session check in front of one mutating route's handler. A row

@@ -248,7 +248,9 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // same earlier still, before its near-copy gate writes anything (createIssue), and a PATCH before
 // a close settles the issue's documents (writeIssue). The write asks again under the locks, which
 // is the authoritative refusal: writeBlockedBy for a target, and validateIssueParent or the
-// create's own read for the parent. Every step words its refusal through refuseUncoveredProject.
+// create's own read for the parent. Every step answers a target or a parent of a private project
+// that the credential does not name as one that does not exist (blockedByNotFound,
+// parentNotFound).
 func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string, parent string) error {
 	foreign, err := foreignDependencyTargets(ctx, tx, project, caller, targets, parent)
 	if err != nil {
@@ -275,8 +277,10 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 // that belongs to a project other than project, the issue's own, targets first, read with no
 // lock held. caller is the one project the request's credential names, empty for a credential
 // that names none. Such a caller links a target, and names a parent, of every project
-// access.CredentialCovers covers, and is refused the first target outside them, then a parent
-// outside them (refuseUncoveredProject), before anything else is read. The lock step, a
+// access.CredentialCovers covers, before anything else is read. The first target of a private
+// project that the credential does not name gets the answer of a target that does not exist
+// (blockedByNotFound), and then such a parent the answer of a parent that does not exist
+// (parentNotFound), which the write's own read answers for an unknown key. The lock step, a
 // create's check before its near-copy gate and a PATCH's check before a close's settlement all
 // run it, so each refuses the same key in the same words.
 func foreignDependencyTargets(ctx context.Context, q queryer, project, caller string, targets []string, parent string) ([]foreignTarget, error) {
@@ -286,8 +290,8 @@ func foreignDependencyTargets(ctx context.Context, q queryer, project, caller st
 	}
 	if caller != "" {
 		for _, target := range foreign {
-			if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, target.project, false) {
-				return nil, refuseUncoveredProject(caller, "blocked_by issue "+target.key, target.project)
+			if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, target.project, target.private) {
+				return nil, blockedByNotFound(target.key)
 			}
 		}
 	}
@@ -299,49 +303,58 @@ func foreignDependencyTargets(ctx context.Context, q queryer, project, caller st
 		return nil, err
 	}
 	if caller != "" && len(foreignParent) > 0 &&
-		!access.CredentialCovers(access.Credential{Listed: []string{caller}}, foreignParent[0].project, false) {
-		return nil, refuseUncoveredProject(caller, "parent issue "+parent, foreignParent[0].project)
+		!access.CredentialCovers(access.Credential{Listed: []string{caller}}, foreignParent[0].project, foreignParent[0].private) {
+		return nil, parentNotFound(parent)
 	}
 	return append(foreign, foreignParent...), nil
 }
 
-// foreignTarget is a blocked_by target or a parent of a project other than the issue's own, and
-// the project it belongs to.
-type foreignTarget struct{ key, project string }
+// foreignTarget is a blocked_by target or a parent of a project other than the issue's own, the
+// project it belongs to, and whether that project is private.
+type foreignTarget struct {
+	key, project string
+	private      bool
+}
 
 // foreignTargets is every target belonging to a project other than project, in key order, which
 // is the order writeBlockedBy reads its targets in, so a scoped caller is refused the same target
-// by both, where it is refused one. A target with no row is left out: the write's own read refuses it inside the
+// by both, where it is refused one. It reads each target's project and that project's visibility
+// in one statement. A target with no row is left out: the write's own read refuses it inside the
 // transaction, which is where an unknown key is answered.
 func foreignTargets(ctx context.Context, q queryer, project string, targets []string) ([]foreignTarget, error) {
 	if len(targets) == 0 {
 		return nil, nil
 	}
 	rows, err := q.Query(ctx, `
-		select key, project_key from issues where key = any($1) and project_key <> $2 order by key
+		select i.key, i.project_key, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = any($1) and i.project_key <> $2
+		order by i.key
 	`, targets, project)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (foreignTarget, error) {
 		var target foreignTarget
-		return target, row.Scan(&target.key, &target.project)
+		return target, row.Scan(&target.key, &target.project, &target.private)
 	})
 }
 
-// refuseUncoveredProject is what a caller whose credential names one project, caller, is answered
-// for a write whose target, what (such as "blocked_by issue KEY"), belongs to project, a private
-// project the credential does not name: the one project access.CredentialCovers leaves out. A
-// blocked_by target and a parent are asked about in more than one step, before any lock and again
-// under the locks, the results routes ask once about the check's issue (readResultRequest,
-// retractCheckResult), and a status change's plan asks about each step's issue under its owner
-// locks (planStatusChangeUnderLocks in status_change.go); each words its refusal here, so the
-// steps cannot drift. Every caller passes private as false while Dispatch holds no private
-// project, so today nothing reaches it.
-func refuseUncoveredProject(caller, what, project string) error {
-	return errorf(http.StatusForbidden, codeProjectScope,
-		"this request's credential names project %s, and %s belongs to project %s, a private project that the credential does not name",
-		caller, what, project)
+// parentNotFound is the 400 PARENT_INPUT of a parent that does not exist. A credential that names
+// one project gets it too for a parent of a private project that it does not name, at each step
+// that asks about a parent (foreignDependencyTargets, validateIssueParent and the create's read of
+// its parent), so the two answers cannot drift.
+func parentNotFound(parent string) error {
+	return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent issue %s not found", parent)
+}
+
+// blockedByNotFound is the 400 BLOCKED_BY_INPUT of a blocked_by target that does not exist. A
+// credential that names one project gets it too for a target of a private project that it does
+// not name, at each step that asks about a target (foreignDependencyTargets and writeBlockedBy),
+// so the two answers cannot drift.
+func blockedByNotFound(target string) error {
+	return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "blocked_by issue %s not found", target)
 }
 
 // lockIssueOwners takes the owner locks of key and of the issues in others in one statement, in the
@@ -430,23 +443,29 @@ func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named 
 // parent that would make key its own ancestor or put key's subtree past parentDepthCap. The
 // parent may be an issue of any project, and the chain it reads runs through every project it
 // crosses. caller is the one project the request's credential names, empty for a credential that
-// names none: a parent of a project access.CredentialCovers leaves out is refused
-// (refuseUncoveredProject), which is the authoritative refusal of a write
+// names none: a parent of a private project that the credential does not name answers as a parent
+// that does not exist (parentNotFound), which is the authoritative refusal of a write
 // lockIssueDependencyWrite already refused before its locks.
 func validateIssueParent(ctx context.Context, tx pgx.Tx, key, caller, parent string) error {
 	if parent == key {
 		return errorf(http.StatusBadRequest, "PARENT_INPUT", "an issue cannot be its own parent")
 	}
 	var parentProject string
-	err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, parent).Scan(&parentProject)
+	var parentPrivate bool
+	err := tx.QueryRow(ctx, `
+		select i.project_key, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = $1
+	`, parent).Scan(&parentProject, &parentPrivate)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent issue %s not found", parent)
+		return parentNotFound(parent)
 	}
 	if err != nil {
 		return err
 	}
-	if caller != "" && !access.CredentialCovers(access.Credential{Listed: []string{caller}}, parentProject, false) {
-		return refuseUncoveredProject(caller, "parent issue "+parent, parentProject)
+	if caller != "" && !access.CredentialCovers(access.Credential{Listed: []string{caller}}, parentProject, parentPrivate) {
+		return parentNotFound(parent)
 	}
 	// parent and the issues above it, parent first: the server's one ancestor walk
 	// (refs.IssueAncestors) with parent itself at its head, since a parent key already stands
@@ -604,26 +623,33 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 //
 // caller is the one project the request's credential names, empty for a credential that names
 // none (callerProject). A credential that names one project links a target of every project
-// that access.CredentialCovers covers. The one exception is a private project it does not name.
-// writeBlockedBy asks about each target of another project here, under the locks, and this is
-// the authoritative refusal. lockIssueDependencyWrite asks the same before any lock is taken,
-// and refuses in the same words.
+// that access.CredentialCovers covers. The one exception is a private project it does not name:
+// such a target answers as a target that does not exist (blockedByNotFound). writeBlockedBy asks
+// about each target of another project here, under the locks, and this is the authoritative
+// refusal. lockIssueDependencyWrite asks the same before any lock is taken, and refuses in the
+// same words.
 func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller string, targets []string) error {
 	if slices.Contains(targets, issue) {
 		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
 	}
 	for _, target := range targets {
 		var targetProject string
-		err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, target).Scan(&targetProject)
+		var targetPrivate bool
+		err := tx.QueryRow(ctx, `
+			select i.project_key, p.visibility = 'private'
+			from issues i
+			join projects p on p.key = i.project_key
+			where i.key = $1
+		`, target).Scan(&targetProject, &targetPrivate)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "blocked_by issue %s not found", target)
+			return blockedByNotFound(target)
 		}
 		if err != nil {
 			return err
 		}
 		if targetProject != project && caller != "" &&
-			!access.CredentialCovers(access.Credential{Listed: []string{caller}}, targetProject, false) {
-			return refuseUncoveredProject(caller, "blocked_by issue "+target, targetProject)
+			!access.CredentialCovers(access.Credential{Listed: []string{caller}}, targetProject, targetPrivate) {
+			return blockedByNotFound(target)
 		}
 	}
 	from := make([]waitNode, len(targets))

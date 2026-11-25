@@ -291,8 +291,9 @@ With `include_children` it writes `backlog`, `icebox` or `triage` only, with `un
 A credential that names one project writes every project's objects that a credential naming no project may write.
 The one exception is a private project that the credential does not name.
 One function holds that test: `access.CredentialCovers` (`internal/dispatch/access/credential.go`).
-Dispatch holds no private project yet.
-So each caller passes `private` as false, and the function refuses nothing today.
+Each caller passes it the visibility of the target's project (`projects.visibility`), which it reads in the statement or the transaction that reads that project, before the route writes anything.
+A write to a private project that the credential does not name writes nothing.
+The caller gets exactly the answer, in status, code and message, that it gets at the same check for a target that does not exist, so it cannot tell the two apart.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
 a `GET` row declares nothing), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
@@ -306,24 +307,32 @@ The project check resolves the project the addressed object belongs to
 — and lets through a target of every project that `access.CredentialCovers` covers.
 It fails closed, so a target that resolves to no project at all (an object belonging to none) or to nothing at all (no such row, or an id Postgres will not read as a uuid) is still `403 PROJECT_SCOPE`.
 That refusal names the project the credential names, and nothing of the credential.
-A write to a private project that the credential does not name is `403 PROJECT_SCOPE` too, and that refusal names both projects.
-So a scoped caller can tell an object that exists from an id nobody holds: a write to the one reaches its handler, and a write to the other is refused.
+An object of a private project that the credential does not name gets the same `403 PROJECT_SCOPE`, with the same message.
+So a scoped caller can tell an object that it may write from an id nobody holds: a write to the one reaches its handler, and a write to the other is refused.
+It cannot tell an id nobody holds from an object of a private project that it does not name.
 Failing closed does not close that existence oracle and does not claim to.
 Nothing is read out that way: no GET route is project-scoped, so the caller reads every project's objects already.
 Each resolver sends the raw path value to Postgres, as the handler behind it does, so the check reads a path exactly as the handler then addresses its row by it
 — Postgres's uuid parser takes a hyphen after any group of four digits, and a check that parsed ids in Go admitted those spellings unjudged.
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming the credential's project and the route:
 a credential that names one project may not create another or change a setting that is not any project's.
-`POST /api/v1/issues` takes its project from the body rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
+`POST /api/v1/issues` takes its project from the body rather than from its address, so its handler makes the same check the moment that project is settled
 — before the ref is resolved to an issue already imported, and before anything is written.
+For a private project that the credential does not name, it answers `404 NOT_FOUND`, the answer for a project that does not exist.
 `POST /api/v1/going/requests` takes its project from the body too, and its handler makes the same check before it records the question.
 A credential that names one project may ask of any project, and of every project at once.
+Such a credential gets `404 PROJECT_NOT_FOUND` for a private project that it does not name and for a project that does not exist, with one body for both.
+A credential that names no project is answered as before: its question of a project that does not exist is recorded.
 A `blocked_by` target and a parent may each be an issue of any project.
 The issue create and `PATCH /api/v1/issues/{key}` make the same check for each `blocked_by` target and for a parent of another project, before any lock is taken (`foreignDependencyTargets`) and again under the locks (`writeBlockedBy` for a target, and `validateIssueParent` or the create's own read of its parent for the parent).
+A target of a private project that the credential does not name is `400 BLOCKED_BY_INPUT`, and such a parent is `400 PARENT_INPUT`, each with the message of a key that does not exist.
 A result and its retraction are appended to the check's issue, which a parent of another project can put in another project, and which the path does not name.
 `POST /api/v1/issues/{key}/results` and its dry run (`POST /api/v1/issues/{key}/results/dry-run`) make the same check for that issue once, before anything is written, and `POST /api/v1/results/{id}/retract` makes it once, before it takes that issue's owner lock.
+For a check of a private project that the credential does not name, the two results routes answer `400 UNKNOWN_CHECK`, and the retraction answers `403 PROJECT_SCOPE` with the message of a result that does not exist.
 A status change's cascade can write an issue of another project, since a parent may be one: an ancestor that `include_parent` moves, and an issue under the issue that `include_children` moves or `unlink_children` unlinks.
 `POST /api/v1/issues/{key}/status-change` and its dry run make the same check for each issue a step of the call writes, under the issues' owner locks and before the first step (`planStatusChangeUnderLocks`).
+The call leaves out each issue of a private project that the credential does not name: it does not move or unlink that issue, and neither its answer nor its dry run names it.
+The parent status rule still judges that issue, and the `issues` of a `409 PARENT_STATUS_CONFLICT` leave it out.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
@@ -2930,7 +2939,8 @@ The `role` check names the six Legion roles, and a row goes with its issue.
 A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
 A new table: the foreign key holds `issues` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so an issue write waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
-Migration `20261125002856_issue_role_holders_daemon_proven` adds `issue_role_holders.daemon_proven`, `boolean not null default false`: whether the credential that wrote a pair proved the session `legion-daemon:<project>` of the issue's project and held `legion-status`, which only the daemon's own broker token does.
+Migration `20261125002856_issue_role_holders_daemon_proven` adds `issue_role_holders.daemon_proven`, `boolean not null default false`: whether the credential that wrote a pair held `legion-status` and proved a daemon's session, which only a daemon's own broker token does.
+That session is `legion-daemon:<project>` of the issue's project, or `legion-daemon:<P>` of another project's daemon whose token names `P`.
 `PUT /api/v1/issues/{key}/role-holders` writes it on each pair that a publication stores, a pair that it keeps unchanged included, with `DISPATCH_LEGION_STATUS_SCOPE` on or off (Routes below).
 A row stored before the migration reads unmarked (`false`), and the next publication of its issue from the daemon's own token marks it.
 With `DISPATCH_LEGION_STATUS_SCOPE` on, R26 lets the write of a Legion issue's status by the architect that owns the issue through only where a marked pair names that architect.
@@ -4954,7 +4964,9 @@ Each item below names a path with its method and identity, then its purpose.
   A role-holder publication then passes only on a credential that proves `legion-daemon:<project>`, and any other is `403 ROLE_HOLDER_NOT_PROVEN` (`/api/v1/issues/{key}/role-holders`, below).
   Turning it on makes a check stronger, so any credential that may write the project's issues may send the `PUT`, which declares no OAuth scope, and the project's daemon can send it with its own project-scoped token; a bearer names its session in `actor`.
   Turning it off makes a check weaker, so the `DELETE` needs the `person` scope and records the person: a credential the deployment configured, the shared token or a pod's, holds none and is `403 OAUTH_SCOPE_REQUIRED`, so no machine turns the setting off.
-  A token scoped to another project is `403 PROJECT_SCOPE`, and an unknown project `404 PROJECT_NOT_FOUND`.
+  A token scoped to another project turns the setting on with the `PUT`, as the shared token does, and its `DELETE` needs the `person` scope, as every caller's does.
+  A token scoped to one project gets `403 PROJECT_SCOPE` for a project that does not exist and for a private project that it does not name, with one message for both (the project check, above).
+  Any other caller gets `404 PROJECT_NOT_FOUND` for a project that does not exist.
   A write that finds the setting as it asks changes nothing and appends no event; a change appends `project.updated`, with the project row and its writer.
   The answer is the project as `GET /api/v1/projects` lists it.
   `dispatch project-update --project <KEY> --proven-sessions on|off` sends the `PUT` or the `DELETE`.
@@ -5293,7 +5305,8 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, which may be any repository at all:
   `400 INVALID_ISSUE` when it is not `owner/name`.
-  `parent` may be an issue of any project: `400 PARENT_INPUT` when no such issue exists, `409 PARENT_INPUT` when the new issue would sit more than 32 links below its root, counting the links in every project, and `403 PROJECT_SCOPE` when a credential that names one project names a parent of a private project it does not name, the one project `access.CredentialCovers` leaves out.
+  `parent` may be an issue of any project: `400 PARENT_INPUT` when no such issue exists, and `409 PARENT_INPUT` when the new issue would sit more than 32 links below its root, counting the links in every project.
+  A credential that names one project gets the same `400 PARENT_INPUT` for a parent of a private project that it does not name, with the message of a parent that does not exist.
   A parent of another project passes on no repository, components, `legion` label or assignee:
   `resolved_repo`, an inherited component attachment, the architecture tree's owner and `legion_managed_status` read only the ancestors in the issue's own project, so such an issue takes its own project's default repository, and a create that names no assignee and acts for no person lands on its own project's default assignee rather than the parent's.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
@@ -5328,7 +5341,7 @@ Each item below names a path with its method and identity, then its purpose.
     A refused close (`status: done`) can still settle the issue's documents: the `PATCH` settles them before its transaction (`settleIssueBeforeClose`), and Dispatch judges the write after that.
     A Legion daemon's own broker token holds `legion-status`, and the shared token, a personal token without `person` and a project's other broker tokens hold neither scope.
 
-  - With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it.
+  - With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it, `issues` and `error` leaving out an issue of a private project that the request's credential does not name.
     The `PATCH` judges only the pairs it changes: a new status judges the issue with its parent and with each direct child, and a new parent judges the issue with that parent.
     A status the issue already has changes no pair, so it is not judged.
     The `PATCH` takes none of that route's options: it ignores them as members it does not declare.
@@ -5383,6 +5396,9 @@ Each item below names a path with its method and identity, then its purpose.
     A keyed call leaves it once, in the transaction that marks its recovery point finished, and a repeat that finishes the call lists the changes of the attempts before it too.
 
   Before the first write, the call reads its plan again under the owner locks of each issue it writes and of each one's current and new parent, and checks the whole plan.
+  When the request's credential names one project, the call leaves out of the plan each issue of a private project that the credential does not name: an ancestor that `include_parent` would move, or an issue under the issue that `include_children` would move or `unlink_children` would remove.
+  The call does not move or unlink that issue, and neither its answer nor its dry run names it.
+  The rule still judges that issue with its parent and its children, so a call that leaves it out of line is `409 PARENT_STATUS_CONFLICT`, as below.
   Then it writes one issue at a time, each through the `PATCH`'s own write in a transaction of its own, in an order where each write keeps the rule.
   That order is the ancestors that `include_parent` moves, highest first, then the children that `unlink_children` removes, then the issue itself.
   `include_children` moves the issues under it before the issue itself, deepest first, for a status that is `done` or not started, and after it, highest first, for a status in work.
@@ -5409,6 +5425,7 @@ Each item below names a path with its method and identity, then its purpose.
   - `409 PARENT_STATUS_CONFLICT` `{code, error, issues, changed}`: the call breaks the rule.
     Each entry of `issues` is `{key, title, status, relation}`: an issue that holds the rule against the write, with its status as the write would leave it, and `relation` `parent` or `child`.
     `error` names each of them with its status, so a client that reads no `issues` still shows them.
+    `issues` and `error` leave out an issue of a private project that the request's credential does not name, so `issues` can be empty.
     The route refuses this with `DISPATCH_PARENT_STATUS_RULE` on, and refuses a dry run of it whatever the setting.
 
   - `403 LEGION_STATUS_SCOPE_REQUIRED`, with an `insufficient_scope` challenge naming `legion-status`: with `DISPATCH_LEGION_STATUS_SCOPE` on, a step writes the status of a Legion issue or moves one out from under every labelled issue, and the request's credential holds neither the `person` scope nor `legion-status`.
@@ -5420,12 +5437,6 @@ Each item below names a path with its method and identity, then its purpose.
     Only a person who is signed in at a browser closes the open issues under an issue together with it.
 
   - `403 DOCUMENT_WRITER_NOT_ARCHITECT`: a write of the call closes, reopens or takes out of Legion an issue that Legion runs, from a writer that is no person, no architect of that issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
-
-  - `403 PROJECT_SCOPE`: the request's credential names one project, and a write of the call is of an issue of a private project it does not name, the one project `access.CredentialCovers` leaves out.
-    Such an issue is an ancestor that `include_parent` moves, or an issue under the issue that `include_children` moves or `unlink_children` removes, since a parent may be an issue of another project.
-    No project is private yet, so today the route refuses no such write.
-    The route checks every write of the plan before the first one, so it refuses the whole call before any write, a dry run too; it decides this after `ISSUE_CLOSED` and before `BROWSER_SIGN_IN_REQUIRED` and `PARENT_STATUS_CONFLICT`.
-    A credential that names no project is refused nothing here.
 
   - `400 STATUS_CHANGE_INPUT`: no status, or `include_children` with `unlink_children`.
 
@@ -5828,7 +5839,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   The phase's newest handoff with its body, byte for byte as written; `404 HANDOFF_NOT_FOUND` when it has none.
 
-- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only the Legion daemon's own broker token; with it off, the actor must be the Legion daemon's session)
+- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only a Legion daemon's own broker token; with it off, the actor must be a Legion daemon's session)
 
   Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
   The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`.
@@ -5837,14 +5848,15 @@ Each item below names a path with its method and identity, then its purpose.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
   A pair that did not change keeps its `recorded_at`.
   The session `legion-daemon:<project>`, the key up to its first `-`, is the session that the daemon of the issue's project writes as.
-  With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that proves this session and holds `legion-status` can publish.
-  Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, including a shared token whose `actor` names the daemon.
+  With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that holds `legion-status` can publish, and it must prove this session.
+  The daemon of another project can publish too: its broker token holds `legion-status`, names its project `P` and proves its session `legion-daemon:<P>`.
+  Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, including a shared token whose `actor` names the daemon and a broker token whose session is no daemon's.
   With the setting off, any actor other than the daemon's session is `403 ROLE_HOLDER_FORBIDDEN`, but for the daemon of another project.
   That daemon writes the set too when its broker token names its project `P` and proves its session `legion-daemon:<P>`.
   A daemon that runs a claim on another project's issue publishes that issue's set this way.
   A bearer with no proven session can name the session of the issue's project's daemon in its body, but the project's `proven_sessions` setting can refuse it.
   With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove the daemon's session is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
-  Each stored pair carries a mark that says whether the daemon's own token wrote it (`issue_role_holders.daemon_proven`, Database migrations above).
+  Each stored pair carries a mark that says whether a daemon's own token wrote it, the issue's project's daemon's or another project's daemon's (`issue_role_holders.daemon_proven`, Database migrations above).
   Each publication sets the mark on every pair it stores or keeps, regardless of either setting.
   Only a marked pair identifies an architect who can write a Legion issue's status under the status guard.
   The answer does not carry the mark.

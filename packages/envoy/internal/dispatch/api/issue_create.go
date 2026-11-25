@@ -122,23 +122,32 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// here by its class (scopeProjectInBody). It runs once the body's project is read, and so
 	// before the external ref is resolved to an issue already imported. Nothing is written before
 	// this point. A credential that names one project creates an issue in every project that
-	// access.CredentialCovers covers. The one exception is a private project it does not name.
-	// Such a caller is refused here, so it is never answered with that project's issue, which
-	// respondWithExistingExternalIssue would also record a related-check outcome on.
-	// callerProject is empty for a credential that names none. The dependency lock step, the
-	// parent's read and writeBlockedBy below read it again, because neither a blocked_by target's
-	// project nor the parent's is part of this address.
+	// access.CredentialCovers covers. The one exception is a private project it does not name,
+	// whose visibility one statement reads here (projectVisibility). Such a caller gets the 404
+	// NOT_FOUND of a project that does not exist, which the project's owner lock below answers
+	// (pgx.ErrNoRows), so it cannot tell the two apart. It is refused here, so it is never
+	// answered with that project's issue, which respondWithExistingExternalIssue would also
+	// record a related-check outcome on. callerProject is empty for a credential that names none.
+	// The dependency lock step, the parent's read and writeBlockedBy below read it again, because
+	// neither a blocked_by target's project nor the parent's is part of this address.
 	callerProject, scoped := s.callerProject(r)
-	if scoped && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, input.Project, false) {
-		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
-		return
+	if scoped {
+		private, _, err := projectVisibility(r.Context(), s.deps.Store.Pool, input.Project)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, input.Project, private) {
+			s.writeHandlerError(w, pgx.ErrNoRows)
+			return
+		}
 	}
 	// A scoped caller is asked here too about a parent or a blocked_by target of another project
 	// (foreignDependencyTargets), with no lock held, before the near-copy gate and every other
-	// write before the transaction, so a create it may not make records no near-copy check and
-	// gets no 409 in place of its 403. A target or a parent of a project access.CredentialCovers
-	// leaves out is refused. The lock step and the reads under the locks ask again, the
-	// authoritative refusal.
+	// write before the transaction, so a create it may not make records no near-copy check. A
+	// target or a parent of a private project that the credential does not name gets the 400 of
+	// a target or a parent that does not exist. The lock step and the reads under the locks ask
+	// again, the authoritative refusal.
 	if scoped && (parentKey != "" || len(blockers) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
@@ -313,9 +322,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	var parentAssignee *string
 	if parentKey != "" {
 		var parentProject string
-		err := tx.QueryRow(r.Context(), `select project_key, assignee from issues where key = $1`, parentKey).Scan(&parentProject, &parentAssignee)
+		var parentPrivate bool
+		err := tx.QueryRow(r.Context(), `
+			select i.project_key, i.assignee, p.visibility = 'private'
+			from issues i
+			join projects p on p.key = i.project_key
+			where i.key = $1
+		`, parentKey).Scan(&parentProject, &parentAssignee, &parentPrivate)
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, fmt.Sprintf("parent issue %s not found", parentKey))
+			s.writeHandlerError(w, parentNotFound(parentKey))
 			return
 		}
 		if err != nil {
@@ -323,10 +338,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// A parent may be an issue of any project. A credential that names one project is asked
-		// about it again here, under the locks, as the lock step asked before them:
-		// access.CredentialCovers refuses only a private project the credential does not name.
-		if callerProject != "" && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, parentProject, false) {
-			s.writeHandlerError(w, refuseUncoveredProject(callerProject, "parent issue "+parentKey, parentProject))
+		// about it again here, under the locks, as the lock step asked before them. A parent of a
+		// private project the credential does not name answers as a parent that does not exist.
+		if callerProject != "" && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, parentProject, parentPrivate) {
+			s.writeHandlerError(w, parentNotFound(parentKey))
 			return
 		}
 		// A parent of another project passes on no assignee, as it passes on no repository,

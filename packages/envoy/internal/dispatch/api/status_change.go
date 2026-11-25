@@ -353,9 +353,10 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 // writes nothing, takes the owner locks of every step's issue and of each step's current and
 // new parent in one store.LockOwners call. Under them it loads the issue the call names and
 // decides expected_sequence first (409 ISSUE_CHANGED), then the closed-issue gate as the PATCH has
-// it (409 ISSUE_CLOSED), reads the plan again, asks access.CredentialCovers about each step's issue
-// where the request's credential names one project, callerProject (refuseUncoveredProject, 403
-// PROJECT_SCOPE), and checks the whole plan (refuseIssueWritePlan). A plan whose issues moved
+// it (409 ISSUE_CLOSED), and reads the plan again. Where the request's credential names one
+// project, callerProject, it asks access.CredentialCovers about each step's issue, and leaves out
+// of the plan each step whose issue is in a private project that the credential does not name.
+// Then it checks the whole plan (refuseIssueWritePlan). A plan whose issues moved
 // between the two reads, so that it needs a lock the transaction does not hold, starts over with
 // what the second read found, as lockPatchOwnersAndParent does, and a plan that moves at every
 // attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls back before the
@@ -442,28 +443,28 @@ func (s *server) planStatusChangeUnderLocks(
 		return statusChangePlan{}, nil, err
 	}
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), options: change.statusChangeOptions}
-	for index := range steps {
-		step := &steps[index]
+	planned := steps[:0]
+	for _, step := range steps {
 		row := rows[step.key]
 		// A credential that names one project writes, in a step, an issue of every project that
-		// access.CredentialCovers covers. The one exception is a private project it does not name.
-		// The route's pre-handler check reads only the project of the issue the path names
-		// (project_scope.go), and a parent may be an issue of another project
-		// (validateIssueParent), so an ancestor that include_parent moves and a descendant that
-		// include_children moves or unlink_children unlinks can each belong to another. Each step's
-		// issue is asked about here, as its row was read under the owner locks, before the first
-		// step and for a dry run as well, so no step of a call writes an issue the credential may
-		// not write.
-		if callerProject != "" && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, row.project, false) {
-			what := "issue " + step.key
-			if step.option != "" {
-				what = step.option + "'s issue " + step.key
-			}
-			return statusChangePlan{}, nil, refuseUncoveredProject(callerProject, what, row.project)
+		// access.CredentialCovers covers. The route's pre-handler check reads only the project of
+		// the issue the path names (project_scope.go), and a parent may be an issue of another
+		// project (validateIssueParent), so an ancestor that include_parent moves and a descendant
+		// that include_children moves or unlink_children unlinks can each belong to another. Each
+		// step's issue is asked about here, as its row and its project's visibility were read
+		// under the owner locks, before the first step and for a dry run as well. A step whose
+		// issue is in a private project that the credential does not name is left out of the
+		// plan: the call does not move or unlink that issue, and neither its answer nor its dry
+		// run names it. The parent status rule still judges each pair that the plan changes, that
+		// issue's included (parentStatusConflictOf reads it as it stands).
+		if callerProject != "" && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, row.project, row.private) {
+			continue
 		}
 		step.title, step.project, step.lastSeq = row.title, row.project, row.lastSeq
+		planned = append(planned, step)
 		writes.steps = append(writes.steps, step.issueWriteStep)
 	}
+	steps = planned
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, writer, writes)
 	if err != nil {
 		return statusChangePlan{}, nil, err

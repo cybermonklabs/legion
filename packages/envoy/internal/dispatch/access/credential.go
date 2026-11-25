@@ -32,8 +32,11 @@ type Credential struct {
 //
 // VisibleProjectsSQL is its SQL twin for reads, which TestTheListRuleIsOneInGoAndSQL holds equal to
 // it over every combination. Dispatch's 11 write checks in internal/dispatch/api call it with
-// Listed alone, the project each write names and private false. The change that turns on private
-// projects or restricted member kinds for writes must change all 11 call sites.
+// Listed alone, the project each write names, and that project's visibility, which each check
+// reads in the statement or the transaction that reads the project, before the write. The 409
+// PARENT_STATUS_CONFLICT answer calls it the same way to leave out each issue that the caller
+// cannot see. No write check builds a restricted member's credential, so the change that turns on
+// restricted member kinds for writes must change all 11 call sites.
 func CredentialCovers(cred Credential, project string, private bool) bool {
 	if cred.Browser {
 		return true

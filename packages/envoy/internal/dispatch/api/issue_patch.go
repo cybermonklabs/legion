@@ -681,7 +681,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// The close's second read of R24 (openChildrenOfAClose): a create under this issue whose
 		// share lock of its row came first made the update above wait for its commit, and this
 		// read sees that new child.
-		conflict, err := openChildrenOfAClose(ctx, tx, key)
+		conflict, err := openChildrenOfAClose(ctx, tx, key, call.callerProject)
 		if err != nil {
 			return issueWriteResult{}, err
 		}

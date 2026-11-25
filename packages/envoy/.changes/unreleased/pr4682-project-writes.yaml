@@ -11,10 +11,23 @@ body: |-
   `include_parent` moves, a descendant that `include_children` moves, or a child that
   `unlink_children` unlinks), and a result on a check of another
   project's issue with its retraction (`POST /api/v1/issues/{key}/results`, its dry run, and
-  `POST /api/v1/results/{id}/retract`), which a parent of another project puts within reach. The one
-  exception is a private project that the token does not name, which `access.CredentialCovers` tests
-  and which no project is yet. A target that resolves to no project or to nothing is still refused
+  `POST /api/v1/results/{id}/retract`), which a parent of another project puts within reach. It
+  also turns on another project's proven-sessions setting (`PUT /api/v1/projects/{key}/proven-sessions`).
+  The one exception is a private project that the token does not name, which
+  `access.CredentialCovers` tests with the visibility each write check reads of the target's
+  project. Such a write writes nothing, and the token gets the answer of a target that does not
+  exist at the same check: `403 PROJECT_SCOPE` for an object the address names and for a
+  retraction, `404 NOT_FOUND` for an issue made in that project, `400 PARENT_INPUT` for a parent,
+  `400 BLOCKED_BY_INPUT` for a `blocked_by` target, and `400 UNKNOWN_CHECK` for a result and its
+  dry run. A question asked of such a project, or of a project that does not exist, is now
+  `404 PROJECT_NOT_FOUND` to a token that names a project. A status change leaves out of its
+  cascade each issue of such a project, does not name it in its answer or its dry run, and still
+  judges it by the parent status rule. The `issues` of a `409 PARENT_STATUS_CONFLICT` leave out
+  each issue of a private project that the request's token does not name, on every route that
+  answers it. A target that resolves to no project or to nothing is still refused
   `403 PROJECT_SCOPE`, a write of the deployment's is still refused `403 PROJECT_SCOPE_DEPLOYMENT`,
   and the session and person checks stay. The Legion daemon of another project, whose broker token
   proves its session `legion-daemon:<P>`, now writes the step records, step ratings, plans and role
-  holders of an issue.
+  holders of an issue. With `DISPATCH_LEGION_STATUS_SCOPE` on, such a daemon's token, which holds
+  `legion-status`, publishes an issue's role holders, and each pair it stores is marked
+  `daemon_proven`.

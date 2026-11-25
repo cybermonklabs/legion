@@ -249,14 +249,15 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// above the recording issue, and the result is appended to that issue. The pre-handler
 	// check read only the path's issue, so a credential scoped to one project is asked about
 	// such a check here, before anything is written: it records on the check of every project
-	// access.CredentialCovers covers.
+	// access.CredentialCovers covers. A check of a private project that the credential does not
+	// name answers as a check that does not exist (unknownCheck), for the record and its dry run.
 	if callerProject, _ := s.callerProject(r); callerProject != "" {
-		project, err := checkIssueProject(r.Context(), pool, callerProject, check.IssueKey)
+		project, private, err := checkIssueProject(r.Context(), pool, callerProject, check.IssueKey)
 		if err != nil {
 			return refused(err)
 		}
-		if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, project, false) {
-			return refused(refuseUncoveredProject(callerProject, "the check's issue "+check.IssueKey, project))
+		if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, project, private) {
+			return refused(unknownCheck(input.Check))
 		}
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
