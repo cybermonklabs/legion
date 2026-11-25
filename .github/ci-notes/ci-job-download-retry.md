@@ -94,8 +94,8 @@ The builds do not fit one job. With its 300 s of base image pulls, the 900 s smo
 (twice) and worker builds would come to 1400 + 15833 + 4263 + 3360 + 2208 + 2208 = 29272 s, and
 with the single slowest retried step that the Budgets note adds, the worker image's 4650 s ladder,
 to 33922 s, above the 360 minutes GitHub gives a job on a hosted runner. So the worker image's
-build runs in a job of its own, download-retry-images-worker, six times: the six runs of its
-matrix are six runner jobs, so its one key bounds one run, at 200 + 15833 = 16033 s and
+build runs in a job of its own, download-retry-images-worker, five times: the five runs of its
+matrix are five runner jobs, so its one key bounds one run, at 200 + 15833 = 16033 s and
 16033 + 4650 = 20683 s, 345 minutes. The other builds stay in download-retry-images, at
 1400 + 4263 + 3360 + 2208 + 2208 = 13439 s and 13439 + 3150 = 16589 s, 277 minutes, which was 240
 (11231 + 3150 = 14381 s) until round 65 added the browser image's second run; 3150 s is the longest
@@ -156,7 +156,7 @@ the next outage. Each arm's G:
   rounds up.
 
 THE COVERAGE CRITERION. Every RUN line of an arm's Dockerfile that reaches a listed host meets a
-faulted request in some run of that arm, but for the five lines THE STATED LIMIT below names. It
+faulted request in some run of that arm, but for the seven lines THE STATED LIMIT below names. It
 is read from each build log's attempt lines: `retry: <what>: attempt <k> of 5 failed` for an
 inline `retry()`, a `curl: (N)` line for a curl that makes its own attempts, or a bare tool's 504
 line. Each report prints the outages its proxy opened and, for each host it decided, the second of
@@ -187,8 +187,8 @@ not a price: the budgets count retried calls.
   coding-intl.dashscope.aliyuncs.com, hyper.charm.land and zenmux.ai. www.authelia.com is where
   authelia.com's go-get page sends the go command (the Envoy arm's proxy passed both), and
   www.gonum.org is where gonum.org's does. pkg.go.dev is the one the go.dev entry faulted in job
-  138409597020 beside go.dev, first at 159.5 s. Run 1 lists all of them, and runs 2 to 6 the
-  clusters THE SIX WORKER RUNS names.
+  138409597020 beside go.dev, first at 159.5 s. Run 1 lists all of them, and runs 2 to 5 the
+  clusters THE FIVE WORKER RUNS names.
 - The Envoy image, 24 hosts: registry.npmjs.org; deb.debian.org; proxy.golang.org,
   sum.golang.org, golang.org and google.golang.org; storage.googleapis.com; github.com, which its
   proxy passed ten requests to in job 138228770096; and the go-get hosts authelia.com and
@@ -272,20 +272,22 @@ is the first listed host reached, at 5.4 s in job 138409597173, so it opens outa
 passed on and run 1 drives only the key. Run 2, the `browser-apt` arm, lists the apt hosts alone,
 so `apt-get update` opens an outage of its own and the apt calls are driven.
 
-THE SIX WORKER RUNS. The worker image is built six times, once for each run of the matrix of
+THE FIVE WORKER RUNS. The worker image is built five times, once for each run of the matrix of
 download-retry-images-worker, each run a job of its own. A stage runs its RUN lines in order, and
 the RUN that meets an outage retries through it, so only a run's first outage lands where an
 unfaulted build reaches the host: every fault before a RUN moves the start of each RUN after it,
 and later outages move with every fault before them. A run that lists one cluster of hosts alone
 opens its first outage at that cluster's first request, where the seconds below put it, predicted
 from the RUN spans of job 138666740482 and the uncached spans of worker-image job 138666741929
-(both at e3e586f3). That is why each cluster has a run of its own. The runs and the RUN lines each
-targets, with the second its first request comes in a clean no-cache build:
+(both at e3e586f3). That is why each cluster has a run of its own, but for the model catalog's
+hosts, which THE STATED LIMIT names. The runs and the RUN lines each targets, with the second its
+first request comes in a clean no-cache build:
 
 - Run 1, `worker`, the job named download-retry-images-worker: the first-minute cluster,
   deb.debian.org and dl-cdn.alpinelinux.org, which the four apt RUNs of plugin-deps, tools,
-  toolchain and runtime-base and go-base's `apk add` reach. It lists every host any run lists,
-  registry.yarnpkg.com among them, which THE STATED LIMIT says no run reaches.
+  toolchain and runtime-base and go-base's `apk add` reach. It lists every host any run lists.
+  Among them are registry.yarnpkg.com, which THE STATED LIMIT says no run reaches, and the 7
+  hosts of runtime 40/40's `legion probe-image`, which it says no run faults.
 - Run 2, `worker-2`, about 10-20 s in: go, npm, github and the toolchain downloads, which go-licenses
   2/2, go-modules 4/4, gopls 1/1, tools 3/5's mise curl, plugin-deps 19/26's bun install and
   toolchain 4/7's downloads and `npm ci` reach. It lists npmjs.org, github.com,
@@ -298,19 +300,39 @@ targets, with the second its first request comes in a clean no-cache build:
 - Run 3, `worker-3`, about 55-100 s in: notices 4/23's fetches, from raw.githubusercontent.com.
 - Run 4, `worker-4`, about 116 s in: azure-cli's toolchain 6/7, from astral.sh, pypi.org and
   pythonhosted.org.
-- Run 5, `worker-5`, about 204-250 s in: webkit-check 2/2 and runtime 24/40's `az version`, from
-  playwright.dev, microsoft.com and windows.net.
-- Run 6, `worker-6`, about 271 s in: runtime 40/40's `legion probe-image`, from commandcode.ai,
-  kilo.ai, venice.ai, stencil.so, aliyuncs.com, charm.land and zenmux.ai.
+- Run 5, `worker-5`, about 204-250 s in: webkit-check 2/2, from playwright.dev and
+  microsoft.com. It lists windows.net too, for runtime 26/40's `az version`, which stays bare (the
+  Dockerfile says why) and which no run faults: run 5 first reaches
+  azcliprod.blob.core.windows.net at 313.9 s in job 138996340699, within 230 s after its outage.
 
-THE STATED LIMIT. Five lines no run can fault: plugin-deps 23/26 and 26/26 (the second and third
-`bun install`; registry.npmjs.org is always first reached, so decided, by 19/26), toolchain 5/7
-(the Cloud SDK; dl.google.com is decided by 4/7's Go tarball through go.dev's redirect), tools 5/5
-(its omp, jj and gh fetches and `mise --version`; github.com and release-assets.githubusercontent.com
-are decided by 3/5's mise curl or 4/7's uv, and mise.jdx.dev by 5/5 itself after that outage) and
-runtime 26/40 (corepack's pnpm on registry.npmjs.org). Each is a later RUN line on a host an
-earlier RUN line of the same build already met in its outage, so a fault keyed to a host cannot
-single it out, and each uses the same inline `retry()` that other lines prove under fault.
+THE STATED LIMIT. Seven lines meet no fault in any run. No run can fault five of them: plugin-deps
+23/26 and 26/26 (the second and third `bun install`; registry.npmjs.org is always first reached,
+so decided, by 19/26), toolchain 5/7 (the Cloud SDK; dl.google.com is decided by 4/7's Go tarball
+through go.dev's redirect), tools 5/5 (its omp, jj and gh fetches and `mise --version`; github.com
+and release-assets.githubusercontent.com are decided by 3/5's mise curl or 4/7's uv, and
+mise.jdx.dev by 5/5 itself after that outage) and runtime 26/40 (corepack's pnpm on
+registry.npmjs.org). Each is a later RUN line on a host an earlier RUN line of the same build
+already met in its outage, so a fault keyed to a host cannot single it out, and each uses the same
+inline `retry()` that other lines prove under fault. The sixth is the Envoy image's build 6/12,
+its `go mod download`, which is the same shape in another arm: build 4/12's go-licenses install
+decides proxy.golang.org first, at 5.7 s in outage 1 of job 138996340640, and the download's other
+hosts are first reached within 190 s after that outage ends (sum.golang.org at 76.0 s,
+storage.googleapis.com at 99.9 s and its go-get hosts from 125.3 s), so none is faulted. An Envoy
+run that listed storage.googleapis.com and those go-get hosts alone would open its outage there,
+and the arm has no such run. The same `go mod download` under the same inline `retry()` meets its
+fault in the held-port image's wrapper 4/4 and in the worker image's go-modules 4/4. The seventh
+is the worker image's runtime 40/40, `legion probe-image`, on commandcode.ai, kilo.ai, venice.ai,
+stencil.so, aliyuncs.com, charm.land and zenmux.ai. What it fetches from them is Oh My Pi's
+background model refresh, which is no retried call and fails nothing (the paragraph on the worker
+image's hosts above cites the code). So a run that faults those hosts alone drives no retry, and
+the report's attempt check refuses it: the build log holds no attempt line and no `curl: (N)`
+line at all (.github/scripts/download-retry-proof.sh, `report`). Until INFRA-1310's architect's
+ruling at 05:59Z on 2026-11-25, a sixth worker run listed those 7 hosts alone. In job 138996340757
+of run 45551940814 (at c9788e014f22) it faulted all 7 hosts, 8 requests in all, in one outage
+from 246.5 s to 306.5 s. The build reached its last stage, and the report failed on the attempt
+check alone. That ruling removed the run and keeps the 7 hosts in run 1's `--hosts`. In run 1 (job
+138996340654 of run 45551940814) they are first reached at 395.6 s, after outage 2 (305.0 s to
+365.0 s) and within 230 s of its end, so they are not faulted.
 registry.yarnpkg.com stays in run 1's `--hosts` by INFRA-1310's architect's ruling at 04:17Z
 although no run reaches it: neither by-host list of job 138666740482 names it. And if a real
 attempt runs longer than measured, a recovering call can meet a fresh outage, and the last-attempt
@@ -408,7 +430,7 @@ before round 64 and 285 after it.
 
 Each report uses `continue-on-error: true` so a failed report does not skip later arms.
 GitHub Actions includes only steps with an `id` in the `steps` context. Each report has an
-ID of the form `report-<arm>`, where `<arm>` is its proxy name, but for the six runs of the
+ID of the form `report-<arm>`, where `<arm>` is its proxy name, but for the five runs of the
 worker job, which are one job's steps and so share `report-worker` and name their proxies by the
 matrix's `run`. The verdict checks all steps with that prefix. It reads `outcome`, the result
 before `continue-on-error` changes a failed report's `conclusion` to `success`.

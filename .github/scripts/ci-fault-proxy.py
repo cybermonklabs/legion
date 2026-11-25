@@ -60,7 +60,7 @@ proxy before the site runs, and outage 1 opens at the site's own first request.
 --bind is the address it listens on, 127.0.0.1 by default. A `RUN` of a docker build runs in a
 network namespace of its own, where 127.0.0.1 is the build container and not the runner, so a
 build reaches this proxy only on an address the container can route to: the docker bridge
-gateway, which the download-retry-images job and the six runs of the download-retry-images-worker
+gateway, which the download-retry-images job and the five runs of the download-retry-images-worker
 job of .github/workflows/ci-job-download-retry.yaml bind to and pass into the build as http_proxy.
 Nothing else changes: a caller that names no --bind listens where it always did.
 

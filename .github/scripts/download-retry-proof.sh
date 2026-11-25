@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The fault rig of the download-retry, download-retry-images and download-retry-images-worker jobs
 # of ci-job-download-retry.yaml, the browser image's two runs in the second and the worker image's
-# six, as the legs of one matrix, in the third: it starts
+# five, as the legs of one matrix, in the third: it starts
 # .github/scripts/ci-fault-proxy.py in front of one step, reads the proxy's log after that step,
 # and prints and checks what the retry did (dispatch://INFRA-1545, T7). Five verbs:
 #

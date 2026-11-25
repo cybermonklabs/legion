@@ -3,7 +3,7 @@ name: CI job download-retry
 # The three jobs of ci.yaml's `download-retry` job, in a file of their own: `download-retry`, which
 # proves the retries of the workflows' own sites, and `download-retry-images` and
 # `download-retry-images-worker`, which prove the inline retries of the four Dockerfiles, the
-# worker image's alone in the second, as six runs of one matrix, and the other three in the
+# worker image's alone in the second, as five runs of one matrix, and the other three in the
 # first. ci.yaml's job of the same
 # id calls this file, and that caller keeps `needs: changes` and the `if:` that decides whether
 # any runs, on the `changes` output download_retry: 'false' in a merge group, 'true' on a
@@ -672,7 +672,7 @@ jobs:
 
   # The same recovering fault, inside the Dockerfiles whose network RUN lines carry the inline
   # retry: this job builds the Envoy and held-port images under it and the browser image twice,
-  # and download-retry-images-worker below builds the worker image six times. The rig:
+  # and download-retry-images-worker below builds the worker image five times. The rig:
   # .github/ci-budgets.md, "The download-retry-images job's rig". Each build has a proxy of its
   # own, started with --coalesce-outage-gap <G>: the first request of a listed host opens an
   # outage of 60 s, a host first reached while it is open joins it, a host first reached less
@@ -681,7 +681,7 @@ jobs:
   # 290 for the held-port image, 380 for the browser image and 230 for the worker image: 80 s,
   # the inline retry's last sleep, plus the longest single attempt of a retried call in that
   # arm's own builds, rounded up to the next whole 10 s, as the comment beside each start step
-  # derives. Why each host is listed, which RUN lines each run faults and the four no run can:
+  # derives. Why each host is listed, which RUN lines each run faults and the seven no run faults:
   # .github/ci-notes/ci-job-download-retry.md#the-image-arms-outages-and-their-coverage
   # Each report holds its build to the price the gate puts on that build where the image is built
   # for real (.github/scripts/check-download-retry.sh, rule 10), plus the probe's 20 s, plus 150
@@ -909,17 +909,21 @@ jobs:
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
 
-  # The worker image's build under the same recovering fault, in a job of its own and six times:
-  # each of the six runs of the matrix below is a runner job of its own, shown as
-  # download-retry-images-worker and -worker-2 to -worker-6 (`run`). With the other builds of
+  # The worker image's build under the same recovering fault, in a job of its own and five times:
+  # each of the five runs of the matrix below is a runner job of its own, shown as
+  # download-retry-images-worker and -worker-2 to -worker-5 (`run`). With the other builds of
   # download-retry-images above, one job would come to 29272 + 4650 = 33922 s, above the 360
   # minutes GitHub gives a job on a hosted runner (dispatch://INFRA-1545, round 63). The rig, the
   # coalesced outages, the price each report holds the build to and the note on what each run
   # faults are the download-retry-images job's, and the `# why:` above the report step names the
   # key. Run 1 lists every host any run lists, registry.yarnpkg.com among them although no run
   # reaches it: neither by-host list of job 138666740482 names it, and INFRA-1310's architect
-  # ruled at 04:17Z that it stays. Runs 2 to 6 each list one cluster of hosts alone, so that its
-  # first request opens an outage where the build reaches it, and the matrix names each cluster.
+  # ruled at 04:17Z that it stays. It lists the 7 hosts of Oh My Pi's model catalog too, which
+  # runtime 40/40's `legion probe-image` reaches and no run faults: that fetch is no retried
+  # call, so the run that faulted them alone drove no retry, and its report failed on the attempt
+  # check (job 138996340757). The same architect ruled at 05:59Z on 2026-11-25 that they stay in
+  # run 1. Runs 2 to 5 each list one cluster of hosts alone, so that its first request opens an
+  # outage where the build reaches it, and the matrix names each cluster.
   #
   # It pulls no base image in a step of its own: BuildKit pulls the worker Dockerfile's FROM
   # images inside the build, as worker-image.yaml's own build does, through the daemon's own
@@ -936,7 +940,7 @@ jobs:
   # its single slowest retried step, the worker Dockerfile's longest single ladder, its
   # `go mod download` at 5 x 900 + 150 = 4650 s, a fault window of its own outside the injected
   # ones, above the ci-ok report's 2460 s (ci-budgets.md's Budgets note, "The ci-ok report").
-  # So 16033 + 4650 = 20683 s -> 345 min, for each of the six runs.
+  # So 16033 + 4650 = 20683 s -> 345 min, for each of the five runs.
   download-retry-images-worker:
     if: inputs.download_retry_images == 'true'
     name: download-retry-images-${{ matrix.run }}
@@ -958,12 +962,9 @@ jobs:
           # Run 4: azure-cli's toolchain 6/7, about 116 s in.
           - run: worker-4
             hosts: astral.sh,pypi.org,pythonhosted.org
-          # Run 5: webkit-check 2/2 and runtime 24/40's `az version`, about 204-250 s in.
+          # Run 5: webkit-check 2/2, about 204-250 s in, and runtime 26/40's bare `az version`.
           - run: worker-5
             hosts: playwright.dev,microsoft.com,windows.net
-          # Run 6: runtime 40/40's `legion probe-image`, about 271 s in.
-          - run: worker-6
-            hosts: commandcode.ai,kilo.ai,venice.ai,stencil.so,aliyuncs.com,charm.land,zenmux.ai
     steps:
       # As the download-retry job's first step, and for the reason its comment gives: a
       # `no_proxy` or `NO_PROXY` of `*` reads every host past the proxy, and the probe below is
