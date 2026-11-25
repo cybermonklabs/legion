@@ -54,6 +54,7 @@ import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusOnDocument } from "../shell/roving";
+import { dialogOpen } from "../shell/useDialog";
 import { useUserPreference } from "../shell/userPreference";
 import {
   announceMove,
@@ -488,14 +489,18 @@ export function IssueBoard({
   // One `aria-live` sentence per keyboard move; `focusAfterMove` names the card focus follows
   // once the optimistic list has rendered (a status move remounts the article under its new
   // column, so the old node cannot keep focus; a card moved into a rail has no node, and focus
-  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), so a
-  // move that ends without placing it takes no focus later. The effect runs on the
-  // `columns`/`boardLanes` render - the announcement's own render comes first, before the query
-  // observer has notified, and would focus the doomed node. It moves the focus only while the
-  // focus stands where the move's press left it (`from`): on the card the press moved, or on the
-  // body that card's going left it on. A move the rule's dry run checks first places the card only
-  // once the dry run answers, and a reader who has moved the focus on by then - a key to another
-  // card, a Tab, a click - keeps it where they put it.
+  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), and only
+  // while the focus then stands where the move's press left it: on the card the press moved
+  // (`from`), or in a dialog, which gives the focus back where it took it from (`useDialog`) - the
+  // rule's question, whose choice places the card. The move reads this as it places the card,
+  // before the board draws the card in its new place and so takes the focus off that card. So a
+  // move that ends without placing the card takes no focus later, and nor does a move the rule's
+  // dry run checks first, placed once the dry run answers, where the reader has moved the focus on
+  // by then - a key to another card, a Tab, a click, a click on a blank spot that leaves the focus
+  // on the body too. The effect runs on the `columns`/`boardLanes` render - the announcement's own
+  // render comes first, before the query observer has notified, and would focus the doomed node.
+  // It moves the focus only while the focus still stands on the press's card, or on the body where
+  // that card's going left it, or where the question's hand-back left it once that card had gone.
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     key: string;
@@ -593,8 +598,9 @@ export function IssueBoard({
     // Where the press left the focus: the card it moves (`focusAfterMove`).
     const from = document.activeElement;
     /** Says where the card stands now - its position and count in the visible cell, the one the
-     *  user sees, or nothing while it is not in that cell - and has focus follow it once the
-     *  board has drawn it there (`focusAfterMove`). */
+     *  user sees, or nothing while it is not in that cell - and, while the focus stands where the
+     *  press left it, has focus follow the card once the board has drawn it there
+     *  (`focusAfterMove`). */
     const placed = () => {
       const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
         (issue) =>
@@ -606,7 +612,11 @@ export function IssueBoard({
       if (position !== -1) {
         setAnnouncement(announceMove(key, target.status, position + 1, column.length));
       }
-      focusAfterMove.current = { from, key, laneId, status: target.status };
+      // Read now, before the query observer notifies the board: the draw that follows takes the
+      // focus off the press's card, so after it a focus on the body cannot tell that draw from a
+      // reader's click.
+      const stands = document.activeElement === from || dialogOpen();
+      focusAfterMove.current = stands ? { from, key, laneId, status: target.status } : null;
     };
     if (lanes && lane !== undefined) {
       void moveCardToLane(key, target.status, lane, target.insertionIndex, placed);

@@ -1677,9 +1677,13 @@ test("board: checking - a second drop while the first is checking waits behind i
 
 // INFRA-3135: a keyboard move the rule's dry run checks first places the card only once the dry
 // run answers. The focus follows the card then only while it stands where the reader's press left
-// it; a reader who has moved on - here `j` to the next card - keeps their place.
-for (const movedOn of [false, true]) {
-  test(`board: checking - focus follows a checked keyboard move only while it stands where the press left it (${movedOn ? "the reader moved on" : "the reader stayed"})`, async () => {
+// it. A reader who has moved on keeps their place: here `j` to the next card, or a blur that puts
+// the focus on the body, as a click on a blank spot of the page's shell does in Chromium and
+// WebKit. The board's draw of the card in its new column removes the node the press focused, so
+// after that draw the body tells nothing: only what the move read as it placed the card tells the
+// reader's blur from the card's going.
+for (const reader of ["stayed", "moved on", "put the focus on the body"] as const) {
+  test(`board: checking - focus follows a checked keyboard move only while it stands where the press left it (the reader ${reader})`, async () => {
     const user = userEvent.setup();
     const dryRun = Promise.withResolvers<StatusChangeAnswer>();
     const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
@@ -1687,12 +1691,19 @@ for (const movedOn of [false, true]) {
     const { cleanup } = renderBoard({}, undefined, parentIssues);
     try {
       const board = await screen.findByRole("region", { name: "Project board" });
-      act(() => within(board).getByRole("article", { name: "CORE-1 Parent" }).focus());
+      const pressed = within(board).getByRole("article", { name: "CORE-1 Parent" });
+      act(() => pressed.focus());
       await user.keyboard("{Shift>}L{/Shift}");
       await waitFor(() => expect(statusChanges).toHaveBeenCalledTimes(1));
-      if (movedOn) await user.keyboard("j");
       const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
-      if (movedOn) expect(bravo).toHaveFocus();
+      if (reader === "moved on") {
+        await user.keyboard("j");
+        expect(bravo).toHaveFocus();
+      }
+      if (reader === "put the focus on the body") {
+        act(() => pressed.blur());
+        expect(document.body).toHaveFocus();
+      }
       await act(async () => {
         dryRun.resolve(fixtureAnswer("dry-run"));
         await settle();
@@ -1701,10 +1712,14 @@ for (const movedOn of [false, true]) {
       await waitFor(() =>
         expect(within(inProgress).getByRole("article", { name: "CORE-1 Parent" })).toBeDefined()
       );
+      expect(pressed).not.toBeInTheDocument();
       await afterFrameAndTasks();
-      expect(
-        movedOn ? bravo : within(inProgress).getByRole("article", { name: "CORE-1 Parent" })
-      ).toHaveFocus();
+      const kept = {
+        "moved on": bravo,
+        "put the focus on the body": document.body,
+        stayed: within(inProgress).getByRole("article", { name: "CORE-1 Parent" }),
+      };
+      expect(kept[reader]).toHaveFocus();
     } finally {
       cleanup();
       patchIssue.mockRestore();
