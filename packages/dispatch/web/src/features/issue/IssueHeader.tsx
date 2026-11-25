@@ -71,7 +71,7 @@ import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
-import { useKeymap } from "../shell/keymap";
+import { inputMethodKey, useKeymap } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
@@ -350,7 +350,9 @@ export function IssueHeader({
     },
   });
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
+    // The Enter that confirms an input method's composition is the input method's: it saves
+    // nothing, or the title would be written mid-word (`inputMethodKey`).
+    if (event.key === "Enter" && !inputMethodKey(event.nativeEvent)) {
       event.currentTarget.blur();
     }
   };
@@ -471,7 +473,9 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Escape") {
+                  // The Escape that ends an input method's composition is the input method's:
+                  // the draft and the editor stay (`inputMethodKey`).
+                  if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                     drafts.discardTitle();
                     setEditingTitle(false);
                     return;
@@ -776,7 +780,8 @@ export function IssueHeader({
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // An input method's Escape leaves the draft and the editor, as the title's does.
+              if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -825,7 +830,8 @@ export function IssueHeader({
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // An input method's Escape leaves the draft and the editor, as the title's does.
+              if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 drafts.discardParent();
                 setParentEditing(false);
               }

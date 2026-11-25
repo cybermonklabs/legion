@@ -73,6 +73,7 @@ import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
 import { postDeletion } from "../refs/post-marks";
 import { ReferencePicker } from "../refs/ReferencePicker";
 import { composerReferences } from "../refs/routes";
+import { inputMethodKey } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import {
@@ -867,6 +868,15 @@ export function MentionComposer({
     if (form === null || dormant) return;
     const handleEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // The Escape that ends an input method's composition is the input method's: it closes
+      // nothing here, and the draft stays (`inputMethodKey`). It goes no further either. The
+      // page's keymap passes over a key marked `isComposing` only, and Safari's comes unmarked,
+      // so it would reach a binding of Escape beneath the composer: the agents scope's `back`,
+      // which leaves an agent's composer, or an open dialog's close.
+      if (inputMethodKey(event)) {
+        event.stopPropagation();
+        return;
+      }
       if (autocomplete !== undefined) {
         event.stopPropagation();
         setAutocomplete(undefined);

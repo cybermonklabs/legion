@@ -3036,6 +3036,51 @@ test("a short row's checkbox marks the row without selecting it or writing the a
   }
 });
 
+// One Escape does one thing. The View menu takes an Escape pressed inside it and closes, and its
+// handler keeps the key from the page's keymap; the Inbox's `clear-selection` (Escape, while the
+// bulk bar is shown) stands down besides while a popover of the bar is open. So the Escape that
+// closes the menu leaves what the reader marked, and the next Escape clears it.
+test("an Escape inside the View menu closes it and clears nothing, and the next Escape clears the selection", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    const mark = within(shortRow("ask-b")).getByRole<HTMLInputElement>("checkbox");
+    await user.click(mark);
+    await screen.findByText("1 selected");
+
+    const trigger = screen.getByRole("button", { name: "View" });
+    await user.click(trigger);
+    const menu = screen.getByRole("menu", { name: "View" });
+    const [choice] = within(menu).getAllByRole("radio");
+    act(() => choice?.focus());
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu", { name: "View" })).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(mark.checked).toBe(true);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText("1 selected")).not.toBeInTheDocument());
+    expect(mark.checked).toBe(false);
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 test("the reader's own answer takes its row off the list and selects the next one", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();

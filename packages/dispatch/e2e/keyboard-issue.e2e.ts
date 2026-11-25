@@ -813,6 +813,45 @@ test.describe("keys typed straight after a key that opens a surface", () => {
     }
   });
 
+  // A dialog that closes gives the focus back to the control it was opened from, and the page
+  // does not scroll to it: a reader who scrolled while the dialog was up stays where they
+  // scrolled to (`useDialog`). Before, the close scrolled the page back to that control.
+  test("a create dialog closed after the reader scrolled leaves the page where they scrolled it", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Scrolled under the dialog" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 400 });
+      await openIssue(page, issue.key, "Scrolled under the dialog");
+      const opener = page.getByTestId("issue-header").getByRole("button", { name: "Pin issue" });
+      await opener.focus();
+
+      await page.keyboard.press("c");
+      const dialog = page.getByRole("dialog", { name: "Create issue" });
+      await expect(dialog.getByRole("textbox", { name: "Title" })).toBeFocused();
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      // What makes a focus on the opener scroll the page: the scroll took it out of view.
+      await expect
+        .poll(() => opener.evaluate((element) => element.getBoundingClientRect().bottom), {
+          message: "the page did not scroll the opener out of view",
+        })
+        .toBeLessThan(0);
+      const from = await page.evaluate(() => window.scrollY);
+
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+      await expect(opener).toBeFocused();
+      // Two frames on, so a scroll the close's focus started is read.
+      await nextFrames(page);
+      expect(await page.evaluate(() => window.scrollY), "the close scrolled the page").toBe(from);
+    } finally {
+      await context.close();
+    }
+  });
+
   // A dialog whose chunk lands after the reader has moved on opens nothing: neither on a page they
   // went back to, whose address moved under the box that held the open, nor over a field they went
   // on to after calling the open off. The late chunk takes no focus from where they are. Before,

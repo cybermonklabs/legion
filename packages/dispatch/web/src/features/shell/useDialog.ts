@@ -464,7 +464,9 @@ export function useDialog<T extends HTMLElement>({
     container?.addEventListener("keydown", handleTab);
 
     // A passive effect's cleanup, so the focus goes back after the commit that closes the dialog
-    // has drawn the page under it: a control that commit enables again takes the focus.
+    // has drawn the page under it: a control that commit enables again takes the focus. The page
+    // does not scroll to it: a reader who scrolled while the dialog was up stays where they
+    // scrolled to, as they do when a dialog's chunk lands late (`asked-surface.tsx`).
     return () => {
       window.cancelAnimationFrame(initialFocusFrame);
       openDialogs.delete(container);
@@ -476,7 +478,7 @@ export function useDialog<T extends HTMLElement>({
         return;
       }
       if (giveBackTo !== null && document.contains(giveBackTo)) {
-        giveBackTo.focus();
+        giveBackTo.focus({ preventScroll: true });
       } else {
         document.body.focus({ preventScroll: true });
       }
