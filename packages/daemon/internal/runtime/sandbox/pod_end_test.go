@@ -32,6 +32,7 @@ const evictedMessage = "The node was low on resource: ephemeral-storage. Thresho
 // evicted pod whose container also ended — fails, with an empty PodEnd and a detail naming the
 // container's end alone.
 func TestAnEvictedPodsReasonReachesTheObservationOnBothBranches(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, sandboxUID, modeRunning, labels),
@@ -84,6 +85,7 @@ func TestAnEvictedPodsReasonReachesTheObservationOnBothBranches(t *testing.T) {
 // detail it comes from ends with an unbounded tail of the role's log. A message longer than the
 // bound is cut at it; a pod with no reason at all carries nothing, however long its message.
 func TestThePodEndIsBoundedAndEmptyWithoutAReason(t *testing.T) {
+	t.Parallel()
 	if got := runtime.PodEnd("", strings.Repeat("x", 10)); got != "" {
 		t.Fatalf("a pod with no reason carries %q, want nothing: the reason is what says the pod ended it", got)
 	}
@@ -108,6 +110,7 @@ func TestThePodEndIsBoundedAndEmptyWithoutAReason(t *testing.T) {
 // the rule the claim keeps the field under (storetext.FarSideText) then reads as the URL's host,
 // or inside the query, which the field then carried as it was.
 func TestAURLAcrossThePodEndsBoundLeavesNoUserNameOrQuery(t *testing.T) {
+	t.Parallel()
 	for n, tc := range []struct {
 		name string
 		// after is the part of the URL the bound falls just after.
