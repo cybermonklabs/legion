@@ -16,8 +16,10 @@ import (
 )
 
 // readTimeout bounds one read of Buckets, the bucket's open included, within the caller's own
-// context: nats.go's KV calls take no context and wait out the JetStream MaxWait (10 s), so a read
-// that has not answered by then is left to finish on its own.
+// context: the caller is answered once it passes (within). nats.go's KV calls take no context and
+// wait out the JetStream MaxWait (10 s), so a session read that has not answered by then is left
+// to finish on its own, and so is a bucket's open (bucket says why it takes the caller's
+// context); a claim read from the stream's leader takes the bound as its context and ends with it.
 const readTimeout = 2 * time.Second
 
 // JetStream is the client Buckets reads through: its JetStream context on the current connection
@@ -29,11 +31,12 @@ type JetStream interface {
 }
 
 // Buckets is a ClaimStore and a SessionLookup that read the role bucket and the session bucket
-// themselves, one direct read per call, with no watcher and no cache: what Dispatch's outbox
-// resolves a role-routed event's holder through. Each bucket is opened on the client's connection
-// at its first read, and again once the client has replaced that connection. A missing role
-// bucket holds no claim; a missing session bucket is a read that fails, since it says nothing of
-// whether a holder is there.
+// themselves, one read per call, with no watcher and no cache: what Dispatch's outbox resolves a
+// role-routed event's holder through. A claim is read from the role bucket stream's leader, a
+// session record by a direct get. Each bucket is opened on the client's connection at its first
+// read, and again once the client has replaced that connection. A missing role bucket holds no
+// claim; a missing session bucket is a read that fails, since it says nothing of whether a holder
+// is there.
 //
 // It writes nothing: a role's claim is the listener's to release, and only once its holder is
 // gone (the package comment states the rule). The Windows it carries are what a holder's record
@@ -107,24 +110,33 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 	return kv, nil
 }
 
-// within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded). A
-// read that did not answer in time is named by what.
-func within[T any](ctx context.Context, what string, read func() (T, error)) (T, error) {
+// within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded), and
+// hands read that bound as its own context, for a read that takes one. A read that did not answer
+// in time is named by what.
+func within[T any](ctx context.Context, what string, read func(bounded context.Context) (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
-	value, answered, err := bus.Bounded(ctx, read)
+	value, answered, err := bus.Bounded(ctx, func() (T, error) { return read(ctx) })
 	if !answered {
 		return value, fmt.Errorf("%s: %w", what, err)
 	}
 	return value, err
 }
 
-// RoleClaim reads role's claim from the role bucket within ctx, decoded as store.Registry decodes
-// one and stamped with the entry's revision as store.Registry stamps the claims it reads: a zero
-// claim without an error when there is no role bucket and when the bucket holds no claim for the
-// role.
+// RoleClaim reads role's claim from the role bucket stream's leader within ctx
+// (bus.KeyValue.ReadFromLeader), decoded as the listener decodes every claim it reads to decide
+// which session a role's message reaches (store.DecodeLeaderRoleClaim): a zero claim without an
+// error when there is no role bucket, when the bucket holds no claim for the role and when its
+// newest message is a delete or purge marker; store.ErrMalformedRoleClaim for a message the server
+// wrote under the role's key, whatever its body names, and for a record no claim decodes from; and
+// the claim stamped with the sequence the leader stores it at otherwise. A direct get would read a
+// message the server wrote as the claim of whichever session its body names, and the outbox would
+// forward the role's events to that session, and the reply check would take its reply for the
+// holder's (Dispatch's api.lookUpRoleHolderReply).
 func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
-	return within(ctx, "read role "+role+"'s claim", func() (store.RoleClaim, error) {
+	return within(ctx, "read role "+role+"'s claim", func(bounded context.Context) (store.RoleClaim, error) {
+		// The open takes the caller's ctx, not the bound: an open still waiting when the bound
+		// passes goes on and keeps the handle for the next read (bucket).
 		kv, err := b.bucket(ctx, bus.RoleClaimBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			return store.RoleClaim{}, nil
@@ -132,19 +144,11 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 		if err != nil {
 			return store.RoleClaim{}, err
 		}
-		entry, err := kv.Get(role)
-		if errors.Is(err, nats.ErrKeyNotFound) {
-			return store.RoleClaim{}, nil
-		}
+		leader, err := kv.ReadFromLeader(bounded, role)
 		if err != nil {
 			return store.RoleClaim{}, err
 		}
-		claim, err := store.DecodeRoleClaim(entry.Value())
-		if err != nil {
-			return store.RoleClaim{}, err
-		}
-		claim.Revision = entry.Revision()
-		return claim, nil
+		return store.DecodeLeaderRoleClaim(role, leader)
 	})
 }
 
@@ -157,7 +161,7 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 // wrote, naming no key, is read as sessionID's, as every listener but the edge reads it. Any
 // other error is a read that did not answer.
 func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	entry, err := within(ctx, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
+	entry, err := within(ctx, "read session "+sessionID, func(context.Context) (nats.KeyValueEntry, error) {
 		kv, err := b.bucket(ctx, bus.SessionBucket)
 		if err != nil {
 			return nil, err

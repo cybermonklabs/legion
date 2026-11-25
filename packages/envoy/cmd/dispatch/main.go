@@ -411,6 +411,19 @@ func main() {
 		slog.Info("dispatch: a targeted message to a session no store holds fails: queueing it needs NATS")
 	}
 
+	// One reader of the role and session buckets serves the outbox and the API's reply check: a
+	// role's holder is read straight from the buckets on the bus client's connection, with no
+	// watcher, its claim from the role bucket stream's leader, and judged by the windows this
+	// deployment gave its listeners (roleHolderWindows). With NATS disabled there is none: the
+	// outbox does not run, and no reply from a session an attempt does not name is a role
+	// holder's. Only a value that is there is put in the interface, as for agentPublisher.
+	var roleHolders *roles.Buckets
+	var roleHolderReader api.RoleHolderReader
+	if natsClient != nil {
+		roleHolders = roles.NewBuckets(natsClient, boot.RoleHolderWindows)
+		roleHolderReader = roleHolders
+	}
+
 	database, err := store.Open(ctx, boot.DatabaseURL)
 	if err != nil {
 		slog.Error("dispatch: open database", "error", err)
@@ -606,6 +619,7 @@ func main() {
 		App:            appCfg,
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,
+		RoleHolders:    roleHolderReader,
 		Files:          fileStore,
 		Lifetime:       ctx,
 		AnswersLatency: answersLatency,
@@ -875,17 +889,13 @@ func main() {
 			slog.Error("dispatch: open the events outbox's pool", "error", err)
 			os.Exit(1)
 		}
-		// One reader of the role and session buckets serves both: a role route's holder is read
-		// straight from the buckets on the bus client's connection, with no watcher, and judged
-		// by the windows this deployment gave its listeners (roleHolderWindows).
-		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
 		outboxPublisher = outbox.New(outbox.Deps{
 			Store:            &store.Store{Pool: outboxPool},
 			Publisher:        natsClient,
 			Broker:           broker,
 			Listen:           database.Pool.Listener,
-			RoleClaims:       holders,
-			Sessions:         holders,
+			RoleClaims:       roleHolders,
+			Sessions:         roleHolders,
 			KeptLanes:        natsClient,
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,

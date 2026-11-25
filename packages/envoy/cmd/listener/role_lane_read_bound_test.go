@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -18,6 +19,18 @@ type slowReadKV struct {
 func (kv slowReadKV) Get(key string) (natsgo.KeyValueEntry, error) {
 	time.Sleep(kv.delay)
 	return kv.KeyValue.Get(key)
+}
+
+// slowLeaderReadKV is slowReadKV whose reads of the bucket stream's leader (bus.LeaderReads, which
+// the role lane's claim read makes) answer after delay too, through leader, the stream's own read.
+type slowLeaderReadKV struct {
+	slowReadKV
+	leader func(ctx context.Context, key string) (natsgo.KeyValueEntry, error)
+}
+
+func (kv slowLeaderReadKV) NewestFromLeader(ctx context.Context, key string) (natsgo.KeyValueEntry, error) {
+	time.Sleep(kv.delay)
+	return kv.leader(ctx, key)
 }
 
 // The role lane bounds its claim read and its holder's session read each on its own
@@ -44,7 +57,14 @@ func TestTheRoleLaneBoundsItsClaimReadAndItsHoldersSessionReadEachOnItsOwn(t *te
 	if _, err := harness.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		t.Fatalf("claim role %s for %s: %v", role, holder, err)
 	}
-	setRegistryRoleKV(t, harness.registry, slowReadKV{KeyValue: registryRoleKV(t, harness.registry), delay: claimDelay})
+	roleBucket, err := bus.OpenKeyValue(t.Context(), harness.client.Conn, harness.client.JS(), bus.RoleClaimBucket)
+	if err != nil {
+		t.Fatalf("open the role bucket for its leader read: %v", err)
+	}
+	setRegistryRoleKV(t, harness.registry, slowLeaderReadKV{
+		slowReadKV: slowReadKV{KeyValue: registryRoleKV(t, harness.registry), delay: claimDelay},
+		leader:     roleBucket.NewestFromLeader,
+	})
 	swapSessionBucket(t, harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
 		return slowReadKV{KeyValue: kv, delay: sessionDelay}
 	})

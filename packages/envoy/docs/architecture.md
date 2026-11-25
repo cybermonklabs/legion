@@ -304,8 +304,18 @@ is not a claim) is `500 {"error":"envoy: the claim record of role <role> is unre
 with no `Retry-After` (`writeRoleClaimUnreadable`), recorded `role_claim_unreadable` on a publish:
 the bus answered, and a retry reads the same record. One resolution is one claim read: neither
 route retries, because a holder that stopped answering keeps its claim and there is no release for
-a second read to see past. `store.Registry` bounds that claim read by the caller's context itself
-(`RoleClaim`), since nats.go's KV calls take none.
+a second read to see past. The publish route reads the claim from the role bucket stream's leader
+(`store.Registry.RoleClaimFromLeader`, whose doc lists every reader that does), as every reader
+that decides which session a role's message reaches does, Dispatch's outbox and its reply check
+among them, all with one decoding (`store.DecodeLeaderRoleClaim`). A message the NATS server
+stored under the role's key on its own, such as a RePublish of another stream, is no writer's
+claim, and a direct get reads its body as the claim of whichever session it names, so on the
+publish route it is the 500 above too, naming `a message the server wrote`. A role bucket with no
+leader answers no such read, and the publish route answers it the 503 above. `GET /v1/roles/<role>`
+and the soft claim keep the direct get (`RoleClaim`), which `store.Registry` bounds by the
+caller's context itself, since nats.go's KV calls take none: neither chooses a delivery on its own,
+since Dispatch's send of a role-routed message carries the role and the send route checks the
+holder again on the leader (`answerRoleSend`).
 
 A send and a publish stamp the envelope's `sender` from the sender's interest record and session
 entry (`senderStamp`, `cmd/listener/api.go`), whose cache misses are read through to their buckets
@@ -665,18 +675,20 @@ namespace an agent names itself, is captured and stored.
 
 The role lane, a core-NATS queue subscriber in each listener, carries a role topic a client
 publishes straight onto NATS rather than through the route. It resolves the holder at delivery
-time, from the role's claim record read from the role bucket within two seconds and never from the
-listener's copy of the claims, and forwards once. A role with no live holder, unclaimed or with
-a holder that is not live, is kept for the role's next live holder first, as the publish route
-keeps one, and a message that was kept publishes no exception and counts as `kept`. A claim
-read that did not answer keeps the message too, under the reason `claim_unread`: the lane has
-no redelivery, so a kept copy is how the message waits for a read that answers. The handover
-the keep starts, or else the sweep's, forwards it only to a live holder: a handover that finds
-no live holder forwards nothing, so no exception is published for the copy, and it waits until
-a handover finds a live holder inside its hour. Once its hour ends, the first walk that reads it
-drops it with a WARN, and sends the dead letter above when the copy names a sender session. A
-keep that failed leaves its branch as it was. The lane's outcome is then one of two exception
-reasons:
+time, from the role's claim record read from the role bucket stream's leader within two seconds
+(`store.Registry.RoleClaimFromLeader`) and never from the listener's copy of the claims, and
+forwards once. A role with no live holder, unclaimed or with a holder that is not live, is kept
+for the role's next live holder first, as the publish route keeps one, and a message that was
+kept publishes no exception and counts as `kept`. A claim read that did not answer keeps the
+message too, under the reason `claim_unread`, and so do a claim no read can decode, a message
+the server wrote under the role's key among them, and a role bucket with no leader to answer: the
+lane has no redelivery, so a kept copy is how the message waits for a read that answers. The
+handover the keep starts, or else the sweep's, forwards it only to a live holder: a handover that
+finds no live holder forwards nothing, so no exception is published for the copy, and it waits
+until a handover finds a live holder inside its hour. Once its hour ends, the first walk that
+reads it drops it with a WARN, and sends the dead letter above when the copy names a sender
+session. A keep that failed leaves its branch as it was. The lane's outcome is then one of two
+exception reasons:
 `no_holder` when no session claims the role and its keep failed, and `delivery_failed` when the
 holder is not live and its keep failed (an `unresponsive` holder among them, whose claim the
 lane leaves alone), when the holder's session read failed, when a claim read failed and its
@@ -688,16 +700,20 @@ when it is back.
 
 Dispatch's outbox forwards its own role-routed events to the holder itself: it resolves the
 holder through the one resolution the listener's routes and its lane use (`roles.ResolveHolder`,
-`internal/roles`) and sends the envelope, its role topic kept, to the holder's agent subject, so
-Dispatch's events no longer cross `notifications.role.*`. That resolution writes nothing to the
-role bucket here either. A role with no claim, and one whose holder is `gone`, is kept on that
-role's kept lane for one hour for the holder that claims it next, as the listener's own copies
-are, and the `gone` holder's claim is left where it is for the role claim reaper. The listener's
-walk drops an outbox copy at the end of its hour and sends nobody a dead letter for it, so the
-person or session that wrote the Dispatch event is not told. An `unresponsive` holder's event
-stays pending and is retried, as a read that failed is, until that session answers or its
-record passes the gone horizon. A copy kept for it would wait one hour at most, and its end would
-tell nobody. The outbox raises no exception.
+`internal/roles`), reading the claim from the role bucket stream's leader with the listener's
+one decoding (`roles.Buckets.RoleClaim`, `store.DecodeLeaderRoleClaim`), and sends the envelope,
+its role topic kept, to the holder's agent subject, so Dispatch's events no longer cross
+`notifications.role.*`. That resolution writes nothing to the role bucket here either. A role
+with no claim, and one whose holder is `gone`, is kept on that role's kept lane for one hour for
+the holder that claims it next, as the listener's own copies are, and the `gone` holder's claim is
+left where it is for the role claim reaper. The listener's walk drops an outbox copy at the end of
+its hour and sends nobody a dead letter for it, so the person or session that wrote the Dispatch
+event is not told. An `unresponsive` holder's event stays pending and is retried, as a read that
+failed is, until that session answers or its record passes the gone horizon. A copy kept for it
+would wait one hour at most, and its end would tell nobody. A claim no read can decode, a message
+the server wrote under the role's key among them, stays pending the same way, and so does every
+role-routed event while the role bucket has no leader to answer its read: the event is sent once
+a leader answers. The outbox raises no exception.
 That forward is stored only: one copy on the holder's agent subject under its own
 `Nats-Msg-Id` (`bus.ForwardMsgID` of the forward's dedupe key and that subject), counted
 reached on the stream's acknowledgement of the copy and on nothing else, with no receipt from

@@ -145,6 +145,10 @@ type Deps struct {
 	// the listener's registry nor its known-session store holds that session. Nil is a deployment
 	// with no NATS and no test hooks, where such a message settles failed instead.
 	AgentPublisher AgentPublisher
+	// RoleHolders reads a role's holder for the reply check (lookUpRoleHolderReply): the claim
+	// from the role bucket stream's leader and the holder's session record. Nil is a deployment
+	// with no NATS, where no reply from a session the attempt does not name is a role holder's.
+	RoleHolders RoleHolderReader
 	// AgentSecrets relays the credential-request UI to the secrets broker; nil (the broker URL
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
@@ -288,6 +292,9 @@ type DepsInput struct {
 	// AgentPublisher queues a targeted message for a session no store of the listener's holds;
 	// nil queues none. See Deps.AgentPublisher; cmd/dispatch passes its NATS client.
 	AgentPublisher AgentPublisher
+	// RoleHolders reads a role's holder for the reply check; nil reads none. See
+	// Deps.RoleHolders; cmd/dispatch passes the roles.Buckets its outbox reads through.
+	RoleHolders RoleHolderReader
 	// AgentSecretsURL is the secrets broker's API base URL (DISPATCH_AGENT_SECRETS_URL); empty
 	// means the feature is off. AgentSecretsTokenFile is the file holding Dispatch's own
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
@@ -400,6 +407,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,
+		RoleHolders:            input.RoleHolders,
 		AgentSecrets:           agentSecretsClient,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,

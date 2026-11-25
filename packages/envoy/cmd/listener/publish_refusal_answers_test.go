@@ -21,9 +21,11 @@ import (
 
 // stalledRoleKV is a role bucket whose claim read does not answer: a Get blocks until the test
 // ends, the way a legacy nats.go KV call waits out the JetStream MaxWait on a bus that has stopped
-// answering. Every other call goes to the real bucket. So only the route's own budget can end a
-// request that reads the claim: a route bounded by its budget answers once that budget is spent,
-// and one that waited the call out would not answer before the test ends.
+// answering, and a read of the bucket stream's leader (bus.LeaderReads, which the publish route's
+// resolution makes) blocks until its context ends, as the stream message get it stands for does.
+// Every other call goes to the real bucket. So only the route's own budget can end a request that
+// reads the claim: a route bounded by its budget answers once that budget is spent, and one that
+// waited the call out would not answer before the test ends.
 type stalledRoleKV struct {
 	nats.KeyValue
 	stallGet bool
@@ -38,14 +40,24 @@ func (kv stalledRoleKV) Get(key string) (nats.KeyValueEntry, error) {
 	return kv.KeyValue.Get(key)
 }
 
+func (kv stalledRoleKV) NewestFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-kv.released:
+		return nil, errors.New("the role bucket's leader read never answered")
+	}
+}
+
 // A role send through the publish route resolves its role's holder within sendRequestBudget of the
-// request's own context, so a role-bucket call that does not answer - the claim read, which takes
-// no context in nats.go - is reported inside the caller's attempt (the client gives each 5 s,
-// packages/envoy-client/src/transport.ts) rather than after it: the bus-unavailable 503 with
-// Retry-After: 1, naming the call that did not answer. The read never answers (stalledRoleKV), so
-// an answer at all is the budget ending the request, and one before the budget was spent would mean
-// something other than the stalled call ended it. The request carries the caller's attempt as its
-// context (contracts.ListenerCallTimeout, envoy-client's own), and the answer must come while that
+// request's own context, so a claim read that does not answer - the read of the role bucket
+// stream's leader, which takes that context and stalls here until it ends - is reported inside the
+// caller's attempt (the client gives each 5 s, packages/envoy-client/src/transport.ts) rather than
+// after it: the bus-unavailable 503 with Retry-After: 1, naming the call that did not answer. The
+// read never answers (stalledRoleKV), so an answer at all is the budget ending the request, and
+// one before the budget was spent would mean something other than the stalled call ended it. The
+// request carries the caller's attempt as its context (contracts.ListenerCallTimeout,
+// envoy-client's own), and the answer must come while that
 // attempt is still live: a route budgeted at the attempt or past it answers after its caller gave
 // up. That is the one bound on time here, and it is the caller's, 1.5 s past the route's budget, not
 // a margin of the test's. A lookup's same case is

@@ -1363,12 +1363,18 @@ func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 	return claim.HolderSessionID, nil
 }
 
-// leaderRoleClaims is the claim side (roles.ClaimStore) of the kept lane handover's resolution of
-// the role's holder: each claim read is the role bucket stream leader's
-// (store.Registry.RoleClaimFromLeader). On a replicated bucket a direct get can answer the claim
-// as it stood before a takeover; the handover would then walk the lane for the previous holder,
-// whose drain hold (roleKeepDrainHolds, a leader read) refuses every forward, and give the lane up
-// with the copy left on it until the next sweep, minutes later.
+// leaderRoleClaims is the claim side (roles.ClaimStore) of every resolution of a role's holder
+// that decides which session a role's message reaches - the publish route's (sendToRole), the role
+// lane's (resolveCoreRoleHolder) and the kept lane handover's: each claim read is the role bucket
+// stream leader's (store.Registry.RoleClaimFromLeader, which lists every such reader). A direct
+// get cannot tell a message the server wrote under the role's key from a claim, and reads it as
+// the claim of whichever session its body names. On a replicated bucket it can also answer the
+// claim as it stood before a takeover; the handover would then walk the lane for the previous
+// holder, whose drain hold (roleKeepDrainHolds, a leader read) refuses every forward, and give the
+// lane up with the copy left on it until the next sweep, minutes later. GET /v1/roles/<role> and
+// the soft claim read the claim through the registry's direct get instead: neither chooses a
+// delivery on its own, since Dispatch's send of a role-routed message carries the role and the
+// send route checks the holder again on the leader (answerRoleSend).
 type leaderRoleClaims struct{ registry *store.Registry }
 
 func (c leaderRoleClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {

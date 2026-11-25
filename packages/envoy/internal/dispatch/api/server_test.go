@@ -174,6 +174,10 @@ type testServerOptions struct {
 	// queues none.
 	agentPublisher   AgentPublisher
 	noAgentPublisher bool
+	// roleHolders reads a role's holder for the reply check (Deps.RoleHolders); nil is the
+	// deployment with no NATS, where no reply from a session an attempt does not name is a role
+	// holder's. withRoleHolders sets it.
+	roleHolders RoleHolderReader
 	// agentWatchInterval replaces how often an agent view re-arms its session (ten seconds), so a
 	// test of the re-arm need not wait one out.
 	agentWatchInterval time.Duration
@@ -298,6 +302,12 @@ func newTestHandlerWithTestHooks(t *testing.T) (http.Handler, *store.Store) {
 	return handler, database
 }
 
+// withRoleHolders has the server options' reply check read a role's holder through holders
+// (Deps.RoleHolders), as cmd/dispatch's does through its roles.Buckets.
+func withRoleHolders(options *testServerOptions, holders RoleHolderReader) {
+	options.roleHolders = holders
+}
+
 // testEnvoyAccountTokenFile is a file holding a stand-in for Dispatch's projected token at the
 // listener, for a server whose Envoy client is configured (envoyURL set), and "" otherwise.
 func testEnvoyAccountTokenFile(t testing.TB, envoyURL string) string {
@@ -406,6 +416,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		AgentSecretsTokenFile:  agentSecretsTokenFile,
 		AgentStream:            options.agentStream,
 		AgentPublisher:         agentPublisher,
+		RoleHolders:            options.roleHolders,
 		Embedder:               options.embedder,
 		Answerer:               options.answerer,
 		Files:                  options.files,

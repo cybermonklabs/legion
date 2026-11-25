@@ -230,7 +230,14 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply(t *
 	t.Parallel()
 	registry := &roleMentionRegistry{holder: "s1", s1Live: true}
 	listener := roleMentionListener(t, registry)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// The reply check reads the holder the listener names, as cmd/dispatch's roles.Buckets and
+	// its listener read one role bucket; the holder this test moves the role to is live.
+	options := testServerOptions{envoyURL: listener.URL}
+	withRoleHolders(&options, standInRoleHolders{
+		claims: func(string) (string, error) { return registry.holder, nil },
+		live:   func(session string) bool { return session != "s1" || registry.s1Live },
+	})
+	handler, database, _ := newTestServer(t, options)
 	issue := createInteractionIssue(t, handler, "TEST", "Role mention outlives a listener outage", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {

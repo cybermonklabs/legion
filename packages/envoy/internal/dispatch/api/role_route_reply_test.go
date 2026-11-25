@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,18 +14,53 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/session"
+	envoystore "github.com/sjawhar/envoy/internal/store"
 )
+
+// standInRoleHolders is a reader of a role's holder for the reply check (RoleHolderReader) that
+// answers from two funcs: claims, the session role's claim names (empty for none) or the error of
+// a read that did not answer, and live, whether a session's record reads live. A test whose
+// listener is a stand-in gives the reply check the holders that stand-in names, as cmd/dispatch's
+// roles.Buckets and its listeners read one role bucket.
+type standInRoleHolders struct {
+	claims func(role string) (string, error)
+	live   func(session string) bool
+}
+
+func (h standInRoleHolders) RoleClaim(_ context.Context, role string) (envoystore.RoleClaim, error) {
+	holder, err := h.claims(role)
+	return envoystore.RoleClaim{HolderSessionID: holder}, err
+}
+
+func (standInRoleHolders) Holder(_ context.Context, sessionID string) (session.SessionEntry, error) {
+	return session.SessionEntry{SessionID: sessionID}, nil
+}
+
+func (h standInRoleHolders) EntryState(entry session.SessionEntry) session.State {
+	if h.live(entry.SessionID) {
+		return session.Live
+	}
+	return session.Unresponsive
+}
+
+func (standInRoleHolders) LastSeen(string) int64 { return 0 }
+
+// errRoleBucketSilent is what a silent roleRouteListener's reader answers a claim read with.
+var errRoleBucketSilent = errors.New("the role bucket did not answer")
 
 // roleRouteListener stands in for the Envoy listener of one Dispatch deployment in the tests of a
 // reply to an attempt sent for a route to a role: for each role, the session its claim names now
 // and whether that session is live, as GET /v1/roles/<role> answers them (200 for a live holder,
 // 404 holder_lapsed naming the holder for one that is not), and every session's own record. A
-// send is stored for its target and answered as the listener answers one.
+// send is stored for its target and answered as the listener answers one. Its holders reader
+// (roleHolders) answers the reply check from the same claims and states.
 type roleRouteListener struct {
 	mu      sync.Mutex
 	holders map[string]string
 	lapsed  map[string]bool
-	// silent answers every role lookup 503, as a listener whose bus does not answer does.
+	// silent answers every role lookup 503, as a listener whose bus does not answer does, and
+	// fails every claim read of its holders reader, as a role bucket that does not answer does.
 	silent bool
 	server *httptest.Server
 }
@@ -43,6 +79,25 @@ func (l *roleRouteListener) claim(role, session string, live bool) {
 	defer l.mu.Unlock()
 	l.holders[role] = session
 	l.lapsed[session] = !live
+}
+
+// roleHolders is the reply check's reader of l's claims and states.
+func (l *roleRouteListener) roleHolders() standInRoleHolders {
+	return standInRoleHolders{
+		claims: func(role string) (string, error) {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			if l.silent {
+				return "", errRoleBucketSilent
+			}
+			return l.holders[role], nil
+		},
+		live: func(session string) bool {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			return !l.lapsed[session]
+		},
+	}
 }
 
 func (l *roleRouteListener) serve(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +176,9 @@ func newRoleRouteReplies(t *testing.T) *roleRouteReplies {
 func newRoleRouteRepliesTraced(t *testing.T, tracer pgx.QueryTracer) *roleRouteReplies {
 	t.Helper()
 	listener := newRoleRouteListener(t)
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL, tracer: tracer})
+	options := testServerOptions{envoyURL: listener.server.URL, tracer: tracer}
+	withRoleHolders(&options, listener.roleHolders())
+	handler, database, _ := newTestServer(t, options)
 	issue := createInteractionIssue(t, handler, "TEST", "Replies to a role route", "before")
 	return &roleRouteReplies{listener: listener, handler: handler, database: database, issue: issue.Key}
 }
@@ -356,10 +413,10 @@ func TestAReplyToARoleRouteAttemptComesFromTheRolesHolder(t *testing.T) {
 	})
 }
 
-// Whether a session the attempt does not name holds the role is the listener's to say, so a role
-// lookup the listener does not answer is a 503 ENVOY_UNAVAILABLE the reply's host can make again,
-// never a refusal that ends a reply the role's holder may well be entitled to. The session the
-// attempt names is answered as ever, with no lookup at all.
+// Whether a session the attempt does not name holds the role is the role bucket's to say, so a
+// read of the role's holder that does not answer is a 503 ENVOY_UNAVAILABLE the reply's host can
+// make again, never a refusal that ends a reply the role's holder may well be entitled to. The
+// session the attempt names is answered as ever, with no read at all.
 func TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain(t *testing.T) {
 	t.Parallel()
 	rig := newRoleRouteReplies(t)

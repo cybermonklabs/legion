@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg"
@@ -266,6 +267,9 @@ func queueingDispatchMux(
 	// publisher.
 	if publisher != nil {
 		input.AgentPublisher = publisher
+		// The reply check reads a role's holder from the buckets on the same client, as
+		// cmd/dispatch wires it.
+		input.RoleHolders = roles.NewBuckets(publisher, roles.Windows{})
 	}
 	deps, err := dispatchapi.NewDeps(input)
 	if err != nil {

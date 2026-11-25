@@ -1562,12 +1562,19 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
 		return
 	}
+	// A read that failed - a statement timeout, a reset connection - says nothing of whether the
+	// attempt exists, so it is the handler's error, a 500 its host can reply again after, and only
+	// a read that found no row is the 404 (role_route_reply.go draws the same line).
 	attempt, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
 	`, comment.ID, target, input.Attempt))
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
+		return
+	}
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	// The session the attempt names answers it, and so does the session that holds the mentioned

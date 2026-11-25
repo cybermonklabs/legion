@@ -2529,7 +2529,14 @@ func TestAResumedRoleMessageKeepsItsOriginalRecipient(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// The reply check reads the holder the listener names, as cmd/dispatch's roles.Buckets and
+	// its listener read one role bucket; both sessions are live.
+	options := testServerOptions{envoyURL: listener.URL}
+	withRoleHolders(&options, standInRoleHolders{
+		claims: func(string) (string, error) { return roleHolder, nil },
+		live:   func(string) bool { return true },
+	})
+	handler, database, _ := newTestServer(t, options)
 	issue := createInteractionIssue(t, handler, "TEST", "Role message stranded mid-send", "before")
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "The holder moves while this attempt is stranded.", "target": "role:reviewer", "delivery": "steer",

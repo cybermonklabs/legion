@@ -8,21 +8,32 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/roles"
+	envoystore "github.com/sjawhar/envoy/internal/store"
 )
+
+// RoleHolderReader is what the reply check resolves a role's holder through
+// (roles.ResolveHolder): the role's claim, read from the role bucket stream's leader with the
+// listener's one decoding of it (store.DecodeLeaderRoleClaim), and the holder's session record,
+// judged by the windows the deployment gave its listeners. cmd/dispatch passes the outbox's
+// roles.Buckets, so the reply check and the outbox read one holder.
+type RoleHolderReader interface {
+	roles.ClaimStore
+	roles.SessionLookup
+}
 
 // roleHolderReply is what a reply route learned, before its transaction opened, of whether the
 // session replying holds the role an attempt was sent for. route is the attempt's route as its
-// row names it (a message's target, a mention's target), and holder is true only when the
-// listener's role lookup named that session as the holder of route's role and called it live.
+// row names it (a message's target, a mention's target), and holder is true only when the role's
+// claim, read from the role bucket stream's leader, named that session and its record read live.
 type roleHolderReply struct {
 	route  string
 	holder bool
 }
 
 // allows reports whether a session the attempt on route does not name may still answer it: it is
-// the live holder of the role route names, by the lookup made for that same route.
+// the live holder of the role route names, by the read made for that same route.
 func (r roleHolderReply) allows(route string) bool {
 	return r.holder && r.route == route
 }
@@ -50,37 +61,49 @@ func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, id, q
 	return s.lookUpRoleHolderReply(ctx, route, attemptSession, actor)
 }
 
-// lookUpRoleHolderReply asks the listener whether actor holds the role route names, for a reply
-// to an attempt sent for a route to that role that names another session, or none yet
-// (attemptSession). A role's message goes to the session its claim names when Dispatch sends it
+// lookUpRoleHolderReply reads whether actor holds the role route names, for a reply to an attempt
+// sent for a route to that role that names another session, or none yet (attemptSession). A
+// role's message goes to the session its claim names when Dispatch sends it
 // (resolveDeliveryTarget), and when a different session takes the role the listener moves what
 // that holder had not read to the role's next holder (packages/envoy/cmd/listener), so the
 // session that answers an attempt can be the role's holder now rather than the one the attempt
-// names. The reply routes accept it from that session while the listener's role lookup (GET
-// /v1/roles/<role>, Client.Role) names it and calls it live: a holder past the live window is
-// answered by that lookup as a lapsed one, and its reply is refused, as any other session's is.
+// names. The reply routes accept it from that session while the role's claim names it and its
+// record reads live (roles.ResolveHolder over Deps.RoleHolders): a holder past the live window is
+// lapsed, and its reply is refused, as any other session's is.
 //
-// It is the resolve half of the reply's listener read (envoy_resolve.go): it runs before the
-// reply's transaction opens, with nothing held, and its answer is compared with the route the
-// locked row names. An attempt pins its session once and never changes it, so a row that named
-// actor when it was read here names actor under the lock too, and no lookup is made for it.
+// The claim is read from the role bucket stream's leader, as every reader that decides which
+// session a role's message reaches reads it (store.Registry.RoleClaimFromLeader), and not through
+// the listener's role lookup (GET /v1/roles/<role>), a direct get: a direct get reads a message
+// the NATS server stored under the role's key on its own as the claim of whichever session its
+// body names, so a live session such a message names would have its reply taken for the
+// holder's. Such a message, and any claim record no read can decode, names no holder here
+// (store.ErrMalformedRoleClaim).
 //
-// A route that is not a role's, an attempt that names actor, and a listener that answers that
-// another session holds the role, or none does, are no holder's reply. A lookup the listener did
-// not answer (dispatchenvoy.ErrUnavailable) is the error, which the route answers 503
-// ENVOY_UNAVAILABLE: whether this session may answer is the listener's to say, and a refusal
-// would end a reply its host could make again.
+// It is the resolve half of the reply's read (envoy_resolve.go): it runs before the reply's
+// transaction opens, with nothing held, and its answer is compared with the route the locked row
+// names. An attempt pins its session once and never changes it, so a row that named actor when it
+// was read here names actor under the lock too, and no read is made for it.
+//
+// A route that is not a role's, an attempt that names actor, a deployment with no reader of the
+// role bucket (Deps.RoleHolders nil: no NATS), and a claim that names another session, or none,
+// are no holder's reply. A read that did not answer - the claim's, the leader's included while the
+// bucket has none, or the holder's session record's - is the error, which the route answers 503
+// ENVOY_UNAVAILABLE: whether this session may answer was not read, and a refusal would end a reply
+// its host could make again.
 func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemptSession *string, actor model.Actor) (roleHolderReply, error) {
 	verdict := roleHolderReply{route: route}
 	parsed, err := model.ParseRoute(route)
-	if err != nil || parsed.Kind != "role" || s.deps.Envoy == nil || (attemptSession != nil && *attemptSession == actor.ID) {
+	if err != nil || parsed.Kind != "role" || s.deps.RoleHolders == nil || (attemptSession != nil && *attemptSession == actor.ID) {
 		return verdict, nil
 	}
-	holder, err := s.deps.Envoy.Role(ctx, parsed.ID)
-	if errors.Is(err, dispatchenvoy.ErrUnavailable) {
+	resolved, err := roles.ResolveHolder(ctx, s.deps.RoleHolders, s.deps.RoleHolders, parsed.ID)
+	switch {
+	case errors.Is(err, envoystore.ErrMalformedRoleClaim):
+		return verdict, nil
+	case err != nil:
 		return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
-			"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())
+			"Dispatch could not read who holds %s, so it cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())
 	}
-	verdict.holder = err == nil && holder.SessionID == actor.ID && holder.State == dispatchenvoy.StateLive
+	verdict.holder = resolved.State == roles.Live && resolved.Holder == actor.ID
 	return verdict, nil
 }

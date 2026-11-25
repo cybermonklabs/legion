@@ -33,9 +33,10 @@ var (
 // countedKeyValue is a bucket's legacy handle with every Get counted, and every Get or Update
 // failing while the test says so. The count is what says which reads an act made of the bucket
 // it wraps, so it wraps the handle the registry reads through and nothing else. bus.Bounded runs
-// each call on a goroutine of its own, so the count and the switches are atomic. A role bucket's
-// handle also answers the leader's read of a claim (leaderReader, which a controller notice lane's
-// decision makes, Registry.roleClaimFromLeader) through leader, counted and failed as a Get is.
+// each call on a goroutine of its own, so the count and the switches are atomic. The handle also
+// answers each read of the bucket stream's leader itself (bus.LeaderReads, which a controller
+// notice lane's decision makes through Registry.RoleClaimFromLeader) through leader, the read of
+// the handle it wraps, counted and failed as a Get is.
 type countedKeyValue struct {
 	natsgo.KeyValue
 
@@ -53,13 +54,10 @@ func (kv *countedKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
 	return kv.KeyValue.Get(key)
 }
 
-func (kv *countedKeyValue) GetFromLeader(ctx context.Context, key string) (natsgo.KeyValueEntry, error) {
+func (kv *countedKeyValue) NewestFromLeader(ctx context.Context, key string) (natsgo.KeyValueEntry, error) {
 	kv.gets.Add(1)
 	if kv.failGets.Load() {
 		return nil, errClaimReadFailed
-	}
-	if kv.leader == nil {
-		return nil, errors.New("this counted handle reads no bucket stream's leader")
 	}
 	return kv.leader(ctx, key)
 }
@@ -83,16 +81,17 @@ func countRoleReads(t *testing.T, reg *Registry) *countedKeyValue {
 	t.Helper()
 	base := reg.roles()
 	return swapRoleBucketHandle(t, reg, func(legacy natsgo.KeyValue) *countedKeyValue {
-		return &countedKeyValue{KeyValue: legacy, leader: base.GetFromLeader}
+		return &countedKeyValue{KeyValue: legacy, leader: base.NewestFromLeader}
 	}, nil)
 }
 
 // countInterestReads puts a countedKeyValue in front of the registry's interest bucket handle,
 // rebuilding its interest watcher over it (useKV), so every read of an interest record the
-// registry makes is counted.
+// registry makes is counted, its reads of the bucket stream's leader among them.
 func countInterestReads(t *testing.T, reg *Registry) *countedKeyValue {
 	t.Helper()
-	counted := &countedKeyValue{KeyValue: reg.watcher.KV().Legacy()}
+	base := reg.watcher.KV()
+	counted := &countedKeyValue{KeyValue: base.Legacy(), leader: base.NewestFromLeader}
 	useKV(t, reg, counted)
 	return counted
 }

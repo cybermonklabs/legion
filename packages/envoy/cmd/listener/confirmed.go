@@ -559,19 +559,24 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 
 // sendToRole delivers a role message through the publish route, answering through record. The
 // first resolution reads the holder as an HTTP lookup does (roles.ResolveHolder), within
-// sendRequestBudget of arrived as GET /v1/roles/<role> reads it, and gives that route's answers:
-// a role with no live holder - no claim, or a claim whose holder is not live - is kept for the
-// role's next live holder and answered 202 while keep asks for it, the request's own keep field,
-// true when it set none (roleKeepable), else 404 unclaimed or holder_lapsed (noHolder); and for a
-// resolution that failed the lookup's 503 or 500 (unresolved). The first attempt forwards to that
-// holder without reading the claim again; every other attempt resolves the holder again, so a
-// holder that relaunched under a new session between attempts gets the next one. On those
-// attempts an unclaimed role is answered as the first resolution answers it, since the claim
-// itself is gone; a holder that stopped answering keeps its claim and fails that attempt only, as
-// a read that failed does, so a holder that comes back inside the window still gets the message,
-// and a send whose window ends on such attempts is a 504 that kept nothing: the sender is told the
-// send failed for the holder its first resolution read live. Each attempt forwards the same
-// envelope, under the role forward's dedupe key and under one Nats-Msg-Id, the key and the
+// sendRequestBudget of arrived as GET /v1/roles/<role> reads it, but reads the claim from the role
+// bucket stream's leader (leaderRoleClaims), as every reader that decides which session a role's
+// message reaches does: a direct get reads a message the server wrote under the role's key as the
+// claim of whichever session its body names, and the send would forward to it at every attempt.
+// It gives that route's answers: a role with no live holder - no claim, or a claim whose holder is
+// not live - is kept for the role's next live holder and answered 202 while keep asks for it, the
+// request's own keep field, true when it set none (roleKeepable), else 404 unclaimed or
+// holder_lapsed (noHolder); and for a resolution that failed the lookup's 503 or 500
+// (unresolved): the 503 for a read that did not answer, a role bucket with no leader to answer it
+// among them, and the 500 for a message the server wrote. The first attempt forwards to
+// that holder without reading the claim again; every other attempt resolves the holder again from
+// the leader, so a holder that relaunched under a new session between attempts gets the next one.
+// On those attempts an unclaimed role is answered as the first resolution answers it, since the
+// claim itself is gone; a holder that stopped answering keeps its claim and fails that attempt
+// only, as a read that failed does, so a holder that comes back inside the window still gets the
+// message, and a send whose window ends on such attempts is a 504 that kept nothing: the sender is
+// told the send failed for the holder its first resolution read live. Each attempt forwards the
+// same envelope, under the role forward's dedupe key and under one Nats-Msg-Id, the key and the
 // holder's subject (bus.ForwardMsgID), and waits what is left of the send, at most
 // roleForwardTimeout, for the stream's acknowledgement that it stored it; that acknowledgement is
 // the send's 200, since the holder answers nothing and reads the stored copy from its session
@@ -595,7 +600,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
 	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
 	resolvedAt := d.delivery.now()
-	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{d.sessions}, role)
+	first, err := roles.ResolveHolder(firstCtx, leaderRoleClaims{d.registry}, roleHolderSessions{d.sessions}, role)
 	cancelFirst()
 	if err != nil {
 		send.unresolved(err)
@@ -618,7 +623,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 	for pass := 0; ; pass++ {
 		if pass > 0 || !sessionIsLive(first.HolderState) || roles.ResolutionTooOld(resolvedAt, d.delivery.now()) {
 			resolvedAt = d.delivery.now()
-			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
+			resolved, err = roles.ResolveHolder(ctx, leaderRoleClaims{d.registry}, roleHolderSessions{d.sessions}, role)
 			if err != nil && ctx.Err() != nil {
 				// The window ended under the resolution: what it read says nothing more.
 				break

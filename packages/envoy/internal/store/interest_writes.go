@@ -519,7 +519,7 @@ type LaneHolders map[string]string
 
 // ReadLaneHolders reads the claim record of the controller role of each controller notice lane
 // the topic sets name, once each however many of the sets name its lane, from the role bucket
-// stream's leader and waiting no longer than ctx (roleClaimFromLeader), and never the role claim
+// stream's leader and waiting no longer than ctx (RoleClaimFromLeader), and never the role claim
 // copy (RolesHeldBy); it reads nothing and answers nil when the sets name no lane
 // (bus.NamesControllerNoticeLane). What it answers decides a session's consumer filter, so a copy
 // that lost the controller's claim would drop the lane from its holder's filter, and a copy that
@@ -529,11 +529,12 @@ type LaneHolders map[string]string
 // former holder, which kept the lane on that holder's row and filter at the very takeover that
 // should drop it, and counted it as a recipient of the lane (cmd/listener's recipientCounts). A
 // record that names a holder gives the lane to that session. A record this build cannot decode
-// (ErrMalformedRoleClaim) names no holder, as the copy reads it, and a key NATS refuses
-// (bus.ErrRefused) is one no read can tell the holder of, which the role claim reaper removes; each
-// gives the lane to nobody and is no error, so a registration naming it stores the rest of its row
-// rather than being refused at every heartbeat. Any other read that did not answer or failed is
-// returned, naming the role.
+// names no holder, as the copy reads it, and neither does a message the server wrote under the
+// role's key, which is no writer's claim: RoleClaimFromLeader answers both ErrMalformedRoleClaim.
+// That, and a key NATS refuses (bus.ErrRefused), which no read can tell the holder of and the role
+// claim reaper removes, each give the lane to nobody and are no error, so a registration naming it
+// stores the rest of its row rather than being refused at every heartbeat. Any other read that did
+// not answer or failed is returned, naming the role.
 func (r *Registry) ReadLaneHolders(ctx context.Context, topics ...[]string) (LaneHolders, error) {
 	if !slices.ContainsFunc(topics, bus.NamesControllerNoticeLane) {
 		return nil, nil
@@ -545,7 +546,7 @@ func (r *Registry) ReadLaneHolders(ctx context.Context, topics ...[]string) (Lan
 			if _, weighed := holders[role]; !lane || weighed {
 				continue
 			}
-			claim, err := r.roleClaimFromLeader(ctx, role)
+			claim, err := r.RoleClaimFromLeader(ctx, role)
 			switch {
 			case errors.Is(err, ErrMalformedRoleClaim), errors.Is(err, bus.ErrRefused):
 				// A claim no read can name a holder of: the lane is nobody's.
@@ -560,42 +561,6 @@ func (r *Registry) ReadLaneHolders(ctx context.Context, topics ...[]string) (Lan
 		}
 	}
 	return holders, nil
-}
-
-// roleClaimFromLeader is RoleClaim with the leader of the role bucket's stream answering the read
-// (bus.KeyValue.GetFromLeader) instead of whichever copy of the bucket a direct get reaches, so it
-// answers the newest claim the bucket took, also one written a moment ago. ctx bounds the whole
-// read. It answers as RoleClaim answers: a zero claim for a role no record claims (a marker
-// included), the record's revision on the claim, ErrMalformedRoleClaim for a record that is not a
-// claim, and the refusal of a key NATS refuses (bus.ErrRefused). A role bucket handle whose legacy
-// half answers the leader's read itself (leaderReader) is read through it.
-func (r *Registry) roleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
-	roles := r.roles()
-	read := roles.GetFromLeader
-	if reader, answers := roles.Legacy().(leaderReader); answers {
-		read = reader.GetFromLeader
-	}
-	entry, err := read(ctx, role)
-	if errors.Is(err, nats.ErrKeyNotFound) {
-		return RoleClaim{}, nil
-	}
-	if err != nil {
-		return RoleClaim{}, fmt.Errorf("read role %s's claim from the bucket's stream leader: %w", role, err)
-	}
-	claim, err := DecodeRoleClaim(entry.Value())
-	if err != nil {
-		return RoleClaim{}, err
-	}
-	claim.Revision = entry.Revision()
-	return claim, nil
-}
-
-// leaderReader is a legacy bucket handle that answers the leader's read of a key itself, as a
-// test's handle does to count or fail that read beside the direct gets it counts: that read goes to
-// the bucket stream's leader on the connection (bus.KeyValue.GetFromLeader) and never through the
-// legacy handle. No nats.go handle is one, so every listener's read goes to the leader.
-type leaderReader interface {
-	GetFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error)
 }
 
 // heldBy is the controller roles h gives sessionID, sorted.

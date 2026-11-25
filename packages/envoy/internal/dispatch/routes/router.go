@@ -150,6 +150,9 @@ type AppContextOptions struct {
 	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
 	// test hooks with NATS disabled, and nil otherwise. See api.Deps.AgentPublisher.
 	AgentPublisher api.AgentPublisher
+	// RoleHolders reads a role's holder for the reply check: the roles.Buckets cmd/dispatch's
+	// outbox reads through, and nil with NATS disabled. See api.Deps.RoleHolders.
+	RoleHolders api.RoleHolderReader
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
@@ -248,6 +251,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
 		AgentPublisher:         opts.AgentPublisher,
+		RoleHolders:            opts.RoleHolders,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		Files:                  opts.Files,

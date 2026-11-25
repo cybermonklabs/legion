@@ -1133,12 +1133,19 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}
+	// A read that failed - a statement timeout, a reset connection - says nothing of whether the
+	// attempt exists, so it is the handler's error, a 500 its host can reply again after, and only
+	// a read that found no row is the 404 (role_route_reply.go draws the same line).
 	attempt, err := scanMessageDelivery(tx.QueryRow(r.Context(), `
 		select `+messageDeliveryColumns+`
 		from message_deliveries where message_id = $1 and attempt = $2 for update
 	`, message.ID, input.Attempt))
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
+		return
+	}
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	// The session the attempt names answers it, and so does the session that holds the role the

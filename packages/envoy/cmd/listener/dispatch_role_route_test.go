@@ -25,6 +25,7 @@ import (
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -224,9 +225,12 @@ func roleRouteDispatchMux(
 			t.Errorf("shut the document service down: %v", err)
 		}
 	})
+	// The reply check reads a role's holder from the buckets on Dispatch's own client, as
+	// cmd/dispatch wires it (roles.Buckets), judged by the compiled windows the listener runs on.
 	input := dispatchapi.DepsInput{
 		Store: database, Identity: caller, AgentTokens: tokens, ServerURL: "https://dispatch.example",
 		EnvoyURL: envoyURL, Docs: documents, Events: broker, AgentPublisher: publisher,
+		RoleHolders: roles.NewBuckets(publisher, roles.Windows{}),
 	}
 	configure(&input)
 	deps, err := dispatchapi.NewDeps(input)

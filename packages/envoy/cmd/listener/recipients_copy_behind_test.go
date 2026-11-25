@@ -12,8 +12,10 @@ import (
 // staleRoleKV is a copy of the role bucket one write behind for one role: a direct get of role
 // answers stale, the claim record that copy still holds, as a replica a direct get reaches can
 // (bus.KeyValue.GetFromLeader says why), and every other call goes to the bucket. The leader's read
-// of a key (bus.KeyValue.GetFromLeader) is a stream message get on the bucket's own connection, not
-// a call on this handle, so it answers the newest record.
+// of a key (bus.KeyValue.ReadFromLeader, which ReadLaneHolders makes through
+// store.Registry.RoleClaimFromLeader) asks a handle that implements bus.LeaderReads and sends a
+// stream message get on the bucket's own connection otherwise; staleRoleKV does not implement it,
+// so that read bypasses it and answers the newest record.
 type staleRoleKV struct {
 	natsgo.KeyValue
 	role  string
