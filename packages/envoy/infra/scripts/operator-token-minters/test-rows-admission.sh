@@ -354,21 +354,27 @@ fi
 
 # --- (cu) An answer read with kubectl -o json, sent with exit 0 but not as the API server wrote it:
 # a proxy's error page, an empty body (jq reads no value in it, prints nothing and exits 0), or `{}`
-# (jq's .items[]? is nothing there); and for the roles, a List with no item. Each list and object
-# is held to its shape first (is_list, is_object), and the roles' list to its witness too, the
-# bootstrap ClusterRole cluster-admin; the answer to the reviews is no list but one document per
-# review, which review-answer.jq holds to its count and its shape. So each reads UNKNOWN naming it,
-# exits 2, runs to its end, and its step does not pass. Each world holds what the answer would show
-# and a principal a right only that answer reveals, which the item names, so a run that took the
-# answer for an empty one would miss it: the webhook's backend Service, the policy engine's
-# resource, the installed allowlist, the admission policy's parameter, a right a role limits by name
-# (for the empty List, the reviewer's impersonation of system:masters limited to that name), and
-# (the answer to the reviews) legion/worker's create of pods in envoy-operator, or, on another
-# cluster, whose reviews the Workload Identity step makes, ci/runner's create of namespaces. The
-# bindings and the ServiceAccounts have no planted right: the first names the subjects reviewed, the
-# second the accounts, and each also has its witness (the bootstrap cluster-admin binding,
-# default/default). Run by hand, the control is the script and its parts as at bfb6ea5c85 for the
-# lists and as at 33e20b2de7 for the reviews: the allowlists, policies and roles items with an empty
+# (jq's .items[]? is nothing there); for the roles, a List with no item; and for the roles and the
+# bindings, a List that holds one of its two kinds alone. Each list and object is held to its shape
+# first (is_list, is_object), and the roles' and the bindings' lists each to two witnesses, one of
+# each kind, labelled kubernetes.io/bootstrapping=rbac-defaults (the ClusterRole cluster-admin and
+# the Role kube-system/extension-apiserver-authentication-reader; the ClusterRoleBinding
+# cluster-admin and the RoleBinding kube-system/system::extension-apiserver-authentication-reader);
+# the answer to the reviews is no list but one document per review, which review-answer.jq holds to
+# its count and its shape. So each reads UNKNOWN naming it, exits 2, runs to its end, and its step
+# does not pass. Each world holds what the answer would show and a principal a right only that
+# answer reveals, which the item names, so a run that took the answer for an empty one would miss
+# it: the webhook's backend Service, the policy engine's resource, the installed allowlist, the
+# admission policy's parameter, a right a role limits by name (for the empty List, the reviewer's
+# impersonation of system:masters limited to that name; for the roles with no Role, legion/worker's
+# patch of the Deployment secrets-broker, by a Role's name), legion/worker's bind of clusterroles in
+# example-db for the bindings with no RoleBinding, and (the answer to the reviews) legion/worker's
+# create of pods in envoy-operator, or, on another cluster, whose reviews the Workload Identity step
+# makes, ci/runner's create of namespaces. The other bindings items and the ServiceAccounts have no
+# planted right: the first names the subjects reviewed, the second the accounts, and the
+# ServiceAccounts' list has its witness, default/default. Run by hand, the control is the script and
+# its parts as at bfb6ea5c85 for the lists and as at 33e20b2de7 for the reviews: the allowlists,
+# policies and roles items with an empty
 # body or `{}`, the CRDs and webhooks with `{}`, the Service with an empty body, and the reviews with
 # an empty body each pass their step and exit 0 (the operator's reviews with "16 principals …: none
 # allowed"), and the webhooks with an empty body stop the run mid-way; and as at 846057fdc7 for the

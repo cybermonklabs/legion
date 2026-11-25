@@ -14,14 +14,16 @@
 # for a right that names none): so the count grows with the namespaces, never with the names.
 #
 # PATCH AND UPDATE OF ROLES AND ROLEBINDINGS ARE KEPT ON PURPOSE, though RBAC lets a writer of a
-# role add only rules it already holds unless it may escalate, and they report every namespace
-# admin (the built-in admin ClusterRole carries both). A namespace admin can rewrite the bindings
-# of its namespace, so it can hand the rights a binding there already gives, the broker's among
-# them, to a subject of its choosing; that is the reach this check exists to show, so it is a
-# finding, not noise. They stay out of TABLE_JSON (rights.sh), whose chains are ways to become a
-# ServiceAccount, which a write of a role alone is not. Read from the deployment's four clusters'
-# RBAC objects on 2026-11-25, a RoleBinding gives one of them to a subject that is not a person
-# 37 times (subject and namespace), across 16 namespaces.
+# role add only rules it already holds unless it may escalate, and checks a write of a RoleBinding
+# the same way (an update that changes only its subjects still needs bind on its role, or every
+# rule of that role: pkg/registry/rbac/rolebinding/policybased/storage.go), and they report every
+# namespace admin (the built-in admin ClusterRole carries both). A namespace admin can rewrite the
+# bindings of its namespace, so it can hand the rights it holds there, which may be the broker's,
+# to a subject of its choosing; that is the reach this check exists to show, so it is a finding,
+# not noise, and keeping these rights only adds findings. They stay out of TABLE_JSON (rights.sh),
+# whose chains are ways to become a ServiceAccount, which a write of a role alone is not. Read from
+# the deployment's four clusters' RBAC objects on 2026-11-25, a RoleBinding gives one of them to a
+# subject that is not a person 37 times (subject and namespace), across 16 namespaces.
 def objs: if type == "array" then .[] | objs
           elif type == "object" and (.kind // "") == "List" then (.items // [])[] | objs
           elif type == "object" then . else empty end;

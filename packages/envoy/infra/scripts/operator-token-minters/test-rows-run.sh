@@ -544,9 +544,11 @@ fi
 # error reads UNKNOWN naming the rights it could not build, exits 2, and the RBAC step does not
 # pass: the review never goes on without those rights. Run by hand, the control is the script and
 # its parts as at cae4905130, whose with_rights read an empty argument as no rights: each empty
-# item and custom-error pass the RBAC step and exit 0. The items that broke a pipeline of the
-# name-limited rights' build (the reviewed principals' list, the IAM holders' awk) went with that
-# build: binding_rights reads the bindings alone, through one jq. ---
+# item and custom-error pass the RBAC step and exit 0. A broken binding-rights.jq also breaks the
+# code step's build of the renders' binding rights, which reads UNKNOWN naming them and does not
+# pass; control, step-code-rbac.sh without that UNKNOWN: both binding items fail. The items that
+# broke a pipeline of the name-limited rights' build (the reviewed principals' list, the IAM
+# holders' awk) went with that build: binding_rights reads the bindings alone, through one jq. ---
 broken_rights_row() {
   local script lib want
   base_world
@@ -564,10 +566,19 @@ broken_rights_row() {
   esac
   run_script="$script" run
   want_rbac_unknown "$want" "a broken part of the rights ($1)"
+  # A broken binding-rights.jq breaks the code step's build of the renders' binding rights too,
+  # which must read UNKNOWN and not pass.
+  case "$1" in
+    binding-*)
+      want_text "UNKNOWN code: RBAC: the rights of the namespaces the renders' RoleBindings are in could not be built" \
+        "a broken part of the rights ($1), in the code step"
+      ! has_prefix "PASS code: RBAC: " || fail "a broken part of the rights ($1): the code step passed without the binding rights"
+      ;;
+  esac
 }
 if row cv; then
   each broken_rights_row custom-empty custom-error binding-empty binding-error
-  passed "(cv) a part that builds the custom resources' rights or the binding namespaces' rights and fails, or prints nothing, reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
+  passed "(cv) a part that builds the custom resources' rights or the binding namespaces' rights and fails, or prints nothing, reads UNKNOWN naming it, exits 2, and the RBAC step does not pass; a broken binding-rights.jq reads UNKNOWN in the code step too, which does not pass"
 fi
 
 # --- (cx) with_rights' own refusal. Every rights value a step joins goes through with_rights, which
