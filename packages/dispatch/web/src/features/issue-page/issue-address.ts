@@ -36,6 +36,10 @@ export type AddressTarget =
    *  wrote outside every thread a person wrote in, an entry of the panel's history
    *  (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
+  /** One node, by its id in the tree read, which `?node=` names: the row a store address in a
+   *  row's words links to (`lenses/store-link.ts`' `outlineRowPath`). Only the outline reads it,
+   *  Conversation's and Graph's, on an address that opens no document (`issueAddress`). */
+  | { readonly kind: "node"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
    *  `t h`), which lands on their section above the outline (`children-section.tsx`, R14). The
    *  tree's first child row tells the page whether the issue holds any (`pathToTarget`). */
@@ -193,6 +197,23 @@ export function issueAddress(
   // `useOpensDocument`).
   const version = pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined);
   const addressed = routeDocument(route, specSlug);
+  // `?node=` names a node by its id in the tree read. It is read only on an address whose
+  // preset is the outline - Conversation's, or Graph's, which draws Graph's read as one outline -
+  // and which opens no document, and there it wins over `#b-`, `?ask=` and `?comment=`.
+  const nodeId = query.get("node") ?? "";
+  const outline = route.kind === "graph" || ROUTE_PRESETS[route.kind] === undefined;
+  if (nodeId !== "" && outline && addressed === undefined) {
+    return {
+      document: undefined,
+      documentItem: undefined,
+      filter: query.get("q") ?? "",
+      nodeMenu: false,
+      preset: ROUTE_PRESETS[route.kind] ?? "conversation",
+      target: { id: nodeId, kind: "node" },
+      version,
+      ...(route.kind === "graph" && route.node !== undefined ? { zoom: route.node } : {}),
+    };
+  }
   const marked = query.get("mark") ?? "";
   const documentItem = documentItemOf(addressed, item, version, marked);
   const outlineItem = documentItem === undefined && item !== null && item !== undefined;
@@ -276,6 +297,7 @@ export function pathToTarget(
     const suffix = `#b-${target.id}`;
     return pathToNode(root, (node) => node.id.endsWith(suffix));
   }
+  if (target.kind === "node") return pathToNode(root, (node) => node.readId === target.id);
   const byId = pathToNode(root, (node) => node.id === target.id);
   if (byId !== undefined) return byId;
   const address = `/${target.id}`;

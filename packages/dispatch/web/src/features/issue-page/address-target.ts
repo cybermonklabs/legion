@@ -40,7 +40,8 @@ export interface AddressedNode {
 /**
  * The node `address` names, resolved against the whole tree `root` - the page's and every
  * filter's - so a view keeps it even where its filter or its words would not have matched it.
- * Every target an address names, `/children` among them, is one a tree unfolds and focuses.
+ * Every target an address names is one a tree unfolds and focuses, but the children's
+ * (`/children`), which lands on their section above the outline (`children-section.tsx`).
  *
  * The target is read by what it says rather than by the value `issueAddress` built, which is a
  * new one on every render: the tree is walked again only when the address or the tree changes.
@@ -186,10 +187,14 @@ export type AddressFallback =
    * no node of it: a block id no node carries, or an issue with no children. No read is left
    * that would draw it, so the page says in the outline's place that the link names nothing on
    * it, rather than leave the reader on the page's body.
+   *
+   * A node that `?node=` names and the read holds none of is one too, as a block is. On
+   * Conversation's own address a block or a node goes first to a view that draws it
+   * (`slots/body.tsx`' `addressView`).
    */
   | {
       readonly kind: "absent";
-      readonly target: Extract<AddressTarget, { kind: "block" | "children" }>;
+      readonly target: Extract<AddressTarget, { kind: "block" | "children" | "node" }>;
     };
 
 /** The reads of the issue's conversation the tree's turns come from, as the page holds them:
@@ -371,7 +376,8 @@ export function useAddressFallback({
         : landing;
   const target = address.target;
   const named =
-    address.document === undefined && (target?.kind === "block" || target?.kind === "children")
+    address.document === undefined &&
+    (target?.kind === "block" || target?.kind === "children" || target?.kind === "node")
       ? target
       : undefined;
   // A block or the children the tree holds no node of, once the reads are held; the children's
