@@ -3992,7 +3992,7 @@ An entry's number is 275 plus its place in the order in which `main` merged the 
 `legion version --contracts` prints the numbers of the build it runs from: `contract <n>` first, then `order stamped` for a release's or a worker image's build or `order id` for any other build, whose entries are numbered in the order of their ids, then one line `<id> <number> <slug>` for each entry.
 A section of this guide about a release that adds a contract entry names the entry by its id, never by a number, and the operator reads that entry's number in the build they run with `legion version --contracts`.
 Each claim records the contract its process registered with as `pluginContract`.
-A role's `pi-legion` declares the contract it was built against in the manifest its pack step writes (`packages/pi-legion/AGENTS.md`), and the daemon's boot pass (`refreshStalePlugins` in `packages/daemon/internal/daemon/daemon.go`) and its registration path (`internal/supervise/plugin.go`) agree on one rule:
+A role's `pi-legion` declares the contract it was built against in the manifest its pack step writes (`packages/contracts/src/daemon-contract.ts`), and the daemon's boot pass (`refreshStalePlugins` in `packages/daemon/internal/daemon/daemon.go`) and its registration path (`internal/supervise/plugin.go`) agree on one rule:
 a registered claim whose recorded contract differs from the daemon's own, or is unrecorded
 — every claim is unrecorded the first time a daemon boots on a release that records contracts at all
 — runs on this daemon's plugin before it does anything else, and it gets there by being relaunched onto it, asked nothing first.
