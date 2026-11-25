@@ -8,7 +8,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
@@ -20,17 +19,13 @@ const judgedSeconds = 300
 // judgedModel is the model a forged judge actor here names.
 const judgedModel = "claude-opus-4-6"
 
-// newJudgeServer is newTestServer with DEEL_API_KEY behind the airlock and tagged with a judge of
-// judgedSeconds. The grant chain verifier reads that tag from the server's live policy, as
-// cmd/cipherd builds it; a test that moves the tag under a grant retags the key afterwards.
+// newJudgeServer is newTestServer with DEEL_API_KEY behind the airlock, its proxy tag naming a kind
+// of the profiles file, and tagged with a judge of judgedSeconds. The grant chain verifier reads
+// that tag from the server's live policy, as cmd/cipherd builds it; a test that moves the tag under
+// a grant retags the key afterwards.
 func newJudgeServer(t *testing.T) *testServer {
 	t.Helper()
-	return newTestServerWith(t, func(d *api.Deps) {
-		d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-			{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}},
-		}}
-		d.Machine.AirlockProxyURL = "http://127.0.0.1:13381"
-		d.Machine.AirlockCACertificate = "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n"
+	return newProxiedTestServer(t, []string{"DEEL_API_KEY"}, func(d *api.Deps) {
 		tagJudge(t, d, "DEEL_API_KEY", judgedSeconds, "")
 	})
 }

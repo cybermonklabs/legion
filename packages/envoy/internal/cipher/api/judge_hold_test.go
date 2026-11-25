@@ -215,8 +215,8 @@ func TestTheSettingsNameTheSourceOfAJudgedProfile(t *testing.T) {
 	type settings struct {
 		JudgeKeys map[string]judgeKey `json:"judge_keys"`
 	}
-	ts := newProfiledTestServer(t, policytest.ProfilesFile(
-		`{"name": "DEEL_READ", "source": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.example"]}}`,
+	ts := newProfiledTestServer(t, policytest.KindsFile(
+		`{"name": "DEEL_READ", "source": "DEEL_API_KEY", "proxy": "example"}`,
 	), func(d *api.Deps) {
 		store := d.Machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
 		judged := policytest.Judged(policytest.Secret("DEEL_API_KEY", testApprover, policy.TierHuman, "deel-v1"), 900, "grant for the payroll export job")
