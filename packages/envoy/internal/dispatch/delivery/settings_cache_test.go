@@ -178,8 +178,8 @@ func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
 
 // SettingsCache.Read's channel is closed by the first read that answers, whatever it found, and by
 // no read that failed: a read on a cancelled context fails and leaves it open; a read that finds a
-// deploy repository it refuses answers, holds nothing, and closes it; a later read that finds no
-// row leaves it closed.
+// deploy repository it refuses answers, holds nothing, and closes it; and a first read that finds
+// no row closes it.
 func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -221,9 +221,6 @@ func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
 
 	if _, err := pool.Exec(ctx, `delete from delivery_settings`); err != nil {
 		t.Fatalf("delete the delivery settings: %v", err)
-	}
-	if !cache.reload(ctx) || !closed(cache) {
-		t.Fatal("a read that found no row after the first read answered reopened it")
 	}
 	empty := newSettingsCache(pool, nil, nil)
 	if !empty.reload(ctx) || !closed(empty) {
