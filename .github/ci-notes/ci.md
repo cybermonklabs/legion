@@ -279,8 +279,7 @@ tests read outside the daemon: the contracts fixtures `packages/daemon/internal/
 `packages/daemon/internal/api/state_golden_test.go#golden`,
 `packages/daemon/internal/intake/intake_test.go#TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer` and `packages/daemon/internal/intake/intake_test.go#TestAWorkflowRunEnvelopeIsNoFact`
 read, the agents `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
-stats, the tools skill `packages/daemon/internal/prompts/roles_test.go#TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI`
-holds roles/mechanics/headless.md to, the merge gate
+stats, the merge gate
 `packages/daemon/internal/workflow/engine_test.go#TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries`
 holds the reviewer's prompt to, the GitHub App helper
 `packages/daemon/internal/api/real_github_test.go#runGitHubAppsLib` sources, and the examples and
