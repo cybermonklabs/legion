@@ -194,10 +194,10 @@ const maxForeignStores = 8
 
 // maxReleasedHolders is how many messages a cursor records as released (releasedHolders): each a
 // message whose hold a write of another URL or a delete of the setting ended, until its next
-// delivery while the project has a setting (after a delete, until newer records push it out,
-// reset). Past it the oldest record goes (reset). That message is judged as any message at its next
-// delivery, which applies nothing of a store other than the cursor's, and it may hold a read again
-// from a count of 1.
+// delivery while the project has a setting; after a delete, a record whose message comes back
+// before a new setting can stay until newer records push it out. Past it the oldest record goes
+// (reset): that message is judged as any message at its next delivery, which applies nothing of a
+// store other than the cursor's, and it may hold a read again from a count of 1.
 const maxReleasedHolders = 8
 
 // maxSkippedStores is how many stores a cursor keeps the highest sequence skipped past
