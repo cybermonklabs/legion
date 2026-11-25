@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -659,17 +660,31 @@ func askEditsOf(t *testing.T, service *Service, ask string) int {
 // A decided ask's wording is fixed. A document edit or an upload that rewords an answered or
 // resolved ask's block leaves its row as it was decided, appends no ask.edited, and settlement
 // writes the decided wording back into the block beside its decision, logging that it did.
+//
+// An answered ask is a person's decision, whose words no agent's write changes (R32 of the
+// issue-tree spec): an agent's upload rewording it is refused (ErrAnsweredAskKept), so the upload
+// that rewords it is a person's own, which R32 takes. A resolved ask is no person's decision, and
+// an agent's upload rewords it.
 func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	writes := map[string]func(t *testing.T, service *Service, document string){
-		"live edit": func(t *testing.T, service *Service, document string) {
+	writes := map[string]func(t *testing.T, service *Service, document, closing string){
+		"live edit": func(t *testing.T, service *Service, document, _ string) {
 			editLiveTree(t, service, document, func(tree *pmdoc.Node) *pmdoc.Node {
 				return replaceRun("Yes: Monday.", "Tuesday: Ship it.")(replaceRun("Ship on Monday?", "Ship on Tuesday?")(tree))
 			})
 		},
-		"upload": func(t *testing.T, service *Service, document string) {
-			if _, err := joinedReplaceText(service, document, "Context\n\n"+tuesdayBlock, model.Actor{Kind: "session", ID: "uploader"}); err != nil {
+		"upload": func(t *testing.T, service *Service, document, closing string) {
+			uploader := model.Actor{Kind: "session", ID: "uploader"}
+			if closing == "answered" {
+				var kept *ErrAnsweredAskKept
+				if _, err := joinedReplaceText(service, document, "Context\n\n"+tuesdayBlock, uploader); !errors.As(err, &kept) ||
+					len(kept.Asks) != 1 || kept.Asks[0].Question != "Ship on Monday?" || !kept.Asks[0].Reworded {
+					t.Fatalf("the agent's upload rewording the answered ask = %v, want it refused as the answered ask kept, reworded", err)
+				}
+				uploader = model.Actor{Kind: "user", ID: "alice"}
+			}
+			if _, err := joinedReplaceText(service, document, "Context\n\n"+tuesdayBlock, uploader); err != nil {
 				t.Fatalf("upload the reworded document: %v", err)
 			}
 		},
@@ -686,7 +701,7 @@ func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testi
 				if err := closeSource(context.Background(), service, original, "ship", source, answer, nil); err != nil {
 					t.Fatal(err)
 				}
-				write(t, service, original)
+				write(t, service, original, closing)
 				settleCurrentGeneration(t, service, original)
 
 				decided := blockAskOn(t, service, original, "ship")

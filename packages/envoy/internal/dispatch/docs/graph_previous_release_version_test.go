@@ -768,13 +768,14 @@ func TestTheTickMarksAVersionABuildOfAnEarlierRuleIndexed(t *testing.T) {
 	`, earlier).Scan(&version, &storeVersion); err != nil || version != storeVersion {
 		t.Fatalf("the document stands at version %d with store_version %d (%v), want the two equal: the case proves nothing", version, storeVersion, err)
 	}
+	// Each event takes its seq off the issue's own counter (recordIssueEvent), so the
+	// artifact.indexed the drain below appends on the issue does not take the same seq.
 	for _, document := range []string{earlier, stated} {
-		if _, err := database.Pool.Exec(ctx, `
-			insert into events (issue_key, seq, type, actor, payload, notify)
-			select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"alice"}',
-			       jsonb_build_object('artifact_id', $1::text, 'version', jsonb_build_object('number', $2::int)), false
-			from events where issue_key = 'CORE-1'
-		`, document, version); err != nil {
+		payload, err := json.Marshal(map[string]any{"artifact_id": document, "version": map[string]any{"number": version}})
+		if err != nil {
+			t.Fatalf("encode the payload of the version's event of %s: %v", document, err)
+		}
+		if _, err := recordIssueEvent(ctx, database.Pool, "CORE-1", "artifact.version", aliceActor, payload); err != nil {
 			t.Fatalf("append the version's event of %s: %v", document, err)
 		}
 	}

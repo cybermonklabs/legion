@@ -84,7 +84,9 @@ func mismatchedMarkdown(t *testing.T) string {
 }
 
 // writeMismatchedSpec creates the spec of issue, with primary set as treeDocument creates one,
-// whose node is its query's (writeQueryNode), so its version has a record of R14, and writes its
+// whose node is its query's, named on its row (writeQueryNode), so its version has a record of
+// R14 and the reconciliation's pass over the rows another build wrote with no node
+// (writeObjectNodesAnotherBuildWrote) leaves the node a query node, and writes its
 // version 1 as the upload route writes a version (api's storeArtifact), with the one input the
 // product never gives: in one transaction joined to the service it seeds the document's text
 // with mismatchSeed (SeedText) and queues version 1 with other (Ledger.QueueVersion), which
@@ -95,7 +97,6 @@ func mismatchedMarkdown(t *testing.T) string {
 func writeMismatchedSpec(t *testing.T, database *store.Store, service *Service, issue, other string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
-	writeQueryNode(t, database, "MISS", issue, "spec", graphstore.QuerySpec)
 	var id, refKey string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
@@ -104,6 +105,7 @@ func writeMismatchedSpec(t *testing.T, database *store.Store, service *Service, 
 	`, issue).Scan(&id, &refKey); err != nil {
 		t.Fatalf("create the spec of %s: %v", issue, err)
 	}
+	writeQueryNode(t, database, "MISS", issue, "spec", graphstore.QuerySpec)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -282,7 +284,6 @@ func renderStepCarryOfACarry(t *testing.T, rig *renderRig, service *Service) {
 	database := rig.database
 	seedMismatchIssues(t, database)
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	writeQueryNode(t, database, "MISS", "MISS-3", "spec", graphstore.QuerySpec)
 	var spec, refKey string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
@@ -290,6 +291,7 @@ func renderStepCarryOfACarry(t *testing.T, rig *renderRig, service *Service) {
 		returning id::text, ref_key`).Scan(&spec, &refKey); err != nil {
 		t.Fatalf("create the spec of MISS-3: %v", err)
 	}
+	writeQueryNode(t, database, "MISS", "MISS-3", "spec", graphstore.QuerySpec)
 	seedServiceText(t, service, spec, "The words the person approved.\n")
 	writeVersionThroughTheRealPath(t, service, spec, "The first version")
 	settle(t, database, spec)
