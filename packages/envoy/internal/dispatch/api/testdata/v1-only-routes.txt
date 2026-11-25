@@ -14,7 +14,9 @@
 # of c8a44f97 (TestEveryV1RowNamesItsV2Route).
 GET /api/v1
 GET /api/v1/agents
+GET /api/v1/agents/known # #3125, one reference framework: a page links a dispatch://agent/<session id> reference only where Dispatch holds a record of that session
 GET /api/v1/agents/{session_id}/answers
+GET /api/v1/agents/{session_id}/artifacts # #3125, one reference framework: the reference picker lists a conversation's newest files
 POST /api/v1/agents/{session_id}/artifacts
 GET /api/v1/agents/{session_id}/artifacts/{slug}
 GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}

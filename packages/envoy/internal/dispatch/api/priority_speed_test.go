@@ -500,7 +500,7 @@ var speedPagedListingTarget = fmt.Sprintf("/api/v1/issues?open=true&limit=%d", s
 func speedPageArguments(limit, offset int) []any {
 	return []any{
 		"", []string{}, "", (*time.Time)(nil), []string{}, true, []int16{}, false,
-		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, false, limit, offset,
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, false, "", "", limit, offset,
 	}
 }
 
@@ -753,7 +753,7 @@ func speedScanAllocs(t *testing.T, corpus speedCorpusShape, query string, argume
 // strings, an empty list of numbers and a time are every value the arguments of the reads counted
 // here hold, and any other stops the test rather than be written wrong. Each is written as pgx
 // sends it: a nil list of strings and a nil time as null, as GET /api/v2/issues sends the keys of
-// no ref= (issueListFiltersV2's $17) and a window it was given no bound of, and an empty list as
+// no ref= (issueListFiltersV2's $19) and a window it was given no bound of, and an empty list as
 // '{}'. A statement that takes no argument is named with no list.
 func speedLiterals(t *testing.T, arguments []any) string {
 	t.Helper()

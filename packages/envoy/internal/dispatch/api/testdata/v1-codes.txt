@@ -287,6 +287,7 @@ INVALID_REPOSITORY 400 # #4457, each project has an optional default repository,
 INVALID_ROLE_HOLDER 400 # #4228, the Legion daemon publishes the session of each role of an issue
 LEGION_NOT_CONFIGURED 404 # #2731, a project's Legion board from its daemon's recorded state
 LEGION_SETTING_INPUT 400 # #2731, the Legion daemon a project's state is read from
+LEGION_STATUS_SCOPE_REQUIRED 403 # #4601, only the Legion daemon and a person write a Legion issue's status (R26)
 NEAR_COPY_CHECK_ID_INPUT 400 # #4103, record every answer of the near-copy gate
 NEAR_COPY_CHECK_NOT_FOUND 404 # #4103, record every answer of the near-copy gate
 NOT_AN_ISSUE_MESSAGE 409 # #3512, the author of a comment or an issue message can correct or delete it

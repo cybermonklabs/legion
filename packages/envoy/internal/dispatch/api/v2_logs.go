@@ -221,12 +221,13 @@ type referencesV2Query struct {
 	Sort querySort `query:"sort" enum:"created_at,source_seq" default:"-created_at"`
 }
 
-// referencesV2 is the body GET /api/v2/references answers: the envelope of the node's edges, with
-// the node and the kinds this build does not emit beside it.
+// referencesV2 is the body GET /api/v2/references answers: the envelope of the node's edges, each
+// as GET /api/v1/references answers it (graphEdgeRead, its excerpt's text_tree for a caller that
+// sent Dispatch-Trees: 1), with the node and the kinds this build does not emit beside it.
 type referencesV2 struct {
 	Node         graphNodeRead `json:"node"`
 	UnknownKinds []string      `json:"unknown_kinds,omitempty"`
-	page[model.GraphEdge]
+	page[graphEdgeRead]
 }
 
 // myThreadsV2Query is GET /api/v2/me/threads's query.
@@ -586,7 +587,7 @@ func (s *server) listReferencesV2(w http.ResponseWriter, r *http.Request) {
 	}
 	edges := answer.Edges
 	if positions.before != nil {
-		edges = slices.DeleteFunc(edges, func(edge model.GraphEdge) bool {
+		edges = slices.DeleteFunc(edges, func(edge graphEdgeRead) bool {
 			return edge.SourceSeq == nil || *edge.SourceSeq >= *positions.before
 		})
 	}
@@ -597,12 +598,12 @@ func (s *server) listReferencesV2(w http.ResponseWriter, r *http.Request) {
 // sortReferenceEdges orders edges, which refs.Edges answers newest first (-created_at), by sort:
 // created_at is that order backwards, and source_seq orders by it, an edge with none after every
 // edge with one and ties left in the newest-first order.
-func sortReferenceEdges(edges []model.GraphEdge, sort querySort) {
+func sortReferenceEdges(edges []graphEdgeRead, sort querySort) {
 	switch {
 	case sort.Field == "created_at" && !sort.Descending:
 		slices.Reverse(edges)
 	case sort.Field == "source_seq":
-		slices.SortStableFunc(edges, func(left, right model.GraphEdge) int {
+		slices.SortStableFunc(edges, func(left, right graphEdgeRead) int {
 			switch {
 			case left.SourceSeq == nil || right.SourceSeq == nil:
 				return boolOrder(left.SourceSeq == nil, right.SourceSeq == nil)
@@ -676,6 +677,7 @@ func (s *server) listMyThreadsV2(w http.ResponseWriter, r *http.Request) {
 	response, err := s.readMyReplies(r.Context(), caller, myRepliesRead{
 		reply: reply, agent: agent, state: query.State,
 		limit: &limit, offset: query.Offset, from: from, after: after, issue: issue, artifact: artifact,
+		trees: wantsDisplayTrees(r),
 	})
 	if err != nil {
 		s.writeHandlerError(w, r, err)

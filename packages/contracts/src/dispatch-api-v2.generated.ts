@@ -282,7 +282,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the files and images of an agent's conversation, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug> keeps the one at ref_key agent/<session_id>/<slug>, as dispatch://agent/<session_id>/artifact/<slug> names it; a conversation holds no document, so no file name is matched. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. A session Dispatch holds no file of answers the empty list; a session_id that is empty or holds /, ?, #, whitespace, a control character or <>"'`[]| is 400 INVALID_SESSION_ID. */
+    /** @description List the files and images of an agent's conversation, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug> keeps the one at ref_key agent/<session_id>/<slug>, as dispatch://agent/<session_id>/artifact/<slug> names it; a conversation holds no document, so no file name is matched. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. A session Dispatch holds no file of answers the empty list; a session_id that is empty or holds /, ?, #, whitespace, a control character or <>"'`[]| is 400 INVALID_SESSION_ID. The list that names no slug is part of the conversation, so it needs the person scope (403 OAUTH_SCOPE_REQUIRED) and admits exactly the callers GET /api/v2/agents/{session_id}/messages admits, as GET /api/v1/agents/{session_id}/artifacts does; the read of one file by its slug needs no more than GET /api/v1/agents/{session_id}/artifacts/{slug} does. */
     get: operations["getApiV2AgentsBySessionIdArtifacts"];
     put?: never;
     /** @description Upload a file or image to an agent's conversation: ref_key agent/<session_id>/<slug>, addressed dispatch://agent/<session_id>/artifact/<slug>. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. A conversation holds files and images only. To replace a file or a picture, precondition {document} names the latest version's token, which GET /api/v2/artifacts/{id}/versions?sort=-number&limit=1 answers on that version; a replacement naming none is taken unchecked. A stale token is 409 PRECONDITION_FAILED with the token and version that stand; a first upload or a version with no token also refuses a named token. A precondition naming blocks is 400 INVALID_PRECONDITION. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name, a markdown document, as JSON content or a text/markdown file), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 INVALID_SESSION_ID. */
@@ -1102,7 +1102,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers by the project's gated_steps), or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. With the parent-status rule on, a change that breaks it is 409 PARENT_STATUS_CONFLICT. Without status-change options, answers the issue with advice; a patch that changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run true, send status and optionally expected_sequence and actor, with no other issue fields; an option sent as false asks for nothing and is taken as absent. The server checks the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and the progress of a keyed attempt. A dry run returns the plan without writing. This form answers {issue, changed}; a refusal carries the changes that committed before it. Closing with include_children requires a browser sign-in. On an issue Legion runs, a close, a reopen and a labels or parent write that takes the issue out of Legion (unlink_children among them) are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of an issue above it; a move under a parent of another project is judged as a root of the issue's own project, which this check does not judge. When Legion runs the issue, or an issue under it, before the move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that is no person and no architect of each such issue or of an issue above it where it stands. Neither check of a move passes the session of the project's Legion daemon. 404 ISSUE_NOT_FOUND. */
+    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers by the project's gated_steps), or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. With the parent-status rule on, a change that breaks it is 409 PARENT_STATUS_CONFLICT. Without status-change options, answers the issue with advice; a patch that changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run true, send status and optionally expected_sequence and actor, with no other issue fields; an option sent as false asks for nothing and is taken as absent. The server checks the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and the progress of a keyed attempt. A dry run returns the plan without writing. This form answers {issue, changed}; a refusal carries the changes that committed before it. Closing with include_children requires a browser sign-in. On an issue Legion runs, a close, a reopen and a labels or parent write that takes the issue out of Legion (unlink_children among them) are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of an issue above it; a move under a parent of another project is judged as a root of the issue's own project, which this check does not judge. When Legion runs the issue, or an issue under it, before the move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that is no person and no architect of each such issue or of an issue above it where it stands. Neither check of a move passes the session of the project's Legion daemon. With DISPATCH_LEGION_STATUS_SCOPE on, three writes of a Legion issue (one that carries the legion label in any case, or is under an issue of its own project that does) need a credential that holds the person scope or legion-status, in both forms: a status write (the status the issue holds included) where the issue is a Legion issue before the call or after it, the removal of its legion label, and a move after which it is no longer a Legion issue. A credential that holds neither is 403 LEGION_STATUS_SCOPE_REQUIRED, with an insufficient_scope challenge naming legion-status, decided before the first write and before PARENT_STATUS_CONFLICT. The one exception is the owning architect's status write: a broker-issued token whose session the Legion daemon's own token published as the architect of an issue above, of the issue's own project, before the call and after it, writes done, backlog, icebox or triage, with neither unlink_children nor include_parent and not done with include_children. 404 ISSUE_NOT_FOUND. */
     patch: operations["patchApiV2IssuesByKey"];
     trace?: never;
   };
@@ -1340,7 +1340,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue's references, one hop in each direction, one list at a time. The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v2/references lists it. relation names the list: links, every node the issue's own content links to; linked_from, every node that links to the issue or to its own content; or members (the default), the rows of links whose node is a document, the documents /api/v1 answers as members. Each list has one row for each node, a block or a part counted as its document or item; the issue and its own content are in no list, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via, artifact}: the node as GET /api/v2/references names it, the words shown for it, the distinct kinds of its links in order, the lowest of the issue's nodes at the near end, and on a row of members or a row of links whose node is a document, the document's row (its own fields, latest_version, latest_version_at, latest_version_size and version_count, and no approval; its versions are GET /api/v2/artifacts/{id}/versions), null on every other row. Each list is in the order of the node's kind, then its id. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}, total the rows of the list. The answer carries an ETag over the page it answers, its relation and its rows whole; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 ISSUE_NOT_FOUND. */
+    /** @description An issue's references, one hop in each direction, one list at a time. The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v2/references lists it. relation names the list: links, every node the issue's own content links to; linked_from, every node that links to the issue or to its own content; or members (the default), the rows of links whose node is a document, the documents /api/v1 answers as members. Each list has one row for each node, a block or a part counted as its document or item; the issue and its own content are in no list, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via, artifact}: the node as GET /api/v2/references names it, the words shown for it, the distinct kinds of its links in order, the lowest of the issue's nodes at the near end, and on a row of members or a row of links whose node is a document, the document's row (its own fields, latest_version, latest_version_at, latest_version_size and version_count, and no approval; its versions are GET /api/v2/artifacts/{id}/versions), null on every other row. A caller that sent Dispatch-Trees: 1 is also given name_tree on each row: its name as the tree a reader is shown. Each list is in the order of the node's kind, then its id. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}, total the rows of the list. The answer carries an ETag over the page it answers, its relation and its rows whole; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 ISSUE_NOT_FOUND. */
     get: operations["getApiV2IssuesByKeyReferences"];
     put?: never;
     post?: never;
@@ -1393,7 +1393,7 @@ export interface paths {
     };
     /** @description The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKeyRoleHolderSet"];
-    /** @description Publish the session that holds each Legion role of this issue {holders}, a bearer naming its session in actor: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Dispatch takes the session a bearer caller names as the caller names it, so any caller whose credential proves no session of its own can name that one: the deployment's shared token, and a person's own agent token whatever its scopes. While the project's proven_sessions is on (PATCH /api/v2/projects/{key}), the route takes a write only on a credential that proves that session, a broker token of it, and any other is 403 ROLE_HOLDER_NOT_PROVEN, after the 400 refusals below. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Each write the route takes marks the issue's project, and from then on a write of the spec or the Verification document of an issue of the project that Legion runs needs a person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). Answers 200 the set this write stored, {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role; a body naming the set already stored, in any order, on a project a write has marked, answers that set and writes nothing. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Publish the session that holds each Legion role of this issue {holders}, a bearer naming its session in actor: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. legion-daemon:<project> is the session the Legion daemon of the issue's project writes as, <project> the key up to its first -. With DISPATCH_LEGION_STATUS_SCOPE on, only a credential that proves session legion-daemon:<project> and holds legion-status publishes: the daemon's own broker token. Every other credential is 403 ROLE_HOLDER_FORBIDDEN, the shared token whose actor names that session included. With it off, the actor must be session legion-daemon:<project>, and any other actor is 403 ROLE_HOLDER_FORBIDDEN; a bearer caller names its own session, so any caller whose credential proves no session can name that one. While the project's proven_sessions is on (PATCH /api/v2/projects/{key}), the route takes a write only on a credential that proves that session, a broker token of it, and any other is 403 ROLE_HOLDER_NOT_PROVEN, after the 400 refusals below. Each stored pair records whether the daemon's own token wrote it, a pair the write keeps unchanged included, and only such a pair names an architect whose write R26 lets through. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Each write the route takes marks the issue's project, and from then on a write of the spec or the Verification document of an issue of the project that Legion runs needs a person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). Answers 200 the set this write stored, {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role; a body naming the set already stored, in any order, on a project a write has marked, whose every pair already records what this write's credential would record, answers that set and writes nothing. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     put: operations["putApiV2IssuesByKeyRoleHolderSet"];
     post?: never;
     delete?: never;
@@ -1499,6 +1499,23 @@ export interface paths {
     post?: never;
     /** @description Unsubscribe a session from an issue's topics (the person scope): the topics scoped to this issue alone are removed from the session's Envoy interests, and subscription.remove_requested and then subscription.removed are appended on the issue. 204. 409 NOT_REMOVABLE where only a broader topic matches, 404 SUBSCRIBER_NOT_FOUND for a session that is not subscribed, 502 ENVOY_UNSUBSCRIBE_FAILED, 503 ENVOY_UNAVAILABLE, 404 ISSUE_NOT_FOUND. */
     delete: operations["deleteApiV2IssuesByKeySubscribersBySessionId"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/known-sessions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Which of the sessions the repeated id parameter names (1 to 100 session ids) Dispatch holds any record of, which needs the person scope, so a page links a dispatch://agent/<session id> reference only where that conversation exists, an ended session's included: each {session_id, title} in the order asked, each once, and no row for an id with no record. A record is the registry copy GET /api/v2/agents lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows; title is the registry copy's, null where that copy lists the session with none or does not list it. One statement answers the whole batch. limit 1 to 100 (default 100, so one page holds the whole batch) and offset; {items, total, limit, offset}, total the sessions found. No id, more than 100, a value that is no session id, or one longer than 2048 bytes, the longest session id a reference in text names, is 400 INVALID_QUERY naming the parameter. It admits exactly the callers GET /api/v2/agents/{session_id}/messages admits. */
+    get: operations["getApiV2KnownSessions"];
+    put?: never;
+    post?: never;
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -2272,7 +2289,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search q= across issues, documents, asks, comments and messages: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, with total, every match, and reachable, how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in the project the search is narrowed to where it names one, and otherwise in number_project, the project of the page the search was made from, which narrows nothing. A q is searched as typed, websearch_to_tsquery's AND of its words; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, and the answer's query {operators, broadened} names the forms it read and whether that second search answered. project=<key>, repeatable, narrows every leg to those projects, with no default project; status= the status of the issue a row belongs to (a row with no issue matches none); author= the actor id that wrote the item a row names; from and to, RFC3339, from inclusive and to exclusive, when that item was last written. filters echoes {project, status, author, from, to}, project [] for none. keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then recency, then id. limit 1 to 50 (default 20) and offset; {items, total, limit, offset, reachable, took_ms, degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over 1000 characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR. */
+    /** @description Full-text search q= across issues, documents, asks, comments and messages: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, with total, every match, and reachable, how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in the project the search is narrowed to where it names one, and otherwise in number_project, the project of the page the search was made from, which narrows nothing. A q is searched as typed, websearch_to_tsquery's AND of its words; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, and the answer's query {operators, broadened} names the forms it read and whether that second search answered. project=<key>, repeatable, narrows every leg to those projects, with no default project; status= the status of the issue a row belongs to (a row with no issue matches none); author= the actor id that wrote the item a row names; from and to, RFC3339, from inclusive and to exclusive, when that item was last written. filters echoes {project, status, author, from, to}, project [] for none. kind=, repeatable, one of issue, document, comment, ask and message, keeps the rows of the kinds named alone, before anything is ranked, counted or paged, and none is every kind, as GET /api/v1/search/results reads it. keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then recency, then id. limit 1 to 50 (default 20) and offset; {items, total, limit, offset, reachable, took_ms, degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over 1000 characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR. */
     get: operations["getApiV2SearchResults"];
     put?: never;
     post?: never;
@@ -2664,7 +2681,7 @@ export interface components {
     };
     ArchitectureTree: {
       components: components["schemas"]["ArchitectureComponentRead"][] | null;
-      not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
+      not_architectural: components["schemas"]["ArchitectureTreeNoneRead"][] | null;
       retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
       sources: components["schemas"]["ArchitectureTreeSource"][] | null;
       totals: components["schemas"]["ArchitectureTreeTotals"];
@@ -2706,6 +2723,19 @@ export interface components {
       inherited_from: null | string;
       key: string;
       reason: string;
+      status: string;
+      title: string;
+    };
+    ArchitectureTreeNoneRead: {
+      inherited_from: null | string;
+      key: string;
+      reason: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       status: string;
       title: string;
     };
@@ -2937,6 +2967,11 @@ export interface components {
       at: string;
       id?: string;
       selected: string[] | null;
+      selected_trees?: ({
+        type: string;
+      } & {
+        [key: string]: unknown;
+      })[];
       text: null | string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       text_tree?: {
@@ -4495,19 +4530,25 @@ export interface components {
       method: string;
       pattern: string;
     };
-    GraphEdge: {
+    GraphEdgeWithTrees: {
       block?: components["schemas"]["GraphNode"];
       /** Format: date-time */
       created_at: string;
       direction: string;
-      excerpt?: components["schemas"]["GraphExcerpt"];
+      excerpt?: components["schemas"]["GraphExcerptWithTrees"];
       kind: string;
       node: components["schemas"]["GraphNode"];
       source_seq: null | number;
     };
-    GraphExcerpt: {
+    GraphExcerptWithTrees: {
       block_id?: string;
       text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     GraphNode: {
       block_id?: string;
@@ -4787,6 +4828,12 @@ export interface components {
       closed_at: null | string;
       comment_count?: number;
       components: components["schemas"]["IssueComponents"];
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      components_reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
@@ -4979,6 +5026,10 @@ export interface components {
        */
       state: "kept";
       text_sha256: string;
+    };
+    KnownSession: {
+      session_id: string;
+      title: null | string;
     };
     LauncherCredentialResp: {
       approved_by: string;
@@ -5472,6 +5523,12 @@ export interface components {
       reply: components["schemas"]["MyReplyReply"];
       session?: components["schemas"]["MyReplySession"];
       subject: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      subject_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       thread_id: string;
       unread: boolean;
       unread_count: number;
@@ -5642,6 +5699,12 @@ export interface components {
     };
     PageOfIssueSummary: {
       items: components["schemas"]["IssueSummary"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+    };
+    PageOfKnownSession: {
+      items: components["schemas"]["KnownSession"][] | null;
       limit: number;
       offset: number;
       total: number;
@@ -6096,6 +6159,12 @@ export interface components {
       artifact: components["schemas"]["ArtifactV2"] | null;
       kinds: string[] | null;
       name: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      name_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       node: components["schemas"]["GraphNode"];
       via: components["schemas"]["ReferenceVia"];
     };
@@ -6122,7 +6191,7 @@ export interface components {
       kind: string;
     };
     ReferencesV2: {
-      items: components["schemas"]["GraphEdge"][] | null;
+      items: components["schemas"]["GraphEdgeWithTrees"][] | null;
       limit: number;
       node: components["schemas"]["GraphNodeRead"];
       offset: number;
@@ -12353,6 +12422,52 @@ export interface operations {
       };
     };
   };
+  getApiV2KnownSessions: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        id?: string[];
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PageOfKnownSession"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV2LimitSet: {
     parameters: {
       query?: {
@@ -15294,6 +15409,7 @@ export interface operations {
         from?: string;
         to?: string;
         keywords_only?: boolean;
+        kind?: ("issue" | "document" | "comment" | "ask" | "message")[];
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -15750,6 +15866,7 @@ export type ArchitectureTreeComponent = components["schemas"]["ArchitectureTreeC
 export type ArchitectureTreeIssue = components["schemas"]["ArchitectureTreeIssue"];
 export type ArchitectureTreeIssueRef = components["schemas"]["ArchitectureTreeIssueRef"];
 export type ArchitectureTreeNone = components["schemas"]["ArchitectureTreeNone"];
+export type ArchitectureTreeNoneRead = components["schemas"]["ArchitectureTreeNoneRead"];
 export type ArchitectureTreeRetired = components["schemas"]["ArchitectureTreeRetired"];
 export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSource"];
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
@@ -15932,8 +16049,8 @@ export type GoingActionV2 = components["schemas"]["GoingActionV2"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRouteV2 = components["schemas"]["GoingRouteV2"];
-export type GraphEdge = components["schemas"]["GraphEdge"];
-export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
+export type GraphEdgeWithTrees = components["schemas"]["GraphEdgeWithTrees"];
+export type GraphExcerptWithTrees = components["schemas"]["GraphExcerptWithTrees"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
 export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
@@ -15976,6 +16093,7 @@ export type ItemBlock = components["schemas"]["ItemBlock"];
 export type ItemBlocks = components["schemas"]["ItemBlocks"];
 export type JsonArtifactUpload = components["schemas"]["JsonArtifactUpload"];
 export type KeepDecisionStateInput = components["schemas"]["KeepDecisionStateInput"];
+export type KnownSession = components["schemas"]["KnownSession"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LeadTime = components["schemas"]["LeadTime"];
 export type LegionBoardCard = components["schemas"]["LegionBoardCard"];
@@ -16043,6 +16161,7 @@ export type PageOfFinishedIssue = components["schemas"]["PageOfFinishedIssue"];
 export type PageOfGoingActionV2 = components["schemas"]["PageOfGoingActionV2"];
 export type PageOfHandoffV2 = components["schemas"]["PageOfHandoffV2"];
 export type PageOfIssueSummary = components["schemas"]["PageOfIssueSummary"];
+export type PageOfKnownSession = components["schemas"]["PageOfKnownSession"];
 export type PageOfLauncherCredentialResp = components["schemas"]["PageOfLauncherCredentialResp"];
 export type PageOfMarkV2 = components["schemas"]["PageOfMarkV2"];
 export type PageOfMessageThreadV2 = components["schemas"]["PageOfMessageThreadV2"];

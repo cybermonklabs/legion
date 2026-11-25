@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 
@@ -115,8 +118,10 @@ func buildDisplayTrees(count int, build func(index int)) {
 
 // shapeBuilt shapes one row of a response that reads its texts where they stand rather than
 // from the table: a write's own answer, which carries the text the request has just written and
-// stored the tree of. The shaping is the shaping every read uses, over a reader of its own that
-// is resolved before the row is handed back (builtDisplayTrees).
+// stored the tree of, and a cut or a piece of a stored text a read answers - an edge's excerpt, an
+// Inbox row's subject, an ambiguous id's candidate first line, a string inside a handoff's body -
+// which no writer stores a tree of. The shaping is the shaping every read uses, over a reader of
+// its own that is resolved before the row is handed back (builtDisplayTrees).
 func shapeBuilt(trees bool, shape func(reader *displayTreeReader)) {
 	reader := builtDisplayTrees(trees)
 	shape(reader)
@@ -132,7 +137,11 @@ func shapeBuilt(trees bool, shape func(reader *displayTreeReader)) {
 // Each shape is built from its row by shape(reader), called once the row is final - after the
 // part ids, the reach and everything else a read attaches - and before the request's reader is
 // resolved, which is what fills every tree field at once. With no reader it only re-wraps what
-// the row already held, so the bytes are the bytes the route wrote before this existed.
+// the row already held, so it answers the keys and the values the route wrote before this
+// existed. The order of those keys is the row's own only where the shadowing field is its last:
+// encoding/json writes an embedded row's fields first and the fields beside them after, so a
+// shadowed field anywhere else moves to the end. A shape whose bytes keep the row's order
+// declares the row's fields itself instead of embedding it (graphEdgeRead).
 
 // askOptionRead is one answer choice with the trees of its label and description.
 type askOptionRead struct {
@@ -177,7 +186,9 @@ type shapedAsk struct {
 // its texts with the request's reader. The texts are texttrees.VisitAskTexts, the one walk this
 // read, the event path and the background fill of the trees all make, and treeField says where
 // each of them lands here: a text the walk gains that this shape has no field for is registered
-// nowhere, which is what the agreement test refuses (ask_texts_test.go).
+// nowhere, which is what the agreement test refuses (ask_texts_test.go). The labels the answer
+// chose are registered beside the walk (registerChosenLabels), since each is an option's label
+// the walk already names.
 func (a *shapedAsk) shape(reader *displayTreeReader) {
 	a.Options = askOptionReads(a.Ask.Options)
 	a.Answer = askAnswerWithTree(a.Ask.Answer)
@@ -186,6 +197,7 @@ func (a *shapedAsk) shape(reader *displayTreeReader) {
 		a.Resolution = &askResolutionRead{AskResolution: *a.Ask.Resolution}
 	}
 	registerAskTexts(reader, texttrees.AskContentOf(a.Ask), a.treeField)
+	registerChosenLabels(reader, a.Answer)
 }
 
 // treeField is the field of this read that carries the tree of text, and nil for a text this
@@ -280,7 +292,9 @@ func shapedAsks(asks []model.Ask, reader *displayTreeReader) []shapedAsk {
 	return reads
 }
 
-// askAnswerReads is a thread's answers with the trees of their texts.
+// askAnswerReads is a thread's answers with the trees of their texts and of the labels each
+// chose. An earlier answer can name an option the ask no longer holds, and its label's tree is
+// read as every other's is.
 func askAnswerReads(answers []model.AskAnswer, reader *displayTreeReader) []model.AskAnswerWithTree {
 	if answers == nil {
 		return nil
@@ -289,6 +303,7 @@ func askAnswerReads(answers []model.AskAnswer, reader *displayTreeReader) []mode
 	for index := range answers {
 		reads[index] = model.AskAnswerWithTree{AskAnswer: answers[index]}
 		reader.textOf(&reads[index].TextTree, answers[index].Text)
+		registerChosenLabels(reader, &reads[index])
 	}
 	return reads
 }
@@ -508,16 +523,122 @@ func (n *graphNodeRead) shape(reader *displayTreeReader) {
 	reader.text(&n.TextTree, n.GraphNode.Text)
 }
 
+// graphExcerptRead is the excerpt an edge shows, with the tree of its text. Every excerpt that
+// has a text carries one, a name's as well as a body's head: the head of a block, of an ask, a
+// comment or a message, or a document's mention at the block holding it, is drawn through the
+// renderer from this tree, and an issue's title, a document's name and a component's title
+// (refs.Edges) are drawn as the characters they are, so their tree is sent and never read. One
+// rule for every excerpt keeps the answer's own promise that a text with a `_tree` beside it
+// always has it, which the dashboard's recordings hold every answer to.
+type graphExcerptRead struct {
+	model.GraphExcerpt
+	TextTree model.DisplayTree `json:"text_tree,omitempty"`
+}
+
+// graphEdgeRead is one edge of a reference-graph read as the dashboard reads it: the edge, with
+// its excerpt carrying the tree of the excerpt's text. It declares model.GraphEdge's fields in
+// the edge's own order rather than embedding the edge and shadowing its excerpt, which would
+// write `excerpt` after `created_at` and `source_seq` for every caller (the read shapes above):
+// so an answer without the trees header is the bytes model.GraphEdge writes, and one with it
+// differs only by the `text_tree` inside each excerpt.
+type graphEdgeRead struct {
+	Kind      string            `json:"kind"`
+	Direction string            `json:"direction"`
+	Node      model.GraphNode   `json:"node"`
+	Block     *model.GraphNode  `json:"block,omitempty"`
+	Excerpt   *graphExcerptRead `json:"excerpt,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	SourceSeq *int64            `json:"source_seq"`
+}
+
+// graphEdgeReads is a read's edges shaped for the dashboard, an absent list staying absent, each
+// excerpt's tree read where it stands for a caller that asked for the trees (shapeBuilt). An
+// excerpt is a cut - the head of a block's or a node's text (refs.BlockExcerpt, refs.Edges) - or
+// a name, which no writer stores a tree of: registered with the request's reader it would be
+// asked of the table and stored there, one row for every distinct excerpt that no reader of a
+// stored text ever takes.
+func graphEdgeReads(edges []model.GraphEdge, trees bool) []graphEdgeRead {
+	if edges == nil {
+		return nil
+	}
+	reads := make([]graphEdgeRead, len(edges))
+	shapeBuilt(trees, func(reader *displayTreeReader) {
+		for index := range edges {
+			edge, read := &edges[index], &reads[index]
+			*read = graphEdgeRead{
+				Kind: edge.Kind, Direction: edge.Direction, Node: edge.Node, Block: edge.Block,
+				CreatedAt: edge.CreatedAt, SourceSeq: edge.SourceSeq,
+			}
+			if edge.Excerpt != nil {
+				read.Excerpt = &graphExcerptRead{GraphExcerpt: *edge.Excerpt}
+				reader.text(&read.Excerpt.TextTree, edge.Excerpt.Text)
+			}
+		}
+	})
+	return reads
+}
+
 // graphReferencesRead is what GET /api/v1/references answers, and the read GET /api/v2/references
-// pages (readReferences, referencesV2): the queried node shaped to carry its trees, and the edges,
-// which carry no stored text of their own.
+// pages (readReferences, referencesV2): the queried node and every edge shaped to carry their
+// trees.
 type graphReferencesRead struct {
-	Node  graphNodeRead     `json:"node"`
-	Edges []model.GraphEdge `json:"edges"`
+	Node  graphNodeRead   `json:"node"`
+	Edges []graphEdgeRead `json:"edges"`
 	// UnknownKinds is model.GraphReferences' own member, kept here because this shape answers
 	// that route now: the edge kinds this build does not know, which a newer build wrote while
 	// two builds serve one database.
 	UnknownKinds []string `json:"unknown_kinds,omitempty"`
+}
+
+// referenceLinkRead is one row of an issue's references read as the dashboard reads it: the row,
+// with the tree of its name. It declares model.ReferenceLink's fields in the row's own order, as
+// graphEdgeRead declares the edge's, and the tree after them, so an answer without the trees
+// header is the bytes model.ReferenceLink writes, and one with it differs only by the `name_tree`
+// that closes each row.
+type referenceLinkRead struct {
+	Node     model.GraphNode    `json:"node"`
+	Name     string             `json:"name"`
+	Kinds    []string           `json:"kinds"`
+	Via      model.ReferenceVia `json:"via"`
+	NameTree model.DisplayTree  `json:"name_tree,omitempty"`
+}
+
+// issueReferencesRead is what GET /api/v1/issues/{key}/references answers: model.IssueReferences'
+// fields in its own order, each row of links and linked_from shaped to carry its name's tree.
+type issueReferencesRead struct {
+	Members    []model.ReferenceMember `json:"members"`
+	Truncated  bool                    `json:"truncated"`
+	Links      []referenceLinkRead     `json:"links"`
+	LinkedFrom []referenceLinkRead     `json:"linked_from"`
+}
+
+// newIssueReferencesRead is an issue's references read shaped for the dashboard, each row's name
+// read into its tree where it stands for a caller that asked for the trees (shapeBuilt). A name
+// is the words the graph read shows for the far node (refs.Closure): a document's name, an
+// issue's title, or the head of an item's text, a cut no writer stores a tree of. So it is read
+// as graphEdgeReads reads an excerpt, and stored nowhere.
+func newIssueReferencesRead(references model.IssueReferences, trees bool) issueReferencesRead {
+	read := issueReferencesRead{Members: references.Members, Truncated: references.Truncated}
+	shapeBuilt(trees, func(reader *displayTreeReader) {
+		read.Links = referenceLinkReads(references.Links, reader)
+		read.LinkedFrom = referenceLinkReads(references.LinkedFrom, reader)
+	})
+	return read
+}
+
+// referenceLinkReads is rows shaped to carry each name's tree, an absent list staying absent and
+// an empty one empty. The list is made whole before any name is registered, since each tree field
+// must stand where it will still stand when reader resolves.
+func referenceLinkReads(rows []model.ReferenceLink, reader *displayTreeReader) []referenceLinkRead {
+	if rows == nil {
+		return nil
+	}
+	reads := make([]referenceLinkRead, len(rows))
+	for index, row := range rows {
+		reads[index] = referenceLinkRead{Node: row.Node, Name: row.Name, Kinds: row.Kinds, Via: row.Via}
+		reader.text(&reads[index].NameTree, row.Name)
+	}
+	return reads
 }
 
 // architectureComponentRead is one component of the model with the tree of the prose its
@@ -529,29 +650,144 @@ type architectureComponentRead struct {
 
 // architectureTreeRead is what GET /api/v1/projects/{key}/architecture and GET
 // /api/v2/projects/{key}/architecture answer (getArchitectureTreeV2): the tree, with every
-// component shaped to carry that tree. The side lists name issues and carry no prose.
+// component shaped to carry the tree of its prose and every Not architectural row the tree
+// of its reason (architectureTreeNoneRead). The other side lists name issues and carry no text.
+// It embeds model.ArchitectureTree, so the document still declares the model's own component and
+// row beside the shaped ones, which a client of the model imports. The three shadows are
+// declared in the order the route has always written them - the Not architectural rows, the
+// retired links, then the components, which the first shaping already moved to the end - so an
+// answer to a caller that asked for no trees keeps its bytes. RetiredLinks carries no text of its
+// own: it is shadowed only to keep its place after the rows.
 type architectureTreeRead struct {
 	model.ArchitectureTree
-	Components []architectureComponentRead `json:"components"`
+	NotArchitectural []architectureTreeNoneRead      `json:"not_architectural"`
+	RetiredLinks     []model.ArchitectureTreeRetired `json:"retired_links"`
+	Components       []architectureComponentRead     `json:"components"`
 }
 
-// newAskAnswerWithTree is an answer a read gives with the tree of its text, nil where nobody
-// answered. A search hit's ask and a person's answer history both read one. An ask read shapes
-// its own answer through askAnswerWithTree instead and registers that text with the rest of the
-// ask's (shapedAsk.shape), so the one walk names every text of an ask exactly once.
+// handoffRead is a handoff as the dashboard reads it: the handoff, with the tree of every text
+// its card draws from the body.
+type handoffRead struct {
+	model.Handoff
+	// FieldTrees is the tree of each string the card draws from the body, keyed by that string's
+	// JSON Pointer into the body (RFC 6901): `/summary` for a top-level field, `/proof/0` for the
+	// first entry of a `proof` list, a `~` or a `/` in a field's name written `~0` or `~1` - the
+	// rows handoffFields splits the body into (web/src/features/conversation/conversation-model.ts).
+	// So a field named `proof.0` (`/proof.0`) and the first proof entry (`/proof/0`) never share a
+	// key. A value that is no string - a number, a boolean, null, an object, a list other than
+	// proof, or an entry of proof that is no string - is drawn as the JSON it is and has none, as
+	// an empty string has none. The root's pointer "" is the whole body, sent only when the body
+	// is not a JSON object, which the card then draws whole; the API refuses such a body
+	// (createHandoff), so one is a body written before that rule.
+	FieldTrees map[string]model.DisplayTree `json:"field_trees,omitempty"`
+}
+
+// handoffProofField is the body field whose list the card splits into one row per entry.
+const handoffProofField = "proof"
+
+// handoffPointerToken writes a field's name as one reference token of a JSON Pointer (RFC 6901):
+// each `~` as `~0` and each `/` as `~1`, in one pass, so the `~` an escape writes is never escaped
+// again.
+var handoffPointerToken = strings.NewReplacer("~", "~0", "/", "~1")
+
+// shape registers each string of the body with reader, each filling its own key of FieldTrees.
+// With no reader the body is not decoded at all: only a caller that asked for the trees pays for
+// reading it.
+func (h *handoffRead) shape(reader *displayTreeReader) {
+	h.FieldTrees = nil
+	if reader == nil {
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(h.Body), &fields); err != nil || fields == nil {
+		h.registerText(reader, "", h.Body)
+		return
+	}
+	for name, value := range fields {
+		pointer := "/" + handoffPointerToken.Replace(name)
+		if name == handoffProofField && len(value) > 0 && value[0] == '[' {
+			var entries []json.RawMessage
+			if json.Unmarshal(value, &entries) == nil {
+				for index, entry := range entries {
+					h.registerString(reader, pointer+"/"+strconv.Itoa(index), entry)
+				}
+			}
+			continue
+		}
+		h.registerString(reader, pointer, value)
+	}
+}
+
+// registerString registers the text value holds under pointer, when value is a JSON string.
+func (h *handoffRead) registerString(reader *displayTreeReader, pointer string, value json.RawMessage) {
+	if len(value) == 0 || value[0] != '"' {
+		return
+	}
+	var text string
+	if json.Unmarshal(value, &text) == nil {
+		h.registerText(reader, pointer, text)
+	}
+}
+
+// registerText registers text to fill FieldTrees under pointer. A map's values have no address,
+// so the tree is handed over rather than pointed at (displayTreeReader.textInto).
+func (h *handoffRead) registerText(reader *displayTreeReader, pointer, text string) {
+	reader.textInto(func(tree json.RawMessage) {
+		if h.FieldTrees == nil {
+			h.FieldTrees = make(map[string]model.DisplayTree)
+		}
+		h.FieldTrees[pointer] = model.DisplayTree(tree)
+	}, text)
+}
+
+// newAskAnswerWithTree is an answer a read gives with the trees of its text and of the labels it
+// chose, nil where nobody answered. A search hit's ask and a related item's ask both read one. An
+// ask read shapes its own answer through askAnswerWithTree instead and registers that text with
+// the rest of the ask's (shapedAsk.shape), so the one walk names every text of an ask exactly
+// once.
 func newAskAnswerWithTree(answer *model.AskAnswer, reader *displayTreeReader) *model.AskAnswerWithTree {
 	read := askAnswerWithTree(answer)
 	if read != nil {
 		reader.textOf(&read.TextTree, answer.Text)
+		registerChosenLabels(reader, read)
 	}
 	return read
 }
 
 // askAnswerWithTree is that same shape with no tree registered, for a caller that registers the
-// answer's text itself.
+// answer's texts itself.
 func askAnswerWithTree(answer *model.AskAnswer) *model.AskAnswerWithTree {
 	if answer == nil {
 		return nil
 	}
 	return &model.AskAnswerWithTree{AskAnswer: *answer}
+}
+
+// registerChosenLabels registers each label answer chose with reader, each filling the entry of
+// SelectedTrees at its own index, so the page draws a chosen option from the tree of exactly the
+// label beside it and never parses one.
+//
+// The reader is the request's own, the one that copies a stored text's tree from the table and
+// stores what the table did not hold, because a label is a stored text and no cut of one: it is
+// the whole label of an option the ask held when it was answered (selectedOptions), and an
+// option's label is a text the table keeps a tree of - stored by the API's write of the ask
+// (texttrees.AskWrittenTexts, at its creation and at each edit) and by the background fill of
+// every ask's row (texttreefill). So the read copies the bytes the option's own tree was read
+// from, and a label of an option the ask has since renamed or removed, which a reader of an
+// earlier answer has no other tree for, is read the same way. The label is no text of the walk
+// (texttrees.VisitAskTexts): the walk names the option it is the label of.
+//
+// Every answer a read gives carries the list, the ask's own current answer too, so a reader of an
+// answer is never handed a chosen label without its tree. With no reader the list stays nil and
+// is left out, so a caller that asked for no trees reads the bytes it read before; it is made
+// whole before any entry is registered, because each entry must stand where it will stand when
+// the reader resolves.
+func registerChosenLabels(reader *displayTreeReader, answer *model.AskAnswerWithTree) {
+	if reader == nil || answer == nil || len(answer.Selected) == 0 {
+		return
+	}
+	answer.SelectedTrees = make([]model.DisplayTree, len(answer.Selected))
+	for index, label := range answer.Selected {
+		reader.text(&answer.SelectedTrees[index], label)
+	}
 }

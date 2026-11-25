@@ -332,14 +332,17 @@ type authorityWhere struct {
 // authorityRule is the authority one value of a request needs (R1.8), beside the route's own
 // OAuthScopes, which every request to it needs: a body member's value (`state` `accepted` needs
 // `person`), a body member's presence, where Value is empty (`default_assignee` needs `person`),
-// or a query value (`waiting_on` `me` needs `person`; a value of a comma list such as `include`
-// is one of its members). The wrapper that refuses a request lacking one, 403
-// OAUTH_SCOPE_REQUIRED naming the scope, runs after the decoder and before the handler
-// (gateV2Authorities). A check that depends on the data, such as who wrote the object,
-// stays in the handler, and the row's description names it.
+// a query value (`waiting_on` `me` needs `person`; a value of a comma list such as `include`
+// is one of its members), or, where Absent, a query key's absence: the form of a read that names
+// no `slug` is the list of a conversation's files, which needs `person`, while the form naming one
+// reads one file. The wrapper that refuses a request lacking one, 403 OAUTH_SCOPE_REQUIRED naming
+// the scope, runs after the decoder and before the handler (gateV2Authorities). A check that
+// depends on the data, such as who wrote the object, stays in the handler, and the row's
+// description names it.
 type authorityRule struct {
 	Where  authorityWhere
 	Value  string
+	Absent bool
 	Scopes routeScopeSet
 }
 

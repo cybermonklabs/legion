@@ -164,6 +164,15 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
 export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
+ * The most session ids one `GET /api/v1/agents/known` names (`id`, repeated). A page asks
+ * once for every agent reference it holds that the live registry does not list, so the bound is a
+ * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
+ * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so
+ * the dashboard's batches and the server's refusal are one number.
+ */
+export const KNOWN_SESSIONS_MAX = 100;
+
+/**
  * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the
  * server answers `400 CAP_EXCEEDED`. It is set above the heaviest set a page was seen to name:
  * 247 distinct references, measured on 2026-11-05 on the issue the new issue page was designed

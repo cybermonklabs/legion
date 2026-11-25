@@ -357,7 +357,17 @@ func (s *server) v2IssueRows() []routeRow {
 				"project, which this check does not judge. When Legion runs the issue, or an issue under it, before the "+
 				"move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that "+
 				"is no person and no architect of each such issue or of an issue above it where it stands. Neither check "+
-				"of a move passes the session of the project's Legion daemon. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
+				"of a move passes the session of the project's Legion daemon. With DISPATCH_LEGION_STATUS_SCOPE on, three "+
+				"writes of a Legion issue (one that carries the legion label in any case, or is under an issue of its own "+
+				"project that does) need a credential that holds the person scope or legion-status, in both forms: a "+
+				"status write (the status the issue holds included) where the issue is a Legion issue before the call or "+
+				"after it, the removal of its legion label, and a move after which it is no longer a Legion issue. A "+
+				"credential that holds neither is 403 LEGION_STATUS_SCOPE_REQUIRED, with an insufficient_scope challenge "+
+				"naming legion-status, decided before the first write and before PARENT_STATUS_CONFLICT. The one "+
+				"exception is the owning architect's status write: a broker-issued token whose session the Legion "+
+				"daemon's own token published as the architect of an issue above, of the issue's own project, before the "+
+				"call and after it, writes done, backlog, icebox or triage, with neither unlink_children nor "+
+				"include_parent and not done with include_children. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
 			Handler:  s.patchIssueV2,
 			Resource: "issues", Kind: kindItem, Key: "{key}",
 			Body: requestBody{Kind: bodyJSON, Type: patchIssueV2Input{}},
@@ -402,6 +412,7 @@ func (s *server) v2IssueRows() []routeRow {
 				rankInvalidRefusal,
 				apicode.Refusal{Condition: apicode.IssueRouteInvalid, Code: apicode.RouteInvalid},
 				specWriterNotArchitectRefusal,
+				apicode.Refusal{Condition: apicode.LegionStatusWriteWithoutScope, Code: apicode.LegionStatusScopeRequired},
 			)...),
 		},
 		{
@@ -521,7 +532,8 @@ func (s *server) v2IssueRows() []routeRow {
 				"its links in order, the lowest of the issue's nodes at the near end, and on a row of members or a row " +
 				"of links whose node is a document, the document's row (its own fields, latest_version, " +
 				"latest_version_at, latest_version_size and version_count, and no approval; its versions are GET " +
-				"/api/v2/artifacts/{id}/versions), null on every other row. Each list is in the order of the node's " +
+				"/api/v2/artifacts/{id}/versions), null on every other row. A caller that sent Dispatch-Trees: 1 is also " +
+				"given name_tree on each row: its name as the tree a reader is shown. Each list is in the order of the node's " +
 				"kind, then its id. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}, total the " +
 				"rows of the list. The answer carries an ETag over the page it answers, its relation and its rows " +
 				"whole; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that " +
@@ -881,6 +893,10 @@ type issueReadV2 struct {
 	// /api/v1/issues/{key}/legion answers and a legion_issue live view carries (readLegionIssue),
 	// so its runs_revision is the one that view moves on.
 	Legion *legionIssueResponse `json:"legion,omitempty"`
+	// ComponentsReasonTree is the tree of the reason the issue's attachment gives for touching no
+	// component (Components.Reason, of mode `none`), for a caller that sent Dispatch-Trees: 1, as
+	// GET /api/v1/issues/{key} answers it (issueDetail).
+	ComponentsReasonTree model.DisplayTree `json:"components_reason_tree,omitempty"`
 }
 
 // issueReachV2 is what the Envoy listener says of an issue (include=reach): where its route reaches
@@ -1014,10 +1030,12 @@ type issueReferencesV2Query struct {
 // answers it: the row /api/v1 answers in links or linked_from (model.ReferenceLink), with
 // Artifact, the document's row (artifactV2, in place of /api/v1's member with its versions,
 // dispatch://INFRA-4071/spec R3), on a row of members and on a row of links whose node is a
-// document, and null on every other row.
+// document, and null on every other row. NameTree is the tree of the row's name for a caller that
+// sent Dispatch-Trees: 1, read where it stands as /api/v1's row reads it (referenceLinkReads).
 type referenceRowV2 struct {
 	model.ReferenceLink
-	Artifact *artifactV2 `json:"artifact"`
+	Artifact *artifactV2       `json:"artifact"`
+	NameTree model.DisplayTree `json:"name_tree,omitempty"`
 }
 
 // referenceRowsV2Statement reads the documents whose id is in $1 as rows, each with its newest
@@ -1091,8 +1109,9 @@ func (s *server) issueReferenceRowsV2(ctx context.Context, who model.Actor, key,
 // referenceRowsV2 is the page's rows of the list relation names, each a document of links
 // carrying its row (loadReferenceRowsV2): every row of members, and a row of links whose node is
 // a document. A document of links the read named and whose row is gone since is the server's
-// fault: /api/v2 answers it 500, as /api/v1 does.
-func referenceRowsV2(ctx context.Context, q queryer, relation string, links []model.ReferenceLink) ([]referenceRowV2, error) {
+// fault: /api/v2 answers it 500, as /api/v1 does. With trees, each row's name carries its tree,
+// read where it stands as newIssueReferencesRead reads /api/v1's.
+func referenceRowsV2(ctx context.Context, q queryer, relation string, links []model.ReferenceLink, trees bool) ([]referenceRowV2, error) {
 	rows := make([]referenceRowV2, len(links))
 	var documentRows []int
 	var ids []string
@@ -1103,6 +1122,11 @@ func referenceRowsV2(ctx context.Context, q queryer, relation string, links []mo
 			ids = append(ids, link.Node.ID)
 		}
 	}
+	shapeBuilt(trees, func(reader *displayTreeReader) {
+		for index := range rows {
+			reader.text(&rows[index].NameTree, rows[index].Name)
+		}
+	})
 	documents, err := loadReferenceRowsV2(ctx, q, ids)
 	if err != nil {
 		return nil, err
@@ -1217,8 +1241,9 @@ func (s *server) answerIssueListV2(w http.ResponseWriter, r *http.Request, proje
 		return
 	}
 	for index, label := range labels {
-		labels[index] = strings.ToLower(label)
+		labels[index] = labelKey(label)
 	}
+	labelsFrom, labelsTo := labelFoldMap(labels)
 	// Each window is judged as the caller wrote it, before rounding, as GET /api/v1/issues judges
 	// its closed window (store.MicrosecondCeiling).
 	if filters.UpdatedFrom != nil && filters.UpdatedTo != nil && !filters.UpdatedFrom.Before(*filters.UpdatedTo) {
@@ -1246,7 +1271,7 @@ func (s *server) answerIssueListV2(w http.ResponseWriter, r *http.Request, proje
 	arguments := []any{projects, parseStatusFilter(filters.Status), strings.TrimSpace(filters.Parent),
 		store.MicrosecondCeiling(filters.UpdatedFrom), labels, open, priorities, unsetPriority,
 		store.MicrosecondCeiling(filters.ClosedFrom), store.MicrosecondCeiling(filters.ClosedTo), advances, noAdvances, anyAdvances,
-		filters.Moved, filters.Own, store.MicrosecondCeiling(filters.UpdatedTo), keys}
+		filters.Moved, filters.Own, labelsFrom, labelsTo, store.MicrosecondCeiling(filters.UpdatedTo), keys}
 	if filters.Pinned {
 		arguments = append(arguments, login)
 	}
@@ -1356,6 +1381,11 @@ func (s *server) getIssueV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		answer.Legion = &state
+	}
+	if parts.issue.Components.Mode == "none" {
+		reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+		reader.textOf(&answer.ComponentsReasonTree, parts.issue.Components.Reason)
+		reader.resolve()
 	}
 	WriteJSON(w, http.StatusOK, answer)
 }
@@ -1619,7 +1649,7 @@ func (s *server) listIssueReferencesV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	listed := pageOf(links, query.pageQuery)
-	rows, err := referenceRowsV2(r.Context(), s.deps.Store.Pool, query.Relation, listed.Items)
+	rows, err := referenceRowsV2(r.Context(), s.deps.Store.Pool, query.Relation, listed.Items, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

@@ -1,6 +1,8 @@
 GET /api/v1 public
 GET /api/v1/agents any
+GET /api/v1/agents/known any
 GET /api/v1/agents/{session_id}/answers any
+GET /api/v1/agents/{session_id}/artifacts any
 POST /api/v1/agents/{session_id}/artifacts any
 GET /api/v1/agents/{session_id}/artifacts/{slug} any
 GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number} any
@@ -310,6 +312,7 @@ PUT /api/v2/issues/{key}/steps/{id}/experiment any
 PUT /api/v2/issues/{key}/steps/{id}/rating any
 GET /api/v2/issues/{key}/subscribers any
 DELETE /api/v2/issues/{key}/subscribers/{session_id} any
+GET /api/v2/known-sessions any
 GET /api/v2/limit-set any
 POST /api/v2/machine-login-lookups any
 GET /api/v2/machine-logins any

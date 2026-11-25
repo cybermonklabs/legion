@@ -535,7 +535,10 @@ func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, sco
 // person's own token holding exactly the scopes the row declares, which is admitted; and, on a
 // row that names `approve`, a token of that person holding `person` alone, which is refused.
 // That last probe is what holds the gate to the table: without it a row the table declares
-// `approve` whose gate asked only for `person` would pass every test here.
+// `approve` whose gate asked only for `person` would pass every test here. A row whose authority
+// rule holds on the probe itself - one that holds where a query key names no value, which the
+// probe never sends (GET /api/v2/agents/{session_id}/artifacts's list form) - is checked as a
+// row naming that rule's scopes is.
 func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -596,7 +599,7 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 			case authAny:
 				expectRefused(t, route, "anonymous")
 				expectAdmitted(t, route, "cookie")
-				if len(route.OAuthScopes) > 0 {
+				if len(route.OAuthScopes) > 0 || slices.ContainsFunc(route.Authorities, func(rule authorityRule) bool { return rule.Absent }) {
 					expectScopeRefusal(t, route, "bearer")
 					if slices.Contains(route.OAuthScopes, model.ScopeApprove) {
 						expectScopeRefusal(t, route, personOnly)
@@ -648,6 +651,14 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The Dismiss beside it writes the person's own dismissal marks, so it is theirs too.
 		"POST /api/v1/me/inbox/dismiss",
 		"GET /api/v1/agents/{session_id}/messages",
+		// Which sessions Dispatch holds a record of is this change's own row: it answers only
+		// what the conversation read above already tells a caller, so it admits the callers
+		// that read admits and needs its scope.
+		"GET /api/v1/agents/known",
+		// The conversation's files are this change's own row: they are part of the conversation
+		// the read above shows, so the list admits the callers that read admits and needs its
+		// scope.
+		"GET /api/v1/agents/{session_id}/artifacts",
 		"POST /api/v1/agents/{session_id}/messages",
 		"POST /api/v1/broadcasts",
 		"GET /api/v1/broadcasts",

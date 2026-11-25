@@ -58,10 +58,16 @@ and the one Dispatch project it may write, or no project for an entry that names
 (`<service account>==<person>`), or neither a person nor a project for an entry that names
 neither (`<service account>==`): such a token acts as the account itself, names the account as its
 service, and Dispatch records its writes under that account. An entry that names a project names
-its person, so no token held to a project is personless. A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`,
-gives it a service and a fixed session instead, and no person and no project: the token holds the OAuth scope
-`read` alone. Dispatch serves such a token on the GET routes it classes as reads, and refuses it on
-every other route with `403 READ_ONLY_TOKEN`. The Envoy listener refuses it with `401`, and the
+its person, so no token held to a project is personless. An entry whose fixed session is
+`legion-daemon:<its own project>` is a Legion daemon's own, and its token holds the OAuth scope
+`legion-status` too. Dispatch reads that scope (`DISPATCH_LEGION_STATUS_SCOPE`): where that
+setting is on, a write of a Legion issue's status needs it or the `person` scope, but for a status
+write of the architect of an issue above, which writes with its own broker token. No other token the
+exchange mints holds `legion-status`, whatever session it carries. A read entry, of
+`BROKER_EXCHANGE_READ_ACCOUNTS`, gives the pod's token a service and a fixed session instead, and
+no person and no project: the token holds the OAuth scope `read` alone. Dispatch serves such a
+token on the GET routes it classes as reads, and refuses it on every other route with
+`403 READ_ONLY_TOKEN`. The Envoy listener refuses it with `401`, and the
 NATS auth service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads every read of Dispatch that
 needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its
@@ -74,7 +80,8 @@ includes a pod's token under any entry, an account entry that names no person am
 person's sign-in and a machine login. The token keeps the session, the person or the service, and
 the projects that the same trade would have named, and it writes nothing. Its project scope is
 the narrowed word of the one it would have had: `read-named`, `read-person` or `read-none`. It
-holds `read`, and `person` beside it when it acts for a person, never `approve`. The trade may
+holds `read`, and `person` beside it when it acts for a person, never `approve` and never
+`legion-status`, so a Legion daemon's read token writes no status either. The trade may
 also name a cut (`as_of`), the past time the token reads at: an RFC 3339 time no later than the
 trade. Until Dispatch serves reads at a past time, it refuses a token with a cut on every read but
 `GET /api/v2/me` and `GET /api/v1/whoami`, with `403 AS_OF_TOKEN_NOT_SERVED`. A trade that asks for
@@ -253,9 +260,32 @@ Compute Engine metadata server, which a machine with none answers "no metadata s
 seconds (a GKE pod's metadata server answers for the pod's own Google service account). A pod's
 projected Kubernetes token is not one of them: the broker's exchange mints no launcher credential
 for a Kubernetes identity, so no session could be registered under it, and a pod enrolls through
-its launcher or `agent-secrets enroll --pod` instead. On EC2 the machine source has nothing, since
-the broker takes no AWS identity: such a machine reaches the broker through a launcher's key
-directory, a sign-in or the helper.
+its launcher or `agent-secrets enroll --pod` instead. On EC2 with no such credential file the
+machine source has nothing, since the broker takes no AWS identity itself: such a machine reaches
+the broker through a launcher's key directory, a sign-in or the helper.
+
+The credential file may take its subject token from a file, a URL, AWS, an executable (with
+`GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, as Google's libraries require) or an X.509
+certificate, whose configuration the file names (`certificate_config_location`) or takes from
+`GOOGLE_API_CERTIFICATE_CONFIG`, else gcloud's default (`use_default_certificate_config`). A
+certificate configuration must name a workload certificate and its private key: an enterprise
+certificate proxy's is refused, since Google's library would start the signer program it names.
+Which kind it is decides the token that mints the account's identity token with IAM Credentials'
+`generateIdToken`, and so the grants the account needs:
+
+- A file, a URL, AWS or an executable: the file's exchange at Google's security token service
+  mints a federated access token, which the file's impersonation URL (IAM Credentials'
+  `generateAccessToken`) spends on the account's access token, and that one mints the identity
+  token. The federation's principal needs `iam.serviceAccounts.getAccessToken` on the account,
+  which `roles/iam.workloadIdentityUser` carries, and the account needs
+  `iam.serviceAccounts.getOpenIdToken` on itself, which `roles/iam.serviceAccountOpenIdTokenCreator`
+  carries. An executable is told the account in `GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL`.
+- An X.509 certificate: the federated access token mints the identity token itself, and the
+  impersonation URL only names the account, as Google's own Go library mints an identity token
+  with an `external_account` credential (`cloud.google.com/go/auth/credentials/idtoken`). The
+  federation's principal needs `iam.serviceAccounts.getOpenIdToken` on the account, which
+  `roles/iam.workloadIdentityUser` carries, and the account needs no role on itself.
+
 `AGENT_SECRETS_MACHINE_IDENTITY` still names the one identity to trade (`metadata` or `pool`,
 with its own variables; `kubernetes` is refused, exit 2, before anything is traded), and then
 nothing is detected. Because the cache sits below

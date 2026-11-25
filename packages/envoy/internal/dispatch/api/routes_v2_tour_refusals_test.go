@@ -48,6 +48,9 @@ var tourRefusals = map[string][]tourRefusal{
 	"GET /api/v2/agents/{session_id}/answers": {
 		{Name: "a session_id that is no session id", Change: refusalPath("session_id", "no session"), Code: apicode.InvalidSessionID},
 	},
+	"GET /api/v2/known-sessions": {
+		{Name: "an id that is no session id", Change: refusalQuery("id", "no session"), Code: apicode.InvalidQuery},
+	},
 	"GET /api/v2/search-results": {
 		{Name: "a project that is no project key", Change: refusalQuery("project", "lower"), Code: apicode.InvalidProject},
 		{Name: "a number_project that is no project key", Change: refusalQuery("number_project", "lower"), Code: apicode.InvalidNumberProject},

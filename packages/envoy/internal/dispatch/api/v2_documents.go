@@ -196,12 +196,18 @@ func (s *server) v2DocumentRows() []routeRow {
 				" slug=<slug> keeps the one at ref_key agent/<session_id>/<slug>, as dispatch://agent/<session_id>/artifact/<slug> " +
 				"names it; a conversation holds no document, so no file name is matched. limit 1 to 200 (default 50) and offset; " +
 				"{items, total, limit, offset}. A session Dispatch holds no file of answers the empty list; a session_id that " +
-				"is empty or holds /, ?, #, whitespace, a control character or <>\"'`[]| is 400 INVALID_SESSION_ID.",
+				"is empty or holds /, ?, #, whitespace, a control character or <>\"'`[]| is 400 INVALID_SESSION_ID. The list " +
+				"that names no slug is part of the conversation, so it needs the person scope (403 OAUTH_SCOPE_REQUIRED) and " +
+				"admits exactly the callers GET /api/v2/agents/{session_id}/messages admits, as GET " +
+				"/api/v1/agents/{session_id}/artifacts does; the read of one file by its slug needs no more than GET " +
+				"/api/v1/agents/{session_id}/artifacts/{slug} does.",
 			Handler:  s.listAgentArtifactsV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
-			Query:    agentArtifactsV2Query{},
-			Shape:    routeShape{Status: http.StatusOK, Response: page[artifactV2]{}},
-			Refusals: listRefusals(sessionIDMalformedRefusal),
+			Query:       agentArtifactsV2Query{},
+			Shape:       routeShape{Status: http.StatusOK, Response: page[artifactV2]{}},
+			Authorities: []authorityRule{agentArtifactListAuthority},
+			Refusals: listRefusals(sessionIDMalformedRefusal,
+				apicode.Refusal{Condition: apicode.AgentArtifactListWithoutPersonScope, Code: apicode.OAuthScopeRequired}),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/agents/{session_id}/artifacts", Auth: authAny, Versions: onlyV2,
@@ -954,10 +960,27 @@ func (s *server) requireArtifactV2(w http.ResponseWriter, r *http.Request, id st
 		apicode.ArtifactNotFound, "artifact not found")
 }
 
+// agentArtifactListAuthority is the authority of GET /api/v2/agents/{session_id}/artifacts's list
+// form, the read that names no slug: the person scope GET /api/v1/agents/{session_id}/artifacts
+// needs (routeScopes), since a conversation's files are part of the conversation. The form that
+// names a slug reads one file, which GET /api/v1/agents/{session_id}/artifacts/{slug} reads with
+// no scope of its own.
+var agentArtifactListAuthority = authorityRule{
+	Where: authorityWhere{In: partQuery, Name: "slug"}, Absent: true, Scopes: routeScopeSet{model.ScopePerson},
+}
+
 // listAgentArtifactsV2 answers GET /api/v2/agents/{session_id}/artifacts: the files and images of
-// one conversation, the list GET /api/v1/agents/{session_id}/artifacts/{slug} read one row of.
+// one conversation, the list GET /api/v1/agents/{session_id}/artifacts reads and the row GET
+// /api/v1/agents/{session_id}/artifacts/{slug} reads. The list form, which names no slug, admits
+// the callers GET /api/v1/agents/{session_id}/artifacts admits: the person scope its authority
+// rule holds it to (agentArtifactListAuthority) and actingPerson, which that read opens with.
 func (s *server) listAgentArtifactsV2(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	query := v2Query[agentArtifactsV2Query](r)
+	if query.Slug == "" {
+		if _, ok := s.actingPerson(w, r); !ok {
+			return
+		}
+	} else if !s.requireAuthenticated(w, r) {
 		return
 	}
 	session, err := requestSessionID(r)
@@ -965,7 +988,6 @@ func (s *server) listAgentArtifactsV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	query := v2Query[agentArtifactsV2Query](r)
 	var list artifactList
 	list.where("session_id = " + list.argument(session))
 	if query.Slug != "" {
@@ -1350,7 +1372,7 @@ func (s *server) listArtifactReferencesV2(w http.ResponseWriter, r *http.Request
 			}
 		}
 	} else {
-		referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, s.requestReader(r), artifact.RefKey)
+		referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, s.requestReader(r), artifact.RefKey, s.deps.ServerURL)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return

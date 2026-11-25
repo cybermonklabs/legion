@@ -806,12 +806,16 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
+		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
+		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
+		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
 
 		"GET /api/v2/search-results":    url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v2/references":        url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v2/reference-targets": url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v2/block-links":       url.Values{"from": {spec}, "to": {spec}}.Encode(),
 		"GET /api/v2/nodes":             url.Values{"person": {"alice"}}.Encode(),
+		"GET /api/v2/known-sessions":    url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
 	}
 }
 

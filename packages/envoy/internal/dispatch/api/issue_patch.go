@@ -153,6 +153,10 @@ type issueWriteCallStep struct {
 	// call's last step (issueWriteResult.closed), so that no fence of the call reads the events of
 	// the sweep. Only the named issue's own step sets it.
 	sweepsLater bool
+	// options is the options of the status change that the step is a step of, which writeIssue
+	// puts on the step's one-step plan. So the step's own check of R26 and R24 reads the options
+	// that the planning check read (planStatusChangeUnderLocks). A step of R25's fix carries none.
+	options statusChangeOptions
 }
 
 // issueWriteFence is the fence of a status change that sent expected_sequence: the sequence it
@@ -518,30 +522,27 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	statusChanged := input.Status != nil && before.Status != status
 	parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
-	var statusAfter *string
-	if input.Status != nil {
-		statusAfter = &status
-	}
 	var labelsAfter *[]string
 	if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
 		labelsAfter = &labels
 	}
+	var statusAfter *string
+	if input.Status != nil {
+		statusAfter = &status
+	}
+	// The status guard judges every write, including a same-status write or a label edit.
+	// It runs before the parent-status rule, even when that rule is off.
 	plan := issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter)
-	// R24 (parent_status_rule.go) judges a write that changes the status or the parent, here,
-	// after the refusals above and under the owner locks the write holds: the issue's, its
-	// current parent's and its proposed parent's. Every writer of a pair holds the parent's
-	// owner lock, so two writes of one pair are judged one after the other. A write that names
-	// the status the issue already has changes no pair and is not judged. With the rule off the
-	// plan is unjudged, so the check reads no conflict that the write would not refuse.
-	if statusChanged || parentChanged {
-		plan.unjudged = !s.deps.ParentStatusRule.On()
-		conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
-		if err != nil {
-			return issueWriteResult{}, err
-		}
-		if conflict != nil {
-			return issueWriteResult{}, conflict
-		}
+	plan.unjudged = !s.deps.ParentStatusRule.On()
+	if step != nil {
+		plan.options = step.options
+	}
+	conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
+	if err != nil {
+		return issueWriteResult{}, err
+	}
+	if conflict != nil {
+		return issueWriteResult{}, conflict
 	}
 	if input.RefuseOpenForeignChildren {
 		// An open child of another project refuses the acceptance with 409 FOREIGN_CHILD_OPEN,
@@ -686,8 +687,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if input.Status != nil {
 		afterStatus = status
 	}
-	if input.Labels != nil || input.LabelsAdd != nil {
-		afterRow.labels = labels
+	if labelsAfter != nil {
+		afterRow.labels = *labelsAfter
 	}
 	advice := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks),
@@ -1087,7 +1088,7 @@ func replacementLabelLimit(own string) labelLimit {
 // (own, its key) among them whatever its length, and refuses more than contracts.MaxIssueLabels
 // counted as c8a44f97 counted them, before a label the issue already holds is folded away: every
 // label it holds and every label added, less its own repo: label, which counts toward no limit
-// (R14).
+// (R14). A label added is one the issue holds where strings.EqualFold matches them (labelKey).
 func mergeIssueLabels(existing, added []string, own string) ([]string, error) {
 	counted := len(existing) + len(added)
 	if own != "" {
@@ -1099,10 +1100,10 @@ func mergeIssueLabels(existing, added []string, own string) ([]string, error) {
 	labels := append(make([]string, 0, len(existing)+len(added)), existing...)
 	seen := make(map[string]struct{}, len(existing)+len(added))
 	for _, label := range existing {
-		seen[strings.ToLower(label)] = struct{}{}
+		seen[labelKey(label)] = struct{}{}
 	}
 	for _, label := range added {
-		key := strings.ToLower(label)
+		key := labelKey(label)
 		if _, held := seen[key]; held {
 			continue
 		}

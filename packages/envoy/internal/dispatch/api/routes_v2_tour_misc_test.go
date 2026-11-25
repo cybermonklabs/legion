@@ -52,6 +52,11 @@ func miscTourSteps() []tourStep {
 			},
 		},
 		{
+			// The tour's recipient session and one no record names, which is answered no row.
+			Method: http.MethodGet, Pattern: "/known-sessions", Status: http.StatusOK,
+			Setup: asAlice(url.Values{"id": {tourRecipient, "session-nobody-recorded"}}),
+		},
+		{
 			Method: http.MethodGet, Pattern: "/block-links", Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				spec := "dispatch://" + tour.issue(t).Key + "/spec"
@@ -74,6 +79,10 @@ func miscTourSteps() []tourStep {
 		{
 			Method: http.MethodGet, Pattern: "/search-results", Status: http.StatusOK,
 			Setup: asAlice(url.Values{"q": {"toured issue"}}),
+		},
+		{
+			Method: http.MethodGet, Pattern: "/search-results", Name: "narrowed to two kinds", Status: http.StatusOK,
+			Setup: asAlice(url.Values{"q": {"toured issue"}, "kind": {"issue", "document"}}),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/search-results", Name: "several projects within a window", Status: http.StatusOK,

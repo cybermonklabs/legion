@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -148,21 +149,24 @@ func issueListingQuery(filters string, parameters int, pinned, paged, readAdvanc
 `
 }
 
-// issueListFilters are the eleven filters a listing request carries, written as fourteen
-// parameters (the priority filter takes a list and a flag for the unset, and the `advances`
-// filter a list and a flag for each of its two keywords), every one but the last written against
-// `issues i` alone, so the matched term joins nothing. The status filter ($2) is a list of the
-// statuses named, an issue standing in any of them, and the empty list is every status. The
-// closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time,
-// is outside every window. The last is the `advances` filter, which no column of an issue holds
-// and whose answer a relation of an issue above it can decide: it reads two terms computed once
-// per request (issueAdvancesFilterTerms) and tests each issue's key for membership in them, so
-// the matched term still resolves nothing per row and the page and the count both read it. Its
-// arms are a union: the ids named ($11) and the work under any ($13), which is every issue
-// `advancing` holds, are one test of membership, and the work under none ($12) is every issue it
-// does not hold. `?own=true` ($15) reads the arms over `advances_originating` instead: the ids
-// named and any, one test of membership over the issues that state a matched priority no issue
-// above them carries, and none, which matches no priority, over nothing.
+// issueListFilters are the eleven filters a listing request carries, written as sixteen
+// parameters (the label filter takes its keys and the two strings of its map, the priority filter
+// a list and a flag for the unset, and the `advances` filter a list and a flag for each of its two
+// keywords), every one but the last written against `issues i` alone. The status filter ($2) is
+// a list of the statuses named, an issue standing in any of them, and the empty list is every
+// status. The label filter ($5) is the labelKey of each label named. An issue matches when it
+// carries a label of each key. The statement maps each stored label with translate() and the
+// two strings of labelFoldMap ($16, $17), so a stored label matches a key exactly where
+// strings.EqualFold matches it, whatever the collation of the column.
+// The closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no
+// time, is outside every window. The last is the `advances` filter, which no column of an issue
+// holds and whose answer a relation of an issue above it can decide: it reads two terms computed
+// once per request (issueAdvancesFilterTerms) and tests each issue's key for membership in them,
+// so `matched` resolves no priority per row. The page and the count both read it. The named ids
+// ($11) and the work under any ($13) are one test of membership in `advancing`. The work under
+// none ($12) is every issue `advancing` does not hold. `?own=true` ($15) reads the arms over
+// `advances_originating` instead: the ids named and any, one test of membership over the issues
+// that state a matched priority no issue above them carries, and none over nothing.
 //
 // Each test is an `in` or a `not in` over a term, never a join to it. Postgres plans an
 // uncorrelated `in` as a hashed subplan whenever the term's estimated rows fit in hash_mem: the
@@ -175,19 +179,21 @@ func issueListingQuery(filters string, parameters int, pinned, paged, readAdvanc
 // them either.
 //
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
-// (issueSummaryJoins), and the parameters after $15 are the pinned login and the page.
+// (issueSummaryJoins). $16 and $17 are the two strings of the label filter's map (labelFoldMap),
+// and the parameters after them are the pinned login and the page.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)` + issueListFilterTerms
 
 // issueListFiltersParameters is the last parameter issueListFilters binds.
-const issueListFiltersParameters = 15
+const issueListFiltersParameters = 17
 
-// issueListFilterTerms are the filters $2 to $13 and $15, `own`, which both versions' listings
-// write alike; $14 between them is the move read's gate and no filter.
+// issueListFilterTerms are the filters $2 to $13, $15 (`own`) and the label filter's map at $16
+// and $17, which both versions' listings write alike; $14 between them is the move read's gate
+// and no filter.
 const issueListFilterTerms = `
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
 		  and ($4::timestamptz is null or i.updated_at >= $4)
-		  and ($5::text[] = '{}' or (select array_agg(lower(label)) from unnest(i.labels) as label) @> $5)
+		  and ($5::text[] = '{}' or (select array_agg(translate(label, $16::text, $17::text)) from unnest(i.labels) as label) @> $5)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
@@ -201,16 +207,17 @@ const issueListFilterTerms = `
 
 // issueListFiltersV2 are the filters of GET /api/v2/issues (R1.3, R1.5): issueListFilters with
 // the project a list ($1, any of the projects named, and the empty list every project, since the
-// list across projects has no default one), $4 and $16 the updated_at window [updated_from,
-// updated_to) as $9 and $10 are closed_at's, and $17 the keys an external reference resolved to
+// list across projects has no default one), $4 and $18 the updated_at window [updated_from,
+// updated_to) as $9 and $10 are closed_at's, and $19 the keys an external reference resolved to
 // (ref=), null where the request named no reference and the empty list for one that resolved to
-// none. $14 is the gate on the move read and $15 `own` as in issueListFilters.
+// none. $14 is the gate on the move read, $15 `own`, and $16 and $17 the label filter's map, as
+// in issueListFilters.
 const issueListFiltersV2 = `where (cardinality($1::text[]) = 0 or i.project_key = any($1::text[]))` + issueListFilterTerms + `
-		  and ($16::timestamptz is null or i.updated_at < $16)
-		  and ($17::text[] is null or i.key = any($17::text[]))`
+		  and ($18::timestamptz is null or i.updated_at < $18)
+		  and ($19::text[] is null or i.key = any($19::text[]))`
 
 // issueListFiltersV2Parameters is the last parameter issueListFiltersV2 binds.
-const issueListFiltersV2Parameters = 17
+const issueListFiltersV2Parameters = 19
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -637,6 +644,59 @@ func (a *advancesScan) resolve() []model.IssueAdvance {
 	return entries
 }
 
+// labelKey is the key that two labels share exactly when strings.EqualFold matches them: each rune
+// of the label is replaced by the least rune of its unicode.SimpleFold orbit. So Ä and ä share a
+// key, and K, k and the Kelvin sign U+212A share one. LEGİON (with U+0130) and legion do not:
+// strings.ToLower maps U+0130 to i, but U+0130 is alone in its orbit. R26 (holdsLegionLabel) and
+// the Legion daemon (CarriesLegionLabel) read the legion label by strings.EqualFold, so Dispatch
+// must keep two labels apart wherever strings.EqualFold does. Otherwise labels_add of legion on
+// an issue that carries LEGİON adds nothing, and neither R26 nor the daemon reads the issue as a
+// Legion issue.
+func labelKey(label string) string {
+	return strings.Map(leastFold, label)
+}
+
+// leastFold is the least rune of the unicode.SimpleFold orbit of r.
+func leastFold(r rune) rune {
+	least := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		least = min(least, f)
+	}
+	return least
+}
+
+// labelFoldMap is the map that the listing's label filter applies to each stored label with
+// translate() (issueListFilters). from holds every rune of the unicode.SimpleFold orbit of every
+// rune of labels, each rune once. to holds, at the same place, the least rune of that rune's
+// orbit. The map is exact for this reason. A label rune in from becomes the least rune of its
+// orbit, as labelKey writes it. A label rune not in from stays itself and cannot equal a rune of a
+// key, because each rune of a key is the least rune of an orbit that from holds whole. So a mapped
+// label equals labelKey(filter) exactly when the two have the same count of runes and each rune
+// of the label is in the orbit of the filter's rune at that place, which is strings.EqualFold.
+// translate() reads no collation, so the database's collation cannot change the match.
+func labelFoldMap(labels []string) (from, to string) {
+	var fromRunes, toRunes strings.Builder
+	seen := make(map[rune]struct{})
+	for _, label := range labels {
+		for _, r := range label {
+			if _, added := seen[r]; added {
+				continue
+			}
+			least := leastFold(r)
+			f := r
+			for {
+				seen[f] = struct{}{}
+				fromRunes.WriteRune(f)
+				toRunes.WriteRune(least)
+				if f = unicode.SimpleFold(f); f == r {
+					break
+				}
+			}
+		}
+	}
+	return fromRunes.String(), toRunes.String()
+}
+
 // normalizeIssueLabels holds the labels a caller names to a caller's limits (callerLabelLimit).
 func normalizeIssueLabels(values []string) ([]string, error) {
 	return normalizeLabels(values, callerLabelLimit)
@@ -682,11 +742,11 @@ func normalizeLabels(values []string, limit labelLimit) ([]string, error) {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		label := strings.TrimSpace(value)
-		key := strings.ToLower(label)
-		units, _ := limit(key)
+		units, _ := limit(strings.ToLower(label))
 		if length := itemblocks.Units16(label); length == 0 || (units > 0 && length > units) {
 			return nil, errorf(apicode.LabelsInput, "each label must be 1 to %d characters", units)
 		}
+		key := labelKey(label)
 		if _, duplicate := seen[key]; duplicate {
 			continue
 		}
@@ -718,8 +778,9 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for index, label := range labels {
-		labels[index] = strings.ToLower(label)
+		labels[index] = labelKey(label)
 	}
+	labelsFrom, labelsTo := labelFoldMap(labels)
 	// Each time bound is read under its literal key rather than through a helper taking the key,
 	// so routes_query_keys_test.go's walk can tie each one to issueListQuery.
 	var updatedSince *time.Time
@@ -786,7 +847,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// (advancesOriginTerms); without an `advances` value it filters nothing.
 	own := query.Get("own") == "true"
 	arguments := []any{project, statuses, parent, store.MicrosecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
-		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved, own}
+		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved, own,
+		labelsFrom, labelsTo}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -1072,6 +1134,13 @@ type issueDetail struct {
 	// pays for it here, with the detail it already reads, instead of a graph request of
 	// its own; the edges themselves are read only when the reader opens the panel.
 	ReferencedByCount int `json:"referenced_by_count"`
+	// ComponentsReasonTree is the tree of the reason the issue's attachment gives for touching no
+	// component (Components.Reason, of mode `none`), which its writer typed in a box that carries
+	// the reference picker and the header's Components line draws through the renderer. It
+	// stands beside the issue rather than inside its components because model.Issue is the
+	// payload of the issue's events and no payload gains a field, and it stands last, so an
+	// answer to a caller that asked for no trees keeps its bytes.
+	ComponentsReasonTree model.DisplayTree `json:"components_reason_tree,omitempty"`
 }
 
 // issueReadParts are the parts of an issue's read beyond its row, its progress, its external
@@ -1108,8 +1177,8 @@ type issueRead struct {
 // loaders run - loadIssueWithProgress, issueBlocksStatement, loadArtifacts, queryOwnerAsks with
 // issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
 // refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
-// for (wantsDisplayTrees): the display trees of the documents' approval reasons and of the open
-// asks' texts, which only the dashboard reads.
+// for (wantsDisplayTrees): the display trees of the documents' approval reasons, the open asks'
+// texts and the attachment's reason for touching no component, which only the dashboard reads.
 func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	parts, err := s.readIssueParts(ctx, who, key, everyIssueReadPart)
 	if err != nil {
@@ -1120,12 +1189,15 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 		Children: parts.children, DesignGates: parts.designGates, ReferencedByCount: parts.referencedByCount,
 	}
 	// The approvals are read by the second batch, so their reasons are registered after it,
-	// where the sequential loader read them after loadArtifacts. The reasons and the open asks'
-	// texts are one query of the stored trees, and what it did not hold is stored on a goroutine
-	// of its own, beside the rest of the request.
+	// where the sequential loader read them after loadArtifacts. The reasons, the open asks'
+	// texts and the attachment's reason are one query of the stored trees, and what it did not
+	// hold is stored on a goroutine of its own, beside the rest of the request.
 	reader := s.readDisplayTrees(ctx, trees)
 	read.Artifacts = artifactReads(parts.artifacts, reader)
 	read.OpenAsks = issueOpenAsksOf(parts.asks, parts.replies, reader)
+	if read.Issue.Components.Mode == "none" {
+		reader.textOf(&read.ComponentsReasonTree, read.Issue.Components.Reason)
+	}
 	reader.resolve()
 	return read, nil
 }

@@ -549,11 +549,10 @@ func openAPIStructOf(t reflect.Type) reflect.Type {
 // absent is one of its three states — and carries the schema that table gives it.
 //
 // A name is added to required once however often it is reflected. A shaped read shadows a field
-// of the row it embeds - architectureTreeRead declares `components` in front of the
-// model.ArchitectureTree it embeds - and the reflector walks the embedded struct's fields into
-// the object beside the shadowing one, so both reach this with the same json name. JSON Schema
-// 2020-12 §6.5.3 says the entries of required are unique, and the first of the two keeps the
-// place the emitter gave it.
+// of the row it embeds - shapedAsk declares `options` in front of the model.Ask it embeds - and
+// the reflector walks the embedded struct's fields into the object beside the shadowing one, so
+// both reach this with the same json name. JSON Schema 2020-12 §6.5.3 says the entries of
+// required are unique, and the first of the two keeps the place the emitter gave it.
 func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 	if !p.Processed {
 		return nil
@@ -941,7 +940,8 @@ func openAPIV2Members(route apiRoute) map[string]any {
 		authorities := make([]openAPIAuthority, 0, len(route.Authorities))
 		for _, rule := range route.Authorities {
 			authorities = append(authorities, openAPIAuthority{
-				In: string(rule.Where.In), Name: rule.Where.Name, Value: rule.Value, Scopes: slices.Clone([]string(rule.Scopes)),
+				In: string(rule.Where.In), Name: rule.Where.Name, Value: rule.Value, Absent: rule.Absent,
+				Scopes: slices.Clone([]string(rule.Scopes)),
 			})
 		}
 		members["x-authorities"] = authorities
@@ -951,12 +951,13 @@ func openAPIV2Members(route apiRoute) map[string]any {
 
 // openAPIAuthority is one authority rule of a row (authorityRule) as the document writes it: the
 // part of the request and the member or key it reads, the value that needs the scopes (none for a
-// rule on a member's presence), and the scopes, every one of which the credential must hold
-// (gateV2Authorities).
+// rule on a member's presence), absent for a rule that holds where the query key names no value,
+// and the scopes, every one of which the credential must hold (gateV2Authorities).
 type openAPIAuthority struct {
 	In     string   `json:"in"`
 	Name   string   `json:"name"`
 	Value  string   `json:"value,omitempty"`
+	Absent bool     `json:"absent,omitempty"`
 	Scopes []string `json:"scopes"`
 }
 

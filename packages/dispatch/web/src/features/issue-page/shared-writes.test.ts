@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import {
   hashKey,
   QueryClient,
@@ -51,6 +51,7 @@ import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { narrowIssue } from "./issue-fixtures";
@@ -66,6 +67,12 @@ import {
   VERIFICATION_ID,
 } from "./shared-controls-fixture";
 import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** What the new issue page's header and Details share. */
 

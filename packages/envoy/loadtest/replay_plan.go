@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -48,7 +49,7 @@ const (
 	// replayDiffCap is the length at which production cut an artifact.version diff.
 	replayDiffCap = 4094
 	// replayDaemonPrefix starts the actor id of the Legion daemon's writes.
-	replayDaemonPrefix = "legion-daemon:"
+	replayDaemonPrefix = oauthwire.LegionDaemonSessionPrefix
 )
 
 // Action kinds: the write kinds (summary.json replay.writes) and the read kinds. Each request's

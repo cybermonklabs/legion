@@ -50,23 +50,23 @@ var eventKinds = []string{kindComment, kindAnchored, kindReply, kindEdit, kindUp
 // delivery join times. A write can append others (an anchored comment's document snapshot, a
 // reply's comment.reopened); those are counted, not timed.
 var primaryEventType = map[string]string{
-	// internal/dispatch/api/comment_create.go (writeComment appends comment.created for
-	// a plain comment, an anchored comment and a reply alike).
+	// writeComment in internal/dispatch/api/comment_create.go appends comment.created for a
+	// plain comment, an anchored comment and a reply alike.
 	kindComment:  evCommentCreated,
 	kindAnchored: evCommentCreated,
 	kindReply:    evCommentCreated,
-	// internal/dispatch/api/artifacts.go:751 (commitArtifactVersionEvent, which editArtifact
-	// calls at :921 for a changed document with a summary).
+	// commitArtifactVersionEvent in internal/dispatch/api/artifacts.go, which editArtifact calls
+	// for a changed document with a summary.
 	kindEdit: evArtifactVersion,
-	// internal/dispatch/api/artifacts.go:493 (storeArtifact: an upload to an existing document is
-	// artifact.version; artifact.created only for a new one).
+	// storeArtifact in internal/dispatch/api/artifacts.go: an upload to an existing document is
+	// artifact.version; artifact.created only for a new one.
 	kindUpload: evArtifactVersion,
-	// internal/dispatch/api/artifacts.go:751 again: an edit of a review page with a summary
-	// writes a named version and commits artifact.version for it.
+	// commitArtifactVersionEvent again: an edit of a review page with a summary writes a named
+	// version and commits artifact.version for it.
 	kindVerdict: evArtifactVersion,
-	// internal/dispatch/api/comment_create.go:856 (the comment.created every created comment
-	// appends). A status change's reply in a resolved thread appends comment.reopened at :829
-	// first, in the same transaction; that one is counted, not timed.
+	// createCommentFor again: the comment.created every created comment appends. A status
+	// change's reply in a resolved thread appends comment.reopened first, in the same
+	// transaction; that one is counted, not timed.
 	kindRequirement: evCommentCreated,
 	kindStatus:      evCommentCreated,
 }
@@ -77,8 +77,8 @@ var primaryEventType = map[string]string{
 //   - a requirement line's body averages 1,205 bytes, the loop's measured per-line mean;
 //   - a status note averages 124 bytes;
 //   - 1.2% of status changes are a reply alone in a resolved thread, which reopens it
-//     (internal/dispatch/api/comment_create.go:737-760 clears resolved in the reply's own
-//     transaction, and :829 and :856 append comment.reopened and comment.created in it).
+//     (createCommentFor in internal/dispatch/api/comment_create.go clears resolved in the
+//     reply's own transaction and appends comment.reopened and then comment.created in it).
 const (
 	loopRequirementMeanBytes = 1_205
 	loopStatusMeanBytes      = 124

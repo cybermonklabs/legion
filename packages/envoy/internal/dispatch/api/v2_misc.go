@@ -127,6 +127,29 @@ func (s *server) v2MiscRows() []routeRow {
 			Refusals: listRefusals(sessionIDMalformedRefusal),
 		},
 		{
+			Method: http.MethodGet, Pattern: "/known-sessions", Auth: authAny, Versions: onlyV2,
+			Description: fmt.Sprintf("Which of the sessions the repeated id parameter names (1 to %d session ids) "+
+				"Dispatch holds any record of, which needs the person scope, so a page links a dispatch://agent/<session "+
+				"id> reference only where that conversation exists, an ended session's included: each {session_id, "+
+				"title} in the order asked, each once, and no row for an id with no record. A record is the registry "+
+				"copy GET /api/v2/agents lists (whatever its age), an event the session wrote, a message targeted at it, "+
+				"a message or comment delivery to it, a file or image of its conversation, or an ask it follows; title "+
+				"is the registry copy's, null where that copy lists the session with none or does not list it. One "+
+				"statement answers the whole batch. limit 1 to %d (default %d, so one page holds the whole batch) and "+
+				"offset; {items, total, limit, offset}, total the sessions found. No id, more than %d, a value that is "+
+				"no session id, or one longer than %d bytes, the longest session id a reference in text names, is 400 "+
+				"INVALID_QUERY naming the parameter. It admits exactly the callers GET "+
+				"/api/v2/agents/{session_id}/messages admits.", contracts.KnownSessionsMax, contracts.KnownSessionsMax,
+				contracts.KnownSessionsMax, contracts.KnownSessionsMax, knownSessionIDMax),
+			Handler:  s.listKnownSessionsV2,
+			Resource: "known-sessions", Kind: kindCollection,
+			Query:       knownSessionsV2Query{},
+			List:        listBounds{Default: contracts.KnownSessionsMax, Max: contracts.KnownSessionsMax},
+			Shape:       routeShape{Status: http.StatusOK, Response: page[knownSession]{}},
+			OAuthScopes: person,
+			Refusals:    listRefusals(),
+		},
+		{
 			Method: http.MethodGet, Pattern: "/block-links", Auth: authAny, Versions: onlyV2,
 			Description: "Links from blocks of one document to blocks of another: from=<document ref> and to=<document " +
 				"ref> (dispatch://KEY/spec, dispatch://KEY/artifact/<slug> or dispatch://PROJECT/artifact/<slug>; one " +
@@ -611,6 +634,8 @@ var searchResultsV2Description = fmt.Sprintf("Full-text search q= across issues,
 	"project; status= the status of the issue a row belongs to (a row with no issue matches none); author= the "+
 	"actor id that wrote the item a row names; from and to, RFC3339, from inclusive and to exclusive, when that "+
 	"item was last written. filters echoes {project, status, author, from, to}, project [] for none. "+
+	"kind=, repeatable, one of issue, document, comment, ask and message, keeps the rows of the kinds named alone, "+
+	"before anything is ranked, counted or paged, and none is every kind, as GET /api/v1/search/results reads it. "+
 	"keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped "+
 	"degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then "+
 	"recency, then id. limit 1 to %d (default %d) and offset; {items, total, limit, offset, reachable, took_ms, "+
@@ -633,6 +658,8 @@ type searchResultsV2Query struct {
 	From          *time.Time `query:"from"`
 	To            *time.Time `query:"to"`
 	KeywordsOnly  bool       `query:"keywords_only"`
+	// Kind keeps the rows of the kinds named alone; none is every kind (searchKinds).
+	Kind []string `query:"kind" enum:"issue,document,comment,ask,message"`
 }
 
 // searchFiltersV2 is what a /api/v2 search narrowed every leg by: the projects, [] for every
@@ -717,8 +744,10 @@ func searchParametersV2(r *http.Request, query searchResultsV2Query) (searchPara
 	if numberProject != "" && !projectKeyPattern.MatchString(numberProject) {
 		return searchParameters{}, errorf(apicode.InvalidNumberProject, "%s", projectKeyProblem("number_project", numberProject))
 	}
+	// The decoder holds each kind to searchIndexedKinds, the enum above, so every value is known.
+	kinds, _ := parseSearchKinds(query.Kind)
 	parameters := searchParameters{text: text, numberProject: numberProject, since: query.From, until: query.To,
-		limit: query.Limit, offset: query.Offset, keywordsOnly: query.KeywordsOnly, trees: wantsDisplayTrees(r)}
+		kinds: kinds, limit: query.Limit, offset: query.Offset, keywordsOnly: query.KeywordsOnly, trees: wantsDisplayTrees(r)}
 	if query.Status != nil {
 		if parameters.status = strings.TrimSpace(*query.Status); !model.IsIssueStatus(parameters.status) {
 			return searchParameters{}, searchStatusRefusal()

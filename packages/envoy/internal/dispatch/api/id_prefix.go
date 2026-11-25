@@ -21,12 +21,27 @@ import (
 // named something the server cannot narrow to one thing, and the caller picks. The page that
 // lists the candidates is the dashboard's, rendered from this answer; there is no route of its
 // own to read them from.
+//
+// A caller that asked for the trees (wantsDisplayTrees) is given each candidate's first line with
+// its tree beside it, as every other stored text is given: the head of an ask's question, of a
+// comment's or a message's body, or of a block's text. A document's first line is its file's
+// name, which the dashboard draws as the characters it is, so it has none. A first line is a cut,
+// which the table holds no row of, so the ten candidates at most are read where they stand
+// (shapeBuilt).
 func writeAmbiguousID(w http.ResponseWriter, r *http.Request, ambiguous *refs.ErrPrefixAmbiguous) {
+	candidates := ambiguous.Candidates
+	shapeBuilt(wantsDisplayTrees(r), func(reader *displayTreeReader) {
+		for index := range candidates {
+			if candidate := &candidates[index]; candidate.Kind != "artifact" {
+				reader.text(&candidate.FirstLineTree, candidate.FirstLine)
+			}
+		}
+	})
 	code, status := refusalPair(r, apicode.IDAmbiguous)
 	WriteJSON(w, status, map[string]any{
 		"error":      ambiguous.Error(),
 		"code":       code,
-		"candidates": ambiguous.Candidates,
+		"candidates": candidates,
 	})
 }
 
@@ -129,7 +144,7 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		// read (requestSession, R4); every other route's is read off the raw query, as it
 		// always was.
 		who := actor.Recorded()
-		viewer := refs.Viewer{Human: human, Session: requestSession(r)}
+		viewer := refs.Viewer{Human: human, Session: requestSession(r), ServerURL: s.deps.ServerURL}
 		if id != "" {
 			scope := refs.Scope{}
 			if entry.WithinIssue {
@@ -224,8 +239,8 @@ func (s *server) wholeID(
 }
 
 // writeIDPrefixError writes what wholeID could not resolve a prefix through: the 409 of a prefix
-// two items or more carry, listing them (writeAmbiguousID), and otherwise the 500 of a database
-// that could not be read.
+// two items or more carry, listing them with the trees r asked for (writeAmbiguousID), and
+// otherwise the 500 of a database that could not be read.
 func (s *server) writeIDPrefixError(w http.ResponseWriter, r *http.Request, err error) {
 	var ambiguous *refs.ErrPrefixAmbiguous
 	if errors.As(err, &ambiguous) {

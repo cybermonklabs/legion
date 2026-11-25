@@ -62,9 +62,11 @@ var schemaNames = map[reflect.Type]string{
 	// The shaped reads: the body a route answers a caller who sent `Dispatch-Trees: 1`, which
 	// is the stored row with the display tree of every text it shows beside that text. Their Go
 	// names say that this package shaped them; the names here are the TypeScript names a client
-	// imports. The eleven `WithTrees` names are new with this change, which
-	// packages/contracts/.changes/unreleased/pr2712-Added-20261104-000317.yaml announces; the last
-	// two below are names main already exports. Declared under their Go names, every one of these
+	// imports. The eleven `WithTrees` names from AskWithTrees to ArtifactApprovalWithTrees are
+	// announced by packages/contracts/.changes/unreleased/pr2712-Added-20261104-000317.yaml, and
+	// the two after them, a backlink's excerpt and its edge, by
+	// packages/contracts/.changes/unreleased/pr3125-Added-20261116-081717.yaml; the ones after
+	// them are names main already exports. Declared under their Go names, every one of these
 	// shapes would reach a client under two exported names at once.
 	reflect.TypeOf(shapedAsk{}):               "AskWithTrees",
 	reflect.TypeOf(askOptionRead{}):           "AskOptionWithTrees",
@@ -77,11 +79,20 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(replyBlockRead{}):          "ReplyBlockWithTrees",
 	reflect.TypeOf(artifactRead{}):            "ArtifactWithTrees",
 	reflect.TypeOf(artifactApprovalRead{}):    "ArtifactApprovalWithTrees",
-	// The two whose published name is the model's own rather than a `WithTrees` of it: the
-	// shaping is the whole body either route answers, so a client that reads an architecture
-	// tree or a node's references reads one of these and never the model behind it.
+	reflect.TypeOf(graphExcerptRead{}):        "GraphExcerptWithTrees",
+	reflect.TypeOf(graphEdgeRead{}):           "GraphEdgeWithTrees",
+	// The ones whose published name is the model's own rather than a `WithTrees` of it: the
+	// shaping is the whole body each route answers, so a client that reads an architecture tree,
+	// a node's references, an issue's references or a handoff with its body reads one of these
+	// and never the model behind it. An architecture tree's components and Not architectural rows
+	// are published under their Go names (ArchitectureComponentRead, ArchitectureTreeNoneRead)
+	// beside the model's own, which the tree still embeds (architectureTreeRead). An issue's
+	// references row is published as the model's ReferenceLink, which no other shape names.
 	reflect.TypeOf(architectureTreeRead{}): "ArchitectureTree",
 	reflect.TypeOf(graphReferencesRead{}):  "GraphReferences",
+	reflect.TypeOf(handoffRead{}):          "Handoff",
+	reflect.TypeOf(issueReferencesRead{}):  "IssueReferences",
+	reflect.TypeOf(referenceLinkRead{}):    "ReferenceLink",
 
 	// The members of the collaborators answer, whose Go names say which handler built them and
 	// whose names here are the ones main's TypeScript exported and a consumer imports

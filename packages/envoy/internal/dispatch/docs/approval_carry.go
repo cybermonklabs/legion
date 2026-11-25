@@ -883,9 +883,10 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// own (refs.NewReader), planned here and written in the step below, after the update whose
 	// row they describe. A version write that moved the request first has planned its parts
 	// already, and this plan runs against what that one leaves, so the answer takes a revision
-	// of its own.
+	// of its own. The answer holds the parts alone, so the step reconciles the question's
+	// references after them too and settles the forms queue there (questionReconciled false).
 	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL),
-		answered, answer.At, model.ReferenceChanges{})
+		answered, answer.At, false, model.ReferenceChanges{})
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}

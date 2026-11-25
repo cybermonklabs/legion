@@ -1066,7 +1066,7 @@
     },
     "/api/v2/agents/{session_id}/artifacts": {
       "get": {
-        "description": "List the files and images of an agent's conversation, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=\u003cslug\u003e keeps the one at ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, as dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e names it; a conversation holds no document, so no file name is matched. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. A session Dispatch holds no file of answers the empty list; a session_id that is empty or holds /, ?, #, whitespace, a control character or \u003c\u003e\"'`[]| is 400 INVALID_SESSION_ID.",
+        "description": "List the files and images of an agent's conversation, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=\u003cslug\u003e keeps the one at ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, as dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e names it; a conversation holds no document, so no file name is matched. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. A session Dispatch holds no file of answers the empty list; a session_id that is empty or holds /, ?, #, whitespace, a control character or \u003c\u003e\"'`[]| is 400 INVALID_SESSION_ID. The list that names no slug is part of the conversation, so it needs the person scope (403 OAUTH_SCOPE_REQUIRED) and admits exactly the callers GET /api/v2/agents/{session_id}/messages admits, as GET /api/v1/agents/{session_id}/artifacts does; the read of one file by its slug needs no more than GET /api/v1/agents/{session_id}/artifacts/{slug} does.",
         "operationId": "getApiV2AgentsBySessionIdArtifacts",
         "parameters": [
           {
@@ -1152,6 +1152,16 @@
           }
         },
         "x-auth": "any",
+        "x-authorities": [
+          {
+            "in": "query",
+            "name": "slug",
+            "absent": true,
+            "scopes": [
+              "person"
+            ]
+          }
+        ],
         "x-list": {
           "default_limit": 50,
           "max_limit": 200,
@@ -1174,6 +1184,7 @@
           "INVALID_UTF8": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
+          "OAUTH_SCOPE_REQUIRED": 403,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
           "QUERY_KEY_UNKNOWN": 400,
@@ -9226,7 +9237,7 @@
         }
       },
       "patch": {
-        "description": "Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers by the project's gated_steps), or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. With the parent-status rule on, a change that breaks it is 409 PARENT_STATUS_CONFLICT. Without status-change options, answers the issue with advice; a patch that changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run true, send status and optionally expected_sequence and actor, with no other issue fields; an option sent as false asks for nothing and is taken as absent. The server checks the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and the progress of a keyed attempt. A dry run returns the plan without writing. This form answers {issue, changed}; a refusal carries the changes that committed before it. Closing with include_children requires a browser sign-in. On an issue Legion runs, a close, a reopen and a labels or parent write that takes the issue out of Legion (unlink_children among them) are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of an issue above it; a move under a parent of another project is judged as a root of the issue's own project, which this check does not judge. When Legion runs the issue, or an issue under it, before the move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that is no person and no architect of each such issue or of an issue above it where it stands. Neither check of a move passes the session of the project's Legion daemon. 404 ISSUE_NOT_FOUND.",
+        "description": "Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers by the project's gated_steps), or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. With the parent-status rule on, a change that breaks it is 409 PARENT_STATUS_CONFLICT. Without status-change options, answers the issue with advice; a patch that changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run true, send status and optionally expected_sequence and actor, with no other issue fields; an option sent as false asks for nothing and is taken as absent. The server checks the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and the progress of a keyed attempt. A dry run returns the plan without writing. This form answers {issue, changed}; a refusal carries the changes that committed before it. Closing with include_children requires a browser sign-in. On an issue Legion runs, a close, a reopen and a labels or parent write that takes the issue out of Legion (unlink_children among them) are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of an issue above it; a move under a parent of another project is judged as a root of the issue's own project, which this check does not judge. When Legion runs the issue, or an issue under it, before the move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that is no person and no architect of each such issue or of an issue above it where it stands. Neither check of a move passes the session of the project's Legion daemon. With DISPATCH_LEGION_STATUS_SCOPE on, three writes of a Legion issue (one that carries the legion label in any case, or is under an issue of its own project that does) need a credential that holds the person scope or legion-status, in both forms: a status write (the status the issue holds included) where the issue is a Legion issue before the call or after it, the removal of its legion label, and a move after which it is no longer a Legion issue. A credential that holds neither is 403 LEGION_STATUS_SCOPE_REQUIRED, with an insufficient_scope challenge naming legion-status, decided before the first write and before PARENT_STATUS_CONFLICT. The one exception is the owning architect's status write: a broker-issued token whose session the Legion daemon's own token published as the architect of an issue above, of the issue's own project, before the call and after it, writes done, backlog, icebox or triage, with neither unlink_children nor include_parent and not done with include_children. 404 ISSUE_NOT_FOUND.",
         "operationId": "patchApiV2IssuesByKey",
         "parameters": [
           {
@@ -9494,6 +9505,7 @@
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LABELS_INPUT": 400,
+          "LEGION_STATUS_SCOPE_REQUIRED": 403,
           "LOGIN_CHANGED": 409,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
@@ -12037,7 +12049,7 @@
     },
     "/api/v2/issues/{key}/references": {
       "get": {
-        "description": "An issue's references, one hop in each direction, one list at a time. The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v2/references lists it. relation names the list: links, every node the issue's own content links to; linked_from, every node that links to the issue or to its own content; or members (the default), the rows of links whose node is a document, the documents /api/v1 answers as members. Each list has one row for each node, a block or a part counted as its document or item; the issue and its own content are in no list, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via, artifact}: the node as GET /api/v2/references names it, the words shown for it, the distinct kinds of its links in order, the lowest of the issue's nodes at the near end, and on a row of members or a row of links whose node is a document, the document's row (its own fields, latest_version, latest_version_at, latest_version_size and version_count, and no approval; its versions are GET /api/v2/artifacts/{id}/versions), null on every other row. Each list is in the order of the node's kind, then its id. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}, total the rows of the list. The answer carries an ETag over the page it answers, its relation and its rows whole; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 ISSUE_NOT_FOUND.",
+        "description": "An issue's references, one hop in each direction, one list at a time. The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v2/references lists it. relation names the list: links, every node the issue's own content links to; linked_from, every node that links to the issue or to its own content; or members (the default), the rows of links whose node is a document, the documents /api/v1 answers as members. Each list has one row for each node, a block or a part counted as its document or item; the issue and its own content are in no list, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via, artifact}: the node as GET /api/v2/references names it, the words shown for it, the distinct kinds of its links in order, the lowest of the issue's nodes at the near end, and on a row of members or a row of links whose node is a document, the document's row (its own fields, latest_version, latest_version_at, latest_version_size and version_count, and no approval; its versions are GET /api/v2/artifacts/{id}/versions), null on every other row. A caller that sent Dispatch-Trees: 1 is also given name_tree on each row: its name as the tree a reader is shown. Each list is in the order of the node's kind, then its id. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}, total the rows of the list. The answer carries an ETag over the page it answers, its relation and its rows whole; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 ISSUE_NOT_FOUND.",
         "operationId": "getApiV2IssuesByKeyReferences",
         "parameters": [
           {
@@ -12496,7 +12508,7 @@
         }
       },
       "put": {
-        "description": "Publish the session that holds each Legion role of this issue {holders}, a bearer naming its session in actor: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:\u003cproject\u003e, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Dispatch takes the session a bearer caller names as the caller names it, so any caller whose credential proves no session of its own can name that one: the deployment's shared token, and a person's own agent token whatever its scopes. While the project's proven_sessions is on (PATCH /api/v2/projects/{key}), the route takes a write only on a credential that proves that session, a broker token of it, and any other is 403 ROLE_HOLDER_NOT_PROVEN, after the 400 refusals below. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Each write the route takes marks the issue's project, and from then on a write of the spec or the Verification document of an issue of the project that Legion runs needs a person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). Answers 200 the set this write stored, {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role; a body naming the set already stored, in any order, on a project a write has marked, answers that set and writes nothing. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "description": "Publish the session that holds each Legion role of this issue {holders}, a bearer naming its session in actor: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. legion-daemon:\u003cproject\u003e is the session the Legion daemon of the issue's project writes as, \u003cproject\u003e the key up to its first -. With DISPATCH_LEGION_STATUS_SCOPE on, only a credential that proves session legion-daemon:\u003cproject\u003e and holds legion-status publishes: the daemon's own broker token. Every other credential is 403 ROLE_HOLDER_FORBIDDEN, the shared token whose actor names that session included. With it off, the actor must be session legion-daemon:\u003cproject\u003e, and any other actor is 403 ROLE_HOLDER_FORBIDDEN; a bearer caller names its own session, so any caller whose credential proves no session can name that one. While the project's proven_sessions is on (PATCH /api/v2/projects/{key}), the route takes a write only on a credential that proves that session, a broker token of it, and any other is 403 ROLE_HOLDER_NOT_PROVEN, after the 400 refusals below. Each stored pair records whether the daemon's own token wrote it, a pair the write keeps unchanged included, and only such a pair names an architect whose write R26 lets through. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Each write the route takes marks the issue's project, and from then on a write of the spec or the Verification document of an issue of the project that Legion runs needs a person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). Answers 200 the set this write stored, {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role; a body naming the set already stored, in any order, on a project a write has marked, whose every pair already records what this write's credential would record, answers that set and writes nothing. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
         "operationId": "putApiV2IssuesByKeyRoleHolderSet",
         "parameters": [
           {
@@ -13314,6 +13326,124 @@
           "UNAUTHORIZED": 401
         },
         "x-write-scope": "project"
+      }
+    },
+    "/api/v2/known-sessions": {
+      "get": {
+        "description": "Which of the sessions the repeated id parameter names (1 to 100 session ids) Dispatch holds any record of, which needs the person scope, so a page links a dispatch://agent/\u003csession id\u003e reference only where that conversation exists, an ended session's included: each {session_id, title} in the order asked, each once, and no row for an id with no record. A record is the registry copy GET /api/v2/agents lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows; title is the registry copy's, null where that copy lists the session with none or does not list it. One statement answers the whole batch. limit 1 to 100 (default 100, so one page holds the whole batch) and offset; {items, total, limit, offset}, total the sessions found. No id, more than 100, a value that is no session id, or one longer than 2048 bytes, the longest session id a reference in text names, is 400 INVALID_QUERY naming the parameter. It admits exactly the callers GET /api/v2/agents/{session_id}/messages admits.",
+        "operationId": "getApiV2KnownSessions",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "id",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageOfKnownSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-list": {
+          "default_limit": 100,
+          "max_limit": 100,
+          "min_limit": 1
+        },
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
+          "AS_OF_TOKEN_NOT_SERVED": 403,
+          "BROKER_TOKEN_KEY_MISMATCH": 401,
+          "BROKER_TOKEN_NOT_ACTIVE": 401,
+          "BROKER_TOKEN_NOT_A_SESSION": 401,
+          "BROKER_TOKEN_PROOF_INVALID": 401,
+          "BROKER_TOKEN_RATE_LIMITED": 429,
+          "BROKER_UNAVAILABLE": 503,
+          "IDENTITY_ERROR": 500,
+          "INTERNAL": 500,
+          "INVALID_LIMIT": 400,
+          "INVALID_OFFSET": 400,
+          "INVALID_QUERY": 400,
+          "INVALID_UTF8": 400,
+          "NO_IDENTITY": 401,
+          "NUL_CHARACTER": 400,
+          "OAUTH_SCOPE_REQUIRED": 403,
+          "OIDC_ISSUER_UNAVAILABLE": 503,
+          "OIDC_TOKEN_INVALID": 401,
+          "QUERY_KEY_UNKNOWN": 400,
+          "SIGNIN_UNAVAILABLE": 503,
+          "TOKEN_REVOKED": 401,
+          "UNAUTHORIZED": 401
+        }
       }
     },
     "/api/v2/limit-set": {
@@ -20278,7 +20408,7 @@
     },
     "/api/v2/search-results": {
       "get": {
-        "description": "Full-text search q= across issues, documents, asks, comments and messages: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, with total, every match, and reachable, how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in the project the search is narrowed to where it names one, and otherwise in number_project, the project of the page the search was made from, which narrows nothing. A q is searched as typed, websearch_to_tsquery's AND of its words; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, and the answer's query {operators, broadened} names the forms it read and whether that second search answered. project=\u003ckey\u003e, repeatable, narrows every leg to those projects, with no default project; status= the status of the issue a row belongs to (a row with no issue matches none); author= the actor id that wrote the item a row names; from and to, RFC3339, from inclusive and to exclusive, when that item was last written. filters echoes {project, status, author, from, to}, project [] for none. keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then recency, then id. limit 1 to 50 (default 20) and offset; {items, total, limit, offset, reachable, took_ms, degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over 1000 characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR.",
+        "description": "Full-text search q= across issues, documents, asks, comments and messages: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, with total, every match, and reachable, how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in the project the search is narrowed to where it names one, and otherwise in number_project, the project of the page the search was made from, which narrows nothing. A q is searched as typed, websearch_to_tsquery's AND of its words; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, and the answer's query {operators, broadened} names the forms it read and whether that second search answered. project=\u003ckey\u003e, repeatable, narrows every leg to those projects, with no default project; status= the status of the issue a row belongs to (a row with no issue matches none); author= the actor id that wrote the item a row names; from and to, RFC3339, from inclusive and to exclusive, when that item was last written. filters echoes {project, status, author, from, to}, project [] for none. kind=, repeatable, one of issue, document, comment, ask and message, keeps the rows of the kinds named alone, before anything is ranked, counted or paged, and none is every kind, as GET /api/v1/search/results reads it. keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then recency, then id. limit 1 to 50 (default 20) and offset; {items, total, limit, offset, reachable, took_ms, degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over 1000 characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR.",
         "operationId": "getApiV2SearchResults",
         "parameters": [
           {
@@ -20359,6 +20489,23 @@
             "in": "query",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "items": {
+                "enum": [
+                  "issue",
+                  "document",
+                  "comment",
+                  "ask",
+                  "message"
+                ],
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           {
@@ -22374,7 +22521,7 @@
           },
           "not_architectural": {
             "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeNone"
+              "$ref": "#/components/schemas/ArchitectureTreeNoneRead"
             },
             "type": [
               "array",
@@ -22593,6 +22740,50 @@
           },
           "reason": {
             "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "status",
+          "reason",
+          "inherited_from"
+        ],
+        "type": "object"
+      },
+      "ArchitectureTreeNoneRead": {
+        "additionalProperties": false,
+        "properties": {
+          "inherited_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "status": {
             "type": "string"
@@ -23514,6 +23705,22 @@
               "array",
               "null"
             ]
+          },
+          "selected_trees": {
+            "items": {
+              "additionalProperties": true,
+              "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           },
           "text": {
             "type": [
@@ -30566,7 +30773,7 @@
         ],
         "type": "object"
       },
-      "GraphEdge": {
+      "GraphEdgeWithTrees": {
         "additionalProperties": false,
         "properties": {
           "block": {
@@ -30580,7 +30787,7 @@
             "type": "string"
           },
           "excerpt": {
-            "$ref": "#/components/schemas/GraphExcerpt"
+            "$ref": "#/components/schemas/GraphExcerptWithTrees"
           },
           "kind": {
             "type": "string"
@@ -30604,7 +30811,7 @@
         ],
         "type": "object"
       },
-      "GraphExcerpt": {
+      "GraphExcerptWithTrees": {
         "additionalProperties": false,
         "properties": {
           "block_id": {
@@ -30612,6 +30819,19 @@
           },
           "text": {
             "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -31931,6 +32151,19 @@
           "components": {
             "$ref": "#/components/schemas/IssueComponents"
           },
+          "components_reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -32883,6 +33116,25 @@
         },
         "required": [
           "text_sha256"
+        ],
+        "type": "object"
+      },
+      "KnownSession": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "session_id",
+          "title"
         ],
         "type": "object"
       },
@@ -34998,6 +35250,19 @@
           "subject": {
             "type": "string"
           },
+          "subject_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "thread_id": {
             "type": "string"
           },
@@ -35798,6 +36063,36 @@
           "items": {
             "items": {
               "$ref": "#/components/schemas/IssueSummary"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
+      "PageOfKnownSession": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KnownSession"
             },
             "type": [
               "array",
@@ -37886,6 +38181,19 @@
           "name": {
             "type": "string"
           },
+          "name_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "node": {
             "$ref": "#/components/schemas/GraphNode"
           },
@@ -37974,7 +38282,7 @@
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/GraphEdge"
+              "$ref": "#/components/schemas/GraphEdgeWithTrees"
             },
             "type": [
               "array",
@@ -40737,6 +41045,7 @@
       "LABELS_INPUT": 400,
       "LEGION_NOT_CONFIGURED": 404,
       "LEGION_SETTING_INPUT": 400,
+      "LEGION_STATUS_SCOPE_REQUIRED": 403,
       "LOGIN_CHANGED": 409,
       "MACHINE_LOGIN_NOT_FOUND": 404,
       "MEMBER_KIND_UNCHECKABLE": 503,

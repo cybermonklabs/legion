@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -12,8 +12,15 @@ import {
 } from "../../__tests__/proof-document";
 import { api } from "../../api/client";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ProofDocument } from "./ProofDocument";
 import { DocumentRuntime } from "./runtime";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 beforeEach(() => {
   answerRequests(...documentSurfaceHandlers());

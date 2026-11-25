@@ -142,12 +142,16 @@ func (s *server) gateV2Authorities(route apiRoute, handler http.HandlerFunc) htt
 // holdsFor reports whether the rule's value is one decoded holds: a body member that has the
 // rule's Value, a body member that is present at all where Value is empty, or a query key one of
 // whose values (a member of a comma list among them) is Value, or that is present at all where
-// Value is empty. A body member is matched as encoding/json matches it to a field, ignoring case,
+// Value is empty, or, where Absent, a query key that names no value: left out, or given only
+// empty. A body member is matched as encoding/json matches it to a field, ignoring case,
 // and every member that matches is read, so no spelling of a member reaches the handler past the
 // rule that holds it.
 func (rule authorityRule) holdsFor(decoded *v2Request) bool {
 	if rule.Where.In == partQuery {
 		values, present := decoded.values[rule.Where.Name]
+		if rule.Absent {
+			return !slices.ContainsFunc(values, func(value string) bool { return value != "" })
+		}
 		return present && (rule.Value == "" || slices.Contains(values, rule.Value))
 	}
 	for name, raw := range decoded.members {
@@ -175,6 +179,8 @@ func memberValue(raw json.RawMessage) string {
 // asked_of`, `waiting_on=me`.
 func (rule authorityRule) String() string {
 	switch {
+	case rule.Where.In == partQuery && rule.Absent:
+		return "a read with no " + rule.Where.Name
 	case rule.Where.In == partQuery && rule.Value != "":
 		return rule.Where.Name + "=" + rule.Value
 	case rule.Where.In == partQuery:
@@ -198,6 +204,8 @@ func (d *v2Decoder) authorityFaults() []string {
 		switch {
 		case rule.Where.Name == "" || len(rule.Scopes) == 0:
 			fault = "names no member or key, or no scope"
+		case rule.Absent && (rule.Where.In != partQuery || rule.Value != ""):
+			fault = "holds a key's absence, which only a query key with no Value reads"
 		case rule.Where.In == partQuery:
 			field, declared := d.query.field(rule.Where.Name)
 			switch {

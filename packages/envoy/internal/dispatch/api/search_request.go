@@ -59,15 +59,18 @@ type searchParameters struct {
 	author        string
 	since         *time.Time
 	until         *time.Time
-	limit         int
-	offset        int
-	keywordsOnly  bool
-	trees         bool
-	ownKeys       []string
-	broaden       []string
-	excluded      string
-	reading       *searchReading
-	who           model.Actor
+	// kinds are the kinds this search leaves out of the ranking, the count and the page
+	// (searchKinds), so its zero value searches every kind the index holds.
+	kinds        searchKinds
+	limit        int
+	offset       int
+	keywordsOnly bool
+	trees        bool
+	ownKeys      []string
+	broaden      []string
+	excluded     string
+	reading      *searchReading
+	who          model.Actor
 }
 
 // projectScope is the form of the statements this search runs: several where it names a list of

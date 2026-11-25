@@ -20,10 +20,11 @@ import (
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
 // no personal scope: the daemon presents the credential the deployment configured, as it does on
-// PATCH /api/v1/issues/{key}, and such a credential holds no scope at all. The list is the
-// daemon's own configuration published back, not a choice a person makes here, so nothing is
-// lost by letting a machine write it; a person who sets a deployment's gate sets it in that
-// deployment's configuration.
+// PATCH /api/v1/issues/{key}, and such a credential holds no person scope. The shared token holds
+// no scope at all, and the daemon's own broker token holds legion-status alone (brokerTokenActor),
+// which no route's scope list names. The list is the daemon's own configuration published back,
+// not a choice a person makes here, so nothing is lost by letting a machine write it; a person who
+// sets a deployment's gate sets it in that deployment's configuration.
 
 // projectGatedSteps is the stored row the route answers: the project and the steps it gates.
 type projectGatedSteps struct {

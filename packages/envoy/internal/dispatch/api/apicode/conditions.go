@@ -230,6 +230,14 @@ var (
 	// RoleHolderSessionUnproven is a role-holder set written, on a project whose proven-sessions
 	// setting is on, by a credential that does not prove the daemon's session.
 	RoleHolderSessionUnproven = Condition{"role holders on a credential that does not prove the daemon's session"}
+	// LegionStatusWriteWithoutScope is a write of a Legion issue's status, a removal of its legion
+	// label, or a move that takes it out from under every labelled issue (R26, #4601), by a
+	// credential that holds neither the person scope nor legion-status, other than the owning
+	// architect's status write.
+	LegionStatusWriteWithoutScope = Condition{"Legion issue status written without the person or legion-status scope"}
+	// AgentArtifactListWithoutPersonScope is the list of an agent conversation's files and images,
+	// the form that names no slug, read by a credential that does not hold the person scope.
+	AgentArtifactListWithoutPersonScope = Condition{"agent conversation's file list without the person scope"}
 	// SpecWriterNotArchitect is a write of the spec or the Verification document of an issue
 	// Legion runs - a version of the document, a create or a move under a parent, a close, a
 	// reopen, or a write that takes the issue out of Legion - by a session that is no person and
