@@ -410,15 +410,17 @@ func dismissedScaleOver(ratio, bound float64) bool {
 //
 //   - state=inbox: 1.10x and 1.38x (1.09x and 1.34x), held to twice in both.
 //   - The Inbox count: 1.06x and 1.55x to 1.57x (1.05x and 1.90x), held to twice in both. Its
-//     time ratio was recorded and not bounded, at 1.96x to 2.57x, because its Agent half reads an
+//     time ratio was recorded and not bounded, at 1.96x to 2.57x, because its Agent half read an
 //     index entry for each of the person's 10,060 one-off roots at the pile against 60 at the
-//     baseline: by count that pass is about 460 more buffer accesses over 935. Under the generic
-//     plan the Reply count reads user_threads_unread and each row it matches, 500 accesses at the
-//     pile against 52. The shape this change replaced, which asked each dismissed thread its own
-//     question, is the negative control (dismissedScaleNegativeControl). With its unread roots
-//     walking every dismissed root's thread as well (myAgentUnreadRoots without
-//     myAgentDismissedRoot, which answers the same rows), it counts 71.01x the buffer accesses at
-//     1.96x the rows, which is why buffer accesses are held as well as rows.
+//     baseline: by count that pass was about 460 more buffer accesses over 935. It reads the 60
+//     live roots alone since messages_direct_roots_live (migration 20261125053341, myAgentLiveRoot)
+//     left the dismissed ones out. Under the generic plan the Reply count reads
+//     user_threads_unread and each row it matches, 500 accesses at the pile against 52. The shape
+//     this change replaced, which asked each dismissed thread its own question, is the negative
+//     control (dismissedScaleNegativeControl). With its unread roots walking every dismissed
+//     root's thread as well (myAgentUnreadRoots without its dismissal test, which answers the same
+//     rows), it counts 71.01x the buffer accesses at 1.96x the rows, which is why buffer accesses
+//     are held as well as rows.
 //   - The first Dismissed page and the page 50,000 deep: 0.69x and 2.21x (0.68x and 1.98x to
 //     2.00x), held to twice in rows and dismissedScaleDismissedPages in buffer accesses, for the
 //     page's composition and not the pile. Each half reads up to a full page before the route

@@ -1234,6 +1234,18 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The thread's root before every other row this reply takes, `for no key update`: the
+		// reply's clear of its root's Agent dismissals moves the root's agent_dismissed_at, so the
+		// root is the first row of the thread a writer of it holds (inboxwrite.Recording.QueueRootLock,
+		// the lock order written on api/inbox_read.go's markInboxReadThreads). A follow-up is
+		// planned again under the first reply, in the same thread, so its root is this one.
+		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+			plan.recording.QueueRootLock(b)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if input.InReplyToBlock != nil {
 		// Before the attempt row, as the accept route takes them: issue, message, attempt.

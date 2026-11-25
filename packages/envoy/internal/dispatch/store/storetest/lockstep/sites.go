@@ -254,27 +254,37 @@ var storeWriteCallSites = map[string]string{
 	// sentinel in its own transaction: the owed index of a reply's parent (refs.ItemRepair.Queue),
 	// the re-index of old text and the rebuild (refs' reindexPlan.queue and replaceInTx), a
 	// restored wording, an approval ask's rewrite and the seed. api's
-	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment and reply paths to the block
-	// steps, and TestEveryObjectNodeWriterTakesTheStoreLockOrder the ask and message paths. No
-	// lock-step test drives the rebuild, an edit or a restored wording: the test beside each runs its
-	// real code.
-	"refs/item_blocks.go#Queue":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"refs/reply_blocks.go#Queue":         "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"refs/rebuild.go#queue":              "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
-	"refs/rebuild.go#replaceInTx":        "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
-	"api/asks.go#editAsk":                "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
-	"api/comment_actions.go#editComment": "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
-	// A comment's delete and an issue message's edit and delete (api/comment_delete.go,
-	// api/message_corrections.go): the body's blocks re-indexed or taken out under the route's own
-	// event (QueueCaused), each pending send's attempt failed under its receipt (QueueAttempted)
-	// and, for an edit, the participation of each person the new text mentions (QueueToPerson). No
-	// lock-step test drives them: the api test beside each runs its real code.
-	"api/comment_delete.go#deleteComment":              "api#TestDeleteCommentFailsEachPendingMentionAttempt",
-	"api/message_corrections.go#deleteMessage":         "api#TestDeleteMessageFailsEachPendingSend",
-	"api/message_corrections.go#editMessage":           "api#TestMessageBlockIndexFollowsAnEditAndADelete",
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment and reply paths and an author's
+	// corrections of a post (listed below) to the block steps, and
+	// TestEveryObjectNodeWriterTakesTheStoreLockOrder the ask and message paths. No lock-step test
+	// drives the rebuild, an edit of a comment or an ask, or a restored wording: the test beside each
+	// runs its real code.
+	"refs/item_blocks.go#Queue":                        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"refs/reply_blocks.go#Queue":                       "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"refs/rebuild.go#queue":                            "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
+	"refs/rebuild.go#replaceInTx":                      "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
+	"api/asks.go#editAsk":                              "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
+	"api/comment_actions.go#editComment":               "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
 	"docs/approval_ask.go#rewriteApprovalAsk":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/decided_wording.go#restoreWordings":          "docs#TestARestorationRefusesAnAskAnsweredSinceItsPlan",
 	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
+	// An author's correction of a post (main's #3512), each under its issue's owner lock: the edit
+	// of an issue message and the delete of a comment or an issue message. Each updates the post's
+	// row, whose body's trigger writes its block state row, then writes the index of the body it
+	// leaves: the block nodes it states, an edit's new block live and a delete's removed blocks gone,
+	// before the block rows that name them. A delete then settles each send of the post still
+	// pending, failed on its attempt's row, and appends each one's receipt and what the settle left on
+	// that row under it (graphstore.QueueAttempted), then its own event and what the cleared body
+	// takes out of the store under that (graphstore.QueueCaused). An edit appends its event, then what
+	// its index states under it (graphstore.QueueCaused), whose mention of a person writes that
+	// person's node `do nothing` with the mentions tuple (graphstore.QueueToPerson), and last the
+	// participation of each person it newly mentions in the post's thread
+	// (inboxwrite.MentionParticipation, graphstore.QueueToPerson). api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder drives each through its route, the deletes
+	// while a send is pending and the edit naming a person no write has recorded.
+	"api/comment_delete.go#deleteComment":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#deleteMessage": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#editMessage":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The one writer of the threads a person takes part in (inboxwrite.Recording.Queue), which every
 	// comment, message, ask and answer write queues after its event: what an answer's ask still owes
 	// the store, its writer's participates_in, every user_threads row of the thread in one pass,
@@ -292,8 +302,9 @@ var storeWriteCallSites = map[string]string{
 	"inboxwrite/record.go#Queue":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"inboxwrite/thread.go#queueKeepRow": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The same writer's clear of the Agent dismissals a session's reply ends
-	// (queueAgentDismissalsClear): the root message `for key share`, then the retraction of each
-	// dismissed mark of that root through QueueMarksEnded, then the delete of the
+	// (queueAgentDismissalsClear): the root message `for no key update`, which the reply's writer
+	// took before its insert already (inboxwrite.Recording.QueueRootLock), then the retraction of
+	// each dismissed mark of that root through QueueMarksEnded, then the delete of the
 	// user_agent_thread_dismissed rows. No lock-step test follows these steps; api's
 	// TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply runs them, holding the root as the
 	// dismiss route takes it `for update`.
@@ -330,6 +341,6 @@ var storeWriteCallSites = map[string]string{
 	// mention arm, inboxwrite.MentionParticipation), which the writer that resolves the mention
 	// queues right after that write's record: the person nodes `do nothing` and the tuples, after
 	// every row the record locked. An edit queues the same after what its index states
-	// (editComment, listed above).
+	// (editComment and editMessage, listed above).
 	"api/comment_create.go#queueRecordAndMentions": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 }

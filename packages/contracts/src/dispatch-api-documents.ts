@@ -241,9 +241,13 @@ export const ArtifactHumanEditedEventPayloadSchema = z.object({
  *  `artifact.approved` in a human's name at a later version whose change since the version he
  *  approved is one the carry takes - a version whose text is byte for byte the approved
  *  version's with no ask block in it decided since, among others. A person's answer, resolve or
- *  decline of an ask writes one version, which changes only the server-owned attributes of the
- *  ask's block, and the carry takes it; a closed issue's settlement carries nothing, so the
- *  version an issue's close writes carries no approval. Its `reason` names the carry and the version it
+ *  decline of an ask writes one version. When the answer, resolve or decline is that version's
+ *  whole change, the version changes only the server-owned attributes of the ask's block, and the
+ *  carry takes it. The version carries an approval only when the person's answer, resolve or
+ *  decline is its whole change. If text that a person was editing in the browser is settled into
+ *  the same version, the approval does not carry, and the request goes back to its agent. A closed
+ *  issue's settlement carries nothing, so the version an issue's close writes carries no approval.
+ *  Its `reason` names the carry and the version it
  *  follows, and its `ask_id` is null unless a request was open at the carry, which it answers
  *  (see `ArtifactReview`). */
 export const artifactReviewEventPayloadFields = {

@@ -30,8 +30,8 @@ const storeStepWait = 20 * time.Second
 
 // TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
-// and tuple store's writers, beside the test that drives each site's lock steps. Twelve of them
-// live here, and this test drives them all:
+// and tuple store's writers, beside the test that drives each site's lock steps. Twenty-three of
+// them name this test, and it drives them all:
 //
 //   - the comment path (createCommentFor, through queueCommentRow, which queues the node through
 //     graphstore.QueueNodes before the row, and queueCommentCreated, which queues the tuples
@@ -61,7 +61,20 @@ const storeStepWait = 20 * time.Second
 //     of a project document (editArtifact, through commitArtifactVersionEvent), and an issue's
 //     create with its spec (createIssue). The upload and the create also write the node of what
 //     they create - the document's, and the issue's and its spec's - before the row that names
-//     it, and so before the version whose insert writes the fence row, which names that row.
+//     it, and so before the version whose insert writes the fence row, which names that row;
+//   - an author's correction of a post (main's #3512), each through its route: an edit of an
+//     issue message that names a person (editMessage), which queues what its index states under
+//     its event (graphstore.QueueCaused), whose mention of that person goes to
+//     graphstore.QueueToPerson, and then the person's part in the message's thread
+//     (graphstore.QueueToPerson, inboxwrite.MentionParticipation); and a delete of a comment and of
+//     an issue message, each while the send its post makes to a session is still pending
+//     (deleteComment, deleteMessage), which settles that send, appends its receipt and what the
+//     settle left on the attempt's row under it (graphstore.QueueAttempted), then its own event and
+//     what the cleared body takes out of the store under that (graphstore.QueueCaused). The delete's
+//     own event and that append come after the receipt and the attempt's facts, whose steps took
+//     the owner's row and graph_tuples already, and the edit's participation after the mention's
+//     statement, which wrote the person's node: each takes no lock its path's earlier steps do
+//     not, and none is a step of its own.
 //
 // The comment path and the reply then run the one writer of a thread (inboxwrite.PlanRecord and
 // Recording.Queue, a site of graphstore.QueueToPerson) right after their event, whose user_threads
@@ -69,8 +82,10 @@ const storeStepWait = 20 * time.Second
 // anybody holding one, then the rows of the people the write reached, then the writer's own row.
 // The ask's create here is a session's, which keeps no row, and lists no such step; a person's
 // ask, which keeps its asker's row, is objectCreate's (object_node_lock_steps_test.go). A
-// comment's or a reply's body is indexed as blocks of their own (bodyBlockSteps), between the
-// item's row and its event.
+// correction writes no user_threads row: the person an edit names takes part in the thread through
+// a tuple alone. A comment's or a reply's body is indexed as blocks of their own (bodyBlockSteps),
+// between the item's row and its event, and a correction's index of the body it writes, or clears,
+// between the post's row and its event (correctionBlockSteps).
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
@@ -107,6 +122,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
 		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalFollowerRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
+		rig.messageEdit(), rig.commentDelete(), rig.messageDelete(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)
@@ -214,9 +230,10 @@ type storeWriter struct {
 // storeWriterRun is one run of a write path.
 type storeWriterRun struct {
 	// made is the one session or person node the run writes: the author's, the session the
-	// delivery reached, or the session a follow records. No write before the run has recorded it,
-	// so its row is new, and a new row is what an upsert waits on another transaction for. It is
-	// the zero node for a path whose nodes are a document's blocks, which are held by their table.
+	// delivery reached, the session a follow records, or the person an edit names. No write before
+	// the run has recorded it, so its row is new, and a new row is what an upsert waits on another
+	// transaction for. It is the zero node for a path whose nodes are a document's blocks, or a
+	// delete's, which are held by their table.
 	made graphstore.Node
 	// answered is the comment a reply answers, and empty for every other path.
 	answered string
@@ -265,6 +282,16 @@ const (
 	reachedRowsStatement = "update user_threads set replied_at"
 	// ownRowStatement is that writer's upsert of the writer's own row (queueKeepRow).
 	ownRowStatement = "with kept as ( insert into user_threads ("
+	// messageEditStatement is an edit's update of the message's row (editMessage), and
+	// commentClearStatement and messageClearStatement a delete's clear of the comment's row and of
+	// the message's (clearDeletedPostBody, for deleteComment and deleteMessage). Each updates the
+	// post's body, whose trigger owes its block state row (item_blocks_owe).
+	messageEditStatement  = "update messages set body = $2, edited_at = $3"
+	commentClearStatement = "update comments set body = '', suggestion = null, deleted_at = $3"
+	messageClearStatement = "update messages set body = '', deleted_at = $3"
+	// attemptsStatement is graphstore.QueueAttempted, the statement of what a write left on the
+	// delivery attempts' rows, appended as a plain insert into graph_tuples.
+	attemptsStatement = "with attempt_rows ("
 )
 
 // --- the paths ----------------------------------------------------------------------------
@@ -772,6 +799,154 @@ func (r *storeWriterRig) issueCreate() storeWriter {
 	}
 }
 
+// messageEdit is an edit of an issue message by its author (editMessage), through its route, that
+// adds a paragraph naming a person by their address (dispatch://person/<login>). It takes the
+// issue's owner lock (lockedMessageForCorrection, lockIssue), and its write phase, one batch, keeps
+// the body it replaces in post_body_history, updates the message's row, writes the index of the
+// new body (correctionBlockSteps: the message's block state row, the new paragraph's block node,
+// then the block row that names it), appends message.edited, then appends what the index stated
+// under it (graphstore.QueueCaused), which hands the mention of the person to
+// graphstore.QueueToPerson: the person's node `do nothing` and the mentions tuple, in one statement
+// after the append. Last it appends the person's participates_in the message's thread
+// (inboxwrite.MentionParticipation, graphstore.QueueToPerson), whose node row the mention's
+// statement already holds, so it takes no lock of its own. The message's row and its block state
+// row are there before the run, and neither is held but as its table, as the new block's node and
+// row are. Each run edits a message of its own, written for it by an author no write has
+// recorded, and names a person no write has recorded, so the person's node is new and is held as
+// its row.
+func (r *storeWriterRig) messageEdit() storeWriter {
+	steps := append([]storeStep{
+		ownerLockStep(store.IssueOwner(r.issue)),
+		{
+			name: "the message's row", order: projectionStep,
+			hold: holdTableWrites("messages"), at: messageEditStatement,
+			takes: []tableLock{{"messages", rowExclusiveMode}},
+		},
+	}, correctionBlockSteps("the message", refs.ItemMessage, messageEditStatement, "insert into message_blocks (")...)
+	return storeWriter{
+		name: "editMessage naming a person",
+		steps: append(steps, eventAppendStep(), tupleAppendStep(), storeStep{
+			name: "the mentioned person's node", order: nodeStep, caused: true,
+			hold: holdNewNode, at: armsStatement,
+			takes: []tableLock{{"graph_nodes", rowExclusiveMode}, {"graph_tuples", rowExclusiveMode}},
+		}),
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			const words = "A message whose words the lock steps edit."
+			login := r.fresh("lockeditor")
+			message := createIssueMessage(t, r.handler, r.issue, map[string]any{"body": words}, login)
+			person := r.fresh("lock-steps-mentioned") + "@example.com"
+			return storeWriterRun{
+				made: graphstore.PersonNode(person, model.Actor{Kind: "user", ID: login}, time.Now().UTC(), graphstore.NoEvent),
+				write: func() error {
+					return statusOrError(dispatchRequest(t, r.call, http.MethodPatch, "/api/v1/messages/"+message.ID, map[string]any{
+						"body": words + "\n\nOver to dispatch://person/" + person + ".",
+					}, login), http.StatusOK)
+				},
+			}
+		},
+	}
+}
+
+// commentDelete is a delete of a comment by its author (deleteComment), through its route, while
+// the send to the session its mention names is still pending. It takes the issue's owner lock
+// (lockedCommentForCorrection, lockOwnerOfComment), and its write phase, Commit's one batch, keeps
+// the body in post_body_history and takes deleteSteps: the comment's clear, the index of the empty
+// body it leaves, the settle of the pending send, its receipt and what the settle left on the
+// attempt's row under it (graphstore.QueueAttempted). It then settles the comment's fallback
+// copies, of which it has none, so that update locks no row, appends comment.deleted, and appends
+// what the cleared body takes out of the store under it (graphstore.QueueCaused). The comment
+// carries no anchor and no suggestion, so the delete makes no document write. Each run deletes a
+// comment of its own, written by an author no write has recorded and mentioning s1, whose send the
+// rig's listener took (leaveSendPending).
+func (r *storeWriterRig) commentDelete() storeWriter {
+	return storeWriter{
+		name: "deleteComment settling a pending send",
+		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
+			deleteSteps("the comment", "comments", refs.ItemComment, commentClearStatement, "comment_deliveries")...),
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			login := r.fresh("lockdeleter")
+			comment := decodeMentionedComment(t, dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
+				map[string]any{"body": "Can this go, @s1?", "mentions": []map[string]any{{"target": "session:s1"}}}, login)).ID
+			settledCommentDeliveries(t, r.database, comment)
+			r.leaveSendPending(t, ctx, "comment_deliveries", "comment_id", comment)
+			return storeWriterRun{write: func() error {
+				return statusOrError(dispatchRequest(t, r.call, http.MethodDelete, "/api/v1/comments/"+comment, map[string]any{}, login), http.StatusOK)
+			}}
+		},
+	}
+}
+
+// messageDelete is a delete of an issue message by its author (deleteMessage), through its route,
+// while its send to the session it targets is still pending. It takes the issue's owner lock
+// (lockedMessageForCorrection, lockIssue), and its write phase, one batch, keeps the body in
+// post_body_history and takes deleteSteps, as a comment's delete does, then appends
+// message.deleted and what the cleared body takes out of the store under it
+// (graphstore.QueueCaused). Each run deletes a message of its own, written by an author no write
+// has recorded and targeted at s1, whose send the rig's listener took within the create
+// (leaveSendPending).
+func (r *storeWriterRig) messageDelete() storeWriter {
+	return storeWriter{
+		name: "deleteMessage settling a pending send",
+		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
+			deleteSteps("the message", "messages", refs.ItemMessage, messageClearStatement, "message_deliveries")...),
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			login := r.fresh("lockunsender")
+			message := createIssueMessage(t, r.handler, r.issue, map[string]any{
+				"body": "Can this go?", "target": "session:s1", "delivery": "steer",
+			}, login)
+			r.leaveSendPending(t, ctx, "message_deliveries", "message_id", message.ID)
+			return storeWriterRun{write: func() error {
+				return statusOrError(dispatchRequest(t, r.call, http.MethodDelete, "/api/v1/messages/"+message.ID, map[string]any{}, login), http.StatusOK)
+			}}
+		},
+	}
+}
+
+// leaveSendPending puts the first attempt of the post id back to pending under a fresh claim, its
+// envelope and its error cleared, as a sender leaves it while its send is in flight: the attempt a
+// delete settles (queueDeletedPostSettlement). table is the post's attempts table and owner the
+// column naming the post in it. The claim is the moment of this write, so no sweep takes the
+// attempt for one a sender gave up on before the run ends.
+func (r *storeWriterRig) leaveSendPending(t *testing.T, ctx context.Context, table, owner, id string) {
+	t.Helper()
+	tag, err := r.database.Pool.Exec(ctx, `
+		update `+table+` set state = 'pending', envelope_id = null, error = null, claimed_at = now()
+		where `+owner+` = $1 and attempt = 1
+	`, id)
+	if err != nil {
+		t.Fatalf("leave the first attempt of %s pending: %v", id, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("leave the first attempt of %s pending: it moved %d rows of %s, want one", id, tag.RowsAffected(), table)
+	}
+}
+
+// deleteSteps are the steps a delete of item, a post of kind whose row is in table, takes after its
+// owner lock while one send of the post is pending: the clear of its row (clear, the head of its
+// statement), the index of the empty body the clear leaves (correctionBlockSteps), the settle of
+// the send, failed, on its row of attempts (queueDeletedPostSettlement), the send's receipt, and
+// what the settle left on the attempt's row, under that receipt (graphstore.QueueAttempted). The
+// attempt's node is there from the attempt's open, and its row names it. Every row the steps take
+// is there before the run, and each step is held as its table.
+func deleteSteps(item, table string, kind refs.ItemKind, clear, attempts string) []storeStep {
+	steps := append([]storeStep{{
+		name: item + "'s clear", order: projectionStep,
+		hold: holdTableWrites(table), at: clear,
+		takes: []tableLock{{table, rowExclusiveMode}},
+	}}, correctionBlockSteps(item, kind, clear, "update "+string(kind)+"_blocks set position = null, removed_at = $2")...)
+	receipt := eventAppendStep()
+	receipt.name = "the receipt"
+	return append(steps, storeStep{
+		name: "the pending send's row", order: projectionStep,
+		hold: holdTableWrites(attempts), at: "update " + attempts + " d set state = 'failed'",
+		takes: []tableLock{{attempts, rowExclusiveMode}},
+	}, receipt, storeStep{
+		name: "the attempt's facts", order: tupleStep, caused: true,
+		hold: holdTableWrites("graph_tuples"), at: attemptsStatement,
+		takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+	})
+}
+
 // settleSteps are the steps of a delivery's settle: the owner's lock, then the receipt, and the
 // reached session's node with its two base attributes under it, in one statement right after the
 // receipt in the same batch (graphstore.QueueReached over graphstore.LatestEvent), which is what
@@ -898,6 +1073,38 @@ func (r *storeWriterRig) bodyBlockSteps(item string, kind refs.ItemKind, insert 
 		{
 			name: item + "'s block rows", order: projectionStep, names: nodes,
 			hold: holdTableWrites(blocks), at: "insert into " + blocks + " (",
+			takes: []tableLock{{blocks, rowExclusiveMode}},
+		},
+	}
+}
+
+// correctionBlockSteps are the three steps a correction of a post takes for the index of the body
+// it writes, or clears, between the post's row and its event (refs' ItemIndexing.Queue). The first
+// is the post's block state row, which the trigger on the update of the post's body writes
+// (item_blocks_owe, migrations 0143 and 20261110224508), so the write waits for it inside update,
+// the row's own statement. The second is the block nodes the index states, in one node write: an
+// edit's new block, stated live, and the blocks a delete takes out, stated gone. It is the write's
+// first of graph_nodes, so it is held as the table. The third is the block rows, each naming its
+// block's node, rows being the head of the first statement that writes them: the insert of an
+// edit's new block, and the update that takes a delete's blocks out of the post's current
+// revision.
+func correctionBlockSteps(item string, kind refs.ItemKind, update, rows string) []storeStep {
+	state, blocks := string(kind)+"_block_state", string(kind)+"_blocks"
+	nodes := item + "'s block nodes"
+	return []storeStep{
+		{
+			name: item + "'s block state row", order: projectionStep,
+			hold: holdTableWrites(state), at: update,
+			takes: []tableLock{{state, rowExclusiveMode}},
+		},
+		{
+			name: nodes, order: nodeStep,
+			hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+			takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+		},
+		{
+			name: item + "'s block rows", order: projectionStep, names: nodes,
+			hold: holdTableWrites(blocks), at: rows,
 			takes: []tableLock{{blocks, rowExclusiveMode}},
 		},
 	}

@@ -49,6 +49,13 @@ The decoders that make this true are the listener's (`cmd/listener/delivery.go`)
 
 `../../../cmd/dispatch/README.md` has the rule for each surface ("Two builds at once") and for migrations with their examples ("Database migrations"), the naming and the identifiers a set is refused for, and what the census is held to.
 
+**An Agent thread's dismissal is a column of its root.**
+Migration `20261125052902_messages_agent_dismissed_at` adds `messages.agent_dismissed_at`: on a person's one-off message to a session (`api/replies_agent.go`, `myAgentRootFilter`), the moment of its author's dismissal of the thread, the `dismissed_at` of the `user_agent_thread_dismissed` row naming the root and the author's login, and null while no such row stands.
+Its one writer is the trigger `user_agent_thread_dismissed_root`, which `20261125053125_user_agent_thread_dismissed_root` attaches to `user_agent_thread_dismissed`: each insert, update and delete of a mark sets or clears its root's column in the statement that writes the mark, whichever build writes it, so the dismissal, the restore and a session's reply that clears the root's marks all keep it, the release before this one's among them.
+The same migration sets the column of every mark already stored, after the trigger is attached and under the lock its `create trigger` holds, and replaces the body of `user_agent_thread_dismissed_clear` so a reply of the release before takes the root `for no key update` before it deletes a mark of it.
+Every writer of a mark takes the root's row first and the mark after it, which is the lock order written on `api/inbox_read.go`'s `markInboxReadThreads`.
+Migration `20261125053341_messages_direct_roots_live` builds `messages_direct_roots_live` concurrently, `messages_direct_roots`' key over the one-off roots no dismissal marks, which state=inbox and state=unread read their Agent rows through (`myAgentLiveRoot`), so neither reads a dismissed root or a mark however many the person has dismissed; `messages_direct_roots` stays, since the release before reads its roots through it.
+
 **The keyword table holds each past version of the searchable text.**
 Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.

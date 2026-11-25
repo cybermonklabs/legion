@@ -400,10 +400,11 @@ func deliveredTo(fromKind, fromID, login string, at time.Time, who model.Actor, 
 //     insert (api's createStoredMessage, D6).
 //
 // A session's reply to a message takes, between steps 1 and 2, its thread root's Agent
-// dismissals: the root `for key share`, then the retraction of the dismissed tuple of each person
-// whose user_agent_thread_dismissed row names it, then the delete of those rows, each statement
-// reading the rows as they stand once the root is held, as the trigger
-// user_agent_thread_dismissed_clear does for an older build's reply (migration 20261105093507).
+// dismissals: the root `for no key update`, which its writer took before the reply's insert
+// (Recording.QueueRootLock), then the retraction of the dismissed tuple of each person whose
+// user_agent_thread_dismissed row names it, then the delete of those rows, each statement reading
+// the rows as they stand once the root is held, as the trigger user_agent_thread_dismissed_clear
+// does for an older build's reply (migrations 20261105093507 and 20261125053125).
 //
 // Steps 2 to 4 hold one lock rule: the rows are locked before the delivered_to of the people
 // holding them is appended, and the backfill marks a row under the same lock, so no delivery falls
@@ -462,7 +463,11 @@ func (r Recording) Root() (string, string) {
 // Inbox (step 6), and whether it does. The writer takes that root `for update` before its own
 // row's insert, as the dismiss route takes an Agent root before the person's rows (D6): taken
 // after the insert, whose foreign key holds its parent `for key share`, the lock would be an
-// upgrade that can deadlock against the dismiss route.
+// upgrade that can deadlock against the dismiss route. Step 6's upsert of the writer's
+// user_agent_thread_dismissed row (queueAgentDismissal) then moves the root's own
+// agent_dismissed_at where the writer sent the root, as the dismiss route's mark does, through the
+// trigger of migration 20261125053125, under this lock: every writer of that column takes the root
+// first.
 func (r Recording) AgentDismissal() (string, bool) {
 	if !r.agentDismiss {
 		return "", false
@@ -481,6 +486,23 @@ func (r Recording) AgentDismissal() (string, bool) {
 func ownDismissal(w Write, person string, root thread) (dismisses, agent bool) {
 	dismisses = w.OwnWrite && !w.unstored && person != "" && w.Who.Act == nil && (w.ask != nil || w.NodeID != root.id)
 	return dismisses, dismisses && w.NodeKind == graphstore.KindMessage && w.Project == ""
+}
+
+// QueueRootLock queues, for a session's reply to a message, the lock of the root of the thread the
+// reply is written in, `for no key update` (queueRootLock): its writer queues it before the
+// reply's insert, and before any lock of a message or an attempt below the root it takes, so the
+// root is the first row of the thread the reply holds. The reply's clear deletes the root's Agent
+// dismissals (queueAgentDismissalsClear), and each delete updates the root's row
+// (agent_dismissed_at, migration 20261125053125). Without this lock the reply would reach the root
+// holding no more than the `for key share` its foreign key takes where it answers the root
+// directly, so a restore holding the root `for no key update` could wait for a mark the reply's
+// delete holds while the reply's update waits for the root, and Postgres would fail one of the
+// two. Any other record queues nothing: a person's own reply that dismisses its Agent thread takes
+// the root `for update` instead (AgentDismissal), and no write is both a session's and a person's.
+func (r Recording) QueueRootLock(b *store.WriteBatch) {
+	if r.clears {
+		queueRootLock(b, r.thread.id)
+	}
 }
 
 // PlanRecord plans w's record in the write's read phase, in tx, under the owner lock every writer

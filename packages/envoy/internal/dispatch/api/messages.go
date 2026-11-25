@@ -641,12 +641,14 @@ func (s *server) createStoredMessage(
 	// The failure point between the message's node and its row (failpoint.Message), decided
 	// before the batch is sent and queued where it fails.
 	fails := failpoint.Planned(ctx, failpoint.Message)
-	// The Agent root's lock where the reply dismisses its thread, the parent's lock, the index its
-	// blocks owe, the message's node, the insert, the recovery point, this message's own index, the
-	// event, its stamp, what the node write and the index stated, its author, its record in its
-	// thread and a targeted message's first delivery attempt go in one batch (store.WriteBatch): the
-	// message is known before the insert runs, and the stamp and every cause name the event's id as
-	// the id sequence left it.
+	// The thread's root - `for update` where the message is a person's own reply that dismisses its
+	// Agent thread (inboxwrite.Recording.AgentDismissal), `for no key update` where it is a
+	// session's reply that clears its Agent dismissals (inboxwrite.Recording.QueueRootLock) - the
+	// parent's lock, the index its blocks owe, the message's node, the insert, the recovery point,
+	// this message's own index, the event, its stamp, what the node write and the index stated, its
+	// author, its record in its thread and a targeted message's first delivery attempt go in one
+	// batch (store.WriteBatch): the message is known before the insert runs, and the stamp and every
+	// cause name the event's id as the id sequence left it.
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		// A person's reply under an Agent thread dismisses it for them (inboxwrite's step 6), so its
@@ -654,10 +656,13 @@ func (s *server) createStoredMessage(
 		// parent `for key share`: taken after that, the lock would be an upgrade that can deadlock
 		// against the dismiss route, which takes the root before the person's rows with this same
 		// statement (inboxDismissLockAgentRoots; D6, the lock order on markInboxReadThreads,
-		// api/inbox_read.go).
+		// api/inbox_read.go). The dismissal's row then moves the root's agent_dismissed_at under
+		// this lock (migration 20261125053125's trigger), as the dismiss route's does.
 		if root, dismisses := recording.AgentDismissal(); dismisses {
 			b.Queue("", inboxDismissLockAgentRoots, []string{root})
 		}
+		// A session's reply takes its root `for no key update` instead; a message is never both.
+		recording.QueueRootLock(b)
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
 			if err := parentRepair.Queue(b); err != nil {

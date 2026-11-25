@@ -14,10 +14,11 @@ import "fmt"
 // askSearchTextOf), so that nothing of the oracle is built from the package's own helpers: an
 // oracle sharing a helper with the statement under test changes with it, and the comparison then
 // holds nothing. The cost is that an edit to a part of these statements this change leaves alone
-// has to be copied here too, which is what the equality tests report when it is not -
-// INFRA-1042's one scored list across the kinds (mainFusedSQL for search and mainRelatedFusedSQL
-// for the related-item check, ts_rank_cd's normalisation flag, a page that names no kind) and
-// INFRA-1150's text of an ask hit, its answer read from the ask's node (askSearchTextOf), are
+// has to be copied here too,
+// which is what the equality tests report when it is not - INFRA-1042's one scored list across
+// the kinds (mainFusedSQL for search and mainRelatedFusedSQL for the related-item check,
+// ts_rank_cd's normalisation flag, a page that names no kind) and this change's text of an ask
+// hit, its answer read from the ask's node (askSearchTextOf), are
 // copied below for exactly that reason, so the only thing these statements still answer
 // differently by is their document arm.
 //

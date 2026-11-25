@@ -3071,6 +3071,16 @@ The new index holds none of them, so the list route's page, the one read's Dismi
 `user_threads_dismissed` stays: the release before this one reads the state with `dismissed_at is not null` alone, which the new predicate does not serve, and a later release drops it.
 The build is `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), and holds off no read or write of `user_threads` while it scans the table, whatever its size; its census answers `0`, and it carries a `.down.sql` an operator runs by hand to drop the index.
 
+Migrations `20261125052902_messages_agent_dismissed_at` through `20261125053341_messages_direct_roots_live` put that mark on the root itself, so the Inbox's two states that answer every Agent row, `state=inbox` and `state=unread`, read their roots without reading the dismissed ones:
+before them each read every one-off root the person ever sent through `messages_direct_roots` and every mark they ever wrote, 10,020 rows at 5,000 dismissed Agent threads for 20 roots in the Inbox, against 520 at 250 dismissed.
+`20261125052902` adds `messages.agent_dismissed_at`, nullable with no default, the moment of the root's author's dismissal and null while no mark of theirs names it: a catalogue change, `ACCESS EXCLUSIVE` on `messages` for that write alone, no row read or rewritten.
+`20261125053125` attaches `user_agent_thread_dismissed_root` after each insert, update and delete of `user_agent_thread_dismissed`, the column's one writer, so every write of a mark — the dismissal, the person's own reply under the thread that dismisses it (`inboxwrite`'s step 6), the restore, a session's reply that clears its root's marks, from either build of a roll — moves its root's column in the statement that writes the mark, and only the author's mark moves it;
+it replaces the body of `user_agent_thread_dismissed_clear` so a reply of the release before takes the root `for no key update` before it deletes a mark of it, and it sets the column of every mark already stored.
+Its `create trigger` takes `SHARE ROW EXCLUSIVE` on `user_agent_thread_dismissed` and holds it to the end, so no mark moves between that catch-up's read and its commit; the catch-up takes `ROW EXCLUSIVE` on `messages` and rewrites one row for each stored mark of an author, so the census holds `messages` to its size limit, and the migration bounds its lock waits at half a second, below the deadlock timeout, since a dismissal of the release before can hold a root while it waits for the first lock.
+Every writer of a mark takes the root first, `for no key update` or stronger, and the mark after it: the dismissal `for update` as before, the person's own reply `for update` before its insert (`inboxwrite`'s `Recording.AgentDismissal`), the restore `for no key update` (`inboxRestoreLockAgentRoots`), and a session's reply `for no key update` before its attempt and its insert (`inboxwrite`'s `Recording.QueueRootLock`), the order `markInboxReadThreads` writes down (`api/inbox_read.go`).
+`20261125053341` builds `messages_direct_roots_live` concurrently, outside a transaction, with `messages_direct_roots`' key over the one-off roots whose `agent_dismissed_at` is null, which the two states read their roots through (`api/replies_agent.go`, `myAgentLiveRoot`); its `.down.sql` drops it by hand, and `messages_direct_roots` stays, since the release before reads its roots through it.
+Every census of the three answers `0`.
+
 Migration `20261105014808_comments_answers` gives `comments` a nullable `answers`, the comment a reply answers, and re-states `graph_edges` with one more arm, `answers` from the reply to that comment ("Reference graph" below).
 A comment write climbs the reply chain to the head of the thread before it stores, which is what every thread read selects on, so `reply_to` holds the head and the comment the writer answered was lost;
 `answers` holds the comment the request named, written whenever the request named one, and `reply_to` keeps exactly the value it held before, so every thread read answers as it did.
@@ -6112,16 +6122,16 @@ Each item below names a path with its method and identity, then its purpose.
   A closed issue's document is `409 ISSUE_CLOSED`, before any other 409; an issue's plan is `409 PLAN_APPROVED_BY_REVIEW`, as its plan review approves it, and a project `plan.md` is no plan.
   The question is `Approve <name> (version <N>)?`, or `Approve <name> (version <N>) and <name> (version <N>)?` for a request naming two documents, followed by the optional `summary` (blank is `400 SUMMARY_INPUT`;
   past the ask cap at the longest version a request can reach, ten digits, is `400 CAP_EXCEEDED` naming `summary`).
-  A request on a document a human approved earlier names that approval in `ask.approval.approved` (`{version, at, by}`);
-  a first request carries no `approved` key.
-  One open approval row follows every document version in place, rewording its question and emitting `ask.edited`;
-  while its `requested_version` is below the new version it waits on the agent.
-  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one, or with those bytes but for the server-owned attributes of its ask blocks, each block agreeing with its ask, as the version a person's answer, resolve, decline or an issue's reopen writes;
+  A request on a document a human approved earlier names that approval in `ask.approval.approved` (`{version, at, by}`); a first request carries no `approved` key.
+  One open approval row follows every document version in place, rewording its question and emitting `ask.edited`; while its `requested_version` is below the new version it waits on the agent.
+  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one, or with those bytes but for the server-owned attributes of its ask blocks, each block agreeing with its ask, as the version a person's answer, resolve, decline or an issue's reopen writes when that is its whole change;
   a version a route writes (a named version, an upload, an edit) moves it to the agent whatever its bytes.
   Only the first move since the request was opened or handed back notifies, even when a thread reply had already left it waiting on the agent;
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.
-  A person's answer, resolve, decline, close or reopen of an ask writes one version, changing only its block's `state`, `answered_by` and `answered_at`:
+  A person's answer, resolve, decline, close or reopen of an ask writes one version, which changes only its block's `state`, `answered_by` and `answered_at` when that is the version's whole change:
   a standing approval carries to it and the row keeps its turn, but a close withdraws the row and its version carries no approval, until the reopen's carries it.
+  The version carries an approval only when the person's answer, resolve or decline is its whole change.
+  If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
   A second call does one of two things, by what the row waits on:
 
   - Calling this route again while the row waits on the agent - moved, or a thread reply newer than its last hand-back holds the turn - hands it back to the human:

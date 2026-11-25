@@ -46,10 +46,10 @@ type dismissedScaleExplained struct {
 	sql       string
 	index     string
 	// relation is the table the plan may not scan, empty for a read whose cheapest way to take a
-	// whole set at this seed is a scan of it, and onceOver a table the plan must read once rather
-	// than once per row: Mark all read's Agent read takes the person's dismissal marks as one set,
-	// and whether the planner takes that set off the index or off the table is its own business,
-	// while taking it one root at a time is what made such a read grow with the pile.
+	// whole set at this seed is a scan of it, and onceOver a table the plan may read at most once
+	// rather than once per row: Mark all read's Agent read leaves the dismissed roots out by their
+	// own column, off messages_direct_roots_live, and reads the person's dismissal marks not at all,
+	// while taking them one root at a time is what made such a read grow with the pile.
 	relation string
 	noSortOn string
 	onceOver string
@@ -687,7 +687,7 @@ func dismissedScaleStatements() []dismissedScaleExplained {
 		{"120-thread dismiss", "reply rows", inboxDismissNamedThreads,
 			"user_threads_pkey", "user_threads", "replied_at", ""},
 		{"mark all read", "reply rows", inboxReadReplyThreads, "user_threads_unread", "user_threads", "replied_at", ""},
-		{"mark all read", "agent rows", inboxReadAgentThreads, "messages_direct_roots", "", "dismissed_at", "user_agent_thread_dismissed"},
+		{"mark all read", "agent rows", inboxReadAgentThreads, "messages_direct_roots_live", "", "dismissed_at", "user_agent_thread_dismissed"},
 	}
 }
 

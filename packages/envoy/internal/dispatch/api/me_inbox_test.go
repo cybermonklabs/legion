@@ -567,9 +567,8 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 // tuple into or out of their node that an event at or below the answered horizon appended puts its
 // node among the read's entries, whatever that event's type and issue. A comment of theirs written
 // while no other transaction is open is an entry of the next read. A comment written to them while
-// an event write of Dispatch's own database stays open (holdEventWrite), the one write that holds
-// the horizon back (events.Horizon), is above the horizon the read answers then and no entry of
-// it, and is an entry once that write ends.
+// an event write of Dispatch's own database stays open (holdEventWrite) is above the horizon the
+// read answers then and no entry of it, and is an entry once that write ends.
 func meInboxAtTheHorizon(t *testing.T) {
 	live := true
 	sent := []map[string]any{}
@@ -670,8 +669,9 @@ func meInboxAtTheHorizon(t *testing.T) {
 			own.ID, writeEventOf(t, database, "comment.created", own.ID), next.Horizon)
 	}
 
-	// A comment written to them while an event write holds the horizon is above the horizon the
-	// read answers, until that write ends.
+	// A comment written to them while an event write of the server's database is open is above the
+	// horizon the read answers, until that write ends: the horizon waits on no other transaction
+	// (events.Horizon).
 	release := holdEventWrite(t, database)
 	held := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Bob writes while an event write is open.", "reply_to": thread.ID}, "bob")
 	event := writeEventOf(t, database, "comment.created", held.ID)

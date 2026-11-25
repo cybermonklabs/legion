@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A user_threads row and a comment_deliveries attempt row the release before this one moves after
@@ -150,7 +151,7 @@ func previousReleaseConn(t *testing.T, database *store.Store) *pgx.Conn {
 	if err != nil {
 		t.Fatalf("connect as the previous release: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	testcleanup.Add(t, func() { _ = conn.Close(context.Background()) })
 	return conn
 }
 

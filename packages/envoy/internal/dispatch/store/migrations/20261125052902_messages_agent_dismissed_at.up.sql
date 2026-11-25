@@ -1,0 +1,28 @@
+-- 20261125052902_messages_agent_dismissed_at.up.sql
+--
+-- INFRA-1152: messages learns whether its author dismissed it as an Agent thread:
+--   agent_dismissed_at   on a one-off root (api/replies_agent.go, myAgentRootFilter), the moment
+--                        of its author's dismissal of the thread, the dismissed_at of the
+--                        user_agent_thread_dismissed row that names the root and the author's
+--                        login, and null while no such row stands; null on every other message.
+--
+-- The Inbox's two states that answer every Agent row, state=inbox and state=unread
+-- (myAgentInboxRoots and myAgentUnreadRoots), read the person's one-off roots through
+-- messages_direct_roots (0051) and leave out the ones a dismissal mark names. No index of messages
+-- can leave the dismissed roots out while the mark is a row of another table, so both read every
+-- root the person ever sent and every mark they ever wrote: at 5,000 dismissed Agent threads,
+-- 5,020 roots and 5,000 marks for a person with 20 in their Inbox, where 250 dismissed read 270
+-- and 250. This column is the mark on the root itself, so a partial index of the live roots
+-- (20261125053341) holds the Inbox's roots and none of the dismissed ones.
+--
+-- Its one writer is the trigger 20261125053125 attaches to user_agent_thread_dismissed, which sets
+-- it on each write of the author's mark and clears it with the mark's delete, whichever build
+-- wrote the mark, and which catches up the marks already stored. No other statement writes it.
+--
+-- A nullable column with no default is a catalogue change: no row is read or rewritten, and every
+-- stored row reads null until 20261125053125's catch-up. The ALTER holds ACCESS EXCLUSIVE on
+-- messages for that catalogue write alone, under the runner's five-second lock bound, and takes no
+-- lock of any other table, so it closes no cycle with a write of the release still serving. That
+-- release names the column in no statement - it reads and writes messages by the columns it names -
+-- so it serves beside it.
+alter table messages add column agent_dismissed_at timestamptz;

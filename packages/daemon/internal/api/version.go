@@ -3691,7 +3691,7 @@ package api
 // #4049, #4495 and #4573, 192 #3993, #4175, #4182, #4193, #4273, #4392 and #4580, 193 #3659,
 // #3712, #4065, #4432, #4539 and #4553, 194 #3831 and #4030, 195 #4493 and #4590, and nothing
 // above 195.)
-// (At the forward merge of 2026-11-21 that brings legion/INFRA-1149 in at f0d08bf24f, which holds
+// (At the forward merge of 2026-11-21 that brings the node store's branch in at f0d08bf24f, which holds
 // main at f3e26096c7, main declares 202, the entry before this one, and this change takes 204 in
 // place of 196: the lowest number above main's 202 that no open pull request declares, in a
 // reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 358 pull requests
