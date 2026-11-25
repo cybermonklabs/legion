@@ -673,7 +673,7 @@ const fixRigWatchPoll = 50 * time.Millisecond
 
 // fixRigOutboxKinds are the outbox rows of each issue the watcher follows.
 var fixRigOutboxKinds = []string{string(record.OutboxKindStepRecord), string(record.OutboxKindDispatchStatus),
-	string(record.OutboxKindPlanRecord), string(record.OutboxKindFixJobRead), string(record.OutboxKindNotice)}
+	string(record.OutboxKindPlanRecord), string(record.OutboxKindFixJobRead), string(record.OutboxKindNotice), string(record.OutboxKindSupervise)}
 
 // fixRigDaemonLines are the messages of the daemon's log whose lines are facts of the walk: the
 // supervise machine's hold of a phase task for another claim's turn (supervise/delivery.go,
@@ -690,6 +690,13 @@ var fixRigDaemonLines = []string{
 	"is held before its retro",
 	"holds a task before its retro",
 	"merge state",
+	// The start executor's lines (daemon/outbox.go), the machine's lines of a delivery it holds or
+	// sends (supervise/delivery.go), and every warning and error, so a start that waits names why.
+	"outbox start",
+	"supervise: no connection",
+	"supervise: the issue has left",
+	`"level":"WARN"`,
+	`"level":"ERROR"`,
 }
 
 // fixRigNotices is each notice listener accepted, in the order it took them.
