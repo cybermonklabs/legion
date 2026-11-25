@@ -41,6 +41,7 @@ DIGEST=sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
 # fixture that means to pass writes this text; a fixture that means to be refused writes another.
 read -r -d '' CANONICAL <<'TEXT' || true
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
 TEXT
@@ -897,7 +898,7 @@ DOCKER
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the Dockerfile, the line and the option" \
-  "$(contains "$out" 'file=packages/envoy/docker/Dockerfile,line=5::.apt-get update. passes no .-o APT::Update::Error-Mode=any.')"
+  "$(contains "$out" 'file=packages/envoy/docker/Dockerfile,line=6::.apt-get update. passes no .-o APT::Update::Error-Mode=any.')"
 check "says what goes wrong, not only what is missing" \
   "$(contains "$out" 'the retry around it stops after one attempt having read no list')"
 check "names the install the unread list breaks" \
@@ -969,7 +970,7 @@ run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 list_check "$root"
 check "the install is one site, on the line it starts" \
-  "$(contains "$out" '^packages/envoy/docker/Dockerfile	6	apt-get install	-$')"
+  "$(contains "$out" '^packages/envoy/docker/Dockerfile	7	apt-get install	-$')"
 check "the package named below a comment is no command of its own" \
   "$(is "$(contains "$out" '^packages/envoy/docker/Dockerfile	[0-9]*	curl')" false)"
 
@@ -1010,7 +1011,7 @@ DOCKER
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the Dockerfile, the line and the verb" \
-  "$(contains "$out" 'file=packages/daemon/docker/worker.Dockerfile,line=5::.mise x. is retried, and that retry protects nothing')"
+  "$(contains "$out" 'file=packages/daemon/docker/worker.Dockerfile,line=6::.mise x. is retried, and that retry protects nothing')"
 check "names the cure" "$(contains "$out" 'The cure is .mise install <tool>. under the retry')"
 check "counts the one refusal" \
   "$(contains "$out" '1 download(s) outside the one retry rule')"
@@ -1054,7 +1055,7 @@ run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 list_check "$root"
 check "the install is on the list" \
-  "$(contains "$out" '^packages/daemon/docker/worker.Dockerfile	5	mise install	-$')"
+  "$(contains "$out" '^packages/daemon/docker/worker.Dockerfile	6	mise install	-$')"
 check "the resolution after it is on no list" \
   "$(is "$(contains "$out" 'mise x')" false)"
 
@@ -1493,7 +1494,7 @@ build_key_fixture "$root" 2 27
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the step's key and the ladder" \
-  "$(contains "$out" "file=.github/workflows/image.yaml,line=9::step 'Build and push' of job 'image' carries .timeout-minutes: 2., 120 s, and it builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s, the .apt-get install. at .github/docker/browser.Dockerfile:6")"
+  "$(contains "$out" "file=.github/workflows/image.yaml,line=9::step 'Build and push' of job 'image' carries .timeout-minutes: 2., 120 s, and it builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s, the .apt-get install. at .github/docker/browser.Dockerfile:7")"
 check "names the job's key, at the ladder's own minute, and the ladder" \
   "$(contains "$out" "file=.github/workflows/image.yaml,line=6::job 'image' carries .timeout-minutes: 27., 1620 s, and step 'Build and push' of job 'image' builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s")"
 check "says why one ladder" \

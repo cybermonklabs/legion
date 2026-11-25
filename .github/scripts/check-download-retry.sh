@@ -1555,9 +1555,14 @@ SOURCE_IN_LOOP = "a source inside a loop"
 # a later run of that file or that variable is refused where it runs (unnamed_runs).
 NONCALL_COMMANDS = {"echo", "grep"}
 # The canonical inline retry of a Dockerfile RUN, already in the shape the comparison uses: its
-# continuations joined and each run of blank space one space.
+# continuations joined and each run of blank space one space. Each attempt that fails prints
+# `retry: <what>: attempt <k> of 5 failed` on stderr, and the fifth then prints `<what> failed
+# after 5 attempts (last exit <s>)` too. .github/scripts/download-retry-proof.sh's `report` reads
+# those lines from an image build's log, so a build under the download-retry-images jobs' fault
+# shows which attempt each retried call reached.
 CANONICAL = (
     'retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; '
+    'echo "retry: $what: attempt $i of 5 failed" >&2; '
     '[ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; '
     'sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }'
 )

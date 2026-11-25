@@ -292,6 +292,7 @@ WORKDIR /repo
 # nothing to retry. .github/scripts/check-download-retry.sh's rule 5 is the whole reason.
 # hadolint ignore=DL3008
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
@@ -343,6 +344,7 @@ COPY docs/site/package.json docs/site/package.json
 # tens of megabytes of tarballs from the npm registry, so an attempt gets 600 s. The two frozen
 # installs below are a handful of packages each and get 300 s.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 600 "bun install" bun install --frozen-lockfile --ignore-scripts
@@ -369,6 +371,7 @@ WORKDIR /opt/omp-plugins
 COPY packages/daemon/docker/omp-plugins/package.json packages/daemon/docker/omp-plugins/bun.lock ./
 # The install retries on the 300 s bound of a small frozen install (the workspace install above).
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 300 "bun install (omp plugins)" bun install --frozen-lockfile --ignore-scripts
@@ -391,6 +394,7 @@ COPY packages/daemon/docker/codegraph/package.json packages/daemon/docker/codegr
 # The install retries on the same 300 s bound as the plugins' above; the copy out of node_modules
 # and the two version reads touch no network and stay bare.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && mkdir -p /out \
@@ -477,6 +481,7 @@ ARG GH_STACK_TOOL
 # and the index read carries this file's error-mode option.
 # hadolint ignore=DL3008
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
@@ -530,6 +535,7 @@ ARG JJ_SHA256
 ARG GH_SHA256
 ARG GH_STACK_SHA256
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
@@ -604,6 +610,7 @@ ENV GOPROXY=https://proxy.golang.org|direct
 # its CDN again and then fetches git's packages, so a retry also retries the index read.
 # hadolint ignore=DL3018
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 420 "apk add" apk add --no-cache git
@@ -619,6 +626,7 @@ COPY scripts/go-third-party-notices.sh /usr/local/bin/
 # download to separate out, so the retry wraps the script: 600 s an attempt, one module tree
 # fetched from the proxy and compiled.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 600 "go-licenses install" go-third-party-notices.sh --install
@@ -631,6 +639,7 @@ ARG GOPLS_VERSION
 # gopls downloads and builds in one act too, so the retry wraps it on the same 600 s bound; `env`
 # carries the two variables, since the retry runs its argument list as a command. `mkdir` is local.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
@@ -673,6 +682,7 @@ COPY packages/envoy/go.mod packages/envoy/go.sum packages/envoy/
 # gets 900 s — the longest bound in the file. The `find` and the `rm` that trim the cache are local
 # and bare, and so is every build below, which reads this cache and fetches nothing.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 900 "go mod download" go mod download \
@@ -789,6 +799,7 @@ ARG GO_SHA256
 # and the index read carries this file's error-mode option.
 # hadolint ignore=DL3008
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
@@ -804,6 +815,7 @@ COPY packages/daemon/docker/language-servers/package.json packages/daemon/docker
 # a fetch that exhausts its attempts names the URL it failed on, and the name cannot drift from
 # what the line fetches (dispatch://INFRA-1865, folded into dispatch://INFRA-1545).
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
@@ -903,6 +915,7 @@ RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && retu
 ARG GCLOUD_VERSION
 ARG GCLOUD_SHA256
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
@@ -963,6 +976,7 @@ RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && retu
 ARG AZURE_CLI_PYTHON_VERSION
 RUN --mount=type=bind,source=packages/daemon/docker/azure-cli/requirements.txt,target=/tmp/azure-cli/requirements.txt \
     retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
@@ -1149,6 +1163,7 @@ ARG PGDG_KEY_SHA256
 # error-mode option.
 # hadolint ignore=DL3008
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && install -d -m 0755 /etc/apt/keyrings \
@@ -1417,6 +1432,7 @@ RUN --mount=type=bind,from=plugin-deps,source=/out/playwright-core,target=/tmp/p
     --mount=type=bind,from=toolchain,source=/opt/node,target=/opt/node \
     --mount=type=bind,source=packages/daemon/docker/webkit-launch.mjs,target=/tmp/webkit-launch.mjs \
     retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
@@ -1695,6 +1711,7 @@ ENV AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt COREPACK_DEFAULT_TO_LATEST=
 # for a failure that never comes, which is why .github/scripts/check-download-retry.sh's rule 7
 # refuses one around `mise x`. Every other command here reads the image.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \

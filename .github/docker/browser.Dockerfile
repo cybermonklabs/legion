@@ -84,6 +84,7 @@ ARG RUNNER_UID=1001
 # variable, so a fetch that exhausts its attempts names what it failed on
 # (dispatch://INFRA-1545, round 37).
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eux; \

@@ -75,6 +75,7 @@ COPY docs/site/package.json docs/site/package.json
 # dependency the root lockfile pins for the four workspaces the filters below name, tens of
 # megabytes of tarballs, so an attempt gets 600 s.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 600 "bun install" bun install --frozen-lockfile --ignore-scripts \
@@ -117,6 +118,7 @@ COPY scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh /
 # download to separate out, so the retry wraps the script: 600 s an attempt, one module tree
 # fetched from the proxy and compiled.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 600 "go-licenses install" go-third-party-notices.sh --install
@@ -125,6 +127,7 @@ COPY packages/envoy/go.mod packages/envoy/go.sum ./
 # of module zips from the proxy: 600 s an attempt. The builds that follow read this cache and
 # download nothing, so they stay bare.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 600 "go mod download" go mod download
@@ -190,6 +193,7 @@ LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
 # (.github/scripts/check-download-retry.sh's rule 5). groupadd, useradd, mkdir and chown fetch
 # nothing and stay bare.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  echo "retry: $what: attempt $i of 5 failed" >&2; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
     && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
