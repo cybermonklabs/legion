@@ -32,7 +32,7 @@ func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t 
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
-		close func(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string)
+		close func(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue, baseURL string)
 	}{
 		{name: "the merge's close", close: mergeClosesTheIssue},
 		{name: "an architect's close_root", close: architectClosesTheRoot},
@@ -44,7 +44,7 @@ func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t 
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
-			tc.close(t, pool, records, engine, issue)
+			tc.close(t, pool, records, engine, issue, baseURL)
 
 			// A person leaves a comment while the row is between its read and its write: the
 			// status is untouched, and Dispatch has moved the issue's sequence on. The merge's
@@ -84,9 +84,10 @@ func TestAReopenedIssueKeepsTheStatusThePersonGaveItAndTheCloseWritesNothing(t *
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
-	mergeClosesTheIssue(t, pool, records, engine, issue)
+	mergeClosesTheIssue(t, pool, records, engine, issue, baseURL)
 
 	reopenTheIssue(t, pool, records, issue)
+	setDispatchStatus(t, baseURL, issue, "in_progress")
 
 	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		dispatchCall(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{"body": "reopening this"}, nil)
@@ -132,7 +133,7 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
-	mergeClosesTheIssue(t, pool, records, engine, issue)
+	mergeClosesTheIssue(t, pool, records, engine, issue, baseURL)
 
 	// The attempt that failed: Dispatch answered 5xx, so the row wrote nothing and waits. The run
 	// itself answers no error — a row whose attempt failed is recorded and backed off, which is
@@ -150,13 +151,14 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 	if rows := statusRowsOf(t, pool, issue); rows != 1 {
 		t.Fatalf("status rows after the failed attempt = %d, want the close still waiting for a fresh attempt", rows)
 	}
-	if got := dispatchStatusOf(t, baseURL, token, issue); got != "in_progress" {
-		t.Fatalf("Dispatch shows %s at %q after the failed attempt, want in_progress: nothing was written", issue, got)
+	if got := dispatchStatusOf(t, baseURL, token, issue); got != "testing" {
+		t.Fatalf("Dispatch shows %s at %q after the failed attempt, want testing: nothing was written", issue, got)
 	}
 
 	// The person's reopen, as a re-admission leaves it, and the row's backoff let go: the daemon
 	// that takes the row next is a fresh process, so this is the row's first attempt again.
 	reopenTheIssue(t, pool, records, issue)
+	setDispatchStatus(t, baseURL, issue, "in_progress")
 	if _, err := pool.Exec(context.Background(), "update outbox set next_at = now() where issue = $1", issue); err != nil {
 		t.Fatalf("let the row's backoff go: %v", err)
 	}
@@ -192,10 +194,9 @@ func reopenTheIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 // mergeClosesTheIssue drives the close the daemon makes of a merged issue: the merge of its pull
 // request stands it in verifying, and the read of its checks after the merge, which finds nothing
 // to wait for, closes it. Every row the merge queued is taken as run, its status write testing
-// among them, whose echo the record never saw, so Dispatch and the record both still show
-// in_progress. The close's rows of the checks' read and of close-wait.md are taken as run too, so
-// the one status row left is the close's, which the helper holds it to.
-func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string) {
+// among them, which Dispatch then shows. The close's rows of the checks' read and of close-wait.md
+// are taken as run too, so the one status row left is the close's, writing done over testing.
+func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue, baseURL string) {
 	t.Helper()
 	ctx := context.Background()
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -214,6 +215,7 @@ func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, e
 		t.Fatalf("apply the merge: %v", err)
 	}
 	finishRowsOf(t, pool, issue)
+	setDispatchStatus(t, baseURL, issue, "testing")
 	if _, err := intake.ApplyFact(ctx, pool, "outbox", "read", intake.CloseChecksRead{Issue: issue, Generation: 1, ReadAt: time.Now().Add(time.Second),
 		Answer: &record.CheckReadAnswer{Results: dispatch.IssueResults{Issue: issue}}}, engine); err != nil {
 		t.Fatalf("apply the read of the checks: %v", err)
@@ -221,7 +223,7 @@ func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, e
 	if _, err := pool.Exec(ctx, "delete from outbox where issue = $1 and kind in ('close_read', 'close_wait_publish')", issue); err != nil {
 		t.Fatalf("finish the close's other rows: %v", err)
 	}
-	wantsOneCloseRow(t, pool, issue)
+	wantsOneCloseRow(t, pool, issue, "testing")
 }
 
 // finishRowsOf deletes every outbox row of issue, as their executors finishing them does.
@@ -234,7 +236,7 @@ func finishRowsOf(t *testing.T, pool *store.Pool, issue string) {
 
 // architectClosesTheRoot drives the close an architect makes of a root that has started no phase,
 // and holds it to the one close row that leaves.
-func architectClosesTheRoot(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string) {
+func architectClosesTheRoot(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue, _ string) {
 	t.Helper()
 	ctx := context.Background()
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -249,25 +251,25 @@ func architectClosesTheRoot(t *testing.T, pool *store.Pool, records record.Store
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the architect's close = %+v, %v", result.Refusal, err)
 	}
-	wantsOneCloseRow(t, pool, issue)
+	wantsOneCloseRow(t, pool, issue, "in_progress")
 }
 
 // wantsOneCloseRow holds the close to the row it queues: one status row, of the close kind, writing
-// done over the status Dispatch shows, fenced on the generation it closed. A wrong kind is
-// reported and the case runs on, since what the kind costs is the write itself and the run that
+// done over observed, the status Dispatch shows, fenced on the generation it closed. A wrong kind
+// is reported and the case runs on, since what the kind costs is the write itself and the run that
 // follows is where that shows.
-func wantsOneCloseRow(t *testing.T, pool *store.Pool, issue string) {
+func wantsOneCloseRow(t *testing.T, pool *store.Pool, issue, observed string) {
 	t.Helper()
-	var kind, status, observed string
+	var kind, status, over string
 	var generation int64
 	if err := pool.QueryRow(context.Background(), `select payload->>'kind', payload->>'status', payload->>'observedStatus',
 		coalesce((payload->>'closeGeneration')::bigint, 0) from outbox where kind = 'dispatch_status' and issue = $1`,
-		issue).Scan(&kind, &status, &observed, &generation); err != nil {
+		issue).Scan(&kind, &status, &over, &generation); err != nil {
 		t.Fatalf("read the close row of %s: %v", issue, err)
 	}
-	if kind != string(record.CloseStatusRow) || status != "done" || observed != "in_progress" || generation != 1 {
-		t.Errorf("the close row is kind %q writing %q over %q at generation %d, want a close row writing done over in_progress at generation 1",
-			kind, status, observed, generation)
+	if kind != string(record.CloseStatusRow) || status != "done" || over != observed || generation != 1 {
+		t.Errorf("the close row is kind %q writing %q over %q at generation %d, want a close row writing done over %s at generation 1",
+			kind, status, over, generation, observed)
 	}
 	if rows := statusRowsOf(t, pool, issue); rows != 1 {
 		t.Fatalf("status rows the close queued = %d, want one", rows)
