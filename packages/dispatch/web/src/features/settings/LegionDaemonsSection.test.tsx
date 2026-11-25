@@ -137,10 +137,10 @@ const failsAtTheNetwork = () =>
 
 /** The section's two writes, by the control that makes each: Save, and a row's Remove, which
  *  takes its row away at the press, so its hold is read on the other row's Remove (`start`). */
-const savesAndRemovals = [
+const savesAndRemovals: { label: string; start: string | undefined }[] = [
   { label: "Save Legion daemon", start: undefined },
   { label: "Remove the Legion daemon of CORE", start: "Remove the Legion daemon of ACME" },
-] as const;
+];
 
 /** How many tries `writes` took between them: every call of each. */
 function triesOf(
