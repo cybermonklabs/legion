@@ -35,7 +35,7 @@ whole suite is the CI job that runs it.
 2. Name it as GitHub writes it: `<caller> / <job>` for a job of a called workflow (`test / test`).
 3. Where the repository runs a job only in its merge queue, and no label runs it on a pull
    request, the merge group is that job's only run. Write no `before_merge` check whose proof is
-   that job, and never ask a role for a run of it at the head it hands off. A check that must name
+   that job, and require no run of it at any head of the pull request. A check that must name
    that job's result is `after_merge`, and it reads the merge group of the merged commit. Where a
    label does run the job on a pull request, item 4 holds instead and the check names that label;
    a repository that keeps such a label runs that job twice for a commit that lands, which is the
