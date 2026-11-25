@@ -175,18 +175,29 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 
 // The window before this build's catch-up. This build's decisions step is held
 // (DISPATCH_TEST_HOLD_DECISIONS_STEP), so its catch-up never states on the ask's node an answer the
-// previous build records, as a step whose last tick ran before that answer has not. The previous
-// build writes the spec and a person answers its one ask there; the previous build stops and leaves
-// the fleet, with the ask's node still holding no answer; through this build an agent changes one
-// word of the spec's prose, the spec's first accepted write on a fleet of one build. The version
-// that write settles into keeps on the ask's opening line the state, the answerer and the time the
-// previous build's own version stored (R10), and none of selected, answer and invalid; and the
-// previous build's CLI then requests approval of the spec against this build's server and is
-// refused nothing.
+// previous build records, as a step whose last tick ran before that answer has not. Whether the
+// row reaches that window is the previous build's to say, and the row reads which build it runs
+// beside from what that build does, before this build starts (previousStatesAnswersOnAskNodes). A
+// build from before answers on ask nodes, as a release from before this change is, records a
+// person's answer and states none on the ask's node, so the node holds no answer until a catch-up
+// states it. A build that states them, such as this tree built as the previous build in the merge
+// group's dispatch-two-builds-same, states the answer on the ask's node as it records it, so there
+// is no window and the node holds the answer throughout.
+//
+// The previous build writes the spec and a person answers its one ask there; the previous build
+// stops and leaves the fleet, with the ask's node still holding no answer beside a build from
+// before that, and holding the answer beside one that states it; through this build an agent
+// changes one word of the spec's prose, the spec's first accepted write on a fleet of one build.
+// In both cases the version that write settles into keeps on the ask's opening line the state, the
+// answerer and the time the previous build's own version stored (R10), and none of selected,
+// answer and invalid; and the previous build's CLI then requests approval of the spec against this
+// build's server and is refused nothing.
 func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatchUp(t *testing.T) {
 	ctx := context.Background()
 	builds := newTwoBuilds(t)
 	previous := builds.startPrevious(t, nil)
+	statesAnswers := previousStatesAnswersOnAskNodes(t, ctx, builds)
+	t.Logf("the %s states a person's answer on the ask's node as it records it: %t", builds.previousName(), statesAnswers)
 	current := builds.startCurrent(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"})
 	project := uniqueProjectKey(t, "PRW")
 	previous.createProject(t, project, "The window before the catch-up")
@@ -214,9 +225,15 @@ func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatch
 
 	stop(t, previous)
 	waitForThePreviousBuildToLeaveTheFleet(t, builds)
-	// The window: the held step has stated no answer on the ask's node.
-	nodeState, _, _ := askNodeAnswerOf(t, ctx, builds, ship)
-	if nodeState == asks.StateAnswered {
+	// Beside a build that states no answer on an ask's node, the window: the held step has stated
+	// no answer on it. Beside one that states answers, the node holds the answer it recorded.
+	nodeState, nodeAnsweredBy, nodeAnsweredAt := askNodeAnswerOf(t, ctx, builds, ship)
+	if statesAnswers {
+		if nodeState != asks.StateAnswered {
+			t.Fatalf("the %s stated the answer to the probe's ask on that ask's node, and not the answer to ask %s on its own: the node holds state %q, answered_by %q and answered_at %q, want the answer it recorded",
+				builds.previousName(), ship, nodeState, nodeAnsweredBy, nodeAnsweredAt)
+		}
+	} else if nodeState == asks.StateAnswered {
 		t.Fatalf("the node of ask %s holds the previous build's answer while this build's decisions step is held: the row does not reach the window before the catch-up", ship)
 	}
 
@@ -261,6 +278,28 @@ func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatch
 	}
 	t.Logf("the previous build's CLI ran request-approval:\n%s\nthe spec's version %d, the previous build's answer:\n%s\nthe spec's version %d, after the agent's change:\n%s",
 		requested, answeredVersion, answeredMarkdown, number, markdown)
+}
+
+// previousStatesAnswersOnAskNodes answers whether the previous build states a person's answer on
+// the ask's node as it records it. Through that build it makes a project of its own and an issue
+// whose spec holds one ask, answers the ask, waits until the spec owes no settlement, and reads the
+// ask's node: state answered is a build that states the answer there itself, and any other state,
+// or none, a build from before that. It runs while the previous build's process is the only one
+// live, before this build starts, so the previous build is the only process that can have written
+// the node: this build's boot, and its decisions step even held, must not be what wrote it, and
+// neither has run yet. The probe's ask stays as it is for the rest of the row: no process answers
+// it again, and this build's held step states nothing on its node.
+func previousStatesAnswersOnAskNodes(t *testing.T, ctx context.Context, builds *twoBuilds) bool {
+	t.Helper()
+	previous := builds.previous()
+	project := uniqueProjectKey(t, "PRP")
+	previous.createProject(t, project, "Whether the previous build states answers on ask nodes")
+	issue, spec := previous.createIssueIn(t, project, "An ask the previous build answers alone", answeredBeforeTheCatchUpSpec)
+	ask := settledAskOf(t, previous, issue, "ship")
+	answerThrough(t, previous, ask, "Ship", "Ship it now.")
+	waitForNoSettlementOwed(t, ctx, builds, spec)
+	state, _, _ := askNodeAnswerOf(t, ctx, builds, ask)
+	return state == asks.StateAnswered
 }
 
 // stringAttr is node's attribute name as a string, or "" where it holds none or another kind.
