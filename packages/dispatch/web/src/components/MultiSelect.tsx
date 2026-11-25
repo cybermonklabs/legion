@@ -1193,9 +1193,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${tooltips ? inputClasses(true) : ON_PAGE.search}`}
               disabled={disabled}
               onChange={(event) => {
-                // A word typed moves the reader on from the option the list opened on, which is
+                // A word typed moves the reader on from the row the list opened on, which is
                 // no longer kept shown (`letGo`), even once the search is back where it began, and
-                // the option it marks active is shown whole once its search is drawn (`awaiting`).
+                // the row it then highlights is shown whole once its search is drawn (`awaiting`).
                 letGo(opening);
                 awaiting.current = { query: event.target.value };
                 setQuery(event.target.value);

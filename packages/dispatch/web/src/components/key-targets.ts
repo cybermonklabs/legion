@@ -2,17 +2,17 @@
  * What an element is to a key pressed on it or a `change` fired on it: whether it takes typed
  * text, whether its `change` is the commit on blur of that text, the mark of an open panel, and
  * the mark of a menu's trigger, on which a typed character is the page's key; and what a key is to
- * a text field: one that only moves (`MOVING_KEYS`), or one that writes (`writesText`). The keymap
- * reads them to leave a control its own keys (`isEditableTarget`, `features/shell/keymap.ts`) and
- * to keep a held key's repeats from the page (`Keymap.captureKeyDown`), the shared list to leave
- * the page its keys (`MultiSelect`), the composer to hold its field while a send is out
- * (`MentionComposer`), and the page's focus hand-offs to tell the reader's press from an edit
- * (`focus-place.ts`'s `isPress`). A module of its own with no import, so the panel and the focus
- * hand-offs read them without loading the keymap. A browser row that imports a control's name
- * from a module that draws a `MultiSelect` (`e2e/issue-page-h.e2e.ts` reads `repoControlName`)
- * loads the keymap all the same, through the trigger's key hint (`ShortcutHelp`); that is safe in
- * Playwright's process, since the keymap reads `import.meta.env` only where it is defined
- * (`appKeymap`).
+ * a text field: one that only moves (`MOVING_KEYS`), one that would type or delete in it whatever
+ * its modifiers (`editsText`), or one that writes (`writesText`). The keymap reads them to leave a
+ * control its own keys (`isEditableTarget`, `features/shell/keymap.ts`) and to keep a held key's
+ * repeats from the page (`Keymap.captureKeyDown`), the shared list to leave the page its keys
+ * (`MultiSelect`), the composer to hold its field while a send is out (`MentionComposer`), and the
+ * page's focus hand-offs to tell the reader's press from an edit (`focus-place.ts`'s `isPress`). A
+ * module of its own with no import, so the panel and the focus hand-offs read them without loading
+ * the keymap. A browser row that imports a control's name from a module that draws a `MultiSelect`
+ * (`e2e/issue-page-h.e2e.ts` reads `repoControlName`) loads the keymap all the same, through the
+ * trigger's key hint (`ShortcutHelp`); that is safe in Playwright's process, since the keymap
+ * reads `import.meta.env` only where it is defined (`appKeymap`).
  */
 
 /** The attribute every open panel's element carries (`AnchoredPanel` writes it): what tells the
@@ -79,16 +79,18 @@ export const MOVING_KEYS: Readonly<Record<string, true>> = {
   Tab: true,
 };
 
-/** Whether a key would write into a text field: held with no Ctrl or Cmd, a character, Enter,
- *  Backspace or Delete. A field an offer holds read only takes none of them, and says why
- *  (`KeptDraftOffers`' `typedOver`). The keymap's rule for a held key does not read it
- *  (`Keymap.captureKeyDown`): a character typed with AltGr, which Windows reports as Ctrl+Alt,
- *  repeats in the field the press was made in as a plain one does, and so does a Mac text
- *  field's own Control+H. */
-export function writesText(press: TypedKey): boolean {
+/** Whether a key would type or delete in a text field it lands in, whatever modifiers it is held
+ *  with: a character, Enter, Backspace or Delete. */
+export function editsText(press: { readonly key: string }): boolean {
   const { key } = press;
-  if (press.ctrlKey || press.metaKey) return false;
   return key.length === 1 || key === "Enter" || key === "Backspace" || key === "Delete";
+}
+
+/** Whether a key would write into a text field: held with no Ctrl or Cmd, a character, Enter,
+ *  Backspace or Delete (`editsText`). A field an offer holds read only takes none of them, and
+ *  says why (`KeptDraftOffers`' `typedOver`). */
+export function writesText(press: TypedKey): boolean {
+  return !press.ctrlKey && !press.metaKey && editsText(press);
 }
 
 /** The `<input>` types whose value is typed text alone, so that their `change` is the commit on

@@ -37,31 +37,51 @@ export function readWithinBound(read: Promise<unknown>): Promise<string | undefi
 }
 
 /**
+ * Why the latest read handed to `keep` with a reason has not settled: `keep` takes a read and
+ * why it had not settled by its bound, as `readWithinBound` answers, and keeps nothing for a read
+ * that settled in time. The page shows `unsettled` beside the sentence it shows for a read that
+ * failed. It goes once that read settles, and a later read kept with a reason puts its own reason
+ * in its place.
+ */
+export function useUnsettledRead(): readonly [
+  unsettled: string | undefined,
+  keep: (read: Promise<unknown>, reason: string | undefined) => void,
+] {
+  const [unsettled, setUnsettled] = useState<{
+    readonly read: Promise<unknown>;
+    readonly reason: string;
+  }>();
+  const keep = useCallback((read: Promise<unknown>, reason: string | undefined) => {
+    if (reason === undefined) return;
+    setUnsettled({ read, reason });
+    const settled = () => setUnsettled((current) => (current?.read === read ? undefined : current));
+    read.then(settled, settled);
+  }, []);
+  return [unsettled?.reason, keep];
+}
+
+/**
  * A control's hold through the re-read that draws what its write changed, bounded by
  * `readWithinBound`. `holdThrough` answers once its read settles or the bound runs out, whichever
  * is first, so a write that returns it from `onSuccess` stays pending, and its control held, for
  * that long and no longer. While it waits, the hold keeps the armed hand-off of the reader's
  * press that made the write live (`holdHandOff`), so a row or a form that read takes away is still
  * the press's doing (`causedByReader`). `unsettled` is why the read of the latest hold that ran out
- * has not settled. The page shows it beside the sentence it shows for a read that failed. It goes
- * once that read settles, and a later hold that runs out puts its own reason in its place.
+ * has not settled (`useUnsettledRead`).
  */
 export function useReadBound(): readonly [
   unsettled: string | undefined,
   holdThrough: (read: Promise<unknown>) => Promise<void>,
 ] {
-  const [unsettled, setUnsettled] = useState<{
-    readonly read: Promise<unknown>;
-    readonly reason: string;
-  }>();
-  const holdThrough = useCallback(async (read: Promise<unknown>) => {
-    const answered = holdHandOff();
-    const reason = await readWithinBound(read);
-    answered();
-    if (reason === undefined) return;
-    setUnsettled({ read, reason });
-    const settled = () => setUnsettled((current) => (current?.read === read ? undefined : current));
-    read.then(settled, settled);
-  }, []);
-  return [unsettled?.reason, holdThrough];
+  const [unsettled, keep] = useUnsettledRead();
+  const holdThrough = useCallback(
+    async (read: Promise<unknown>) => {
+      const answered = holdHandOff();
+      const reason = await readWithinBound(read);
+      answered();
+      keep(read, reason);
+    },
+    [keep]
+  );
+  return [unsettled, holdThrough];
 }

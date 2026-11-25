@@ -1096,29 +1096,25 @@ test("a held Ctrl+-, which no binding names, leaves each repeat on the page to t
   }
 });
 
-test("in a text box the press was made in, a held character typed with AltGr, which Windows reports as Ctrl+Alt, repeats as a plain character does", () => {
+test.each([
+  [
+    "in a text box the press was made in, a held character typed with AltGr, which Windows reports as Ctrl+Alt, repeats as a plain character does",
+    "@",
+    { altKey: true, code: "KeyQ", ctrlKey: true },
+    "AltGr+Q, which types @",
+  ],
+  [
+    "in a text box the press was made in, a held Control+H, a Mac text field's own delete, repeats",
+    "h",
+    { code: "KeyH", ctrlKey: true },
+    "Control+H",
+  ],
+] as const)("%s", (_title, key, init, message) => {
   const input = document.createElement("input");
   const release = heldPage([], [input]);
   try {
     act(() => input.focus());
-    expect(
-      hold("@", 3, { altKey: true, code: "KeyQ", ctrlKey: true }),
-      "AltGr+Q, which types @"
-    ).toEqual({ acted: 3, reached: 3 });
-  } finally {
-    release();
-  }
-});
-
-test("in a text box the press was made in, a held Control+H, a Mac text field's own delete, repeats", () => {
-  const input = document.createElement("input");
-  const release = heldPage([], [input]);
-  try {
-    act(() => input.focus());
-    expect(hold("h", 3, { code: "KeyH", ctrlKey: true }), "Control+H").toEqual({
-      acted: 3,
-      reached: 3,
-    });
+    expect(hold(key, 3, init), message).toEqual({ acted: 3, reached: 3 });
   } finally {
     release();
   }

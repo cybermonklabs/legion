@@ -11,7 +11,7 @@ import {
 } from "react";
 
 import { api } from "../../api/client";
-import { readWithinBound } from "../../api/read-bound";
+import { readWithinBound, useUnsettledRead } from "../../api/read-bound";
 import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { useTooltips } from "../../components/tooltips";
@@ -304,14 +304,11 @@ function ChangeComposer({
   // `readingRef` is the same fact for a press that lands before the render shows it.
   const [reading, setReading] = useState(false);
   const readingRef = useRef(false);
-  // Why the latest press's document read had not settled by the request deadline, kept with
-  // that read: the form says why the change it sent named no place until the read settles, as
-  // `useReadBound` keeps its reason. That hook is not used here: its hold on the press's
-  // hand-off would end with the read, before the comment the press sends has answered.
-  const [unread, setUnread] = useState<{
-    readonly read: Promise<unknown>;
-    readonly reason: string;
-  }>();
+  // Why the latest press's document read had not settled by the request deadline: the form says
+  // why the change it sent named no place until that read settles. `useReadBound` is not used
+  // here, since its hold on the press's hand-off would end with the read, before the comment the
+  // press sends has answered.
+  const [unsettled, keepUnsettled] = useUnsettledRead();
   // Whether this press has spent `SEND_DEADLINE_MS` across its document read and its comment
   // together: a read that runs to its own deadline followed by an offline comment must not hold
   // Send for a second one. The timer is the press's, and goes once the write settles.
@@ -401,7 +398,7 @@ function ChangeComposer({
         // takes it where the quote stands once, and refuses it where the quote stands more than
         // once, which the form says in the page's words with the draft kept. A read the bound
         // ended is said beside Send change too, in the words the page says for a read of the
-        // decisions document that failed and then why it has not settled (`unread`).
+        // decisions document that failed and then why it has not settled (`unsettled`).
         readingRef.current = true;
         setReading(true);
         setPressLate(false);
@@ -417,12 +414,7 @@ function ChangeComposer({
         void readWithinBound(read).then((reason) => {
           readingRef.current = false;
           setReading(false);
-          if (reason !== undefined) {
-            setUnread({ read, reason });
-            void read.then(() =>
-              setUnread((current) => (current?.read === read ? undefined : current))
-            );
-          }
+          keepUnsettled(read, reason);
           const anchor = changeAnchor(
             decision,
             queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
@@ -455,9 +447,9 @@ function ChangeComposer({
         rows={3}
         value={body}
       />
-      {unread === undefined ? null : (
+      {unsettled === undefined ? null : (
         <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
-          {`${STATE_LINES.decisions_document_unreadable} ${unread.reason}.`}
+          {`${STATE_LINES.decisions_document_unreadable} ${unsettled}.`}
         </p>
       )}
       {send.error === null ? null : (

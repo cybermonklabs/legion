@@ -609,6 +609,9 @@ export function ApprovalChip({
     !requestChangesOpen && review.isError && apiErrorCodeIn(review.error, VERSION_MOVED)
       ? review.error.message
       : null;
+  // The class of a line under the actions that says what failed: that refusal, or why the reads
+  // a landed review made stale have not settled (`unsettled`).
+  const failureLineClass = `basis-full text-sm ${page === null ? dangerText : ON_PAGE.failure}`;
   // The pane's head draws its actions as compact as the controls beside them, so the two and the
   // pill hold one line of the head's place.
   const actionSize = pane ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm md:py-1";
@@ -702,18 +705,12 @@ export function ApprovalChip({
             {boxed(requestChangesAction)}
           </ActionsGroup>
           {movedRefusal === null ? null : (
-            <p
-              className={`basis-full text-sm ${page === null ? dangerText : ON_PAGE.failure}`}
-              role="alert"
-            >
+            <p className={failureLineClass} role="alert">
               {movedRefusal}
             </p>
           )}
           {unsettled === undefined ? null : (
-            <p
-              className={`basis-full text-sm ${page === null ? dangerText : ON_PAGE.failure}`}
-              role="alert"
-            >
+            <p className={failureLineClass} role="alert">
               {`${APPROVAL_NOT_READ} ${unsettled}.`}
             </p>
           )}

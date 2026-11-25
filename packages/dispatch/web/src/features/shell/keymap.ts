@@ -1,6 +1,7 @@
 import { createContext, useContext, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 
 import {
+  editsText,
   MOVING_KEYS,
   PANEL_ATTRIBUTE,
   takesText,
@@ -419,17 +420,6 @@ function physicalKey(event: KeyboardEvent): string {
   return event.code === "" ? event.key : event.code;
 }
 
-/** Whether a key would type or delete in a text field it lands in, whatever modifiers it is held
- *  with: a character, Enter, Backspace or Delete. A repeat that lands in a field its press was not
- *  made in is kept from it by what it would do there, not by its modifiers
- *  (`Keymap.captureKeyDown`), so `writesText`, which takes a key held with Ctrl or Cmd for no
- *  typing, is not the test: a character typed with AltGr, which Windows reports as Ctrl+Alt,
- *  types too. */
-function editsText(event: KeyboardEvent): boolean {
-  const { key } = event;
-  return key.length === 1 || key === "Enter" || key === "Backspace" || key === "Delete";
-}
-
 /** `event` as the registry matches it. The space bar types `" "`, which no key text can hold (a
  *  chord splits on whitespace) and which would read as a key that holds its Shift already, as
  *  `?` does: as `Space` it has a name of its own, and Space and Shift+Space are two keys. */
@@ -681,9 +671,12 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   };
 
   /**
-   * Whether a repeat of a held key goes on to the page: the rule the architect ruled on
-   * 2026-11-25T09:24Z, which keeps a repeat from the page only where it would act there. `press`
-   * is the key's held press (`captureKeyDown`), none once the page has lost its release.
+   * Whether a repeat of a held key goes on to the page. A held key's repeats are no presses (R5,
+   * R8), so a repeat is kept from the page only where it would act there, but for a binding that
+   * repeats by design (`KeyBinding.repeats`), and for a text field's own Backspace and Delete and
+   * a multi-line field's or an editor's Enter, held with no Ctrl or Cmd (no Alt for Enter), on the
+   * element the press was made in, which repeat as typing does. `press` is the key's held press
+   * (`captureKeyDown`), none once the page has lost its release.
    *
    * Tab is kept, so that a fresh press is needed to leave the next layer, and a key that moves
    * goes on to whatever has the focus now (`MOVING_KEYS`). A key a binding names goes on only to
@@ -716,11 +709,11 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       return press?.event.defaultPrevented !== true && !(field && editsText(event));
     }
     if (!press.event.defaultPrevented) return true;
-    // The one way on from a press a control took, as the rule had it before the ruling: a text
-    // field's own Backspace and Delete, and an editor's Enter, held with no Ctrl or Cmd. An editor
-    // takes Backspace at a paragraph's start to join it to the one before, and Enter to break a
-    // paragraph, and each repeat does it again, as typing does; a field's Ctrl or Cmd key that
-    // its handler took, such as the one that sends, acts once.
+    // The one way on from a press a control took: a text field's own Backspace and Delete, and an
+    // editor's Enter, held with no Ctrl or Cmd. An editor takes Backspace at a paragraph's start
+    // to join it to the one before, and Enter to break a paragraph, and each repeat does it again,
+    // as typing does; a field's Ctrl or Cmd key that its handler took, such as the one that sends,
+    // acts once.
     return (
       field &&
       !event.ctrlKey &&

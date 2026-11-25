@@ -269,9 +269,10 @@ export function IssueHeader({
   // parent forms' submits need no guard of their own: `useIssueDrafts` keeps a draft submitted
   // meanwhile and sends it once the writes out have landed, never beside one.
   const fieldHeld = updateIssue.isPending && !updateIssue.late;
-  // A status write is out within its deadline, or the rule's question is checking or asking about
-  // one: no second status write can start. The check is a dry run held to the request deadline
-  // (`dryRunStatusChange`), so it holds no longer than the write does.
+  // A write of the header's fields (its status, title, route or parent) is out within its
+  // deadline, or the rule's question is checking or asking about a status write: no second status
+  // write can start. The check is a dry run held to the request deadline (`dryRunStatusChange`),
+  // so it holds no longer than the write does.
   const statusBusy = fieldHeld || statusMove.pending !== undefined;
   // No default key: closing and reopening an issue are too consequential for a single key, so
   // they are rows of `$mod+k` until a person gives them a key, through the same handlers and the
@@ -313,10 +314,11 @@ export function IssueHeader({
   const statusShown = statusText(statusValue);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const [statusOpen, setStatusOpen] = useState(false);
-  // A closed issue's Status takes no pick, and while a status write of the header is out within
-  // its deadline or the rule's question is checking or asking about one (`statusBusy`) it takes no
-  // second one. Either way it is held (`aria-disabled`), never disabled: it keeps the focus the
-  // reader's pick handed back to it, and a press of it or `s` opens nothing.
+  // A closed issue's Status takes no pick, and neither does it while a write of the header's
+  // fields (its status, title, route or parent) is out within its deadline or the rule's question
+  // is checking or asking about a status write (`statusBusy`). Either way it is held
+  // (`aria-disabled`), never disabled: it keeps the focus the reader's pick handed back to it, and
+  // a press of it or `s` opens nothing.
   const statusHeld = isClosed || statusBusy;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
@@ -619,11 +621,11 @@ export function IssueHeader({
               back is Reopen. A pick goes through the rule's question (`requestStatus`), then
               writes through `updateIssueGuard` (`requestStatusSubmit`), and a pick of the status
               it shows writes nothing, as a select set to the value it holds fires nothing. Held
-              on a closed issue and while a status write within its deadline or the rule's
-              question is out (`statusHeld`), so the focus a status pick hands back stays where it
-              went, and a list that stood open as the hold began picks nothing. It takes D5's rules
-              (`STATUS_MENU`): the issue page's `s` opens it on the status held, and every close
-              gives the focus back where it was as the list opened. */}
+              on a closed issue and while a write of the header's fields within its deadline or
+              the rule's question is out (`statusHeld`), so the focus a status pick hands back
+              stays where it went, and a list that stood open as the hold began picks nothing. It
+              takes D5's rules (`STATUS_MENU`): the issue page's `s` opens it on the status held,
+              and every close gives the focus back where it was as the list opened. */}
           <span
             className={`flex min-h-11 shrink-0 items-center rounded-full border text-sm font-semibold uppercase tracking-wide md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >

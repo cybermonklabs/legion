@@ -279,6 +279,8 @@ export function IssuePriorityLine({
   // after it, the reason with `max-w-full` - rather than push the line past its row. Outside,
   // each part stays whole, as on `main`.
   const wraps = page !== null;
+  // The class of a refusal's reason and of why a read has not settled: both are values (`wraps`).
+  const reasonClass = `${wraps ? "max-w-full [overflow-wrap:anywhere] " : "shrink-0 "}text-xs ${failed}`;
 
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -480,7 +482,7 @@ export function IssuePriorityLine({
       ) : null}
       {write.error === null ? null : (
         <span
-          className={`${wraps ? "max-w-full [overflow-wrap:anywhere] " : "shrink-0 "}text-xs ${failed}`}
+          className={reasonClass}
           role="alert"
           {...(failureIsPageWords ? page?.pageChrome : page?.authorText)}
         >
@@ -490,11 +492,7 @@ export function IssuePriorityLine({
       {/* Only inside `NoTooltips` does the line hold through the reads its write made stale, so
           only there does a read outlive its hold and say why here, until it settles. */}
       {unsettled === undefined ? null : (
-        <span
-          className={`${wraps ? "max-w-full [overflow-wrap:anywhere] " : "shrink-0 "}text-xs ${failed}`}
-          role="alert"
-          {...page?.pageChrome}
-        >
+        <span className={reasonClass} role="alert" {...page?.pageChrome}>
           {`${prioritiesUnreadable} ${unsettled}.`}
         </span>
       )}
