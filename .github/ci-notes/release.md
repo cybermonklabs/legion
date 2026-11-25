@@ -538,3 +538,36 @@ the job unless the tag names exactly the digest the release note and the attesta
 The release's body gets one "## Worker image" section, naming the digest the version tag
 points at now. release-section replaces a section that heading already holds, which is what
 a whole-run rerun of this image needs, and says there why the write is a replace.
+
+## What the smoke test holds legion version to
+
+`legion version` names the release, the commit and the linked plugin pair. Then `legion version
+--contracts` is held line by line to the stamp the build linked: `contract` L plus the stamp's count
+of ids, L the greatest number of packages/contracts/fixtures/daemon-api/released-contracts.json;
+`order stamped`, for the stamp `v1:` of no entry too; and each id of the stamp in its order, the
+k-th numbered L + k and followed by its slug. An archive linked with no stamp prints `order id`, so
+it fails here even where its ids fall in the stamp's order.
+
+## Why the packed manifest points at the dist bundle
+
+The committed manifest keeps the source path (extensions/envoy.ts) so repo checkouts (dev sessions)
+load the source without a build. The published tarball ships only the self-contained dist bundle,
+and scripts/pi-plugin-prepack.sh refuses to pack any other omp.extensions. Nothing restores the
+manifest: this job's tree is discarded, and no job commits a version, so the committed manifest
+keeps whatever it last held.
+
+## Why pi_legion_build writes repository.url into the manifest
+
+As in pi_envoy_build, and for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
+gives: npm refuses a publish with provenance whose repository.url is not the publishing
+repository's, case for case, and the publish job packs nothing of its own. The committed manifest
+keeps today's repository; this writes whichever one the job runs in, and this job's tree is
+discarded.
+
+## Where legion_build reads the contract entries' merge order
+
+The stamp of this commit's contract entries in main's merge order, which the build links in
+(.github/scripts/release-build-legion.sh says why it refuses to build without one). The checkout's
+fetch-depth 0 holds this commit's history and main's: it fetches every branch into
+refs/remotes/origin, so refs/remotes/origin/main is there, the main the script reads. As the tags
+are, it is read before setup-go, so no dependency code has run yet.

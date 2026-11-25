@@ -172,11 +172,7 @@ jobs:
       - name: Resolve plugin versions for the smoke test and worker image
         id: plugin_versions
         run: .github/scripts/release-plugin-versions.sh
-      # The stamp of this commit's contract entries in main's merge order, which the build links in
-      # (.github/scripts/release-build-legion.sh says why it refuses to build without one). The
-      # checkout's fetch-depth 0 holds this commit's history and main's: it fetches every branch
-      # into refs/remotes/origin, so refs/remotes/origin/main is there, the main the script reads.
-      # As the tags are, it is read before setup-go, so no dependency code has run yet.
+      # why: .github/ci-notes/release.md#where-legion_build-reads-the-contract-entries-merge-order
       - name: Read the contract entries' merge order
         id: contract_order
         if: steps.version.outputs.skip != 'true'
@@ -212,13 +208,7 @@ jobs:
           LEGION_CONTRACT_ORDER: ${{ steps.contract_order.outputs.stamp }}
         run: .github/scripts/release-build-legion.sh
 
-      # `legion version` names the release, the commit and the linked plugin pair. Then `legion
-      # version --contracts` is held line by line to the stamp the build linked: `contract` L plus
-      # the stamp's count of ids, L the greatest number of
-      # packages/contracts/fixtures/daemon-api/released-contracts.json; `order stamped`, for the
-      # stamp `v1:` of no entry too; and each id of the stamp in its order, the k-th numbered L + k
-      # and followed by its slug. An archive linked with no stamp prints `order id`, so it fails
-      # here even where its ids fall in the stamp's order.
+      # why: .github/ci-notes/release.md#what-the-smoke-test-holds-legion-version-to
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
         env:
@@ -354,11 +344,7 @@ jobs:
       - name: Point extensions at the packed bundle
         if: steps.version.outputs.skip != 'true'
         run: |
-          # The committed manifest keeps the source path (extensions/envoy.ts) so repo checkouts
-          # (dev sessions) load the source without a build. The published tarball ships only the
-          # self-contained dist bundle, and scripts/pi-plugin-prepack.sh refuses to pack any other
-          # omp.extensions. Nothing restores the manifest: this job's tree is discarded, and no job
-          # commits a version, so the committed manifest keeps whatever it last held.
+          # why: .github/ci-notes/release.md#why-the-packed-manifest-points-at-the-dist-bundle
           jq '.omp.extensions = ["dist/envoy.js"]' \
             packages/pi-envoy/package.json > tmp.json \
             && mv tmp.json packages/pi-envoy/package.json
@@ -486,12 +472,7 @@ jobs:
       - name: Point the manifest at the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # As in pi_envoy_build, and for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
-          # gives: npm refuses a publish with
-          # provenance whose repository.url is not the publishing repository's, case for case, and
-          # the publish job packs nothing of its own. The committed manifest keeps today's
-          # repository; this writes whichever one the job runs in, and this job's tree is
-          # discarded.
+          # why: .github/ci-notes/release.md#why-pi_legion_build-writes-repositoryurl-into-the-manifest
           url=$(.github/scripts/repo-paths.sh repository_url)
           jq --arg u "$url" '.repository.url = $u' \
             packages/pi-legion/package.json > tmp.json \
