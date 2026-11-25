@@ -142,7 +142,10 @@ skill's cases (`cases.ts`), one JSON object per line.
 - In every stage, a case one of whose captures needs a directory no read can give (the commit
   holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
   as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
-  started again skips it. A stage left unscreened (an arm lacks its judged runs after its 5 extra
+  started again skips it. So is, as `legion-tool-undefined`, a case one of whose captures is of
+  a Legion pane whose context installs `pi-legion` as an extension and whose body defines no
+  `legion` tool in either of its two attempts (below), its drop naming the arm and each attempt's
+  stderr lines. A stage left unscreened (an arm lacks its judged runs after its 5 extra
   runs) counts for nothing in the score, unless its runs show it can never be judged: an arm's
   runs that read skill files past the last answered round drop its case as `reads-past-last-round`
   (below); else a stage in which the provider refused, on a content policy (a stream error whose
@@ -201,7 +204,8 @@ skill's cases (`cases.ts`), one JSON object per line.
   the verdict line under `confirm` above in its place), ending with how many of the skill's
   screened cases have a listing that could not be measured (no listing measure, or one that says
   so); the drops per judge control and the drops counted as `model-not-served`, as
-  `unreadable-directory`, as `listing-misses`, as `listing-adds`, as `injection-unrebuildable`, the
+  `unreadable-directory`, as `legion-tool-undefined`, as `listing-misses`, as `listing-adds`, as
+  `injection-unrebuildable`, the
   last by kind (a case under each kind it holds), as `path-form`, by the arm whose text holds the
   file, as
   `reads-past-last-round` and as `provider-refused`; the verdict line also counts the screened
@@ -268,7 +272,15 @@ ends, and is ended after 10 minutes (`AFTER_CASE_TIMEOUT_MS`). Captures are kept
 `<out>/captures/`; a capture that is not there yet is made with Oh My Pi and needs `--models`:
 `--omp`, else `$LEGION_OMP_PATH`, else the `omp` on PATH, taken as an
 absolute path; a command given `--models` when none of them names one is refused (exit 2), and
-`load` reads Oh My Pi the same way. A saved capture is read back and not made again; the
+`load` reads Oh My Pi the same way. A capture of a Legion pane (any role but the controller)
+whose context installs `pi-legion` as an extension must send that plugin's `legion` tool, which
+the plugin defines at the end of its session start: a body without it (Oh My Pi goes on past a
+session start that threw, saying `Extension error` on stderr) is refused and the arm captured
+once more by a fresh run, each attempt kept in the record's `legionAttempts` (its tool count,
+whether it defines `legion`, its `[legion]` and `Extension error` lines of stderr), and a second
+refusal saves nothing and stops the case: `behaviour` drops it as `legion-tool-undefined`, and
+`load` fails that task. A context that installs no `pi-legion`, or installs it as skills only, is
+not refused. A saved capture is read back and not made again; the
 installed copies of the profile's other skills that its record names, which its replays answer a
 read of such a skill from, are not in it but in the cache (`<cache-dir>/skills/<key>`), which is
 not kept with `--out`. So where the cache lacks one of them (on a new machine, say), the case's

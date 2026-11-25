@@ -35,7 +35,7 @@ import {
   textDigest,
 } from "./cli";
 import { loadConfig } from "./config";
-import { cacheKey } from "./context";
+import { cacheKey, skillFrontmatter } from "./context";
 import { countSql } from "./countsql";
 import { GATEWAY_TRIES } from "./gateway";
 import { NOTHING_REPLY } from "./judge";
@@ -1036,7 +1036,7 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("case c09: not run");
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 1 unscreened, 1 not run`
+      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 1 unscreened, 1 not run`
     );
     expect(lines).toContain(
       `judge controls failed, by control (a case can fail more than one): the real step not judged pass 1, the violating step not judged fail 1, the reply "${NOTHING_REPLY}" not judged fail 0`
@@ -1427,7 +1427,7 @@ describe("behaviour", () => {
       "case c-unserved: dropped at screen: model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves"
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 300_000);
 
@@ -1471,7 +1471,137 @@ describe("behaviour", () => {
     expect(reported.code).toBe(0);
     expect(reported.stdout).toContain(`case c04: dropped at screen: ${dropped}; screen: not run\n`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
+    );
+  }, 120_000);
+
+  // Catches: a Legion pane's capture whose pi-legion defined no legion tool in either attempt
+  // ending the whole screen in place of its case, or a drop of it that report does not count.
+  test("a case whose Legion pane's capture defines no legion tool in either of its two attempts is dropped as legion-tool-undefined, naming each attempt's stderr lines; a run started again skips it, and report counts it", async () => {
+    const s = scenario("legion-tool", LOSS_SKILL(), [{ id: "c04" }]);
+    answer = behaviourStandIn;
+    const commit = "0123456789abcdef";
+    // c04 in a Legion implementer pane whose profile installs pi-legion as an extension: a module
+    // that does nothing, since the stand-in Oh My Pi below loads no extension.
+    const [c04] = s.cases;
+    const legionCase = {
+      ...c04,
+      context: "legion:acme:implementer",
+      profile: {
+        ...c04?.profile,
+        plugins: [{ repo: "acme/legion", commit, path: "packages/pi-legion", name: "pi-legion" }],
+        appendSystemPrompt: "You are a made-up role of a made-up project.",
+      },
+    };
+    writeFileSync(s.casesFile, `${JSON.stringify(legionCase)}\n`);
+    const repos = path.join(s.dir, "repos");
+    const beta = path.join(repos, "acme", "skills", commit, "skills/beta");
+    writeSkill(beta, {
+      "SKILL.md": "---\nname: beta\ndescription: Use for the beta greeting.\n---\n",
+    });
+    writeSkill(path.join(repos, "acme", "legion", commit, "packages/pi-legion"), {
+      "package.json": JSON.stringify({
+        name: "@acme/pi-legion",
+        files: ["dist"],
+        omp: { extensions: ["dist/legion.js"] },
+      }),
+      "dist/legion.js": "export default function legion() {}\n",
+    });
+    // Oh My Pi's stand-in, in place of standInContext's: it answers --version, gives the natives
+    // cache (omp-natives.ts) the one native its comment says it embeds, and as the capture run
+    // sends the turn's request with two tools and no legion tool, and writes on stderr a line of
+    // the plugin's, one of Oh My Pi's on a session start that threw, and one of neither.
+    const bin = path.join(s.dir, "bin");
+    mkdirSync(bin, { recursive: true });
+    const { models } = standInContext(s, "c04", bin);
+    writeFileSync(
+      models,
+      "providers:\n  anthropic:\n    baseUrl: http://127.0.0.1:9\n    api: anthropic-messages\n    models:\n      - {id: claude-sonnet-5-5}\n"
+    );
+    const said = [
+      "[legion] stand-in: the daemon refused the registration",
+      "Extension error (dist/legion.js): Error: the stand-in's session start failed",
+    ];
+    const turn = path.join(bin, "turn.ts");
+    writeFileSync(
+      turn,
+      `await (await fetch(process.env.LEGION_DAEMON_URL + "/v1/messages", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    model: "claude-sonnet-5-5",
+    system: [{ type: "text", text: "A stand-in system prompt." }],
+    tools: [{ name: "read" }, { name: "bash" }],
+    messages: [{ role: "user", content: "A stand-in turn." }],
+  }),
+})).text();
+console.error(${JSON.stringify(said[0])});
+console.error("a stand-in line of neither");
+console.error(${JSON.stringify(said[1])});
+`
+    );
+    const omp = path.join(bin, "omp");
+    writeFileSync(
+      omp,
+      `#!/bin/sh
+# filename: "pi_natives.linux-x64-modern.node", size: 5,
+case "$1" in
+--version) echo 'omp 0.0.0 (stand-in)' ;;
+config) mkdir -p "$HOME/.omp/natives/0.0.0" && printf stand >"$HOME/.omp/natives/0.0.0/pi_natives.linux-x64-modern.node" ;;
+*) exec ${JSON.stringify(process.execPath)} ${JSON.stringify(turn)} ;;
+esac
+`,
+      { mode: 0o755 }
+    );
+    // Each listed skill's hint in the cache, as a capture before would have left it, so the
+    // capture makes no hint run.
+    for (const [name, dir] of [
+      ["alpha", s.old],
+      ["beta", beta],
+    ] as const) {
+      const { description } = skillFrontmatter(dir);
+      const key = cacheKey("omp 0.0.0 (stand-in)", name, description);
+      writeSkill(path.join(s.dir, "cache", "hints"), {
+        [`${key}.json`]: JSON.stringify({
+          omp: "omp 0.0.0 (stand-in)",
+          name,
+          description,
+          ompKey: cacheKey("made-up Oh My Pi key", name),
+          hint: `Use for the ${name} work.`,
+          model: "anthropic/claude-sonnet-5-5",
+          writtenAt: "2026-11-22T00:00:00.000Z",
+          kept: true,
+        }),
+      });
+    }
+    // The natives cache under the row's directory, on the scratch's filesystem.
+    const env = { ...ENV, XDG_CACHE_HOME: path.join(s.dir, "xdg-cache") };
+    const args = behaviour("screen", s, "--models", models, "--omp", omp, "--repos", repos);
+
+    const first = await cli(args, env);
+    expect({ code: first.code, stderr: first.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = said.map((line) => JSON.stringify(line)).join(" ");
+    const attempt = (n: number) =>
+      `attempt ${n}: its body defines 2 tools, legion not among them, and its stderr's [legion] and Extension error lines are ${lines}`;
+    const dropped = `legion-tool-undefined: case c04 arm old: the captured body is refused: a Legion implementer pane whose context installs pi-legion as an extension must send pi-legion's legion tool, and the body of none of its 2 attempts defines it: ${attempt(1)}; ${attempt(2)}`;
+    const c = result(s.out, "c04");
+    expect([c.dropped, c.droppedAt, c.controls?.hold, c.stages]).toEqual([
+      dropped,
+      "screen",
+      true,
+      {},
+    ]);
+    expect(first.stdout).toContain(`case c04: dropped: ${dropped};`);
+
+    const again = await cli(args, env);
+    expect({ code: again.code, stderr: again.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(again.stdout).toContain(`case c04: dropped before, skipped: ${dropped}`);
+
+    const reported = await cli(report(s));
+    expect(reported.code).toBe(0);
+    expect(reported.stdout).toContain(`case c04: dropped at screen: ${dropped}; screen: not run\n`);
+    expect(reported.stdout).toContain(
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 legion-tool-undefined, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 120_000);
 
@@ -1741,6 +1871,8 @@ describe("behaviour", () => {
 /** A made-up drop of a case whose context needs a directory no read gives. */
 const UNREADABLE =
   "unreadable-directory: acme/skills at 0123456789abcdef: skills/beta cannot be read: GitHub cuts the tree of skills/beta short even one level at a time";
+/** The report's count of `legion-tool-undefined` drops when there is none. */
+const NO_LEGION_TOOL = "0 legion-tool-undefined";
 /** The report's count of `injection-unrebuildable` drops, by kind, when there is none. */
 const NO_INJECTION =
   "0 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0)";
@@ -1926,7 +2058,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at confirm: ${UNREADABLE}; screen: old 10/10, new 0/10, none 0/10: informative, flagged`
     );
     expect(lines).toContain(
-      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: none: flagged case c07 could not be confirmed (${UNREADABLE})${unmeasured(7, 7)}`
@@ -2040,7 +2172,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at screen: ${misses}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
     );
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 1 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(1, 6, 0, 1)}`
@@ -2090,7 +2222,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at screen: ${adds}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
     );
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 1 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
 
     // A case not screened yet is dropped by screen before any call.
@@ -2212,7 +2344,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       "case c06: screen: old 10/10, new 10/10, none 0/10: informative, not flagged"
     );
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       "outside recorded listing: 3 of 30 runs of 1 recorded-prompt case (the capture sends the session's recorded system prompt whole) read a skill the recorded listing lacks; by skill and answer (copy: an installed copy; absent: the unknown-skill reply): delta (0 copy, 2 absent), gamma (2 copy, 0 absent)"
@@ -2511,7 +2643,7 @@ describe("behaviour: confirm --confirm-flagged", () => {
       "case c07: screen: old 10/10, new 0/10, none 0/10: informative, flagged; confirm: old 40/40, new 0/40: a loss"
     );
     expect(lines).toContain(
-      `cases: 7 screened, 7 informative, 1 flagged, 1 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+      `cases: 7 screened, 7 informative, 1 flagged, 1 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines.filter((line) => line.startsWith("verdict: "))).toEqual([CASE_RESULT_ONLY]);
 
@@ -2764,7 +2896,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
       `case c-invoked: dropped at screen: ${fault}`
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
     // The other stages read the file too, and do not refuse it.
     const confirm = await cli(behaviour("confirm", s));
@@ -2829,7 +2961,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout).toContain(`case c-autoload: dropped at screen: ${fault}`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 60_000);
 });
@@ -2894,7 +3026,7 @@ describe("behaviour: a case whose new text holds a file it reads by path in a fo
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout).toContain(`case c-wide: dropped at screen: ${fault}`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, 1 path-form (old 0, new 1), ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, 1 path-form (old 0, new 1), ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 60_000);
 });
@@ -3215,7 +3347,7 @@ describe("behaviour: a case the provider refuses on every replay", () => {
       `case c04: dropped at screen: ${SCREEN_REFUSED}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (${3 * SCREEN_ALL} runs with no verdict, run again)\n`
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
     );
   }, 120_000);
 
@@ -3249,7 +3381,7 @@ describe("behaviour: a case the provider refuses on every replay", () => {
     expect(again.stdout).toContain(`case c04: dropped before, skipped: ${SCREEN_REFUSED}`);
     const reported = await cli(report(s));
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
     );
   }, 60_000);
 
@@ -3394,7 +3526,7 @@ describe("behaviour: a case the provider refuses on every replay", () => {
     }
     const reported = await cli(report(s));
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 2 unscreened, 0 not run`
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 2 unscreened, 0 not run`
     );
   }, 60_000);
 });

@@ -487,6 +487,48 @@ function builtPlugins(names: readonly string[]): Profile["plugins"] {
   }));
 }
 
+/** The profile's entry of a stand-in of the Legion plugin, named `pi-legion`, in the made-up
+ *  repository acme/<repo> at COMMIT: a plugin whose one extension is `extension` (the text of
+ *  its module, `dist/legion.js`), or, with none, a plugin of skills only (its package.json names
+ *  no `omp`). */
+function standInLegion(repo: string, extension?: string): Profile["plugins"][number] {
+  writeTree(path.join(dir, "repos/acme", repo, COMMIT, "packages/pi-legion"), {
+    "package.json": JSON.stringify({
+      name: "@acme/pi-legion",
+      files: ["dist"],
+      ...(extension === undefined ? {} : { omp: { extensions: ["dist/legion.js"] } }),
+    }),
+    ...(extension === undefined ? {} : { "dist/legion.js": extension }),
+  });
+  return { repo: `acme/${repo}`, commit: COMMIT, path: "packages/pi-legion", name: "pi-legion" };
+}
+
+/** The capture of the old arm of F1's case `id` in a Legion implementer pane whose profile
+ *  installs `plugin`, with the options of `captures()`. */
+function legionCapture(id: string, plugin: Profile["plugins"][number]): Promise<Capture> {
+  const base = f1Case(id);
+  const c: Case = {
+    ...base,
+    context: "legion:acme:implementer",
+    profile: {
+      ...base.profile,
+      plugins: [plugin],
+      appendSystemPrompt: "You are a made-up role of a made-up project.",
+    },
+  };
+  const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
+  return captureBody(c, buildArm(c, "old", dirs, dir), {
+    omp: binary(),
+    outDir: path.join(dir, "out"),
+    scratchDir: path.join(dir, "scratch"),
+    cacheDir: path.join(dir, "cache"),
+    source: localSource(path.join(dir, "repos")),
+    models: path.join(dir, "models.yml"),
+    hints,
+    session: SESSION,
+  });
+}
+
 describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
   test(
     "the recorded body lists each installed skill under the hint the profile's cache holds, never its description",
@@ -865,9 +907,10 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       );
       const { record, body } = capture;
       expect(record.context.plugins.map((plugin) => plugin.as)).toEqual(["extension", "extension"]);
+      // The plugins' own words on a tool they left out come first, so a failure prints them.
+      expect(record.pluginTools.leftOut).toEqual([]);
       expect(record.pluginTools.tools).toContain("legion");
       expect(record.pluginTools.envoy).toContain("envoy_send");
-      expect(record.pluginTools.leftOut).toEqual([]);
       // Every endpoint the pane was given is a listener of the capture's own on 127.0.0.1, and
       // the stand-in daemon took the registration the tool waits for.
       expect(record.legion?.role).toBe("implementer");
@@ -881,6 +924,118 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       expect(texts(body.messages).some((text) => text.includes("127.0.0.1"))).toBe(false);
       expect(texts(body).some((text) => text.includes("placeholder prompt"))).toBe(false);
       expect(record.exit.code === 0 || record.exit.reason !== "").toBe(true);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a Legion pane's capture saved with a body that lacks the legion tool, every session
+  // of the pane having had it, when pi-legion's session start throws and Oh My Pi goes on.
+  test(
+    "a Legion pane's capture whose pi-legion throws in its session start on every start is refused after its second attempt, naming the plugin and each attempt's own error text, and saves nothing",
+    async () => {
+      await captures();
+      const plugin = standInLegion(
+        "legion-throws",
+        `export default function legion(pi) {
+  pi.on("session_start", async () => {
+    throw new Error("the stand-in pi-legion's session start failed");
+  });
+}
+`
+      );
+      // In one value, so a capture that is not refused shows what it saved of the plugin.
+      const failed = await legionCapture("legion-throws-1", plugin).then(
+        (made) => made.record.pluginTools,
+        (caught: unknown) => caught
+      );
+      expect(failed).toBeInstanceOf(Error);
+      const message = String((failed as Error).message);
+      expect(message).toStartWith(
+        "case legion-throws-1 arm old: the captured body is refused: a Legion implementer pane whose context installs pi-legion as an extension must send pi-legion's legion tool, and the body of none of its 2 attempts defines it: attempt 1: its body defines "
+      );
+      const [first = "", second = "", ...more] = message.split(/attempt \d: /).slice(1);
+      expect(more).toEqual([]);
+      for (const attempt of [first, second]) {
+        expect(attempt).toContain("Extension error");
+        expect(attempt).toContain("the stand-in pi-legion's session start failed");
+      }
+      const files = capturePaths(path.join(dir, "out"), "legion-throws-1", "old");
+      expect([existsSync(files.body), existsSync(files.record)]).toEqual([false, false]);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a capture that takes the first body a Legion pane sends, so one start of pi-legion
+  // that threw saves a body with no legion tool; or a second attempt that leaves no record of the
+  // first.
+  test(
+    "a Legion pane's capture whose pi-legion throws in its first session start only is captured again, and its record keeps both attempts: the first with no legion tool and the plugin's error text, the second with the tool",
+    async () => {
+      await captures();
+      // The stand-in's state, outside the capture's scratch: whether it has started once. It
+      // registers its tool as pi-legion's own is registered (src/tools.ts), inactive until its
+      // session start activates it, so Oh My Pi sends it as a tool of the body and not as an
+      // xd:// device, as it sends a tool registered without `defaultInactive`.
+      const started = path.join(dir, "legion-once", "started");
+      mkdirSync(path.dirname(started), { recursive: true });
+      const plugin = standInLegion(
+        "legion-once",
+        `import { existsSync, writeFileSync } from "node:fs";
+
+export default function legion(pi) {
+  pi.on("session_start", async () => {
+    if (!existsSync(${JSON.stringify(started)})) {
+      writeFileSync(${JSON.stringify(started)}, "started\\n");
+      throw new Error("the stand-in pi-legion's first session start failed");
+    }
+    pi.registerTool({
+      name: "legion",
+      label: "legion",
+      description: "A made-up stand-in of the Legion plugin's tool.",
+      defaultInactive: true,
+      parameters: pi.zod.object({}),
+      execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    });
+    await pi.setActiveTools([...pi.getActiveTools(), "legion"]);
+  });
+}
+`
+      );
+      const { record } = await legionCapture("legion-once-1", plugin);
+      expect(record.pluginTools.leftOut).toEqual([]);
+      expect(record.pluginTools.tools).toContain("legion");
+      const [first, second, ...more] = record.legionAttempts ?? [];
+      expect(more).toEqual([]);
+      expect([first?.legion, second?.legion]).toEqual([false, true]);
+      expect(first?.stderr.join("\n")).toContain(
+        "the stand-in pi-legion's first session start failed"
+      );
+      expect(second?.stderr).toEqual([]);
+      // The second body defines the first's tools and the plugin's one more; the record's other
+      // fields are the second attempt's, two capture runs and no hint run.
+      expect(second?.tools).toBe((first?.tools ?? 0) + 1);
+      expect(record.pluginTools.tools).toHaveLength(second?.tools ?? 0);
+      expect(record.runs).toBe(2);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a refusal that takes every Legion pane's body with no legion tool for pi-legion's
+  // failure, though its context does not install pi-legion as an extension, so its body never
+  // had the tool.
+  test(
+    "a Legion pane's capture whose context installs pi-legion as skills only is neither refused nor made twice, and records no attempts",
+    async () => {
+      await captures();
+      const { record } = await legionCapture("legion-skills-1", standInLegion("legion-skills"));
+      expect(record.context.plugins.map((plugin) => [plugin.name, plugin.as])).toEqual([
+        ["pi-legion", "skills only"],
+      ]);
+      expect({
+        attempts: record.legionAttempts,
+        runs: record.runs,
+        legion: record.pluginTools.legion,
+      }).toEqual({ attempts: null, runs: 1, legion: false });
     },
     ROW_TIMEOUT_MS
   );

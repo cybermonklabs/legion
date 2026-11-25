@@ -112,8 +112,12 @@
  *   In any stage, a case one of whose captures needs a directory no read can give (context.ts's
  *   UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree
  *   short even read alone) is dropped as `unreadable-directory`, its drop naming the repository,
- *   the commit and the path, and a run started again skips it. Each drop records its stage
- *   (`droppedAt`). A case dropped at screen is never informative; one dropped at confirm or
+ *   the commit and the path, and a run started again skips it; so is, as `legion-tool-undefined`,
+ *   a case one of whose captures is of a Legion pane whose context installs pi-legion as an
+ *   extension and whose body defines no `legion` tool in either of its two attempts (capture.ts's
+ *   LegionToolUndefined), its drop naming the arm and each attempt's stderr lines. Each drop
+ *   records its stage (`droppedAt`). A case dropped at screen is never informative; one dropped
+ *   at confirm or
  *   control keeps its screen's passes in the score, so a flagged one that cannot be confirmed
  *   gives its skill no verdict unless another case is a confirmed loss, and a dropped control
  *   case gives its place to the next case of the control rule's order (score.ts's `scoreSkill`).
@@ -150,8 +154,9 @@
  *   passes of each stage it ran; each confirm of a case
  *   with more than one, and the pooled passes of a case whose three confirms are pooled; the drops
  *   by the judge controls (and by each control), by `model-not-served`, `unreadable-directory`,
- *   `listing-misses`, `listing-adds`, `injection-unrebuildable` (by kind), `path-form` (by arm),
- *   `reads-past-last-round` and `provider-refused`; the control case, and each dropped case it
+ *   `legion-tool-undefined`, `listing-misses`, `listing-adds`, `injection-unrebuildable` (by
+ *   kind), `path-form` (by arm), `reads-past-last-round` and `provider-refused`; the control case,
+ *   and each dropped case it
  *   replaced; the skill's verdict and its reason (score.ts; `keeps` is printed "no loss detected
  *   by the registered rule"), with how many of its screened cases have a listing that could not be
  *   measured, how many installed names their recorded listing gave them (`fromRecorded`), and how
@@ -302,6 +307,8 @@ import {
   captureBody,
   capturePaths,
   gatewayHints,
+  LEGION_TOOL_UNDEFINED,
+  LegionToolUndefined,
   listingOf,
   restoreCopies,
   type SessionFacts,
@@ -1765,9 +1772,11 @@ async function runRound(
  * ends; the stage's last state is returned unsaved, for `finishCase` to write. Each phase's time
  * is counted in `phases`. A case whose context holds a directory no read can give (context.ts's
  * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of it short
- * even read alone) is returned dropped, with that reason and `stage`, before any run, so a run
- * started again skips it. A stage left unscreened by an arm whose runs read skill files past the
- * last answered round is returned dropped under READS_PAST_LAST_ROUND (`readsPastDrop`); else one
+ * even read alone), or one whose Legion pane's capture defines no `legion` tool in either attempt
+ * (capture.ts's LegionToolUndefined, under LEGION_TOOL_UNDEFINED), is returned dropped, with that
+ * reason and `stage`, before any run, so a run started again skips it. A stage left unscreened by
+ * an arm whose runs read skill files past the last answered round is returned dropped under
+ * READS_PAST_LAST_ROUND (`readsPastDrop`); else one
  * in each of whose arms that lack their judged runs the provider refused, on a content policy,
  * every run with no verdict, under PROVIDER_REFUSED (`refusedDrop`). A stage it starts records
  * this runner (`r.runner`), and a confirm it runs or goes on with under `--confirm-flagged`
@@ -1839,7 +1848,9 @@ async function runStage(
             }
           : error instanceof UnreadableDirectory
             ? { dropped: `${UNREADABLE_DIRECTORY}: ${error.message}` }
-            : undefined;
+            : error instanceof LegionToolUndefined
+              ? { dropped: `${LEGION_TOOL_UNDEFINED}: ${error.message}` }
+              : undefined;
       if (dropped === undefined) throw error;
       phases.captureMs[name] = performance.now() - started;
       countReads();
@@ -2878,7 +2889,7 @@ function reportCommand(b: Behaviour, requestLog: string): void {
       `${arm} ${formed.filter((reason) => reason.startsWith(`${PATH_FORM}: ${arm}: `)).length}`
   ).join(", ");
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${droppedAs(LISTING_ADDS)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LEGION_TOOL_UNDEFINED)}, ${droppedAs(LISTING_MISSES)}, ${droppedAs(LISTING_ADDS)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
   );
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
   // round still only read skill files: an arm that keeps the agent reading acts differently.
