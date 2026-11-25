@@ -41,9 +41,15 @@ type documentSocketTokenRig struct {
 	// Its own server is sent no socket; a test that needs a person's agent token mints it there
 	// (asPerson), on the database this server reads too.
 	tokens *brokerTokenRig
-	// serviceTokens is the issuer of the service-account tokens this server verifies.
-	serviceTokens *serviceTokenIssuer
-	sessions      *store.PgSessionStore
+	// serviceTokens is the issuer of the service-account tokens this server verifies, and
+	// serviceVerifies the verifier it verifies them with, counting the tokens it is asked to
+	// verify.
+	serviceTokens   *serviceTokenIssuer
+	serviceVerifies *countedServiceVerifier
+	// tokenLookups counts each statement the server's pool runs that looks a bearer up among the
+	// personal tokens (agentTokenLookup).
+	tokenLookups *agentTokenLookups
+	sessions     *store.PgSessionStore
 	// logins is the API's Identity: the cookie identity the document service shares, counting
 	// the lookups made through it (countedLogins).
 	logins *countedLogins
@@ -75,8 +81,9 @@ const documentSocketPerson = "alice@d.example"
 func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, beats clock.Clock, options ...func(*ciphertoken.Options)) *documentSocketTokenRig {
 	t.Helper()
 	ctx := context.Background()
-	rig := &documentSocketTokenRig{heartbeats: &heartbeatCalls{}, serviceTokens: newServiceTokenIssuer(t)}
-	rig.tokens = newBrokerTokenRig(t, append([]func(*ciphertoken.Options){timeBrokerCalls(t, rig.heartbeats)}, options...)...)
+	rig := &documentSocketTokenRig{heartbeats: &heartbeatCalls{}, serviceTokens: newServiceTokenIssuer(t), tokenLookups: &agentTokenLookups{}}
+	rig.tokens = newBrokerTokenRigOn(t, testServerOptions{tracer: rig.tokenLookups}, append([]func(*ciphertoken.Options){timeBrokerCalls(t, rig.heartbeats)}, options...)...)
+	rig.serviceVerifies = &countedServiceVerifier{ServiceTokenVerifier: rig.serviceTokens.verifier(t)}
 	database := rig.tokens.database
 	rig.sessions = store.NewPgSessionStore(database.Pool)
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
@@ -86,7 +93,7 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, beats cloc
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: rig.logins, AgentTokens: sharedAgentTokens(t, "agent-token"),
-		ServerURL: testServerURL, Docs: documents, Events: broker, OIDC: rig.serviceTokens.verifier(t),
+		ServerURL: testServerURL, Docs: documents, Events: broker, OIDC: rig.serviceVerifies,
 		BrokerTokens: rig.tokens.deps.BrokerTokens, StreamHeartbeat: heartbeat, Clock: beats,
 	})
 	if err != nil {
@@ -414,18 +421,21 @@ func timeBrokerCalls(t *testing.T, heartbeats *heartbeatCalls) func(*ciphertoken
 // writes whether the broker answered the token not live.
 type introspectionRefusedKey struct{}
 
-// openDocument opens the spec's document socket as the dashboard's editor does, with the
-// person's cookie and every header of beside on the upgrade, and closes it when the test ends.
-func (rig *documentSocketTokenRig) openDocument(t *testing.T, beside http.Header) *syncedPeer {
+// openDocument opens room's document socket as the dashboard's editor does, with every header of
+// beside on the upgrade, and the person's cookie beside them when withCookie, and closes it when
+// the test ends.
+func (rig *documentSocketTokenRig) openDocument(t *testing.T, room string, withCookie bool, beside http.Header) *syncedPeer {
 	t.Helper()
 	headers := beside.Clone()
 	if headers == nil {
 		headers = http.Header{}
 	}
-	headers.Set("Cookie", rig.cookie.Name+"="+rig.cookie.Value)
+	if withCookie {
+		headers.Set("Cookie", rig.cookie.Name+"="+rig.cookie.Value)
+	}
 	peer := &syncedPeer{
-		wsURL: "ws" + strings.TrimPrefix(rig.server.URL, "http") + "/ws/doc/" + rig.artifactID, sockets: rig.sockets,
-		headers: headers, artifactID: rig.artifactID, doc: crdt.New(),
+		wsURL: "ws" + strings.TrimPrefix(rig.server.URL, "http") + "/ws/doc/" + room, sockets: rig.sockets,
+		headers: headers, artifactID: room, doc: crdt.New(),
 	}
 	peer.connect(t)
 	t.Cleanup(peer.close)
@@ -496,7 +506,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 			const token = "a-token-sent-beside-the-cookie"
 			rig.tokens.broker.Says(token, beside.answer(caller.jkt))
 			presented := caller.presenting(t, http.MethodGet, "/ws/doc/"+rig.artifactID, token, nil)
-			peer := rig.openDocument(t, presentedHeaders(presented))
+			peer := rig.openDocument(t, rig.artifactID, true, presentedHeaders(presented))
 			rig.heartbeats.record()
 
 			// While the cookie resolves the socket outlives several heartbeats and still
@@ -562,7 +572,7 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 			fake := clocktest.New(time.Now())
 			opened := fake.Now()
 			rig := newDocumentSocketTokenRig(t, heartbeat, fake)
-			peer := rig.openDocument(t, beside.headers(t, rig))
+			peer := rig.openDocument(t, rig.artifactID, true, beside.headers(t, rig))
 
 			// Four of the server's heartbeats, each of which re-checks the cookie: the heartbeat
 			// armed after them proves the first three checks found it resolving, since a check that

@@ -925,11 +925,9 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
 	}); ok {
-		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
-		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
-		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
+		// A document service that serves no socket mounts none. The chain that admits a socket,
+		// a sign-in or a broker-issued token, is documentSocketHandler's (document_socket.go).
+		mux.Handle("GET "+documentSocketPattern, s.documentSocketHandler(websocket.ServeHTTP))
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s

@@ -2303,10 +2303,12 @@ func TestRevokedCookieIsRejectedAcrossDispatchSurfaces(t *testing.T) {
 	}
 }
 
-// The document socket takes a signed-in person's cookie and nothing else (INFRA-264). The shared
-// agent token the HTTP API accepts is no credential for it: the handshake is refused, where the
-// same room admits the cookie. A bearer once named its own session in a header the socket read,
-// which made it a second, weaker door into Dispatch.
+// The document socket takes a sign-in or an access token the secrets broker issued under DPoP, and
+// the shared agent token the HTTP API accepts is no credential for it (INFRA-264): the handshake is
+// refused 401 DOC_SOCKET_CREDENTIAL_REFUSED, as JSON, where the same room admits the cookie. A
+// bearer once named its own session in a header the socket read, which made it a second, weaker
+// door into Dispatch. A bearer beside a cookie that resolves is not read at all: the cookie's
+// person is who the connection is.
 func TestTheDocumentSocketTakesACookieAndNotTheSharedAgentToken(t *testing.T) {
 	t.Parallel()
 	handler, _, cookie, request := newCookieServer(t)
@@ -2337,11 +2339,17 @@ func TestTheDocumentSocketTakesACookieAndNotTheSharedAgentToken(t *testing.T) {
 	if connection != nil {
 		_ = connection.Close()
 	}
-	if err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("the document socket with the shared agent token: response=%#v err=%v, want a refused handshake (401)", response, err)
+	if response == nil {
+		t.Fatalf("the document socket with the shared agent token got no answer: %v", err)
+	}
+	var refusal refusalAnswer
+	if decodeErr := json.NewDecoder(response.Body).Decode(&refusal); err == nil || decodeErr != nil ||
+		response.StatusCode != http.StatusUnauthorized || refusal.Code != "DOC_SOCKET_CREDENTIAL_REFUSED" {
+		t.Fatalf("the document socket with the shared agent token: status=%d code=%q (%v, %v), want a refused handshake, 401 DOC_SOCKET_CREDENTIAL_REFUSED as JSON",
+			response.StatusCode, refusal.Code, err, decodeErr)
 	}
 	// The same room admits the person the browser signs in as, and a bearer beside that cookie is
-	// no second credential: the person is who the connection is.
+	// not read: the person is who the connection is.
 	for name, header := range map[string]http.Header{
 		"the signed-in person's cookie":             {"Cookie": []string{cookie.Name + "=" + cookie.Value}},
 		"that cookie beside the shared agent token": {"Cookie": []string{cookie.Name + "=" + cookie.Value}, "Authorization": []string{"Bearer agent-token"}},
