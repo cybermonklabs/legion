@@ -2,7 +2,7 @@ package textcheck
 
 // This test reads the done-by-checks migration through migrations.WayBack, as the other ways back
 // of this package do, and the guide under ../../../.., so the guide is its one row.
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:496 reads it under ../../../.. for TestTheDoneByChecksWayBackIsOneTextInTheHeaderAndTheGuide (wayBackBlockOfTheGuide, way_back_doc_test.go:190)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestTheDoneByChecksWayBackIsOneTextInTheHeaderAndTheGuide (through `packages/daemon/internal/textcheck/way_back_doc_test.go#wayBackBlockOfTheGuide`)
 
 import "testing"
 
