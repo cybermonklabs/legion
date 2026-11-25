@@ -201,7 +201,8 @@
 #                                 agent (as ENVOY_NATS_URL) get this URL, so never give a pod's own
 #                                 ENVOY_NATS_URL or a shared hub here. The batch provisions it with
 #                                 every bucket a listener copies before its listener starts
-#                                 (fixturebuckets), so it must be on this machine's loopback
+#                                 (fixturebuckets), so it must name one server, with no `,` list
+#                                 nats.go would dial any server of, on this machine's loopback
 # Set both and the batch starts no container, so it needs neither docker nor a docker daemon. It
 # needs psql and python3 instead: it reads the Postgres URL with python3 and libpq, and reaches the
 # server with psql. Set one without the other and the batch ignores it and starts both
@@ -936,13 +937,17 @@ nats_ready() {
 # this machine's loopback as fixturebuckets reads it (bus.LocalNATSURL): localhost, or a loopback
 # address, read from the URL and never resolved, its root dot dropped. The host is what follows
 # the last `@` of the authority, as Go's net/url reads it, so it never holds the URL's user info. A
-# URL it cannot read prints nothing and fails. python3 reads the URL from its environment, never
-# from its arguments: a given URL can carry a password or a token, and every user of this machine
-# reads a process's arguments.
+# URL it cannot read prints nothing and fails, and so does a URL that holds a `,`: nats.go splits
+# its URL on `,` into a list of servers and dials any of them, so the one host read here would not
+# be the one server dialed. python3 reads the URL from its environment, never from its arguments:
+# a given URL can carry a password or a token, and every user of this machine reads a process's
+# arguments.
 nats_url_host() {
   NATS_URL_HOST_URL=$1 python3 -c '
 import ipaddress, os, sys, urllib.parse
 raw = os.environ["NATS_URL_HOST_URL"].strip()
+if "," in raw:
+    sys.exit(1)
 if "://" not in raw:
     raw = "nats://" + raw
 try:
@@ -991,10 +996,11 @@ connections_needed() {
 # connection string each run's Dispatch gets (own_dispatch), and refuses a value that string
 # cannot carry, so such a URL is refused here, before anything starts, and not in every run.
 #
-# A given NATS must be a server on this machine's loopback: the batch provisions it with every
-# bucket a listener copies (fixturebuckets), which refuses any other server. services_up reads its
-# host with nats_url_host beside the Postgres URL's checks, and refuses any other host there,
-# before anything starts or connects.
+# A given NATS must be one server, on this machine's loopback: the batch provisions it with every
+# bucket a listener copies (fixturebuckets), which refuses a list of servers and any server off
+# loopback. services_up refuses both beside the Postgres URL's checks, before anything starts or
+# connects: a URL that holds a `,`, which nats.go reads as a list it dials any server of, and a host
+# nats_url_host does not read as loopback.
 services_up() {
   evidence=$S
   local parallel=${SKILL_SCENARIOS_PARALLEL:-5} per_run needs admits fits pg_port nats_port pg_host nats_host run_url tool rest param key
@@ -1021,6 +1027,8 @@ services_up() {
     done
     require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" "each run creates a database there" || fail "$pg_host"
     run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
+    [[ $SKILL_SCENARIOS_NATS_URL != *,* ]] ||
+      fail "SKILL_SCENARIOS_NATS_URL names a list of servers (it holds a ','), and nats.go would dial any of them: the batch provisions one NATS of its own with every bucket a listener copies, so give it that server alone"
     nats_host=$(nats_url_host "$SKILL_SCENARIOS_NATS_URL") ||
       fail "SKILL_SCENARIOS_NATS_URL must name 127.0.0.1, localhost or ::1: it names ${nats_host:+the host }${nats_host:-no host the batch can read}, and the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback"
     connections_needed

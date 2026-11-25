@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/nats-io/nats.go"
 
@@ -51,6 +52,13 @@ func run(args []string, stdout io.Writer) error {
 	}
 	if *url == "" || flags.NArg() > 0 {
 		return fmt.Errorf("usage: fixturebuckets -url nats://127.0.0.1:<port> [-replicas N], or FIXTUREBUCKETS_URL in place of -url")
+	}
+	// nats.go splits its URL on ',' into a pool it dials in random order, while the loopback check
+	// below reads one host, the one after the authority's last '@'. A fixture provisions one
+	// server, its own, so a list is refused whole rather than each server read: nothing a fixture
+	// runs gives it one, and no reading of the list can drift from the one nats.go makes.
+	if strings.Contains(*url, ",") {
+		return fmt.Errorf("the URL names a list of servers (it holds a ','), and nats.go would dial any of them: a fixture provisions one server, its own, so give it that server alone")
 	}
 	server := bus.NATSURLWithoutUserinfo(*url)
 	if !bus.LocalNATSURL(*url) {

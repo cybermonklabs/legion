@@ -841,6 +841,27 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     }
   });
 
+  // Catches: a given NATS that names a list of servers. nats.go splits its URL on ',' and dials
+  // any server of the list, while the loopback check reads the one host after the authority's
+  // last '@', so nats://x@<hub>,y@127.0.0.1 passed it and fixturebuckets could provision the hub.
+  // services_up refuses a list before psql runs or a URL is written, naming no user info.
+  test("refuses a NATS URL that names a list of servers before psql runs or the URL is written", () => {
+    const withToken = (hostPort: string, token: string) => {
+      const url = new URL(`nats://${hostPort}`);
+      url.username = token;
+      return url.href;
+    };
+    const nats = `${withToken("db.example:4222", "x")},${withToken("127.0.0.1:4222", "y").replace("nats://", "")}`;
+    expect({ nats, ...up("postgres://u:p@127.0.0.1:5432/postgres", nats) }).toEqual({
+      nats,
+      code: 1,
+      stderr:
+        "skill-scenarios: SKILL_SCENARIOS_NATS_URL names a list of servers (it holds a ','), and nats.go would dial any of them: the batch provisions one NATS of its own with every bucket a listener copies, so give it that server alone\n",
+      psqlRan: false,
+      written: [],
+    });
+  });
+
   /** services_up given a loopback Postgres URL and natsUrl, past every check to the provisioning
    * of that NATS: a psql that answers 500 to `SHOW max_connections`, a NATS probe that answers,
    * and a go that builds a fixturebuckets that fails, as the real one does on a server it cannot

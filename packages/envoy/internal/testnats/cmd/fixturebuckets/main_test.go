@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
 
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -19,6 +23,38 @@ func withPassword(t *testing.T, raw string) string {
 	}
 	parsed.User = url.UserPassword("user", "s3cret")
 	return parsed.String()
+}
+
+// withToken is the server hostPort as a NATS URL whose user info is token alone, which nats.go
+// reads as a token.
+func withToken(hostPort, token string) string {
+	return (&url.URL{Scheme: "nats", User: url.User(token), Host: hostPort}).String()
+}
+
+// A URL that names a list of servers is refused, and nothing is provisioned. nats.go splits its
+// URL on ',' into a pool it dials in random order, while the loopback check reads one host, the
+// one after the authority's last '@'. So nats://x@<hub>,y@<loopback> passed that check, and the
+// fixture could provision the hub. Here the list's loopback server is the test's own, which
+// nats.go reaches when the other does not resolve, so a fixture that dialed the list provisions it.
+func TestFixturebucketsRefusesAListOfServers(t *testing.T) {
+	_, uri := testnats.Start(t)
+	own := strings.TrimPrefix(uri, "nats://")
+	list := withToken("db.example:4222", "x") + "," + strings.TrimPrefix(withToken(own, "y"), "nats://")
+	var out bytes.Buffer
+	err := run([]string{"-url", list}, &out)
+	const want = "names a list of servers"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("fixturebuckets answered %v and printed %q for a list of servers, want a refusal that %s", err, out.String(), want)
+	}
+	conn := testnats.Connect(t, uri)
+	defer conn.Close()
+	js, jsErr := conn.JetStream()
+	if jsErr != nil {
+		t.Fatalf("jetstream: %v", jsErr)
+	}
+	if _, err := js.StreamInfo(bustest.MarkerStream); !errors.Is(err, natsgo.ErrStreamNotFound) {
+		t.Fatalf("the list's loopback server holds %s (read: %v): the refused fixture provisioned it", bustest.MarkerStream, err)
+	}
 }
 
 // fixturebuckets names the server it provisions, or refuses, without the URL's user info: a rig
