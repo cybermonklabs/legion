@@ -43,6 +43,7 @@
       "!packages/daemon/internal/capabilities/testdata/web-search-open-planner.json",
       "!packages/daemon/internal/runtime/tmux/testdata/golden/launch-baseline-no-experiment.json",
       "!packages/envoy/going/testdata/filtered-answers.json",
+      "!packages/envoy/internal/cipherclient/testdata/gcloud-credential-case-distinct-headers.json",
       "!packages/envoy/internal/dispatch/api/testdata/search_split/**",
       "!packages/envoy/internal/explaintest/testdata/**"
     ]
