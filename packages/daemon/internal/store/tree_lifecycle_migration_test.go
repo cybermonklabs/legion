@@ -16,6 +16,7 @@ import (
 // refused as unbound and its next start as having no lifecycle. The project controller's claim
 // (0032, on no tree) opens no lifecycle and binds none, and its launch is never refused for it.
 func TestTheLifecycleMigrationOpensEpochOneForTreesAdmittedBeforeIt(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 32)
