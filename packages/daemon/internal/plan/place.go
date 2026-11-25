@@ -24,22 +24,24 @@ type Place struct {
 }
 
 // Places is where each task block of one version stands, by its id. blocks is the version's
-// typed blocks in document order, each id once, each task block's Parent set by its reader. A
-// task block whose Parent is no task block of blocks is a task at the top: no Parent, a typed
-// block that is no task block, or an id no block holds, which FromBlocks keeps for Validate. A
-// task block under a task with a sub-owner (`owner`) is a part of that task, and one under a task
-// with no sub-owner is an element of it. A task block under an element is an element of that
-// element's task. So a part of a part with a sub-owner is a part of it, at any depth.
+// typed blocks in document order, each id once, and parents the id of the block each task block
+// stands directly under, by its id, as FromBlocks reads it (ParentOf); a block with no entry
+// stands under no block. A task block whose parent is no task block of blocks is a task at the
+// top: no parent, a typed block that is no task block, or an id no block holds, which FromBlocks
+// keeps for Validate. A task block under a task with a sub-owner (`owner`) is a part of that task,
+// and one under a task with no sub-owner is an element of it. A task block under an element is an
+// element of that element's task. So a part of a part with a sub-owner is a part of it, at any
+// depth.
 //
 // It errs where task blocks stand under each other in a cycle, which gives none of them a place,
 // naming them from the first in the document's order, and where a task block stands under itself.
 //
-// Before Dispatch serves the tree of an issue, each Parent comes from the block's `parent`
+// Before Dispatch serves the tree of an issue, each parent comes from the block's `parent`
 // (ParentOf), and the version Dispatch gives holds its typed blocks alone. So a `parent` that
 // names a heading of the plan's document names an id no block holds, as a deleted block does, and
 // Validate refuses it. That is the limit of the document's read: the tree read gives the node
 // each block stands under, and a task block under a heading is then a task at the top.
-func Places(blocks []Block) (map[string]Place, error) {
+func Places(blocks []Block, parents map[string]string) (map[string]Place, error) {
 	tasks := make(map[string]Block, len(blocks))
 	for _, block := range blocks {
 		if block.Type == TaskBlockType {
@@ -47,7 +49,7 @@ func Places(blocks []Block) (map[string]Place, error) {
 		}
 	}
 	for _, block := range blocks {
-		switch cycle := parentCycle(block, tasks); {
+		switch cycle := parentCycle(block, tasks, parents); {
 		case len(cycle) == 1:
 			return nil, fmt.Errorf("task block %s stands under itself, so it has no place in the plan", block.ID)
 		case cycle != nil:
@@ -61,7 +63,7 @@ func Places(blocks []Block) (map[string]Place, error) {
 			return place
 		}
 		place := Place{Kind: PlaceTop}
-		if above, ok := tasks[tasks[id].Parent]; ok {
+		if above, ok := tasks[parents[id]]; ok {
 			switch upper := placeOf(above.ID); {
 			case upper.Kind == PlaceElement:
 				place = Place{Kind: PlaceElement, Task: upper.Task}
@@ -82,14 +84,15 @@ func Places(blocks []Block) (map[string]Place, error) {
 
 // parentCycle is the task blocks of the cycle that block's chain of parents closes back at block,
 // in the order of the chain from block, or nil where block is no task block or its chain closes
-// no cycle through it. tasks is the version's task blocks by id. A chain that runs into a cycle
-// it is not on answers nil: the walk from a block of that cycle finds it.
-func parentCycle(block Block, tasks map[string]Block) []string {
+// no cycle through it. tasks is the version's task blocks by id, and parents each one's parent
+// (Places). A chain that runs into a cycle it is not on answers nil: the walk from a block of that
+// cycle finds it.
+func parentCycle(block Block, tasks map[string]Block, parents map[string]string) []string {
 	if block.Type != TaskBlockType {
 		return nil
 	}
 	chain := []string{block.ID}
-	for above, ok := tasks[block.Parent]; ok; above, ok = tasks[above.Parent] {
+	for above, ok := tasks[parents[block.ID]]; ok; above, ok = tasks[parents[above.ID]] {
 		if above.ID == block.ID {
 			return chain
 		}

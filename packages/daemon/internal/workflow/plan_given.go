@@ -120,10 +120,10 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		if err != nil {
 			return givenVersion{}, nil, err
 		}
-		if takesNoPlan(group) && (refusal != nil || !given.retextsAlone()) {
-			return givenVersion{}, intake.PlanNotTaken(issue.Key, group), nil
-		}
 		if takesNoPlan(group) {
+			if refusal != nil || !given.retextsAlone() {
+				return givenVersion{}, intake.PlanNotTaken(issue.Key, group), nil
+			}
 			given.source = record.PlanSourceDefault
 		}
 	}
@@ -207,7 +207,7 @@ type writtenVersion struct {
 // each other task it changes takes the steps its block now names, and each task it removes is
 // deleted. It answers what it read of the version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
-	version, tasks, steps := givenRows(fact, given.source, given.stored, given.changed, e.cfg.DefaultSteps, e.now())
+	version, tasks, steps := givenRows(fact, given, e.cfg.DefaultSteps, e.now())
 	var removed []string
 	var written writtenVersion
 	if given.stored != nil {
@@ -330,27 +330,27 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 	return held
 }
 
-// givenRows is the rows of fact's version, given at now with source (givenVersion.source) over
-// stored, the plan in force (nil for none), of which changed are the tasks it changes, adds or
-// removes. Each task takes the version's block, and a task new to the generation waits at no act
-// (PutPlan keeps where a task the generation holds stands). A task the version leaves as it was
-// keeps its stored steps; any other task takes the steps its block names (StepsOf), or, for a
-// block that names none, defaults, the project's default steps (Config.DefaultSteps), each with
-// the type of its role (planSteps).
-func givenRows(fact intake.PlanGiven, source string, stored *record.StoredPlan, changed []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// givenRows is the rows of fact's version, given at now, as versionRefusal read it (given): stored
+// with given.source, over given.stored, the plan in force (nil for none), of which given.changed
+// are the tasks it changes, adds or removes. Each task takes the version's block, and a task new
+// to the generation waits at no act (PutPlan keeps where a task the generation holds stands). A
+// task the version leaves as it was keeps its stored steps; any other task takes the steps its
+// block names (StepsOf), or, for a block that names none, defaults, the project's default steps
+// (Config.DefaultSteps), each with the type of its role (planSteps).
+func givenRows(fact intake.PlanGiven, given givenVersion, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
-		Source: source, GivenBy: fact.GivenBy, GivenAt: now}
+		Source: given.source, GivenBy: fact.GivenBy, GivenAt: now}
 	var tasks []record.PlanTask
 	var steps []record.PlanStep
-	for _, given := range fact.Plan.Tasks {
-		tasks = append(tasks, record.PlanTask{Issue: fact.Issue, Generation: fact.Generation, Task: given.ID, PlanVersion: fact.Plan.Version,
-			BlockText: given.Text, Needs: given.Needs, PartOf: given.PartOf, ParentRef: given.ParentRef, OwnerRole: given.Owner, Merges: given.Merges,
-			StepsByDefault: !given.NamesSteps() && given.Owner == "", State: record.TaskWaiting})
-		if stored != nil && !slices.Contains(changed, given.ID) {
-			steps = append(steps, stored.Steps[given.ID]...)
+	for _, task := range fact.Plan.Tasks {
+		tasks = append(tasks, record.PlanTask{Issue: fact.Issue, Generation: fact.Generation, Task: task.ID, PlanVersion: fact.Plan.Version,
+			BlockText: task.Text, Needs: task.Needs, PartOf: task.PartOf, ParentRef: task.ParentRef, OwnerRole: task.Owner, Merges: task.Merges,
+			StepsByDefault: !task.NamesSteps() && task.Owner == "", State: record.TaskWaiting})
+		if given.stored != nil && !slices.Contains(given.changed, task.ID) {
+			steps = append(steps, given.stored.Steps[task.ID]...)
 			continue
 		}
-		steps = append(steps, planSteps(fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
+		steps = append(steps, planSteps(fact.Issue, fact.Generation, task.ID, plan.StepsOf(task, defaults))...)
 	}
 	return version, tasks, steps
 }

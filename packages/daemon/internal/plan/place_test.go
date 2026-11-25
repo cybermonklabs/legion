@@ -15,8 +15,8 @@ func partPlace(task string) Place    { return Place{Kind: PlacePart, Task: task}
 func elementPlace(task string) Place { return Place{Kind: PlaceElement, Task: task} }
 
 // under is a task block id that stands directly under the block parent, "" for none, with the
-// sub-owner owner, "" for none. Its `parent` names parent in the plan's document, and it carries no
-// Parent: FromBlocks reads that from `parent`, and a test of Places alone resolves it (resolved).
+// sub-owner owner, "" for none. Its `parent` names parent in the plan's document, which FromBlocks
+// reads (ParentOf).
 func under(id, parent, owner string) Block {
 	attributes := map[string]string{"steps": "implementer"}
 	if owner != "" {
@@ -26,8 +26,7 @@ func under(id, parent, owner string) Block {
 }
 
 // withParent is block whose `parent` names the block parent of the plan's document, as a writer of
-// the document writes it, its other attributes kept. Its Parent is left as it was, for FromBlocks
-// to read. parent "" leaves block as it is.
+// the document writes it, its other attributes kept. parent "" leaves block as it is.
 func withParent(block Block, parent string) Block {
 	if parent == "" {
 		return block
@@ -42,22 +41,21 @@ func withParent(block Block, parent string) Block {
 	return block
 }
 
-// resolved is blocks with each task block's Parent read from its `parent` against the plan's
-// document (ParentOf), as FromBlocks reads it before it calls Places.
-func resolved(t *testing.T, blocks []Block) []Block {
-	t.Helper()
-	out := slices.Clone(blocks)
-	for i, block := range out {
-		if block.Type != TaskBlockType {
-			continue
+// node is one task block of a test of Places alone: its id, the block it stands directly under,
+// "" for none, and its sub-owner, "" for none.
+type node struct{ id, parent, owner string }
+
+// placesInput is the blocks others and then nodes, in that order, each node as under writes it,
+// and the parent of each node by its id: the two Places takes, as FromBlocks hands them over.
+func placesInput(others []Block, nodes ...node) ([]Block, map[string]string) {
+	blocks, parents := slices.Clone(others), map[string]string{}
+	for _, n := range nodes {
+		blocks = append(blocks, under(n.id, n.parent, n.owner))
+		if n.parent != "" {
+			parents[n.id] = n.parent
 		}
-		parent, err := ParentOf(block.Attributes["parent"], planDocument)
-		if err != nil {
-			t.Fatalf("ParentOf(%q): %v", block.Attributes["parent"], err)
-		}
-		out[i].Parent = parent
 	}
-	return out
+	return blocks, parents
 }
 
 // Each task block stands at one of three places, by the block it stands directly under. Under no
@@ -72,40 +70,43 @@ func resolved(t *testing.T, blocks []Block) []Block {
 // as work. The control is a Places that answers a part for every parent that is a task: the rows
 // of an element fail.
 func TestPlacesGivesEachTaskBlockItsPlace(t *testing.T) {
-	requirement := Block{ID: "r1", Type: "requirement", Text: "What the plan serves."}
-	role := Block{ID: "prober", Type: RoleBlockType, Text: "You probe."}
-	callout := Block{ID: "note", Type: "callout", Text: "A note."}
+	others := []Block{
+		{ID: "r1", Type: "requirement", Text: "What the plan serves."},
+		{ID: "prober", Type: RoleBlockType, Text: "You probe."},
+		{ID: "note", Type: "callout", Text: "A note."},
+	}
 	for _, tc := range []struct {
 		name   string
-		blocks []Block
+		others []Block
+		nodes  []node
 		want   map[string]Place
 		err    string
 	}{
-		{name: "under no block", blocks: []Block{under("a", "", "")}, want: map[string]Place{"a": top}},
-		{name: "under a task with a sub-owner", blocks: []Block{under("f", "", "architect"), under("f1", "f", "")},
+		{name: "under no block", nodes: []node{{"a", "", ""}}, want: map[string]Place{"a": top}},
+		{name: "under a task with a sub-owner", nodes: []node{{"f", "", "architect"}, {"f1", "f", ""}},
 			want: map[string]Place{"f": top, "f1": partPlace("f")}},
-		{name: "under a task with no sub-owner", blocks: []Block{under("a", "", ""), under("a1", "a", "")},
+		{name: "under a task with no sub-owner", nodes: []node{{"a", "", ""}, {"a1", "a", ""}},
 			want: map[string]Place{"a": top, "a1": elementPlace("a")}},
-		{name: "under an element", blocks: []Block{under("a", "", ""), under("a1", "a", ""), under("a1x", "a1", "architect"), under("a1y", "a1x", "")},
+		{name: "under an element", nodes: []node{{"a", "", ""}, {"a1", "a", ""}, {"a1x", "a1", "architect"}, {"a1y", "a1x", ""}},
 			want: map[string]Place{"a": top, "a1": elementPlace("a"), "a1x": elementPlace("a"), "a1y": elementPlace("a")}},
-		{name: "a part of a part whose task has a sub-owner", blocks: []Block{under("f", "", "architect"), under("f1", "f", "architect"), under("f1a", "f1", "")},
+		{name: "a part of a part whose task has a sub-owner", nodes: []node{{"f", "", "architect"}, {"f1", "f", "architect"}, {"f1a", "f1", ""}},
 			want: map[string]Place{"f": top, "f1": partPlace("f"), "f1a": partPlace("f1")}},
-		{name: "under a part with no sub-owner", blocks: []Block{under("f", "", "architect"), under("f1", "f", ""), under("f1a", "f1", "")},
+		{name: "under a part with no sub-owner", nodes: []node{{"f", "", "architect"}, {"f1", "f", ""}, {"f1a", "f1", ""}},
 			want: map[string]Place{"f": top, "f1": partPlace("f"), "f1a": elementPlace("f1")}},
-		{name: "under a requirement, a role block and a callout", blocks: []Block{requirement, role, callout, under("a", "r1", ""), under("b", "prober", ""), under("c", "note", "")},
+		{name: "under a requirement, a role block and a callout", others: others, nodes: []node{{"a", "r1", ""}, {"b", "prober", ""}, {"c", "note", ""}},
 			want: map[string]Place{"a": top, "b": top, "c": top}},
-		{name: "under an id no block holds", blocks: []Block{under("a", "gone", "")}, want: map[string]Place{"a": top}},
-		{name: "a parent written later in the document", blocks: []Block{under("f1", "f", ""), under("f", "", "architect")},
+		{name: "under an id no block holds", nodes: []node{{"a", "gone", ""}}, want: map[string]Place{"a": top}},
+		{name: "a parent written later in the document", nodes: []node{{"f1", "f", ""}, {"f", "", "architect"}},
 			want: map[string]Place{"f": top, "f1": partPlace("f")}},
-		{name: "two task blocks under each other", blocks: []Block{under("a", "", ""), under("c", "b", "architect"), under("b", "c", "architect")},
+		{name: "two task blocks under each other", nodes: []node{{"a", "", ""}, {"c", "b", "architect"}, {"b", "c", "architect"}},
 			err: "task blocks c, b stand under each other, so none of them has a place in the plan"},
-		{name: "a task block under itself", blocks: []Block{under("a", "a", "")},
+		{name: "a task block under itself", nodes: []node{{"a", "a", ""}},
 			err: "task block a stands under itself, so it has no place in the plan"},
-		{name: "a chain into a cycle", blocks: []Block{under("x", "a", ""), under("a", "b", "architect"), under("b", "a", "architect")},
+		{name: "a chain into a cycle", nodes: []node{{"x", "a", ""}, {"a", "b", "architect"}, {"b", "a", "architect"}},
 			err: "task blocks a, b stand under each other, so none of them has a place in the plan"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Places(resolved(t, tc.blocks))
+			got, err := Places(placesInput(tc.others, tc.nodes...))
 			if tc.err != "" {
 				if err == nil || err.Error() != tc.err {
 					t.Fatalf("Places = %+v, %v, want the error %q", got, err, tc.err)
@@ -195,16 +196,11 @@ func TestFromBlocksPlacesEachTaskBlockByItsParent(t *testing.T) {
 		attributes := map[string]string{"owner": "architect", "merges": "false", "parent": block.Attributes["parent"]}
 		return Block{ID: block.ID, Type: block.Type, Attributes: attributes, Text: block.Text}
 	}
-	// outside is a task block id whose `parent` writes reference, with its Parent read as
-	// register_plan reads it (ParentOf), against the plan's document.
+	// outside is a task block id whose `parent` writes reference, which FromBlocks reads against
+	// the plan's document (ParentOf).
 	outside := func(id, reference string) Block {
 		block := under(id, "", "")
 		block.Attributes["parent"] = reference
-		parent, err := ParentOf(reference, "dispatch://ACME-1/artifact/plan-md")
-		if err != nil {
-			t.Fatalf("ParentOf(%q): %v", reference, err)
-		}
-		block.Parent = parent
 		return block
 	}
 	// elementReason is Validate's reason for id, an element directly under a, which names names.

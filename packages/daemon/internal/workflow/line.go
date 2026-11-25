@@ -98,12 +98,10 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 	return record.TaskPlace{}, false
 }
 
-// steps is the part of the line each step runs: all of it but the retro and the merge.
+// steps is the part of the line each step runs: all of it but the retro and the merge
+// (record.LineSteps).
 func (w Walk) steps() []phase.Phase {
-	if len(w.Line) < 2 {
-		return nil
-	}
-	return w.Line[:len(w.Line)-2]
+	return record.LineSteps(w.Line)
 }
 
 // MovesBack says whether a move of w's task from the phase from to the phase to goes back by the

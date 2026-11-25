@@ -517,7 +517,9 @@ func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
 		t.Fatalf("version 2 moved %s or queued %d outbox rows, want no move and one row, the plan node", key, kept.outbox-before.outbox)
 	}
 	// Nothing is written for the running task: its stored start task is the one version 1's start
-	// wrote, and the rewrite every send of it makes holds version 2's text and not version 1's.
+	// wrote. WithTaskText, the rewrite the send-time read of a held task makes (supervise's
+	// Deps.TaskText), gives that task version 2's text and not version 1's; the send itself is
+	// tested through the whole daemon (running_task_text_test.go, the sent stored implementer).
 	if kept := roleRowOf(t, pool, engine, key, claim.RoleImplementer); kept.Entry != started.Entry || kept.EntryTask != started.EntryTask {
 		t.Fatalf("the implementer's stored start task after version 2 = entry %d %q, want entry %d as version 1's start wrote it", kept.Entry, kept.EntryTask, started.Entry)
 	}

@@ -72,10 +72,10 @@ type Task struct {
 	// two requirements. The record stores it with the task (record.PlanTask.ParentRef), and a later
 	// version is compared with it (sameParent), so a running task's parent does not change.
 	ParentRef string
-	// MissingParent is the block's Parent where no block of the version holds that id, as
-	// FromBlocks leaves it: a block of the plan's document that the version lacks, or a heading's,
-	// which the version Dispatch gives holds no id of. The block is then a task at the top, and
-	// Validate refuses it.
+	// MissingParent is the id the block's `parent` names (ParentOf) where no block of the version
+	// holds that id, as FromBlocks leaves it: a block of the plan's document that the version lacks,
+	// or a heading's, which the version Dispatch gives holds no id of. The block is then a task at
+	// the top, and Validate refuses it.
 	MissingParent string
 	// Merges is `merges`: true unless the block leaves the attribute out or writes `false`.
 	Merges bool

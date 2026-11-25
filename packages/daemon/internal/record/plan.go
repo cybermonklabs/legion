@@ -207,6 +207,16 @@ func Line(steps []PlanStep) []phase.Phase {
 	return plan.Line(NamedSteps(steps), BuiltinDeployment)
 }
 
+// LineSteps is the part of line (Line) each step runs: all of it but the retro and the merge,
+// which end every line; nil for a line too short to hold them. It is the one reading of that
+// shape, for PhaseAt and the workflow's walk (Walk.steps).
+func LineSteps(line []phase.Phase) []phase.Phase {
+	if len(line) < 2 {
+		return nil
+	}
+	return line[:len(line)-2]
+}
+
 // PhaseAt is the one mapping of where a task stands to a phase: the phase an issue whose one task
 // stands at place in state, on line (Line), stands in. It is done for a task that is done or left
 // the workflow before it was done (TaskLeft), whatever its place, which is the phase of an issue
@@ -225,8 +235,8 @@ func PhaseAt(line []phase.Phase, place TaskPlace, state TaskState) phase.Phase {
 	case PlaceMerge:
 		return phase.Merging
 	case PlaceStep:
-		if steps := len(line) - 2; place.Position >= 1 && place.Position <= steps {
-			return line[place.Position-1]
+		if steps := LineSteps(line); place.Position >= 1 && place.Position <= len(steps) {
+			return steps[place.Position-1]
 		}
 		return ""
 	}

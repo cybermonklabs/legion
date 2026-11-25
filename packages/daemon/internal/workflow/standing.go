@@ -50,9 +50,11 @@ func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 }
 
 // ownersText is the owners part of a step's standing (Standing), the text of its task's block as
-// a task places it, last: ownersOpening, which says the owner of the issue wrote it (Legion's own
-// text for the task default where its owner gave none, record.PlanSourceDefault, which the sentence
-// names too), then the text between two fence lines, and a line end after the closing one. A
+// a task places it, last: ownersOpening, which says the owner of the issue wrote it, or Legion
+// wrote it for the task default where its owner gave none (the sentence names both), then the
+// text between two fence lines, and a line end after the closing one. A version with the source
+// record.PlanSourceDefault holds either: version 0 holds Legion's text, and a later version the
+// owner gave an issue of a group that runs the default steps holds the owner's. A
 // fence is a line of backticks one longer than the longest run of backticks the text holds, and
 // three at the least, so no line of the text closes it and stands after it as a line of the
 // daemon's. The line end puts what a task adds after the owner's part, the reviewer's round
