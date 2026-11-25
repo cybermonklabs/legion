@@ -184,7 +184,9 @@ func (rig *sessionConsumerRig) startSeq(t *testing.T, sessionID string) uint64 {
 }
 
 // awaitPending waits until sessionID's consumer has want messages pending, and fails the test
-// when it does not within 2 s.
+// when it does not within 2 s. Pending is what the consumer has not delivered yet (NumPending),
+// not what it delivered and no one acked (NumAckPending): a message delivered into a pull is no
+// longer pending, so the failure names both.
 func (rig *sessionConsumerRig) awaitPending(t *testing.T, sessionID string, want uint64) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -197,8 +199,37 @@ func (rig *sessionConsumerRig) awaitPending(t *testing.T, sessionID string, want
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the consumer of %s has %d messages pending, want %d (start %d, delivered %d, filters %v)",
-				sessionID, info.NumPending, want, info.Config.OptStartSeq, info.Delivered.Stream, info.Config.FilterSubjects)
+			t.Fatalf("the consumer of %s has %d messages pending, want %d (start %d, delivered %d, delivered and not acked %d, filters %v)",
+				sessionID, info.NumPending, want, info.Config.OptStartSeq, info.Delivered.Stream, info.NumAckPending, info.Config.FilterSubjects)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// awaitHeld waits until sessionID's consumer holds want messages, pending or delivered and not
+// acked (NumPending plus NumAckPending), and fails the test when it does not within 2 s. A row
+// that asks whether a message it stored is the consumer's to deliver reads this, not the pending
+// count, when a pull of that consumer may still stand at the server: a relay restart answers
+// with a pull whose request stands there until its expiry (30 s), and ending it with Stop only
+// queues the unsubscribe on the session-consumer connection, so a message stored over another
+// connection before that unsubscribe arrives is delivered into the request. Delivered there, it
+// is still the consumer's; a message outside the consumer's filter is neither pending nor
+// delivered, whatever pull stands.
+func (rig *sessionConsumerRig) awaitHeld(t *testing.T, sessionID string, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		info, err := rig.consumers.Info(context.Background(), sessionID)
+		if err != nil {
+			t.Fatalf("read the consumer of %s: %v", sessionID, err)
+		}
+		held := info.NumPending + uint64(info.NumAckPending)
+		if held == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the consumer of %s holds %d messages (%d pending, %d delivered and not acked), want %d (start %d, delivered %d, filters %v)",
+				sessionID, held, info.NumPending, info.NumAckPending, want, info.Config.OptStartSeq, info.Delivered.Stream, info.Config.FilterSubjects)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -1111,9 +1142,11 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 	<-restarted
 
 	requireFilters(t, rig.sessionConsumerRig, sessionID, followed)
-	// A message on the topic the restart would have dropped is the consumer's to deliver.
+	// A message on the topic the restart would have dropped is the consumer's to deliver. The
+	// restart's pull may still stand at the server and take it, so what is read is what the
+	// consumer holds, pending or delivered (awaitHeld), not its pending count.
 	rig.store(t, "notifications.dispatch.issue.ROWLOCK.comment")
-	rig.awaitPending(t, sessionID, 1)
+	rig.awaitHeld(t, sessionID, 1)
 }
 
 // subscribeExceptionLanes subscribes over core NATS to every exception lane, through conn.
