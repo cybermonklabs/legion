@@ -42,19 +42,20 @@ const (
 var alternatingBlocks = []int{4_096, 16_384}
 
 // Parse and Render finish in time linear in the text on the shapes that once cost them quadratic
-// time: the work of each at its full size (parseFullTarget/renderFullTarget, above)
-// grows less than growthBound times over its work at a growthScale-th of it (growsLinearly,
-// below). The work is the CPU time, user and system, of the thread that parses or renders
-// (cputest.Growth, on cputest's thread clock), not wall time and not the process's CPU time: a
-// wait for a core is not in it, nor the collector's work on another thread. The smaller size runs
-// growthScale times in one window and the full size once in another, so that the two windows last
-// about as long and a load of the machine that comes and goes reaches both alike.
+// time: the work of each grows less than growthBound times over each growthScale-fold step of its
+// size up to its full size (parseFullTarget/renderFullTarget, above; growsLinearly, below). The
+// work is the CPU time, user and system, of the thread that parses or renders (cputest.Growth, on
+// cputest's thread clock), not wall time and not the process's CPU time: a wait for a core is not
+// in it, nor the collector's work on another thread. The smaller size of a step runs growthScale
+// times in one window and the larger once in another, so that the two windows last about as long
+// and a load of the machine that comes and goes reaches both alike.
 //
 // A write of a mebibyte of these is refused for the elements it makes (MaxDocumentElements), so
 // the parse here is a read-back's, which counts none and reads all of it. Render's target is
 // smaller than parse's (above). The margin the bound keeps is between the work healthy linear code
-// does and the far greater work of a reintroduced O(n²) bug, not a hang, which the test binary's
-// own timeout reports with the name of the test that runs.
+// does and the far greater work of a reintroduced O(n²) bug, which breaks the bound at the smaller
+// step already, in seconds; the test binary's own timeout reports a hang with the name of the test
+// that runs.
 func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 	for _, shape := range []string{"a_", "a_b*", "a~b_"} {
 		t.Run(shape, func(t *testing.T) {
@@ -561,18 +562,32 @@ const (
 // growthSamples is how many times cputest.Growth times each window of a row.
 const growthSamples = 3
 
-// growsLinearly requires the work at a size of full to grow less than growthBound times over the
-// work at full/growthScale (cputest.Growth). input builds the input of one size, untimed, and
-// returns the small or large of cputest.Growth for it: cputest.Again of a run that changes nothing,
-// or a function that builds a fresh input for each run.
+// growsLinearly requires the work at each size to grow less than growthBound times over the work at
+// a growthScale-th of it (cputest.Growth), first from full/growthScale² to full/growthScale, then
+// from there to full, and stops at the first step whose work grows past the bound, failing there.
+// Work for each pair of units grows about growthScale² times at either step, so it fails the first,
+// where each window holds a growthScale²-th of the work it would hold at full size: a quadratic
+// walk that takes minutes at full size, such as a parse of a mebibyte of footnote references that
+// builds its map of definitions again for each reference, fails in seconds, and the full size is
+// not timed. Linear work with a cost of its own for each run grows less over the smaller step than
+// over the larger, so the bound holds it with more room there. input builds the input of one size,
+// untimed, and returns the small or large of cputest.Growth for it: cputest.Again of a run that
+// changes nothing, or a function that builds a fresh input for each run.
 func growsLinearly(t *testing.T, what string, full int, input func(size int) func() func()) {
 	t.Helper()
-	small := full / growthScale
-	growth, smallWork, largeWork := cputest.Growth(growthSamples, growthScale, input(small), input(full))
-	t.Logf("%s: %s %d times %v, %s once %v: %.1f times", what, sizeText(small), growthScale, smallWork, sizeText(full), largeWork, growth)
-	if growth >= growthBound {
-		t.Errorf("%s: the work grew %.1f times, from %v for %d runs of %s to %v for one run of %s, want less than %d times",
-			what, growth, smallWork, growthScale, sizeText(small), largeWork, sizeText(full), growthBound)
+	for _, large := range []int{full / growthScale, full} {
+		small := large / growthScale
+		growth, smallWork, largeWork := cputest.Growth(growthSamples, growthScale, input(small), input(large))
+		t.Logf("%s: %s %d times %v, %s once %v: %.1f times", what, sizeText(small), growthScale, smallWork, sizeText(large), largeWork, growth)
+		if growth >= growthBound {
+			untimed := ""
+			if large < full {
+				untimed = fmt.Sprintf("; %s, the full size, is not timed", sizeText(full))
+			}
+			t.Errorf("%s: the work grew %.1f times, from %v for %d runs of %s to %v for one run of %s, want less than %d times%s",
+				what, growth, smallWork, growthScale, sizeText(small), largeWork, sizeText(large), growthBound, untimed)
+			return
+		}
 	}
 }
 
