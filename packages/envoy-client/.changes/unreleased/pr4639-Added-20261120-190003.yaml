@@ -23,7 +23,12 @@ body: |-
   members it left out (`AnswerCut`, an `AsOfRead` with no `asOf`); it refuses nothing.
   `readSessionAnswers` reads the people's answers this way, keeps the cut with the list (`as_of`
   in `answers.json`; a file without it still reads), and prints an ask's question that the answer
-  left out as `Question: left out at <cut>`, where it threw before and lost the whole list.
+  left out as `Question: left out at <cut>`, where it threw before and lost the whole list. It
+  counts the list's 72 hours back from the cut, where it counted them from the host's clock and
+  showed no answer under a cut more than 72 hours old: it asks for the 72 hours before the cut the
+  list kept, and a read that did not know the cut asks once more, at once, for the 72 hours
+  before the cut its answer named. A kept cut that Dispatch refuses (the session's token now reads
+  the present or a later cut) is asked again by the host's clock.
   Each renderer prints a member that an answer left out as `left out at <cut>`, or `left out by
   Dispatch` where the cut is not known (`leftOutWords`), and never throws on it, the refusal of a
   `reply_to_ask` prefix that lists an ask whose question the answer left out included.

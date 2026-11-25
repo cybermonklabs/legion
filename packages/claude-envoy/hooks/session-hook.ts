@@ -378,7 +378,9 @@ async function openAsks(raw: unknown): Promise<void> {
     try {
       // Under a token that carries a cut (a replayed agent's), Dispatch answers at that cut and
       // leaves out the person an ask waits on where it rests on a default the records cannot
-      // give: the summary names the cut the answer named, as `dispatch open-asks` does at a cut.
+      // give: the summary names a person that the answer left out as left out at the cut, as
+      // `dispatch open-asks` does, not as `asked of nobody`, and prints no `Left out at <cut>:`
+      // line.
       const cut = new AnswerCut()
       const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
         deadlineMs: OPEN_ASKS_TIMEOUT_MS,

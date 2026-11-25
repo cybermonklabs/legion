@@ -6,7 +6,13 @@ import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import { leftOutWords, type ReadTime } from "./dispatch-commands/as-of";
 import type { DispatchConfigResolution } from "./dispatch-config";
-import { AnswerCut, DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
+import {
+  AnswerCut,
+  DispatchClient,
+  DispatchNoRouteError,
+  DispatchServiceError,
+  isNoRoute,
+} from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor } from "./errors";
@@ -139,6 +145,26 @@ function windowOf(
     words: sessionAnswersWords(withinWindow(items, now)),
     since: new Date(now - SESSION_ANSWERS_WINDOW_MS).toISOString(),
   };
+}
+
+/** The instant (epoch ms) a list counts its 72 hours back from: the cut its answer named
+ *  (`SessionAnswersCache.as_of`), or `now()` for a list of the present. A cut that does not parse
+ *  counts as none, so no read throws on it. */
+function windowEnd(asOf: string | undefined, now: () => number): number {
+  const cut = asOf === undefined ? Number.NaN : Date.parse(asOf);
+  return Number.isNaN(cut) ? now() : cut;
+}
+
+/** Whether Dispatch refused a read's `since` (400 INVALID_QUERY), as it refuses one more than 7
+ *  days before the cut it answers at: the answer to a read that asked by a kept cut its token no
+ *  longer reads at. */
+function keptCutRefused(error: unknown): boolean {
+  return (
+    error instanceof DispatchServiceError &&
+    error.fromDispatch &&
+    error.status === 400 &&
+    error.code === "INVALID_QUERY"
+  );
 }
 
 /**
@@ -441,7 +467,8 @@ export interface ReadSessionAnswersOptions {
   readonly fetchImpl?: typeof fetch | undefined;
   /** The request's own abort: it stops this call's wait, never the shared read. */
   readonly signal?: AbortSignal | undefined;
-  /** The clock (epoch ms): the window, the read time and the 404 back-off read it. */
+  /** The clock (epoch ms): the read time, the 404 back-off and the window of a list of the
+   *  present read it; a list read at a cut counts its window back from the cut instead. */
   readonly now?: (() => number) | undefined;
   /** How long this call waits on the read (`SESSION_ANSWERS_DEADLINE_MS` by default). */
   readonly deadlineMs?: number | undefined;
@@ -466,9 +493,9 @@ export interface SessionAnswersRead {
    *  gives `[]` and no `text`, so a host still learns that the items of a list it shows left the
    *  read (`sessionAnswersChanged`). */
   readonly words?: readonly string[];
-  /** The start of that window (ISO 8601 UTC), 72 hours before the render (`fresh` and `cache`):
-   *  an item `words` no longer holds whose time is at or after it left the read inside the window
-   *  (`sessionAnswersChanged`). */
+  /** The start of that window (ISO 8601 UTC), 72 hours before the render, or before the cut for
+   *  a list read at one (`fresh` and `cache`): an item `words` no longer holds whose time is at or
+   *  after it left the read inside the window (`sessionAnswersChanged`). */
   readonly since?: string;
   /** Why the read gave no list (`cache`, `failure`, `unavailable`), or the notice that turns
    *  Dispatch off. */
@@ -527,22 +554,31 @@ async function settleWithin<T>(
  * session's state directory (`sessionDirectory(env, session)`) with the URL it was read from,
  * loaded when memory has none for that URL; a list read from another Dispatch is never carried.
  * A cached list is rendered with its read time and the reason this read failed, and filtered by
- * the 72 hours again. Each read asks Dispatch for the 72 hours by this host's clock (`since`), the
- * clock every render filters by, so an item Dispatch would drop by its own clock is still sent
- * while the render's window holds it, and is not taken for one a person retracted
- * (`sessionAnswersChanged`). When no cached list renders (none was read, it was empty, or every
- * item is now past 72 hours), a failed read carries the failure line naming why. Dispatch off with
- * an error names no URL: only a list read from `dispatchUrl` stands in, and with none given the
- * failure line does. A Dispatch that answers it has no answers route (`isNoAnswersRoute`) is not
- * asked again for 5 minutes, process-wide; that answer, and a request inside those 5 minutes,
- * carry the list read before from that URL, its left-out line naming no command, or else nothing:
- * the failure line would send the agent to `dispatch answers`, which that Dispatch refuses too.
- * The first such read for a session and URL, until a read of it answers with a list again, gives
- * the host a `notice` to report. Every other failure, a gateway's 404 or a 200 that is no
- * answers list included, is a failed read as above. An answer under a token that carries a cut
- * names the cut (`AnswerCut`), which the list keeps in memory and in `answers.json` (`as_of`), so
- * the fresh list and each list carried from it print an ask's question the answer left out as
- * left out at that cut; a list from a file with no cut prints it as left out by Dispatch.
+ * the 72 hours again. A read of the present asks Dispatch for the 72 hours by this host's clock
+ * (`since`), the clock every render of its list filters by, so an item Dispatch would drop by its
+ * own clock is still sent while the render's window holds it, and is not taken for one a person
+ * retracted (`sessionAnswersChanged`). When no cached list renders (none was read, it was empty,
+ * or every item is now past 72 hours), a failed read carries the failure line naming why.
+ * Dispatch off with an error names no URL: only a list read from `dispatchUrl` stands in, and with
+ * none given the failure line does. A Dispatch that answers it has no answers route
+ * (`isNoAnswersRoute`) is not asked again for 5 minutes, process-wide; that answer, and a request
+ * inside those 5 minutes, carry the list read before from that URL, its left-out line naming no
+ * command, or else nothing: the failure line would send the agent to `dispatch answers`, which
+ * that Dispatch refuses too. The first such read for a session and URL, until a read of it answers
+ * with a list again, gives the host a `notice` to report. Every other failure, a gateway's 404 or
+ * a 200 that is no answers list included, is a failed read as above.
+ *
+ * An answer under a token that carries a cut names the cut (`AnswerCut`), which the list keeps in
+ * memory and in `answers.json` (`as_of`), so the fresh list and each list carried from it print an
+ * ask's question the answer left out as left out at that cut; a list from a file with no cut
+ * prints it as left out by Dispatch. Dispatch answers such a token at its cut whatever the read
+ * sends, so a read under it counts the 72 hours back from the cut, not from this host's clock: the
+ * `since` it sends, and every render of its list, its `words` and its `since`. A token's cut is
+ * fixed, so a read asks for the 72 hours before the cut the list read before kept. When the answer
+ * names another cut than the one the read asked by (the list kept none, or the answer names
+ * none), the read asks once more, at once, for the 72 hours before the cut that answer named (by
+ * this host's clock where it named none), and that second answer is the read's own: it is the
+ * same read in flight, under the same 10 s, and when it fails the read fails.
  */
 export async function readSessionAnswers(
   options: ReadSessionAnswersOptions
@@ -565,7 +601,7 @@ export async function readSessionAnswers(
     reason: string,
     noRoute = false
   ): SessionAnswersRead => {
-    const at = now();
+    const at = windowEnd(cache?.as_of, now);
     const text =
       cache === undefined
         ? undefined
@@ -627,20 +663,37 @@ export async function readSessionAnswers(
       deadlineMs: READ_TIMEOUT_MS,
     });
     // A replayed agent reads under a token that carries a cut, and Dispatch answers it at that
-    // cut, leaving out each question the records at the cut cannot give: the read learns the cut
-    // the answer names, and the list keeps it, so such a question prints as left out at it.
-    const cut = new AnswerCut();
-    const started = client
-      .sessionAnswers(
+    // cut whatever the read sends, leaving out each question the records at the cut cannot give:
+    // each request learns the cut its answer names, and the list keeps it, so such a question
+    // prints as left out at it and the list's 72 hours count back from it.
+    const ask = async (asOf: string | undefined) => {
+      const cut = new AnswerCut();
+      const response = await client.sessionAnswers(
         session,
         {
-          since: new Date(now() - SESSION_ANSWERS_WINDOW_MS).toISOString(),
+          since: new Date(windowEnd(asOf, now) - SESSION_ANSWERS_WINDOW_MS).toISOString(),
           maxChars: SESSION_ANSWERS_MAX_CHARS,
         },
         cut
-      )
+      );
+      return { response, asOf: cut.cut, askedBy: asOf };
+    };
+    // A token's cut is fixed, so the read asks by the cut the list read before kept. An answer
+    // that names another (none was kept, as on a token's first read) answered the 72 hours before
+    // the wrong time, so the read asks once more, at once, by the time that answer names. A kept
+    // cut that the session's token no longer reads at (a token of the present, or a later cut,
+    // more than 7 days after it) is refused 400 INVALID_QUERY for its since: the read then asks
+    // by this host's clock, as a read that kept no cut does, and the rule above takes the cut
+    // that answer names, so a stale cut in answers.json never fails every later read.
+    const kept = current.cache?.as_of;
+    const started = ask(kept)
+      .catch((error: unknown) => {
+        if (kept !== undefined && keptCutRefused(error)) return ask(undefined);
+        throw error;
+      })
+      .then((answer) => (answer.asOf === answer.askedBy ? answer : ask(answer.asOf)))
       .then(
-        (response): ReadOutcome => {
+        ({ response, asOf }): ReadOutcome => {
           // A 200 whose body is no answers list (a proxy's page, another service on the URL) is a
           // failed read, never a cache: rendering it would throw on the request path.
           if (!Array.isArray(response?.items) || typeof response.total !== "number") {
@@ -651,7 +704,7 @@ export async function readSessionAnswers(
             read_at: new Date(now()).toISOString(),
             total: response.total,
             items: response.items,
-            ...(cut.cut === undefined ? {} : { as_of: cut.cut }),
+            ...(asOf === undefined ? {} : { as_of: asOf }),
           };
           current.cache = cache;
           current.noRouteReported = false;
@@ -693,7 +746,7 @@ export async function readSessionAnswers(
   }
   if ("noRoute" in outcome) return noRoute();
   if ("failure" in outcome) return carry(current.cache, outcome.failure);
-  const at = now();
+  const at = windowEnd(outcome.cache.as_of, now);
   return {
     text: renderSessionAnswers(outcome.cache.items, {
       now: at,

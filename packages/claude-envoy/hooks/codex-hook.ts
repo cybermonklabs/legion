@@ -140,8 +140,9 @@ async function sessionStart(raw: unknown): Promise<void> {
   }
   process.stdout.write(`${CODEX_DISPATCH_NOTE}\n\n`)
   try {
-    // Under a token that carries a cut, Dispatch answers at that cut: the summary names the cut
-    // the answer named, as `dispatch open-asks` does at a cut (session-hook.ts's `openAsks`).
+    // Under a token that carries a cut, Dispatch answers at that cut: the summary names a person
+    // that the answer left out as left out at the cut, as `dispatch open-asks` does, not as
+    // `asked of nobody`, and prints no `Left out at <cut>:` line (session-hook.ts's `openAsks`).
     const cut = new AnswerCut()
     const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
       signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
