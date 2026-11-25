@@ -205,7 +205,9 @@ func newForkReadsRoom(t *testing.T) (*Service, string) {
 }
 
 // forkReadsMode is a write that forks a room (warm), or the store with no room holding the
-// document (cold). A cold case closes the room first; its publish loads it again.
+// document (cold). A cold case closes the room first, and its publish loads none: it arms the
+// document's settlement, whose warm-up would load the room as a browser's open would, and this
+// service's settlement waits an hour (newForkReadsRoom).
 type forkReadsMode struct {
 	name string
 	cold bool

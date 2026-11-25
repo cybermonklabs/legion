@@ -151,32 +151,34 @@ func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states b
 // row - every node was already there - must still let every tuple through.
 const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 
-// nodeArm writes the nodes and, where states says so, the two base attributes of each node it
-// made. The node rows arrive in ascending (kind, id), as every write of this store takes them
+// nodeArm writes the nodes and, where states says so, the base attributes of each node it made.
+// The node rows arrive in ascending (kind, id), as every write of this store takes them
 // (queueNodes), and the upsert moves nothing on a node that is already there: a record of what
 // a delivery reached learns nothing about a node another write made, and its own made_at,
 // made_by and source_event would otherwise overwrite that write's. The base attributes are read
 // off the rows the insert returned, so they are stated once, by the write that made the node,
-// rather than per event.
+// rather than per event: its visibility and state always, and its project and parties where it
+// carries them.
 //
 // That is the rule QueueWrite follows too, and the arm needs no second half of it: this upsert
 // moves no stored state, so there is never a state of a node already there for it to state.
 //
 // states is false for a writer whose cause is appended after these arms (WriteArmsUncaused): the
 // nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMarks), as
-// made, so the append that cause comes with states those same two for that event.
+// made, so the append that cause comes with states those same attributes for that event.
 func nodeArm(first int, states bool) string {
 	source := causeOf("source_event")
 	if !states {
-		source = markSQL("$"+strconv.Itoa(first+len(nodeArrayTypes)), strconv.Itoa(markVisibility|markState))
+		source = markSQL("$"+strconv.Itoa(first+len(nodeArrayTypes)), markMade)
 	}
 	written := `graph_nodes_written as (
 	insert into graph_nodes (` + nodeColumns + `)
-	select kind, id, supertag, visibility, state, attributes, made_at, made_by, ` + source + `
+	select kind, id, supertag, visibility, state, attributes, made_at, made_by, ` + source + `,
+	       project_key, string_to_array(parties, ' ')
 	from unnest(` + nodeArrays(first) + `) as node(` + nodeColumns + `)
 	order by kind, id
 	on conflict (kind, id) do nothing
-	returning kind, id, visibility, state, made_at, made_by, source_event
+	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
 )`
 	if !states {
 		return written
@@ -187,8 +189,11 @@ graph_node_attributes as (
 	select written.kind, written.id, attribute.kind, '` + KindValue + `', attribute.value,
 	       written.made_at, written.made_by, written.source_event, null, true
 	from graph_nodes_written written
-	cross join lateral (values ('visibility', written.visibility), ('state', written.state))
+	cross join lateral (values
+		('` + AttributeVisibility + `', written.visibility), ('` + AttributeState + `', written.state),
+		('` + AttributeProject + `', written.project_key), ('` + AttributeParties + `', array_to_string(written.parties, ' ')))
 		as attribute(kind, value)
+	where attribute.value is not null
 	order by written.kind, written.id, attribute.kind` + valueRepeatKey + `
 )`
 }
@@ -342,10 +347,12 @@ const (
 	do nothing`
 )
 
-// nodeArrayTypes are the types of the nine arrays a node write binds, in nodeColumns' order, and
-// nodeArrays their parameter list: one spelling of the types, read by the arm the publisher's
-// record splices in and by queueNodes alike.
-var nodeArrayTypes = []string{"text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint"}
+// nodeArrayTypes are the types of the eleven arrays a node write binds, in nodeColumns' order,
+// and nodeArrays their parameter list: one spelling of the types, read by the arm the publisher's
+// record splices in and by queueNodes alike. The project and the parties are bound as text, null
+// for a node that carries none, and the parties as the one value their attribute carries
+// (PartiesValue), which a node write splits into the column's array (string_to_array).
+var nodeArrayTypes = []string{"text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint", "text", "text"}
 
 func nodeArrays(first int) string {
 	return arrayList(first, nodeArrayTypes...)
@@ -409,7 +416,7 @@ func splitTuples(tuples []Tuple) (relations, values []Tuple) {
 	return relations, values
 }
 
-// nodeParams are the nine arrays a node write binds, in nodeColumns' order.
+// nodeParams are the eleven arrays a node write binds, in nodeColumns' order.
 func nodeParams(nodes []Node) ([]any, error) {
 	kinds := make([]string, len(nodes))
 	ids := make([]string, len(nodes))
@@ -420,6 +427,8 @@ func nodeParams(nodes []Node) ([]any, error) {
 	madeAts := make([]time.Time, len(nodes))
 	madeBys := make([][]byte, len(nodes))
 	sourceEvents := make([]int64, len(nodes))
+	projects := make([]*string, len(nodes))
+	parties := make([]*string, len(nodes))
 	var writers writerEncoder
 	for index, node := range nodes {
 		encoded, err := encodeAttributes(node.Attributes)
@@ -434,8 +443,18 @@ func nodeParams(nodes []Node) ([]any, error) {
 		supertags[index], visibilities[index], states[index] = node.Supertag, node.Visibility, node.State
 		attributes[index], madeAts[index], madeBys[index] = encoded, node.MadeAt, madeBy
 		sourceEvents[index] = node.SourceEvent
+		if node.Project != "" {
+			projects[index] = &nodes[index].Project
+		}
+		value, err := PartiesValue(node.Parties)
+		if err != nil {
+			return nil, fmt.Errorf("node %s/%s: %w", node.Kind, node.ID, err)
+		}
+		if value != "" {
+			parties[index] = &value
+		}
 	}
-	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAts, madeBys, sourceEvents}, nil
+	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAts, madeBys, sourceEvents, projects, parties}, nil
 }
 
 // tupleParams are the tupleArrayCount arrays a tuple append binds, in tupleWriteColumns' order.

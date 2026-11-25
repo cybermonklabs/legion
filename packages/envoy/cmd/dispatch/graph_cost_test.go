@@ -53,6 +53,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -103,6 +104,9 @@ type costArm struct {
 	server      *dispatchProcess
 	databaseURL string
 	pool        *pgxpool.Pool
+	// jit is what a new session of the arm's database reads for JIT compilation, printed on the
+	// arm's line (costDatabaseWithoutJIT).
+	jit string
 }
 
 // ready puts the arm in the state its readings are taken in. It is off the clock.
@@ -126,17 +130,19 @@ func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 		SigningKey: costSigningKey,
 		Env:        map[string]string{"ENVOY_URL": envoyURL},
 	})
-	t.Logf("arm %q is this working copy's build, serving %s", head.name, costDatabaseName(head.databaseURL))
-	t.Logf("arm %q is %s, serving %s", base.name, older, costDatabaseName(base.databaseURL))
+	t.Logf("arm %q is this working copy's build, serving %s with %s", head.name, costDatabaseName(head.databaseURL), head.jit)
+	t.Logf("arm %q is %s, serving %s with %s", base.name, older, costDatabaseName(base.databaseURL), base.jit)
 	return head, base
 }
 
 // startCostArm starts one arm on an empty database of its own. The database is empty rather
 // than storetest's clone of a migrated template, because each build has to run its own
-// migrations on it: that is what makes the older arm the older schema.
+// migrations on it: that is what makes the older arm the older schema. It is set to jit = off
+// before any process of the arm connects to it (costDatabaseWithoutJIT).
 func startCostArm(t *testing.T, name string, head bool, options dispatchOptions) *costArm {
 	t.Helper()
 	databaseURL := censusDatabase(t)
+	jit := costDatabaseWithoutJIT(t, name, databaseURL)
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open %s's own connections: %v", name, err)
@@ -144,7 +150,43 @@ func startCostArm(t *testing.T, name string, head bool, options dispatchOptions)
 	t.Cleanup(pool.Close)
 	server := startDispatchProcessWith(t, databaseURL, options)
 	server.waitHealthy(t)
-	return &costArm{name: name, head: head, server: server, databaseURL: databaseURL, pool: pool}
+	return &costArm{name: name, head: head, server: server, databaseURL: databaseURL, pool: pool, jit: jit}
+}
+
+// costDatabaseWithoutJIT sets jit = off on an arm's database and answers what a new session of
+// it reads. Production's Cloud SQL does not JIT-compile statements, and a test Postgres that
+// does (a pgvector image ships LLVM and leaves jit on) spends time compiling a read that
+// production never spends: on 2026-11-24 INFRA-1098's implementer measured the references read's
+// statement compiling for longer than its median run took. The setting is the database's, so it
+// reaches every session of both builds, the server's pool included, which each opens after it;
+// a session open before it keeps the setting it started with, which is why it is read back on a
+// session of its own.
+func costDatabaseWithoutJIT(t *testing.T, name, databaseURL string) string {
+	t.Helper()
+	ctx := context.Background()
+	setter, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to %s's database: %v", name, err)
+	}
+	_, err = setter.Exec(ctx, `do $$ begin execute format('alter database %I set jit = off', current_database()); end $$`)
+	setter.Close(ctx)
+	if err != nil {
+		t.Fatalf("set jit = off on %s's database: %v", name, err)
+	}
+	reader, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to %s's database: %v", name, err)
+	}
+	defer reader.Close(ctx)
+	var setting string
+	var available bool
+	if err := reader.QueryRow(ctx, `select current_setting('jit'), pg_jit_available()`).Scan(&setting, &available); err != nil {
+		t.Fatalf("read the jit setting of %s's database: %v", name, err)
+	}
+	if setting != "off" {
+		t.Fatalf("%s's database reads jit = %s after it was set off", name, setting)
+	}
+	return fmt.Sprintf("jit = %s (pg_jit_available() = %t)", setting, available)
 }
 
 // costDatabaseName is the database a URL names, for the line that says which arm served which.

@@ -117,8 +117,10 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 // version row is only queued hands it over from what that row will hold (docs' planBlockIndex),
 // since no read of the row answers yet; one whose row is stored reads it (ReadIndexedVersion).
 type IndexedVersion struct {
-	RefKey string
-	Writer model.Actor
+	RefKey  string
+	Writer  model.Actor
+	Project string
+	Parties []string
 }
 
 // VersionBlocks is the version a block-index pass indexes (PlanBlocks), the inputs that travel
@@ -273,7 +275,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	writer := version.Record.Writer
 	nodes, fits := indexing.indexedNodes(version.Blocks)
 	texts := indexing.planBlockTexts(index, version.Markdown, nodes, fits, now)
-	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, writer, now)
+	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, version, now)
 	if err != nil {
 		return BlockIndexing{}, err
 	}
@@ -1201,6 +1203,12 @@ type DocumentAddress struct {
 	// that parent followed by its own. A pending issue with no parent is a root, and both paths
 	// answer the empty list.
 	PendingParent string
+	// Project is the project the document belongs to, an issue's or its own, and Session the
+	// session whose conversation holds it, "" where it is a project's: the scope its block
+	// nodes carry (IndexedVersion's Project and Parties). Only an address this transaction
+	// recorded for a row it is creating carries them; a stored row's version is read with its
+	// scope (ReadIndexedVersion).
+	Project, Session string
 }
 
 // BlockTargets is where a write to document artifactID, which sits at address, lands and the
