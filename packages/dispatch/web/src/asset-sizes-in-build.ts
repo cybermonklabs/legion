@@ -86,7 +86,10 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * two chunks that the pages' chunks share (`routes-*.js`, 10,989 bytes, and
  * `dispatch-block-ref-*.js`, 3,632), and the entry read 492,802 bytes with a 39-character build
  * id on 2026-11-25, 7,198 under this budget. The simplify pass of pull request #3513 the same day
- * took it to 492,840 bytes with a 39-character build id, 7,160 under this budget.
+ * took it to 492,840 bytes with a 39-character build id, 7,160 under this budget. The forward merge
+ * of the default branch's `479c1460` the same day took it to 492,868 bytes, 7,132 under this
+ * budget: its new event type (`project.access_changed`, #4674) is a member of the list of event
+ * types (`packages/contracts/src/dispatch-api-constants.ts`) that the entry reads.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character

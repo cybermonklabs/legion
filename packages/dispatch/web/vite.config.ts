@@ -205,7 +205,7 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    // The entry - the one `assets/index-*.js` that dist/index.html names - reads 492,840 bytes,
+    // The entry - the one `assets/index-*.js` that dist/index.html names - reads 492,868 bytes,
     // measured with `bun run build:web` and a 39-character `DISPATCH_BUILD` on 2026-11-25; the
     // build id is in the entry, so CI's 40-character commit writes one byte more.
     // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps the history of
