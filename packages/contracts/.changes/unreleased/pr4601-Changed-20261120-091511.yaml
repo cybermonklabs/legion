@@ -1,0 +1,5 @@
+kind: Changed
+body: The descriptions of `dispatch_issue_update` and `dispatch_claim`, and the doc of whoami's `scopes`, say that Dispatch refuses a Legion issue's status write from a credential without the `person` or `legion-status` scope where `DISPATCH_LEGION_STATUS_SCOPE` is on, and that a Legion daemon's own broker token answers `["legion-status"]`. The two descriptions also say that an architect of an issue above writes `done`, `backlog`, `icebox` or `triage` with its own broker token once its claim is ready.
+time: 2026-11-20T09:15:11.360234956Z
+custom:
+    Issue: pr4601

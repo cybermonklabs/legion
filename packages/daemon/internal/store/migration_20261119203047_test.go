@@ -50,6 +50,7 @@ const designNewsVersion = 20261119203047
 // an unread history is taken only with its reason and a version above 0, and a change set is taken
 // as unchanged only where Dispatch answered it and it is not decision-only.
 func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261119203047(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, designNewsVersion-1)

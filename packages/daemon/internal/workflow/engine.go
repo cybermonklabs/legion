@@ -333,6 +333,11 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.closed(ctx, tx, fact)
 	case intake.PullRequestDequeued:
 		return e.dequeued(ctx, tx, fact)
+	case intake.PullRequestReviewRequests:
+		// It records nothing: the read it asks for (askMergeState) counts the requests.
+		return intake.Result{}, nil
+	case intake.PullRequestMergeStateUnread:
+		return e.mergeStateUnread(ctx, tx, fact)
 	case intake.MergeQueueReadDone:
 		return e.mergeQueueReadDone(ctx, tx, fact)
 	case intake.ConflictConfirmDone:

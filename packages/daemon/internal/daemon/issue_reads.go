@@ -52,8 +52,10 @@ const issueRead = 30 * time.Second
 // logs it; the record then stands as it was, and the next read of the issue asks again.
 //
 // It answers whether GitHub is still computing the merge of the pull request's head: its read
-// found the pull request open with merge state `unknown` or `mergeable` null. The start read
-// queues a ladder of reads for such an issue (readIssuesAtStart), which a handoff's read does not.
+// found the pull request open with `mergeable` null, or an answer the readers read again
+// (answerIncomplete: `unknown`, or `blocked` missing part of what the round decides it on). The
+// start read queues a ladder of reads for such an issue (readIssuesAtStart), which a handoff's
+// read does not.
 // A read whose reviews read must stop - ctx ended, or GitHub's rate limit, which the ladder's reads
 // would meet as well - answers false.
 func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue, task string) (bool, error) {
@@ -85,14 +87,15 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue, task 
 	// which the GitHub consumer's backlog can hold for a while.
 	prCtx, cancelReads := context.WithTimeout(ctx, issueRead)
 	defer cancelReads()
-	if err := w.applyMergeability(ctx, github, pr, pull, answeredAt, w.mergeabilityEventID(pr, answeredAt)); err != nil && ctx.Err() == nil {
+	fact, err := w.applyMergeability(ctx, github, pr, pull, answeredAt, w.mergeabilityEventID(pr, answeredAt))
+	if err != nil && ctx.Err() == nil {
 		w.log.Warn("apply whether a pull request's head can be merged into its base; the issue's next read applies it again",
 			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "head", pull.Head.SHA, "error", err)
 	}
 	if w.readReviews(ctx, prCtx, github, pr) {
 		return false, nil
 	}
-	return pull.State == "open" && (pull.mergeState() == record.MergeStateUnknown || pull.mergeability() == record.MergeabilityUnknown), nil
+	return pull.State == "open" && (pull.mergeability() == record.MergeabilityUnknown || answerIncomplete(fact)), nil
 }
 
 // issuePullRequest is the open pull request the per-issue read judges for key and task (task ""
@@ -134,8 +137,10 @@ func (w *workflowRuntime) issuePullRequest(ctx context.Context, key, task string
 	// (intake.PullRequestReview), so no clock of this read is weighed against a review's.
 	w.log.Warn("workflow: GitHub holds an open pull request for an issue the daemon records none for; applying the opened its webhook would",
 		"repo", repo, "pullRequest", pull.Number, "issue", key, "branch", branch, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt)
-	fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, HeadRepo: pull.HeadRepository(),
-		Body: pull.Body, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: pr != nil && pr.Number == pull.Number}
+	// The base the list answer names goes with it, so a record found this way has the base its
+	// reads of the merge state follow on (followOnBase) even when the detail read after it fails.
+	fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA,
+		HeadRepo: pull.HeadRepository(), Body: pull.Body, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: pr != nil && pr.Number == pull.Number}
 	eventID := fmt.Sprintf("opened-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, repo, pull.Number, time.Now().UnixNano())
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
 		return nil, fmt.Errorf("apply the open pull request %s#%d read from GitHub: %w", repo, pull.Number, err)
@@ -288,9 +293,13 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 // and the pull request of every issue whose implementer completed with none open or merged
 // recorded, which this read looks up by the branch of the task the record judges. It is what
 // covers a daemon that was down while GitHub made the deliveries nothing redelivers. A read that
-// fails is logged and the boot goes on, since the task's next handoff reads the same pull request;
-// GitHub's rate limit ends the start read there, because every read after it on the same
-// installation meets the same limit, and the panes share it.
+// fails is logged and the boot goes on; the open pull request the record holds for its task is
+// handed to the reads of its base (followOnBase), and a run of null `mergeable` reads it holds
+// asks the round again (readFailed): a round that waits quietly on the head has no handoff coming
+// that would read it. GitHub's rate limit ends the start read there, because every read after it
+// on the same installation meets the same limit, and the panes share it; the hand-off makes no
+// GitHub call, so the limited read and every one after it are handed to the reads of their base
+// all the same, which wait out the limit.
 //
 // A read that finds GitHub still computing the merge of an open pull request's head - merge state
 // `unknown`, or `mergeable` null - queues a ladder of reads for the issue (queueMergeState), which
@@ -308,7 +317,7 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 		}
 		return
 	}
-	for _, read := range reads {
+	for i, read := range reads {
 		if ctx.Err() != nil {
 			return
 		}
@@ -322,12 +331,39 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 		}
 		var answer *githubrest.Answer
 		if errors.As(err, &answer) && answer.RateLimited {
-			w.log.Error("read an issue's pull request as the daemon starts: GitHub's rate limit; the start reads no more issues, and each issue's next handoff reads it",
-				"issue", read.issue, "task", read.task, "error", err)
+			// Every read after this one on the same installation meets the same limit, so the start
+			// reads no more issues; the hand-off below makes no GitHub call, so this issue and each
+			// one after it with an open pull request recorded go to the reads of their base, which
+			// wait out the limit, and one handed off with none open is read at its next handoff.
+			w.log.Error("read an issue's pull request as the daemon starts: GitHub's rate limit; the start reads no more issues: each one left with an open pull request goes to the reads of its base, and one with none open is read at its next handoff",
+				"issue", read.issue, "task", read.task, "left", len(reads)-i, "error", err)
+			for _, left := range reads[i:] {
+				w.startReadFailed(ctx, left)
+			}
 			return
 		}
-		w.log.Warn("read an issue's pull request as the daemon starts; the issue's next handoff reads it", "issue", read.issue, "task", read.task, "error", err)
+		w.log.Warn("read an issue's pull request as the daemon starts; with an open pull request recorded the reads of its base read it again, and with none its next handoff does",
+			"issue", read.issue, "task", read.task, "error", err)
+		w.startReadFailed(ctx, read)
 	}
+}
+
+// startReadFailed hands the open pull request the record holds for read's task to the reads of
+// its base after the start read of it failed (followOnBase), and asks its round again for a run of
+// null `mergeable` reads the record holds (readFailed), so the head is read, and a persistent null
+// is told, though no handoff is coming. A read whose record cannot be read, or holds no open pull
+// request for its task, has nothing to hand.
+func (w *workflowRuntime) startReadFailed(ctx context.Context, read taskRead) {
+	recorded, err := issueRecord(ctx, w.pool, w.records, read.issue, read.task)
+	pr := recorded.pullRequest()
+	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
+		if err != nil && ctx.Err() == nil {
+			w.log.Warn("read the record of an issue whose start read failed; its next handoff reads it", "issue", read.issue, "task", read.task, "error", err)
+		}
+		return
+	}
+	w.followOnBase(read.issue, *pr)
+	w.readFailed(ctx, *pr)
 }
 
 // issuesInWorkflow is every read of a task's pull request the start makes (taskRead), in the order

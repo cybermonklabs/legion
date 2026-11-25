@@ -11,7 +11,7 @@ covers() {
   local check="$1" kind="$2" id="$3" in_project="$4"
   case "$kind" in organization | folder) return 0 ;; esac
   case "$check:$kind" in
-    gke:project | sql:project | dbsecret:project | state:project | signing:project) [ "${id#projects/}" = "$PROJECT" ] ;;
+    gke:project | dm:project | sql:project | dbsecret:project | state:project | signing:project) [ "${id#projects/}" = "$PROJECT" ] ;;
     gsa:project) [ "${id#projects/}" = "$GSA_PROJECT" ] ;;
     broker:project) [ "${id#projects/}" = "$BROKER_PROJECT" ] ;;
     fleet:project) [ "${id#projects/}" = "$POOL_PROJECT" ] ;;

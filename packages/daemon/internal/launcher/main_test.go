@@ -168,6 +168,50 @@ func exitHelper(t *testing.T) {
 	os.Exit(0)
 }
 
+// runsAloneVariable is the variable requireRunsAlone sets for the rest of a test. Nothing reads
+// it: setting it through testing's Setenv is how a helper shows that no other test runs beside its
+// caller. Its name is outside the prefixes fixtureenv.Guard takes out, and no code a test starts
+// reads it.
+const runsAloneVariable = "LAUNCHER_TEST_RUNS_ALONE"
+
+// requireRunsAlone fails t, naming what reads the whole process (what), unless no other test can
+// run beside t. A helper whose reading another test's processes or descriptors would spoil calls
+// it first (expectHeldClosed, descriptorsKept): the race detector cannot see such a caller, since
+// no variable is shared, and its failure would be a late end of file or an extra descriptor.
+func requireRunsAlone(t *testing.T, what string) {
+	t.Helper()
+	if refused := runsBeside(t); refused != nil {
+		t.Fatalf("%s reads the whole process, so its caller must run beside no other test, and this test runs in parallel: %v", what, refused)
+	}
+}
+
+// runsBeside answers why other tests can run beside t, or nil when none can: when neither t nor a
+// test above it called t.Parallel. The check is testing's own for a test that changes the process:
+// Setenv panics in a test that is parallel or under a parallel one, and makes a later t.Parallel in
+// it panic, so the answer holds for the rest of the test.
+func runsBeside(t *testing.T) (refused any) {
+	defer func() { refused = recover() }()
+	t.Setenv(runsAloneVariable, "1")
+	return nil
+}
+
+// requireRunsAlone's control: runsBeside refuses a parallel subtest and lets a serial one through.
+func TestRunsBesideRefusesAParallelTestAndNoOther(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (runsBeside), which is the
+	// check itself.
+	t.Run("serial", func(t *testing.T) {
+		if refused := runsBeside(t); refused != nil {
+			t.Errorf("runsBeside refused a test that called no t.Parallel: %v", refused)
+		}
+	})
+	t.Run("parallel", func(t *testing.T) {
+		t.Parallel()
+		if runsBeside(t) == nil {
+			t.Error("runsBeside let a parallel test through, so requireRunsAlone checks nothing")
+		}
+	})
+}
+
 // No test of this package can reach the workspace of the pod it runs in. The first two cases fail
 // without a Guard in a Legion issue pod, where LEGION_WORKSPACE names the pod's live workspace,
 // and name the workspace whose clone a git lock sweep of this package's tests would have swept.
@@ -175,6 +219,7 @@ func exitHelper(t *testing.T) {
 // git and jj fixtures of the sweep's tests build their environment from (fixturegit.Isolated),
 // drops a workspace the process holds.
 func TestNoTestOfThisPackageCanReachThePodsWorkspace(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	// The test process: Guard ran, and nothing it takes out is left — no LEGION_, no GIT_ but
 	// GIT_ALLOW_PROTOCOL=file, no JJ_ (fixtureenv.RequireGuarded), so neither this package's code
 	// under test nor a child it starts with no environment of its own can read the pod's.
@@ -216,6 +261,7 @@ func TestNoTestOfThisPackageCanReachThePodsWorkspace(t *testing.T) {
 // resume of this package's tests would have queried. A test that wants a session database names
 // its own with testdb.DSNFile, in the start's own environment.
 func TestNoTestOfThisPackageCanReachThePodsSessionStore(t *testing.T) {
+	t.Parallel()
 	// The test process: TestMain unset both, so neither this package's code under test nor a
 	// child it starts with no environment of its own can read the pod's store.
 	t.Run("the test process holds no session store of the pod's", func(t *testing.T) {

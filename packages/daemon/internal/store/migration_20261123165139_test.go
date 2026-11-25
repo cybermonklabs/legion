@@ -21,6 +21,7 @@ const experimentAssignmentPlanVersion = 20261123165139
 // refuses as a column it does not know. The control of the check is the migration without it:
 // the write of 'alone' then succeeds, and this test fails.
 func TestMigrationExperimentAssignmentPlan(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, experimentAssignmentPlanVersion-1)

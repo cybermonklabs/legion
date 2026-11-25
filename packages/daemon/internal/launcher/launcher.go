@@ -300,9 +300,11 @@ func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan st
 	return done
 }
 
-// podTrimmer is the trimmer's own loop, a package variable for the reason readVolumeUsage is one
-// (volumeusage.go): a test drives the trimmer the launcher built — its tree, its /proc,
-// its clock and its ticker — and watches the very loop Run waits on return.
+// podTrimmer is the trimmer's own loop, a package variable so a test can drive the trimmer the
+// launcher built — its tree, its volume reading, its /proc, its clock and its ticker — and watch
+// the very loop Run waits on return. Only a launcher taken for the container's first process
+// (containerInit) reads it, and only a test that runs alone makes a launcher one
+// (useContainerInit).
 var podTrimmer = func(ctx context.Context, trim *trimmer) { trim.run(ctx) }
 
 // newManagers is one manager per role the launcher serves, each with its own token, private
