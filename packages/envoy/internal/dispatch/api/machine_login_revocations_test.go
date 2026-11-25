@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // removalAged sets every owed machine-login revocation's removal back to age before now, and its
@@ -400,6 +401,68 @@ func TestAPassBeforeTheBrokersDecisionBoundLeavesTheRevocationOwed(t *testing.T)
 	registered.revokeBrokerDebts(ctx)
 	if owing() {
 		t.Errorf("the revocation of erin's machine logins is owed after a pass whose claim came %s after the removal, want it settled", machineLoginSettleAfter)
+	}
+}
+
+// TestTheBackgroundPassPaysAnOwedMachineLoginRevocation: the process that serves Dispatch runs the
+// broker revocation loop on the pass Register hands it (Background.RevokeBrokerCredentials), and
+// that pass must pay the revocations of restricted members' machine logins beside those of replaced
+// accounts (revokeBrokerDebts), or no pass of the loop ever pays one: the removed member's logins
+// keep refreshing and every approve of theirs is 409. alice names erin, a restricted member, on
+// ACC's list and takes her off, and erin's browser approve of her own machine login is 409
+// MACHINE_LOGIN_REVOCATION_OWED. The pass of the Background Register gave for the server that
+// answers these requests, its claim machineLoginSettleAfter after the removal, revokes erin's login
+// and settles the revocation, and the same approve then is 200.
+//
+// Control: Register handing the process revokeOwedBrokerCredentials, the replaced accounts' pass
+// alone, as RevokeBrokerCredentials, and the revocation is still owed after the pass, named.
+func TestTheBackgroundPassPaysAnOwedMachineLoginRevocation(t *testing.T) {
+	t.Parallel()
+	rig := newFakeBrokerRig(t)
+	database := storetest.Open(t)
+	seedPeople(t, database, "alice", accessErin)
+	markRestricted(t, database, accessErin)
+	deps, err := NewDeps(withDocumentService(t, DepsInput{
+		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"), ServerURL: testServerURL,
+		AgentSecretsURL: rig.server.URL, AgentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		RestrictedAdmission: restrictedAdmissionOf(true, database.Pool),
+	}))
+	if err != nil {
+		t.Fatalf("new API dependencies: %v", err)
+	}
+	// served answers every request below, and background is what Register hands the process that
+	// serves it, so the pass this row runs is that process's pass of the same server.
+	served := http.NewServeMux()
+	background := Register(served, t.Context(), deps)
+	t.Cleanup(background.Wait)
+	ctx := t.Context()
+	if created := dispatchRequest(t, served, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ACC", "name": "Access project"}, "alice"); created.Code != http.StatusCreated {
+		t.Fatalf("alice creates ACC: status=%d body=%s", created.Code, created.Body.String())
+	}
+	for _, write := range []struct{ method, does string }{{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}} {
+		if response := dispatchRequest(t, served, write.method, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("alice %s ACC's list: status=%d body=%s", write.does, response.Code, response.Body.String())
+		}
+	}
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	approve := func() *httptest.ResponseRecorder {
+		t.Helper()
+		return dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin)
+	}
+	wantRefusal(t, approve(), http.StatusConflict, "MACHINE_LOGIN_REVOCATION_OWED", accessErin,
+		"the approve of her own machine login after her removal from ACC, before any pass")
+
+	rig.bodyByRoute["GET /v1/launcher-credentials"] = erinsLoginListed("cred-erin")
+	removalAged(t, database, machineLoginSettleAfter)
+	background.RevokeBrokerCredentials(ctx)
+	if !slices.Equal(rig.revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {
+		t.Errorf("the server's background pass sent %v, want erin's login cred-erin revoked", rig.revokes())
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Fatalf("the revocation of erin's machine logins is owed %t (%v) after the server's background pass, want it settled", owed, err)
+	}
+	if approved := approve(); approved.Code != http.StatusOK {
+		t.Errorf("erin's approve of her own machine login once the pass settled the revocation = %d %s, want 200", approved.Code, approved.Body.String())
 	}
 }
 
