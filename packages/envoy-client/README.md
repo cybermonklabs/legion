@@ -1059,10 +1059,13 @@ later wherever that half is over the minute. A file with no `access_life_seconds
 build writes it, keeps the minute alone until the next refresh. A refusal of the trade's session or
 projects is not refreshed: a refresh cures none of those. A refresh the broker did not answer is
 sent once more at once: the broker redeems the spent refresh token again within its five-minute
-grace, and past it the login ends. The broker's `invalid_grant` to a refresh is final
-(`DeviceLoginEndedError` in `token-errors.ts`): the login was revoked or ran out, and only a new
-`dispatch login --device` cures it. A trade whose time ran out while another process of the
-machine held the lock says so (`LockHeldError`), and not that the broker did not answer.
+grace, and past it the login ends. The broker's 400 or 401 `invalid_grant` to a refresh is final
+(`DeviceLoginEndedError` in `token-errors.ts`, decided by `endsGrant` in `oauth-refusal.ts`): the
+login was revoked or ran out, and only a new `dispatch login --device` cures it. An
+`invalid_grant` at another status, a 403 or a 429, is a refusal like any other
+(`BrokerRefusedError`), and a later refresh gets past a 429. A trade whose time ran out while
+another process of the machine held the lock says so (`LockHeldError`), and not that the broker
+did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1087,7 +1090,7 @@ next one:
 |---|---|
 | a token | answers every caller, and both schedules start over |
 | a pod session not registered yet | trades again 2 s later, doubling to 30 s, so the trade after a registration lands is at most 30 s away; that trade has its own 30 s |
-| no answer within 30 s, no connection, a 5xx, the broker's 429 or a DPoP refusal, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
+| no answer within 30 s, no connection, a 5xx, a 408 or a 429, a DPoP refusal, a 4xx naming no OAuth error, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
 | a refusal no trade cures | ends; a call before the next slot is told the same refusal with no trade |
 
 The loop logs through `console.warn`, as the Go client does: a pod session not registered yet
@@ -1448,13 +1451,25 @@ exception is Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ub
 not upstream OpenSSH, which refuses every directory its group may write to. The rest is this
 command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each link
 on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1 when
-the broker refuses the login, the person denies it, its code expires, or the broker answers a
-poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
-naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
-broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s),
-and 5 s where it names none. It then writes no file. It exits 1 too when a login that was approved
-cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
-it in Machine logins on the page the code was typed into. Where it wrote a copy of the login whole,
+the broker refuses the login, the person denies it, its code expires, the broker answers a code
+that would lapse before its first poll (refused before the code is printed, naming the broker's
+interval and its codes' lifetime, or the hour this machine polls a code at most, and what must
+change at the broker), or the broker answers a poll with any other 4xx, with another OAuth error
+or without one (a proxy's page, a bare challenge), naming its status. The status decides first
+(`oauth-refusal.ts` in `@legion/cipher-client`): a poll the broker did not answer, a 408, its 429
+and a 5xx are polled again, whatever OAuth error they name, and only in another
+4xx does a deciding error count: `access_denied`, which the broker answers 403, is the denial,
+`expired_token` and `invalid_grant` the expiry, and `authorization_pending` and `slow_down` poll
+again. It polls at the broker's interval, 1 s at least, and 5 s where it names none; each
+`slow_down` adds 5 s, at whatever status it comes, and so does each poll the broker did not answer
+or answered 408, 429 or 5xx, once for a poll that is both, as RFC 8628 has it. Such an answer's
+`Retry-After`, in seconds or as a date, is waited before the next poll where it asks longer,
+though never past the code's lifetime, which no wait passes and which is kept on the monotonic
+clock, so a step of the system clock does not move it; a code that lapses after such polls says
+how many came in a row before it. It then writes no file. It
+exits 1 too when a login that was approved cannot be kept: it names the login's credential, which
+the broker holds live, and says to revoke it in Machine logins on the page the code was typed
+into. Where it wrote a copy of the login whole,
 the copy is kept beside the file, under the file's name with `.kept-<uuid>` added, and the message
 names that suffix, whatever fails after it, letting go of the lock included: moved over the file,
 the copy is the login and its credential needs no revoke; unused, the person deletes it, since it

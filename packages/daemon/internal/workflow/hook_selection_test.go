@@ -50,6 +50,7 @@ func clearsConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head st
 // pair: nobody sent the work back. Every move whose hook's count is not a multiple fires nothing,
 // which is what the steps between the firings read.
 func TestAHookFiresOnTheMovesItSelects(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := workBackEngine(50,
 		Hook{Name: "every-move", On: HookEventWorkBack, Every: 5,

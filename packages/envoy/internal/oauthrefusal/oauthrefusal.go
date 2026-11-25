@@ -6,15 +6,16 @@
 // a refusal is a 4xx (Refuses), and its OAuth error code (RFC 6749 section 5.2) only names the
 // refusal's reason (Refusal). Ending a grant is narrower still (EndsGrant). Every reader of a token
 // endpoint's answer that decides something on it - a sign-in refused, a client rejected, a login
-// denied or ended - reads it through these, so each rule has one definition. The readers that end
-// a person's sign-in on this machine read EndsGrant's 400/401 rule: the broker client's device
-// flow by EndsGrant itself (internal/cipherclient/device.go, DeviceFlow.Refresh), and the
-// TypeScript broker client by the same rule in its own language
-// (packages/cipher-client/src/person-identity.ts, grantRefused). The broker's minters read
-// GitHub's and Google's statuses by Refuses and Outage too (internal/cipher/secrets,
-// mintStatusError and classify), beside their own rate-limit reading. It imports only the
-// standard library and golang.org/x/oauth2, so a command that links no OpenID Connect verifier can
-// use it.
+// denied or ended - reads it through these, so each rule has one definition. The TypeScript
+// broker client states the same rules once in its own language
+// (packages/cipher-client/src/oauth-refusal.ts: outage, refusalCode and endsGrant), which its
+// person identity and its device login read. The readers that end a person's sign-in on this
+// machine read EndsGrant's 400/401 rule: the broker client's device flow by EndsGrant itself
+// (internal/cipherclient/device.go, DeviceFlow.Refresh), and the TypeScript broker client by
+// endsGrant. The broker's minters read GitHub's and Google's statuses by Refuses and Outage too
+// (internal/cipher/secrets, mintStatusError and classify), beside their own rate-limit reading.
+// It imports only the standard library and golang.org/x/oauth2, so a command that links no OpenID
+// Connect verifier can use it.
 package oauthrefusal
 
 import (

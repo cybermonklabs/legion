@@ -13,6 +13,7 @@ import (
 // production is not, and refusing it threw the only report of that deploy away and left the check
 // to close as not run (dispatch://INFRA-714/spec R12).
 func TestALateReportOfTheCurrentLookIsRecorded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		verdict string
