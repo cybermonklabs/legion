@@ -911,8 +911,8 @@ const shapedAnswersContract = 193
 // served the keys of 256 without this object.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, as the last number of answers.go's SupportedContracts does.
+// that constant, and the contract the key arrived at stays where it is. It moves only with #4392's
+// own number, the entry of answers.go's SupportedContracts that stands before gateBasisContract.
 const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1171,8 +1171,8 @@ const causeTimesContract = 256
 // (heldReasons), served as `children_first`, the word a started parent's wait took over
 // (withoutUnadmittedHeldWords, heldReasonStandIn).
 //
-// Of the bands of stateNarrowings, causeTimesContract's stands right below this one,
-// priorityContract's below that, podHoldContract's below that, intakeGiveUpsContract's below that,
+// Of the bands of stateNarrowings, dispatchCredentialContract's stands right below this one,
+// causeTimesContract's below that, priorityContract's below that, podHoldContract's below that, intakeGiveUpsContract's below that,
 // assignmentPlanContract's below that, repositoriesLiveContract's below that and
 // shapedAnswersContract's below that, and this band touches no key of any of theirs:
 // shapedAnswersContract's takes `lowestPluginContract` and the claim views' `updateState` and
@@ -1180,7 +1180,8 @@ const causeTimesContract = 256
 // assignmentPlanContract's takes each assignment's `plan`, intakeGiveUpsContract's takes the
 // state's `intakeGiveUps`, podHoldContract's takes the issues' `podHold`, priorityContract's takes
 // the issues' `priority` and their waitingLine's `priority`, causeTimesContract's takes the claim
-// views' `lastDeathAt` and `lastStartFailureAt`, and this one takes `treeRuns` and some
+// views' `lastDeathAt` and `lastStartFailureAt`, dispatchCredentialContract's takes the state's
+// `dispatchCredential`, and this one takes `treeRuns` and some
 // `gatedSteps`. So a caller from 202 up to the number below this contract is served the keys 193
 // added and the block 202 writes and none of this contract's keys and words. One that states a
 // number between 202 and this contract is served the nearest recorded contract at or below it
@@ -1196,10 +1197,12 @@ const causeTimesContract = 256
 // records are intakeGiveUpsContract's under its own number, as version.go's 232 entry adds two
 // fields to a request and moves no answer's shape, one at 246 to 249 is served podHoldContract's,
 // which are 232's with each issue's `podHold`, one at 250 to 255 is served priorityContract's,
-// which are podHoldContract's with each issue's `priority` and its waitingLine's `priority`, and
-// one at 256 up to the number below this contract is served causeTimesContract's, which are
-// priorityContract's with each claim view's `lastDeathAt` and `lastStartFailureAt`. So a caller
-// below causeTimesContract is served no cause times, one below priorityContract no `priority`
+// which are podHoldContract's with each issue's `priority` and its waitingLine's `priority`, one at
+// 256 to 274 is served causeTimesContract's, which are priorityContract's with each claim view's
+// `lastDeathAt` and `lastStartFailureAt`, and one at 275 is served dispatchCredentialContract's,
+// which are causeTimesContract's with the state's `dispatchCredential`. So a caller below
+// dispatchCredentialContract is served no `dispatchCredential`, one below causeTimesContract no
+// cause times either, one below priorityContract no `priority`
 // either, one below podHoldContract no `podHold` either, one below intakeGiveUpsContract no
 // `intakeGiveUps` either, one below assignmentPlanContract no assignment's `plan` either, and one
 // below OwnerPlanContract neither the owner's plan's additions nor this contract's. A caller from

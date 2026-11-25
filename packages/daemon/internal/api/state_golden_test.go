@@ -1273,9 +1273,10 @@ func TestStateGolden(t *testing.T) {
 // assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
 // intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
 // root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
-// (withoutGateBasis, gateBasisContract's row), the two other rows of stateNarrowings above the
-// contract it is served at, no issue's `priority` (withoutPriority, priorityContract's row) and no
-// claim view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row),
+// (withoutGateBasis, gateBasisContract's row), the three other rows of stateNarrowings above the
+// contract it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no
+// claim view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row)
+// and no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row),
 // and every other key as a caller at shapedAnswersContract is served it, since no other
 // row of stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
 // shapedAnswersContract's row and pauseContract's stand at or below the contract it is served at,

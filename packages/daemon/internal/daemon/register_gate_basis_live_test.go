@@ -167,7 +167,7 @@ func (r *registerGateBasisLive) world() {
 	r.setStatus(r.parent.Key, "in_progress")
 	r.approved = r.approve(r.parent.PrimaryArtifactID).Version
 	r.linkUnder(r.root, r.parent, false)
-	r.writeDocument(r.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(r.parent.Key, "p2")}}))
+	r.writeDocument(r.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(r.parent.Key, "p2")}}))
 	r.quiet(r.root.Key, r.parent.Key)
 	state, body := settled(t, r.d, "answer its state before the registration", func(api.State) bool { return true })
 	if step := stepOf(state, r.root.Key); step.Status != api.GatedStepUnregistered || r.gateFacts(r.root.Key) != 0 {

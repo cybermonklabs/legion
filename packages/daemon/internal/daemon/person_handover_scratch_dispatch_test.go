@@ -649,15 +649,15 @@ func requirementBlock(id string) string {
 	return fmt.Sprintf(":::requirement{#%s}\n**%s.** The change delivers %s.\n:::\n", id, id, id)
 }
 
-// rigCheck is one check of a Verification document: its id and the blocks its `serves` names, in
+// verificationCheck is one check of a Verification document: its id and the blocks its `serves` names, in
 // Dispatch's reference form; none writes a check that serves nothing.
-type rigCheck struct {
+type verificationCheck struct {
 	id     string
 	serves []string
 }
 
 // checksMarkdown is a Verification document holding checks, in that order.
-func checksMarkdown(checks ...rigCheck) string {
+func checksMarkdown(checks ...verificationCheck) string {
 	var text strings.Builder
 	text.WriteString("# Verification\n\n")
 	for _, check := range checks {

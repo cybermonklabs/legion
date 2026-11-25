@@ -325,15 +325,12 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				below.contract, highest.contract, dispatchCredentialContract, gateBasisContract)
 		}
 		served := func(body []byte) int {
-			var answer struct {
-				Contract struct {
-					Caller int `json:"caller"`
-				} `json:"contract"`
+			mark, carried := contractServed(t, body)
+			caller, ok := mark["caller"].(float64)
+			if !carried || !ok {
+				t.Fatalf("the state served carries no contract mark with a caller: %s", body)
 			}
-			if err := json.Unmarshal(body, &answer); err != nil {
-				t.Fatalf("decode the state served: %v", err)
-			}
-			return answer.Contract.Caller
+			return int(caller)
 		}
 		for caller := causeTimesContract + 1; caller < dispatchCredentialContract; caller++ {
 			body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), caller)
