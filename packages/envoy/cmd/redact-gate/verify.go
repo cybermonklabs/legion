@@ -252,10 +252,10 @@ func goPackageName(pkg string) string {
 	return pkg
 }
 
-// reported is a line of a test's output that reports a failure: a file and line of a _test.go file
-// (a t.Log line reads as a t.Error line does), a panic, go test's FAIL, a failed build, a timeout,
-// or a compiler's "cannot" or "undefined:". A failed test is named by its first and last.
-var reported = regexp.MustCompile(`_test\.go:\d+:|^panic:|\bpanic: |^FAIL\b|build failed|timed out|cannot|undefined:`)
+// failureLine is a line of a test's output that reports a failure: a file and line of a _test.go
+// file (a t.Log line reads as a t.Error line does), a panic, go test's FAIL, a failed build, a
+// timeout, or a compiler's "cannot" or "undefined:". A failed test is named by its first and last.
+var failureLine = regexp.MustCompile(`_test\.go:\d+:|^panic:|\bpanic: |^FAIL\b|build failed|timed out|cannot|undefined:`)
 
 // goRead is what -verify reads of one package's go test events: the run is of that package alone,
 // so each event is the package's, and its tests are named by test alone ("" the package itself).
@@ -294,7 +294,7 @@ func readEvents(events []byte) goRead {
 			read.built[e.ImportPath] += e.Output
 		case "output":
 			output.WriteString(e.Output)
-			if text := strings.TrimSpace(e.Output); reported.MatchString(text) {
+			if text := strings.TrimSpace(e.Output); failureLine.MatchString(text) {
 				if _, ok := read.said[e.Test]; !ok {
 					read.said[e.Test] = text
 				}
@@ -506,9 +506,9 @@ func judgeVerify(inv inventory, gos []goRun, buns []bunRun, out io.Writer) int {
 	}
 	for _, r := range inv.Bun {
 		row := fmt.Sprintf("%s (%s) %s %s", r.ID, r.Requirement, r.File, r.Test)
-		found, reported := states[r.File]
+		found, hasReport := states[r.File]
 		state := "has no JUnit report"
-		if reported {
+		if hasReport {
 			switch state = found[r.Test]; state {
 			case "":
 				state = "is not in the report"
