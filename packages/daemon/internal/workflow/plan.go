@@ -214,7 +214,7 @@ func (e *Engine) tellPassedOver(ctx context.Context, tx pgx.Tx, issue record.Iss
 	}
 	ran, told := "default steps", "the default steps"
 	if runs.Source == record.PlanSourceOwner {
-		ran = describeVersion(runs)
+		ran = describeVersion(runs, runs.Givers())
 		told = ran
 	}
 	for _, version := range earlier {
@@ -247,36 +247,60 @@ func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // namedOnce names the versions a first step passed over as its plan-not-taken notice names them:
-// each version once (describeVersion), in the order it was first passed over. A rerun carries the
-// owner's plan to its new generation with the time it was given (record.Store's CarryPlan), so the
-// versions passed over hold one copy of a version for each generation it ran, and the notice names
-// the version, not its copies.
+// each version of a document once, in the order it was first passed over, with the givers of all
+// its copies (describeVersion). A rerun carries the owner's plan to its new generation with its
+// givers and the time it was given (record.Store's CarryPlan), and a give of the version in force
+// by another owner adds that owner to the copy of its own generation alone (record.Store's
+// AddPlanGiver), so the versions passed over hold one copy of a version for each generation it
+// ran, whose givers can differ, and the notice names the version, not its copies.
 func namedOnce(versions []record.PlanVersion) string {
-	named := make([]string, 0, len(versions))
-	for _, version := range versions {
-		if described := describeVersion(version); !slices.Contains(named, described) {
-			named = append(named, described)
+	var named []string
+	for i, version := range versions {
+		if slices.ContainsFunc(versions[:i], func(earlier record.PlanVersion) bool { return sameDocumentVersion(earlier, version) }) {
+			continue
 		}
+		// The copies are passed over in the order they were given (record.Store's PlansInForce), so
+		// read backward they name the last to give the version first, as one copy's givers do.
+		var givers []claim.Token
+		for _, copied := range slices.Backward(versions) {
+			if !sameDocumentVersion(copied, version) {
+				continue
+			}
+			for _, giver := range copied.Givers() {
+				if !slices.Contains(givers, giver) {
+					givers = append(givers, giver)
+				}
+			}
+		}
+		named = append(named, describeVersion(version, givers))
 	}
 	return strings.Join(named, "; ")
 }
 
-// describeVersion names an owner's version of a plan as a log line and a notice name it: its
-// version, its document and who gave it (giversOf).
-func describeVersion(version record.PlanVersion) string {
-	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, giversOf(version))
+// sameDocumentVersion says whether a and b are copies of one version of one document.
+func sameDocumentVersion(a, b record.PlanVersion) bool {
+	return a.ArtifactID == b.ArtifactID && a.Version == b.Version
 }
 
-// giversOf names every giver of version (record.PlanVersion.Givers) by its claim, as a sentence
-// lists them (listed), the last to give it first. Each log line of a version names its givers so,
-// under the key giver.
+// describeVersion names an owner's version of a plan as a log line and a notice name it: its
+// version, its document and who gave it, givers (namedGivers).
+func describeVersion(version record.PlanVersion, givers []claim.Token) string {
+	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, namedGivers(givers))
+}
+
+// giversOf names every giver of version (record.PlanVersion.Givers), the last to give it first
+// (namedGivers). Each log line of a version names its givers so, under the key giver.
 func giversOf(version record.PlanVersion) string {
-	all := version.Givers()
-	givers := make([]string, len(all))
-	for i, giver := range all {
-		givers[i] = string(giver)
+	return namedGivers(version.Givers())
+}
+
+// namedGivers names givers by their claims, as a sentence lists them (listed).
+func namedGivers(givers []claim.Token) string {
+	names := make([]string, len(givers))
+	for i, giver := range givers {
+		names[i] = string(giver)
 	}
-	return listed(givers)
+	return listed(names)
 }
 
 // listed joins words as a sentence lists them: one alone, two joined by "and", more by commas and

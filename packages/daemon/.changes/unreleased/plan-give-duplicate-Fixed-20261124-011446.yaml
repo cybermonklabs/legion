@@ -18,7 +18,8 @@ body: |-
     `TREE_LINGERING`, also where the same give was taken before. Before, each was answered 200.
   - Every owner that gave a version is one of its givers. A version is set aside as an earlier
     owner's only when none of its givers owns the issue any more. The `plan-not-taken` notice
-    names every giver of a version it names. A second delivery of a give writes nothing.
+    names each version it passed over once, with every giver of its copies. A second delivery of
+    a give writes nothing.
 
   The store gains `issue_plans.earlier_givers`. An earlier release reads only the giver that
   gave a version last, so after a rollback its first step sets a version aside when that giver no
