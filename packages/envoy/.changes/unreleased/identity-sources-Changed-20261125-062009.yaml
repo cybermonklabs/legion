@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `agent-secrets`, its helper and the Dispatch and Envoy plugins' TypeScript client choose the
+  machine's identity source from one registry each, and a service of the bus connects to the NATS
+  auth service through the same registry. `AGENT_SECRETS_MACHINE_IDENTITY` takes the same values
+  and `NATS_SERVICE_GOOGLE_AUDIENCE` the same audience; the public `cipherclient` package no
+  longer re-exports the per-source constants. A hub whose providers share one issuer, which a
+  local stack has, now tries each of them: a service's token is whichever kind verifies it.
+time: 2026-11-25T06:20:09Z
+custom:
+    Issue: identity-sources

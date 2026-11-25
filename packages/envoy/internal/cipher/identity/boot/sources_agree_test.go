@@ -1,5 +1,8 @@
 package boot_test
 
+//ci:reads packages/cipher-client/scripts/print-identity-sources.ts TestClientSourcesAgree runs `bun ../../../../../cipher-client/scripts/print-identity-sources.ts`
+//ci:reads packages/cipher-client/src/** print-identity-sources.ts imports ../src/environment, whose own imports the run evaluates
+
 import (
 	"encoding/json"
 	"os"
