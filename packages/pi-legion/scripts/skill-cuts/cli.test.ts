@@ -1630,7 +1630,7 @@ esac
     expect({ code: first.code, stderr: first.stderr }).toEqual({ code: 0, stderr: "" });
     const lines = said.map((line) => JSON.stringify(line)).join(" ");
     const attempt = (n: number) =>
-      `attempt ${n}: its body defines 2 tools, legion not among them, and its stderr's [legion] and Extension error lines are ${lines}`;
+      `attempt ${n}: its body defines 2 tools, legion not among them, and its stderr's [legion], Extension error and Failed to load extension lines are ${lines}`;
     const dropped = `legion-tool-undefined: case c04 arm old: the captured body is refused: a Legion implementer pane whose context installs pi-legion as an extension must send pi-legion's legion tool, and the body of none of its 2 attempts defines it: ${attempt(1)}; ${attempt(2)}`;
     const c = result(s.out, "c04");
     expect([c.dropped, c.droppedAt, c.controls?.hold, c.stages]).toEqual([
@@ -3612,7 +3612,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
   }, 60_000);
 });
 
-// INFRA-4676's architect (2026-11-25T18:54:22Z and 19:02:42Z): cases come from Postgres sessions
+// The task's architect (2026-11-25T18:54:22Z and 19:02:42Z): cases come from Postgres sessions
 // alone, so a session only the transcript store holds is counted but is never a case source. Each
 // behaviour report says how many of its skill's counted sessions are such, and a skill with too
 // few informative cases for a verdict says so in its reason.

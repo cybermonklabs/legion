@@ -556,6 +556,201 @@ test("a file written into a cached checkout after it was made is no change to it
   ]);
 });
 
+// The daemon API contract a pack writes into a plugin's manifest as `legion.daemonApiVersion`
+// (`scripts/daemon-contract.sh` prints it), which pi-legion of 2026-11-25 or later reads as it
+// loads. A made-up plugin whose extension imports its own package.json, as pi-legion's does, and
+// throws as it loads when the manifest holds no such field. `bun build` inlines that file, so a
+// bundle holds what the file held while the build ran.
+const CONTRACT_PLUGIN = {
+  repo: "acme/legion",
+  commit: COMMIT,
+  path: "packages/plugin-contract",
+  name: "plugin-contract",
+};
+const CONTRACT_EXTENSION = `import pkg from "../package.json";
+const declared = pkg.legion?.daemonApiVersion;
+if (declared === undefined) {
+  throw new Error("the plugin's package.json holds no legion.daemonApiVersion");
+}
+export const contract = declared;
+export default function plugin(): void {}
+`;
+const CONTRACT_BUILD = "bun build extensions/contract.ts --outdir dist --target bun";
+
+/** A script that runs `body` in bash, as a checkout's scripts/daemon-contract.sh does. */
+const contractScript = (body: string) => `#!/usr/bin/env bash\n${body}\n`;
+
+/** CONTRACT_PLUGIN's package.json text, with `fields` over its own: tab-indented and with no
+ *  newline at its end, so a file written back as `JSON.stringify(manifest, null, 2)` and a
+ *  newline differs from it in its bytes. */
+function contractManifest(fields: Record<string, unknown> = {}): string {
+  return JSON.stringify(
+    {
+      name: CONTRACT_PLUGIN.name,
+      files: ["dist"],
+      scripts: { build: CONTRACT_BUILD },
+      omp: { extensions: ["extensions/contract.ts"] },
+      ...fields,
+    },
+    null,
+    "\t"
+  );
+}
+
+/** A devbox case that installs CONTRACT_PLUGIN from a made-up checkout under `root`: its manifest
+ *  `manifest` and `files` (the checkout's path to text) written over the usual repositories. The
+ *  case, arm and options, and where the cached checkout and the installed plugin will be. */
+function contractPluginSetUp(root: string, manifest: string, files: Record<string, string> = {}) {
+  const c = aCase("devbox", { plugins: [CONTRACT_PLUGIN], contextFiles: [] });
+  const { options, arm } = setUp(root, c);
+  writeTree(path.join(root, "repos", "acme", "legion", COMMIT), {
+    [`${CONTRACT_PLUGIN.path}/package.json`]: manifest,
+    [`${CONTRACT_PLUGIN.path}/extensions/contract.ts`]: CONTRACT_EXTENSION,
+    ...files,
+  });
+  const tree = path.join(options.cacheDir, "trees", cacheKey(CONTRACT_PLUGIN.repo, COMMIT));
+  return {
+    c,
+    arm,
+    options,
+    tree,
+    pluginDir: path.join(tree, CONTRACT_PLUGIN.path),
+    manifestFile: path.join(tree, CONTRACT_PLUGIN.path, "package.json"),
+    installed: (scratch: string) => path.join(scratch, "plugins", CONTRACT_PLUGIN.name),
+  };
+}
+
+/** `contractPluginSetUp`, its context built: the plugin's record and its directory as well. */
+async function contractPluginBuilt(
+  root: string,
+  manifest: string,
+  files: Record<string, string> = {}
+) {
+  const set = contractPluginSetUp(root, manifest, files);
+  const built = await buildContext(set.c, set.arm, set.options);
+  return { ...set, plugin: built.record.plugins[0], dir: set.installed(set.options.root) };
+}
+
+/** The package.json a built plugin ships in `installed`. */
+function shippedManifest(installed: string) {
+  return JSON.parse(readFileSync(path.join(installed, "package.json"), "utf8"));
+}
+
+/** The number the bundle of the plugin installed at `installed` holds: its extension reads the
+ *  field as the bundle loads, and the load throws where there is none. */
+async function bundledContract(installed: string): Promise<number> {
+  // The bundle is built by the row, so no static import can name it.
+  const bundle = await import(path.join(installed, "dist", "contract.js"));
+  return bundle.contract;
+}
+
+// Catches: a Legion pane built from main's pi-legion defined no `legion` tool: the runner ran the
+// plugin's own build in its checkout, which holds no `legion.daemonApiVersion` (a pack writes it),
+// so the bundle threw as it loaded and Oh My Pi said `Failed to load extension`.
+test("a plugin built in a checkout that holds scripts/daemon-contract.sh is built with the number it prints as legion.daemonApiVersion, in its bundle and in the package.json it ships, and the checkout's package.json keeps its bytes", async () => {
+  const manifest = contractManifest();
+  const built = await contractPluginBuilt(path.join(dir, "contract-stamped"), manifest, {
+    "scripts/daemon-contract.sh": contractScript("echo 321"),
+  });
+  expect(built.plugin).toMatchObject({ name: CONTRACT_PLUGIN.name, as: "extension" });
+  expect(await bundledContract(built.dir)).toBe(321);
+  expect(shippedManifest(built.dir).legion).toEqual({ daemonApiVersion: 321 });
+  expect(readFileSync(built.manifestFile, "utf8")).toBe(manifest);
+});
+
+// Catches: a build that failed with the number written into the checkout's package.json left the
+// file as written, so a later build of the checkout read it as the plugin's own.
+test("a build that fails ran with the number in the checkout's package.json, and the file keeps its bytes after", async () => {
+  const manifest = contractManifest({
+    scripts: { build: "cp package.json seen-by-build.json && exit 1" },
+  });
+  const built = await contractPluginBuilt(path.join(dir, "contract-failed-build"), manifest, {
+    "scripts/daemon-contract.sh": contractScript("echo 321"),
+  });
+  expect(built.plugin?.as).toBe("left out");
+  expect(built.plugin?.reason).toContain("exit 1");
+  const seen = JSON.parse(readFileSync(path.join(built.pluginDir, "seen-by-build.json"), "utf8"));
+  expect(seen.legion).toEqual({ daemonApiVersion: 321 });
+  expect(readFileSync(built.manifestFile, "utf8")).toBe(manifest);
+});
+
+// Catches: the script run, or a field written, where nothing is to be stamped: a checkout from
+// before the field has no script (every saved case's is one), and a manifest that holds the field
+// holds the plugin's own number.
+test("a checkout with no scripts/daemon-contract.sh builds the plugin as it is, and a manifest that holds legion.daemonApiVersion keeps it with no run of the script", async () => {
+  const manifest = contractManifest();
+  const none = await contractPluginBuilt(path.join(dir, "contract-no-script"), manifest);
+  expect(none.plugin?.as).toBe("extension");
+  expect(shippedManifest(none.dir)).not.toHaveProperty("legion");
+  expect(readFileSync(none.manifestFile, "utf8")).toBe(manifest);
+
+  const own = contractManifest({ legion: { daemonApiVersion: 7 } });
+  const held = await contractPluginBuilt(path.join(dir, "contract-held"), own, {
+    "scripts/daemon-contract.sh": contractScript("touch ran\necho 321"),
+  });
+  expect(held.plugin?.as).toBe("extension");
+  expect(await bundledContract(held.dir)).toBe(7);
+  expect(shippedManifest(held.dir).legion).toEqual({ daemonApiVersion: 7 });
+  expect(existsSync(path.join(held.tree, "ran"))).toBe(false);
+  expect(readFileSync(held.manifestFile, "utf8")).toBe(own);
+});
+
+// Catches: a script that failed, or printed no number, ignored, or its output written as the
+// contract, so the plugin was built without the number a pack writes, or with a wrong one.
+test("a script that exits nonzero or prints no non-negative integer fails the plugin's build before it runs, naming the script and what it did, and the checkout's package.json keeps its bytes", async () => {
+  const named = "bash scripts/daemon-contract.sh";
+  const printed = (text: string) =>
+    `\`${named}\` printed ${JSON.stringify(text)}, not a non-negative integer, so the plugin cannot be built the way a pack builds it`;
+  const scripts: [string, string][] = [
+    [
+      "echo 'daemon-contract.sh: the tree holds no contract' >&2\nexit 1",
+      `\`${named}\` failed with exit 1: daemon-contract.sh: the tree holds no contract`,
+    ],
+    ["echo abc", printed("abc")],
+    ["echo -4", printed("-4")],
+    ["echo 1.5", printed("1.5")],
+    ["true", printed("")],
+  ];
+  const manifest = contractManifest();
+  for (const [at, [body, message]] of scripts.entries()) {
+    const built = await contractPluginBuilt(path.join(dir, `contract-script-${at}`), manifest, {
+      "scripts/daemon-contract.sh": contractScript(body),
+    });
+    expect(built.plugin?.as).toBe("left out");
+    expect(built.plugin?.reason).toBe(`its build failed: ${message}`);
+    expect(existsSync(path.join(built.pluginDir, "dist"))).toBe(false);
+    expect(readFileSync(built.manifestFile, "utf8")).toBe(manifest);
+  }
+});
+
+// Catches: two captures that built one checkout's plugin at once, the second reading the
+// package.json while the first held the number in it: it took the number as the plugin's own,
+// wrote none, and built once the first had put the file back, so its bundle, kept under the
+// plugin's cache key, held no number.
+test("two builds of one checkout's plugin run one after the other, and each bundle holds the number", async () => {
+  const root = path.join(dir, "contract-concurrent");
+  mkdirSync(root, { recursive: true });
+  const log = path.join(root, "build.log");
+  const manifest = contractManifest({
+    scripts: {
+      build: `echo start >> ${log} && sleep 1 && ${CONTRACT_BUILD} && echo end >> ${log}`,
+    },
+  });
+  const set = contractPluginSetUp(root, manifest, {
+    "scripts/daemon-contract.sh": contractScript("echo 321"),
+  });
+  const again = { ...set.options, root: path.join(root, "again") };
+  await Promise.all([
+    buildContext(set.c, set.arm, set.options),
+    buildContext(set.c, set.arm, again),
+  ]);
+  expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["start", "end", "start", "end"]);
+  for (const scratch of [set.options.root, again.root]) {
+    expect(await bundledContract(set.installed(scratch))).toBe(321);
+  }
+  expect(readFileSync(set.manifestFile, "utf8")).toBe(manifest);
+});
+
 test("a second copy of a name whose text differs goes in a skills directory of its namespace, which the capture gives Oh My Pi after skills/, so it lists the copy as <namespace>/<name>", async () => {
   const root = path.join(dir, "namespaced");
   const c = aCase("devbox", {});

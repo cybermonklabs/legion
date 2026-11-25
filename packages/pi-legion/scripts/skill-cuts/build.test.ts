@@ -7574,7 +7574,7 @@ test("build-cases --written stops above 1 GiB of peak resident memory once a tas
   expect(lines.at(-1)).toContain(`, peak memory 1024 MiB; written to ${out}`);
 }, 60_000);
 
-// INFRA-4676's architect (2026-11-25T18:54:22Z and 19:02:42Z): cases come from Postgres sessions
+// The task's architect (2026-11-25T18:54:22Z and 19:02:42Z): cases come from Postgres sessions
 // alone, so a build that ends with no case says how many of the skill's counted sessions only the
 // transcript store holds, which were never case sources; the walk copies that line into the
 // skill's no-case report.
@@ -8683,7 +8683,7 @@ test("a read inside the session checkout's own .claude/skills is that project's 
   expect((plugin.profile?.skills ?? []).map((skill) => skill.name)).toContain("beta");
 }, 60_000);
 
-// INFRA-4676's architect, 2026-11-25: a session's context follows where its skills came from. A
+// The task's architect, 2026-11-25: a session's context follows where its skills came from. A
 // named-profile session of a devbox store whose [Skill file: …] headers are under the dev box's
 // home ran in a pod that mounts that home, whose Oh My Pi loaded the dev box's skills, so it gets
 // the dev box's context; one with no such header gets the session pod's. In every context a
