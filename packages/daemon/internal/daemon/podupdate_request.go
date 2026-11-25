@@ -208,7 +208,7 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 	}
 	if step.opened {
 		s.log.Info("supervise: the project's controller asked for the replacement of this issue's pod; its update round is posted",
-			"issue", issue, "round", round, "pod", pod, "roles", namesOf(sessionClaims(told)))
+			"issue", issue, "round", round, "pod", pod, "roles", namesOf(asked))
 	}
 	return api.PodUpdateResponse{Round: round, Reasons: step.reasons, Opened: step.opened}, tokens, nil
 }

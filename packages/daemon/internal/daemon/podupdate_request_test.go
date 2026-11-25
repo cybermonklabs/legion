@@ -376,6 +376,46 @@ func TestPodUpdateTheControllerAsksForIsRefusedWhereNoRoundCanOpen(t *testing.T)
 	}
 }
 
+// podUpdatePostedLine is the line the daemon writes for a round the controller's request opened
+// (postRequestedPodUpdate). Its roles field names the claims the round is posted to.
+const podUpdatePostedLine = "supervise: the project's controller asked for the replacement of this issue's pod; its update round is posted"
+
+// A claim that records no process and whose launch waits on the issue's pod for that pod's round
+// (supervise.Claim.AwaitsPod) is a claim the controller's request counts, with a session or with
+// none: the round is posted to it (postedClaims), and its machine records the round
+// (noticeClaims). Such a claim may be the issue's only one, and the round is its one way to the
+// pod. Here the issue's only claim is an implementer whose first launch the runtime refused for
+// want of the pod's round, with no session and no process after it (refusedFirstLaunch). The
+// request is not refused 404 NO_POD: it opens the round over the pod that launch waits on, the
+// implementer records the round with the controller's reasons, and the daemon's line names the
+// implementer as the one role the round is posted to.
+//
+// The negative control is the request counting the claims with a session alone (sessionClaims in
+// place of noticeClaims): it is refused 404 NO_POD where this test wants the round opened. Where
+// the daemon's line alone names the claims with a session (namesOf(sessionClaims(told))), it
+// names no role where this test wants the implementer.
+func TestPodUpdateTheControllerAsksForOpensTheRoundOverThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
+	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued})
+	refusals := rig.refuseLaunches()
+	refusals.refuse(claim.RoleImplementer, podUpdatePod)
+	rig.refusedFirstLaunch(claim.RoleImplementer)
+	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+
+	route.answered(podUpdateIssue, requestedRound)
+
+	if c := rig.awaitRound(claim.RoleImplementer, podUpdateRound); c.UpdateReasons != requestedPodUpdateReasons {
+		t.Errorf("the implementer records the reasons %q, want %q", c.UpdateReasons, requestedPodUpdateReasons)
+	}
+	lines := loggedLines(t, rig.logs.String(), `"msg":"`+podUpdatePostedLine+`"`)
+	if len(lines) != 1 || lines[0]["issue"] != podUpdateIssue || lines[0]["round"] != podUpdateRound {
+		t.Fatalf("lines %q = %v, want one naming %s and round %s", podUpdatePostedLine, lines, podUpdateIssue, podUpdateRound)
+	}
+	if roles, _ := lines[0]["roles"].([]any); len(roles) != 1 || roles[0] != string(claim.RoleImplementer) {
+		t.Errorf("the line %q names the roles %v, want the %s alone, the one claim the round is posted to",
+			podUpdatePostedLine, lines[0]["roles"], claim.RoleImplementer)
+	}
+}
+
 // A round this daemon ended is no round for the controller's request to answer or to open over
 // again while a claim of the issue still records it (podUpdateEnded).
 // The end is posted to each member's machine, and a machine in a relaunch takes it only once the

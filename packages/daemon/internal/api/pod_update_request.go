@@ -52,8 +52,8 @@ const (
 	// ways: no claim records a process in a pod (each is suspended or between launches, or the
 	// runtime runs no pods), or the claims record a pod and none of them is a worker the round
 	// could ask (none has a session or waits on that pod for its launch, or each one that does has
-	// failed), so no claim would record the round. 404 NO_POD: the claims are there, and a worker in
-	// the pod the round is opened over is what is missing.
+	// failed), so no claim would record the round. 404 NO_POD: the claims are there, and a worker
+	// in the pod the round is opened over is what is missing.
 	PodUpdateNoPod
 	// PodUpdatePodChanging: the issue's pod is changing under the request — its claims record two
 	// pods, a replacement in flight, or a round over the pod before this one is still ending — and
