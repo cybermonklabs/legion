@@ -123,6 +123,7 @@ func (r *roleClaimRelaunchRig) stored() store.RoleClaim {
 //   - and the relaunched holder's own clean stop then frees the role at once, rather than leaving
 //     it to the role claim reaper, because by then the claim names the process handing it back.
 func TestARelaunchedRoleHolderReclaimsItsRoleAndItsOwnStopFreesIt(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_relaunched_holder"
 		role      = "legion-controller"

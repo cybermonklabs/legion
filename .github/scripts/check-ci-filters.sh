@@ -59,9 +59,16 @@
 #      gate: dispatch-browser.yaml's `lane`, which each of ci.yaml's two callers of it passes as
 #      a literal, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
-#      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone,
+#      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone.
+#      A step may read its filter out of the changes job's one list of the filters that matched
+#      instead, `contains(needs.changes.outputs.matched_filters, '"<filter>"')` once resolved, as
+#      the test job's steps do (rule 23 holds that shape): the filter each `contains` names is a
+#      gate of the step, and the list itself is none. The list hands on every filter that
+#      matched, so a filter a step reads out of it needs no output of the changes job of its own,
+#      as one read through an output does,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
-#      or in a workflow it calls, where the filter is the one the resolved condition names,
+#      or in a workflow it calls, where the filter is the one the resolved condition names, or
+#      the one it reads out of the list,
 #   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls - which is where
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
@@ -169,13 +176,21 @@
 #      of its job (a save under that output takes that restore's key text); an
 #      actions/cache/restore of ci-caches.yaml of a family it saves under `-${{ github.sha }}`
 #      that sets lookup-only at all, or whose restore-keys are not exactly its key followed by
-#      `-`; and any other actions/cache/restore of ci-caches.yaml that is not `lookup-only: true`
-#      or that carries restore-keys. ci-caches.yaml fills the entries ci.yaml restores, and a key
-#      or a path that drifts apart makes every restore miss silently: nothing fails, every job
-#      just rebuilds from nothing what the fill already built. A save is matched to a restore by
+#      `-`; any other actions/cache/restore of ci-caches.yaml that is not `lookup-only: true`
+#      or that carries restore-keys; and an actions/cache/restore of any workflow of the
+#      directory whose family no actions/cache/save of a workflow or of a composite action of
+#      .github/actions writes (a save that names its restore's cache-primary-key writes that
+#      restore's family; one whose family cannot be read is named in the refusal, which then says
+#      that no save it can read writes the family). ci-caches.yaml fills
+#      the entries ci.yaml restores, and a key or a path that drifts apart makes every restore
+#      miss silently: nothing fails, every job just rebuilds from nothing what the fill already
+#      built. A save is matched to a restore by
 #      family, the key's text up to its first `${{`, which is the Go version the entry is keyed
-#      on. A family ci.yaml restores that ci-caches.yaml does not save is no failure: go-docs is
-#      saved by docs-pages.yaml, from the build job that workflow shares with ci.yaml's docs job.
+#      on. A family ci.yaml restores that ci-caches.yaml does not save is no failure when another
+#      workflow saves it: go-docs is saved by docs-site.yaml, the build job docs-pages.yaml shares
+#      with ci.yaml's docs job. A family no save writes is one, since a misspelled family name
+#      (go-envoy-tests- for go-envoy-test) would otherwise be a family of its own that nothing
+#      holds, and its restore would miss on every run.
 #      A save's own hashFiles() is evaluated after the build, which can change the files it
 #      hashes (a go command may add the checksums it fetched to go.sum or go.work.sum), so it can save under
 #      a key no restore asks for: go-envoy-infra's did, and every push missed its lookup. A
@@ -269,7 +284,20 @@
 #      computed filter (no file of .github/ci-gates declares it), naming the output and the
 #      reference. Such an output is empty on every run, which reads as a filter that never
 #      matched: the job it gates would be skipped on every change it selects, and nothing else
-#      here would say so,
+#      here would say so. The one name no filter holds that an output may read is the paths
+#      filter's own `changes`, the list of the filters that matched, in the output
+#      matched_filters alone, which must be exactly `${{ (github.event_name ==
+#      'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' ||
+#      steps.filter.outputs.changes }}` - a list that is not `all` on a dispatched run, whose
+#      filter step is skipped, or on one whose filters fell open, whose fallback file holds no
+#      filter a step reads out of the list, skips there every step it gates - in a job whose one
+#      step of id `generate` runs the generation (ci-filters-generate.sh writes
+#      every_filter=true to that step's outputs when it writes the fallback file), while every
+#      filter's name is letters, digits, `_` and `-` (which JSON writes as they are) and no two
+#      names differ only in case (GitHub's `contains` ignores case). And with or without the
+#      list, a gate declaring a filter whose name the action writes another output under:
+#      `changes`, under which it would write that filter's verdict in place of the list, and which
+#      the fallback file leaves out, or `<another filter>_count` or `_files`,
 #  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
 #      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
 #      between them pass over a file go builds for that platform under some tags, naming the
@@ -297,6 +325,33 @@
 #      import at their top level, and every gate file where one of them loads the gate files
 #      (ci_job_reads.py), naming the gate, the harness, the file and how it is reached. A harness
 #      tests what it reaches, so a change to one of those files alone must start its step.
+#  23. a condition of ci.yaml or of a workflow it calls that names the changes job's list output
+#      matched_filters, resolved through the caller's `with:`, and is not on a step or is not, as a
+#      whole, `needs.changes.result != 'success' || needs.changes.outputs.matched_filters == 'all'
+#      || contains(needs.changes.outputs.matched_filters, '"<filter>"')`, with more `||
+#      contains(...)` terms for a step that runs when any of several filters matched (spaces, and
+#      the case of `contains`, free), naming the file, the job and the step. `!= ''` is true on
+#      every run; a `!` before the `contains` runs the step when its filter did not match, and a
+#      term after it can stop it running at all; a `contains` without the quotes matches every
+#      name holding the filter's (`ci_tools_test` inside `mirror_ci_tools_test`); a condition
+#      without the `all` term is skipped on every dispatched run, and one without the result term
+#      on every run whose changes failed; and a job-level read selects a job by an output that is
+#      never 'true', which ci-ok's CI_OK_SELECTED_BY cannot map. Also a condition, a `with:` value
+#      of ci.yaml, or any other `${{ }}` of a job of ci.yaml or of a workflow it calls (but
+#      ci.yaml's ci-ok job), that names the changes job other than as needs.changes.result,
+#      needs.changes.outputs.<name> or needs.changes, or an input other than as inputs.<name>
+#      (`needs['changes']`, `outputs['x']`, `INPUTS.x`, `inputs['x']`, `inputs. x`,
+#      `toJSON(inputs)`): GitHub reads those spellings as the same values, and no rule here reads
+#      them, so a read so spelt would be held to nothing. An input's name is read in any case, as
+#      GitHub reads it. Also a condition reading the ci-ok payload (`toJSON(needs.changes)`, which
+#      holds the list and filter_verdicts), filter_verdicts, `toJSON(needs)` or every job's
+#      outputs (`needs.*` but `needs.*.result`) other than as the payload's `!= ''`, which asks
+#      only whether ci.yaml is the caller; and a `run:`, `env:`, `with:` or other text of a job
+#      that reads any of them, but ci.yaml's own `with:` to a workflow it calls, the ci-ok report
+#      action's `changes:` and ci.yaml's ci-ok job: each of these names every filter on every run,
+#      so a step reading one for a filter (`case '${{ inputs.matched-filters }}' in *apx*)`) is
+#      gated on a filter no rule reads. Rules 2 and 3 read the filter out of each `contains`
+#      (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to
