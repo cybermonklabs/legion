@@ -207,13 +207,15 @@
  * build, and the GitHub reads in it with their count), the runs of its profile's tasks, its
  * writes, the rest, and the total.
  *
- * The listing rule (the architect, 2026-11-22T03:04Z), so that no one applies it by hand: each
+ * The listing rule (the architect, 2026-11-24T23:52Z), so that no one applies it by hand: each
  * task's listing measure is read from the tasks file's build-tasks summary
  * (`<tasks>.summary.json`: a session task's own profile's evidence, a written task's context
  * session's; `taskListings`), and a task with no summary beside its file is not measurable. A task
- * whose rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of the names its session's
- * recorded listing holds (score.ts's `listingStanding`) is dropped before any run, its reason in
- * the summary's task and the counts in its `listing`; it is not run and no verdict reads it. Where
+ * whose rebuilt listing misses more than MAX_LISTING_CHANGE_PERCENT of the names its session's
+ * recorded listing holds, or adds more names than that share of them, each counted alone
+ * (score.ts's `listingStanding`), is dropped before any run, its reason in the summary's task and
+ * the counts in its `listing`, by the start of its reason (`listing-misses` or `listing-adds`);
+ * it is not run and no verdict reads it. Where
  * the rule drops more than half of the tasks, the command stops before any run and says so with
  * the numbers (exit 3): the architect decides such a load. The skill's verdict is made with and
  * without the tasks whose listing could not be measured (`listedOutcome`), both in the summary's
@@ -331,12 +333,14 @@ import {
 } from "./replay";
 import {
   descriptionFault,
+  LISTING_ADDS,
   LISTING_MEASURE_ITEM,
+  LISTING_MISSES,
   type ListingStanding,
   LOAD_RUNS,
   listingStanding,
   MAX_EXTRA_RUNS,
-  MAX_LISTING_MISSING_PERCENT,
+  MAX_LISTING_CHANGE_PERCENT,
   NEAR_MISS_MAX_LOADS,
   NEED_MIN_LOADS,
   TaskLabel,
@@ -2621,6 +2625,14 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     measured: standings.filter((standing) => standing.state === "measured").length,
     notMeasurable: standings.filter((standing) => standing.state === "not measurable").length,
     dropped: listingDrops.size,
+    // The drops by the start of their reason: a task whose listing both misses and adds too many
+    // names is counted under listing-misses (score.ts's `listingStanding`).
+    droppedBy: Object.fromEntries(
+      [LISTING_MISSES, LISTING_ADDS].map((start) => [
+        start,
+        [...listingDrops.values()].filter((reason) => reason.startsWith(start)).length,
+      ])
+    ),
     // The tasks whose profile took names from their recorded listing (build.ts's fromRecorded):
     // their measure cannot see a miss of those names.
     fromRecorded,
@@ -2878,7 +2890,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   writeSummary();
   if (listingDrops.size * 2 > tasks.length) {
     throw new Stopped(
-      `the listing rule drops ${listingDrops.size} of the ${tasks.length} tasks of ${o.tasksFile}, more than half (${[...listingDrops.keys()].join(", ")}): the rebuilt listing of each misses more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds, so the test stops before any run, and the architect decides such a load; ${listingCounts.measured} tasks' listings were measured and ${listingCounts.notMeasurable} could not be; written to ${summaryFile}`
+      `the listing rule drops ${listingDrops.size} of the ${tasks.length} tasks of ${o.tasksFile}, more than half (${[...listingDrops.keys()].join(", ")}): the rebuilt listing of each misses more than ${MAX_LISTING_CHANGE_PERCENT}% of the names its session's recorded listing holds or adds more names than ${MAX_LISTING_CHANGE_PERCENT}% of them, so the test stops before any run, and the architect decides such a load; ${listingCounts.measured} tasks' listings were measured and ${listingCounts.notMeasurable} could not be; written to ${summaryFile}`
     );
   }
 
@@ -2886,8 +2898,11 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   test.say(
     `the skill ${name} on ${o.host === "omp" ? "Oh My Pi" : "Claude Code"}, model ${settings.model}, thinking ${o.thinking}: ${count("need")} need and ${count("near-miss")} near-miss tasks, ${o.runs} runs each`
   );
+  const droppedBy = Object.entries(listingCounts.droppedBy)
+    .map(([start, n]) => `${n} ${start}`)
+    .join(", ");
   test.say(
-    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped, each missing more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds, ${listingCounts.fromRecorded} installed names their recorded listing gave them (fromRecorded); ${dispatchCounts.carryBlock} tasks carry the Envoy plugin's block of the skill, ${dispatchCounts.assumed} of them on the assumption that their session had Dispatch`
+    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped (${droppedBy}), each missing more than ${MAX_LISTING_CHANGE_PERCENT}% of the names its session's recorded listing holds or adding more names than ${MAX_LISTING_CHANGE_PERCENT}% of them, ${listingCounts.fromRecorded} installed names their recorded listing gave them (fromRecorded); ${dispatchCounts.carryBlock} tasks carry the Envoy plugin's block of the skill, ${dispatchCounts.assumed} of them on the assumption that their session had Dispatch`
   );
   const byFile = new Map<string, { profile: TaskProfile; ids: string[] }>();
   for (const { task, profile } of profiled) {

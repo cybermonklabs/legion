@@ -1036,7 +1036,7 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("case c09: not run");
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 1 unscreened, 1 not run`
+      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 1 unscreened, 1 not run`
     );
     expect(lines).toContain(
       `judge controls failed, by control (a case can fail more than one): the real step not judged pass 1, the violating step not judged fail 1, the reply "${NOTHING_REPLY}" not judged fail 0`
@@ -1427,7 +1427,7 @@ describe("behaviour", () => {
       "case c-unserved: dropped at screen: model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves"
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 300_000);
 
@@ -1471,7 +1471,7 @@ describe("behaviour", () => {
     expect(reported.code).toBe(0);
     expect(reported.stdout).toContain(`case c04: dropped at screen: ${dropped}; screen: not run\n`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 120_000);
 
@@ -1836,19 +1836,22 @@ const KEPT = { old: SCREEN_RUNS, new: SCREEN_RUNS, none: 0 };
 const FLAGGED = { old: SCREEN_RUNS, new: 0, none: 0 };
 
 /** Plants under `s.out` the screens of `ids`, each informative and not flagged (KEPT), and the
- *  control runs of `control` among them, whose two controls hold. */
-function plantSix(s: Scenario, ids: readonly string[], control: string): void {
+ *  control runs of `control` among them, whose two controls hold; each stage made by `runner`
+ *  (this runner by default). */
+function plantSix(s: Scenario, ids: readonly string[], control: string, runner = RUNNER): void {
   for (const id of ids) {
     plantResult(s, id, {
       stages: {
-        screen: plantedStage(s, id, "screen", KEPT),
+        screen: plantedStage(s, id, "screen", KEPT, runner),
         ...(id === control
           ? {
-              control: plantedStage(s, id, "control", {
-                old: FRESH_RUNS,
-                minus: 0,
-                twin: FRESH_RUNS,
-              }),
+              control: plantedStage(
+                s,
+                id,
+                "control",
+                { old: FRESH_RUNS, minus: 0, twin: FRESH_RUNS },
+                runner
+              ),
             }
           : {}),
       },
@@ -1858,18 +1861,19 @@ function plantSix(s: Scenario, ids: readonly string[], control: string): void {
 
 /** A case's evidence holding one listing measure as build.ts writes it (ListingMeasure): of
  *  `kind`, its recorded listing holding `recorded` names, of which the rebuilt one misses
- *  `missing`. */
+ *  `missing`, and to which it adds `added`. */
 function listingEvidence(
   kind: ListingMeasure["kind"],
   recorded: number | null,
-  missing: string[]
+  missing: string[],
+  added: string[] = []
 ): { item: string; source: string }[] {
   const measure = ListingMeasure.parse({
     kind,
     recorded,
     listed: 12,
     missing,
-    added: [],
+    added,
     missingShare: recorded === null || recorded === 0 ? null : missing.length / recorded,
     sessionDigest: "46874d907e557998",
     rebuiltDigest: null,
@@ -1922,7 +1926,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at confirm: ${UNREADABLE}; screen: old 10/10, new 0/10, none 0/10: informative, flagged`
     );
     expect(lines).toContain(
-      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: none: flagged case c07 could not be confirmed (${UNREADABLE})${unmeasured(7, 7)}`
@@ -2036,7 +2040,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at screen: ${misses}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
     );
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(1, 6, 0, 1)}`
@@ -2060,11 +2064,57 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     ]);
   }, 60_000);
 
+  // The architect, 2026-11-24T23:52Z: the listing rule drops on added names too. Report applies
+  // it to saved results, so a case a runner of the earlier code screened, under the rule that
+  // dropped only on missing names, is dropped at screen with no model call.
+  test("a case whose rebuilt listing adds more names than 10% of its session's recorded names is dropped as listing-adds: report drops and counts a saved case an earlier runner screened, and screen drops a new one before any call", async () => {
+    const s = scenario("listing-adds", LOSS_SKILL(), ids(7));
+    withEvidence(s, {
+      ...Object.fromEntries(
+        SIX.map((id) => [id, listingEvidence("session listing", 10, [], ["beta"])])
+      ),
+      c07: listingEvidence("session listing", 20, [], ["cw-one", "cw-two", "cw-three"]),
+    });
+    // A runner digest no runner of this tree has: the code before the listing-adds rule.
+    const earlier = "0123456789abcdef";
+    plantSix(s, [...SIX, "c07"], "c01", earlier);
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines[1]).toContain(`screen: ${earlier} (7 case stages, `);
+    const adds =
+      "listing-adds: its rebuilt listing adds 3 to the 20 names of the recorded session listing (15.0%), more than 10%: cw-one, cw-two, cw-three";
+    expect(lines).toContain(
+      `case c07: dropped at screen: ${adds}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
+    );
+    expect(lines).toContain(
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+    );
+
+    // A case not screened yet is dropped by screen before any call.
+    const fresh = scenario("listing-adds-screen", LOSS_SKILL(), [{ id: "c-adds" }]);
+    withEvidence(fresh, {
+      "c-adds": listingEvidence("session listing", 9, [], ["cw-one"]),
+    });
+    answer = behaviourStandIn;
+    const from = recorder.requests.length;
+    const screen = await cli(behaviour("screen", fresh));
+    expect({ code: screen.code, stderr: screen.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(0);
+    const dropped = result(fresh.out, "c-adds");
+    expect([dropped.dropped, dropped.droppedAt, dropped.stages]).toEqual([
+      "listing-adds: its rebuilt listing adds 1 to the 9 names of the recorded session listing (11.1%), more than 10%: cw-one",
+      "screen",
+      {},
+    ]);
+  }, 60_000);
+
   test("the listing rule reads the listing measure build.ts writes", () => {
     expect(listingStanding(listingEvidence("subagent listing", 30, ["beta", "gamma"]))).toEqual({
       state: "measured",
       recorded: 30,
       missing: 2,
+      added: 0,
     });
   });
 
@@ -2248,7 +2298,7 @@ describe("behaviour: confirm --confirm-flagged", () => {
       "case c07: screen: old 10/10, new 0/10, none 0/10: informative, flagged; confirm: old 40/40, new 0/40: a loss"
     );
     expect(lines).toContain(
-      `cases: 7 screened, 7 informative, 1 flagged, 1 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+      `cases: 7 screened, 7 informative, 1 flagged, 1 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines.filter((line) => line.startsWith("verdict: "))).toEqual([CASE_RESULT_ONLY]);
 
@@ -2501,7 +2551,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
       `case c-invoked: dropped at screen: ${fault}`
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
     // The other stages read the file too, and do not refuse it.
     const confirm = await cli(behaviour("confirm", s));
@@ -2566,7 +2616,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout).toContain(`case c-autoload: dropped at screen: ${fault}`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 60_000);
 });
@@ -2631,7 +2681,7 @@ describe("behaviour: a case whose new text holds a file it reads by path in a fo
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout).toContain(`case c-wide: dropped at screen: ${fault}`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, 1 path-form (old 0, new 1), ${NO_READS_PAST}, ${NO_REFUSED}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, 1 path-form (old 0, new 1), ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 60_000);
 });
@@ -2952,7 +3002,7 @@ describe("behaviour: a case the provider refuses on every replay", () => {
       `case c04: dropped at screen: ${SCREEN_REFUSED}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (${3 * SCREEN_ALL} runs with no verdict, run again)\n`
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
     );
   }, 120_000);
 
@@ -2986,7 +3036,7 @@ describe("behaviour: a case the provider refuses on every replay", () => {
     expect(again.stdout).toContain(`case c04: dropped before, skipped: ${SCREEN_REFUSED}`);
     const reported = await cli(report(s));
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
     );
   }, 60_000);
 
@@ -3131,7 +3181,7 @@ describe("behaviour: a case the provider refuses on every replay", () => {
     }
     const reported = await cli(report(s));
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 2 unscreened, 0 not run`
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 2 unscreened, 0 not run`
     );
   }, 60_000);
 });

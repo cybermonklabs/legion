@@ -68,8 +68,9 @@
  *   (none of the configuration's `servedModels` has its id, its text after the last `/`) is
  *   dropped as `model-not-served`, and a case on a served model runs as that served
  *   `provider/model`, on the gateway route of its capture's body (gateway.ts); a case whose
- *   listing measure misses more than MAX_LISTING_MISSING_PERCENT of its session's recorded names
- *   (score.ts's `listingStanding`) is dropped as `listing-misses`, before any call too; the three
+ *   listing measure misses more than MAX_LISTING_CHANGE_PERCENT of its session's recorded names,
+ *   or adds more names than that share of them (score.ts's `listingStanding`), is dropped as
+ *   `listing-misses` or `listing-adds`, before any call too; the three
  *   judge controls (judge.ts's CONTROLS) run, and a case that fails any is dropped, its drop
  *   naming each control it failed; then a capture
  *   per arm (old, new, none; capture.ts, read back when saved already), SCREEN_RUNS replays of
@@ -139,7 +140,7 @@
  *   passes of each stage it ran; each confirm of a case
  *   with more than one, and the pooled passes of a case whose three confirms are pooled; the drops
  *   by the judge controls (and by each control), by `model-not-served`, `unreadable-directory`,
- *   `listing-misses`, `injection-unrebuildable` (by kind), `path-form` (by arm),
+ *   `listing-misses`, `listing-adds`, `injection-unrebuildable` (by kind), `path-form` (by arm),
  *   `reads-past-last-round` and `provider-refused`; the control case, and each dropped case it
  *   replaced; the skill's verdict and its reason (score.ts; `keeps` is printed "no loss detected
  *   by the registered rule"), with how many of its screened cases have a listing that could not be
@@ -360,6 +361,7 @@ import {
   isFlagged,
   isInformative,
   isLoss,
+  LISTING_ADDS,
   LISTING_MISSES,
   LOAD_RUNS,
   LOSS_GAP,
@@ -2763,6 +2765,8 @@ function reportCommand(b: Behaviour, requestLog: string): void {
   // A case dropped after its judge controls held (its context could not be read) is no drop by
   // them.
   const byControls = dropped.filter((result) => result.controls?.hold === false).length;
+  // A drop counts under the kind its reason begins with: one whose listing both misses and adds
+  // too many names counts as listing-misses (score.ts's `listingStanding`).
   const droppedAs = (kind: string) =>
     `${drops.filter((reason) => reason.startsWith(kind)).length} ${kind}`;
   const unscreened = score.cases.filter(
@@ -2790,7 +2794,7 @@ function reportCommand(b: Behaviour, requestLog: string): void {
       `${arm} ${formed.filter((reason) => reason.startsWith(`${PATH_FORM}: ${arm}: `)).length}`
   ).join(", ");
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${droppedAs(LISTING_ADDS)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
   );
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
   // round still only read skill files: an arm that keeps the agent reading acts differently.

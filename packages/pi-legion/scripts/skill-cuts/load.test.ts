@@ -994,14 +994,18 @@ interface EvidenceItem {
 
 /** A listing measure as build.ts writes it into a task profile's evidence (ListingMeasure): its
  *  session's recorded listing holding `recorded` names, `missing` of them not in the rebuilt
- *  listing; with `recorded` null, not measurable. */
-function measureItem(recorded: number | null, missing: string[] = []): EvidenceItem {
+ *  listing, which adds `added` to them; with `recorded` null, not measurable. */
+function measureItem(
+  recorded: number | null,
+  missing: string[] = [],
+  added: string[] = []
+): EvidenceItem {
   const measure = ListingMeasure.parse({
     kind: recorded === null ? "not measurable" : "session listing",
     recorded,
     listed: 2,
     missing,
-    added: [],
+    added,
     missingShare: recorded === null || recorded === 0 ? null : missing.length / recorded,
     sessionDigest: null,
     rebuiltDigest: null,
@@ -1816,8 +1820,9 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
   });
 });
 
-// The listing rule (the architect, 2026-11-22T03:04Z): every load applies it, from the listing
-// measure of each task's profile in the tasks file's build-tasks summary.
+// The listing rule (the architect, 2026-11-22T03:04Z; on added names too, 2026-11-24T23:52Z):
+// every load applies it, from the listing measure of each task's profile in the tasks file's
+// build-tasks summary.
 describe("skill-cuts load applies the listing rule", () => {
   const NEED_2 = "List the alpha steps of the made-up project.";
   /** A load test under `scratch/<name>`: alpha against `lines` (session tasks of store_a unless
@@ -1911,7 +1916,7 @@ describe("skill-cuts load applies the listing rule", () => {
       "listing-misses: its rebuilt listing misses 2 of the 10 names of the recorded session listing (20.0%), more than 10%: beta, gamma";
     expect(ran.stdout).toContain(`task need-2 (need, from a session): dropped, not run: ${misses}`);
     expect(ran.stdout).toContain(
-      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped, each missing more than 10% of the names its session's recorded listing holds, 1 installed names their recorded listing gave them (fromRecorded); `
+      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped (1 listing-misses, 0 listing-adds), each missing more than 10% of the names its session's recorded listing holds or adding more names than 10% of them, 1 installed names their recorded listing gave them (fromRecorded); `
     );
     expect(sentWith(from, NEED_2)).toBe(0);
     expect(sentWith(from, NEED)).toBe(3);
@@ -1926,11 +1931,62 @@ describe("skill-cuts load applies the listing rule", () => {
       measured: 2,
       notMeasurable: 0,
       dropped: 1,
+      droppedBy: { "listing-misses": 1, "listing-adds": 0 },
       fromRecorded: 1,
     });
     expect(summary.verdict).toEqual({
       descriptionFault: true,
       reason: "a description fault: tasks near-1",
+    });
+  });
+
+  // The architect, 2026-11-24T23:52Z: the listing rule drops on added names too.
+  test("a task whose rebuilt listing adds more names than 10% of its session's recorded names is dropped with the listing-adds reason: in the summary's tasks, not run, and counted by its reason; one that adds 10% runs", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-adds",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+        { id: "need-2", text: NEED_2, label: "need" },
+      ],
+      new Map([
+        [NEED, 2],
+        [NEAR, 0],
+        [NEED_2, 0],
+      ])
+    );
+    writeTasksSummary(
+      tasks,
+      {
+        "need-1": measureItem(10, [], ["cw-one"]),
+        "need-2": measureItem(10, [], ["cw-one", "cw-two"]),
+      },
+      measureItem(10)
+    );
+    const from = recorder.requests.length;
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const adds =
+      "listing-adds: its rebuilt listing adds 2 to the 10 names of the recorded session listing (20.0%), more than 10%: cw-one, cw-two";
+    expect(ran.stdout).toContain(`task need-2 (need, from a session): dropped, not run: ${adds}`);
+    expect(ran.stdout).toContain(
+      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped (0 listing-misses, 1 listing-adds), each missing more than 10% of the names its session's recorded listing holds or adding more names than 10% of them, 0 installed names their recorded listing gave them (fromRecorded); `
+    );
+    expect(sentWith(from, NEED_2)).toBe(0);
+    expect(sentWith(from, NEED)).toBe(3);
+    const summary = summaryOf(out);
+    expect(summary.tasks.map((task) => [task.id, task.made, task.dropped])).toEqual([
+      ["need-1", 3, null],
+      ["near-1", 3, null],
+      ["need-2", 0, adds],
+    ]);
+    expect(summary.listing).toEqual({
+      summary: `${tasks}.summary.json`,
+      measured: 2,
+      notMeasurable: 0,
+      dropped: 1,
+      droppedBy: { "listing-misses": 0, "listing-adds": 1 },
+      fromRecorded: 0,
     });
   });
 
@@ -2005,7 +2061,7 @@ describe("skill-cuts load applies the listing rule", () => {
     const ran = await cli(args);
     expect(ran.code).toBe(3);
     expect(ran.stderr).toContain(
-      `skill-cuts: stopped: the listing rule drops 2 of the 3 tasks of ${tasks}, more than half (need-1, near-1): the rebuilt listing of each misses more than 10% of the names its session's recorded listing holds, so the test stops before any run, and the architect decides such a load; 1 tasks' listings were measured and 0 could not be`
+      `skill-cuts: stopped: the listing rule drops 2 of the 3 tasks of ${tasks}, more than half (need-1, near-1): the rebuilt listing of each misses more than 10% of the names its session's recorded listing holds or adds more names than 10% of them, so the test stops before any run, and the architect decides such a load; 1 tasks' listings were measured and 0 could not be`
     );
     expect(recorder.requests.length).toBe(from);
     const tasksOf = summaryOf(out).tasks;
@@ -2050,7 +2106,7 @@ describe("skill-cuts load applies the listing rule", () => {
     ]);
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     expect(ran.stdout).toContain(
-      "tasks dropped, each missing more than 10% of the names its session's recorded listing holds, 0 installed names their recorded listing gave them (fromRecorded); 2 tasks carry the Envoy plugin's block of the skill, 1 of them on the assumption that their session had Dispatch"
+      "tasks dropped (0 listing-misses, 0 listing-adds), each missing more than 10% of the names its session's recorded listing holds or adding more names than 10% of them, 0 installed names their recorded listing gave them (fromRecorded); 2 tasks carry the Envoy plugin's block of the skill, 1 of them on the assumption that their session had Dispatch"
     );
     const summary = z
       .looseObject({ listing: z.unknown(), dispatch: z.unknown() })

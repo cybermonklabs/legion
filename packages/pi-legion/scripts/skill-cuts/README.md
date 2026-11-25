@@ -73,8 +73,13 @@ skill's cases (`cases.ts`), one JSON object per line.
   served model runs as that served `provider/model`, so an Anthropic model behind another
   gateway prefix runs as `anthropic/<id>`. A case whose listing measure (its `listing measure`
   evidence item, under `build-cases` below) misses more than 10% of the names its session's
-  recorded listing holds is dropped before any call too, as `listing-misses`, with the count and
-  the names. With `--reading-models`
+  recorded listing holds, or adds more names than 10% of them (names the recording lacks), each
+  side counted alone, is dropped before any call too, as `listing-misses` or `listing-adds`, with
+  the count, the share and the names; exactly 10% is kept. A case over 10% on both sides is
+  dropped as `listing-misses`, and its reason gives the adds part too (the architect,
+  2026-11-24). `report` applies the rule to saved results as well, so a case screened before the
+  rule dropped on added names is dropped at screen when the report runs, with no model call. With
+  `--reading-models`
   (the skill's `<cut id>/models/<skill>.json` that `attribute` writes: its reading sessions by
   model), a skill with fewer than 6 reading sessions on models the gateway serves is refused
   before any call (exit 2): it gets no verdict, with the reason `too few sessions on served
@@ -172,8 +177,9 @@ skill's cases (`cases.ts`), one JSON object per line.
   the verdict line under `confirm` above in its place), ending with how many of the skill's
   screened cases have a listing that could not be measured (no listing measure, or one that says
   so); the drops per judge control and the drops counted as `model-not-served`, as
-  `unreadable-directory`, as `listing-misses`, as `injection-unrebuildable`, the last by kind (a
-  case under each kind it holds), as `path-form`, by the arm whose text holds the file, as
+  `unreadable-directory`, as `listing-misses`, as `listing-adds`, as `injection-unrebuildable`, the
+  last by kind (a case under each kind it holds), as `path-form`, by the arm whose text holds the
+  file, as
   `reads-past-last-round` and as `provider-refused`; the verdict line also counts the screened
   cases whose profile took names from their recorded listing (`fromRecorded`, below); an estimate of
   the procedure's false-loss
@@ -539,16 +545,20 @@ summary's `dropped` give the reason (`unreadable-directory: ` and the repository
 the path), a run started again skips it while its profile file keeps the same bytes, and the
 verdict rule counts it as a task with no runs.
 
-Every load applies the listing rule (the architect, 2026-11-22), so no one applies it by hand.
-Each task's listing measure comes from the tasks file's build-tasks summary
-(`<tasks>.summary.json`): a session task's own profile's `listing measure` evidence item, and a
-written task's context session's; a task with no summary beside its file is not measurable. A
-task whose rebuilt listing misses more than 10% of the names its session's recorded listing holds
-is dropped before any run (`listing-misses: ` with the count and the names): its line and the
-summary's task give the reason, the summary's `listing` counts the tasks measured, not
-measurable and dropped, and no verdict reads it. Where the rule drops more than half of a load's
-tasks, the command stops before any run (exit 3) and says so with the numbers: the architect
-decides such a load. The skill's verdict is made twice, with and without the tasks whose listing
+Every load applies the listing rule (the architect, 2026-11-22; on added names too, 2026-11-24),
+so no one applies it by hand. Each task's listing measure comes from the tasks file's build-tasks
+summary (`<tasks>.summary.json`): a session task's own profile's `listing measure` evidence item,
+and a written task's context session's; a task with no summary beside its file is not measurable.
+A task whose rebuilt listing misses more than 10% of the names its session's recorded listing
+holds, or adds more names than 10% of them, each side counted alone, is dropped before any run
+(`listing-misses: ` or `listing-adds: ` with the count, the share and the names; exactly 10% is
+kept, and a task over 10% on both sides is dropped as `listing-misses`, its reason giving the adds
+part too): its line and the summary's task give the reason, the summary's `listing` counts the
+tasks measured, not measurable and dropped, and the drops by the start of their reason
+(`droppedBy`, also on the listing rule's line), and no verdict reads it. Where the rule drops more
+than half of a load's tasks, the command stops before any run (exit 3) and says so with the
+numbers: the architect decides such a load. The skill's verdict is made twice, with and without
+the tasks whose listing
 could not be measured, both in the summary's `verdicts`. Where they agree it stands, its reason
 giving how many tasks were not measured; where they differ there is no verdict (`no verdict:
 depends on tasks whose listing could not be measured`, with both results).
@@ -1208,7 +1218,8 @@ new at a subagent's start, above) lists those names as `fromRecorded`: the measu
 miss of them, since the same listing decided them. The summaries count such measures
 (`listing.fromRecorded`), and so do `behaviour report`'s verdict line and `load`'s summary and
 listing line. The measure drops
-nothing here: `behaviour` and `load` apply the listing rule to it (above, under each command).
+nothing here: `behaviour` and `load` apply the listing rule to its `missing` and `added` names
+(above, under each command).
 
 `--reprofile` builds the profiles of an existing case file again that way, from the cases and
 their sessions' heads (no transcript pulled, no reader call), and writes a new file in which only

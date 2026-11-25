@@ -96,11 +96,13 @@ const confirmOn = (runner: string, old: number, cut: number): MadeConfirm => ({
 const onOneRunner = (...cuts: number[]): MadeConfirm[] =>
   cuts.map((cut) => confirmOn("r1", 40, cut));
 /** A case's evidence holding one listing measure as build.ts writes it: of `kind`, its recorded
- *  listing holding `recorded` names, of which the rebuilt one misses `missing`. */
+ *  listing holding `recorded` names, of which the rebuilt one misses `missing`, and to which it
+ *  adds `added`. */
 const measured = (
   kind: "session listing" | "subagent listing" | "not measurable",
   recorded: number | null,
-  missing: string[]
+  missing: string[],
+  added: string[] = []
 ) => [
   {
     item: LISTING_MEASURE_ITEM,
@@ -109,7 +111,7 @@ const measured = (
       recorded,
       listed: 9,
       missing,
-      added: [],
+      added,
       missingShare: recorded === null || recorded === 0 ? null : missing.length / recorded,
       sessionDigest: null,
       rebuiltDigest: null,
@@ -595,11 +597,12 @@ const rows: [string, () => unknown, unknown][] = [
   ],
 
   // listing: a case or a load task whose rebuilt listing misses more than 10% of its session's
-  // recorded names is dropped (the architect, 2026-11-22T03:04Z).
+  // recorded names, or adds more names than 10% of them, each counted alone, is dropped (the
+  // architect, 2026-11-24T23:52Z).
   [
     "a listing that misses 2 of 20 recorded names (10%) is measured, and the case stays",
     () => listingStanding(measured("session listing", 20, ["a1", "a2"])),
-    { state: "measured", recorded: 20, missing: 2 },
+    { state: "measured", recorded: 20, missing: 2, added: 0 },
   ],
   [
     "a listing that misses 3 of 20 recorded names (15%) drops the case, the reason naming them",
@@ -624,6 +627,38 @@ const rows: [string, () => unknown, unknown][] = [
     "evidence that holds no listing measure is not measurable",
     () => listingStanding([{ item: "role", source: "made up" }]),
     { state: "not measurable", why: "its evidence holds no listing measure" },
+  ],
+  [
+    "a listing that adds 3 names to 20 recorded names (15%) drops the case as listing-adds, the reason naming them",
+    () => listingStanding(measured("session listing", 20, [], ["b1", "b2", "b3"])),
+    {
+      state: "dropped",
+      reason:
+        "listing-adds: its rebuilt listing adds 3 to the 20 names of the recorded session listing (15.0%), more than 10%: b1, b2, b3",
+    },
+  ],
+  [
+    "a listing that adds 2 names to 20 recorded names (10%) is measured, and the case stays",
+    () => listingStanding(measured("session listing", 20, [], ["b1", "b2"])),
+    { state: "measured", recorded: 20, missing: 0, added: 2 },
+  ],
+  [
+    "a listing that misses 3 and adds 3 of 20 recorded names drops the case as listing-misses, the reason naming the adds too",
+    () => listingStanding(measured("subagent listing", 20, ["a1", "a2", "a3"], ["b1", "b2", "b3"])),
+    {
+      state: "dropped",
+      reason:
+        "listing-misses: its rebuilt listing misses 3 of the 20 names of the recorded subagent listing (15.0%), more than 10%: a1, a2, a3; listing-adds: its rebuilt listing adds 3 to the 20 names of the recorded subagent listing (15.0%), more than 10%: b1, b2, b3",
+    },
+  ],
+  [
+    "a measure with no added names array reads as adding none",
+    () => {
+      const [item] = measured("session listing", 20, ["a1"]);
+      const { added: _, ...rest } = JSON.parse(item?.source ?? "{}");
+      return listingStanding([{ item: LISTING_MEASURE_ITEM, source: JSON.stringify(rest) }]);
+    },
+    { state: "measured", recorded: 20, missing: 1, added: 0 },
   ],
 
   // skills tested: the walk of the ranking.

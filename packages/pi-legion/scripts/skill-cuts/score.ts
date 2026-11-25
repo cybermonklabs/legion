@@ -25,8 +25,8 @@
  * cannot be confirmed leaves its skill no `keeps` (the architect's rule of 2026-11-22), and a
  * dropped control case gives its place to the next case the control rule chooses. A case's
  * confirms on one runner at one set of texts pool when two disagree (confirmScore). A case or a
- * load task whose rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of its session's
- * recorded names is dropped (listingStanding).
+ * load task whose rebuilt listing misses more than MAX_LISTING_CHANGE_PERCENT of its session's
+ * recorded names, or adds more names than that share of them, is dropped (listingStanding).
  */
 import { z } from "zod";
 import { parseJson } from "./common";
@@ -67,15 +67,21 @@ export const LOAD_RUNS = 3;
 export const NEED_MIN_LOADS = 2;
 /** A near-miss task is a fault when it loads on more of its runs than this. */
 export const NEAR_MISS_MAX_LOADS = 1;
-/** The most a case's or a load task's rebuilt skill listing may miss, in percent of the names its
- *  session's recorded listing holds (the architect, 2026-11-22T03:04Z): one that misses more is
- *  dropped (listingStanding). */
-export const MAX_LISTING_MISSING_PERCENT = 10;
+/** The most a case's or a load task's rebuilt skill listing may miss of the names its session's
+ *  recorded listing holds, and the most names it may add to them, each counted alone, in percent
+ *  of the recorded names (the architect, 2026-11-24T23:52Z; the rule of 2026-11-22T03:04Z
+ *  counted only the missing names): one that misses more, or adds more, is dropped
+ *  (listingStanding). */
+export const MAX_LISTING_CHANGE_PERCENT = 10;
 /** The evidence item of a case or a load task that holds its listing measure as JSON, under which
  *  build.ts writes its ListingMeasure. */
 export const LISTING_MEASURE_ITEM = "listing measure";
-/** How the drop of a case or a task whose listing misses too many names begins. */
+/** How the drop of a case or a task whose listing misses too many names begins, also where it
+ *  adds too many names as well. */
 export const LISTING_MISSES = "listing-misses";
+/** How the drop of a case or a task whose listing adds too many names, and misses no more than
+ *  MAX_LISTING_CHANGE_PERCENT of them, begins. */
+export const LISTING_ADDS = "listing-adds";
 
 /** The texts a case runs under: the cut's base, the cut text, no skill, the base without the
  *  case's line (the planted-loss control), and the base again under another arm's name (`twin`,
@@ -519,27 +525,38 @@ export function screeningDone(counts: { screened: number; informative: number })
   return counts.informative >= MIN_INFORMATIVE_CASES || counts.screened >= MAX_SCREENED_CASES;
 }
 
-/** What the listing rule reads of a listing measure: build.ts's ListingMeasure, which writes it. */
+/** What the listing rule reads of a listing measure: build.ts's ListingMeasure, which writes it.
+ *  build.ts always writes `added`; a measure with no `added` (this schema is loose) reads as one
+ *  whose rebuilt listing adds no name. */
 const ListingRead = z.looseObject({
   kind: z.enum(["session listing", "subagent listing", "not measurable"]),
   recorded: z.number().nullable(),
   missing: z.array(z.string()),
+  added: z.array(z.string()).default([]),
   why: z.string(),
 });
 
 /** Where a case or a load task stands by the listing measure of its evidence: measured, with the
- *  names its session's recorded listing holds and how many of them its rebuilt listing misses; not
- *  measurable, and why; or dropped, with the drop's reason. */
+ *  names its session's recorded listing holds, how many of them its rebuilt listing misses and how
+ *  many names it adds to them; not measurable, and why; or dropped, with the drop's reason. */
 export type ListingStanding =
-  | { readonly state: "measured"; readonly recorded: number; readonly missing: number }
+  | {
+      readonly state: "measured";
+      readonly recorded: number;
+      readonly missing: number;
+      readonly added: number;
+    }
   | { readonly state: "not measurable"; readonly why: string }
   | { readonly state: "dropped"; readonly reason: string };
 
 /** Where a case or a load task stands by the listing measure its `evidence` holds (the item
- *  LISTING_MEASURE_ITEM): dropped when its rebuilt listing misses more than
- *  MAX_LISTING_MISSING_PERCENT of the names its session's recorded listing holds, the reason
- *  naming them; not measurable when the measure says so, or when the evidence holds none or one
- *  this rule cannot read; else measured. */
+ *  LISTING_MEASURE_ITEM). Dropped when its rebuilt listing misses more than
+ *  MAX_LISTING_CHANGE_PERCENT of the names its session's recorded listing holds (LISTING_MISSES),
+ *  or adds more names than that share of them (LISTING_ADDS), each counted alone, the reason
+ *  giving the count, the share and the names; where it does both, the reason begins
+ *  LISTING_MISSES and goes on with the LISTING_ADDS part, so the names of both are on record.
+ *  Exactly MAX_LISTING_CHANGE_PERCENT is kept. Not measurable when the measure says so, or when
+ *  the evidence holds none or one this rule cannot read; else measured. */
 export function listingStanding(
   evidence: readonly { readonly item: string; readonly source: string }[] | undefined
 ): ListingStanding {
@@ -551,19 +568,28 @@ export function listingStanding(
   if (!measure.success) {
     return { state: "not measurable", why: "its listing measure is not one build.ts writes" };
   }
-  if (measure.data.kind === "not measurable") {
+  const { kind, missing, added } = measure.data;
+  if (kind === "not measurable") {
     return { state: "not measurable", why: measure.data.why };
   }
   const recorded = measure.data.recorded ?? 0;
-  const missing = measure.data.missing;
-  if (missing.length * 100 <= MAX_LISTING_MISSING_PERCENT * recorded) {
-    return { state: "measured", recorded, missing: missing.length };
+  // Each side counted alone, in one form; the share is of the recorded names, 100% where the
+  // recording holds none.
+  const sides = [
+    [LISTING_MISSES, missing, `misses ${missing.length} of`],
+    [LISTING_ADDS, added, `adds ${added.length} to`],
+  ] as const;
+  const parts = sides.flatMap(([start, names, says]) =>
+    names.length * 100 <= MAX_LISTING_CHANGE_PERCENT * recorded
+      ? []
+      : [
+          `${start}: its rebuilt listing ${says} the ${recorded} names of the recorded ${kind} (${(recorded === 0 ? 100 : (100 * names.length) / recorded).toFixed(1)}%), more than ${MAX_LISTING_CHANGE_PERCENT}%: ${names.join(", ")}`,
+        ]
+  );
+  if (parts.length === 0) {
+    return { state: "measured", recorded, missing: missing.length, added: added.length };
   }
-  const share = ((100 * missing.length) / Math.max(recorded, missing.length)).toFixed(1);
-  return {
-    state: "dropped",
-    reason: `${LISTING_MISSES}: its rebuilt listing misses ${missing.length} of the ${recorded} names of the recorded ${measure.data.kind} (${share}%), more than ${MAX_LISTING_MISSING_PERCENT}%: ${missing.join(", ")}`,
-  };
+  return { state: "dropped", reason: parts.join("; ") };
 }
 
 /** A cut's changed skills, loaded skills included, most read first by the counted sessions of the
