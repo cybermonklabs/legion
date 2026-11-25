@@ -443,14 +443,16 @@ func fixtureSecret(tag string) string {
 	return tag + "+" + rand.Text()
 }
 
-// A --nats URL whose user info a parse does not read where nats.go does prints no part of itself,
-// and is not dialed. One that does not parse fails nats.go's own parse with a *url.Error, whose text
-// quotes the whole URL, password included; one whose user or password holds a `/` ends its
-// authority there, so it parses with the credential's head as its host, which nats.go dials, and the
-// failed lookup names that head. The command reaches nats.go with any URL, since it sets
-// bus.AllowRemoteEnvVar. Both connects, the normal path's and --break-glass's, refuse each with fixed
-// text: no part of the URL, not even the host. At ff9c03a4a0 the two URLs that parse printed
-// `lookup <the credential's head>: no such host`.
+// A --nats URL whose user info a parse does not read where it is written prints no part of itself.
+// One that does not parse fails nats.go's own parse with a *url.Error, whose text quotes the whole
+// URL, password included; one whose user or password holds a `/` ends its authority there, so it
+// parses with the credential's head as its host, which nats.go dials, and the failed lookup names
+// that head. The command refuses both before any dial. One with a space before it reads well once
+// bus trims it, so it reaches nats.go, which parses it as given and fails with that *url.Error:
+// connectFailure prints fixed text for it. The command reaches nats.go with any URL, since it sets
+// bus.AllowRemoteEnvVar. Both connects, the normal path's and --break-glass's, print the same fixed
+// text for each: no part of the URL, not even the host. At ff9c03a4a0 the two URLs that parse
+// printed `lookup <the credential's head>: no such host`.
 func TestAConnectToAURLThatDoesNotParsePrintsNoPartOfIt(t *testing.T) {
 	at := string(rune(64))
 	user, head, tail := fixtureSecret("user"), fixtureSecret("head"), fixtureSecret("tail")
@@ -461,6 +463,7 @@ func TestAConnectToAURLThatDoesNotParsePrintsNoPartOfIt(t *testing.T) {
 		{"a password holding a slash, which does not parse", "nats://" + user + ":" + head + "/" + tail + at + "db.example:4222", []string{user, head, tail}},
 		{"a token holding a slash, its head read as the host", "nats://" + head + "/" + tail + at + "db.example:4222", []string{head, tail}},
 		{"a password holding a slash after digits, the user read as the host", "nats://" + user + ":2024/" + tail + at + "db.example:4222", []string{user, tail}},
+		{"a space before the URL, which nats.go does not trim", " nats://" + user + ":" + tail + at + "db.example:4222", []string{user, tail}},
 	} {
 		for _, args := range [][]string{
 			{"create", "--nats", c.url, "--this-machine"},
