@@ -1051,6 +1051,26 @@ func TestLegionVerdictASuccessWhoseVerdictNoLongerStandsTurnsToFailure(t *testin
 	}
 }
 
+// R4 (a check run belongs to a commit, so the one legion-verdict at a head is every open pull
+// request's there): a success the writer wrote stands only while the head's verdict over all of
+// them does, though the pull request's own verdict still stands. Here pull request 91, on another
+// project's issue branch, where no verdict stands, opens at code after the owner's acceptance wrote
+// success there, so the head's verdict is none; the next fact of pull request 86 at code turns the
+// success to failure at once, rather than at the writers' next sweep.
+func TestLegionVerdictASuccessAnotherPullRequestAtTheHeadNoLongerBacksTurnsToFailure(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	run := rig.acceptedAndWritten(t)
+	rig.github.mu.Lock()
+	rig.github.opened = append(rig.github.opened, fakePull{number: 91, ref: "legion/OTHER-1", head: "code"})
+	rig.github.pulls[91] = `{"number":91,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/OTHER-1","sha":"code"}}`
+	rig.github.mu.Unlock()
+	rig.checkState(t, "code", "k1", verdict.StateYes)
+	rig.written(t)
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
+		t.Fatalf("legion-verdict runs on code = %+v, want run %d turned to failure: no verdict stands at code over pull requests 86 and 91", runs, run.ID)
+	}
+}
+
 // C2: a person's request for changes at H refuses a Legion head every step passed at, and a later
 // approval of H by the same person lifts that refusal, so the steps' passes write success again.
 func TestLegionVerdictPersonsApprovalLiftsTheirRefusal(t *testing.T) {

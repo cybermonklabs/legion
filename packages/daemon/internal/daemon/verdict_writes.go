@@ -330,8 +330,9 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 // check run or turns each run of the one App to the head's conclusion, the runs its record holds
 // among them, and writes its conclusion over each status of the one App its record does not hold
 // (spec R19, writeDecided). A success this daemon wrote stands only while the head's verdict does:
-// a write a fact asks for on a head with no verdict now turns that success to failure, and writes
-// nothing, and reads nothing of GitHub, on a head it wrote no success on.
+// a write a fact asks for on a head with no verdict now, of its pull request or over every open pull
+// request there, turns that success to failure. Where the pull request's own verdict is none and
+// the daemon wrote no success there, it writes nothing and reads nothing of GitHub.
 //
 // Once a pass writes a Legion head's success, or turns its run or status to success, the issue's
 // merge state is read once more, a ladder's wait later (mergeStateWait): GitHub can answer the read
@@ -349,14 +350,21 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 		return err
 	}
 	written := verdictTarget{repository: target.repository, number: target.number, head: target.head}
-	standing := false
+	standing, read := false, false
 	if decided.conclusion == verdict.None && !target.overForeign {
 		if standing, err = w.wroteSuccess(ctx, written); err != nil || !standing {
 			return err
 		}
+		read = true
 	}
 	if decided.conclusion != verdict.Failure && !target.alone {
 		if decided, err = w.atHead(ctx, entry, target.repository, target.number, decided); err != nil {
+			return err
+		}
+	}
+	if decided.conclusion == verdict.None && !target.overForeign && !read {
+		// Another pull request at the head turned the pull request's own verdict to none there.
+		if standing, err = w.wroteSuccess(ctx, written); err != nil {
 			return err
 		}
 	}
