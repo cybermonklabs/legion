@@ -251,12 +251,14 @@ func TestASecondReleaseIsWokenByTheStatePrompt(t *testing.T) {
 }
 
 // A release between the executor's read of the claim and its publish is a publish the listener
-// answers with no holder: the reviewer's claim is not released when the row reads it, so the row
-// wakes nothing, its publish is refused, and the row stays; once a session holds the role's topic
-// the retry publishes once, under the row's key.
+// answers with no holder: the reviewer is up and idle, not released, when the row reads its claim,
+// so the row wakes nothing, its publish is refused, and the row stays. The pod is then released,
+// as the idle release stops a claim (supervise.RequestSuspend by SuspendedByReleased), and the
+// row's retry wakes the released reviewer and, once a session holds the role's topic again,
+// publishes once, under the row's key. Each runs on a whole daemon.
 //
 // The control, a kept subtest: with no holder taken as delivered (the seam noHolderDelivers), the
-// row finishes unpublished, which the subtest asserts.
+// row finishes unpublished at the refused publish, which the subtest asserts.
 func TestAReleaseDuringDeliveryKeepsTheRow(t *testing.T) {
 	t.Parallel()
 	play := func(t *testing.T, noHolderDelivers bool) (*ciDaemon, claim.Token, int64) {
@@ -266,23 +268,26 @@ func TestAReleaseDuringDeliveryKeepsTheRow(t *testing.T) {
 		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.launchingReader(claim.RoleReviewer, ciReviewerEntry))
 		d.entry(claim.RoleReviewer, ciReviewerEntry)
 		d.boot()
+		d.until(token, "the boot's launch of the reviewer", func() bool { return len(d.rt.launchesOf(token)) >= 1 })
+		d.upAndIdle(token)
 		id := d.queue(d.prompt(claim.RoleReviewer, 1, ciHeadX, record.CIReader{Phase: phase.Reviewing, Entry: ciReviewerEntry}, "k-ci"))
 		d.until(token, "the row's publish refused for want of a holder", func() bool { return d.listener.refusedTo(token) >= 1 })
 		return d, token, id
 	}
-	t.Run("the row stays and its retry publishes once", func(t *testing.T) {
+	t.Run("the row stays, and its retry wakes the released claim and publishes once", func(t *testing.T) {
 		t.Parallel()
 		d, token, id := play(t, false)
 		key := record.OutboxKey(id)
-		if !d.rowLeft(id) || len(d.listener.takenTo(token, key)) != 0 {
-			t.Fatalf("the publish no holder took: the row left %t, %d taken; want the row kept and nothing taken", d.rowLeft(id), len(d.listener.takenTo(token, key)))
+		if !d.rowLeft(id) || len(d.listener.takenTo(token, key)) != 0 || d.wakes(claim.RoleReviewer) != 0 {
+			t.Fatalf("the publish no holder took: the row left %t, %d taken, %d wakes; want the row kept, nothing taken and no wake",
+				d.rowLeft(id), len(d.listener.takenTo(token, key)), d.wakes(claim.RoleReviewer))
 		}
-		d.listener.hold(token)
+		d.handle(token, supervise.RequestSuspend{Claim: token, Reason: "the idle release takes the reviewer's pod", By: supervise.SuspendedByReleased})
+		if released := d.awaitState(token, supervise.StateSuspended, "the release stops the reviewer"); !released.Released() {
+			t.Fatalf("the reviewer after the release is suspended by %s, want released", released.SuspendedBy)
+		}
 		d.hurry(record.OutboxKindCINews)
-		d.until(token, "the retry to finish the row", func() bool { return !d.rowLeft(id) })
-		if taken, wakes := len(d.listener.takenTo(token, key)), d.wakes(claim.RoleReviewer); taken != 1 || wakes != 0 {
-			t.Fatalf("the retry: %d publishes under %s, %d wakes; want one publish and no wake", taken, key, wakes)
-		}
+		d.wokenThenDelivered(claim.RoleReviewer, id, 1)
 	})
 	t.Run("control: noHolderDelivers finishes the row unpublished", func(t *testing.T) {
 		t.Parallel()
