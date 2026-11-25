@@ -196,6 +196,25 @@ check "a row with no Oh My Pi carries omp false" "$(is "$(proof_field 1 omp)" fa
 run_select "$root" pull_request
 check "the e2e label selects the same rows" "$(is "$(proof_scripts)" "alpha-proof.sh beta-proof.sh")"
 
+echo "case: a dispatch_only row runs on its dispatch alone"
+root=$(fixture dispatch-only)
+write_row_key "$root" hosted 1 dispatch_only true
+run_select "$root" schedule
+check "the nightly passes over it" "$(is "$(proof_scripts)" "alpha-proof.sh")"
+check "and says so in its count" "$(contains "$out" '^1 proof(s): alpha-proof.sh$')"
+run_select "$root" pull_request
+check "the e2e label passes over it too" "$(is "$(proof_scripts)" "alpha-proof.sh")"
+run_select "$root" workflow_dispatch beta-proof
+check "its dispatch selects it" "$(is "$(proof_scripts)" "beta-proof.sh")"
+check "and the entry carries no dispatch_only" "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,omp,proof,script,timeout_minutes")"
+write_row_key "$root" hosted 1 dispatch_only false
+run_select "$root" schedule
+check "a false dispatch_only is a row like any other" "$(is "$(proof_scripts)" "alpha-proof.sh beta-proof.sh")"
+write_row_key "$root" hosted 1 dispatch_only '"yes"'
+run_select "$root" schedule
+check "a dispatch_only that is no boolean fails" "$(is "$status" 1)"
+check "and is named" "$(contains "$out" "^::error file=.github/e2e-scripts.json::hosted row beta-proof.sh has dispatch_only 'yes', which is not a boolean. Write dispatch_only as a boolean, or leave it out.$")"
+
 echo "case: a hosted row with jj deleted is refused by name, with no traceback"
 root=$(fixture missing-jj)
 drop_row_key "$root" hosted 0 jj
@@ -400,7 +419,7 @@ check "  no traceback" "$(is "$(contains "$out" Traceback)" false)"
 # scripts/e2e/ of this repository.
 hosted_scripts=$(python3 -c 'import json, pathlib, sys
 rows = json.loads(pathlib.Path(sys.argv[1]).read_text())["hosted"]
-print(" ".join(sorted(row["script"] for row in rows)))' "$script_dir/../e2e-scripts.json")
+print(" ".join(sorted(row["script"] for row in rows if not row.get("dispatch_only", False))))' "$script_dir/../e2e-scripts.json")
 echo "case: the repository's own .github/e2e-scripts.json and scripts/e2e/ ($hosted_scripts)"
 real_output="$work/real-output"
 : > "$real_output"
@@ -410,7 +429,7 @@ status=$?
 set -e
 proofs=$(sed -n 's/^proofs=//p' "$real_output")
 check "a schedule run of the repository's own data passes" "$(is "$status" 0)"
-check "and emits every hosted row" "$(is "$(proof_scripts)" "$hosted_scripts")"
+check "and emits every hosted row a dispatch_only does not keep to its dispatch" "$(is "$(proof_scripts)" "$hosted_scripts")"
 # The proofs whose panes run the pinned Oh My Pi are the hosted rows that have the job install it,
 # and no other row does.
 for name in $hosted_scripts; do

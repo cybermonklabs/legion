@@ -1,5 +1,5 @@
-/** Which of a few named states the page is in, read once the page has settled on one of them,
- *  for a helper whose next step depends on what the page shows.
+/** What the page shows, read once the page has settled on it, for a helper or a row whose next
+ *  step depends on what the page shows.
  *
  * A branch on what the page shows reads that state after the page has settled on one of the
  * states it chooses between, never with one zero-wait probe such as `isVisible()`. A probe
@@ -15,6 +15,10 @@
  * state is read in the same callback, because waiting for one of them alone costs its whole
  * timeout whenever the page is in another. The first state that shows wins, so the order is a
  * priority: two states can show at once, as the rail's Menu control does under its open sheet.
+ *
+ * A measurement has no list of states to choose between - a gap in pixels, the heights of a
+ * toolbar's controls - so `settledValue` reads it until two reads a poll apart agree: the page
+ * has come to rest on that answer, and a loop over it runs over a settled state.
  */
 
 import { expect, type Locator } from "@playwright/test";
@@ -58,4 +62,32 @@ export function expandedState(what: string, control: Locator): Promise<"open" | 
     ["open", control.and(page.locator('[aria-expanded="true"]'))],
     ["shut", control.and(page.locator('[aria-expanded="false"]'))],
   ]);
+}
+
+/** What `read` answers once two reads of it a poll apart agree, read until they do or the
+ *  project's expect timeout ends: a page still laying itself out answers differently from one
+ *  read to the next. The answers are compared as JSON, so `read` answers plain data. `what`
+ *  names what is read, for the failure: `the tables' lines: two reads a poll apart never agreed`. */
+export async function settledValue<Value>(
+  what: string,
+  read: () => Promise<Value>
+): Promise<Value> {
+  const failure = `${what}: two reads a poll apart never agreed`;
+  let last: { readonly json: string; readonly value: Value } | undefined;
+  let agreed = false;
+  await expect
+    .poll(
+      async () => {
+        const value = await read();
+        const json = JSON.stringify(value);
+        agreed = last?.json === json;
+        last = { json, value };
+        return agreed;
+      },
+      { message: failure }
+    )
+    .toBe(true);
+  // A poll whose row has already ended passes without reading, and leaves no answer behind.
+  if (!agreed || last === undefined) throw new Error(failure);
+  return last.value;
 }

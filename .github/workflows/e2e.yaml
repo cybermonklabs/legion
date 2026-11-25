@@ -22,6 +22,12 @@ name: E2E proofs
 #     default branch alone, so the nightly is main's copy of this file, of the list beside it and
 #     of the scripts, never a pull request's.
 #
+# A hosted row marked `dispatch_only` runs on the first start alone, `gh workflow run e2e.yaml
+# --ref <branch> -f script=<name>`, whose checkout is that branch's head: the label checks out a
+# pull request's merge commit, for which no image is built, and the nightly main's head, whose
+# image release.yaml builds only for a push whose paths call it, and maybe not yet when the nightly
+# starts; such a proof runs the image of its checkout's own commit (shared-clone-kind.sh).
+#
 # No hosted proof here needs a secret, and none may: Sami answered that no API key goes into
 # cybermonklabs/legion, and that a smoke test which calls a model runs in the deployment repository on
 # workload identity federation (sjawhar/legion#2512).
@@ -174,6 +180,12 @@ jobs:
           # Only a workflow that runs on a push to main writes an Actions cache entry here, and
           # this workflow saves none (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs, "Caches").
           cache: false
+
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       - name: Run the proof
         env:
