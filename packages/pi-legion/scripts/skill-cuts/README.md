@@ -494,8 +494,12 @@ pattern in a large checkout; past 30 s the worker is ended and the call is not a
 one test of whose regular expression (or of its exclusions') takes more than 100 ms is not
 answered either: JavaScript's engine stops a backtracking match after a count of its steps and
 gives no match (`(a+)+b` over 40 a's and then `xab`, about 0.7 s), where Oh My Pi's search finds
-one, so its `No matches found` would be wrong. A `grep` path may be a list joined by `;` (outside
-braces): its parts that
+one, so its `No matches found` would be wrong. A `grep` pattern may start with one inline flag
+group `(?FLAGS)`, FLAGS one or more of `i`, `m` and `s` each once (`(?i)technique[- ]targeted`),
+which Oh My Pi's Rust regex takes and JavaScript's does not: the runner takes it off and adds its
+letters to JavaScript's flags (`i` as `case: false` does); a flag group anywhere else, a scoped one
+(`(?i:…)`), a negated one (`(?-i)`) or one of another flag (`x`, `U`, `u`, `R`) is not answered.
+A `grep` path may be a list joined by `;` (outside braces): its parts that
 start with `!` and name no path of the checkout are exclusions (one with no `/`, or that starts
 with `**`, matches at any depth; another is anchored where it resolves), and the rest are
 searched, each on its own in their order, or as the one directory that holds the others, a part

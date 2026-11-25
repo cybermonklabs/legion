@@ -253,13 +253,17 @@
  *   (30 s), past which the worker is ended; and since JavaScriptCore stops a backtracking match
  *   after a count of its steps and gives no match where the pin finds one, a call one test of
  *   whose expression (or of its exclusions') takes past REGEX_TEST_MS (100 ms) is not answered
- *   (`timedExec`). Not answered: a glob or a selector in a searched
- *   path, a path outside the root, a path (or every path of a list) the copy lacks, a path named
- *   twice, an exclusion of a form the runner does not read (`dialectGlob`), a list joined by
- *   commas or blanks, a file named alone past 4 MiB (which the pin streams), a pattern over lines
- *   or with a look-around, a back-reference or a named group in Rust's own form, one JavaScript
- *   does not take, a cut match line of a file that is not UTF-8, an output past 50 KB with its
- *   notices, a test of its expression past 100 ms, and a search past the time limit.
+ *   (`timedExec`). A pattern that starts with one inline flag group `(?FLAGS)`, FLAGS one or
+ *   more of `i`, `m` and `s` each once, which Rust's regex takes and JavaScript's does not, is
+ *   read without it, its letters added to the expression's flags (`i` as `case` false adds it).
+ *   Not answered: a glob or a selector in a searched path, a path outside the root, a path (or
+ *   every path of a list) the copy lacks, a path named twice, an exclusion of a form the runner
+ *   does not read (`dialectGlob`), a list joined by commas or blanks, a file named alone past
+ *   4 MiB (which the pin streams), a pattern over lines or with a look-around, a back-reference,
+ *   a named group in Rust's own form or a flag group other than that leading one (one elsewhere,
+ *   a scoped `(?i:…)`, a negated one, one of another flag), one JavaScript does not take, a cut
+ *   match line of a file that is not UTF-8, an output past 50 KB with its notices, a test of its
+ *   expression past 100 ms, and a search past the time limit.
  * - `glob` (keys `path`, `hidden`, `gitignore`, `limit`, `i`): GlobTool's output
  *   (packages/coding-agent/src/tools/glob.ts lines 197-375, path-utils.ts's `parseFindPattern`
  *   and `splitDelimitedPathEntry`): `path` (`.` when absent) a pattern, or a list of patterns
@@ -3040,12 +3044,27 @@ function grepAnswer(
   }
   const skip = Math.floor(given);
   if (pattern.includes("\n") || pattern.includes("\\n")) return { why: "its pattern spans lines" };
-  if (/\(\?(<?[=!]|P<)|\\[1-9]/.test(pattern)) {
+  // One leading inline flag group `(?FLAGS)`, FLAGS one or more of `i`, `m` and `s` each once,
+  // which the pin's Rust regex takes and JavaScript's RegExp does not, is taken off and read as
+  // JavaScript's flags; any other flag group stays in `source` and is not read.
+  const leading = /^\(\?([ims]+)\)/.exec(pattern);
+  const inline = leading?.[1] ?? "";
+  const once = new Set(inline).size === inline.length;
+  const source = leading !== null && once ? pattern.slice(leading[0].length) : pattern;
+  const group = /\(\?[A-Za-z-]+[:)]/.exec(source);
+  if (group !== null) {
+    return {
+      why: `its pattern holds the flag group \`${group[0]}\`, where the runner reads only one leading \`(?FLAGS)\` of i, m and s, each once`,
+    };
+  }
+  if (/\(\?(<?[=!]|P<)|\\[1-9]/.test(source)) {
     return { why: "its pattern holds a look-around, a back-reference or a Rust named group" };
   }
+  const flags = new Set(inline);
+  if (caseSensitive === false) flags.add("i");
   let regex: RegExp;
   try {
-    regex = new RegExp(pattern, caseSensitive === false ? "iu" : "u");
+    regex = new RegExp(source, `${[...flags].join("")}u`);
   } catch (error) {
     return { why: `its pattern is none JavaScript takes: ${String(error)}` };
   }

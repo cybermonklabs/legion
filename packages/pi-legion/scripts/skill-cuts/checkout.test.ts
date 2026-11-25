@@ -1844,6 +1844,52 @@ test("two identical grep calls made at once share one answer, worked out once", 
   expect(workedOut).toEqual([`grep\0numbered\0${JSON.stringify(input)}`]);
 }, 60_000);
 
+// Catches: a grep pattern that starts with an inline flag group (`(?i)technique[- ]targeted`),
+// which the pin's Rust regex takes, left unanswered as JavaScript's RegExp throws on it, so the
+// recorded runs exhausted their attempts on the call.
+test("grep inline flag: a leading (?i) is taken off and makes the search case-insensitive, answered as the pin answers it", async () => {
+  const copy = { dir: gitCopy("grep-inline-flag"), root: ROOT, cwd: ROOT, git: true };
+  const grep = (pattern: string) =>
+    answerCall(copy, "grep", { pattern, path: "docs/guide.md" }, "hashline");
+  expect(await grep("(?i)run THE app")).toEqual({
+    text: `[docs/guide.md#${snapshotTag(GUIDE)}]\n 2:\n*3:Run the app.`,
+    isError: false,
+  });
+  expect(await grep("run THE app")).toEqual({ text: "No matches found", isError: false });
+}, 60_000);
+
+// Catches: a leading flag group's letters read in place of `case` rather than beside it (a
+// `(?i)` search made case-sensitive by `case: true`), or its `m` and `s` not read.
+test("grep inline flag: a leading (?i) keeps the search case-insensitive where case is true, and (?m) and (?s) are read beside it", async () => {
+  const copy = { dir: gitCopy("grep-inline-flag-case"), root: ROOT, cwd: ROOT, git: true };
+  const found = { text: "# docs/\n## guide.md\n 2|\n*3|Run the app.", isError: false };
+  for (const [pattern, answer] of [
+    ["(?i)RUN the APP", found],
+    ["(?ism)^RUN.the APP\\.$", found],
+    ["(?ms)^Run.the app\\.$", found],
+    ["(?ms)^RUN.the app\\.$", { text: "No matches found", isError: false }],
+  ] as const) {
+    const given = { pattern, path: "docs", case: true };
+    expect({ pattern, answer: await answerCall(copy, "grep", given, "numbered") }).toEqual({
+      pattern,
+      answer,
+    });
+  }
+}, 60_000);
+
+// Catches: a flag group the runner does not read (one elsewhere in the pattern, scoped, negated,
+// repeated, a second one, or of another flag) answered in a form the pin may not give.
+test("grep inline flag: a flag group elsewhere in the pattern, scoped, negated, repeated or of another flag is not answered", async () => {
+  const copy = { dir: gitCopy("grep-inline-flag-other"), root: ROOT, cwd: ROOT, git: true };
+  for (const pattern of ["a(?i)b", "(?i:run)", "(?-i)run", "(?x)run", "(?ii)run", "(?i)(?s)run"]) {
+    const answer = await answerCall(copy, "grep", { pattern, path: "docs/guide.md" }, "hashline");
+    expect({ pattern, answer }).toEqual({
+      pattern,
+      answer: { why: expect.stringContaining("flag group") },
+    });
+  }
+}, 60_000);
+
 // Catches: a glob's matching (Bun.Glob's, of every path under its base) run in the runner's own
 // thread with no time limit: a long pattern against each path of a large checkout takes seconds to
 // minutes, which stops every run of the process meanwhile.
