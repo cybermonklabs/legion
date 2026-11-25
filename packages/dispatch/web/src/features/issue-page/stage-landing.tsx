@@ -14,6 +14,7 @@ import { api } from "../../api/client";
 import { useAddressedItem } from "../artifacts/ArtifactDocument";
 import { useWholeRouteRead } from "../refs/reference-target";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
+import { claimBox, rewatch, watchedIn } from "../shell/ViewportAnchor";
 import { useOpenedDocument, useOutlineAddress } from "./document-address";
 import { useEscapeOrder } from "./escape-order";
 import { useFocusedNode } from "./focused-node";
@@ -24,6 +25,7 @@ import { wholeOnScreen } from "./on-screen";
 import { useAskOutline, useFocusBranch } from "./outline-request";
 import { CONTROL_LABELS } from "./page-words";
 import { isFilter } from "./presets";
+import { scrollingAncestor } from "./scroll-box";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
 import { blockNodeId } from "./tree-drafts";
@@ -31,6 +33,7 @@ import { nodeRowSelectorOf } from "./tree-focus";
 import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";
 import { type ItemLanding, isItemRoute, useItemLanding } from "./useItemLanding";
+import { abortOnReaderAct } from "./useNodeEditing";
 
 /**
  * What the stage draws before the outline or a view (dispatch://INFRA-1196 part N's R1, R6), for
@@ -402,23 +405,64 @@ const STEPS_HEADING = `aside[${DETAILS_ATTRIBUTE}] [data-testid="issue-steps"] h
 
 /** The history above the steps in Details, drawn: its list, or the line that it failed
  *  (`IssueHistory.tsx`). Its entries arriving after the steps took the focus would push them out
- *  of Details' view. */
+ *  of Details' view, which the hold of the heading (`holdSteps`) then brings back. */
 const HISTORY_DRAWN = `aside[${DETAILS_ATTRIBUTE}] [data-testid="issue-history"] :is(ol, [role="alert"])`;
+
+/**
+ * Keeps the steps' heading at the top of Details' view after `reachSteps` brought it there, until
+ * the reader acts or `landing` ends. Content above the steps that draws after the landing - the
+ * history's entries, the pinned entries and what each of them reads - moves the heading down,
+ * and where the box was clamped at its end when the heading was brought up, it moves it out of the
+ * view: the box is scrolled again at each change of height around the heading (`watchedIn`).
+ * The hold claims the box (`claimBox`), so the history's anchor keeps no place in it meanwhile,
+ * as Details' hold of a landed place does (`details-more.tsx`), and it ends with the claim, at the
+ * reader's first act (`abortOnReaderAct`), where Details closes and where `landing` ends.
+ */
+function holdSteps(heading: HTMLElement, landing: AbortSignal): void {
+  const box = scrollingAncestor(heading);
+  if (box === null) return;
+  const acts = abortOnReaderAct(() => release());
+  let watched: ReadonlySet<Element> = new Set();
+  const watch = () => {
+    const now = watchedIn(heading, box);
+    rewatch(sizes, watched, now);
+    watched = now;
+  };
+  const sizes = new ResizeObserver(() => {
+    if (!heading.isConnected || heading.closest("[hidden]") !== null) {
+      release();
+      return;
+    }
+    watch();
+    heading.scrollIntoView({ block: "start" });
+  });
+  const unclaim = claimBox(box, () => release());
+  function release(): void {
+    landing.removeEventListener("abort", release);
+    acts.abort();
+    sizes.disconnect();
+    unclaim();
+  }
+  landing.addEventListener("abort", release, { once: true });
+  watch();
+}
 
 /** Puts the focus on the steps' heading inside Details and brings it to the top of Details' view,
  *  once Details has drawn it and the history above it; `left` frames are waited for that, and
- *  then the heading is reached as it stands. A page that never draws it leaves the focus where it
- *  was. */
-function reachSteps(left: number): void {
+ *  then the heading is reached as it stands, and held there (`holdSteps`). A page that never
+ *  draws it leaves the focus where it was. */
+function reachSteps(left: number, landing: AbortSignal): void {
+  if (landing.aborted) return;
   const heading = document.querySelector<HTMLElement>(STEPS_HEADING);
   const drawn = heading !== null && heading.closest("[hidden]") === null;
   if (!(drawn && document.querySelector(HISTORY_DRAWN) !== null) && left > 0) {
-    requestAnimationFrame(() => reachSteps(left - 1));
+    requestAnimationFrame(() => reachSteps(left - 1, landing));
     return;
   }
   if (!drawn) return;
   heading.focus({ preventScroll: true });
   heading.scrollIntoView({ block: "start" });
+  holdSteps(heading, landing);
 }
 
 /**
@@ -430,22 +474,30 @@ function reachSteps(left: number): void {
  * opens that address (`useIssueKeymap.ts`), or by Back to it from another address, as
  * `/activity` opens again (`details-more.tsx`'s `DetailsHistory`). The search waits two frames
  * first, as `useOpenDetailsAt` does, for the drawer gives the focus to its own Close as it opens.
+ * The landing and the hold of the heading at the top of Details' view (`holdSteps`) end where
+ * the following does, and with the page.
  */
 function useStepsAddress(route: IssueRoute): void {
   const following = useFollowing();
   const openDetails = useMarginDrawer()?.setOpen;
   const steps = route.kind === "steps";
   const openedFor = useRef<string | undefined>(undefined);
+  const landing = useRef<AbortController | undefined>(undefined);
   useEffect(() => {
     if (!steps) {
       if (openedFor.current !== following) openedFor.current = undefined;
+      landing.current?.abort();
       return;
     }
     if (openedFor.current === following) return;
     openedFor.current = following;
+    landing.current?.abort();
+    const own = new AbortController();
+    landing.current = own;
     openDetails?.(true);
-    requestAnimationFrame(() => requestAnimationFrame(() => reachSteps(STEPS_FRAMES)));
+    requestAnimationFrame(() => requestAnimationFrame(() => reachSteps(STEPS_FRAMES, own.signal)));
   }, [following, openDetails, steps]);
+  useEffect(() => () => landing.current?.abort(), []);
 }
 
 /**

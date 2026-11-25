@@ -13,7 +13,7 @@ import {
   PRESET_ORDER,
   type Preset,
 } from "../web/src/features/issue-page/page-words";
-import type { IssueRoute } from "../web/src/features/refs/routes";
+import { type IssueRoute, parseIssuePath } from "../web/src/features/refs/routes";
 import { PAGE_COLORS } from "../web/src/theme/classes";
 import { oklchToSrgb8 } from "../web/src/theme/contrast";
 import { getIssue } from "./api";
@@ -78,6 +78,8 @@ const SELECTORS = {
   childRow: "[data-child-row]",
   /** One crumb of the line a zoomed outline draws above its rows; none while it is not zoomed. */
   crumb: "[data-crumb]",
+  /** Documents' list, drawn in place of the outline and of every view (`DocumentsList.tsx`). */
+  documentsList: "[data-documents-list]",
   /** The whole filter row: the five controls or the one control, Outline, and the small
    *  controls at its right end (`IssuePresets.tsx`). */
   filterRow: "[data-filter-row]",
@@ -131,6 +133,11 @@ export function zoomCrumbs(page: Page): Locator {
   return issuePage(page).locator(SELECTORS.crumb);
 }
 
+/** Documents' list, the one the stage draws at `/documents` and `/artifacts`. */
+export function documentsList(page: Page): Locator {
+  return page.locator(SELECTORS.documentsList);
+}
+
 /** The hidden file input the upload opens, which is how a test hands it a file. */
 export function uploadInput(page: Page): Locator {
   return page.locator('input[type="file"]');
@@ -175,6 +182,19 @@ export async function openVersionControl(page: Page): Promise<void> {
   if (shown === "open") return;
   await (shown === "own control" ? versionControlButton(page) : outlineControl(page)).click();
   await expect(versionControl(page), "the version control did not open").toBeVisible();
+}
+
+/** Opens the filter by words' box as a reader does, unless it is drawn: it is drawn while it holds
+ *  words, and below 1024 px it stands in the Outline sheet, which this opens. Which of the two the
+ *  page shows is read once it shows one. */
+export async function openFilterBox(page: Page): Promise<void> {
+  const shown = await settledState("the filter by words", [
+    ["drawn", filterBox(page)],
+    ["Outline sheet", outlineControl(page)],
+  ]);
+  if (shown === "drawn") return;
+  await outlineControl(page).click();
+  await expect(filterBox(page), "the Outline sheet draws no filter by words").toBeVisible();
 }
 
 /** Which version the version control is showing, as the picker's own value: the empty string
@@ -1065,8 +1085,13 @@ export interface AddressSeed {
   readonly agentsOnly: string;
   /** The comment anchored in the spec, its node's words, and its id written short. */
   readonly comment: { readonly id: string; readonly short: string; readonly words: string };
+  /** A message the Legion daemon of the issue's project wrote with no target, which begins a
+   *  thread the history holds whole (`agents-only.ts`), and its words. */
+  readonly daemon: { readonly id: string; readonly words: string };
   /** The id of no ask at all. */
   readonly goneAsk: string;
+  /** A handoff the issue holds (INFRA-4870's view of it). */
+  readonly handoff: string;
   readonly key: string;
   /** The root message of the issue's conversation and its words. */
   readonly message: { readonly id: string; readonly words: string };
@@ -1087,6 +1112,10 @@ export interface AddressSeed {
   readonly planTask: { readonly block: string; readonly node: string };
   /** The spec's slug and words its text holds. */
   readonly spec: { readonly slug: string; readonly words: string };
+  /** A document of tasks that is no plan of the issue, so no node of the outline stands for any
+   *  block of it (decision 449): its slug, a typed block far down its text, which is off screen
+   *  until a link to it scrolls there, and that block's words. */
+  readonly tasks: { readonly block: string; readonly slug: string; readonly words: string };
   /** A prefix two comments of the issue carry, and the two. */
   readonly twins: { readonly ids: readonly string[]; readonly prefix: string };
 }
@@ -1095,11 +1124,13 @@ export interface AddressSeed {
 export type AddressContent =
   /** That view on, with no document open in place of the outline. */
   | { readonly kind: "view"; readonly preset: Preset }
-  /** The node menu, open. */
-  | { readonly kind: "node-menu" }
+  /** Documents' list, drawn in place of the outline and of every view, with Documents the
+   *  control that is on. */
+  | { readonly kind: "documents" }
   /** A document in place of the outline and of every view, drawing `words` of its text. */
   | { readonly kind: "document"; readonly words: string }
-  /** That document opened at `block`, a block no node holds, on screen. */
+  /** That document opened at `block`, a block no node of the outline holds, with the focus on it:
+   *  on screen, the document drawn in place of Documents' list and of the outline. */
   | { readonly kind: "document-block"; readonly block: string; readonly words: string }
   /** That document opened with the ask or comment `id` marked in it. */
   | { readonly kind: "document-item"; readonly id: string }
@@ -1123,19 +1154,35 @@ export type AddressContent =
   | { readonly kind: "not-found"; readonly heading: string }
   /** The line that the item could not be read, with its Retry. */
   | { readonly kind: "retry" }
+  /** The view row's control `name` is the one that is on: the view of a part this branch may not
+   *  hold (`PART_ADDRESSES`). */
+  | { readonly kind: "control"; readonly name: string }
+  /** The handoff's own view, drawn at its address with no refusal (INFRA-4870). */
+  | { readonly kind: "handoff" }
   /** The address replaced by `to`, which then opens `lands`: an id written short replaced by the
    *  whole id, and another issue's item at that issue's address. */
   | { readonly kind: "replaced"; readonly lands: AddressContent; readonly to: string };
+
+/** The parts that build a view an address of INV-1 opens, none of which this part builds: each
+ *  by its issue or its letter in the plan. */
+export type AddressPart = "INFRA-4870" | "INFRA-5702" | "INFRA-5704" | "T";
 
 /** One address of today's page, and what it opens on the new page. */
 export interface AddressCase {
   /** The address, on the issue `seed` holds. */
   readonly address: (seed: AddressSeed) => string;
+  /** The part that builds the view this address opens, where it is not this part's: the row
+   *  reads the case only where the page draws that part (`drawsPart`), and names the address as
+   *  not read otherwise. */
+  readonly builtBy?: AddressPart;
   /** What it opens. */
   readonly opens: (seed: AddressSeed) => AddressContent;
   /** The read the row answers with a server error for this address alone: the lookup that
    *  fails, by its URL. */
   readonly unreadable?: (seed: AddressSeed) => (url: URL) => boolean;
+  /** The part whose view takes this address from what `opens` says: the row leaves the case
+   *  out once the page draws that part, whose own case reads the address. */
+  readonly until?: AddressPart;
 }
 
 /** The issue's own address on `seed`, with `rest` after it. */
@@ -1151,7 +1198,8 @@ function issuePath(seed: AddressSeed, rest = ""): string {
  * issue's own; `/spec?comment=` and `?v=` on the spec's; a `#b-` of a block of a document no view
  * opens, and `?mark=`, on a document's; an id written short, an id that names several items, a
  * gone id, a failed lookup, another issue's item and an approval request on an item's. Row (1)
- * of `c-addresses`, "every address of the old page still resolves", walks it.
+ * of `c-addresses`, "every address of the old page still resolves and each new one opens its
+ * view", walks it and `PART_ADDRESSES`.
  */
 export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly AddressCase[]>> = {
   activity: [
@@ -1187,6 +1235,17 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
       }),
     },
     {
+      // Decision 449: a block of a document the outline does not draw - a task of a document of
+      // tasks that is no plan, far down its text, which no node of the outline holds - opens that
+      // document in place of Documents' list and of the outline, on that block.
+      address: (seed) => issuePath(seed, `/artifacts/${seed.tasks.slug}#b-${seed.tasks.block}`),
+      opens: (seed) => ({
+        block: seed.tasks.block,
+        kind: "document-block",
+        words: seed.tasks.words,
+      }),
+    },
+    {
       address: (seed) => issuePath(seed, `/artifacts/${seed.spec.slug}?mark=${seed.comment.id}`),
       opens: (seed) => ({ id: seed.comment.id, kind: "document-item" }),
     },
@@ -1200,7 +1259,7 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
     },
   ],
   artifacts: [
-    { address: (seed) => issuePath(seed, "/artifacts"), opens: () => ({ kind: "node-menu" }) },
+    { address: (seed) => issuePath(seed, "/artifacts"), opens: () => ({ kind: "documents" }) },
   ],
   ask: [
     {
@@ -1286,7 +1345,12 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
     },
   ],
   issue: [
-    { address: (seed) => issuePath(seed), opens: () => ({ kind: "view", preset: "conversation" }) },
+    {
+      address: (seed) => issuePath(seed),
+      opens: () => ({ kind: "view", preset: "conversation" }),
+      // Until Dashboard is drawn, which opens the bare address (`PART_ADDRESSES`).
+      until: "INFRA-5702",
+    },
     {
       address: (seed) => issuePath(seed, `?q=${encodeURIComponent("Requirement 2")}`),
       opens: () => ({ kind: "words", words: "Requirement 2" }),
@@ -1319,12 +1383,22 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
   ],
   // The new page's own address of Documents, which opens the same list as `/artifacts`.
   "issue-documents": [
-    { address: (seed) => issuePath(seed, "/documents"), opens: () => ({ kind: "node-menu" }) },
+    { address: (seed) => issuePath(seed, "/documents"), opens: () => ({ kind: "documents" }) },
   ],
   message: [
     {
       address: (seed) => issuePath(seed, `/messages/${seed.message.id}`),
       opens: (seed) => ({ kind: "node", node: seed.message.id, words: seed.message.words }),
+    },
+    {
+      // A turn of a thread the Legion daemon began opens in Details' history, and no row of the
+      // outline draws it (part M).
+      address: (seed) => issuePath(seed, `/messages/${seed.daemon.id}`),
+      opens: (seed) => ({
+        id: seed.daemon.id,
+        kind: "history-turn",
+        words: seed.daemon.words,
+      }),
     },
   ],
   plan: [
@@ -1360,6 +1434,73 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
     },
   ],
 };
+
+/**
+ * The addresses of the views that parts other than this one build (R6): Dashboard's, which opens
+ * the bare address too (dispatch://INFRA-5702), Threads' (dispatch://INFRA-5704), Graph's (part
+ * T) and a handoff's (dispatch://INFRA-4870). Each has no route kind of `IssueRoute` on this
+ * branch, so none is a case of `OLD_PAGE_ADDRESSES`; each is marked with the part that builds it,
+ * and the row reads it only where the page draws that part (`drawsPart`). Where it does not, the
+ * row names the address as not read, and the pull request names it. While dispatch://INFRA-5704
+ * follows this part, `/threads`, `/threads/<id>` and each address root R20 lands in Threads are
+ * left out here (R11). When a part lands, its kind joins `OLD_PAGE_ADDRESSES` with its cases.
+ */
+export const PART_ADDRESSES: readonly AddressCase[] = [
+  {
+    address: (seed) => issuePath(seed),
+    builtBy: "INFRA-5702",
+    opens: () => ({ kind: "control", name: "Dashboard" }),
+  },
+  {
+    address: (seed) => issuePath(seed, "/dashboard"),
+    builtBy: "INFRA-5702",
+    opens: () => ({ kind: "control", name: "Dashboard" }),
+  },
+  {
+    address: (seed) => issuePath(seed, "/threads"),
+    builtBy: "INFRA-5704",
+    opens: () => ({ kind: "control", name: "Threads" }),
+  },
+  {
+    address: (seed) => issuePath(seed, `/threads/${seed.message.id}`),
+    builtBy: "INFRA-5704",
+    opens: () => ({ kind: "control", name: "Threads" }),
+  },
+  {
+    address: (seed) => issuePath(seed, "/graph"),
+    builtBy: "T",
+    opens: () => ({ kind: "control", name: "Graph" }),
+  },
+  {
+    address: (seed) => issuePath(seed, `/graph/${seed.planTask.node}`),
+    builtBy: "T",
+    opens: () => ({ kind: "control", name: "Graph" }),
+  },
+  {
+    address: (seed) => issuePath(seed, `/handoffs/${seed.handoff}`),
+    builtBy: "INFRA-4870",
+    opens: () => ({ kind: "handoff" }),
+  },
+];
+
+/**
+ * Whether this branch's page draws the view `part` builds, which is what lets the row read that
+ * part's addresses (`PART_ADDRESSES`): the part's control stands in the view row, or, for the
+ * handoff's view, which has no control, the page parses its route.
+ */
+export function drawsPart(part: AddressPart): boolean {
+  const controls: readonly string[] = PRESET_ORDER;
+  switch (part) {
+    case "INFRA-4870":
+      return parseIssuePath("/issues/KEY-1/handoffs/handoff-1") !== undefined;
+    case "INFRA-5702":
+      return controls.includes("dashboard");
+    case "INFRA-5704":
+      return controls.includes("threads");
+    case "T":
+      return controls.includes("graph");
+  }
+}
 
 // ---------------------------------------------------------------------------------------------
 // INV-2: the states and widths of part N's R9.

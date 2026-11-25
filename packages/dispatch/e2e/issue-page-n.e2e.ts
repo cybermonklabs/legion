@@ -39,6 +39,7 @@ import {
   claimIssue,
   createAsk,
   createComment,
+  createHandoff,
   createIssue,
   createIssueArtifact,
   createMessage,
@@ -82,7 +83,7 @@ import {
   seedWholeIssueAdvancing,
   type WholeIssueSeed,
 } from "./issue-layout-seed";
-import { asPlanner, PLANNER_TITLE, PROJECT } from "./issue-layout-seed-support";
+import { asPlanner, PLANNER_TITLE, PROJECT, plannerActor } from "./issue-layout-seed-support";
 import {
   OPEN_QUESTION_BLOCK_ID,
   planTaskBlockId,
@@ -148,6 +149,8 @@ import {
   assertInventoryCarried,
   assertNoSidewaysScroll,
   chromeTexts,
+  documentsList,
+  drawsPart,
   expectDocumentConnected,
   filterBox,
   filterControl,
@@ -164,12 +167,14 @@ import {
   offThePalette,
   openedArtifact,
   openedEditor,
+  openFilterBox,
   openIssueActions,
   openIssueAddress,
   openPageState,
   openSpecDocument,
   openVersionControl,
   optionsOf,
+  PART_ADDRESSES,
   type ParentRowMapping,
   REFLOW_STATES,
   rowsWithoutAuthorScrollers,
@@ -1942,9 +1947,14 @@ async function twinComment(id: string, body: string): Promise<string> {
   return twin;
 }
 
+/** The block id of the typed block `addressSeed`'s document of tasks ends with, and how many
+ *  lines of the document stand before it. */
+const TASKS_BLOCK = "t-far";
+const TASKS_BEFORE_THE_BLOCK = 60;
+
 /** The records INV-1's addresses are written with (`AddressSeed`): the whole issue's, and an
- *  agents' comment, a twin comment, a comment of another issue and an approval request, written
- *  here beside it. */
+ *  agents' comment, a twin comment, a comment of another issue, an approval request, a document
+ *  of tasks, a message of the Legion daemon and a handoff, written here beside it. */
 async function addressSeed(seeded: WholeIssueSeed): Promise<AddressSeed> {
   const issue = await getIssue(seeded.key);
   const notes = (issue.artifacts ?? []).find(
@@ -1969,6 +1979,40 @@ async function addressSeed(seeded: WholeIssueSeed): Promise<AddressSeed> {
   const otherWords = "A comment its own issue holds.";
   const other = await createComment(seeded.parentKey, { body: otherWords });
   const approval = withOpenedAsk(await requestApproval(seeded.specArtifactId, {}, asPlanner));
+  // A document of tasks that is no plan of the issue (decision 449): ordinary, so the outline
+  // draws no node of it, with its one typed block after so many lines that the block is off
+  // screen until a link to it scrolls there.
+  const taskWords = "Draw the last step of the tasks.";
+  const tasks = await createIssueArtifact(seeded.key, {
+    content: `${[
+      "# Tasks",
+      ...Array.from(
+        { length: TASKS_BEFORE_THE_BLOCK },
+        (_, index) => `Step ${index + 1} of the tasks, in a line of its own.`
+      ),
+      `:::plan_task{#${TASKS_BLOCK}}\n${taskWords}\n:::`,
+    ].join("\n\n")}\n`,
+    name: "plan-one-plan.md",
+  });
+  // A message the Legion daemon of the issue's project wrote with no target, and a handoff.
+  const daemonWords = "The daemon handed the build to its next step.";
+  const daemon = await createMessage(
+    seeded.key,
+    { body: daemonWords },
+    {
+      actor: {
+        id: `legion-daemon:${seeded.key.slice(0, seeded.key.indexOf("-"))}`,
+        kind: "session",
+      },
+      as: "agent",
+    }
+  );
+  const handoff = await createHandoff(
+    seeded.key,
+    "plan",
+    { phase: "plan", schemaVersion: 1 },
+    plannerActor
+  );
   return {
     agentsOnly: agentsOnly.id,
     approval: { artifactId: seeded.specArtifactId, askId: approval.ask.id },
@@ -1977,7 +2021,9 @@ async function addressSeed(seeded: WholeIssueSeed): Promise<AddressSeed> {
       short: seeded.comments.anchored.slice(0, SHORT_ID),
       words: "This requirement is the one the tree reads first.",
     },
+    daemon: { id: daemon.id, words: daemonWords },
     goneAsk: "00000000-0000-4000-8000-000000000000",
+    handoff: handoff.id,
     key: seeded.key,
     message: { id: seeded.messages.root, words: "The tree is folded to the frontier." },
     notes: { paragraph: paragraph.id, slug: notes.slug, words: notesWords },
@@ -1993,6 +2039,7 @@ async function addressSeed(seeded: WholeIssueSeed): Promise<AddressSeed> {
       node: blockNodeId(planSlug, planTaskBlockId(9)),
     },
     spec: { slug: specSlug, words: requirementText(2) },
+    tasks: { block: TASKS_BLOCK, slug: tasks.artifact.slug, words: taskWords },
     twins: { ids: [thread, twin], prefix: thread.slice(0, SHORT_ID) },
   };
 }
@@ -2020,9 +2067,12 @@ async function expectAddressOpens(
       }
       return;
     }
-    case "node-menu": {
-      await expectIssuePageDrawn(page);
-      await expect(openMenu(page), `${form} does not open the node menu`).toHaveCount(1);
+    case "documents": {
+      await expect(documentsList(page), `${form} does not open Documents`).toBeVisible();
+      await expect
+        .poll(() => activePreset(page), { message: `${form} does not open Documents` })
+        .toBe(PRESET_NAMES.documents);
+      await expect(tree(page), `${form} draws the outline beside Documents' list`).toHaveCount(0);
       return;
     }
     case "document": {
@@ -2031,6 +2081,10 @@ async function expectAddressOpens(
         content.words
       );
       await expect(tree(page), `${form} draws the outline beside the document`).toHaveCount(0);
+      await expect(
+        documentsList(page),
+        `${form} draws Documents' list beside the document`
+      ).toHaveCount(0);
       return;
     }
     case "document-block": {
@@ -2040,6 +2094,10 @@ async function expectAddressOpens(
         `${form} does not open its document at the block`
       ).toBeInViewport();
       await expect(openedEditor(page)).toContainText(content.words);
+      await expect(
+        documentsList(page),
+        `${form} draws Documents' list in place of the document`
+      ).toHaveCount(0);
       return;
     }
     case "document-item": {
@@ -2063,6 +2121,7 @@ async function expectAddressOpens(
     }
     case "words": {
       await expectIssuePageDrawn(page);
+      await openFilterBox(page);
       await expect(filterBox(page), `${form} does not fill the filter by words`).toHaveValue(
         content.words
       );
@@ -2174,6 +2233,22 @@ async function expectAddressOpens(
       ).toBeVisible();
       return;
     }
+    case "control": {
+      await expect(issuePage(page), `${form} draws no page`).toHaveCount(1);
+      await expect
+        .poll(() => activePreset(page), { message: `${form} does not open ${content.name}` })
+        .toBe(content.name);
+      return;
+    }
+    case "handoff": {
+      await expectIssuePageDrawn(page);
+      await expect(page, `${form} leaves its address`).toHaveURL(address);
+      await expect(
+        page.getByRole("heading", { name: /not found/iu }),
+        `${form} refuses the handoff`
+      ).toHaveCount(0);
+      return;
+    }
     case "replaced": {
       await expect(page, `${form} is not replaced by ${content.to}`).toHaveURL(content.to);
       await expectAddressOpens(page, content.to, form, content.lands);
@@ -2182,13 +2257,20 @@ async function expectAddressOpens(
   }
 }
 
-// c-urls; c-addresses (1): INV-1, every address of today's page and what it opens.
-test("every address of the old page still resolves", async ({ browser }) => {
-  // Thirty-five cold loads of the issue page, each one a navigation and its reads: the source's
+// c-urls; c-addresses (1): INV-1, every address of today's page and each that root R20 adds, and
+// what it opens, at the project's width: 1440 px on chromium and 390 px on iphone. The addresses
+// of the views other parts build are read only where the page draws that part
+// (`PART_ADDRESSES`); the rest are named as not read.
+test("every address of the old page still resolves and each new one opens its view @phone", async ({
+  browser,
+}) => {
+  // About forty cold loads of the issue page, each one a navigation and its reads: the source's
   // eighteen took 28 s, so the row carries a deadline of its own rather than the 60 s default.
   test.setTimeout(300_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const seed = await addressSeed(seeded);
+    const desktopProject = test.info().project.name !== "iphone";
+    await page.setViewportSize(viewportAt(desktopProject ? DESKTOP.width : IPHONE_13.width));
     // Every address is read before the row fails, so one run names each one that does not
     // resolve, with the first line of what it does not open.
     const unresolved: string[] = [];
@@ -2199,23 +2281,28 @@ test("every address of the old page still resolves", async ({ browser }) => {
         unresolved.push(error instanceof Error ? (error.message.split("\n")[0] ?? form) : form);
       }
     };
-    for (const cases of Object.values(OLD_PAGE_ADDRESSES)) {
-      for (const one of cases) {
-        const address = one.address(seed);
-        const form = address.slice(`/issues/${seed.key}`.length) || `/issues/${seed.key}`;
-        const unreadable = one.unreadable?.(seed);
-        const failing = (url: URL) => unreadable?.(url) === true;
-        if (unreadable !== undefined) {
-          await page.route(failing, (route) =>
-            route.fulfill({ json: { code: "SERVER_ERROR", error: "unreadable" }, status: 500 })
-          );
-        }
-        await resolves(form, async () => {
-          await gotoIssue(page, address);
-          await expectAddressOpens(page, address, form, one.opens(seed));
-        });
-        if (unreadable !== undefined) await page.unroute(failing);
+    for (const one of [...Object.values(OLD_PAGE_ADDRESSES).flat(), ...PART_ADDRESSES]) {
+      // Once Dashboard is drawn, the bare address opens it, and its own case reads that.
+      if (one.until !== undefined && drawsPart(one.until)) continue;
+      const address = one.address(seed);
+      const form = address.slice(`/issues/${seed.key}`.length) || `/issues/${seed.key}`;
+      if (one.builtBy !== undefined && !drawsPart(one.builtBy)) {
+        // The page draws no part that builds this view: the address is named as not read.
+        test.info().annotations.push({ description: `${form} (${one.builtBy})`, type: "not-read" });
+        continue;
       }
+      const unreadable = one.unreadable?.(seed);
+      const failing = (url: URL) => unreadable?.(url) === true;
+      if (unreadable !== undefined) {
+        await page.route(failing, (route) =>
+          route.fulfill({ json: { code: "SERVER_ERROR", error: "unreadable" }, status: 500 })
+        );
+      }
+      await resolves(form, async () => {
+        await gotoIssue(page, address);
+        await expectAddressOpens(page, address, form, one.opens(seed));
+      });
+      if (unreadable !== undefined) await page.unroute(failing);
     }
 
     // `t e`, the Steps tab's chord, opens Details at its steps as `/steps` does (answer A).

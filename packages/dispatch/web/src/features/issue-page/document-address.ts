@@ -11,6 +11,7 @@ import { type IssueAddress, issueAddress } from "./issue-address";
 import { NODE_TYPES } from "./page-words";
 import { nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
 import { useIssueDetail } from "./useIssueDetail";
+import { treeDocumentIds } from "./useIssueTree";
 import { abortOnReaderAct } from "./useNodeEditing";
 
 /** The document an address opens in place of the outline: the route it is drawn at, and the
@@ -30,16 +31,23 @@ function outlineOf(state: unknown): string | undefined {
 /**
  * Whether the address opens its document in place of the outline (dispatch://INFRA-1196 R3,
  * R20). A document's own address opens the document, with one exception: an address naming a
- * block of it that the outline holds as a node - a typed block, which a citation of a check or a
- * plan task names - is where that block now stands, so it opens the outline at that node. A block
- * no node holds - a paragraph of the document's own text - opens the document at the block. Which
- * blocks are typed is the blocks read the outline is built from, so this asks it under the same
- * key and sends nothing of its own; until it answers, the address draws the outline it most
- * likely names.
+ * block of it that the outline holds as a node - a typed block of a document the outline is
+ * built from (`outlined`), which a citation of a check or a plan task names - is where that block
+ * now stands, so it opens the outline at that node. A block no node holds opens the document at
+ * the block: a paragraph of the document's own text, and every block of a document the outline is
+ * not built from, a typed one included (decision 449: a task of a document of tasks that is no
+ * plan). Which blocks of an outlined document are typed is the blocks read the outline is built
+ * from, so this asks it under the same key and sends nothing of its own, and none for a document
+ * the outline is not built from; until it answers, the address draws the outline it most likely
+ * names.
  */
-function useOpensDocument(address: IssueAddress, artifact: Artifact | undefined): boolean {
+function useOpensDocument(
+  address: IssueAddress,
+  artifact: Artifact | undefined,
+  outlined: boolean
+): boolean {
   const block = address.target?.kind === "block" ? address.target.id : undefined;
-  const asksBlocks = address.document !== undefined && block !== undefined;
+  const asksBlocks = outlined && address.document !== undefined && block !== undefined;
   const blocks = useQuery({
     ...artifactBlocksQuery(artifact?.id ?? ""),
     enabled: asksBlocks && artifact?.kind === "doc",
@@ -69,7 +77,9 @@ export function useOpenedDocument(
   const { artifactRoute, primaryArtifact, selectedArtifact } = useIssueDetail(issue, route);
   const address = issueAddress(route, search, hash, primaryArtifact?.slug);
   const documentRoute = address.preset === "conversation" ? artifactRoute : undefined;
-  const opens = useOpensDocument(address, selectedArtifact);
+  const outlined =
+    selectedArtifact !== undefined && treeDocumentIds(issue).includes(selectedArtifact.id);
+  const opens = useOpensDocument(address, selectedArtifact, outlined);
   return opens && documentRoute !== undefined
     ? { artifact: selectedArtifact, route: documentRoute }
     : undefined;
