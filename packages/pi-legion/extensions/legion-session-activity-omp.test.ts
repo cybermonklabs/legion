@@ -12,6 +12,7 @@ import {
   type Cleanup,
   call,
   deliveryFor,
+  isRequestOf,
   isSelfCheck,
   messageStream,
   ompNatsGuard,
@@ -71,10 +72,6 @@ const REGISTRATION_SECRET = fixtureSecret("reg");
  */
 const ASSIGNMENT = `Implement ${ISSUE}. ACT-ROLE-ASSIGNMENT.`;
 
-/** The first line of agents/deep-worker.md's body, which Oh My Pi puts in the subagent's system
- *  prompt: the one thing that tells the subagent's own Messages request from a role turn. */
-const DEEP_WORKER_SYSTEM = "You are an autonomous coding worker";
-
 /** The name of the service the case starts, which the host requires to be unique in the session. */
 const SERVICE_NAME = "activity-service";
 
@@ -104,10 +101,11 @@ function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
 }
 
-/** Whether a Messages request is the subagent's own: only its system prompt is deep-worker's. */
-function isSubagentRequest(request: Request): boolean {
-  return JSON.stringify(request.body.system ?? null).includes(DEEP_WORKER_SYSTEM);
-}
+/** Whether a Messages request is the subagent's own: only its system prompt carries the body of
+ *  agents/deep-worker.md, which the pane loads from this package's root. */
+const isSubagentRequest = isRequestOf(
+  path.resolve(import.meta.dir, "..", "agents", "deep-worker.md")
+);
 
 /**
  * Whether a Messages request is a turn of the role's own conversation: it carries the daemon's

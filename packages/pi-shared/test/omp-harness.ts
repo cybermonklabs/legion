@@ -6,6 +6,7 @@
 // together as one Legion pane against a stand-in daemon and listener. The profile format, the
 // flags and the RPC stream are the Oh My Pi pin's (the repository's .omp-pin), so a pin bump that
 // changes one is fixed here once.
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -955,6 +956,44 @@ export function isSummarization(request: Request): boolean {
   return JSON.stringify(request.body.system ?? null).includes(
     "Summarize user–AI coding-assistant conversations"
   );
+}
+
+/** The text of a Messages request's system prompt: its string, or its text blocks joined. */
+function systemText(request: Request): string {
+  const system = request.body.system;
+  if (typeof system === "string") return system;
+  if (!Array.isArray(system)) return "";
+  return system
+    .map((block: unknown) =>
+      typeof block === "object" &&
+      block !== null &&
+      "text" in block &&
+      typeof block.text === "string"
+        ? block.text
+        : ""
+    )
+    .join("\n");
+}
+
+/**
+ * Whether a Messages request is the own request of a `task` subagent of the agent that
+ * `agentFile` defines. Oh My Pi puts the body of an agent definition, below its frontmatter, in
+ * the system prompt of that agent's subagent and of no other request, so the body's first line
+ * tells the subagent's requests from a role's turns and from its side requests (the task label,
+ * the run-end self-check). The line is read from the file the pane loads, so a case holds no
+ * word of the definition, and a definition that is worded anew is still told apart.
+ */
+export function isRequestOf(agentFile: string): (request: Request) => boolean {
+  const text = readFileSync(agentFile, "utf8");
+  const frontmatter = /^---\n[\s\S]*?\n---\n/.exec(text);
+  if (frontmatter === null) throw new Error(`${agentFile} has no frontmatter`);
+  const mark = text
+    .slice(frontmatter[0].length)
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line !== "");
+  if (mark === undefined) throw new Error(`${agentFile} has no body below its frontmatter`);
+  return (request) => systemText(request).includes(mark);
 }
 
 /** The real binary and the NATS server one case runs against, as `ompNatsGuard().setup()`

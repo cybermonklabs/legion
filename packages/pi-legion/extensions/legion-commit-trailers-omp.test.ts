@@ -8,6 +8,7 @@ import {
   type Cleanup,
   call,
   deliveryFor,
+  isRequestOf,
   isSelfCheck,
   messageStream,
   ompNatsGuard,
@@ -60,14 +61,6 @@ const BOOT_TOKEN = fixtureSecret("boot");
  */
 const ASSIGNMENT_MARK = "TRAILERS-ROLE-ASSIGNMENT";
 
-/**
- * The first line of the body of agents/deep-worker.md, which Oh My Pi puts in the system prompt
- * of the subagent. This tells the Messages requests of the subagent from the others, never their
- * place in the order: the pane also sends side requests (the task label, the run-end self-check),
- * and those arrive among the turns.
- */
-const DEEP_WORKER_SYSTEM = "You are an autonomous coding worker";
-
 /** The message of the commit that the subagent makes. */
 const COMMIT_MESSAGE = "subagent commit";
 
@@ -85,10 +78,13 @@ afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
 
-/** Whether a Messages request is the subagent's own: only its system prompt is deep-worker's. */
-function isSubagentRequest(request: Request): boolean {
-  return JSON.stringify(request.body.system ?? null).includes(DEEP_WORKER_SYSTEM);
-}
+/** Whether a Messages request is the subagent's own: only its system prompt carries the body of
+ * agents/deep-worker.md, which the pane loads from this package's root. The body tells the
+ * subagent's requests from the others, never their place in the order: the pane also sends side
+ * requests (the task label, the run-end self-check), and those arrive among the turns. */
+const isSubagentRequest = isRequestOf(
+  path.resolve(import.meta.dir, "..", "agents", "deep-worker.md")
+);
 
 /** Whether a Messages request is a turn of the role's own conversation: it carries the assignment
  * of the daemon, and it is not a side turn (pi-envoy's run-end self-check, `isSelfCheck`). */

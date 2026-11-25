@@ -130,11 +130,30 @@ const relaunchFirstPromptWithin = 90 * time.Second
 // (pi-legion/extensions/legion.ts, SESSION_ACTIVITY_PERIOD_MS).
 const relaunchReportWithin = time.Minute
 
-// deepWorkerSystemLine is the first line of packages/pi-legion/agents/deep-worker.md's body, which
-// Oh My Pi puts in the system prompt of a `task` subagent of that agent, and nowhere else: it is
-// how the stand-in tells the subagent's own request from a turn of the role's, as the plugins'
-// own pin test does (packages/pi-legion/extensions/legion-session-activity-omp.test.ts).
-const deepWorkerSystemLine = "You are an autonomous coding worker"
+// deepWorkerSystemLine is the first line of packages/pi-legion/agents/deep-worker.md's body, below
+// its frontmatter, which Oh My Pi puts in the system prompt of a `task` subagent of that agent,
+// and nowhere else: it is how the stand-in tells the subagent's own request from a turn of the
+// role's, as the plugins' own pin tests do (isRequestOf, packages/pi-shared/test/omp-harness.ts).
+// It is read from the file the pane loads, so this proof holds no word of the definition.
+func deepWorkerSystemLine(t *testing.T) string {
+	t.Helper()
+	const file = "../../../pi-legion/agents/deep-worker.md"
+	text, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	_, body, ok := strings.Cut(string(text), "\n---\n")
+	if !ok || !strings.HasPrefix(string(text), "---\n") {
+		t.Fatalf("%s has no frontmatter", file)
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	t.Fatalf("%s has no body below its frontmatter", file)
+	return ""
+}
 
 // The words of the relaunch sentence a step reads, as supervise's relaunchSentence
 // (supervise/relaunch.go) writes them at this head for a death (endDied, supervise/endedwork.go).
@@ -1181,6 +1200,9 @@ func subagentCall(marker string) map[string]any {
 type scriptedStandin struct {
 	*paneStandin
 
+	// subagentMark is what only a `task` subagent's own system prompt holds (deepWorkerSystemLine).
+	subagentMark string
+
 	mu      sync.Mutex
 	rules   []*standinRule
 	seen    []seenRequest
@@ -1222,7 +1244,7 @@ type seenRequest struct {
 
 func newScriptedStandin(t *testing.T, name string) *scriptedStandin {
 	t.Helper()
-	s := &scriptedStandin{paneStandin: &paneStandin{modelStandin: &modelStandin{name: name}}, stopped: make(chan struct{})}
+	s := &scriptedStandin{paneStandin: &paneStandin{modelStandin: &modelStandin{name: name}}, subagentMark: deepWorkerSystemLine(t), stopped: make(chan struct{})}
 	s.serve(t, s)
 	// Registered after the server's own close, so it runs first: a request still held when the
 	// run ends is let go, and the server's close does not wait on it.
@@ -1240,7 +1262,7 @@ func (s *scriptedStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	seen := readStandinRequest(body, time.Now())
+	seen := readStandinRequest(body, time.Now(), s.subagentMark)
 	s.mu.Lock()
 	rule := s.ruleFor(seen)
 	seen.conversation = ""
@@ -1378,8 +1400,9 @@ func (h *heldRequest) let() {
 	h.once.Do(func() { close(h.release) })
 }
 
-// readStandinRequest reads a Messages request's body as a step reads it back.
-func readStandinRequest(body []byte, at time.Time) seenRequest {
+// readStandinRequest reads a Messages request's body as a step reads it back: a request whose
+// system prompt holds subagentMark is a `task` subagent's own.
+func readStandinRequest(body []byte, at time.Time, subagentMark string) seenRequest {
 	seen := seenRequest{at: at, side: isSideQuestion(string(body))}
 	var request struct {
 		System   json.RawMessage `json:"system"`
@@ -1391,7 +1414,8 @@ func readStandinRequest(body []byte, at time.Time) seenRequest {
 	if json.Unmarshal(body, &request) != nil || len(request.Messages) == 0 {
 		return seen
 	}
-	seen.subagent = strings.Contains(string(request.System), deepWorkerSystemLine)
+	system, _ := contentText(request.System)
+	seen.subagent = strings.Contains(system, subagentMark)
 	var conversation strings.Builder
 	for _, message := range request.Messages {
 		text, _ := contentText(message.Content)

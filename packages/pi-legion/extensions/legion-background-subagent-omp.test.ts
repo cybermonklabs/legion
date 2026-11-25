@@ -9,6 +9,7 @@ import {
   call,
   deleteRelayCapturingStreams,
   deliveryFor,
+  isRequestOf,
   isSelfCheck,
   messageStream,
   newestMessage,
@@ -71,14 +72,6 @@ const BOOT_TOKEN = fixtureSecret("boot");
  */
 const ASSIGNMENT = `Implement ${ISSUE}. BGSUB-ROLE-ASSIGNMENT.`;
 
-/**
- * The first line of agents/deep-worker.md's body, which Oh My Pi puts in the subagent's system
- * prompt. The subagent's own Messages request is told by this, never by its place in the order:
- * the pane also sends side requests the host answers at once (the task label, the run-end
- * self-check, a skill's routing-hint compression), and those arrive among the turns.
- */
-const DEEP_WORKER_SYSTEM = "You are an autonomous coding worker";
-
 /** The spec's bound on a message the role is sent while its worker runs: it is in the role's
  *  context at a model turn within 30 s of reaching the session. */
 const MESSAGE_BOUND_MS = 30_000;
@@ -110,10 +103,14 @@ function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
 }
 
-/** Whether a Messages request is the subagent's own: only its system prompt is deep-worker's. */
-function isSubagentRequest(request: Request): boolean {
-  return JSON.stringify(request.body.system ?? null).includes(DEEP_WORKER_SYSTEM);
-}
+/** Whether a Messages request is the subagent's own: only its system prompt carries the body of
+ *  agents/deep-worker.md, which the pane loads from this package's root. The body tells it, never
+ *  its place in the order: the pane also sends side requests the host answers at once (the task
+ *  label, the run-end self-check, a skill's routing-hint compression), and those arrive among the
+ *  turns. */
+const isSubagentRequest = isRequestOf(
+  path.resolve(import.meta.dir, "..", "agents", "deep-worker.md")
+);
 
 /**
  * Whether a Messages request is a turn of the role's own conversation: it carries the daemon's
