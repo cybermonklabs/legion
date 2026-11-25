@@ -188,11 +188,13 @@
 # that reads a record reads too, Dispatch's answer to each dispatch:// reference, the
 # Dispatch API, the GitHub budget, GitHub's own name for the deployment repository and its
 # answer to git ls-remote of that private repository rows read, the default branch and its
-# fetch, the fetch of each commit a landed step merged in another pull request names, the
-# fetch of each pinned clone, and the run of coordination/count.py, the walker of the count,
-# which reads the feed of the count's window, so that a read inside it that fails is that
-# feed not answering. A source that does not answer is a mode that cannot run, naming the
-# source, exit 2, or exit 1 after a FAIL, by the precedence above; it is never an assertion's
+# fetch, the branch's history and the fetch of the commit each landed step is read at by
+# --published, the fetch of each commit a landed step merged in another pull request names
+# for --landed, the fetch of each pinned clone, and the run of coordination/count.py, the
+# walker of the count, which reads the feed of the count's window, so that a read inside it
+# that fails is that feed not answering. A source that does not answer is a mode that cannot
+# run, naming the source, exit 2, or exit 1 after a FAIL, by the precedence above; it is
+# never an assertion's
 # failure. A source that answers that it holds no such thing has answered, and judges the
 # deliverable: Dispatch's "not found", "No block", "no version N of" or "document ... not
 # found" for a reference fails citation-dispatch, for the record of a step that is not landed
@@ -464,12 +466,20 @@
 # front page and pages, as the directory's name and the path characters after it with its
 # trailing dots and slashes taken off; a judgement that names no such path fails, by the
 # expected-set rule, and a path of another repository is not read. It reads the sentences
-# each landed step added in its files at the step's own commit, which must be in the history
-# of the default branch's commit, as the architect's reading of c-published records
-# (dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6): a step whose commit
-# the history does not hold fails, naming the step, its commit and the branch's commit, and
-# main's tip may hold other words on the step's files: later work of other trees on them is
-# not this check's subject. published-delivery reads this issue, its messages and its comments
+# each landed step added in its files at a commit of the history of the default branch's
+# commit, as the architect's reading of c-published records
+# (dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6), and its reading A2
+# reads the two kinds of landed step apart: a step another pull request merged (merged_in)
+# at the step's own commit, which that history must hold, and a step of this pull request
+# at its own commit where that history holds it, and otherwise at the one commit of the
+# branch's first parents whose subject ends "(#<n>)", <n> being our_repository.pull_request
+# of sources.json, the squash that carries this pull request, since main holds none of the
+# pull request's own commits. A merged-in step whose commit the history does not hold
+# fails, naming the step, its commit and the branch's commit; a step of this pull request
+# fails, naming the step, when our_repository.pull_request is no positive whole number or
+# not one commit of the first parents ends its subject so, the count named; and main's tip
+# may hold other words on the step's files: later work of other trees on them is not this
+# check's subject. published-delivery reads this issue, its messages and its comments
 # and the comments of dispatch://INFRA-1098 from the Dispatch API, and holds them to the
 # judgement as Dispatch holds it, each part read by rule: the ranking, every item of the list
 # under "## The ranking", in order; the paragraph, the text under "## Where the authors'
@@ -946,7 +956,7 @@ landed-no-refusal|landed|no landed step's diff reaches a refusal path of the dae
 landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
 landed-coverage|landed|every non-blank line the merge commit of a step merged in another pull request added to a file its published list names is covered by the sentences the merged-in steps publish there, all but whitespace and a list marker|a line the merge commit added that its step's published list leaves out
 landed-proof-holds|landed|the proof the page of each step merged in another pull request writes holds every sentence the step publishes, backticks taken out|a published sentence the page's proof does not grep for
-published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every path under docs/research/internet-of-cognition/ the judgement names, front page and pages, and each landed step's files carry the sentences the step added at the step's own commit, which the default branch's history holds|a page that names a file of this directory the default branch's commit lacks
+published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every path under docs/research/internet-of-cognition/ the judgement names, front page and pages, and each landed step's files carry the sentences the step added at the step's own commit, which the default branch's history holds, or, for a step of this pull request whose commit that history does not hold, at the one commit of its first parents whose subject ends with the pull request's number|a page that names a file of this directory the default branch's commit lacks
 published-delivery|published|the record of the delivery is on the issue: a message to its assignee carrying each item of the ranking in order, the paragraph on where the two accounts differ and each candidate above one engineer-day with its default after its title; a comment of dispatch://INFRA-1098 naming this issue that cites each gap node-model.md records, or, where it records none, R8's sentence in the judgement; and a comment of this issue naming the controller's topic, the time of the publication as a UTC time in RFC 3339 form and the ranking as published|a delivery message without the paragraph on where the two accounts differ
 admitted-form|admitted|every entry of ADMITTED, the forms the evaluator admits, is used by a row of claims.jsonl|-
 admitted-rows|admitted|every line of claims.jsonl is a row the one parse reads, and the classifier refuses no row that carries a command|-
@@ -1063,16 +1073,16 @@ SELF_TEST_STUBBED=" tool:omp variable:IOC_OMP_MODELS "
 
 # prerequisite_rows <mode>; the lines of prerequisite_table the mode needs, without the
 # mode, as kind|name|what needs it|what provides it, each kind and name once; for
-# self-test, the lines of the five modes it runs too, but SELF_TEST_STUBBED's. cases names
-# what check.test.sh checks before its first case, the lines of --self-test alone, which
-# its fixture builder needs; each run a case makes checks the lines of its own mode.
+# self-test, the lines of the five modes it runs too, but SELF_TEST_STUBBED's, which seen
+# starts with, as lines printed already. cases names what check.test.sh checks before its
+# first case, the lines of --self-test alone, which its fixture builder needs; each run a
+# case makes checks the lines of its own mode.
 prerequisite_rows() {
-    local modes=" $1 " left_out=" " mode kind name why provides seen=" "
-    [ "$1" = self-test ] && modes=" self-test replay shape citations landed published " left_out="$SELF_TEST_STUBBED"
+    local modes=" $1 " mode kind name why provides seen=" "
+    [ "$1" = self-test ] && modes=" self-test replay shape citations landed published " seen="$SELF_TEST_STUBBED"
     [ "$1" = cases ] && modes=" self-test "
     while IFS='|' read -r mode kind name why provides; do
         case "$modes" in *" $mode "*) ;; *) continue ;; esac
-        case "$left_out" in *" $kind:$name "*) continue ;; esac
         case "$seen" in *" $kind:$name "*) continue ;; esac
         seen="$seen$kind:$name "
         printf '%s|%s|%s|%s\n' "$kind" "$name" "$why" "$provides"
@@ -8285,7 +8295,10 @@ mode_published() {
     # judgement, whose paths published-tree reads and whose ranking, paragraph and pages
     # published-delivery holds the delivery to; then the default branch from GitHub,
     # fetched into a clone of this run's scratch and never into this repository's own
-    # object store. A source that does not answer ends the mode, exit 2.
+    # object store, and, when a step of sources.json's landed list is landed, the branch's
+    # history, its commits without their trees, and the commit each landed step is read at:
+    # its own, where that history holds it, or, for a step of this pull request, the squash
+    # that carries the pull request. A source that does not answer ends the mode, exit 2.
     live_read "Dispatch, the read of the comments of INFRA-3134" "$work/comments" dispatch_get '/api/v1/issues/INFRA-3134/comments?limit=200'
     live_read "Dispatch, the read of the messages of INFRA-3134" "$work/messages" dispatch_get '/api/v1/issues/INFRA-3134/messages?limit=200'
     live_read "Dispatch, the read of the comments of INFRA-1098" "$work/upstream" dispatch_get '/api/v1/issues/INFRA-1098/comments?limit=200'
@@ -8296,10 +8309,66 @@ mode_published() {
         live_read "GitHub, the read of the default branch of $remote" "$work/ls-remote" git ls-remote "$remote" refs/heads/main
         head="$(cut -f1 "$work/ls-remote")"
     fi
-    local clone="$work/clone" missing=0 path landed_steps=0 not_landed="" named=0
+    local clone="$work/clone" history_repo="$work/history" missing=0 path landed_steps=0 not_landed="" named=0
+    local title sentence state index kind commit at said pr squash="" squashes="" squashed=0 read_at_squash=""
+    local -A step_at=()
+    # The landed steps, one line each: the step's index in the list; merged for a step
+    # another pull request merged (merged_in), ours for a step of this pull request; its
+    # commit; its title.
+    local landed_rows='.landed // [] | to_entries[] | select(.value.state == "landed") | [.key, (if (.value.merged_in // "") != "" then "merged" else "ours" end), (.value.commit // ""), (.value.title // "")] | @tsv'
     if [ -n "$head" ]; then
         git init --quiet "$clone" 2>/dev/null || cannot_run environment " --published: git init of the scratch clone failed."
         live_read "GitHub, the fetch of $head from $remote" "$work/fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$head"
+        # The clone holds the one commit it fetched at depth 1, so ancestry needs the
+        # branch's history: its commits, without their trees, are fetched once, only when a
+        # step is landed, into a repository of their own under this run's scratch, and
+        # listed once. The list is read, never git merge-base: the history is a partial
+        # clone, and merge-base fetches a commit it does not hold from the remote before it
+        # answers, as it did for a commit of this pull request in 3 s against GitHub on
+        # 2026-11-25. Each landed step is then given the commit it is read at, in step_at:
+        # its own commit, where the list names it whole; for a step of this pull request
+        # whose commit the list does not name, since main holds only the pull request's
+        # squash, the one commit of the branch's first parents whose subject ends "(#<n>)",
+        # <n> being our_repository.pull_request of sources.json, read from the same history,
+        # which needs no tree; else a word saying why there is none: unheld for a merged-in
+        # step, no-pull-request where that field is no positive whole number, and
+        # squashes=<count> where not one commit's subject ends so. Each commit a step is
+        # read at is fetched into the clone, unless the clone holds it already, as it holds
+        # the branch's commit and a commit an earlier step names, so the assertions below
+        # read no live source.
+        landed_steps="$(jq '[.landed[]? | select(.state == "landed")] | length' "$EVIDENCE/sources.json")"
+        if [ "$landed_steps" -gt 0 ]; then
+            git init --quiet "$history_repo" 2>/dev/null || cannot_run environment " --published: git init of the scratch repository of the default branch's history failed."
+            live_read "GitHub, the fetch of the history of $head from $remote" "$work/history.log" git -C "$history_repo" fetch --quiet --filter=tree:0 --no-tags "$remote" "$head"
+            git -C "$history_repo" rev-list "$head" >"$work/history.list" 2>/dev/null ||
+                cannot_run environment " --published: git rev-list of the fetched history of $head failed."
+            pr="$(jq -r '.our_repository.pull_request | if type == "number" and . > 0 and . == floor then tostring else "" end' "$EVIDENCE/sources.json")"
+            while IFS=$'\t' read -r index kind commit title; do
+                at="$commit"
+                if ! grep -qxF -- "$commit" "$work/history.list"; then
+                    if [ "$kind" = merged ]; then
+                        at=unheld
+                    elif [ -z "$pr" ]; then
+                        at=no-pull-request
+                    else
+                        if [ -z "$squashes" ]; then
+                            git -C "$history_repo" log --first-parent --format='%H %s' "$head" >"$work/first-parents" 2>/dev/null ||
+                                cannot_run environment " --published: git log of the first parents of $head failed."
+                            squash="$(grep -E "^[0-9a-f]{40} .*\\(#$pr\\)\$" "$work/first-parents" | cut -d' ' -f1)"
+                            squashes="$(printf '%s' "$squash" | grep -c '^')"
+                        fi
+                        at="$squash"
+                        [ "$squashes" -eq 1 ] || at="squashes=$squashes"
+                    fi
+                fi
+                step_at[$index]="$at"
+                case "$at" in
+                unheld | no-pull-request | squashes=*) continue ;;
+                esac
+                git -C "$clone" cat-file -e "$at^{commit}" 2>/dev/null ||
+                    live_read "GitHub, the fetch of $at, the commit the landed step '$title' is read at, from $remote" "$work/step-fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$at"
+            done < <(jq -r "$landed_rows" "$EVIDENCE/sources.json")
+        fi
     fi
     if [ -z "$head" ]; then
         missing=$((missing + 1))
@@ -8334,11 +8403,15 @@ mode_published() {
         # (dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6) makes the
         # step's commit, which main merged, this check's subject: main's tip may hold other
         # words on the step's files, since later work of other trees changes them, and that
-        # work is not read. Each entry of sources.json's landed list whose state is landed
-        # lists its sentences as its `published` pairs, so a change to a rule edits that one
-        # list; a step not landed, or not made (refuted), changed no file and is not read, and
-        # the line that passes names it. A list with no step is no pass.
-        local title sentence state index commit history="$work/history" fetched=" "
+        # work is not read. Its reading A2 reads the two kinds of landed step apart: a step
+        # another pull request merged (merged_in) at its own commit, which main's history
+        # must hold; a step of this pull request at its own commit where main's history
+        # holds it, as the fixture's does, and otherwise at the squash that carries this
+        # pull request, since main holds no commit of the pull request's own history. Each
+        # entry of sources.json's landed list whose state is landed lists its sentences as
+        # its `published` pairs, so a change to a rule edits that one list; a step not
+        # landed, or not made (refuted), changed no file and is not read, and the line that
+        # passes names it. A list with no step is no pass.
         [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json")" -gt 0 ] || {
             missing=$((missing + 1))
             fail published-tree "sources.json's landed list names no step, so no landed step is read at its commit"
@@ -8351,51 +8424,54 @@ mode_published() {
             missing=$((missing + 1))
             fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read at its commit"
         done < <(jq -r '.landed[]? | select(.state == "landed") | select((.published // []) | length == 0) | .title' "$EVIDENCE/sources.json")
-        # The clone above holds the one commit it fetched at depth 1, so ancestry needs the
-        # branch's history: its commits, without their trees, are fetched once, only when a
-        # step is landed, into a repository of their own under this run's scratch, through
-        # live_read like the fetch above, and listed once. A step's commit is held when that
-        # list names it whole. The list is read, never git merge-base: the history is a partial
-        # clone, and merge-base fetches a commit it does not hold from the remote before it
-        # answers, as it did for a commit of this pull request in 3 s against GitHub on
-        # 2026-11-25. A step whose commit the list does not name fails, naming the step, its
-        # commit and the branch's commit, and its sentences are not read: a commit main never
-        # merged is no published step, whatever it carries.
-        landed_steps="$(jq '[.landed[]? | select(.state == "landed")] | length' "$EVIDENCE/sources.json")"
-        if [ "$landed_steps" -gt 0 ]; then
-            git init --quiet "$history" 2>/dev/null || cannot_run environment " --published: git init of the scratch repository of the default branch's history failed."
-            live_read "GitHub, the fetch of the history of $head from $remote" "$work/history.log" git -C "$history" fetch --quiet --filter=tree:0 --no-tags "$remote" "$head"
-            git -C "$history" rev-list "$head" >"$work/history.list" 2>/dev/null ||
-                cannot_run environment " --published: git rev-list of the fetched history of $head failed."
-        fi
-        while IFS=$'\t' read -r index title commit; do
-            grep -qxF -- "$commit" "$work/history.list" || {
+        # Each landed step is read at the commit step_at gives it above. A merged-in step
+        # whose commit the history does not hold fails, naming the step, its commit and the
+        # branch's commit, and its sentences are not read: a commit main never merged is no
+        # published step, whatever it carries. A step of this pull request with no squash to
+        # read fails the same way, naming why: no pull request number, or how many commits
+        # end their subject with it. Each pair of a step that has a commit is read in the
+        # file as that commit, fetched into the clone above, holds it.
+        while IFS=$'\t' read -r index kind commit title; do
+            at="${step_at[$index]}" said="commits $commit"
+            case "$at" in
+            unheld)
                 missing=$((missing + 1))
                 fail published-tree "the landed step '$title' commits $commit, and the default branch's history at $head does not hold that commit, so its sentences are not read"
                 continue
-            }
-            # A held commit is fetched into the clone once, however many steps name it, and
-            # each of its step's pairs is read in the file as that commit holds it.
-            if [[ "$fetched" != *" $commit "* ]]; then
-                live_read "GitHub, the fetch of $commit, the commit of the landed step '$title', from $remote" "$work/step-fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$commit"
-                fetched="$fetched$commit "
-            fi
+                ;;
+            no-pull-request)
+                missing=$((missing + 1))
+                fail published-tree "the landed step '$title' of this pull request commits $commit, which the default branch's history at $head does not hold, and our_repository.pull_request of sources.json is no positive whole number, so the squash of this pull request is not found and the step's sentences are not read"
+                continue
+                ;;
+            squashes=*)
+                missing=$((missing + 1))
+                fail published-tree "the landed step '$title' of this pull request commits $commit, which the default branch's history at $head does not hold, and ${at#squashes=} commits of that history's first parents end their subject '(#$pr)', where one is the squash of this pull request, so the step's sentences are not read"
+                continue
+                ;;
+            "$commit") ;;
+            *)
+                squashed=$((squashed + 1))
+                said="of this pull request commits $commit, which the default branch's history at $head does not hold, and is read at $at, the one commit of that history's first parents whose subject ends '(#$pr)'"
+                ;;
+            esac
             while IFS=$'\t' read -r path sentence; do
-                git -C "$clone" show "$commit:$path" >"$work/published" 2>/dev/null || {
+                git -C "$clone" show "$at:$path" >"$work/published" 2>/dev/null || {
                     missing=$((missing + 1))
-                    fail published-tree "the landed step '$title' commits $commit, and that commit does not carry $path"
+                    fail published-tree "the landed step '$title' $said, and that commit does not carry $path"
                     continue
                 }
                 grep -qF -- "$sentence" "$work/published" || {
                     missing=$((missing + 1))
-                    fail published-tree "the landed step '$title' commits $commit, and $path at that commit does not carry its sentence '$sentence'"
+                    fail published-tree "the landed step '$title' $said, and $path at that commit does not carry its sentence '$sentence'"
                 }
             done < <(jq -r --argjson i "$index" '.landed[$i].published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
-        done < <(jq -r '.landed // [] | to_entries[] | select(.value.state == "landed") | [.key, (.value.title // ""), (.value.commit // "")] | @tsv' "$EVIDENCE/sources.json")
+        done < <(jq -r "$landed_rows" "$EVIDENCE/sources.json")
+        [ "$squashed" -eq 0 ] || read_at_squash=", or, for the $squashed of this pull request whose own commit that history does not hold, at $squash, the one commit of its first parents whose subject ends '(#$pr)'"
         not_landed="$(jq -r --arg q "'" '[.landed[]? | select(.state != "landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
         [ -z "$not_landed" ] || not_landed="; the steps sources.json's landed list commits as not landed or not made changed no file and are not read there: $not_landed"
     fi
-    [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and every path of this directory the judgement names, $named of them, and the files each of the $landed_steps landed steps changed hold its sentences at the step's own commit, which the branch's history holds$not_landed"
+    [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and every path of this directory the judgement names, $named of them, and the files each of the $landed_steps landed steps changed hold its sentences at the step's own commit, which the branch's history holds$read_at_squash$not_landed"
 
     # The record of the delivery, held to the judgement by delivery_judge, one line per
     # verdict.
@@ -8574,7 +8650,7 @@ JSONL
   "repositories": [
     {"name": "mas-lab", "url": "https://github.com/ioc-project/mas-lab", "commit": "COMMIT"}
   ],
-  "our_repository": {"name": "legion", "url": "$dir/repo", "commit": "OURS"},
+  "our_repository": {"name": "legion", "url": "$dir/repo", "commit": "OURS", "pull_request": 1},
   "records_under_check": [
     {"ref": "the fixture record", "label": "u", "copy": "records/under-check.md"}
   ],

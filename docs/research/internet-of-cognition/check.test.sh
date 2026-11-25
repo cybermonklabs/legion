@@ -17,7 +17,9 @@
 # check.sh's run_ending, and --self-test reads it by that record.
 # It needs what check.sh --self-test needs, which `check.sh --help` prints: the lines of
 # --self-test and of the five modes it runs over its fixture, --replay, --shape, --citations,
-# --landed and --published. A case that needs uv or go prints SKIP when that tool is missing.
+# --landed and --published, but not --replay's omp and IOC_OMP_MODELS, for which the stub omp
+# of tests/omp-stub and the models.yml beside it stand (check.sh's SELF_TEST_STUBBED). A case
+# that needs uv or go prints SKIP when that tool is missing.
 
 set -u
 
@@ -294,6 +296,16 @@ envoy_plant() {
     line="$(grep -m1 '^The Envoy field' "$1/judgement.md")"
     sed -i "s|^The Envoy field.*\$|& $2|" "$1/judgement.md"
     [ -n "$line" ] && grep -qxF -- "$line $2" "$1/judgement.md"
+}
+
+# published_step_plant <dir> <commit> [<pull request>]; names <commit> as the commit of the
+# fixture's landed step and the fixture's own repository as our repository's url, so
+# --published fetches from it, and, where <pull request> is given, that pull request as the
+# one that merged the step (merged_in), so --published reads the step at <commit> alone.
+published_step_plant() {
+    local sources="$1/repo/docs/research/internet-of-cognition/sources.json"
+    jq --arg url "$1/repo" --arg c "$2" --arg m "${3:-}" '.our_repository.url = $url | .landed[0].commit = $c | if $m == "" then . else .landed[0].merged_in = $m end' \
+        "$sources" >"$1/sources.json" && mv "$1/sources.json" "$sources"
 }
 
 # dir_copy <name> <check.test.sh>; a scratch copy of this directory that --self-test can
@@ -7597,9 +7609,7 @@ one_failure_result "a page that names a file of this directory the default branc
 dir="$(fresh published-landed-file)"
 (cd "$dir/repo" && git rm --quiet skills/legion-worker/references/pr-body.md && git commit --quiet -m "the landed step's file removed") &&
     step_commit="$(git -C "$dir/repo" rev-parse HEAD)" &&
-    jq --arg url "$dir/repo" --arg c "$step_commit" '.our_repository.url = $url | .landed[0].commit = $c' \
-        "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
-    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" || {
+    published_step_plant "$dir" "$step_commit" || {
     printf "FAIL the landed step's file could not be removed in the step's own commit on the fixture's head\n"
     exit 1
 }
@@ -7718,9 +7728,7 @@ dir="$(fresh published-landed-sentence)"
     ! grep -qF 'one row per half' skills/legion-worker/references/pr-body.md &&
     git commit --quiet -am "docs(skills): the landed step's sentence in other words") &&
     step_commit="$(git -C "$dir/repo" rev-parse HEAD)" &&
-    jq --arg url "$dir/repo" --arg c "$step_commit" '.our_repository.url = $url | .landed[0].commit = $c' \
-        "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
-    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" || {
+    published_step_plant "$dir" "$step_commit" || {
     printf "FAIL the landed step's sentence could not be rewritten in the step's own commit on the fixture's head\n"
     exit 1
 }
@@ -7729,14 +7737,17 @@ one_failure_result "a landed step's sentence its own commit lacks fails publishe
     "^FAIL published-tree: the landed step 'An execution record under the gen_ai\\. names' commits $step_commit, and skills/legion-worker/references/pr-body\\.md at that commit does not carry its sentence 'one row per half'\$" \
     "$(fixture_published "$dir")"
 
-# 245. A landed step's commit is one the default branch's history holds, since a commit main
-# never merged is no published step (the architect's reading of c-published). The case makes
-# a commit on a side branch of the fixture's repository that adds a line to pr-body.md and
-# keeps the step's sentence, keeps that branch so the commit can be fetched, goes back to the
-# fixture's branch, whose head is unchanged, and names the side commit as the step's commit in
-# sources.json and the fixture's own repository as our repository's url: published-tree must
-# fail alone, naming the step, that commit and the head. At ded1a321 published-tree read the
-# head alone, which carries the sentence, and never the step's commit, so it passed, exit 0.
+# 245. A landed step another pull request merged (merged_in) is read at its own commit, which
+# the default branch's history holds, since a commit main never merged is no published step
+# (the architect's reading of c-published, and its reading A2, which reads a step of this pull
+# request at the pull request's squash instead, cases 247 and 248). The case makes a commit on
+# a side branch of the fixture's repository that adds a line to pr-body.md and keeps the step's
+# sentence, keeps that branch so the commit can be fetched, goes back to the fixture's branch,
+# whose head is unchanged, and names the side commit as the step's commit in sources.json,
+# merged in cybermonklabs/legion#4636, and the fixture's own repository as our repository's
+# url: published-tree must fail alone, naming the step, that commit and the head. At ded1a321
+# published-tree read the head alone, which carries the sentence, and never the step's
+# commit, so it passed, exit 0.
 dir="$(fresh published-landed-side)"
 (cd "$dir/repo" && branch="$(git branch --show-current)" && [ -n "$branch" ] &&
     git checkout --quiet -b side &&
@@ -7747,9 +7758,7 @@ dir="$(fresh published-landed-side)"
     fixture_head="$(git -C "$dir/repo" rev-parse HEAD)" &&
     ! git -C "$dir/repo" merge-base --is-ancestor "$side_commit" "$fixture_head" &&
     git -C "$dir/repo" show "$side_commit:skills/legion-worker/references/pr-body.md" | grep -qF 'one row per half' &&
-    jq --arg url "$dir/repo" --arg c "$side_commit" '.our_repository.url = $url | .landed[0].commit = $c' \
-        "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
-    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" || {
+    published_step_plant "$dir" "$side_commit" cybermonklabs/legion#4636 || {
     printf "FAIL a step commit the fixture's branch does not hold could not be planted on a side branch\n"
     exit 1
 }
@@ -7790,6 +7799,82 @@ if ! accord_unrun "$eval_case"; then
         case_failed "$eval_case" "over bash, exit $bash_status, last line '$(printf '%s\n' "$bash_out" | tail -1 | cut -c1-120)', '${bash_report//$'\n'/; }'; over eval, exit $eval_status, last line '$(printf '%s\n' "$eval_out" | tail -1 | cut -c1-120)', '${eval_report//$'\n'/; }'"
     fi
 fi
+
+# 247. A landed step of this pull request, one with no merged_in, whose own commit the default
+# branch's history does not hold is read at the squash that carries this pull request, the one
+# commit of the branch's first parents whose subject ends "(#<n>)", <n> being
+# our_repository.pull_request of sources.json (the architect's reading A2): main holds that
+# squash and none of the pull request's own commits. The case makes a commit on a side branch
+# of the fixture's repository that adds a line to pr-body.md and keeps the step's sentence, as
+# case 245 does, goes back to the fixture's branch and commits there a change whose subject ends
+# "(#<n>)", <n> being the fixture's pull request, and that rewrites the sentence 'one row per
+# half' in pr-body.md, and names the side commit as the step's commit, with no merged_in, and
+# the fixture's own repository as our repository's url: published-tree must fail alone, naming
+# that squash, the file and the sentence. The gate at 5787a79c read no squash: run on this case,
+# with "pull_request": 1 added to its fixture's sources.json, which it never reads, it failed
+# published-tree alone with "the landed step 'An execution record under the gen_ai. names'
+# commits <the side commit>, and the default branch's history at <the squash> does not hold
+# that commit, so its sentences are not read".
+dir="$(fresh published-step-squash)"
+pull_request="$(jq -r '.our_repository.pull_request' "$dir/repo/docs/research/internet-of-cognition/sources.json")"
+[[ "$pull_request" =~ ^[1-9][0-9]*$ ]] &&
+    (cd "$dir/repo" && branch="$(git branch --show-current)" && [ -n "$branch" ] &&
+        git checkout --quiet -b side &&
+        printf '%s\n' "- a line of the pull request's own history." >>skills/legion-worker/references/pr-body.md &&
+        git commit --quiet -am "docs(skills): a commit of the pull request's own history" &&
+        git checkout --quiet "$branch" &&
+        sed -i 's/one row per half/a row for each half of the pair/' skills/legion-worker/references/pr-body.md &&
+        ! grep -qF 'one row per half' skills/legion-worker/references/pr-body.md &&
+        git commit --quiet -am "docs(research): the squash of the fixture's pull request (#$pull_request)") &&
+    side_commit="$(git -C "$dir/repo" rev-parse side)" &&
+    squash_commit="$(git -C "$dir/repo" rev-parse HEAD)" &&
+    ! git -C "$dir/repo" merge-base --is-ancestor "$side_commit" "$squash_commit" &&
+    git -C "$dir/repo" show "$side_commit:skills/legion-worker/references/pr-body.md" | grep -qF 'one row per half' &&
+    published_step_plant "$dir" "$side_commit" &&
+    [ -z "$(jq -r '.landed[0].merged_in // ""' "$dir/repo/docs/research/internet-of-cognition/sources.json")" ] || {
+    printf "FAIL a step commit of the pull request's own history and its squash on the fixture's branch could not be planted\n"
+    exit 1
+}
+one_failure_result "a landed step of this pull request whose own commit the default branch's history does not hold is read at the pull request's squash, and a sentence that squash lacks fails published-tree alone, naming the squash, the file and the sentence" published-tree \
+    '^1 of 2 assertions failed: published-tree$' \
+    "^FAIL published-tree: the landed step 'An execution record under the gen_ai\\. names' of this pull request commits $side_commit, .* is read at $squash_commit, .*, and skills/legion-worker/references/pr-body\\.md at that commit does not carry its sentence 'one row per half'\$" \
+    "$(fixture_published "$dir")"
+
+# 248. The squash a step of this pull request is read at is the one commit of the branch's first
+# parents whose subject ends "(#<n>)" (the architect's reading A2), so two such commits leave
+# the step with no squash to read. The case plants case 247's side commit as the step's commit
+# and commits two changes on the fixture's branch whose subjects end "(#<n>)", each adding a
+# line to pr-body.md and keeping the sentence 'one row per half', so a gate that read either
+# would pass: published-tree must fail alone, naming the step and the count, 2. The gate at
+# 5787a79c read no squash: run on this case as on case 247, it failed published-tree alone with
+# "the landed step 'An execution record under the gen_ai. names' commits <the side commit>, and
+# the default branch's history at <the second squash> does not hold that commit, so its
+# sentences are not read".
+dir="$(fresh published-step-squashes)"
+pull_request="$(jq -r '.our_repository.pull_request' "$dir/repo/docs/research/internet-of-cognition/sources.json")"
+[[ "$pull_request" =~ ^[1-9][0-9]*$ ]] &&
+    (cd "$dir/repo" && branch="$(git branch --show-current)" && [ -n "$branch" ] &&
+        git checkout --quiet -b side &&
+        printf '%s\n' "- a line of the pull request's own history." >>skills/legion-worker/references/pr-body.md &&
+        git commit --quiet -am "docs(skills): a commit of the pull request's own history" &&
+        git checkout --quiet "$branch" &&
+        printf '%s\n' '- a line of the first squash.' >>skills/legion-worker/references/pr-body.md &&
+        git commit --quiet -am "docs(research): the first squash of the fixture's pull request (#$pull_request)" &&
+        printf '%s\n' '- a line of the second squash.' >>skills/legion-worker/references/pr-body.md &&
+        git commit --quiet -am "docs(research): the second squash of the fixture's pull request (#$pull_request)" &&
+        grep -qF 'one row per half' skills/legion-worker/references/pr-body.md) &&
+    side_commit="$(git -C "$dir/repo" rev-parse side)" &&
+    fixture_head="$(git -C "$dir/repo" rev-parse HEAD)" &&
+    ! git -C "$dir/repo" merge-base --is-ancestor "$side_commit" "$fixture_head" &&
+    published_step_plant "$dir" "$side_commit" &&
+    [ -z "$(jq -r '.landed[0].merged_in // ""' "$dir/repo/docs/research/internet-of-cognition/sources.json")" ] || {
+    printf "FAIL a step commit of the pull request's own history and two squashes on the fixture's branch could not be planted\n"
+    exit 1
+}
+one_failure_result "a landed step of this pull request whose own commit the default branch's history does not hold, beside two commits whose subjects end with the pull request's number, fails published-tree alone, naming the step and the count" published-tree \
+    '^1 of 2 assertions failed: published-tree$' \
+    "^FAIL published-tree: the landed step 'An execution record under the gen_ai\\. names' of this pull request commits $side_commit, which the default branch's history at $fixture_head does not hold, and 2 commits of that history's first parents end their subject '\\(#$pull_request\\)', where one is the squash of this pull request, so the step's sentences are not read\$" \
+    "$(fixture_published "$dir")"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending

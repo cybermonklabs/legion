@@ -60,7 +60,8 @@
     "name": "legion",
     "url": "https://github.com/cybermonklabs/legion",
     "commit": "9542c6fbbecd184ccee73523ab3defa39d6cf23a",
-    "comment": "The commit this issue's branch starts from, and the commit every our-code claim was read at."
+    "pull_request": 3771,
+    "comment": "The commit this issue's branch starts from, and the commit every our-code claim was read at. pull_request is the number of the pull request that carries this directory, whose squash on main published-tree reads a step of this pull request at."
   },
   "records_under_check": [
     {

@@ -194,10 +194,12 @@ CHECK_RE = re.compile(r'<accord-delivery\b[^>]*\bcheck="([0-9a-f]+)"')
 SKILL_RE = re.compile(r"accord-(initiator|receiver)")
 CMD_RE = re.compile(r"(?:accord_initiator\.py[\"']?|\$\{?ACCORD\}?[\"']?)\s+(?:--state\s+\S+\s+)?(" + "|".join(SUBS) + r")\b")
 # The start of what each command of the script prints, one JSON object whose first two keys
-# are "ok" and "phase", the subcommand (argparse's dest), a refusal with "ok": false. The
-# objects nested in its "data" carry a "phase" too, but none starts with "ok", and a string
-# in it escapes its quotes, so only the object a call printed matches.
-RESULT_RE = re.compile(r'\{\s*"ok":\s*(true|false),\s*"phase":\s*"(' + "|".join(SUBS) + r')"')
+# are "ok" and "phase", a refusal with "ok": false. The phase is the subcommand (argparse's
+# dest), or "usage" for a call whose arguments the parser refused: _Parser.error reports the
+# phase _accord_phase holds, which nothing sets, and "usage" by default. The objects nested
+# in its "data" carry a "phase" too, but none starts with "ok", and a string in it escapes
+# its quotes, so only the object a call printed matches.
+RESULT_RE = re.compile(r'\{\s*"ok":\s*(true|false),\s*"phase":\s*"(' + "|".join(SUBS + ("usage",)) + r')"')
 SKILLS = {"accord-initiator", "accord-receiver"}
 
 
@@ -233,6 +235,11 @@ def tally(usage):
             n = usage.get(kind)
             TOKENS[kind] += n if isinstance(n, int) else 0
     return cost_of(usage)
+
+
+# result_text(result): what one tool call printed, the text of its result's content.
+def result_text(result):
+    return "".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
 
 
 # What omp discovered under the new HOME.
@@ -310,8 +317,7 @@ for ev in events:
             found = len(subs)
         if found:
             # The script prints "ok": false on every refusal, a run in a loop included.
-            text = "".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
-            refused += max(failed, len(re.findall(r'"ok":\s*false', text)))
+            refused += max(failed, len(re.findall(r'"ok":\s*false', result_text(result))))
     elif kind == "tool_execution_end" and ev.get("toolName") == "eval":
         # A session can run the script through its eval tool too, whose events carry the code
         # and what it printed, and no trace of what ran. The code is no record of the calls:
@@ -319,11 +325,11 @@ for ev in events:
         # that ran the script and called it, and each later cell held only calls of that
         # function, which name the script nowhere, so a reading of the code missed about nine
         # calls of ten. What each call printed is read instead, one object per call
-        # (RESULT_RE), its phase the subcommand and "ok": false a refusal.
-        result = ev.get("result") or {}
-        text = "".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
-        for ok, phase in RESULT_RE.findall(text):
-            calls.append(phase)
+        # (RESULT_RE), "ok": false a refusal; its phase is the subcommand, and a call the
+        # parser refused, whose phase is "usage", is recorded as (none), as the bash tool's
+        # trace records a call whose argv names no subcommand.
+        for ok, phase in RESULT_RE.findall(result_text(ev.get("result") or {})):
+            calls.append(phase if phase in SUBS else "(none)")
             if ok == "false":
                 refused += 1
 
