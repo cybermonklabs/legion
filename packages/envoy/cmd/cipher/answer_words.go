@@ -111,18 +111,14 @@ const (
 	stateExpired   requestState = "expired"
 )
 
-// requestStates are the states of a request this CLI acts on.
-var requestStates = []requestState{statePending, stateGranted, stateDenied, stateCancelled, stateExpired}
+// requestStates are the states of a request this CLI acts on, as stateOf reads them.
+var requestStates = []string{string(statePending), string(stateGranted), string(stateDenied), string(stateCancelled), string(stateExpired)}
 
 // stateOf is the one of requestStates the broker's state is, compared as it came
-// (RemoteText.Equal), and "" for any other.
+// (RemoteText.OneOf), and "" for any other.
 func stateOf(state redact.RemoteText) requestState {
-	for _, known := range requestStates {
-		if state.Equal(string(known)) {
-			return known
-		}
-	}
-	return ""
+	known, _ := state.OneOf(requestStates...)
+	return requestState(known)
 }
 
 // notSentBack is what a line says of an id the broker answered that this client does not send

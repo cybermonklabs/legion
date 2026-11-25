@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
 	"sync"
 	"time"
 
@@ -633,22 +632,11 @@ func (c *Client) readKind(ctx context.Context, person string) (string, error) {
 	if status == http.StatusNotFound {
 		return "", fmt.Errorf("projectaccess: dispatch answered %d with no member kind for %s", status, person)
 	}
-	kind := knownKind(answer.MemberKind)
-	if kind == "" {
+	kind, known := answer.MemberKind.OneOf(MemberFull, MemberRestricted, MemberNone)
+	if !known {
 		return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.MemberKind, person)
 	}
 	return kind, nil
-}
-
-// knownKind is the one of MemberFull, MemberRestricted and MemberNone that kind is, compared as it
-// came, and "" for any other kind.
-func knownKind(kind redact.RemoteText) string {
-	for _, known := range []string{MemberFull, MemberRestricted, MemberNone} {
-		if kind.Equal(known) {
-			return known
-		}
-	}
-	return ""
 }
 
 // States answers each of projects as it is to a question naming no person, and Missing for each
@@ -766,7 +754,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
 			}
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			if code.IsEmpty() || slices.ContainsFunc(outageCodes, code.Equal) {
+			if _, outage := code.OneOf(outageCodes...); code.IsEmpty() || outage {
 				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
 			}
 		}

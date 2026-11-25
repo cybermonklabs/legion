@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"slices"
 	"sync/atomic"
 	"time"
 
@@ -688,7 +687,7 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 		}
 	}
 	err := listenerRefusal(response, refusal.Error)
-	if slices.ContainsFunc(roleholder.NoHolderReasons, refusal.Reason.Equal) && !errors.Is(err, ErrUnavailable) {
+	if _, noHolder := refusal.Reason.OneOf(roleholder.NoHolderReasons...); noHolder && !errors.Is(err, ErrUnavailable) {
 		return Session{}, noRoleHolderError{reason: err.Error()}
 	}
 	return Session{}, err
