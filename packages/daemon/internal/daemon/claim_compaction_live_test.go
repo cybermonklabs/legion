@@ -642,15 +642,29 @@ func (r *claimCompactionLive) controllerCompactsAndTheRefusedRunFails() {
 
 	// Each refused turn after it is a newer task, which takes the place of the one the ladder
 	// kept rather than waiting out its rung, until the run reaches the limit.
-	for run := 3; run <= limit; run++ {
+	for run := 3; run < limit; run++ {
 		r.erroredTurn(token, run-1)
 	}
+	// The turn that brings the run to the limit is read off its plugin's report ("supervise: a
+	// turn ended"), not off its prompt's result (providerErroredMessage) as the turns before it
+	// are. The two travel apart and either can reach the daemon first (supervise's turnOutcome).
+	// When the report comes first, the daemon fails the claim on it and drops the result that
+	// follows as stale ("supervise: dropped a stale event"), so that turn's providerErroredMessage
+	// is never written; the failure's own sentence carries the 529 instead.
+	r.pane(token).stand.errorTurn()
+	sent := r.daemon.count()
+	r.deliver(token, "Say the word REFUSED-"+randomSuffix(t)+" and nothing else.")
+	r.awaitLogFrom("the report of the turn that makes "+string(token)+"'s run of refused turns the limit", sent, 4*time.Minute,
+		func(record loggedRecord) bool {
+			return record.Message == "supervise: a turn ended" && record.Attrs["claim"] == string(token) &&
+				record.Attrs["refused"] == true && record.Attrs["refusedRun"] == float64(limit)
+		})
 	failure := r.awaitLogFrom("the failure of "+string(token)+" at its run of refused turns", from, time.Minute,
 		func(record loggedRecord) bool {
 			return record.Message == "supervise: claim failed" && record.Attrs["claim"] == string(token)
 		})
 	why, _ := failure.Attrs["why"].(string)
-	ran := fmt.Sprintf("the provider refused %d turns in a row", limit)
+	ran := fmt.Sprintf("the provider refused %d turns in a row: 529", limit)
 	if failure.Attrs["cause"] != string(supervise.CauseProviderError) || !strings.HasPrefix(why, ran) {
 		t.Fatalf("%s failed with cause %v: %q, want %s and a sentence that opens %q",
 			token, failure.Attrs["cause"], why, supervise.CauseProviderError, ran)
