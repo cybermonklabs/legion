@@ -99,12 +99,14 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork, at the release of sjawhar/jj#3 (INFRA-4036): jj 0.46 with a gix-pack that maps
-# each pack, index and multi-pack-index in 8 MiB chunks and keeps the chunks reads mark within
-# 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget). Under gVisor a whole mapping counts as the
-# pod's memory once one page of it is read, so a later pin must carry that patch, or one jj command
-# on a large pack fills an issue pod again.
-ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
+# The jj fork sjawhar/jj, at a release built from sjawhar/jj#4 on top of sjawhar/jj#3. sjawhar/jj#3
+# gives jj 0.46 a gix-pack that maps each pack, index and multi-pack-index in 8 MiB chunks and keeps
+# the chunks reads mark within 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget): under gVisor a
+# whole mapping counts as the pod's memory once one page of it is read. sjawhar/jj#4 starts from
+# jj-vcs/jj#10100 and keeps, in a merge of two commits with several merge bases, what both sides
+# hold (jj-vcs/jj#6369). A later pin must carry both patches, or one jj command on a large pack
+# fills an issue pod again, or a role's merge silently reverts work.
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261125-112159
 ARG GH_TOOL=gh@2.98.0
 # github/gh-stack, the `gh stack` extension (GitHub's stacked pull requests), at the release this
 # pin names, as a `github:<owner>/<repo>@<version>` pin the tools stage reads as it reads .omp-pin.
@@ -120,8 +122,8 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Oh My Pi's was read on 2026-11-25 at its 18.18.6-sami.20261125-001804 pin, jj's on 2026-11-22 at
-# its 0.46.0-sami.20261120-120102 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
+# Oh My Pi's was read on 2026-11-25 at its 18.18.6-sami.20261125-001804 pin, jj's on 2026-11-25 at
+# its 0.46.0-sami.20261125-112159 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
 # GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
 # '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
 # stage reads. gh's is also its line in the release's gh_<version>_checksums.txt, and `gh
@@ -131,7 +133,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
 # bump repeats those reads.
 ARG OMP_SHA256=bedea356fa433d3114780b4d0960cc46c715271c915732a7edd5194a1f664632
-ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
+ARG JJ_SHA256=2e47fd34fc59a50c0db0a231db018dcf672e9640b494bdc57fe01d6b9560167e
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
 # ships bare binaries, `linux-amd64`, no archive). Read on 2026-11-22 as the `digest` GitHub's API
