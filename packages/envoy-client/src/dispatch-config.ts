@@ -58,7 +58,9 @@ export type DispatchEnvironment = EnvoyConfigEnvironment & {
  * dashboard as people open it (DISPATCH_PUBLIC_URL), set only when the variable is: a Legion pod
  * reaches Dispatch at an in-cluster `url` nobody outside the cluster can open, so every link the
  * `dispatch` command prints is resolved against `publicUrl` when it is set, and against `url`
- * otherwise. */
+ * otherwise. Beside the `dispatch` command's token files, its origin is also the one Dispatch
+ * checks each proof's URL against: `url` is then on that origin, or its host is a Kubernetes
+ * Service name and each proof names the request's path on that origin (`tokenFilesTarget`). */
 export interface ActiveDispatchConfig {
   readonly enabled: true;
   readonly url: string;
@@ -237,7 +239,8 @@ export async function dispatchSettings(
   let credential: RequestCredential;
   try {
     if (source.kind === "broker") credential = brokerCredential(env, options.session, source.read);
-    else if (source.kind === "files") credential = fileTokenCredential(source, url);
+    else if (source.kind === "files")
+      credential = fileTokenCredential(source, url, source.proofOrigin);
     else {
       credential = bearerCredential(
         source.kind === "variable"
@@ -248,14 +251,9 @@ export async function dispatchSettings(
   } catch (error) {
     return offWithError(messageFor(error));
   }
-  // An http(s) URL the URL parser takes whose port, when it names one, is from 1 to 65535. The
-  // daemon accepts at load only values taken here, under a narrower rule (its CheckPod and this
-  // read hold to packages/contracts/fixtures/dispatch-public-url.json).
-  const publicUrl = nonEmpty(env.DISPATCH_PUBLIC_URL);
-  const publicParsed = publicUrl === undefined ? undefined : httpUrl(publicUrl);
-  if (publicUrl !== undefined && (publicParsed === undefined || publicParsed.port === "0")) {
-    return offWithError("DISPATCH_PUBLIC_URL must be an http or https URL");
-  }
+  const publicSetting = publicUrlSetting(env);
+  if (publicSetting !== undefined && "enabled" in publicSetting) return publicSetting;
+  const publicUrl = publicSetting?.written;
   const base = publicUrl === undefined ? url : withoutTrailingSlashes(publicUrl);
   const linkNotice = linkNoticeFor(
     base,
@@ -289,11 +287,12 @@ export async function dispatchUrl(
 
 /** Where Dispatch's credential comes from: a variable, a file with the server written beside it,
  * the secrets broker, where this machine's identity, or a person's sign-in on it, is traded, with
- * the read trade the read settings ask for, or the `dispatch` command's token files. */
+ * the read trade the read settings ask for, or the `dispatch` command's token files, with the
+ * origin each proof names where it is not the request's own (`tokenFilesTarget`). */
 type TokenSource =
   | Exclude<BearerSource, { readonly kind: "none" }>
   | { readonly kind: "broker"; readonly read: ReadTrade | undefined }
-  | ({ readonly kind: "files" } & TokenFiles);
+  | ({ readonly kind: "files"; readonly proofOrigin?: string } & TokenFiles);
 
 /** Dispatch on, as `dispatchTarget` resolves it. */
 interface DispatchTarget {
@@ -336,6 +335,29 @@ export function settingsBesideTokenFiles(env: DispatchEnvironment): readonly str
 }
 
 /**
+ * `DISPATCH_PUBLIC_URL` as written and as the URL parser reads it, undefined when it is unset or
+ * empty, or a refusal naming it: it must be an http(s) URL the URL parser takes whose port, when
+ * it names one, is from 1 to 65535. The daemon accepts at load only values taken here, under a
+ * narrower rule (its CheckPod and this read hold to
+ * packages/contracts/fixtures/dispatch-public-url.json).
+ */
+function publicUrlSetting(
+  env: DispatchEnvironment
+): { readonly written: string; readonly parsed: URL } | SectionOff | undefined {
+  const written = nonEmpty(env.DISPATCH_PUBLIC_URL);
+  if (written === undefined) return undefined;
+  const parsed = httpUrl(written);
+  if (parsed === undefined || parsed.port === "0") {
+    return offWithError("DISPATCH_PUBLIC_URL must be an http or https URL");
+  }
+  return { written, parsed };
+}
+
+/** How a Kubernetes Service's name in its cluster ends: `<service>.<namespace>.svc.cluster.local`
+ *  is the host a pod reaches the Service at. */
+const SERVICE_NAME_SUFFIX = ".svc.cluster.local";
+
+/**
  * The token files as `dispatchTarget` takes them, or undefined when neither is set. A caller that
  * does not take them (`taken` false: every plugin) is refused while either is set. The `dispatch`
  * command is refused, with every setting named, when one of the two is set alone, when
@@ -344,9 +366,16 @@ export function settingsBesideTokenFiles(env: DispatchEnvironment): readonly str
  * credential, and it trades nothing. The checkout's file is read for this even with
  * `DISPATCH_URL` set, and a `!` value is found by the field's presence and never run. A checkout's
  * file that cannot be read is refused too, since whether it holds a token cannot be told. The
- * URL is `DISPATCH_URL`'s alone, which must be Dispatch's public origin: Dispatch checks each
- * proof's URL against it. `dispatch login`, which asks the broker and keeps a login in a file,
- * refuses while either is set, before any request (`loginCommand`).
+ * URL is `DISPATCH_URL`'s alone, and Dispatch checks each proof's URL against its public origin.
+ * With `DISPATCH_PUBLIC_URL` unset, each proof names the request's own URL. With it set, its
+ * origin is taken for that public origin, and the case is decided here, before the credential is
+ * built: a `DISPATCH_URL` on that origin is taken as it is; one whose host is a Kubernetes Service
+ * name (the parsed host ends in `.svc.cluster.local`, so a trailing dot or an IP address is none)
+ * is taken with `proofOrigin` set to that origin, so each proof names the request's path there;
+ * any other is refused, naming both settings and quoting neither value. A `DISPATCH_PUBLIC_URL`
+ * that is not an http(s) URL is refused, as `dispatchSettings` refuses it (`publicUrlSetting`).
+ * `dispatch login`, which asks the broker and keeps a login in a file, refuses while either is
+ * set, before any request (`loginCommand`).
  */
 function tokenFilesTarget(
   env: DispatchEnvironment,
@@ -391,14 +420,34 @@ function tokenFilesTarget(
   if (config.dispatch.enabled === false) {
     return offWithNotice(`${config.path} sets dispatch.enabled to false: Dispatch is off`);
   }
-  if (httpUrl(explicitUrl) === undefined) {
+  const parsed = httpUrl(explicitUrl);
+  if (parsed === undefined) {
     return offWithError("DISPATCH_URL must be an http or https URL");
+  }
+  const publicSetting = publicUrlSetting(env);
+  if (publicSetting !== undefined && "enabled" in publicSetting) return publicSetting;
+  const publicOrigin = publicSetting?.parsed.origin;
+  // Set only where DISPATCH_URL is a Service name off the public origin.
+  let proofOrigin: string | undefined;
+  if (publicOrigin !== undefined && parsed.origin !== publicOrigin) {
+    if (!parsed.hostname.endsWith(SERVICE_NAME_SUFFIX)) {
+      // Neither URL is quoted: either may carry user info.
+      return offWithError(
+        `DISPATCH_URL is neither on DISPATCH_PUBLIC_URL's origin nor at a Kubernetes Service name (a host that ends in ${SERVICE_NAME_SUFFIX}), and beside the token files it must be one of the two: Dispatch takes only proofs that name its public origin, and the dispatch command sends such a proof to that origin or to a Service name alone, never to another server`
+      );
+    }
+    proofOrigin = publicOrigin;
   }
   return {
     enabled: true,
     url: withoutTrailingSlashes(explicitUrl),
     urlSetting: "DISPATCH_URL",
-    source: { kind: "files", tokenFile, keyFile },
+    source: {
+      kind: "files",
+      tokenFile,
+      keyFile,
+      ...(proofOrigin === undefined ? {} : { proofOrigin }),
+    },
   };
 }
 

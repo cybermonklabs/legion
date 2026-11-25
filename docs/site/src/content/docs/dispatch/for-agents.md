@@ -48,7 +48,10 @@ goes through a `dispatch` command.
    as well. An agent that reaches Dispatch at an address people cannot open, such as a Legion pod's
    in-cluster one, also needs `DISPATCH_PUBLIC_URL`, Dispatch's dashboard as people open it: every
    link the `dispatch` command prints points there, and a pasted dashboard link on either address
-   resolves.
+   resolves. Beside the `dispatch` command's token files (`DISPATCH_BROKER_TOKEN_FILE` and
+   `DISPATCH_BROKER_DPOP_KEY_FILE`), the origin of `DISPATCH_PUBLIC_URL` is also the one each proof
+   names when `DISPATCH_URL` is a Kubernetes Service name (a host that ends in
+   `.svc.cluster.local`), and any other `DISPATCH_URL` off that origin stops the command at start.
 
    The same file holds the agent's other two sections: `envoy`, the listener its session connects
    to, and `askgate`, the switch for the review each Dispatch write of a main session gets before

@@ -993,7 +993,9 @@ a session that reaches Dispatch at an address they cannot (a Legion pod's in-clu
 settings carry it as `publicUrl`, less a trailing slash; every link the executor prints resolves
 against it rather than the API's URL, which every call still goes to; a dashboard URL given as a
 `ref` resolves on either address; and a value that is not an http or https URL disables Dispatch,
-naming it in `error`.
+naming it in `error`. Beside the `dispatch` command's token files it has a second meaning: its
+origin is the one Dispatch checks each proof's URL against, and it decides which `DISPATCH_URL`
+the command takes and which URL each proof names (the `dispatch` command's token files, below).
 
 With no bearer configured at all, the session's credential is traded at the secrets broker
 instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
@@ -1397,13 +1399,27 @@ live launcher credential is bound to. Keeping every other token off the key is t
 driver that trades for the copy.
 
 With both set, the command's one Dispatch credential presents `Authorization: DPoP <token>` and a
-proof signed with the key, naming the request's method, its URL and the token (`ath`). It sends
-them to `DISPATCH_URL` alone, and refuses a request to any other origin. `DISPATCH_URL` must be
-Dispatch's public origin, because Dispatch checks each proof's URL against it. The command reads
-both files again before each request and keeps neither, so the driver renews the token by writing
-a new file and renaming it over the old one, and keeps the key. The Envoy listener never gets the
-token: it takes only its own settings (`ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`, `envoy.token`), and the
-command makes no trade at the broker for Dispatch or for any other service.
+proof signed with the key, naming the request's method, a URL without its query, and the token
+(`ath`). It sends them to `DISPATCH_URL` alone, and refuses a request to any other origin, that of
+`DISPATCH_PUBLIC_URL` included. Dispatch checks each proof's URL against its public origin. When
+`DISPATCH_PUBLIC_URL` is unset, the proof names the request's own URL. When it is set, the command
+takes its origin for that public origin, and three cases hold, decided before any request:
+
+- A `DISPATCH_URL` on the origin of `DISPATCH_PUBLIC_URL` is used as it is, and the proof names the
+  request's own URL.
+- A `DISPATCH_URL` whose host is a Kubernetes Service name (it ends in `.svc.cluster.local`), the
+  name a pod uses for Dispatch's Service, gets each request, and the proof names the request's path
+  on the origin of `DISPATCH_PUBLIC_URL`. The host is the one the URL parser reads, in lower case: a
+  host with a trailing dot, the bare `svc.cluster.local`, an IP address, and a name that holds
+  `.svc.cluster.local` anywhere but at its end are not Service names. The rule reads the name
+  alone: an ExternalName Service can give such a name to a host outside the cluster.
+- Any other `DISPATCH_URL`, the public host with another scheme or port among them, makes the
+  command refuse to start (below).
+
+The command reads both files again before each request and keeps neither, so the driver renews
+the token by writing a new file and renaming it over the old one, and keeps the key. The Envoy
+listener never gets the token: it takes only its own settings (`ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`,
+`envoy.token`), and the command makes no trade at the broker for Dispatch or for any other service.
 
 A person's read trade does not extend the launcher credential of the person's sign-in. Once that
 credential lapses, the broker refuses the driver's read trades and names the cure: one ordinary
@@ -1420,13 +1436,17 @@ settings is set alone, when `DISPATCH_URL` is not set, or when any of these is s
 `dispatch.token` in the chosen `envoy.json`, or a `dispatch.token` in the checkout's
 `.envoy/envoy.json`. The checkout's file is read for this check even with `DISPATCH_URL` set, and
 one that cannot be read is refused too, since whether it holds a token cannot be told. A `!`
-command in either `dispatch.token` is found by the field's presence and never run. `dispatch login`
-exits 2 too, `--help` aside, before any request, while either setting is set, and names each of the
-variables above that is set beside them: a device login asks the broker and keeps a login in a file,
-and the token files trade nothing. A file that cannot be read, a token file that is empty or blank,
-and a key that is not P-256 in one PKCS#8 PEM block each fail the request with an error that names
-the setting and the file and quotes none of its bytes. Under a read-only token, a write prints
-Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
+command in either `dispatch.token` is found by the field's presence and never run. It refuses to
+start and exits 2 as well when `DISPATCH_PUBLIC_URL` is set and is not an http or https URL
+(`DISPATCH_PUBLIC_URL must be an http or https URL`), and when it is set and `DISPATCH_URL` is
+neither on its origin nor at a Kubernetes Service name: that refusal names both settings and why,
+and quotes neither value, since either may carry user info. `dispatch login` exits 2 too, `--help`
+aside, before any request, while either setting is set, and names each of the variables above that
+is set beside them: a device login asks the broker and keeps a login in a file, and the token files
+trade nothing. A file that cannot be read, a token file that is empty or blank, and a key that is
+not P-256 in one PKCS#8 PEM block each fail the request with an error that names the setting and
+the file and quotes none of its bytes. Under a read-only token, a write prints Dispatch's refusal
+(`READ_ONLY_TOKEN: …`) and exits 1.
 
 Only the `dispatch` command reads the two settings: it passes `tokenFiles` to
 `sessionDispatchSettings`. Every other caller of `dispatchSettings` that finds either set, each

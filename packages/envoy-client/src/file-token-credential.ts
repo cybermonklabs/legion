@@ -80,30 +80,39 @@ async function keyIn(filePath: string): Promise<DpopKey> {
 
 /**
  * The credential `files` give for requests to `dispatchUrl`: `Authorization: DPoP <token>` and a
- * proof signed with the key, naming the request's method, its URL and the token (`ath`). Both
- * files are read again on every call, so the credential keeps no token of its own. A URL whose
- * origin is not `dispatchUrl`'s is refused, so the token reaches no other server. A file that
- * cannot be read, a token file that is empty or blank, and a key that is not P-256 in PKCS#8 PEM
- * each fail the call with an error that names the setting and the file.
+ * proof signed with the key, naming the request's method, a URL and the token (`ath`). The URL is
+ * the request's own, or, where `proofOrigin` is given, `proofOrigin` followed by the request's own
+ * path: Dispatch checks each proof's URL against its public origin, and `tokenFilesTarget` gives
+ * that origin as `proofOrigin` when `dispatchUrl`'s host is a Kubernetes Service name. Either way
+ * the proof drops the query. Both files are read again on every call, so the credential keeps no
+ * token of its own. A URL whose origin is not `dispatchUrl`'s is refused, one on `proofOrigin`
+ * included, so the token reaches no other server. A file that cannot be read, a token file that
+ * is empty or blank, and a key that is not P-256 in PKCS#8 PEM each fail the call with an error
+ * that names the setting and the file.
  */
-export function fileTokenCredential(files: TokenFiles, dispatchUrl: string): RequestCredential {
+export function fileTokenCredential(
+  files: TokenFiles,
+  dispatchUrl: string,
+  proofOrigin?: string
+): RequestCredential {
   const origin = httpUrl(dispatchUrl)?.origin;
   let presented = "";
   return {
     scheme: "DPoP",
     async headers(method: string, url: string): Promise<Readonly<Record<string, string>>> {
-      const target = httpUrl(url)?.origin;
-      if (origin === undefined || target !== origin) {
+      const target = httpUrl(url);
+      if (origin === undefined || target?.origin !== origin) {
         throw new Error(
-          `the token ${TOKEN_FILE_VAR} names goes to DISPATCH_URL's origin (${origin}) alone, and this request is for ${target ?? "a URL that is not http or https"}`
+          `the token ${TOKEN_FILE_VAR} names goes to DISPATCH_URL's origin (${origin}) alone, and this request is for ${target?.origin ?? "a URL that is not http or https"}`
         );
       }
+      const proofUrl = proofOrigin === undefined ? url : `${proofOrigin}${target.pathname}`;
       const token = tokenIn(files.tokenFile);
       const key = await keyIn(files.keyFile);
       presented = token;
       return {
         Authorization: `DPoP ${token}`,
-        DPoP: await key.proof({ method, url, accessToken: token }),
+        DPoP: await key.proof({ method, url: proofUrl, accessToken: token }),
       };
     },
     stale(): void {

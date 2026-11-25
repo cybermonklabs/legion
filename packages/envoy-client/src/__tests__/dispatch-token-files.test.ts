@@ -220,10 +220,12 @@ function commandEnvironment(
   };
 }
 
+/** Runs `dispatch <argv>` in this process, with `fetchImpl` as its fetch where one is given. */
 async function run(
   argv: readonly string[],
   env: Record<string, string | undefined>,
-  cwd: string
+  cwd: string,
+  fetchImpl?: typeof fetch
 ): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -236,6 +238,7 @@ async function run(
     },
     readText: (file) => readFileSync(file, "utf8"),
     cwd,
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
   });
   return { code, stdout, stderr };
 }
@@ -409,6 +412,168 @@ function wordsOf(named: string, copy: Copy, cwd: string): string {
     .replace("<chosen>", path.join(copy.dir, "chosen.json"))
     .replace("<checkout>", path.join(cwd, ".envoy", "envoy.json"));
 }
+
+/** The public origin the rows of DISPATCH_PUBLIC_URL beside the token files set. */
+const PUBLIC_ORIGIN = "https://dispatch.example.org";
+
+/** A DISPATCH_URL whose host is a Kubernetes Service name, as a pod reaches Dispatch. */
+const SERVICE_URL = "http://dispatch.dispatch.svc.cluster.local:8766";
+
+/** One request the command asked its fetch for: the URL it named and the proof it carried. */
+interface Asked {
+  readonly method: string;
+  readonly url: URL;
+  readonly dpop: string | null;
+}
+
+/**
+ * A fetch for the command that records what it asked for, then forwards each request to the
+ * stand-in at `standIn` as a proxy serving Dispatch at `dispatchUrl` would: the path below
+ * `mount`, `dispatchUrl`'s own path ("" for an origin), and the query, on the stand-in's origin.
+ * No request leaves the process, so a host `dispatchUrl` names need not resolve.
+ */
+function forwardingFetch(
+  dispatchUrl: string,
+  standIn: string
+): { readonly fetchImpl: typeof fetch; readonly asked: Asked[]; readonly mount: string } {
+  const asked: Asked[] = [];
+  const mount = new URL(dispatchUrl).pathname.replace(/\/+$/, "");
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    asked.push({
+      method: init?.method ?? "GET",
+      url,
+      dpop: new Headers(init?.headers).get("DPoP"),
+    });
+    const forwarded = new URL(standIn);
+    forwarded.pathname = url.pathname.startsWith(mount)
+      ? url.pathname.slice(mount.length)
+      : url.pathname;
+    forwarded.search = url.search;
+    return await fetch(forwarded, init);
+  }) as typeof fetch;
+  return { fetchImpl, asked, mount };
+}
+
+/** `asked` as a row names it: its method, path and query. */
+function shownOf({ method, url }: Asked): string {
+  return `${method} ${url.pathname}${url.search}`;
+}
+
+/** What a row of DISPATCH_PUBLIC_URL beside the token files must hold. */
+type PublicUrlHolds =
+  /** The command starts: each request goes to DISPATCH_URL's origin, and its proof names
+   *  `proofOrigin` followed by the request's own path, never its query. `write` runs a write
+   *  after the read, `query` reads the requests that carry a query alone, and `unquoted` is a
+   *  word no line the command prints holds. */
+  | {
+      readonly kind: "starts";
+      readonly proofOrigin: string;
+      readonly write?: true;
+      readonly query?: true;
+      readonly unquoted?: string;
+    }
+  /** The command exits 2 before any request, its refusal holding each of `named`. */
+  | { readonly kind: "refused"; readonly named: readonly string[] }
+  /** The credential the command would use refuses a request to each of `refused`. */
+  | { readonly kind: "credential"; readonly refused: readonly string[] };
+
+/** One row of DISPATCH_PUBLIC_URL beside the token files. In a URL, `<stand-in>` is the stand-in
+ *  Dispatch's origin and `<port>` its port. */
+interface PublicUrlRow {
+  readonly row: string;
+  readonly dispatchUrl: string;
+  /** Unset where undefined. */
+  readonly publicUrl: string | undefined;
+  readonly holds: PublicUrlHolds;
+}
+
+/** The inventory of DISPATCH_PUBLIC_URL beside the token files: a DISPATCH_URL on its origin and
+ *  one whose host is a Service name start, the second's proofs naming the public origin; every
+ *  other DISPATCH_URL, and a DISPATCH_PUBLIC_URL that is no http(s) URL, is refused; and the
+ *  credential sends the token to DISPATCH_URL's origin alone. */
+const PUBLIC_URL_ROWS: readonly PublicUrlRow[] = [
+  {
+    row: "P1",
+    dispatchUrl: "<stand-in>",
+    publicUrl: undefined,
+    holds: { kind: "starts", proofOrigin: "<stand-in>" },
+  },
+  {
+    row: "P2",
+    dispatchUrl: "<stand-in>",
+    publicUrl: "<stand-in>",
+    holds: { kind: "starts", proofOrigin: "<stand-in>" },
+  },
+  {
+    row: "P3",
+    dispatchUrl: SERVICE_URL,
+    publicUrl: PUBLIC_ORIGIN,
+    holds: { kind: "starts", proofOrigin: PUBLIC_ORIGIN, write: true },
+  },
+  {
+    row: "P4",
+    dispatchUrl: SERVICE_URL,
+    publicUrl: PUBLIC_ORIGIN,
+    holds: { kind: "starts", proofOrigin: PUBLIC_ORIGIN, query: true },
+  },
+  {
+    row: "P5",
+    dispatchUrl: `${SERVICE_URL}/prefix`,
+    publicUrl: PUBLIC_ORIGIN,
+    holds: { kind: "starts", proofOrigin: PUBLIC_ORIGIN },
+  },
+  {
+    row: "P6",
+    dispatchUrl: SERVICE_URL,
+    publicUrl: "https://reader@dispatch.example.org:8443/base?view=mine#top",
+    holds: { kind: "starts", proofOrigin: "https://dispatch.example.org:8443", unquoted: "reader" },
+  },
+  {
+    row: "P7",
+    dispatchUrl: "http://DISPATCH.Dispatch.SVC.cluster.local:8766",
+    publicUrl: PUBLIC_ORIGIN,
+    holds: { kind: "starts", proofOrigin: PUBLIC_ORIGIN },
+  },
+  ...(
+    [
+      ["R1", "https://dispatch.example.net"],
+      ["R2", "http://127.0.0.1:<port>"],
+      ["R3", "http://svc.cluster.local:8766"],
+      ["R4", "http://dispatch.svc.cluster.local.evil.example"],
+      ["R5", "http://evil-svc.cluster.local"],
+      ["R6", "http://dispatch.dispatch.svc.cluster.local.:8766"],
+      ["R7", "http://a.svc.cluster.local@evil.example"],
+      // The public host with another scheme, then with another port.
+      ["R8", "http://dispatch.example.org"],
+      ["R9", "https://dispatch.example.org:9443"],
+    ] as const
+  ).map(
+    ([row, dispatchUrl]): PublicUrlRow => ({
+      row,
+      dispatchUrl,
+      publicUrl: PUBLIC_ORIGIN,
+      holds: { kind: "refused", named: ["DISPATCH_URL", "DISPATCH_PUBLIC_URL"] },
+    })
+  ),
+  ...["dispatch.example.org", "ftp://dispatch.example.org", "https://dispatch.example.org:0"].map(
+    (publicUrl): PublicUrlRow => ({
+      row: `R10 ${publicUrl}`,
+      dispatchUrl: SERVICE_URL,
+      publicUrl,
+      holds: { kind: "refused", named: ["DISPATCH_PUBLIC_URL must be an http or https URL"] },
+    })
+  ),
+  {
+    row: "T1",
+    dispatchUrl: SERVICE_URL,
+    publicUrl: PUBLIC_ORIGIN,
+    holds: {
+      kind: "credential",
+      refused: [`${PUBLIC_ORIGIN}/api/v1/projects`, "<stand-in>/api/v1/projects"],
+    },
+  },
+];
 
 describe("the dispatch command's token files", () => {
   test("the token files refuse every setting beside them", async () => {
@@ -850,4 +1015,132 @@ describe("the dispatch command's token files", () => {
       url
     );
   });
+
+  // The 30 s limit is a hang guard, not a budget: the test runs 20 commands in this process, a read
+  // for every row but T1 and P3's write, and bun's unwritten 5,000 ms per-test default is a limit
+  // on that work rather than on a hang. It took 0.25 s with this file alone, and 4.71 s with a
+  // biome check running beside it in a pod six agents share.
+  test("beside DISPATCH_PUBLIC_URL the token files take its origin or a Service name's, whose proofs name the public origin, and refuse any other DISPATCH_URL", async () => {
+    // One line for each fact a row found, beside the line it must find. Every line names its row,
+    // so a failure names every row that fails rather than the first.
+    const seen: string[] = [];
+    const wanted: string[] = [];
+    for (const entry of PUBLIC_URL_ROWS) {
+      const { row, holds } = entry;
+      const standIn = standInDispatch();
+      const fill = (url: string): string =>
+        url.replace("<stand-in>", standIn.url).replace("<port>", new URL(standIn.url).port);
+      const dispatchUrl = fill(entry.dispatchUrl);
+      const copy = copyFiles();
+      const env = commandEnvironment(copy, dispatchUrl, {
+        DISPATCH_PUBLIC_URL: entry.publicUrl === undefined ? undefined : fill(entry.publicUrl),
+      });
+
+      if (holds.kind === "credential") {
+        // The credential the command resolves for these settings, asked for each URL it refuses.
+        const config = activeDispatchSettings(
+          (
+            await sessionDispatchSettings({ path: env.ENVOY_CONFIG_FILE ?? "", error: null }, env, {
+              cwd: copy.dir,
+              tokenFiles: true,
+            })
+          ).dispatch
+        );
+        seen.push(`${row} presents ${config?.credential.scheme ?? "nothing: Dispatch is off"}`);
+        wanted.push(`${row} presents DPoP`);
+        for (const url of holds.refused.map(fill)) {
+          const message = await Promise.resolve()
+            .then(() => config?.credential.headers("GET", url))
+            .then(
+              () => "",
+              (error: unknown) => String(error)
+            );
+          seen.push(
+            `${row} GET ${url}: refused ${message !== ""}, naming DISPATCH_URL ${message.includes("DISPATCH_URL")}, quoting the token ${quotedRun(message, copy.token) !== undefined}`
+          );
+          wanted.push(
+            `${row} GET ${url}: refused true, naming DISPATCH_URL true, quoting the token false`
+          );
+        }
+        continue;
+      }
+
+      const { fetchImpl, asked, mount } = forwardingFetch(dispatchUrl, standIn.url);
+      const read = await run(["read", "--issue", "DSP-1"], env, copy.dir, fetchImpl);
+      const output = `${read.stdout}${read.stderr}`;
+      if (holds.kind === "refused") {
+        const heard = standIn.presented.map(({ method, url }) => `${method} ${url.pathname}`);
+        seen.push(
+          `${row} exits ${read.code}`,
+          ...holds.named
+            .filter((name) => output.includes(name))
+            .map((name) => `${row} names ${name}`),
+          `${row} asks for ${asked.map(shownOf).join(", ") || "nothing"}`,
+          `${row} has the stand-in hear ${heard.join(", ") || "nothing"}`
+        );
+        wanted.push(
+          `${row} exits 2`,
+          ...holds.named.map((name) => `${row} names ${name}`),
+          `${row} asks for nothing`,
+          `${row} has the stand-in hear nothing`
+        );
+        continue;
+      }
+
+      // The command started: each request it asked for is on DISPATCH_URL's origin, and its proof
+      // names the row's proof origin followed by the request's own path, never its query.
+      const origin = new URL(dispatchUrl).origin;
+      const proofOrigin = fill(holds.proofOrigin);
+      const noteRequests = (as: string, sent: readonly Asked[]): void => {
+        for (const one of sent) {
+          const htu = one.dpop === null ? "no proof" : proofOf(one.dpop).claims.htu;
+          seen.push(`${as} ${shownOf(one)} goes to ${one.url.origin}, its proof naming ${htu}`);
+          wanted.push(
+            `${as} ${shownOf(one)} goes to ${origin}, its proof naming ${proofOrigin}${one.url.pathname}`
+          );
+        }
+      };
+      const reads = asked.splice(0);
+      const issueRead = `GET ${mount}/api/v1/issues/DSP-1`;
+      seen.push(
+        `${row} exits ${read.code}`,
+        ...(reads.map(shownOf).includes(issueRead) ? [`${row} asks for ${issueRead}`] : [])
+      );
+      wanted.push(`${row} exits 0`, `${row} asks for ${issueRead}`);
+      if (holds.query === true) {
+        // This row's requests are the ones that carry a query.
+        const queried = reads.filter(({ url }) => url.search !== "");
+        if (queried.length > 0) seen.push(`${row} asks for a URL with a query`);
+        wanted.push(`${row} asks for a URL with a query`);
+        noteRequests(row, queried);
+      } else {
+        noteRequests(row, reads);
+      }
+      const { unquoted } = holds;
+      if (unquoted !== undefined) {
+        for (const line of output.split("\n").filter((printed) => printed.includes(unquoted))) {
+          seen.push(`${row} prints ${JSON.stringify(line)}`);
+        }
+      }
+
+      if (holds.write === true) {
+        // The stand-in refuses the comment as a read-only token's, so the command exits 1.
+        const write = await run(
+          ["comment", "--issue", "DSP-1", "--body", "Read only."],
+          env,
+          copy.dir,
+          fetchImpl
+        );
+        const writes = asked.splice(0);
+        const comment = `POST ${mount}/api/v1/issues/DSP-1/comments`;
+        seen.push(
+          `${row} write exits ${write.code}`,
+          ...(writes.map(shownOf).includes(comment) ? [`${row} write asks for ${comment}`] : [])
+        );
+        wanted.push(`${row} write exits 1`, `${row} write asks for ${comment}`);
+        noteRequests(`${row} write`, writes);
+      }
+    }
+    expect(seen).toEqual(wanted);
+  }, 30_000);
 });
