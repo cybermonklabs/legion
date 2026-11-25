@@ -2692,6 +2692,7 @@ The release before cannot run on what this release leaves:
 
 - It decodes a queued `step_record` row strictly (`DecodeOutboxPayload` in `record/outbox.go`).
   It fails a row that names `set_model` or `answers` at every attempt, so the end of that step never reaches Dispatch.
+
 - Its start of a step leaves `start_totals` as the run before kept it, since it names the column in no statement.
   After a roll forward, the end of such a run would count from the read of an earlier run.
 
