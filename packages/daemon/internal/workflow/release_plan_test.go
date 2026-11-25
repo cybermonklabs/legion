@@ -61,6 +61,7 @@ func seedPlanOfTheReleaseBefore(t *testing.T, pool *pgxpool.Pool, key string, ge
 // planner under it, holds the one task default and three elements of it, and it is taken as a
 // change of the text of default, which goes on at its step.
 func TestAPlanStoredByTheReleaseBeforeComparesAsItWasGiven(t *testing.T) {
+	t.Parallel()
 	t.Run("an owner's task takes a text alone and refuses a parent", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

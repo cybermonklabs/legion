@@ -19,6 +19,7 @@ const requirementOne = "dispatch://ACME-1/spec#b-r1"
 // is heldPlan without the stored parent: the held task then names none, so version 2 reads as a
 // parent added to a running task and is refused.
 func TestARunningTaskWithAStoredParentTakesALaterText(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	apply := applyFacts(t, pool, engine)

@@ -45,6 +45,7 @@ func drawnAndPlanning(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 // PLAN_VERSION_OLD), and one of another document than the version in force (another issue gets
 // PLAN_DOCUMENT_CHANGED).
 func TestTheGroupDefaultTakesAChangeOfTheTextOfItsRunningTaskAlone(t *testing.T) {
+	t.Parallel()
 	const was, now = "The project's default steps.", "Start with the changelog entry."
 	t.Run("the text of default alone is taken", func(t *testing.T) {
 		pool, engine, root := drawnAndPlanning(t)
