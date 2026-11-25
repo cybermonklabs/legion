@@ -379,6 +379,15 @@ export const DECISIONS_WORDS = freeze({
   in_conversation: "in the conversation",
   /** Before the spec's statements that an entry's links tie it to, as the picture draws it. */
   informs: "informs",
+  /** After the count of a part's entries not yet drawn, on the control under the part that
+   *  draws the next of them, which says it in brackets after what a press draws: "Show the next
+   *  20 (25 left)" (R2: a control at a part's foot "that says how many are left", decision 424). */
+  page_left: "left",
+  /** The control under a part whose entries are not all drawn, before the count of those a
+   *  press draws, at most 20, the size root R40 pages a flat list by: "Show the next 20 (25
+   *  left)". Each part draws its first 20 entries as the view opens, and a press draws the next
+   *  ones; a page is no fold (R2, decision 424). */
+  page_next: "Show the next",
   /** The headings of the headed parts, in the order the filter draws them (R2): the reader's
    *  own decisions are "his own decisions", and what another person answered, declined, kept or
    *  asked to change stands under a heading that says it is theirs. */

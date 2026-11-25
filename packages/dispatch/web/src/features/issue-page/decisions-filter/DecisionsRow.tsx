@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, Artifact } from "../../../api/types";
@@ -22,14 +22,12 @@ import {
   BodyAuthor,
   DeletedLine,
   KeepOpen,
-  MoreWords,
   NODE_ROW_LAYOUT,
   NodeOptions,
   ParentLink,
   RowActs,
   RowMargin,
   type Tone,
-  useClamp,
   useRowOnScreen,
 } from "../NodeRow";
 import { shortDay } from "../node-time";
@@ -67,14 +65,14 @@ interface RowPerson {
  * on one line, at the right end of the first line from 761 px up and under the words on a
  * phone, with how it stands under them.
  *
- * An ask draws what its row in the conversation draws, by the same parts: its question, cut at
- * six lines once it is answered, its options, which are the choices of its answer while it is
- * open, and the person's answer character for character as the store holds it, with no
- * sentence of the page's beside it. A declined ask says who declined it, and draws their note
- * where they wrote one: a question the person declined, never an answer.
+ * An ask draws what its row in the conversation draws, by the same parts: its question, whole,
+ * its options, which are the choices of its answer while it is open, and the person's answer
+ * character for character as the store holds it, with no sentence of the page's beside it. A
+ * declined ask says who declined it, and draws their note where they wrote one: a question the
+ * person declined, never an answer.
  *
- * A decision draws its words - whole where it waits for the reader's review, cut as an agent's
- * words are anywhere else (ruling 6) - how it stands in the states the page declares
+ * A decision draws its words whole, as every entry does, with no cut and no control that opens
+ * the rest (R2, decision 424), how it stands in the states the page declares
  * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the name
  * the body gives it (`DecisionsFilterBody.tsx`) and each a link to that statement. A decision
  * of the review list draws Keep and Change with no focus, as the picture does; no other row
@@ -174,24 +172,9 @@ export function DecisionsRow({
   const standing = entryStanding(entry, agentText.author);
   const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
   const row = useRef<HTMLDivElement | null>(null);
-  const words = useRef<HTMLDivElement | null>(null);
   // Where the reader writes: an open question's options and Answer set it (R16).
   const writer = useOutlineWriter();
   const press = useRowOnScreen(row, focused);
-  // An answered question and an agent's decision are cut at six lines, as an agent's words are
-  // on every row; a question that waits on the reader and a decision that waits for their
-  // review are drawn whole, since they are what the reader is asked to read (rulings 1 and 6).
-  // So is the node an address names, which the reader was sent to read: R5 (d) cuts no other
-  // words.
-  const cuttable =
-    entry.kind === "ask"
-      ? standing?.token === "answered" && !node.waiting
-      : entry.kind === "decision"
-        ? !review
-        : false;
-  const clamp = useClamp(words, cuttable);
-  const [opened, setOpened] = useState(false);
-  const clamped = clamp !== undefined && !opened && !body;
   const tone = toneOf(entry);
   // Each statement the entry shaped by its name, and none whose node holds no words: no
   // address, slug or id is drawn in a statement's place (R22).
@@ -227,10 +210,8 @@ export function DecisionsRow({
           <div
             className={`relative text-[15px] leading-6 ${
               standing?.token === "replaced" ? `line-through ${pageQuietText}` : pageWordsText
-            } ${clamped ? "overflow-clip" : ""}`}
+            }`}
             data-node-words=""
-            ref={words}
-            style={clamped ? { maxHeight: clamp.height } : undefined}
           >
             {deleted === null ? (
               <RowText
@@ -244,24 +225,7 @@ export function DecisionsRow({
                 <DeletedLine deleted={deleted} />
               </p>
             )}
-            {clamped && !clamp.pictures ? (
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-[linear-gradient(transparent,var(--color-page-paper))]"
-              />
-            ) : null}
           </div>
-          {/* G's control under cut words, the one every view that cuts a node's words draws,
-              so it opens and closes the rest as the outline's rows do. The body draws the words
-              whole, so it offers nothing to open there. */}
-          {clamp === undefined || body ? null : (
-            <MoreWords
-              hidden={clamp.hidden}
-              onToggle={() => setOpened((held) => !held)}
-              opened={opened}
-              tabStops={false}
-            />
-          )}
           {node.options === undefined ? null : (
             <NodeOptions body={body} node={node} writer={writer} />
           )}
@@ -384,8 +348,7 @@ export function DecisionsRow({
               not say it whole - "Author unknown", with its own shape, where the model holds no
               author, and an agent's whole session title where the margin names it by its role's
               word alone (ruling 5) - and the control that keeps the body open (R6). The open
-              body also draws the rest of a cut text and what each option says beside its name,
-              in their own places above. */}
+              body also draws what each option says beside its name, in its own place above. */}
           {body ? (
             <div
               className="mt-1 flex min-w-0 flex-col gap-1 text-sm"
