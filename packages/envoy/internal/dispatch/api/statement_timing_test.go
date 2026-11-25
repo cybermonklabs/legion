@@ -47,8 +47,9 @@ const (
 //     (priorityNewestEventKeyedWalkQuery) and one of main's text with its walk keyed
 //     (mainPriorityNewestEventKeyedWalkQuery), and the parked move (parkedMoveLateral) in the
 //     parked fault and in the listing with ?moved=true, each without and with
-//     events_parked_moves, with a reading of the walk over the members alone. The listing and
-//     the project list add no migration, agentLastActivity reads
+//     events_parked_moves, with a reading of each walk over the members alone: main's
+//     (memberWalkQuery) and the walk keyed through issues_parent_key (keyedMemberWalkQuery). The
+//     listing and the project list add no migration, agentLastActivity reads
 //     events_session_actor_created_at_idx, which migration 0026 built, the children read walks
 //     issues_parent_key, the document arm's older text reads artifact_versions, a table this
 //     release's schema still holds, and the newest event and its keyed walks read issues_pkey,
@@ -314,18 +315,20 @@ const (
 
 // priorityNewestEventKeyedWalkQuery is priorityNewestEventQuery with every read of issues keyed:
 // a candidate that TestStatementTimings measures beside it, on the seed and on production, and
-// that no test yet holds to a plan. The walk steps from each member to its children through
-// issues_parent_key, and each member issue's own issues row is read through issues_pkey, each
-// written as a lateral probe that `offset 0` keeps the planner from flattening into a join it may
-// hash; the event of last_seq is read by a probe like that of priorityNewestEventQuery
-// (last_seq_event). As there, the issues row and the event are read inside a materialized CTE
-// (member_event) for the distinct keys of `members` (member_issue), and the one time of each
-// issue is joined back to `members`. The event's probe names i alone, but i is itself a lateral
-// on member_issue, so the probe too runs only after the walk and its dedupe; the fence keeps the
-// join to `members` above both probes, so each runs once for each member issue. It is written
-// out whole, with the depth cap (parentDepthCapSQL) and the project filter
-// (priorityProjectFilter) as they stand at this commit, because a run on production takes the
-// text from the measurement's log and checks it by its sha256.
+// that the plan test (TestPriorityNewestEventReadsOneEventOfEachMember) holds, through its branch
+// for a walk other than main's, to an index condition on every scan (requireEveryScanKeyed). The
+// walk steps from each member to its children through issues_parent_key, and each member issue's
+// own issues row is read through issues_pkey, each written as a lateral probe that `offset 0`
+// keeps the planner from flattening into a join it may hash; the event of last_seq is read by a
+// probe like that of priorityNewestEventQuery (last_seq_event). As there, the issues row and the
+// event are read inside a materialized CTE (member_event) for the distinct keys of `members`
+// (member_issue), and the one time of each issue is joined back to `members`. The event's probe
+// names i alone, but i is itself a lateral on member_issue, so the probe too runs only after the
+// walk and its dedupe; the fence keeps the join to `members` above both probes, so each runs once
+// for each member issue. Its walk is the one keyedMemberWalkQuery reads alone. It is written out
+// whole, with the depth cap (parentDepthCapSQL) and the project filter (priorityProjectFilter) as
+// they stand at this commit, because a run on production takes the text from the measurement's
+// log and checks it by its sha256.
 const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 		select ($1::text[])[i] as key, ($2::text[])[i] as priority
 		from generate_subscripts($1::text[], 1) as seed(i)
@@ -496,20 +499,47 @@ func priorityReadSeed(t *testing.T, database *store.Store) (keys, priorities []s
 
 // parkedMoveTiming names the group of the readings of the parked move (parkedMoveLateral)
 // without and with events_parked_moves, in the parked fault and in the listing with ?moved=true,
-// and of the walk over the members alone. Each reading is a subtest of the group, so one -run
-// pattern of the group's name selects them all. The other three names are those of the readings,
-// and each reading of a top node's buffers carries the name of its reading as a prefix.
+// and of each walk over the members alone, main's and the walk keyed through issues_parent_key.
+// Each reading is a subtest of the group, so one -run pattern of the group's name selects them
+// all. The other four names are those of the readings, and each reading of a top node's buffers
+// carries the name of its reading as a prefix. The keyed walk's name carries main's walk's as a
+// prefix too, so one -run pattern of memberWalkTiming selects both walks.
 const (
-	parkedMoveTiming    = "the parked move and the walk over the members"
-	parkedFaultTiming   = "the parked fault, without and with events_parked_moves"
-	parkedListingTiming = "the listing with ?moved=true, without and with events_parked_moves"
-	memberWalkTiming    = "the walk over the members alone"
+	parkedMoveTiming      = "the parked move and the walk over the members"
+	parkedFaultTiming     = "the parked fault, without and with events_parked_moves"
+	parkedListingTiming   = "the listing with ?moved=true, without and with events_parked_moves"
+	memberWalkTiming      = "the walk over the members alone"
+	keyedMemberWalkTiming = memberWalkTiming + ", keyed through issues_parent_key"
 )
 
 // memberWalkQuery is the walk over the members of each priority alone (priorityMemberTerms), which
 // each statement over the seed of the priorities read descends through, with a count over the
 // members in place of what each statement reads of them.
 var memberWalkQuery = `with recursive ` + priorityMemberTerms + `
+	select count(*) from members`
+
+// keyedMemberWalkQuery is the walk keyed through issues_parent_key alone: the walk of
+// priorityNewestEventKeyedWalkQuery, which steps from each member to its children by a lateral
+// probe of issues_parent_key that `offset 0` keeps the planner from flattening into a join it may
+// hash, with the count over the members that memberWalkQuery ends with. The two texts differ in
+// the step alone, so the two readings differ in the walk and in nothing else. It is written out
+// whole, with the depth cap (parentDepthCapSQL) as it stands at this commit, for the reason
+// priorityNewestEventKeyedWalkQuery is.
+const keyedMemberWalkQuery = `with recursive members_seed as (
+		select ($1::text[])[i] as key, ($2::text[])[i] as priority
+		from generate_subscripts($1::text[], 1) as seed(i)
+	), members_spread as (
+		select s.key, s.priority, 0 as depth from members_seed s
+		union all
+		select c.key, m.priority, m.depth + 1
+		from members_spread m
+		cross join lateral (
+			select c.key from issues c where c.parent_key = m.key offset 0
+		) c
+		where m.depth < 32
+	), members as (
+		select distinct key, priority from members_spread
+	)
 	select count(*) from members`
 
 // measureParkedMoveAndMemberWalk measures, in the group parkedMoveTiming:
@@ -522,7 +552,9 @@ var memberWalkQuery = `with recursive ` + priorityMemberTerms + `
 //     the empty status list, no parent, no updated_since, the empty label list, open false, the
 //     empty priority list, the unset priority false, no closed window, the empty advances list,
 //     advances=none and advances=any false, and moved true;
-//   - the walk over the members alone (memberWalkQuery), over the seed of the parked fault.
+//   - each walk over the members alone, over the seed of the parked fault: main's
+//     (memberWalkQuery), which every statement over that seed takes, and the walk keyed through
+//     issues_parent_key (keyedMemberWalkQuery).
 //
 // Each of the first two is a pair whose two sides are one text. The before side drops
 // events_parked_moves in its measuring transaction, which every reading rolls back, so it reads as
@@ -532,10 +564,12 @@ var memberWalkQuery = `with recursive ` + priorityMemberTerms + `
 // fault is timed as a pair whose after side must be faster (benchtime.Runner.Pair). The listing is
 // timed within the bound of benchtime.Runner.PairWithin instead: the lateral is a small part of the
 // listing's work, a page of every row of a project, so its gain can sit inside the run-to-run
-// spread of the rest of the statement, and a slower listing is still a regression. The walk has
-// no before side. It is timed alone (benchtime.Runner.After), and its top node's shared buffers
-// under each plan are logged (benchtime.Runner.AfterBuffers), which are its buffer reads for each
-// call. Each text is logged with its sha256.
+// spread of the rest of the statement, and a slower listing is still a regression. Neither walk
+// has a before side. Each is timed alone (benchtime.Runner.After), and its top node's shared
+// buffers under each plan are logged (benchtime.Runner.AfterBuffers), which are its buffer reads
+// for each call. The two walks are read over the same arguments, under the same two plans and by
+// the same timing, so each reading compares with the other directly; nothing here bounds either.
+// Each text is logged with its sha256.
 func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, keys, priorities []string) {
 	t.Helper()
 	t.Run(parkedMoveTiming, func(t *testing.T) {
@@ -545,6 +579,7 @@ func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, keys
 			{parkedFaultTiming + ": parkedQuery", parkedQuery},
 			{parkedListingTiming + ": listIssuesQuery", listIssuesQuery},
 			{memberWalkTiming + ": memberWalkQuery", memberWalkQuery},
+			{keyedMemberWalkTiming + ": keyedMemberWalkQuery", keyedMemberWalkQuery},
 		} {
 			t.Logf("%s, sha256 %x:\n%s", text.name, sha256.Sum256([]byte(text.sql)), text.sql)
 		}
@@ -564,11 +599,17 @@ func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, keys
 		listingAfter := benchtime.Statement{SQL: listIssuesQuery, Args: listing}
 		runner.PairWithin(t, parkedListingTiming, []benchtime.Statement{listingBefore}, []benchtime.Statement{listingAfter})
 		pairBuffers(parkedListingTiming, listingBefore, listingAfter)
-		walk := benchtime.Statement{SQL: memberWalkQuery, Args: []any{keys, priorities}}
-		runner.After(t, memberWalkTiming, walk)
-		t.Run(memberWalkTiming+", its top node's buffers", func(t *testing.T) {
-			runner.AfterBuffers(t, memberWalkTiming, walk)
-		})
+		seed := []any{keys, priorities}
+		for _, walk := range []struct{ name, sql string }{
+			{memberWalkTiming, memberWalkQuery},
+			{keyedMemberWalkTiming, keyedMemberWalkQuery},
+		} {
+			statement := benchtime.Statement{SQL: walk.sql, Args: seed}
+			runner.After(t, walk.name, statement)
+			t.Run(walk.name+", its top node's buffers", func(t *testing.T) {
+				runner.AfterBuffers(t, walk.name, statement)
+			})
+		}
 	})
 }
 
