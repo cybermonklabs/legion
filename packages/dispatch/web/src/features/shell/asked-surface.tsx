@@ -88,12 +88,12 @@ export interface AskedSurfaceProps {
  * from failing online, the decision card of a body in the peek among them
  * (`features/doc/TextAskCardHost.tsx`), or any other fault of the surface - draws an alert in
  * the surface's place, "Could not open <name>." with Close and Reload (`CouldNotOpen`), as the
- * boundary's `fallback` and its `notLoaded` both, and the page stays drawn and signed in, rather
- * than reaching the app's top boundary (`main.tsx`). A render error is never silent: a surface
- * that closed with no word would look like a key that did nothing, and the reader would press it
- * again into the same fault. The surface's own chunk failing to download is no throw in a
- * render: it rejects the download above, and the same alert takes the box's place, as "WHEN THE
- * CHUNK IS ASKED FOR" says.
+ * boundary's `fallback`, which it draws for a chunk that could not load too, and the page stays
+ * drawn and signed in, rather than reaching the app's top boundary (`main.tsx`). A render error
+ * is never silent: a surface that closed with no word would look like a key that did nothing,
+ * and the reader would press it again into the same fault. The surface's own chunk failing to
+ * download is no throw in a render: it rejects the download above, and the same alert takes the
+ * box's place, as "WHEN THE CHUNK IS ASKED FOR" says.
  *
  * `name` is the name the surface's own element carries - "Create issue", "Keyboard shortcuts",
  * "Search", "Inbox" - and names the box and the alert that stand in its place.
@@ -173,7 +173,7 @@ export function askedSurface<P extends AskedSurfaceProps>(
       />
     );
     return (
-      <ChunkBoundary fallback={alert} notLoaded={alert} reset={closes}>
+      <ChunkBoundary fallback={alert} reset={closes}>
         {Component !== undefined ? (
           <Component {...props} typed={held.text} />
         ) : open ? (

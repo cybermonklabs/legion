@@ -333,8 +333,8 @@ test("a surface whose render throws draws an alert in its place, whose Close giv
 });
 
 // A chunk the surface draws from that fails to download online - a decision card in a body of
-// the peek, say - draws the same alert: the boundary names it for a chunk that could not load as
-// well as for a render that threw (`notLoaded`), so the surface does not go with no word.
+// the peek, say - draws the same alert: the boundary draws its `fallback` for a chunk that could
+// not load as well as for a render that threw, so the surface does not go with no word.
 test("a chunk the surface draws from that fails to download draws the alert in its place", async () => {
   const user = userEvent.setup();
   const Card = failingChunkComponent();
