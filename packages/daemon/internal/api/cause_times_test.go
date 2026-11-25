@@ -222,7 +222,9 @@ func TestALastStartFailureCarriesItsTimeUntilReady(t *testing.T) {
 // implementer, so the band is read on a worker's view as well as the architect's (it narrows
 // each through withEachClaimView). The worker is given it here rather than in the golden state:
 // a worker's lastDeathCause there would be a key no record of a contract below this one holds.
-// The daemon's log names what the narrowed body lost.
+// The daemon's log names what the narrowed body lost: one line for each band above the caller's
+// contract (narrowingsExpected), the cause times' first, since the table is applied lowest
+// contract first; a later band's own line is that band's test's to name.
 func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	state := populatedState(t)
 	architect := state.Issues[recordGoldenIssue].Architect
@@ -292,8 +294,9 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) != 1 || narrowings[0].Dropped != dropped {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q",
+	if len(narrowings) == 0 || narrowings[0].Dropped != dropped || narrowings[0].PluginContract != causeTimesContract-1 {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want its first line saying it dropped %q",
 			narrowings, causeTimesContract-1, dropped)
 	}
+	wantNarrowings(t, narrowings, causeTimesContract-1, narrowingsExpected(populatedState(t), causeTimesContract-1))
 }
