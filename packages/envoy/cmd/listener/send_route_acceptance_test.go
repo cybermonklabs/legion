@@ -94,6 +94,7 @@ func assertRecordFields(t *testing.T, record map[string]any, want map[string]any
 // delivery read back from notifications.agent.<id> is the second half: a 200 alone would pass
 // even if the envelope never left the listener.
 func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
+	t.Parallel()
 	const target = "ses_cold_cache_target"
 	registrar, cold := trailingListeners(t)
 	if err := registrar.sessions.Put(target, session.SessionEntry{
@@ -436,6 +437,7 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 // topic goes to the bus as written, so `notifications..x` clears the handler's prefix checks and
 // is refused by the bus's own subject check (bus.ErrInvalidSubject).
 func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) {
+	t.Parallel()
 	const target = "ses_refused_publish_target"
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{target})
@@ -534,6 +536,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 // the line's own fields (the summary among them) are checked on a refusal that has an envelope
 // and on one refused before any envelope exists.
 func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
+	t.Parallel()
 	const target = "ses_recorded_target"
 	const sender = "ses_recorded_sender"
 	client := setupPublishTestClient(t)

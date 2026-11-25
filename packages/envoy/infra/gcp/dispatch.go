@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
@@ -335,6 +336,11 @@ type DispatchArgs struct {
 	OidcAudience string `pulumi:"oidcAudience,optional"`
 	OidcIssuer   string `pulumi:"oidcIssuer,optional"`
 
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK: the lowercase email of a full
+	// member, whom Dispatch makes, at boot, the owner of every project the migration left without
+	// one. Unset renders nothing.
+	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
+
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
 	// DISPATCH_APP_PEM_B64 read from the key AppPrivateKeySecretKey of the Kubernetes Secret
@@ -624,6 +630,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
 		{"oidcIssuer", args.OidcIssuer},
+		{"projectOwnerFallback", args.ProjectOwnerFallback},
 		{"appClientId", args.AppClientId},
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
@@ -783,6 +790,7 @@ type dispatchSettings struct {
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
+	projectOwnerFallback                        string
 	appClientID, appID, verdictAppID            string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -1131,6 +1139,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
 		{"oidcIssuer", args.OidcIssuer != ""},
+		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1497,6 +1506,16 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 // (https://cloud.google.com/compute/docs/naming-resources).
 var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
 
+// refuseDispatchAccessValues refuses, when the stack plans, the access values Dispatch refuses at
+// boot, naming the input, so one typo never reaches a Deployment whose one replica would then not
+// start: an owner fallback that is not a lowercase email.
+func refuseDispatchAccessValues(args *DispatchArgs) error {
+	if fallback := args.ProjectOwnerFallback; fallback != "" && principal.CheckPersonLogin(fallback) != nil {
+		return core.InputErrorf("projectOwnerFallback", "projectOwnerFallback must be a lowercase email, the one a full member signed in with")
+	}
+	return nil
+}
+
 // refuseDispatchEntrance judges what the deployment's own entrance, a load balancer serving
 // publicOrigin, hands the component: loadBalancerSourceRanges, the CIDRs it reaches the app's pods
 // from, and networkEndpointGroupName, the endpoint group it takes as its backend. Each needs
@@ -1815,6 +1834,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if args.OidcIssuer != "" && !issuerURL(args.OidcIssuer) {
 		return dispatchSettings{}, core.InputErrorf("oidcIssuer", "oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", args.OidcIssuer)
 	}
+	if err := refuseDispatchAccessValues(args); err != nil {
+		return dispatchSettings{}, err
+	}
 	var appSet, appMissing []string
 	for _, in := range []struct{ input, value string }{
 		{"appClientId", args.AppClientId},
@@ -1905,6 +1927,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
+	s.projectOwnerFallback = args.ProjectOwnerFallback
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName

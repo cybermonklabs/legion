@@ -751,7 +751,8 @@ func (p *Pool) Horizon() (*RawPool, error) {
 // embedding queue and its coverage pass, the suggestion sweep, the delivery reconcile and intakes,
 // the architecture importer's ticker, the documents' resumption query, task progress,
 // reference-excerpt and block-index reconciliation, the edit-notice sweep, the repair of closed and
-// reopened issues' asks, the Legion sampler's reads of its settings and records of each daemon's
+// reopened issues' asks, the boot's check that every project has an owner and its grants
+// (EnsureProjectOwners), the Legion sampler's reads of its settings and records of each daemon's
 // state (legion.RunSampler), the server process registry's prune and the fleet build announcer, and
 // what a request leaves running behind its answer: the comment mention sender's claim statements
 // (api/comment_mention_sender.go) and the one retry of a related_checks or near_copy_checks row

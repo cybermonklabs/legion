@@ -644,10 +644,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 // 500 ms came from the replay on an idle machine (TestNearCopyRefusalReplay: p50 135 ms, p95
 // 228 ms, max 566 ms), which predicted it would cut 0.17% of creates. In production it cut 9 of
 // INFRA's first 29 creates in near_copy_checks (2026-11-17, build 4055c4a5, reason bound). 2 s is an
-// estimate, not a measurement: the rows hold no read time past the bound. If production's reads
-// are a uniform multiple of the replay's (about three times, which puts the replay's 70th
-// percentile at 500 ms), 2 s covers the replay's slowest read. How many reads 2 s still cuts is
-// read from near_copy_checks after it is deployed.
+// estimate, not a measurement: the rows written before read_ms and read_stage held no read time
+// past the bound. If production's reads are a uniform multiple of the replay's (about three times,
+// which puts the replay's 70th percentile at 500 ms), 2 s covers the replay's slowest read. How long
+// each read takes, and the step a read the bound cuts was in, is read from near_copy_checks'
+// read_ms and read_stage.
 const duplicateGateTimeout = 2 * time.Second
 
 // nearCopyOutcome is everything the near-copy gate decides for one create, settled once by
@@ -699,7 +700,7 @@ func (s *server) runNearCopyGate(
 ) nearCopyOutcome {
 	gate := s.duplicateGate(ctx, project, title, spec, ancestors)
 	refusals := gate.refusals()
-	check := &nearCopyCheck{force: force, candidates: gate.Candidates}
+	check := &nearCopyCheck{force: force, candidates: gate.Candidates, readMS: gate.ReadMS, readStage: gate.ReadStage}
 	switch {
 	case !gate.answered():
 		check.outcome, check.reason = nearCopyNotMade, gate.NotMade

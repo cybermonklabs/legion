@@ -43,6 +43,18 @@ const (
 	nearCopyNotMadeUnrecorded = "unrecorded"
 )
 
+// The steps of the gate's read (readDuplicateCandidates), as near_copy_checks.read_stage records
+// the one a read was in when it ended (duplicateGateResult.ReadStage): taking a pool connection and
+// opening the read transaction with its statement_timeout, picking the new text's rarest words,
+// reading the lexemes the project's issue keys give, and scoring the project's open issues, which
+// every answered read ends in.
+const (
+	nearCopyStageConnect = "connect"
+	nearCopyStageTerms   = "terms"
+	nearCopyStageKeys    = "keys"
+	nearCopyStageScore   = "score"
+)
+
 // nearCopyRecordTimeout bounds the first attempt of each write recordNearCopyRefusal and
 // recordNearCopyCheck make: a refusal's row, and the row of a create after its commit. Such a row
 // is written on a context of its own, so a create whose client has gone still leaves its record,
@@ -68,6 +80,10 @@ type nearCopyCheck struct {
 	reason     string
 	force      bool
 	candidates []scoredDuplicate
+	// readMS and readStage are duplicateGateResult.ReadMS and ReadStage: how long the gate's read
+	// took and the step it ended in. Every check runNearCopyGate settles holds both.
+	readMS    *int
+	readStage string
 }
 
 // nearCopyCheckRow is one near_copy_checks row to write: the create the gate answered, with the
@@ -120,8 +136,8 @@ func newNearCopyCheckRow(id, project string, actor model.Actor, title, spec, par
 const nearCopyCheckInsert = `
 	insert into near_copy_checks
 		(id, project_key, actor_kind, actor_id, outcome, reason, force, title, spec, spec_sha256,
-		 parent_key, issue_key, candidates, refuse_score, nudge_score, build_commit)
-	values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		 parent_key, issue_key, candidates, refuse_score, nudge_score, build_commit, read_ms, read_stage)
+	values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 	on conflict (id) do update
 	   set outcome = excluded.outcome, reason = excluded.reason, spec = excluded.spec,
 	       issue_key = excluded.issue_key, candidates = excluded.candidates
@@ -156,7 +172,7 @@ func (s *server) writeNearCopyCheck(ctx context.Context, q queryer, row nearCopy
 		row.id, row.project, row.actor.Kind, row.actor.ID, check.outcome, nullableText(check.reason),
 		check.force, row.title, spec, row.specSHA256, nullableText(row.parent),
 		nullableText(row.issue), row.candidates, duplicateRefuseScore, duplicateNudgeScore,
-		nullableText(s.deps.BuildCommit),
+		nullableText(s.deps.BuildCommit), check.readMS, nullableText(check.readStage),
 	).Scan(&written)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
@@ -217,7 +233,7 @@ func (s *server) recordNearCopyCheck(ctx context.Context, row nearCopyCheckRow, 
 // a page, which carries no spec.
 const nearCopyCheckColumns = `id::text, created_at, project_key, actor_kind, actor_id, outcome, reason,
        force, title, spec_sha256, parent_key, issue_key, candidates, refuse_score, nudge_score,
-       build_commit`
+       build_commit, read_ms, read_stage`
 
 // nearCopyChecksPageQuery reads one page of a project's rows ($1), within [$2, $3) when given,
 // after the row whose created_at and id are $4 and $5 when given, oldest first, at most $6.
@@ -237,7 +253,7 @@ func scanNearCopyCheck(row pgx.Row, check *model.NearCopyCheck) error {
 		&check.ID, &check.CreatedAt, &check.Project, &check.ActorKind, &check.ActorID,
 		&check.Outcome, &check.Reason, &check.Force, &check.Title, &check.SpecSHA256,
 		&check.Parent, &check.Issue, &check.Candidates, &check.RefuseScore, &check.NudgeScore,
-		&check.BuildCommit, &check.Spec,
+		&check.BuildCommit, &check.ReadMS, &check.ReadStage, &check.Spec,
 	)
 }
 
