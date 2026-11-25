@@ -14,7 +14,8 @@ body: |-
   a todo does not start it again while the role is gone. The daemon API contract gains an entry
   for this change. State names the role of a running step (`stepRole`) and the roles that wait
   for the issue's pod (`startWaitsForPod`), and a caller whose contract lacks the entry reads
-  `step` as `implementing`.
+  `step` as `implementing`. A plugin whose contract lacks the entry is refused, with a `409`, the
+  registration of a claim of such a role.
 
   The migration `20261124192838_deployment_roles` widens the role and phase checks, and an
   earlier release cannot read a row at `step` or of such a role. Before a rollback past this

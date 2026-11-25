@@ -690,7 +690,10 @@ const legionPendingStatusWrite = z.object({
  * daemon runs queues that start, so nothing will wake it either. That state arrived with contract
  * 56, and a pod whose claims record a contract below it is served this report without its retired
  * entries (`api`'s `stateFor`, `withoutUnadmittedStrandedStates`) rather than being made to
- * refuse the whole state over a third value its enum does not name.
+ * refuse the whole state over a third value its enum does not name. Its `role` is read by the role
+ * grammar, not `LEGION_ROLES`: the deployment roles' contract entry opens the field
+ * (`openFrom` in the daemon's `enumerated-fields.json` rows), so a role the deployment defines
+ * reaches this build, and a caller below the entry is served no entry of such a role.
  *
  * Who suspended a suspended one is not here and must never be added: a session parses this body
  * with the schema of the contract its plugin was built at, and a Kubernetes deployment relaunches
@@ -730,7 +733,7 @@ const legionHeldOutboxRow = z.object({
  * string, so a lane a later daemon names is read rather than refused. `dueAt` is required: the
  * controller's `read_state` summary names the earliest of them (`pi-legion/src/tools.ts`), and
  * the daemon writes it on every wake. The rest is optional, since no plugin code reads it
- * (LEGION_ANSWER_READS). */
+ * (LEGION_ANSWER_READS). Its `role` is read by the role grammar, as a stranded claim's is. */
 const legionWakeWaiting = z.object({
   claim: nonEmptyString.optional(),
   issue: issueKey.optional(),
@@ -1390,7 +1393,7 @@ const legionEndedPause = z.object({
  * and role, and `askedAt`, when the pause asked it to stop. A role in a turn stops when that turn
  * ends, so it is listed until then. The controller's summary names each by its issue and role,
  * so those two are required; `claim` and `askedAt` are optional, since no plugin code reads them
- * (LEGION_ANSWER_READS). */
+ * (LEGION_ANSWER_READS). Its `role` is read by the role grammar, as a stranded claim's is. */
 const legionPauseStop = z.object({
   claim: nonEmptyString.optional(),
   issue: issueKey,
@@ -1527,7 +1530,10 @@ export type LegionHealth = z.output<typeof LegionHealthResponse>;
 /** `claim.RegisterResponse`, the body of `POST /legion/v1/claims/register`: the claim the agent
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
  * the task agents the role's prompts dispatch — what the session's subagents check measures its
- * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`. */
+ * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
+ * Its `role` is read by the role grammar, as a stranded claim's is: a plugin below the deployment
+ * roles' contract entry is refused the registration of a claim of a role the deployment
+ * defines. */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,

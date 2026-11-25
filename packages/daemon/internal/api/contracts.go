@@ -50,7 +50,8 @@ const contractOrderForm = "v1:"
 // row holds a contract — a band's or a stand-in's contract, an Answer's Since, an
 // EnumeratedValue's Since, a TypedSetting's Since and Until, a RemovedRoutes value, an
 // AcceptedField's LeftAt — and the registry resolves each such value to the entry's number, so
-// a row moves verbatim from a frozen table into an entry's file.
+// a row moves verbatim from a frozen table into an entry's file. An opened field names no
+// contract at all: it is opened at the entry's own number (openedFields).
 type contractEntry struct {
 	id   int
 	slug string
@@ -74,6 +75,11 @@ type contractEntry struct {
 	// (withIssueRecordRows). enumeratedValues are values it adds to a field older than it.
 	enumeratedFields []EnumeratedField
 	enumeratedValues []enumeratedValues
+	// openedFields are fields older than the entry whose enumeration the entry ends: from the
+	// entry's number each takes any word of a grammar no list holds, and its row's OpenFrom is
+	// that number. A field of the state under issueKeyPath is opened at its record's key path
+	// too, since the two are one field (withIssueRecordRows).
+	openedFields []openedField
 	// typedSettings, removedRoutes and acceptedByName are rows of typedSettings, RemovedRoutes and
 	// AcceptedByName.
 	typedSettings  []TypedSetting
@@ -95,6 +101,13 @@ type enumeratedValues struct {
 	answer  AnswerID
 	keyPath string
 	values  []EnumeratedValue
+}
+
+// openedField is a field an entry opens, the row of EnumeratedFields of answer at keyPath, which
+// is older than the entry (contractEntry.openedFields).
+type openedField struct {
+	answer  AnswerID
+	keyPath string
 }
 
 // fileName is the name of the entry's file, by which every refusal names the entry.
@@ -179,8 +192,8 @@ type NumberedEntry struct {
 // the frozen tables: each entry numbered L plus its rank in the build's order (entryOrder), and
 // each table its frozen rows and then the entries' rows in that order. It refuses an entry whose
 // id or slug is of no entry's form, two entries of one id, naming both, a stamp that does not
-// name exactly entries, naming each difference, and a row that adds to an answer or a field the
-// tables do not hold.
+// name exactly entries, naming each difference, and a row that adds to or opens an answer or a
+// field the tables do not hold.
 func buildContractRegistry(entries []contractEntry, stamp string) (*contractRegistry, error) {
 	byID := make(map[int]contractEntry, len(entries))
 	for _, entry := range entries {
@@ -278,9 +291,10 @@ func entryOrder(entries map[int]contractEntry, stamp string) ([]int, bool, error
 
 // deriveTables fills every table of r from the frozen rows and the rows of ordered, the entries
 // in number order. Every new row comes in before any route or value an entry adds to an older
-// row, so an entry may add to a row of an entry before it, and every contract value of every row
-// that is an entry's id is then resolved to that entry's number. The frozen tables are copied
-// before anything is written, so they stay as the numbered entries wrote them.
+// row and before any field an entry opens, so an entry may add to or open a row of an entry before
+// it, and every contract value of every row that is an entry's id — an opened row's OpenFrom
+// among them — is then resolved to that entry's number. The frozen tables are copied before
+// anything is written, so they stay as the numbered entries wrote them.
 func (r *contractRegistry) deriveTables(ordered []contractEntry) error {
 	r.stateNarrowings = slices.Clone(frozenStateNarrowings)
 	r.valueStrips = frozenValueStrips()
@@ -320,6 +334,12 @@ func (r *contractRegistry) deriveTables(ordered []contractEntry) error {
 				return fmt.Errorf("%s adds values to `%s` of the %s answer, which EnumeratedFields has no row for", entry.fileName(), added.keyPath, added.answer)
 			}
 		}
+		for _, opened := range entry.openedFields {
+			if !withFieldOpened(fields, opened, entry.id) {
+				return fmt.Errorf("%s opens `%s` of the %s answer, which EnumeratedFields has no row for",
+					entry.fileName(), opened.keyPath, opened.answer)
+			}
+		}
 	}
 
 	resolved := func(contract int) int {
@@ -340,6 +360,7 @@ func (r *contractRegistry) deriveTables(ordered []contractEntry) error {
 			values[at].Since = resolved(values[at].Since)
 		}
 		fields[place].Values = values
+		fields[place].OpenFrom = resolved(fields[place].OpenFrom)
 	}
 	for place := range r.typedSettings {
 		r.typedSettings[place].Since = resolved(r.typedSettings[place].Since)
@@ -386,6 +407,26 @@ func withValuesAdded(fields []EnumeratedField, added enumeratedValues) bool {
 		values := append(slices.Clone(field.Values), added.values...)
 		slices.SortFunc(values, func(a, b EnumeratedValue) int { return strings.Compare(a.Value, b.Value) })
 		fields[place].Values = values
+	}
+	return held
+}
+
+// withFieldOpened opens the row of fields that opened names at contract, the opening entry's id,
+// which deriveTables resolves to its number with every other row's, and that row's record row
+// where the row is an issue's field of the state. It reports whether fields holds the row opened
+// names.
+func withFieldOpened(fields []EnumeratedField, opened openedField, contract int) bool {
+	recordPath, ofAnIssue := strings.CutPrefix(opened.keyPath, issueKeyPath)
+	ofAnIssue = ofAnIssue && opened.answer == AnswerState
+	held := false
+	for place, field := range fields {
+		atTheRow := field.Answer == opened.answer && field.KeyPath == opened.keyPath
+		atTheRecord := ofAnIssue && field.Answer == AnswerIssueRecord && field.KeyPath == recordPath
+		if !atTheRow && !atTheRecord {
+			continue
+		}
+		held = held || atTheRow
+		fields[place].OpenFrom = contract
 	}
 	return held
 }

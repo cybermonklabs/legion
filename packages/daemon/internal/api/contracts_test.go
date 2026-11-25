@@ -256,6 +256,7 @@ func everyTableEntry() contractEntry {
 			Values: []EnumeratedValue{{Value: "every-table", Since: laterTestContract}}}},
 		enumeratedValues: []enumeratedValues{{answer: AnswerState, keyPath: issueKeyPath + "holdReason",
 			values: []EnumeratedValue{{Value: "every-table", Since: laterTestContract}}}},
+		openedFields:  []openedField{{answer: AnswerState, keyPath: issueKeyPath + "memoryGroup"}},
 		typedSettings: []TypedSetting{{Key: "every_table", Since: laterTestContract}},
 		removedRoutes: map[string]int{"POST /legion/v1/every-table/removed": laterTestContract},
 		acceptedByName: []AcceptedField{{Route: "POST /legion/v1/handoff/complete", Field: "everyTable",
@@ -285,9 +286,9 @@ func answerAt(answers []Answer, id AnswerID) (Answer, bool) {
 // frozen row and with the entry's id resolved to its number: a band, a value strip, a stand-in,
 // a whole answer, a route added to an older answer, an identity answer, a new enumerated field
 // (at the record's key path too, where it is an issue's), a value added to an older field (at
-// both its key paths, and in the arrivals its value strip reads), a typed setting (on the state's
-// row of Answers too), a removed route and a field accepted by name. The frozen tables are left
-// as they were.
+// both its key paths, and in the arrivals its value strip reads), an older field opened (at both
+// its key paths), a typed setting (on the state's row of Answers too), a removed route and a
+// field accepted by name. The frozen tables are left as they were.
 func TestEveryTableHoldsTheRowsOfARegisteredEntry(t *testing.T) {
 	frozenEmptyRoutes := len(frozenAnswers[slices.IndexFunc(frozenAnswers, func(a Answer) bool { return a.ID == AnswerEmptyObject })].Routes)
 	frozenHoldReasons, frozenFields := len(holdReasons), enumeratedFields()
@@ -360,6 +361,25 @@ func TestEveryTableHoldsTheRowsOfARegisteredEntry(t *testing.T) {
 				at.keyPath, at.answer, field.Values, frozenHoldReasons, entryValue[0])
 		}
 	}
+	for _, at := range []struct {
+		answer  AnswerID
+		keyPath string
+	}{{AnswerState, issueKeyPath + "memoryGroup"}, {AnswerIssueRecord, "memoryGroup"}} {
+		field, _ := fieldAt(fields, at.answer, at.keyPath)
+		if field.OpenFrom != number || !slices.Equal(field.Values, memoryGroups) {
+			t.Errorf("`%s` of %s is open from %d with %+v, want open from the entry's %d with its "+
+				"frozen values %+v", at.keyPath, at.answer, field.OpenFrom, field.Values, number, memoryGroups)
+		}
+	}
+	if field, _ := fieldAt(fields, AnswerState, issueKeyPath+"phase"); field.OpenFrom != 0 {
+		t.Errorf("`issues.*.phase`, which the entry does not open, is open from %d", field.OpenFrom)
+	}
+	for _, field := range enumeratedFields() {
+		if field.OpenFrom != 0 {
+			t.Errorf("the frozen row `%s` of %s is open from %d after the build, want it open from none",
+				field.KeyPath, field.Answer, field.OpenFrom)
+		}
+	}
 	if arrivals := arrivalsAt(issueKeyPath + "holdReason"); !arrivals.heldBack("every-table", number-1) || arrivals.heldBack("every-table", number) {
 		t.Errorf("the holdReason strip holds the entry's value back from %d: %t and from %d: %t, want true and false",
 			number-1, arrivals.heldBack("every-table", number-1), number, arrivals.heldBack("every-table", number))
@@ -389,12 +409,34 @@ func TestEveryTableHoldsTheRowsOfARegisteredEntry(t *testing.T) {
 	}
 }
 
+// A field an entry opens is a row of EnumeratedFields older than the entry, as a field it adds
+// values to is: an entry that opens a field no table holds a row of is refused, naming its file
+// and the field. The control is the same entry opening a field a frozen row declares, which
+// builds, so the refusal is of the missing row alone.
+func TestAnEntryThatOpensAFieldNoTableHoldsIsRefused(t *testing.T) {
+	opening := func(keyPath string) contractEntry {
+		return contractEntry{id: laterTestContract, slug: "opening",
+			openedFields: []openedField{{answer: AnswerState, keyPath: keyPath}}}
+	}
+	frozenRow := []contractEntry{opening("strandedClaims.*.role")}
+	if _, err := buildContractRegistry(frozenRow, ""); err != nil {
+		t.Fatalf("an entry that opens `strandedClaims.*.role`, a frozen row, was refused: %v", err)
+	}
+	_, err := buildContractRegistry([]contractEntry{opening("strandedClaims.*.colour")}, "")
+	want := fmt.Sprintf("contract_%d_opening.go opens `strandedClaims.*.colour` of the state answer, "+
+		"which EnumeratedFields has no row for", laterTestContract)
+	if err == nil || err.Error() != want {
+		t.Errorf("an entry that opens a field no table holds built with %v, want the refusal %q",
+			err, want)
+	}
+}
+
 // A row of a frozen table holds the number of a numbered entry, at or below L, and never a new
 // entry's constant, whose value is an id far above L: a row that names a new entry lives in that
 // entry's file (contract_<id>_<slug>.go), where the registry resolves it to the entry's number.
 // The frozen tables are SupportedContracts' list, the bands, the stand-ins, the answers, the
-// enumerated fields' values (which carry the arrivals the value strips read), the typed settings,
-// the removed routes and the fields accepted by name.
+// enumerated fields' values (which carry the arrivals the value strips read) and openings, the
+// typed settings, the removed routes and the fields accepted by name.
 func TestNoFrozenRowNamesAnEntry(t *testing.T) {
 	atOrBelowL := func(table string, row any, contract int) {
 		t.Helper()
@@ -419,6 +461,8 @@ func TestNoFrozenRowNamesAnEntry(t *testing.T) {
 		for _, value := range field.Values {
 			atOrBelowL("EnumeratedFields", fmt.Sprintf("`%s` of `%s` of %s", value.Value, field.KeyPath, field.Answer), value.Since)
 		}
+		opening := fmt.Sprintf("the opening of `%s` of %s", field.KeyPath, field.Answer)
+		atOrBelowL("EnumeratedFields", opening, field.OpenFrom)
 	}
 	for _, setting := range frozenTypedSettings {
 		atOrBelowL("typedSettings", setting, setting.Since)
