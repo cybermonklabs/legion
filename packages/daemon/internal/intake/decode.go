@@ -360,6 +360,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			Title        string          `json:"title"`
 			Parent       *string         `json:"parent"`
 			Rank         string          `json:"rank"`
+			Priority     json.RawMessage `json:"priority"`
 			Labels       []string        `json:"labels"`
 			ResolvedRepo json.RawMessage `json:"resolved_repo"`
 			// An event retained from a Dispatch that did not yet send blocked_by decodes to no
@@ -401,7 +402,8 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
-			HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels, ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
+			Priority: issueEventPriority(issue.Priority, unread), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
+			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
 	}
 	switch event.Type {
@@ -600,6 +602,24 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 		return "", false
 	}
 	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
+}
+
+// issueEventPriority reads an issue event's own priority, Dispatch's 0 for P0 to 3 for P3 or null,
+// as the record keeps it (record.DecodePriority); an absent field is none. A value Dispatch never
+// writes, a level outside 0 to 3 or no integer at all, is none and named in unread rather than
+// making the event poison: the event can carry a status the workflow acts on.
+func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
+	if raw == nil {
+		return record.NoPriority
+	}
+	priority, read, err := record.DecodePriority(raw)
+	switch {
+	case err != nil:
+		*unread = append(*unread, fmt.Sprintf("priority %s is not a priority: %v", raw, err))
+	case !read:
+		*unread = append(*unread, fmt.Sprintf("priority %s is no level Dispatch writes", raw))
+	}
+	return priority
 }
 
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself

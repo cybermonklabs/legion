@@ -20,6 +20,7 @@ import {
   writeDeviceLoginFile,
 } from "@legion/cipher-client/test/device-logins";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
+import { HEADER_DPOP_HOLDER } from "@legion/cipher-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { forgetBrokerClients } from "../broker-credential";
@@ -47,10 +48,12 @@ function standInScope(prefix: string) {
   return { servers, tempDir };
 }
 
-/** One trade the stub broker was asked, and the access token it answered. */
+/** One trade the stub broker was asked, and the access token it answered: its form, its DPoP
+ *  proof's claims, and its holder proof (`DPoP-Holder`) as sent, "" where it sent none. */
 export interface Trade {
   readonly form: URLSearchParams;
   readonly proof: Record<string, unknown>;
+  readonly holder: string;
   readonly token: string;
 }
 
@@ -70,7 +73,7 @@ export function brokerStandIns(prefix: string) {
   const { servers, tempDir } = standInScope(prefix);
 
   /** The config a caller with no envoy.json reads: the neutral file, which does not exist. */
-  function noFile(env: DispatchEnvironment) {
+  async function noFile(env: DispatchEnvironment) {
     return readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
   }
 
@@ -86,6 +89,7 @@ export function brokerStandIns(prefix: string) {
         trades.push({
           form: new URLSearchParams(await request.text()),
           proof: JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")),
+          holder: request.headers.get(HEADER_DPOP_HOLDER) ?? "",
           token,
         });
         return Response.json({

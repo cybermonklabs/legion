@@ -252,10 +252,12 @@ func (s *supervision) reserveUnfinishedTurns(launches []*bootRelaunch) {
 	}
 }
 
-// owedSince is when the work an unfinished launch is for was first owed: the moment the task the
-// claim holds was queued to it, and the zero time for a claim that holds none.
+// owedSince is when the work an unfinished launch is for was first owed: the moment the task that
+// hands the claim work was queued to it (supervise.HoldsWork), and the zero time for a claim that
+// holds none — no delivery, the daemon's own notice of its relaunch, or a task of news alone,
+// none of which is work a person waits on.
 func owedSince(c supervise.Claim) time.Time {
-	if c.Pending == nil {
+	if !supervise.HoldsWork(c.Pending) {
 		return time.Time{}
 	}
 	return c.Pending.QueuedAt

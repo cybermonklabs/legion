@@ -639,7 +639,7 @@ broker refuses to start, naming the entry or the account, on:
   could then enrol the person's pods as its own workers;
 - a mapped account whose login service a `BROKER_VM_SERVICES` entry names, since the broker
   registers those services as owners a secret may name too;
-- a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person;
+- a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person or lists with no person;
 - a mapped account that a `BROKER_POD_REGISTRARS` entry names as its registrar, since the person's
   pod would then choose the session names other pods exchange under (a mapped account on the pod
   side of an entry is not refused);
@@ -768,23 +768,78 @@ setting says. A roll serves the previous release beside this one against one dat
 A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
 tokens write as one person: in the one Dispatch project the entry names, or, for an entry that names
-no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write.
+no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write. An
+entry may name neither a person nor a project (`<service account>==`, or
+`<service account>===<session>` to fix its session): its tokens name no person and no project and
+name the account as their service, so they act as the account itself, write wherever Dispatch's own
+rules let a credential naming no project write, and are recorded under that account. That includes
+the writes that belong to the deployment rather than to one project and need no OAuth scope:
+priorities (`POST`, `PATCH` and `DELETE /api/v1/priorities`), a new project with its default
+assignee (`POST /api/v1/projects`), the delivery settings (`PUT /api/v1/settings/delivery`), a
+project's Legion daemon URL (`PUT` and `DELETE /api/v1/projects/{key}/legion/daemon`) and default
+repository (`PUT /api/v1/projects/{key}/default-repository`), and the delivery session groups
+(`POST`, `PATCH` and `DELETE /api/v1/delivery/session-groups`). The broker refuses to start on an
+entry that names a project and no person: an entry that names a project names its person, so no
+token held to a project is personless. A broker of a build older than the entry naming no person
+refuses to start on one, and an Envoy listener or a Dispatch of a build older than it answers such
+a token `401`, so deploy the broker, Dispatch and every Envoy listener before you write one. For the
+same reason, before you roll the broker, Dispatch or an Envoy listener back to a build older than
+this release, remove every entry that names no person and redeploy the broker: an older broker
+refuses to start on such an entry and restarts in a loop, and an older Dispatch or listener answers
+the account's tokens `401`. Bring the session images' pi-envoy and claude-envoy builds that carry
+the same release's `dispatch` command there first too: an older `dispatch whoami` ignores
+Dispatch's `sign_in_required` and tells such a session that its writes are refused, though they
+succeed.
 `BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
 `<service account>=<service>=<session>` entries, for example
 `BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.
-The token of such an entry holds the OAuth scope `read` alone and the project scope `none`, names
-that service and that session, and names no person and no project. Dispatch serves it on the routes
-its read list names, today `GET /api/v1/projects/{key}/architecture` alone, and answers it
-`403 READ_ONLY_TOKEN` on every other route. That token reads the whole answer of
-`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
-source, each component, and every issue of the project, closed and iceboxed ones included. No
-setting holds a read entry to some projects. The Envoy listener answers it `401`. Both settings need
+The token of such an entry, traded with no scope, holds the OAuth scope `read` alone and the project
+scope `none`, names that service and that session, and names no person and no project. Dispatch
+serves it on the GET routes it classes as reads, and answers it `403 READ_ONLY_TOKEN` on every other
+route. That token reads every read of Dispatch that needs no OAuth scope, for every project: each
+issue, closed and iceboxed ones included, with its documents, comments and asks. No setting holds a
+read entry to some projects. The Envoy listener answers it `401`. Both settings need
 `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`, and the broker refuses to start on a
 read entry without the audience. It also refuses an entry with a missing field, a namespace's
 `default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is
 `shared`, and an account that one setting lists twice or that both settings list. A broker of a
 build older than this setting does not read it, so it mints those accounts no token. The boot line
 `token exchange state=on` counts the read entries as `read_accounts`.
+
+No setting turns on a read trade. Every trade the exchange takes may ask for the scope `read`
+(`scope=read`), and its token keeps the identity the same trade would have had and writes nothing
+([Concepts](/legion/broker/concepts/#sessions-and-enrollment)). Such a trade may name a cut
+(`as_of`), an RFC 3339 time with at most six fractional digits, no later than the trade. The broker
+refuses each of these with `400 invalid_request`, naming what is wrong:
+
+- A cut on a trade that does not ask for `read`, a cut later than the trade, a cut at the zero
+  time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and a cut in any
+  other form.
+- `launcher_credential=true` on a read trade, which makes, moves and extends no credential.
+- A `DPoP-Holder` header on a trade that does not ask for `read`, a holder proof that does not
+  verify, and a holder proof signed with the DPoP proof's own key.
+- A person's read trade with no `DPoP-Holder` proof.
+- A read token that would be bound to a key that a live launcher credential is bound to, a read
+  entry's token traded with no scope included. The answer names the cure.
+
+A person's read trade whose sign-in holds no launcher credential yet is refused
+`400 invalid_grant`, naming `agent-secrets login`. One whose credential has lapsed is refused
+`400 invalid_grant` too, naming the cure: one ordinary trade of the sign-in, which `agent-secrets`
+makes and which renews the credential. A driver that renews a read token for a copy elsewhere
+keeps the sign-in trading ordinarily as well. The other side of the key rule is refused where a
+key another live credential holds is refused, with a code or a hint of its own that names the read
+token and the cure, a new key: a device login's approval and a token login whose key a live read
+token is bound to are `409 KEY_BINDS_READ_TOKEN`, beside the `409 KEY_HOLDS_LIVE_CREDENTIAL` of a
+key another live credential holds, and a Google machine's or a person's trade is
+`400 invalid_grant`.
+
+The broker keeps a token narrowed to reading in a table of its own, which migration 0042 adds
+(`oauth_narrowed_access_tokens`), and decides at each introspection whether it is still live: its
+own row, the launcher credential it names and, for a machine login's trade, that login's access
+token must all be live. A broker of an older build reads nothing of that table, so while the
+broker rolls, an older replica answers a narrowed token's introspection inactive and refuses it as
+a subject token, and a revoke or a retire that replica makes still ends the token. A Dispatch or a
+listener of an older build refuses a narrowed token's project scope, so it answers the token `401`.
 
 A machine holding a Google identity token — a Compute Engine VM, a pod on Google Kubernetes
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's
@@ -887,8 +942,10 @@ enrolled under the old one stop renewing when it lapses, and a box enrolled with
 `agent-secrets enroll --helper` is enrolled again by running that command again.
 
 Only a trade that asks for a credential holds one, and a trade asks unless it says otherwise, so
-`agent-secrets` and the helper hold theirs by doing nothing. A person's sign-in cannot do
-otherwise: a sign-in holds its credential, so a trade of a person's that declined one is refused
+`agent-secrets` and the helper hold theirs by doing nothing. A trade that asks for the scope `read`
+is the exception: it never asks, makes, moves or extends a credential, and it is refused
+`400 invalid_request` when it sends `launcher_credential=true`. A person's ordinary trade cannot
+decline: a sign-in holds its credential, so a trade of a person's that declined one is refused
 `400 invalid_request`. The clients that
 want a Dispatch token and read no secret — the `dispatch` command, the Oh My Pi and Claude Code
 plugins, `envoy-send` — decline it, since each of them makes a key per process and per session
@@ -989,6 +1046,68 @@ That file is per user: change `BROKER_GOOGLE_OIDC_AUDIENCE` on a deployed broker
 with removing `agent-secrets/machine/google-exchange-audience` from each user's state directory
 (`$XDG_STATE_HOME`, else `~/.local/state`) on each machine whose `agent-secrets` has used its own
 identity.
+
+## Earlier clients' github_app field
+
+An `agent-secrets` of a release before `--target` narrows a stored `github-app` secret with
+`--github-owner`, `--github-repo`, `--github-read-only` and `--github-token`, and sends that
+narrowing in the `github_app` field of its request and of its release. The broker answers it, so
+those clients go on running while the deployment moves to a client with `--target`.
+
+**Which Apps leave the airlock.** `BROKER_GITHUB_APP_FIELD_SECRETS` names the stored
+`github-app` secrets whose release this answer hands over outside the airlock, separated by
+commas or spaces; unset, it names none and the field is answered for no secret. The answer
+removes the profile's proxy block, and the broker this field comes from refused a narrowed
+release of a name its airlock held, so a deployment names the Apps that broker handed over raw
+and no others. Each entry is an agent-secret name, and the start is refused for anything else.
+
+**Who it is answered for.** `BROKER_GITHUB_APP_FIELD_REQUESTERS` names them: registered services
+and people, separated by commas or spaces, such as
+`BROKER_GITHUB_APP_FIELD_REQUESTERS=example-service,ada@example.com`. A person asking for their
+own App, which the stored secret's `owner` tag names, is answered besides. **Unset, the broker
+answers no service at all**, so a deployment's own value is what turns the answer on for its
+pods. This list, and not the profiles file alone, decides: a profile with no `requesters` list is
+granted to every agent-tier caller, and this answer hands over a real token outside the airlock,
+which such a caller's own `--target` request never gets.
+
+**What it answers.**
+
+- The request is served as one profile of the stored secret it names: of that secret's own profile
+  and the profiles whose `source` it is, in the profiles file's order, one the file grants the
+  caller at once and whose scope holds the narrowing's account and repositories. Of those, the one
+  whose permissions hold the most at `write`, then the greatest sum of its permissions' levels;
+  the stored secret's own name wins a tie before the profiles of it, and each profile before the
+  ones after it in the file. Where none is, the request is refused
+  `400 GITHUB_APP_FIELD_REMOVED`: there is no wider path. One check decides for the request and
+  for its release alike, and neither admits what the other refuses. A request that would wait for
+  a person is refused too.
+- The request records that profile, the narrowing as its target, and that it was made this way,
+  with the field's `read_only`. A live grant of one form is never handed to the other: a
+  `--target` request takes no such grant, and a narrowed request takes no `--target` grant.
+- The release hands over the token in the `installations` form under the stored secret's name,
+  narrowed to the account and repositories, **outside the airlock**, and echoes `github_app`, as
+  legion-envoy-v33.7.0 answered. A read-only body gets each of that broker's read set —
+  `actions`, `checks`, `contents`, `metadata`, `pull_requests` and `statuses` — at read where the
+  profile holds it, and none it does not; any other gets the profile's permissions. Each is cut
+  to what the installation holds.
+- Such a grant releases only through that field, with the same `read_only`: a release that drops
+  it, or that asks for another `read_only`, is refused and hands over nothing, so neither widens
+  the token the request was granted. A `--target` grant, including one a person approved, is
+  refused the field, so no grant of a client with `--target` is released past the airlock.
+
+**Rolling it out and back.** A broker of the release before this one reads a narrowed grant's row
+without the two columns the answer records, so it releases that grant without the field, as the
+profile's own value, and the recorded `read_only` has no effect there; that release gives no
+permission the policy does not grant the caller at once. So set `BROKER_GITHUB_APP_FIELD_REQUESTERS` and
+`BROKER_GITHUB_APP_FIELD_SECRETS` only once no replica of an earlier broker serves releases, and before you roll the broker back, take
+`BROKER_GITHUB_APP_FIELD_SECRETS` out, redeploy, and wait until every grant made from the field
+has ended.
+
+Each answer logs `broker: answered the github_app field of an earlier agent-secrets` (below), so
+you can count the clients that still send the field. Once none does, set
+`BROKER_GITHUB_APP_FIELD=off` and roll the broker: the field is then refused
+`400 GITHUB_APP_FIELD_REMOVED`, whoever sends it, as before this answer. The setting takes `off`
+or nothing; any other value refuses the start.
 
 ## Approval sign-in
 
@@ -1835,6 +1954,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: fatal error=…` | Startup refused; the error names the variable or dependency. The process exits 1. |
 | `agent secret policy refused name=<secret's name in the store> reason=<reason> owner=<owner tag> first_load=<true or false>` | At ERROR, when a secret becomes one the broker refuses to serve, and when it is refused for another reason than before, with `was=<the reason before>`: one line at the change, not one for each read of the store. A pod's first load writes one for each secret it refuses, each with `first_load=true`. A load or a reread that finds a secret refused for the reason it had writes nothing, and `broker_unservable_secrets` ([Metrics](#metrics)) holds every secret refused now. `name` is the secret's whole name in the store, such as `production/agent-secrets/deel-api-key`, or `profile:<NAME>` for a profile of the profiles file that the broker refuses against its source. `owner` is its owner tag (a profile's is its source's), and empty for `owner-tag-missing` and `owner-tag-malformed`. A refusal of the profiles file's ends with `detail=<what fails>`: the source and its own reason, the account or scope a block names that the source does not, the looser tier, requester or `maxGrant`. Reasons include `owner-tag-missing`, `owner-tag-malformed` (among others, a `group:` owner whose address is no lowercase email), `tier-tag-missing`, `tier-tag-malformed`, `name-malformed`, `service-owner-human-tier`, `not-on-agent-secrets-key`, `no-current-value`, `type-unknown`, `github-owners-missing`, `github-owners-malformed`, `requesters-malformed` (a `requesters` list holding a comma, naming nobody, carrying an email with a capital letter, holding a `group:` entry whose address is no lowercase email, or naming a service the deployment does not register), `type-human-tier` (an `anthropic-federation` secret that is not human tier), `max-grant-required` (an `admin` secret, or a `google-service-account` or `anthropic-federation` one, with no `max-grant` or one longer than an hour), `requesters-not-owner` (a `google-service-account` or `anthropic-federation` secret whose `requesters` do not name its owner once, a person or a group, and no other person or group, or that lists a service it may not: any service at agent tier, and any service at all on a secret `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a `dev-<name>` account), `admin-malformed` (an `admin` tag set to anything but `true`), `admin-tier` (an `admin` secret that is not human tier), `admin-requesters` (an `admin` secret with no `requesters` list), `scopes-malformed` (a `scopes` list holding a comma, naming no scope, naming one twice, or holding an entry that is no scope name, a whole `https://www.googleapis.com/auth/…` URL among them), `scopes-type` (a `scopes` tag on a secret that is not a `google-service-account` one), `project-tag-misspelled` (a tag key that differs from `dispatch-project` or `project-channels` only in case or in its separators, such as `Dispatch-Project`, `dispatch_project` or `PROJECT-CHANNELS`, which the broker would otherwise read as no project tag at all), `project-malformed` (a `dispatch-project` tag that is not one Dispatch project key), `project-unchecked` (a `dispatch-project` tag on a broker with no `BROKER_PROJECT_ACCESS_URL`), `project-channels-malformed` (a `project-channels` tag set to anything but `slack`), `max-grant-malformed`, `default-grant-malformed` and `value-malformed` (a `github-app`, `github-installations`, `google-login`, `google-service-account`, `azure-login` or `anthropic-federation` secret whose stored value that type's minter could not mint from, among them a `github-installations` value of a `shapeVersion` other than 1 or of none: [the value read](#the-value-read)); of the airlock's kinds, `proxy-kind-unknown` (a `proxy` tag that names no kind of the profiles file; the detail names the tag's value), `proxy-way-not-in-kind` (the way the secret's type takes, `swap`, `mint`, `sign` or `exchange`, is not one of its kind's `ways`; the detail names both), `proxy-max-grant-above-kind` (a secret of a kind with a `max_grant` that sets no `max-grant`, or one above the kind's; the detail names both), `proxy-kind-conflict` (a profile whose `proxy` string names another kind than its source's `proxy` tag), `proxy-narrowed-malformed` (a `proxy-narrowed` tag set to anything but `true`), `proxy-narrowed-profiles` (a secret tagged `proxy-narrowed=true` that no profile names, whose one profile has no `allow`, or that more than one profile names; the secret and each such profile are refused); and, of the profiles file, `profile-source-missing` (the profile's source is no secret the broker serves: absent, refused, waiting for its value, or itself a profile), `profile-name-taken` (the profile's name is a stored secret's other than its source, and that stored secret carries no `superseded-by` tag whose value is exactly the profile's source; that stored secret is refused by its own name too. With such a tag the profile is served by the name and the stored secret is not), `profile-block-mismatch` (a `github` or `google` block that does not fit the source's type, `github-owners` or `scopes`, or a `github-app` or `github-installations` source's profile with no `github` block), `profile-looser` (agent tier on a human-tier source, a requester the source's `requesters` does not name, or a `maxGrant` above the source's `max-grant`), `profile-source-not-proxied` (a profile whose source is a stored token, a `google-login`, an `azure-login` or an `anthropic-federation` secret with no `proxy` tag and no `proxy` string; the source is refused by its own name too), `profile-allow-not-narrowed` (a profile with an `allow` of its own whose source carries no `proxy-narrowed=true` tag), `profile-allow-outside-kind` (a row of a profile's `allow` that no row of its kind's `allow` covers; the detail names the row), `profile-allow-host` (a row of a profile's `allow` naming a host its kind does not bind), `github-app-no-profile` (a `github-app` secret no profile names, which the broker refuses by its own name) and `github-installations-no-profile` (the same of a `github-installations` secret). A profile is held to the tag rules on its own tags over its source's, so a profile of an `admin` source can be refused `admin-tier`, and an agent-tier profile of an `anthropic-federation` source `type-human-tier`. Every secret behind a kind whose `max_grant` is set needs a `max-grant` tag no longer than it, or it is refused `proxy-max-grant-above-kind`: before a deployment adds a `max_grant` to a kind, it gives each secret of that kind such a tag (`agent-secrets secret retag NAME --max-grant <duration>`). |
 | `broker: profiles applied served=<count> refused=<count> file_digest=<SHA-256 of the file>` | At INFO, once for each broker process, at its first load: how many of the profiles file's entries the broker serves and how many it refuses, each refused one beside it as an `agent secret policy refused` line named `profile:<NAME>`, and the SHA-256 of the file it read (empty when `BROKER_PROFILES_FILE` names none). A pod that wrote it read its profiles; one that did not has not loaded its policy. |
+| `broker: answered the github_app field of an earlier agent-secrets at=<request or release> name=<stored secret> profile=<profile served> request=… state=… grant=… enrollment=… kind=… person=… service=… owner=… repositories=[…] read_only=<true or false>` | At INFO, once for each request and each release that answered the `github_app` field of an `agent-secrets` of a release before `--target` ([Earlier clients' github_app field](#earlier-clients-github_app-field)). A release line names the grant and no request or state. When none has been written for long enough that no released client still runs, set `BROKER_GITHUB_APP_FIELD=off`. |
 | `agent secret policy no longer refused name=<secret's name in the store> reason=<the reason it had> owner=<owner tag> now=<servable, pending or absent>` | At INFO, when a secret the broker refused is refused no longer: `now=servable` when the broker serves it, `now=pending` when it is a new secret of that name waiting for its value (the line below), and `now=absent` when the store no longer holds it (deleted, or scheduled for deletion). |
 | `agent secret policy waiting for a value name=<secret's name in the store> reason=pending-value owner=<owner tag> first_load=<true or false>` | At INFO, once, when the broker first finds a secret that `agent-secrets secret create` made and has not yet filled: it carries the `agent-secrets-create` label the create gives a Google Secret Manager secret it makes before the value, holds no version at all, and the store created it less than ten minutes ago, while the person types or pipes the value. On AWS Secrets Manager the create makes the secret with its value and writes no such tag, so a secret there waits only where another writer gave it a tag of that name and no value. The broker serves it to nobody, a request for it is refused `PENDING_VALUE`, with no request recorded and no approver asked, and a reread answers `reason=pending-value`, but it is no refusal: `broker_unservable_secrets` holds no series for it, and the loads that find it still waiting write nothing. Its value landing serves it and writes no line, as does its leaving the store. Ten minutes after its creation the create that made it gives up and deletes it, or, where the person was still typing or pasting then, deletes it when that entry ends: at Enter, or at a signal that ends the process, such as a hang-up, or Ctrl-C typed outside a paste where it still sends SIGINT. One still there without a value past the ten minutes is refused `no-current-value` (the `agent secret policy refused` line, and a `broker_unservable_secrets` series until the create deletes it). The broker itself deletes nothing: a create that was killed leaves its secret in the store with no version, refused from then on, until its owner frees the name with `gcloud secrets delete <id> --project <project number>` or stores its value; `agent-secrets secret delete NAME` only schedules the deletion 30 days out, and the name stays taken until then. A secret without that label, one holding any version, and one whose listing names no creation time are never waiting: one without a value is refused `no-current-value` at once. |
 | `agent secret policy load failed; previous policy kept error=…` | At ERROR, in two cases. The five-minute reload of the namespace failed (the secret store out of reach, or refusing the broker; a Secret Manager failure names its gRPC status code alone, never the status message), and the broker keeps serving the policy from its last good read: the first failed reload of a run writes the line, and the reloads after it write nothing until one succeeds, which writes `agent secret policy load succeeded again`. Or, with `name=<NAME>` (the name a request asked for), the request named a secret the broker did not serve and the broker's reread of that one secret failed, so the request is refused `UNKNOWN_SECRET`: one line for each such request. A read in flight when the broker shuts down, and a request's reread its own caller abandoned, are not one of these and log nothing. |

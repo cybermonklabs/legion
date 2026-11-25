@@ -172,6 +172,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"signInOutside", func(a *gcp.DispatchArgs) { a.SignInOutside = true }},
 		{"signInPasskey", func(a *gcp.DispatchArgs) { a.SignInPasskey = true }},
 		{"signInWorkspaceDomains", func(a *gcp.DispatchArgs) { a.SignInWorkspaceDomains = []string{"example.net"} }},
+		{"parentStatusRule", func(a *gcp.DispatchArgs) { a.ParentStatusRule = true }},
 		{"publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = dispatchPublicOrigin }},
 		{"iapAudience", func(a *gcp.DispatchArgs) { a.IapAudience = pulumi.String(dispatchIAPAudience) }},
 		{"loadBalancerSourceRanges", func(a *gcp.DispatchArgs) { a.LoadBalancerSourceRanges = dispatchLoadBalancerRanges }},

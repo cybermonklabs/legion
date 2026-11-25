@@ -663,7 +663,7 @@ assert_instance_isolated() {
   local read_token="${workdir}/read-token"
   if [[ "$(cat "$read_token" 2>/dev/null)" != "fake-token-for-${reader}" ]] \
     || ! grep -qF "dev-oidc-issuer: ${read_token} holds ${reader}'s token for audience legion-broker-exchange (pod pod-uid-of-${reader##*:})" "$log_file" \
-    || ! grep -qF "  read token:          ${read_token}  (${reader}'s pod, audience legion-broker-exchange: exchanges under example-reader-session for a token of the scope read alone, which Dispatch serves on GET /api/v1/projects/{key}/architecture and answers 403 READ_ONLY_TOKEN on every other route)" "$log_file"; then
+    || ! grep -qF "  read token:          ${read_token}  (${reader}'s pod, audience legion-broker-exchange: exchanges under example-reader-session for a token of the scope read alone, which Dispatch serves on every GET route it classes as a read and answers 403 READ_ONLY_TOKEN on every other route)" "$log_file"; then
     cat "$log_file" >&2
     echo "FAIL: $label's issuer does not write the read entry's pod token at the exchange's audience into ${read_token}, or its banner does not name that file and what its token may do" >&2
     exit 1

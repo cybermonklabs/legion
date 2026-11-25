@@ -194,8 +194,7 @@ func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T)
 // validator it gave before the message's delete. Before the delete each read gives the posts'
 // words; after it each gives none of them, and every event of either post carries the mark.
 func TestEveryReadOfTheEventLogGivesADeletedPostsEventsWithTheMarkAndNoBody(t *testing.T) {
-	// Not parallel: it reads the event log through awaitHorizonRead, whose horizontest.Listen
-	// changes slog's default logger for the whole process (slog.SetDefault).
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	handler, database := rig.handler, rig.database
 	issue := createInteractionIssue(t, handler, "TEST", "Posts the log carries", "A spec")
