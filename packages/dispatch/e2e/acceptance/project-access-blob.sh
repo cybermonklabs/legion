@@ -59,6 +59,14 @@
 #     App key, the refusal both answer before any repository is read. Whether the App is installed
 #     on a repository, and what the proxy forwards, are held by github_app_installation_test.go
 #     and the githubapi package's tests, and by project-access.sh's proxy section.
+#   - The GitHub proxy as a token reads it, against a base that refuses every token there. The
+#     proxy reads for a full member's token that holds `person` and refuses a token that holds no
+#     scope (`api.githubGate`), where a base without that answers every token `401 NO_IDENTITY`, as
+#     it answers a request with no credential. Against such a base a token's proxy read has no
+#     answer to be held to, so this build's answer to a person's token is held to its own answer to
+#     that person's browser, and the shared token's to `403 OAUTH_SCOPE_REQUIRED` naming `person`
+#     (proxy_token_read, in the reads section). A base that answers a token otherwise reads for it
+#     too, and the read is compared there as any other.
 #   - A route this build serves that the base does not: the base has no answer to hold it to, only
 #     its router's no-route 404. A route is new when this build's own route index (`GET /api/v1`)
 #     lists it and the base's does not, never by an answer's status or body, since a hidden
@@ -702,6 +710,7 @@ pass
 # PUB's holding the seed's messages and replies. The
 # GitHub App's installation lookup and the proxy are read for the repository PUB is mapped to, as
 # a deployment with no App key answers them (see "Not compared" above).
+readonly proxy_read=/api/github/rest/repos/acme/pub-map/pulls/1
 pipeline_at=$(date -u -d "@$run_epoch" +%Y-%m-%dT%H:%M:%SZ)
 readonly pipeline_at
 readonly reads=(
@@ -735,7 +744,7 @@ readonly reads=(
   /api/v1/agents/ses-priv-session/messages
   /api/v1/agents/ses-priv-session/answers
   /api/v1/github/app-installation/acme/pub-map
-  /api/github/rest/repos/acme/pub-map/pulls/1
+  "$proxy_read"
 )
 readonly project_reads=(
   "/api/v1/issues?project={P}"
@@ -814,6 +823,36 @@ no_difference
 note "every caller's session group answers are the same at both builds"
 pass
 
+# proxy_token_read CALLER holds this build's answer to CALLER's read of the GitHub proxy where
+# CALLER is a token and the base answers it `401 NO_IDENTITY`, the base that refuses every token
+# there ("Not compared", above). It returns 1, having sent the base's read alone, where CALLER is
+# a person at a browser or the base answers the token otherwise: compare then reads it as any
+# other. A person's token is held to that person's browser at this build, the same status, bytes
+# and headers (same_answers); the shared token, which holds no scope, to `403
+# OAUTH_SCOPE_REQUIRED` with the scope gate's challenge naming `person`.
+proxy_token_reads=0
+proxy_token_read() {
+  local caller=$1 problem=''
+  [[ $caller == *-token || $caller == shared ]] || return 1
+  send base "$caller" GET "$proxy_read"
+  [ "$status" = 401 ] && [ "$(jq -r '.code? // empty' "$work/body" 2>/dev/null)" = NO_IDENTITY ] || return 1
+  proxy_token_reads=$((proxy_token_reads + 1))
+  send head "$caller" GET "$proxy_read"
+  keep_answer head head
+  if [ "$caller" = shared ]; then
+    if [ "$status" != 403 ] || [ "$(jq -r '.code? // empty' "$work/body" 2>/dev/null)" != OAUTH_SCOPE_REQUIRED ]; then
+      problem="$caller GET $proxy_read: this build answered HTTP $status, want 403 OAUTH_SCOPE_REQUIRED: $(head -c 300 "$work/body")"
+    elif ! tr -d '\r' <"$work/headers" | grep -qiE '^www-authenticate: .*scope="person"'; then
+      problem="$caller GET $proxy_read: this build's 403 sends no challenge naming the person scope: $(grep -i '^www-authenticate:' "$work/headers" || echo 'no WWW-Authenticate')"
+    fi
+    judge "$status" "$problem"
+    return 0
+  fi
+  send head "${caller%-token}" GET "$proxy_read"
+  keep_answer browser head
+  same_answers "$caller GET $proxy_read, held to ${caller%-token}'s browser at this build" browser head
+}
+
 begin reads
 # A build pages its event log only up to its safe horizon (listEventLog, sinceHorizon), and a
 # build can answer a read before that horizon has passed what the seed wrote: one run read [] from
@@ -837,6 +876,9 @@ for build in base head; do
 done
 for caller in "${callers[@]}"; do
   for path in "${reads[@]}"; do
+    if [ "$path" = "$proxy_read" ] && proxy_token_read "$caller"; then
+      continue
+    fi
     compare "$caller" GET "$path"
   done
   for project in PUB PRIV; do
@@ -856,6 +898,7 @@ main_additions_used
 note "$compared answers compared, each the same status and the same masked bytes at both builds" \
   "but the members of any main addition admitted above;" "by this build's status: $(statuses)"
 note "$new_routes new routes skipped, $skipped_requests requests to them read at neither build (each route named on its SKIP line above)"
+note "$proxy_token_reads token reads of the GitHub proxy held to this build's own answers, the base refusing every token there (proxy_token_read)"
 pass
 
 # A list that is empty in every answer compares no row, so a field this build added to its rows
