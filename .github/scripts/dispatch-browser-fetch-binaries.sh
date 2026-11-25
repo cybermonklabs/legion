@@ -122,9 +122,11 @@ for attempt in $(seq 1 "$attempts"); do
   else
     lost=$((after - before))
   fi
+  # curl's error text stays on this line: its carriage returns and newlines become spaces, so no
+  # text of curl's, a server's reply among it, starts a line of the log as a workflow command.
   echo "attempt $attempt: curl exit $status, HTTP ${code:-none}, ${got:-0} bytes in ${took:-0} s" \
     "(${speed:-0} bytes/s), $have of $size bytes on disk, $lost TCP segments retransmitted" \
-    "$(head -c 300 "$work/error" | tr '\n' ' ')"
+    "$(head -c 300 "$work/error" | tr '\r\n' '  ')"
   # curl's 33 is a server that answered a resumed read with the whole object rather than the
   # range asked for: what is on disk cannot be continued, so the next attempt starts from 0.
   if [ "$have" -gt "$size" ] || [ "$status" -eq 33 ]; then
