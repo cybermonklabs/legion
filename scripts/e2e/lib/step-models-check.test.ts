@@ -12,8 +12,8 @@ import { fakeDispatchRead } from "./fake-dispatch-command";
 // The fake answers `dispatch steps --issue <KEY>` with that issue's records, lines of
 // testdata/step-models/printed-steps-16.txt, printed-steps-16-b.txt and printed-steps-16-c.txt.
 // The daemon's logs, the transcripts and the agents files are the other files of
-// testdata/step-models. Its README names each record (A0 to A8, C1 to C3, C1b, C3b, D1 to D9, T1
-// and S1), and says which fixtures are made.
+// testdata/step-models. Its README names each record (A0 to A8, C1 to C3, C1b, C3b, D1 to D10,
+// T1 and S1), and says which fixtures are made.
 const script = join(import.meta.dir, "..", "step-models-check.sh");
 const data = join(import.meta.dir, "testdata", "step-models");
 const dir = temporaryDirectory("step-models-check-test");
@@ -36,7 +36,7 @@ const C3 = sixteen[11];
 const A0 = sixteen[12];
 const C1b = sixteenB[1];
 const C3b = sixteenB[2];
-const [, D1, D2, D3, D4, D5, D6, D7, D8, D9, T1, S1] = sixteenC;
+const [, D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, T1, S1] = sixteenC;
 
 const A = "LEGION-3550";
 const B = "LEGION-3551";
@@ -615,6 +615,18 @@ describe("step-models-check.sh", () => {
     );
     expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: UNKNOWN"]);
     expect(run.code).toBe(0);
+  });
+
+  test("a call after the end read and after the claim's next read is no completion call", () => {
+    // D10's only call of the `legion` tool ends 0.080 s after its end read, as D6's does. A read
+    // of the same claim for its next step comes 0.040 s after the end read, before that call.
+    const run = check({ [D]: [D10] }, agentsFile("d-implementer"), { log: completionLog });
+    expect(run.stdout).toContain(
+      `GAP: ${D} default 2 step attempt 10 (omp): start read 2026-11-21T10:09:00.000318273Z: the last response ended 47.000 s before it, the next 3.000 s after it. end read 2026-11-21T10:09:10.000216347Z: the last response ended 4.000 s before it, the next 0.080 s after it. No response holds the completion call, so the end read leaves out none. Not taken: a response ended within 2 s of its end read.`
+    );
+    expect(run.stdout).toContain("c-real: UNKNOWN: took no step of harness omp");
+    expect(run.verdicts).toEqual(["c-real: UNKNOWN", "live-at-both-reads: UNKNOWN"]);
+    expect(run.code).toBe(2);
   });
 
   test("an acceptance step that its architect ended with sign_off counts that response", () => {
