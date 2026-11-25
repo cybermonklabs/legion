@@ -1752,6 +1752,7 @@ mkdir -p "$self_copy/evidence"
 cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$HERE/claims.jsonl" "$self_copy/"
 cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
     "$HERE/evidence/build-constraints.txt" "$self_copy/evidence/"
+mkdir -p "$self_copy/tests" && cp -r "$HERE/tests/omp-stub" "$self_copy/tests/"
 # A check.test.sh that runs no case: it sources the copy's check.sh and writes its ending
 # record, all 0 cases passed, by run_ending, as this file's summary does.
 CASES_STUB='. "$(dirname "$0")/check.sh" && run_ending cases'
@@ -1902,6 +1903,7 @@ dir_copy() {
     cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$HERE/claims.jsonl" "$copy/"
     cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
         "$HERE/evidence/build-constraints.txt" "$copy/evidence/"
+    mkdir -p "$copy/tests" && cp -r "$HERE/tests/omp-stub" "$copy/tests/"
     cp "$2" "$copy/check.test.sh"
     printf '%s' "$copy"
 }
@@ -7201,6 +7203,202 @@ for form in row no-row; do
     no-row) honest_result "a measurement the interview states with no row of R1 passes citation-row" citation-row "$out" ;;
     esac
 done
+
+# 225. The models file of the row i-skills-run is a required input of --replay, as the deployment
+# repository is (the architect's condition 1 on the row, ruled 2026-11-24T23:59Z). The row runs
+# one headless omp session on a model that IOC_OMP_MODELS, the path of an omp models.yml,
+# reaches, so a run with the variable unset ends cannot run, naming it and what provides it,
+# before it reads anything, and never as a FAIL of the row. At 3e1e50ce the prerequisite table
+# named neither the variable nor omp, so --replay went on to the row, whose script ended 2, and
+# the row failed replay-command, exit 1. The case plants the row as claims.jsonl holds it into
+# the fixture and runs --replay with the stub omp of tests/omp-stub first on PATH and
+# IOC_OMP_MODELS empty (FIXTURE_OMP_STUB, FIXTURE_OMP_MODELS): it must end exit 2, every
+# assertion it leaves of the kind prerequisite and none failed, its last line naming the
+# variable and what provides it. Case 228 is the honest form.
+#
+# Cases 225 to 230 run the row on the stub (check.sh's FIXTURE_OMP_STUB), never on a model. The
+# stub reads its mode from a file beside itself, so each case copies it (accord_stub) and
+# writes the mode. The script reads a clone of cognition-protocols at the commit sources.json
+# pins, which is made once here, under the cases' scratch, by env.sh's rule; where it cannot be
+# made, each case that needs it could not run, of the kind source.
+ACCORD_CASE="$WORK/accord-skills-run"
+ACCORD_CLONES="$ACCORD_CASE/clones"
+mkdir -p "$ACCORD_CLONES" "$ACCORD_CASE/home" "$ACCORD_CASE/tmp"
+ACCORD_WHY=""
+if ! (
+    IOC_ENV_FUNCTIONS_ONLY=1
+    . "$HERE/env.sh" && IOC_ENV_HERE="$HERE" IOC_CLONES="$ACCORD_CLONES" ioc_env_clone cognition-protocols
+) >"$ACCORD_CASE/clone.log" 2>&1; then
+    ACCORD_WHY="the clone of cognition-protocols at the commit sources.json pins could not be made: $(tail -1 "$ACCORD_CASE/clone.log" | head -c 240)"
+fi
+# accord_unrun <case>; ends the case as one that could not run, of the kind source, and returns
+# 0, when the clone could not be made; it returns 1 when the case can run.
+accord_unrun() {
+    [ -n "$ACCORD_WHY" ] || return 1
+    case_unrun "$1" source "$ACCORD_WHY"
+}
+# accord_stub <mode>; prints a copy of the stub omp, tests/omp-stub, whose mode file holds <mode>.
+accord_stub() {
+    local copy="$ACCORD_CASE/stub-$1"
+    rm -rf "$copy" && cp -r "$HERE/tests/omp-stub" "$copy" && printf '%s\n' "$1" >"$copy/omp-stub-mode" || return 1
+    printf '%s' "$copy"
+}
+# accord_plant <name>; prints a fresh copy of the fixture whose claims.jsonl holds the row
+# i-skills-run as this directory's holds it, its command and its predicate among them.
+accord_plant() {
+    local dir
+    dir="$(fresh "$1")" || return 1
+    jq -c 'select(.id == "i-skills-run")' "$HERE/claims.jsonl" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || return 1
+    [ "$(grep -c '"id":"i-skills-run"' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl")" = 1 ] || return 1
+    printf '%s' "$dir"
+}
+# accord_run <stub dir> [<argument>...]; the script run by hand, under env -i, with the stub first on
+# PATH and its models.yml as IOC_OMP_MODELS.
+accord_run() {
+    local stub="$1"
+    shift
+    env -i PATH="$stub:$PATH" HOME="$ACCORD_CASE/home" TMPDIR="$ACCORD_CASE/tmp" IOC_CLONES="$ACCORD_CLONES" IOC_OMP_MODELS="$stub/models.yml" \
+        sh "$HERE/evidence/accord-skills-run.sh" "$@"
+}
+dir="$(accord_plant accord-models-unset)" || {
+    printf 'FAIL the row i-skills-run could not be planted into the fixture\n'
+    exit 1
+}
+out="$(FIXTURE_OMP_STUB="$(accord_stub locked)" FIXTURE_OMP_MODELS='' IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
+models_case="--replay with IOC_OMP_MODELS unset cannot run, exit 2, of the kind prerequisite, naming the variable and what provides it, and the row i-skills-run runs no session"
+ending_read "$out"
+if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] &&
+    printf '%s\n' "$RUN_LINE" | grep -qxF -- 'check.sh cannot run --replay: the variable IOC_OMP_MODELS is not set; provided by: export IOC_OMP_MODELS=<the path of an omp models.yml that reaches a model>' &&
+    [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = prerequisite ]; then
+    case_passed "$models_case"
+else
+    case_failed "$models_case" "exit $RUN_STATUS, last line: $RUN_LINE; could not run, by kind: $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort | uniq -c | tr -s ' \n' ' ')"
+fi
+
+# 226. A session whose protocol does not lock is the row's FAIL, naming the row and what it
+# printed, never a read that failed. The script ends 1 and prints "result: not locked" when the
+# model answered and the state did not reach INTENT-LOCKED, and the row declares that status
+# (IOC_EXPECT_STATUS=1), so run_recorded's record of it is no failed read and the predicate,
+# one_of ["locked"], judges the output. This case guards that reading rather than bites: a
+# 3e1e50ce whose fixture carried the variable passes it, since the declared status was read the
+# same way there; as the fixture stood, with no IOC_OMP_MODELS, the script ended 2 and the row
+# failed as a read inside it, with no word of the predicate or of what the session printed. The
+# case plants the row and runs --replay with the stub in its stalled mode,
+# which ends the session after the first round: exactly one assertion, replay-command, must
+# fail, its one line naming the row, its command, the predicate and "not locked".
+stalled_case="a session that does not lock fails replay-command alone, naming the row i-skills-run, the predicate and what the run printed"
+if ! accord_unrun "$stalled_case"; then
+    dir="$(accord_plant accord-stalled)" || {
+        printf 'FAIL the row i-skills-run could not be planted into the fixture\n'
+        exit 1
+    }
+    out="$(FIXTURE_OMP_STUB="$(accord_stub stalled)" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
+    one_failure_result "$stalled_case" replay-command '^1 of 18 assertions failed: replay-command$' \
+        "^FAIL replay-command: i-skills-run ran '.*accord-skills-run\\.sh\" --max-cost 2 .*' and its output does not meet \\{\"one_of\":\\[\"locked\"\\]\\}: not locked" "$out"
+fi
+
+# 227. A model gateway that does not answer is a source that did not, never a verdict on the
+# deliverable (check.sh's live-read rule, which the model gateway joins). The script ends 3 and
+# prints "result: model not reached (<cause>)" when the model gave no answer, HTTP 429, HTTP 5xx
+# or a refusal of the credential, and writes into the row's record the line check.sh's function of a
+# program writes, as evidence/concord-build-run.sh does for its curl, so that source_answer reads
+# the row's failure as the gateway's. At 3e1e50ce source_answer knew GitHub and Dispatch alone,
+# so the script's line was read as any failed read, and the row failed replay-command, exit 1:
+# "'omp -p --mode json --max-cost 2' exited 3, so its output is no reading of what the row
+# claims". The case plants the row and runs
+# --replay with the stub answering the first request with 429, 503 and 401 in turn: each run must
+# end exit 2, cannot run, every assertion it leaves of the kind source and none failed, its last
+# line naming the row, the model gateway, the rate limit, the server error or the credential,
+# and the cause the script printed.
+for gateway in 429 503 401; do
+    case "$gateway" in
+    429) refused="the model gateway's rate limit refused i-skills-run's read of its model through omp" said='HTTP 429' ;;
+    503) refused="the model gateway gave no answer that judges i-skills-run's read of its model through omp" said='HTTP 5xx' ;;
+    401) refused="the model gateway refused the credential of i-skills-run's read of its model through omp" said='credential refused' ;;
+    esac
+    gateway_case="a model gateway that answers $gateway cannot run --replay, exit 2, of the kind source, naming the row i-skills-run and the model gateway, and fails no assertion"
+    accord_unrun "$gateway_case" && continue
+    dir="$(accord_plant "accord-gateway-$gateway")" || {
+        printf 'FAIL the row i-skills-run could not be planted into the fixture\n'
+        exit 1
+    }
+    out="$(FIXTURE_OMP_STUB="$(accord_stub "$gateway")" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
+    ending_read "$out"
+    if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] && ! grep -q '^FAIL' "$out/text" &&
+        printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --replay now: $refused, so the row's failure is no verdict on the deliverable: 'omp -p --mode json --max-cost 2' exited 3 and printed 'result: model not reached ($said)'" &&
+        [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = source ]; then
+        case_passed "$gateway_case"
+    else
+        case_failed "$gateway_case" "exit $RUN_STATUS, $(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')last line: $RUN_LINE; could not run, by kind: $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort | uniq -c | tr -s ' \n' ' ')"
+    fi
+done
+
+# 228. The honest form of cases 225 to 227: with the stub in its locked mode the session runs the
+# protocol to INTENT-LOCKED, the script prints "result: locked", and --replay over the fixture and
+# the row passes every assertion it declares. At 3e1e50ce the same --replay did not pass: the
+# fixture's run carried no IOC_OMP_MODELS, so the script ended 2 and the row failed.
+locked_case="--replay over the fixture and the row i-skills-run on the stub in its locked mode passes every assertion"
+if ! accord_unrun "$locked_case"; then
+    dir="$(accord_plant accord-locked)" || {
+        printf 'FAIL the row i-skills-run could not be planted into the fixture\n'
+        exit 1
+    }
+    ending_result "$locked_case" 0 '^all 18 assertions passed$' \
+        "$(FIXTURE_OMP_STUB="$(accord_stub locked)" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
+fi
+
+# 229. omp is a prerequisite of --replay, and the models file is one that is read, not only set. A
+# run with no omp on PATH, or with IOC_OMP_MODELS naming no readable file, ends cannot run, exit 2,
+# of the kind prerequisite, naming it and what provides it, and no line the gate prints names the
+# path of the models file, which holds a credential. At 3e1e50ce the table held neither line, so
+# each run passed all 18 assertions, exit 0. The
+# case runs the fixture's --replay with FIXTURE_OMP_STUB empty and a PATH without omp
+# (path_without), then with FIXTURE_OMP_MODELS naming a file that is not there.
+dir="$(fresh accord-omp-missing)"
+path_without omp
+out="$(FIXTURE_OMP_STUB='' PATH="$WORK/path-without-omp" fixture_run "$dir" --replay)"
+ending_result "--replay with no omp on PATH cannot run, naming omp and what provides it" 2 \
+    '^check\.sh cannot run --replay: the tool omp is not on PATH; provided by: the omp coding agent, with its print mode, on PATH$' "$out"
+out="$(FIXTURE_OMP_MODELS="$dir/no-such-models.yml" fixture_run "$dir" --replay)"
+ending_result "--replay whose IOC_OMP_MODELS names no readable file cannot run, naming the variable" 2 \
+    '^check\.sh cannot run --replay: the variable IOC_OMP_MODELS names no readable file; provided by: export IOC_OMP_MODELS=<the path of an omp models\.yml that reaches a model>$' "$out"
+if grep -qF -- 'no-such-models' "$out/text"; then
+    case_failed "--replay whose IOC_OMP_MODELS names no readable file prints no line that names its path" "$(grep -F -- 'no-such-models' "$out/text" | head -1 | cut -c1-300)"
+else
+    case_passed "--replay whose IOC_OMP_MODELS names no readable file prints no line that names its path"
+fi
+
+# 230. The cost cap of the session is the row's, and the script writes none of its own (the
+# architect's condition 2 on the row): the row's command carries --max-cost and its number, the
+# flag omp --help prints, the script reads it from its arguments and hands it to omp, and a script
+# run with none ends cannot run, naming the flag, as does one whose omp prints no such flag, so
+# a renamed flag is never read as a model that did not answer. The case reads the row's command,
+# runs the script by hand on the stub with --max-cost 7, which the stub writes into the arguments
+# of its session, with no flag, and over an omp whose help prints none. It judges the script and
+# the row's command by hand and not the gate, so a gate of 3e1e50ce passes it as well.
+cap_case="the cost cap of the row i-skills-run is the --max-cost its command passes: the script hands it to omp, and ends cannot run with none or with an omp that prints no such flag"
+if ! accord_unrun "$cap_case"; then
+    stub="$(accord_stub locked)"
+    mkdir -p "$ACCORD_CASE/old-omp"
+    printf '#!/bin/sh\necho "usage: omp"\n' >"$ACCORD_CASE/old-omp/omp"
+    cp "$HERE/tests/omp-stub/models.yml" "$ACCORD_CASE/old-omp/models.yml"
+    chmod +x "$ACCORD_CASE/old-omp/omp"
+    flag="$(jq -r 'select(.id == "i-skills-run") | .command' "$HERE/claims.jsonl" | grep -oE -- '--max-cost [0-9]+(\.[0-9]+)?')"
+    without="$(accord_run "$stub" 2>&1)"
+    without_status=$?
+    old="$(accord_run "$ACCORD_CASE/old-omp" --max-cost 2 2>&1)"
+    old_status=$?
+    with="$(accord_run "$stub" --max-cost 7 2>&1)"
+    with_status=$?
+    handed="$(awk '$0 == "--max-cost" { getline; print; exit }' "$stub/omp-stub-args" 2>/dev/null)"
+    if [ -n "$flag" ] && [ "$without_status" = 2 ] && [ "$(printf '%s\n' "$without" | head -1)" = 'cannot run: --max-cost is not given; pass the flag omp --help prints, as --max-cost 2' ] &&
+        [ "$old_status" = 2 ] && [ "$(printf '%s\n' "$old" | head -1)" = 'cannot run: omp --help prints no --max-cost flag' ] &&
+        [ "$with_status" = 0 ] && [ "$(printf '%s\n' "$with" | tail -1)" = 'result: locked' ] && [ "$handed" = 7 ]; then
+        case_passed "$cap_case"
+    else
+        case_failed "$cap_case" "the row's flag is '$flag'; with none the script exited $without_status, '$(printf '%s\n' "$without" | head -1 | cut -c1-120)'; over an omp with no flag, $old_status, '$(printf '%s\n' "$old" | head -1 | cut -c1-120)'; with 7, $with_status and handed '$handed'"
+    fi
+fi
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending

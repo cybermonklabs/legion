@@ -42,8 +42,8 @@
 # the clones, the run's own scratch and record (below), or the machine the run is on, as
 # when a signal ends a child the gate waits on, coordination/count.py among them
 # (count_load), or a child runs past its bound ("Every child the gate waits on ends"
-# below); and source, the GitHub budget or a live source the gate reads itself (the
-# live-read rule below). What the evidence holds
+# below); and source, the GitHub budget, a live source the gate reads itself, or the model
+# gateway a row's omp session reaches (the live-read rule below). What the evidence holds
 # is never such a reason: a line of claims.jsonl the one parse cannot read is a FAIL
 # (below), and a reader that loaded and then stopped is a failure of the gate. A run that
 # cannot run ends exit 2 with the reason as its last line, which names what is missing, and
@@ -204,16 +204,20 @@
 # take for an answer, so a merged-in step whose commit GitHub does not hold leaves --landed
 # unable to run, of the kind source, and never reaches landed-proof's FAIL that the fetch did
 # not bring that commit; check.test.sh's case 146 holds that. The live-read rule covers the
-# gate's own reads. A row's own failed read of a live source, GitHub or Dispatch, is read by
-# one rule of its own (source_answer), since only an answer from the source judges the
-# deliverable: a curl of GitHub's REST API or of the Dispatch API, by the status the row got,
-# curl's own error line, which the curl's record holds, and by one read of the gate's own of
-# the URL, with the header file the record names, for the source's message, and for the
-# status where the record holds none; a curl inside a script a row runs, as
-# evidence/concord-build-run.sh's two reads of GitHub are, by the same record, which the
-# script leaves; a dispatch command, by the first line it printed; and a python3 of a row
+# gate's own reads. A row's own failed read of a live source, GitHub, Dispatch or the model
+# gateway, is read by one rule of its own (source_answer), since only an answer from the
+# source judges the deliverable: a curl of GitHub's REST API or of the Dispatch API, by the
+# status the row got, curl's own error line, which the curl's record holds, and by one read
+# of the gate's own of the URL, with the header file the record names, for the source's
+# message, and for the status where the record holds none; a curl inside a script a row
+# runs, as evidence/concord-build-run.sh's two reads of GitHub are, by the same record, which
+# the script leaves; a dispatch command, by the first line it printed; a python3 of a row
 # whose command reads DISPATCH_URL, by the last urllib or transport error its output holds,
-# where the record holds no curl of a source beside it. A read that got no answer, a server
+# where the record holds no curl of a source beside it; and an omp session of a script a row
+# runs, as evidence/accord-skills-run.sh's is, by the line the script leaves in the same
+# record when the gateway gave no answer, which names the cause, HTTP 429, HTTP 5xx, a
+# refusal of the credential or no answer, and never omp's own message. A read that got no
+# answer, a server
 # error (5xx) or a rate limit the row got, whatever a later read answers, and an answer about
 # the reader's credential (a 401, or a 403 that names authentication, a permission or a token
 # rather than a rate limit, or that a read again answers below 400) are no verdict on the
@@ -244,6 +248,18 @@
 # ends exit 2 there, of the kind prerequisite, every assertion the mode declares unrun,
 # naming timeout and what provides it by the mode's own line of the table, never the 127 of
 # a program that is not there.
+#
+# The row i-skills-run makes the one model session --replay spends on: evidence/accord-
+# skills-run.sh installs the two ACCORD skills into a new omp HOME and runs one headless omp
+# session on them, capped by the --max-cost its row's command passes, a flag omp --help
+# prints. It needs IOC_OMP_MODELS, the path of an omp models.yml that reaches a model, omp,
+# and tar, three lines of the prerequisite table for --replay and so for the --self-test that
+# runs it; the credential in that file reaches no file of this tree and no line the gate
+# prints.
+# --self-test and check.test.sh run the row under tests/omp-stub/omp, a stub that plays the
+# session on canned replies (FIXTURE_OMP_STUB), and no run of theirs reaches a model. A
+# session whose gateway gave no answer is a read of a source that did not answer, by the
+# live-read rule above, and never a FAIL.
 #
 # --landed runs the committed proof of each landed step, the command sources.json commits
 # for it, from the root of this tree, and a proof that exits non-zero is the step failing, a
@@ -333,9 +349,12 @@
 #             IOC_NO_ENV=1, IOC_PUBLISHED_COMMIT to the fixture's head, IOC_ENDING to the
 #             record of that one run, IOC_CACHE to the fixture's own directory cache/,
 #             which the runs over that one fixture share and no run over another fixture
-#             reads, and IOC_DEPLOYMENT_REPO to FIXTURE_DEPLOYMENT_REPO, a placeholder, since
+#             reads, IOC_DEPLOYMENT_REPO to FIXTURE_DEPLOYMENT_REPO, a placeholder, since
 #             the fixture reads no deployment repository and a fixture's run never reads
-#             the caller's
+#             the caller's, and IOC_OMP_MODELS to FIXTURE_OMP_MODELS, the models.yml of
+#             tests/omp-stub/, which names no provider, with FIXTURE_OMP_STUB, that
+#             directory, first on PATH, whose omp plays a session on canned replies, so that
+#             no fixture reaches a model and the caller's models file is never read
 #   cleared   every other variable: IOC_HISTORY_REF, IOC_OUR_TREE, every variable env.sh
 #             exports and every cache of its table among them, so the fixture reads its
 #             own history and keeps its caches in its own IOC_CACHE
@@ -629,6 +648,15 @@ fi
 ROOT="${IOC_ROOT:-$(cd "$HERE/../../.." && pwd)}"
 CLONES="${IOC_CLONES:-${TMPDIR:-/tmp}/ioc-clones}"
 EVIDENCE="${IOC_EVIDENCE:-$HERE}"
+# The stub omp, and the models.yml beside it that names no provider, a fixture's run is given
+# in place of the caller's: FIXTURE_OMP_STUB is put first on the fixture's PATH, and
+# FIXTURE_OMP_MODELS is its IOC_OMP_MODELS, so that a fixture's --replay meets the
+# prerequisites of the row i-skills-run (prerequisite_table) and no run over a fixture reaches
+# a model or reads the caller's models file. A case of check.test.sh sets either on its own
+# command, to a copy of the stub in another mode or to a file of its own, or empty to run a
+# fixture with none (fixture_run).
+FIXTURE_OMP_STUB="$EVIDENCE/tests/omp-stub"
+FIXTURE_OMP_MODELS="$FIXTURE_OMP_STUB/models.yml"
 # The bounds of the rule every child the gate waits on ends by (the header's "Every child
 # the gate waits on ends"), in seconds. Each is at least three times the slowest run of what
 # it bounds that was measured, and where a child was not measured alone, three times the
@@ -910,7 +938,9 @@ usage() {
 # needs its lines and those of the four modes it runs (prerequisite_rows). The last column
 # is what a reader runs to provide it, and may hold a |. How each kind is checked:
 #   tool       the program is on PATH
-#   variable   the variable is set, one whose name ends _FILE names a readable file, and one
+#   variable   the variable is set, one whose name ends _FILE names a readable file, one
+#              whose name ends _MODELS names a readable file, which no line the gate prints
+#              names, since it is an omp models.yml and holds a credential, and one
 #              whose name ends _REPO holds a GitHub repository written <owner>/<name>, a /
 #              between two words of letters, digits, ".", "_" and "-" (REPOSITORY_FORM)
 #   history    the history ref, IOC_HISTORY_REF or else HEAD, names a commit of this
@@ -934,9 +964,12 @@ replay|tool|curl|reads the GitHub budget and the review corpus env.sh fetches, a
 replay|tool|uv|builds env.sh's python environments and runs the recorded uv commands|curl -LsSf https://astral.sh/uv/0.13.5/install.sh | sh
 replay|tool|go|runs the two recorded commands that count rows of our own table|curl -fsSL https://go.dev/dl/go1.27.3.linux-amd64.tar.gz | tar -xzC /usr/local, then PATH=/usr/local/go/bin:$PATH
 replay|tool|dispatch|reads the two records under check, the judgement and the recorded Dispatch reads|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+replay|tool|omp|runs the one headless model session of the row i-skills-run, in a new HOME, capped by the --max-cost its command passes, a flag omp --help prints|the omp coding agent, with its print mode, on PATH
+replay|tool|tar|unpacks the two ACCORD skills that evidence/accord-skills-run.sh installs into the new HOME of that session|apt-get install tar
 replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
 replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
 replay|variable|IOC_DEPLOYMENT_REPO|the deployment repository, as <owner>/<name>, which this public tree names nowhere: GitHub's REST API reads its own name for it first, which the variable then holds for env.sh and every row, git ls-remote reads it, env.sh clones it under IOC_CLONES/deployment and writes the header file of its token, and the rows that read it name it by this variable|export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from
+replay|variable|IOC_OMP_MODELS|the omp models.yml, which reaches one model, that evidence/accord-skills-run.sh copies into the new HOME of the session of the row i-skills-run; no line this gate prints names its path, since the file holds a credential|export IOC_OMP_MODELS=<the path of an omp models.yml that reaches a model>
 replay|clone|IOC_CLONES|env.sh clones mas-lab, scope, cognition-protocols and the deployment repository under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
 replay|tool|timeout|ends the mode, and each child of it the mode bounds, rows and count.py among them, at its bound, in a process group of its own (the header's "Every child the gate waits on ends")|apt-get install coreutils
 replay|pcre|grep|reads the clone commit each evidence file of mas-lab names as a whole token, with grep -P (whole_token)|GNU grep built with PCRE, as the distribution's grep is: apt-get install grep
@@ -1005,6 +1038,8 @@ prerequisite_missing() {
             printf 'the variable %s is not set' "$name"
         elif [[ "$name" == *_FILE ]] && [ ! -r "$value" ]; then
             printf 'the variable %s names %s, which is no readable file' "$name" "$value"
+        elif [[ "$name" == *_MODELS ]] && { [ ! -f "$value" ] || [ ! -r "$value" ]; }; then
+            printf 'the variable %s names no readable file' "$name"
         elif [[ "$name" == *_REPO ]] && ! [[ "$value" =~ $REPOSITORY_FORM ]]; then
             printf "the variable %s holds '%s', which is no GitHub repository written <owner>/<name>" "$name" "$value"
         else
@@ -2321,7 +2356,7 @@ prepare_env() {
 #   form                            rows  what it is
 #   &&                               220  runs the next pipeline when this one exits 0
 #   ||                                 9  runs the next pipeline when this one fails
-#   |                                471  joins the commands of a pipeline
+#   |                                472  joins the commands of a pipeline
 #   ;                                 73  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
@@ -2335,18 +2370,18 @@ prepare_env() {
 #   in                                21  comes before a for loop's words
 #   do                                21  comes before a for loop's body
 #   done                              21  closes a for loop
-#   simple command                   657  a command word and its arguments
-#   pipeline                         471  two or more commands joined by |
+#   simple command                   658  a command word and its arguments
+#   pipeline                         472  two or more commands joined by |
 #   list                             257  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          21  for NAME in words; do list; done
-#   assignment before a command       29  NAME=value, set in that command's environment
+#   assignment before a command       30  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
 #   command substitution in a word    15  $( ) in a word, its code admitted by this table
 #   assigns ACCORD_MODEL_DIR          16  a name the rows assign
 #   assigns GOFLAGS                    1  a name the rows assign
-#   assigns IOC_EXPECT_STATUS          9  the declared status, the last prefix of one command
+#   assigns IOC_EXPECT_STATUS         10  the declared status, the last prefix of one command
 #   assigns UV_REQUIRE_HASHES          4  0, before a uv pip install of local sources alone
 #   assigns VIRTUAL_ENV                3  a name the rows assign
 #   assigns W                          1  a name the rows assign
@@ -2376,8 +2411,8 @@ prepare_env() {
 #   program printf                    15  wrapped in a function that records its status
 #   program python3                   38  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      308  wrapped in a function that records its status
-#   program sh                         1  wrapped in a function that records its status
+#   program sed                      309  wrapped in a function that records its status
+#   program sh                         2  wrapped in a function that records its status
 #   program sha256sum                  8  wrapped in a function that records its status
 #   program sort                      33  wrapped in a function that records its status
 #   program stat                       2  wrapped in a function that records its status
@@ -2399,9 +2434,9 @@ prepare_env() {
 #   uv run --python                    4  uv run runs the python version named
 #   uv run --with                      4  uv run installs the package named into its environment
 #   uv run python                      4  uv run's python, whose status uv run exits with
-#   sh running a script file           1  the script's status reaches the row as sh's
+#   sh running a script file           2  the script's status reaches the row as sh's
 #   true                               9  a command whose status is no read
-#   $NAME or ${NAME}                 457  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 458  a parameter, its name in braces or not
 #   $?                                27  the status of the last command
 #   $( )                              15  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
@@ -2975,8 +3010,9 @@ github_headers_fresh() {
     [ "$stale" = 0 ] || github_headers
 }
 
-# source_answer <id> <output-file>; reads the first failed read of a live source, GitHub or
-# Dispatch, that the row's record holds with a status the row did not declare, and says
+# source_answer <id> <output-file>; reads the first failed read of a live source, GitHub,
+# Dispatch or the model gateway, that the row's record holds with a status the row did not
+# declare, and says
 # whether the source's answer judges the row (the header's live-read rule). Only an answer
 # about the record judges it. A read that got no answer, a server error (5xx), a rate limit,
 # and an answer about the reader's credential, a 401 or a 403 that names authentication, a
@@ -2987,7 +3023,7 @@ github_headers_fresh() {
 # failure is no verdict on the deliverable: ... GitHub answered 401: Bad credentials". Any
 # other answer judges the row, and IOC_SOURCE_ANSWER names it for the row's FAIL line. Both
 # are empty when no read of a source failed, or when one failed and printed nothing this
-# rule reads. A source's reads are three, each found by its record (run_recorded), and a
+# rule reads. A source's reads are four, each found by its record (run_recorded), and a
 # python3's is read only where the record holds no curl or dispatch command of a source,
 # whose own line names the read the python3 was handed:
 #
@@ -3031,6 +3067,16 @@ github_headers_fresh() {
 #     output that names urllib's error, the line a traceback ends with: a URLError is no
 #     answer, and an HTTPError's "HTTP Error <status>: <message>" is read as the status of a
 #     curl of Dispatch is.
+#   - An omp session of a script a row runs, whose model gateway gave no answer, by the line
+#     the script writes into the record, as evidence/accord-skills-run.sh writes it when its
+#     session ended with no answer: the status 3, no declared status, omp with the arguments
+#     of its session, and "result: model not reached (<cause>)". The cause is one of HTTP
+#     429, HTTP 5xx, credential refused and no answer, and never omp's own message, which can
+#     name the gateway's address. HTTP 429 is a rate limit, credential refused is the
+#     reader's credential, HTTP 5xx is a server error, and no answer is no answer; each ends
+#     the mode cannot run, of the kind source, naming the row and the model gateway. Any
+#     other line of the script's, as its exit 1 for a protocol that did not lock, is the
+#     deliverable's, and a row that declares that status reads the answer in its output.
 #
 # The read again is one request, made only on a failure, and its body, its headers and
 # curl's stderr go into the run's scratch. Nothing of it is printed but the status, the
@@ -3068,6 +3114,10 @@ source_answer() {
             ;;
         "dispatch "*)
             source=Dispatch via=dispatch what="its API through the dispatch command"
+            [ "$failed_said" = - ] || said="$failed_said"
+            ;;
+        "omp "*)
+            source="the model gateway" via=omp what="its model through omp"
             [ "$failed_said" = - ] || said="$failed_said"
             ;;
         "python3 "*)
@@ -3158,6 +3208,17 @@ source_answer() {
             kind=unanswered
         fi
         answer="${said:+the dispatch command printed '$said'}"
+        detail="'${failed_command% }' exited $failed_status and printed '$said'"
+        ;;
+    omp)
+        # The script wrote the cause of the gateway's silence in its line, one of four words.
+        case "$said" in
+        *"HTTP 429"*) kind=rate ;;
+        *"credential refused"*) kind=credential ;;
+        *"HTTP 5xx"*) kind=server ;;
+        *) kind=unanswered ;;
+        esac
+        answer="${said:+the script printed '$said'}"
         detail="'${failed_command% }' exited $failed_status and printed '$said'"
         ;;
     python)
@@ -8369,8 +8430,10 @@ fixture_run() {
     # rows read its own repository alone, so it needs nothing env.sh prepares and skips it.
     # It runs in an environment of its own, as the header's "The fixture of --self-test"
     # states: FIXTURE_CARRIED and FIXTURE_INPUTS, each where it is set, the fixture's own
-    # tree, judgement and head, FIXTURE_DEPLOYMENT_REPO as IOC_DEPLOYMENT_REPO unless it is
-    # empty, the run's own record, and an IOC_CACHE of its own unless a case names one; no
+    # tree, judgement and head, FIXTURE_DEPLOYMENT_REPO as IOC_DEPLOYMENT_REPO and
+    # FIXTURE_OMP_MODELS as IOC_OMP_MODELS, each unless it is empty, FIXTURE_OMP_STUB first on
+    # PATH unless it is empty, the run's own record, and an IOC_CACHE of its own unless a case
+    # names one; no
     # other variable of the caller's. The run is a child the caller waits on, under
     # BOUND_RUN (the header's "Every child the gate waits on ends"): one that a signal or its
     # bound ended holds the record bound_record writes for it.
@@ -8379,6 +8442,8 @@ fixture_run() {
         [ -n "${!name+set}" ] && carried+=("$name=${!name}")
     done
     [ -z "$FIXTURE_DEPLOYMENT_REPO" ] || carried+=("IOC_DEPLOYMENT_REPO=$FIXTURE_DEPLOYMENT_REPO")
+    [ -z "$FIXTURE_OMP_MODELS" ] || carried+=("IOC_OMP_MODELS=$FIXTURE_OMP_MODELS")
+    [ -z "$FIXTURE_OMP_STUB" ] || carried+=("PATH=$FIXTURE_OMP_STUB:$PATH")
     run="$(mktemp -d "$dir/run.XXXXXX")" || return 1
     bounded_run "$BOUND_RUN" env -i "${carried[@]}" \
         IOC_ROOT="$dir/repo" \
