@@ -274,6 +274,41 @@ func (d *taskDaemon) reportOf(sequence uint64) claim.TurnOutcomeRequest {
 	return report
 }
 
+// seenReportWait bounds waitForSeen: 10 s, a bound of its own rather than what is left of the test
+// binary's deadline (deadlineWait), so a seen report that never comes fails its own row by name and
+// leaves the package's other rows their time.
+const seenReportWait = 10 * time.Second
+
+// waitForSeen waits for the seen report of the value naming number at revision, at testEpoch, the
+// epoch every value the cases hand is written at (handReading), to reach d within seenReportWait,
+// or what is left of the test binary's deadline less deadlineMargin where that is sooner, and fails
+// the case at once, naming every seen report d recorded, when it has not come by then. It waits for
+// that revision's report and not for a count of reports: the bridge sends each seen report on a
+// goroutine of its own (reportSeen), the take of a value is a post apart from it, and a newer value
+// stops the seen report of an older one still being sent (replace). So the take of revision 1 can
+// be answered, and Claude Code start the task's turn, before revision 1's report reaches the
+// daemon; revision 2 then stops that report, and only revision 2's comes. T12 of
+// dispatch://INFRA-2811's plan v168 allows that order, since only the newest revision's seen report
+// matters: a count of two reports never comes in it, and the report of the revision the case
+// handed last does.
+func (r *rig) waitForSeen(d *taskDaemon, number, revision uint64) {
+	r.t.Helper()
+	bound := testwait.Bounded(r.t, seenReportWait, deadlineMargin)
+	if testwait.Holds(bound, 5*time.Millisecond, func() bool {
+		return slices.ContainsFunc(d.seenReports(), func(seen claim.TaskSeenRequest) bool {
+			return seen.Number == number && seen.Epoch == testEpoch && seen.Revision == revision
+		})
+	}) {
+		return
+	}
+	var recorded []string
+	for _, seen := range d.seenReports() {
+		recorded = append(recorded, fmt.Sprintf("%d at %d of epoch %s", seen.Number, seen.Revision, seen.Epoch))
+	}
+	r.t.Fatalf("the seen report of task %d at revision %d did not reach the stand-in within %s: it recorded seen reports at %q; the bridge logged:\n%s",
+		number, revision, bound, recorded, r.log)
+}
+
 // newTakingRig runs a resumed session's bridge whose pane names d at url — d's own server,
 // started here, when url is "" — and which sends its seen reports and takes with calls. It is a
 // plain *rig: the stand-in daemon is the d the caller already holds, so the rig keeps no second
@@ -405,6 +440,7 @@ func TestATaskLineIsReportedSeenAndTakenOncePerRevision(t *testing.T) {
 	r.logged("the daemon refused the take of task 7 (hold in-turn)")
 	r.handTask(testTask, 1)
 	r.quiet()
+	r.waitForSeen(d, testTask, 1)
 
 	r.handTask(testTask, 2)
 	r.expect("agent_start", nil)
@@ -475,7 +511,7 @@ func TestNoTakeWhileARunIsInProgress(t *testing.T) {
 	r.turn("ev1", "wait r1")
 	r.expect("agent_start", nil)
 	r.handTask(testTask, 1)
-	r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
+	r.waitForSeen(d, testTask, 1)
 	r.quiet()
 	if takes := d.takesMade(); len(takes) != 0 {
 		t.Fatalf("the bridge asked to take %+v during a turn", takes)
@@ -581,7 +617,7 @@ func TestNothingIsTakenBeforeTheReadyLine(t *testing.T) {
 		inbox := r.dialInbox()
 
 		r.handReading(testTask, 1, testTask-1)
-		r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
+		r.waitForSeen(d, testTask, 1)
 		inbox.deliver("ev1", "say the card")
 		r.logged("Envoy delivery ev1 waits for the take of the claim's task")
 		r.quiet()
@@ -601,7 +637,7 @@ func TestNothingIsTakenBeforeTheReadyLine(t *testing.T) {
 		r.logged("Envoy delivery ev1 waits for the claim's ready line")
 		r.quiet()
 		r.handReading(testTask, 1, testTask-1)
-		r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
+		r.waitForSeen(d, testTask, 1)
 		r.quiet()
 		taskRunsAheadOfTheCard(t, d, r, inbox)
 	})
@@ -643,13 +679,13 @@ func TestAValueNamingAFinishedNumberIsReportedSeenAndNotTaken(t *testing.T) {
 	r.handReady()
 
 	r.handReading(testTask, 1, testTask)
-	r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
+	r.waitForSeen(d, testTask, 1)
 	r.turn("ev1", "say the card")
 	r.logged("Envoy delivery ev1 starts a turn")
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
 	r.handTask(testTask, 2)
-	r.waitFor("the relayed value to be reported seen", func() bool { return len(d.seenReports()) == 2 })
+	r.waitForSeen(d, testTask, 2)
 	r.quiet()
 	if takes := d.takesMade(); len(takes) != 0 {
 		t.Fatalf("the bridge asked to take %+v, a task the claim finished", takes)
@@ -660,7 +696,7 @@ func TestAValueNamingAFinishedNumberIsReportedSeenAndNotTaken(t *testing.T) {
 	r.untilTurnEnds()
 	// The seen report and the take of a value are sent apart, each until the daemon answers, so the
 	// take can land, and its turn run, before the seen report of the same value does.
-	r.waitFor("the third value to be reported seen", func() bool { return len(d.seenReports()) == 3 })
+	r.waitForSeen(d, testTask+1, 3)
 	if seen := pairsOf(t, d.seenReports()); !slices.Equal(seen, []string{"7 at 1", "7 at 2", "8 at 3"}) {
 		t.Errorf("the bridge reported seen %q, want every value", seen)
 	}
@@ -711,7 +747,7 @@ func TestATaskFinishedAtItsTurnsEndIsNotTakenAgainUntilItsReportIsRefused(t *tes
 			r.untilTurnEnds()
 			r.waitFor("the task's report to reach the daemon", func() bool { return len(d.reportsAttempted()) == 1 })
 			r.handTask(testTask, 2)
-			r.waitFor("the newer value to be reported seen", func() bool { return len(d.seenReports()) == 2 })
+			r.waitForSeen(d, testTask, 2)
 			r.quiet()
 			if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1"}) {
 				t.Fatalf("before the report landed the bridge asked to take %q, want task 7 once", takes)
@@ -734,8 +770,12 @@ func TestATaskFinishedAtItsTurnsEndIsNotTakenAgainUntilItsReportIsRefused(t *tes
 			if texts := r.userTexts(); !slices.Equal(texts, tc.texts) {
 				t.Errorf("Claude Code read %q, want %q", texts, tc.texts)
 			}
-			if seen := pairsOf(t, d.seenReports()); !slices.Equal(seen, []string{"7 at 1", "7 at 2"}) {
-				t.Errorf("the bridge reported seen %q, want both values", seen)
+			// Revision 2 stops the seen report of revision 1 where it has not reached the daemon yet
+			// (replace), and the case waited for revision 2's alone: revision 1's may be missing, or,
+			// stopped in flight on a connection of its own, land behind revision 2's.
+			allowed := [][]string{{"7 at 1", "7 at 2"}, {"7 at 2"}, {"7 at 2", "7 at 1"}}
+			if seen := pairsOf(t, d.seenReports()); !slices.ContainsFunc(allowed, func(want []string) bool { return slices.Equal(seen, want) }) {
+				t.Errorf("the bridge reported seen %q, want task 7 at revision 2, and at revision 1 no more than once", seen)
 			}
 		})
 	}
@@ -777,7 +817,7 @@ func TestAFinishedLineOfAReadingWithNoValueIsHeldBesideTheTaskLines(t *testing.T
 		t.Fatalf("the inbox answered a finished line with no number %+v, want %+v", answer, want)
 	}
 	r.handTask(testTask, 1)
-	r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
+	r.waitForSeen(d, testTask, 1)
 	inbox.deliver("ev1", "say the card")
 	r.logged("Envoy delivery ev1 waits for the take of the claim's task")
 

@@ -108,7 +108,7 @@ func TestALostAnswersRepeatAcceptedDuringARunIsHeldAndRunsNextOnce(t *testing.T)
 	inbox.deliver("ev1", "wait r1")
 	r.expect("agent_start", nil)
 	r.handTask(testTask, 1)
-	r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
+	r.waitForSeen(d, testTask, 1)
 	reset := resetConnection(t)
 	d.setFault(func(w http.ResponseWriter, req *http.Request) {
 		d.setFault(nil)
@@ -170,7 +170,7 @@ func TestTakeOfATextHeldThroughATurnIsMadeAgainAtANewerRevisionAndRunsOnce(t *te
 	// The daemon writes the number's value again while the text is held: the value is reported
 	// seen at once, and asked about only once the turn has ended.
 	r.handTask(testTask, 2)
-	r.waitFor("the newer value to be reported seen", func() bool { return len(d.seenReports()) == 2 })
+	r.waitForSeen(d, testTask, 2)
 	r.quiet()
 	r.open()
 	r.expect("agent_end", nil)
@@ -205,7 +205,7 @@ func TestTakeOfANewerRevisionBeforeClaudeCodeTakesTheTextHandsNothingMore(t *tes
 	r.handTask(testTask, 1)
 	r.expect("agent_start", nil)
 	r.handTask(testTask, 2)
-	r.waitFor("the newer value to be reported seen", func() bool { return len(d.seenReports()) == 2 })
+	r.waitForSeen(d, testTask, 2)
 	r.quiet()
 
 	r.release("r1")
