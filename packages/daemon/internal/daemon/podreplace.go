@@ -369,9 +369,9 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 
 // endTakenRounds ends the round of each round's record of the issue that the finish of the launch's
 // record of operation took with it (took, store.PodReplacementFinish.Took), as the act that took its
-// pod (endRecordedRound), over the issue's claims read now, unmasked (noticeGroup). A record this
-// daemon cannot read ends nothing. Where the claims cannot be read, each such round stays open, and
-// the walk ends it once it reads the pod gone.
+// pod (endRecordedRound), over the issue's claims as their machines hold them now, unmasked
+// (machinesGroup), which no failed read of the store can keep from it. A record this daemon cannot
+// read ends nothing.
 func (s *supervision) endTakenRounds(ctx context.Context, issue, operation string, took []store.PodReplacement) {
 	var group []supervise.Claim
 	read := false
@@ -381,15 +381,7 @@ func (s *supervision) endTakenRounds(ctx context.Context, issue, operation strin
 			continue
 		}
 		if !read {
-			claims, err := s.supervisor.Claims(ctx)
-			if err != nil {
-				if ctx.Err() == nil {
-					s.log.Error("supervise: read the issue's claims to end the update round whose record a launch's replacement took; the round stays open, and the walk ends it once it reads the pod gone",
-						"issue", issue, "round", rec.Round, "pod", r.PodUID, "operation", r.Operation, "error", err)
-				}
-				return
-			}
-			group, read = s.noticeGroup(claimsOf(claims, issue)), true
+			group, read = s.machinesGroup(issue), true
 		}
 		s.endRecordedRound(ctx, group, r, rec, true)
 	}

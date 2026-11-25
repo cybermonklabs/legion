@@ -2438,6 +2438,25 @@ func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 	return read
 }
 
+// machinesGroup is the issue's claims as this daemon's machines publish them now, unmasked
+// (noticeGroup), in the order of their tokens, as the store reads a group. It reads no store, so
+// an end that a finish outside the round's own call decides (endTakenRounds) ends its round
+// whatever the store answers: an end left undone for a failed read of the claims would leave the
+// round open, and a later walk would read the pod as one that went before its round was over (the
+// Legion reviewer's finding on podreplace.go:355 on #5285 at 18d81dad). The end goes to the
+// members' machines alone (endPodUpdates), so a claim no machine of this daemon holds is one no end
+// reaches either.
+func (s *supervision) machinesGroup(issue string) []supervise.Claim {
+	var group []supervise.Claim
+	for _, m := range s.supervisor.supervised() {
+		if view := m.View().Claim; view.Issue == issue {
+			group = append(group, view)
+		}
+	}
+	slices.SortFunc(group, func(a, b supervise.Claim) int { return strings.Compare(string(a.Token), string(b.Token)) })
+	return s.noticeGroup(group)
+}
+
 // roundGroup is the claims of group as a round reads them now, less the ones no round weighs, and
 // which of them a machine was deciding something for at that read (deciding, nil where none was).
 // It is the one read the sweep's decision, its ask, the replacement's last word and the
