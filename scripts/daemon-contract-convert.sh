@@ -582,6 +582,8 @@ def held_in_entry_files(ref, entries):
     text opens with the entry's summary (an entry file writes the entry's text verbatim after `// <id>
     <slug>: `), else as (path, constant) where it declares the constant the entry declares, whose name
     an edit of the text after the conversion leaves as it was."""
+    if not entries:
+        return {}
     paths = [p for p in git("ls-tree", "--name-only", ref, f"{API}/").decode().split("\n")
              if ENTRY_FILE.search(p) and not p.endswith("_test.go")]
     texts = read_blobs([f"{ref}:{p}" for p in paths])
@@ -609,7 +611,7 @@ def held_in_entry_files(ref, entries):
         if path:
             held[e["number"]] = (path, None)
             continue
-        path = next((p for p, _, consts in files if e["const"] in consts), None)
+        path = next((p for p, _, consts in files if e["const_path"] and e["const"] in consts), None)
         if path:
             held[e["number"]] = (path, e["const"])
     return held
@@ -782,22 +784,6 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
     head_lines, head_const, head_entries = numbered(head_version)
     entries = [e for e in head_entries if e["number"] not in base_heads and e["number"] > base_number]
     entries.sort(key=lambda e: e["number"])
-    # An entry whose text main holds under a number of its own is main's change, which this branch
-    # carries from another branch it was stacked on and main took as a squash: the branch has to
-    # merge main as it was before the cutover first, and then it adds only its own entries.
-    on_main = {summary(e): e["number"] for e in numbered(main_version)[2]}
-    stale = [(e["number"], on_main[summary(e)]) for e in entries if summary(e) in on_main]
-    for number, theirs in stale:
-        print(f"onmain {number} {theirs}")
-    if stale and mode == "convert":
-        die("; ".join(f"entry {n} of this branch is entry {m} of {main_name}" for n, m in stale) +
-            f": the branch carries a change {main_name} already holds. Merge {before_cutover(main_name)} into the "
-            "branch first, then convert it")
-    entries = [e for e in entries if summary(e) not in on_main]
-    nothing = f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert"
-    if not entries:
-        print(nothing)
-        return None
 
     go_paths = [p for p in changed_paths(base, head, "packages/daemon") if p.endswith(".go")]
     copies = changed_paths(base, head, *MANIFESTS, *STATE_GOLDENS, *WHOLE_COPIES)
@@ -811,7 +797,6 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
     edits = {p: Edits(s.text) for p, s in head_src.items()}
 
     # Step 2's constants: each `const <x>Contract = <n>` of package api the base does not declare.
-    numbers = {e["number"]: e for e in entries}
     for e in entries:
         e.update(const=None, const_path=None, const_line=None, doc=[], rows={f: [] for f, _ in FIELDS},
                  decls=[], imports=set())
@@ -841,10 +826,9 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
             for first, last in specs:
                 code = src.code_between(first, last)
                 if len(code) == 3 and code[0][0] == "ident" and code[1][1] == "=" and code[2][0] == "number" \
-                        and code[2][1].isdigit() and int(code[2][1]) in numbers \
-                        and re.search(r"[Cc]ontract$", code[0][1]):
-                    entry = numbers[int(code[2][1])]
-                    if entry["const"] is not None:
+                        and code[2][1].isdigit() and re.search(r"[Cc]ontract$", code[0][1]):
+                    entry = next((e for e in entries if e["number"] == int(code[2][1])), None)
+                    if entry is None or entry["const"] is not None:
                         continue
                     if decl.block:
                         lead = src.lead_comments(first, decl.kw)
@@ -855,27 +839,6 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
                         start, end, doc = decl.start, decl.end, decl.doc_lines()
                     entry.update(const=code[0][1], const_path=path, const_line=src.line(src.tokens[first][2]),
                                  const_span=(start, end), doc=[re.sub(r"^\s*", "", line) for line in doc])
-    # An entry an entry file of main holds is a change main took after the cutover: the entry of a base
-    # branch this branch was stacked on, converted and taken as a squash, after which GitHub retargets
-    # the branch to main. Over its merge base with main the branch would convert it again under another
-    # id, as a second entry file of one change.
-    held = held_in_entry_files(main, entries)
-    for number, (path, _) in sorted(held.items()):
-        print(f"onmain {number} {path}")
-    if held and mode == "convert":
-        die("; ".join(f"entry {n} of this branch declares {const}, which {path} of {main_name} declares too" if const
-                      else f"entry {n} of this branch is {path} of {main_name}" for n, (path, const) in sorted(held.items())) +
-            f": the branch carries the entries of a base branch that {main_name} took as a squash after the "
-            "cutover, and would convert them again under other ids. Run this with --base naming the base "
-            f"branch's last commit before the squash, then merge {main_name}")
-    entries = [e for e in entries if e["number"] not in held]
-    if not entries:
-        print(nothing)
-        return None
-    numbers = {e["number"]: e for e in entries}
-    for e in entries:
-        if e["const_path"]:
-            edits[e["const_path"]].replace(*e["const_span"])
     taken = set()
     for e in entries:
         if e["const"]:
@@ -891,6 +854,39 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
         taken.add(e["slug"])
         if not e["const"]:
             e["const"] = lower_camel(e["slug"]) + "Contract"
+
+    # Which entries are the branch's own: neither check below writes anything, and a convert refuses
+    # what either finds. An entry whose text main holds under a number of its own is main's change,
+    # which this branch carries from another branch it was stacked on and main took as a squash before
+    # the cutover: the branch has to merge main as it was before the cutover first. An entry an entry
+    # file of main holds is such a change main took after the cutover, after which GitHub retargets
+    # the branch to main: over its merge base with main the branch would convert it again under
+    # another id, as a second entry file of one change.
+    on_main = {summary(e): e["number"] for e in numbered(main_version)[2]}
+    stale = {e["number"]: on_main[summary(e)] for e in entries if summary(e) in on_main}
+    for number, theirs in sorted(stale.items()):
+        print(f"onmain {number} {theirs}")
+    if stale and mode == "convert":
+        die("; ".join(f"entry {n} of this branch is entry {m} of {main_name}" for n, m in sorted(stale.items())) +
+            f": the branch carries a change {main_name} already holds. Merge {before_cutover(main_name)} into the "
+            "branch first, then convert it")
+    held = held_in_entry_files(main, [e for e in entries if e["number"] not in stale])
+    for number, (path, _) in sorted(held.items()):
+        print(f"onmain {number} {path}")
+    if held and mode == "convert":
+        die("; ".join(f"entry {n} of this branch declares {const}, which {path} of {main_name} declares too" if const
+                      else f"entry {n} of this branch is {path} of {main_name}" for n, (path, const) in sorted(held.items())) +
+            f": the branch carries the entries of a base branch that {main_name} took as a squash after the "
+            "cutover, and would convert them again under other ids. Run this with --base naming the base "
+            f"branch's last commit before the squash, then merge {main_name}")
+    entries = [e for e in entries if e["number"] not in stale and e["number"] not in held]
+    if not entries:
+        print(f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert")
+        return None
+    numbers = {e["number"]: e for e in entries}
+    for e in entries:
+        if e["const_path"]:
+            edits[e["const_path"]].replace(*e["const_span"])
     owner = {e["const"]: e for e in entries if e["const_path"]}
 
     # Step 3: the rows of the frozen tables that name an entry's constant.
