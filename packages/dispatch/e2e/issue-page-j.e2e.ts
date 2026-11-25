@@ -2109,6 +2109,105 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
   });
 });
 
+// The tester's finding at cf7e601c: a drag over a statement's words keeps what it selected on
+// screen and keeps the reader's place. The drag selects words and opens no editor, and the
+// statement takes the focus once the press is over, as a press does. At cf7e601c that focus
+// places the statement by the page's rule, which puts a statement taller than the screen at its
+// top, so the page jumps up and the selected words leave the screen: on a large issue's copy,
+// 1693 px at 1440 x 900 for a statement 4144 px tall, and 4940 px at 390 x 844. A press on the
+// same words, with no drag, moves no page (the row above).
+// SLOW(>=2s): a seeded issue of sixty statements and one of 600 words, a load of the Spec view, a
+// turn of the wheel and a drag, each read once the page has stopped moving.
+test("a drag over a Spec statement's words keeps the selection on screen and the reader's place", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 600)));
+  await phase(browser, seed, async (page, seeded) => {
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
+    const body = issuePage(page).locator("[data-spec-body]");
+    const heads = body.locator("[data-spec-head]");
+    const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
+    // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
+    // screen, with the rest of its 600 words on screen under the column heads.
+    const top = await long.evaluate((row) => row.getBoundingClientRect().top);
+    const wheelAt = await settledScrollTop(page);
+    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
+    await page.mouse.wheel(0, top + 200);
+    await expect
+      .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
+      .not.toBe(wheelAt);
+    const box = await long.evaluate((row) => {
+      const { left, top: rowTop, width } = row.getBoundingClientRect();
+      return { left, top: rowTop, width };
+    });
+    expect(
+      box.top,
+      "after the wheel the long statement's top is not above the screen"
+    ).toBeLessThan(0);
+    expect(
+      await long.evaluate((row) => row.contains(document.activeElement)),
+      "the long statement holds the focus before the drag"
+    ).toBe(false);
+    // The drag runs along one line of the statement's words, 60 px under the column heads, from a
+    // quarter of the row's width to two thirds of it, clear of a link or a chip at both ends.
+    const from = { x: box.left + box.width / 4, y: headsBottom + 60 };
+    const to = { x: box.left + (box.width * 2) / 3, y: headsBottom + 60 };
+    for (const point of [from, to]) {
+      expect(
+        await long.evaluate((row, at) => {
+          const hit = document.elementFromPoint(at.x, at.y);
+          return row.contains(hit) && hit?.closest("a, button") === null;
+        }, point),
+        `the point (${point.x}, ${point.y}) is not on the long statement's words`
+      ).toBe(true);
+    }
+    const draggedAt = await settledScrollTop(page);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 8 });
+    await page.mouse.up();
+    // The statement takes the focus in a task after the press ends, and that focus is what places
+    // it, so the page is read once the focus has come and the page has stopped moving.
+    await expect
+      .poll(() => long.evaluate((row) => row.contains(document.activeElement)), {
+        message: "the long statement does not take the focus once the drag is over",
+      })
+      .toBe(true);
+    const moved = (await settledScrollTop(page)) - draggedAt;
+    const selection = await page.evaluate(() => {
+      const selected = window.getSelection();
+      const range = selected === null || selected.rangeCount === 0 ? null : selected.getRangeAt(0);
+      const rect = range?.getBoundingClientRect();
+      return {
+        bottom: rect?.bottom ?? 0,
+        collapsed: selected?.isCollapsed ?? true,
+        editing:
+          document.activeElement instanceof HTMLElement && document.activeElement.isContentEditable,
+        text: selected?.toString() ?? "",
+        top: rect?.top ?? 0,
+      };
+    });
+    expect(selection.editing, "the drag over the long statement's words opened its editor").toBe(
+      false
+    );
+    expect(selection.collapsed, "the drag over the long statement's words kept no selection").toBe(
+      false
+    );
+    expect(selection.text, "the drag selected no words of the long statement").toMatch(
+      /long\d+\s+long\d+/
+    );
+    expect(
+      Math.abs(moved),
+      `a drag over the long statement's words, its top above the screen, moves the page ${moved} px`
+    ).toBeLessThanOrEqual(1);
+    expect(
+      selection.top >= headsBottom && selection.bottom <= DESKTOP.height,
+      `after the drag the selected words stand from ${selection.top} to ${selection.bottom} px, off the screen`
+    ).toBe(true);
+  });
+});
+
 // The tester's finding at cac836d5: a row the Spec view keeps that is no statement - a comment of
 // the issue its address names - draws its text whole, as the outline draws that comment and as
 // every node's text is drawn in every view. At cac836d5 the row is whole while it holds the focus
