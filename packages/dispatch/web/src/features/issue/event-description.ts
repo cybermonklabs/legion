@@ -103,6 +103,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Priority ${event.payload.change}: ${event.payload.id}`;
     case "going_plan.updated":
       return "Command-bar plan updated";
+    case "project.access_changed":
+      return `Access changed: ${event.payload.change.replace("_", " ")}`;
     case "ask.resolved":
       return askResolutionParts(event.payload.resolution);
     case "ask.answered":

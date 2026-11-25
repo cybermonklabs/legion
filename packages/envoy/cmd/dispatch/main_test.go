@@ -1549,6 +1549,9 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 		-- delivery_settings.production_job_name; a database at 52 still has both.
 		create table users (login text primary key);
 		alter table delivery_settings add column production_job_name text;
+		-- CORE's default assignee has signed in, so 20261116015736's census counts no project
+		-- the owner fill would leave without an owner, and 0053's is the one refusal.
+		insert into people (email) values ('alice');
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U');

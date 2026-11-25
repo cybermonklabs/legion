@@ -58,6 +58,7 @@ const PAYLOAD_TYPES = [
   "MessageEventPayload",
   "PriorityUpdatedEventPayload",
   "Project",
+  "ProjectAccessChangedEventPayload",
   "ProjectDefaultAssigneeUpdatedEventPayload",
   "ReferenceChangesPayload",
   "RepoProjectUpdatedEventPayload",
