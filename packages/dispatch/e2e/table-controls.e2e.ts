@@ -10768,3 +10768,178 @@ test("a double click or two clicks on a marked row's held Start next while Take 
   // their next Tab from the top of the page, far from the rows they were working in.
   expect(got, got.join("; ")).toEqual(want);
 });
+
+// INFRA-3135, round 26 (the tester's), by the architect's ruling of 2026-11-24 10:03Z ("Round 25
+// failed"), which put into round 26 the armed hand-off's partly-in-sight landing, scrolled to its
+// nearest edge (the ruling of 2026-11-21 12:3xZ). Measured at 8e7e463a in builds Job
+// infra-3135-f-h-w2-cpzw7 and at 34dc6a07 in infra-3135-f-b-w2-tdtlg, in Chromium, Firefox and
+// WebKit at 390x664: under the project List's Epic filter, with the mark of the row marked last
+// cut by 30% of its height at the bottom edge of the table's scroll box, Take out of epic lands the
+// focus on the checkbox of the row now at its place, "Select CORE-21", top 458 to bottom 471 in a
+// box whose visible bottom is at 467, and scrolls nothing. The selection bar's hand-off takes the
+// focus with no scroll and never shows its landing whole (components/SelectionBar.tsx:137), where
+// the other hand-offs of this pull request land through `land`, which shows a control partly in
+// sight whole at its nearest edge (components/focus-place.ts:486-503). This row makes the same cut
+// at 1440x900 too.
+// SLOW(>=2s): forty-five seeded issues, and two Take out of epic presses read once the box settles.
+test("Take out of epic with the row marked last cut by the table box's bottom edge hands the focus to a control wholly inside every box that clips it, on the project List at 390 and 1440 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Table epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  for (let index = 0; index < 44; index++) {
+    await createIssue({ parent: epic.key, project: "CORE", title: `Epic row ${index}` });
+  }
+  const view = `/projects/CORE/issues?f.epic=${encodeURIComponent(`${epic.key} · Table epic`)}`;
+  const box = page.getByTestId("issues-table-scroll");
+  const rows = page.locator("[data-issue-row]");
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const markOf = (key: string) =>
+    page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+  /** The issues the table draws, top to bottom, and of them those whose checkbox the reader sees:
+   *  inside the window and the table's box, with nothing, such as the sticky head, drawn over its
+   *  centre. */
+  const drawn = () =>
+    page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="issues-table-scroll"]');
+      const frame = scroller?.getBoundingClientRect();
+      const listed = [...document.querySelectorAll<HTMLElement>("[data-issue-row]")];
+      const topOf = (row: HTMLElement) => row.getBoundingClientRect().top;
+      listed.sort((one, other) => topOf(one) - topOf(other));
+      const seen = (row: HTMLElement) => {
+        const mark = row.querySelector('input[type="checkbox"]');
+        if (mark === null || frame === undefined) return false;
+        const own = mark.getBoundingClientRect();
+        const above = Math.max(0, frame.top);
+        const below = Math.min(window.innerHeight, frame.bottom);
+        if (own.top < above || own.bottom > below) return false;
+        const hit = document.elementFromPoint(own.left + own.width / 2, own.top + own.height / 2);
+        return hit !== null && row.contains(hit);
+      };
+      return {
+        order: listed.map((row) => row.getAttribute("data-issue-row") ?? ""),
+        shown: listed.filter(seen).map((row) => row.getAttribute("data-issue-row") ?? ""),
+      };
+    });
+  /** How a control stands against the window and every box around it that clips it: the mark of
+   *  the row `key` names, else the focused element. `whole` says whether it lies wholly inside
+   *  all of them, and `text` names it, its rect and each edge that cuts it. */
+  const standing = (key?: string) =>
+    page.evaluate((key) => {
+      const element =
+        key === null
+          ? document.activeElement
+          : document.querySelector(`[data-issue-row="${CSS.escape(key)}"] input[type="checkbox"]`);
+      if (!(element instanceof HTMLElement) || element === document.body) {
+        return { text: "the body", whole: false };
+      }
+      const round = (value: number) => Math.round(value * 10) / 10;
+      const own = element.getBoundingClientRect();
+      const label =
+        element instanceof HTMLInputElement ? element.labels?.[0]?.textContent?.trim() : undefined;
+      const name = element.getAttribute("aria-label") || label || element.tagName.toLowerCase();
+      const cuts: string[] = [];
+      const cutBy = (box: string, clip: Omit<DOMRectReadOnly, "toJSON" | "x" | "y">) => {
+        if (own.top < clip.top - 0.5) cuts.push(`${box}'s top edge at ${round(clip.top)}`);
+        if (own.bottom > clip.bottom + 0.5) {
+          cuts.push(`${box}'s bottom edge at ${round(clip.bottom)}`);
+        }
+        if (own.left < clip.left - 0.5) cuts.push(`${box}'s left edge at ${round(clip.left)}`);
+        if (own.right > clip.right + 0.5) cuts.push(`${box}'s right edge at ${round(clip.right)}`);
+      };
+      cutBy("the window", {
+        bottom: window.innerHeight,
+        height: window.innerHeight,
+        left: 0,
+        right: window.innerWidth,
+        top: 0,
+        width: window.innerWidth,
+      });
+      for (let around = element.parentElement; around !== null; around = around.parentElement) {
+        const style = getComputedStyle(around);
+        if (style.overflowX !== "visible" || style.overflowY !== "visible") {
+          cutBy(
+            `the box ${around.dataset.testid ?? around.tagName.toLowerCase()}`,
+            around.getBoundingClientRect()
+          );
+        }
+      }
+      const rect = `top ${round(own.top)} to bottom ${round(own.bottom)}, left ${round(own.left)} to right ${round(own.right)}`;
+      const verdict =
+        cuts.length === 0
+          ? "wholly inside every box that clips it"
+          : `cut by ${cuts.join(" and ")}`;
+      return {
+        text: `${element.tagName.toLowerCase()} "${name}" at ${rect}, ${verdict}`,
+        whole: cuts.length === 0,
+      };
+    }, key ?? null);
+  const landings: { text: string; whole: boolean }[] = [];
+  for (const size of [
+    { height: 664, width: 390 },
+    { height: 900, width: 1440 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `project List at ${size.width}x${size.height}`;
+    await page.goto(view);
+    await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(12);
+    // The window brings the table's box to just below the app's 56 px header, and the box
+    // scrolls half way down its rows, so rows stand in it above and below the ones marked.
+    await box.evaluate((node) => {
+      window.scrollBy(0, node.getBoundingClientRect().top - 60);
+      node.scrollTop = (node.scrollHeight - node.clientHeight) / 2;
+    });
+    await settledScrollTop(page);
+    await settledScrollTop(box);
+    await expect.poll(async () => (await drawn()).shown.length).toBeGreaterThanOrEqual(3);
+    // The rows read once the box has held still and the poll above found them in sight; they
+    // only name the two rows marked below, the middle one in sight and the one after it.
+    const { order, shown } = await drawn();
+    const at = order.indexOf(shown[Math.floor(shown.length / 2)] ?? "");
+    const upper = order[at] ?? "";
+    const lower = order[at + 1] ?? "";
+    // The lower row first, so the row marked last is the upper one, whose place the focus takes.
+    for (const key of [lower, upper]) {
+      await markOf(key).focus();
+      await page.keyboard.press("Space");
+      await expect(markOf(key)).toBeChecked();
+    }
+    await expect(bar).toContainText("2 selected");
+    // The box scrolls so that 30% of the upper row's mark stands below the box's visible bottom:
+    // the row after the marked two moves up into that place when they go, cut the same way, and
+    // the centre of its mark stays in sight, so the bar's hand-off takes it.
+    await markOf(upper).evaluate((mark) => {
+      const scroller = mark.closest<HTMLElement>('[data-testid="issues-table-scroll"]');
+      const own = mark.getBoundingClientRect();
+      const bottom = Math.min(window.innerHeight, scroller?.getBoundingClientRect().bottom ?? 0);
+      scroller?.scrollBy(0, own.bottom - (bottom + own.height * 0.3));
+    });
+    await settledScrollTop(box);
+    // One read is the answer: the box has held still, and the cut is checked before the press so
+    // that a case the page cannot make fails here rather than passing.
+    const arranged = await standing(upper);
+    expect(arranged.whole, `${where}: the row marked last is not cut: ${arranged.text}`).toBe(
+      false
+    );
+    await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(bar).toHaveCount(0);
+    await expect(markOf(upper)).toHaveCount(0);
+    // The bar's hand-off runs after the commit that took the bar away, so it is done after these
+    // frames.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: the writes have landed, the bar has gone and every hand-off of the
+    // press has run, so nothing moves the focus or the box after this.
+    const landing = await standing();
+    landings.push({ text: `${where}: the focus is on ${landing.text}`, whole: landing.whole });
+  }
+  // A landing the box cuts is a control the reader cannot read whole: the press that took their
+  // rows away leaves them looking for the focus at the box's edge.
+  expect(
+    landings.map((landing) => landing.whole),
+    landings.map((landing) => landing.text).join("; ")
+  ).toEqual(landings.map(() => true));
+});
