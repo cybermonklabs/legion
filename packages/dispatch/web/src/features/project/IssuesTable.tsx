@@ -345,9 +345,9 @@ export function IssuesTable({
   // The bar's hand-off (`useLastMarkedPlace`): the checkbox of the issue marked last while the
   // table draws its row, out of sight or not. After a press that took that issue out of the view
   // - off the list, or out of what the filters show, as Take out of epic does under the Epic
-  // filter: a row the reader can see at its place, else before it. With no issue marked, as after
-  // a select-all from the table's head: the first row the reader can see below the table's sticky
-  // head. Each is shown whole at its nearest edge, below that head too. `head` is a header cell:
+  // filter: a row with any part of its mark in sight at its place, else before it. With no
+  // issue marked, as after a select-all from the table's head: the first row the reader can see
+  // below the sticky head. Each mark is shown whole at its nearest edge. `head` is a header cell:
   // the cells stick, and the `thead` does not (`DataTable`). Else the table's own stop, with no
   // scroll. A row the window has not drawn is out of their sight, so it is never where the focus
   // lands in the place of an issue that went.
@@ -364,14 +364,17 @@ export function IssuesTable({
   });
   // The bar gone with the focus (`SelectionBar`): the hand-off above (`landAtPlace`) has put the
   // focus itself, save where the table lists the issue marked last and its window has not drawn
-  // that row: the row is scrolled to, and its checkbox takes the focus as it lands (`focusRow`).
+  // that row: scroll to draw it, then show the measured checkbox whole at its nearest edge
+  // and give it focus with no additional focus scroll (`focusRow`).
   // A table action clears the selection only once the list read after it has settled
   // (`useIssueTableActions`), so the view read here is the one the action left.
   const returnFocus = () => {
     if (landAtPlace()) return null;
     // `landAtPlace` moved nothing, so the issue marked last is listed and its row is not drawn.
     const key = lastMarked.current;
-    return key === null ? focusListStop(tableStop()) : model.focusRow(key, ROW_CHECKBOX);
+    if (key === null) return focusListStop(tableStop());
+    model.focusRow(key, ROW_CHECKBOX, "nearest");
+    return null;
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
   // own - goes with the table when a press in it sends the List back to its skeleton. A notice's

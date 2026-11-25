@@ -137,6 +137,7 @@ function Deploys({
   counts,
   fillColumn,
   filterCounted,
+  focusTarget,
   groupSlot,
   grouping: initialGrouping = [],
   groupOrder,
@@ -162,6 +163,8 @@ function Deploys({
   fillColumn?: string;
   /** Which values of the open filter's column the counts have counted. */
   filterCounted?: DataTableProps<Deploy>["filterCounted"];
+  /** An undrawn row whose trailing control this caller asks to show whole. */
+  focusTarget?: string;
   /** What this caller draws beside a group's heading, in place of the count of its deploys. */
   groupSlot?: ReactNode;
   grouping?: GroupingState;
@@ -221,6 +224,11 @@ function Deploys({
   });
   return (
     <section aria-label={layoutKey}>
+      {focusTarget === undefined ? null : (
+        <button type="button" onClick={() => model.focusRow(focusTarget, "button", "nearest")}>
+          Return to row
+        </button>
+      )}
       <DataTable
         empty="No deploys match."
         fillColumn={fillColumn}
@@ -1086,11 +1094,12 @@ const LINE_PX = 40;
 /** The unit DOM lays nothing out: give every drawn line - a row or a group's heading, each
  *  carrying `data-index` - a height of `LINE_PX`, so a 600 px box draws the lines near it and
  *  no more. */
-function linesTall(): void {
+function linesTall(boxHeight?: number): void {
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
     configurable: true,
     get() {
+      if (boxHeight !== undefined && this.dataset.testid?.endsWith("-scroll")) return boxHeight;
       return this.dataset.index === undefined ? (descriptor?.get?.call(this) ?? 0) : LINE_PX;
     },
   });
@@ -1192,4 +1201,62 @@ test("a table whose rows are all one height counts the rows it has not drawn at 
   expect(table.querySelector<HTMLElement>("tbody > tr[aria-hidden]:last-child")?.style.height).toBe(
     `${(60 - drawn) * LINE_PX}px`
   );
+});
+
+test("a nearest-edge hand-off waits for an undrawn row and places its measured control whole", async () => {
+  linesTall(600);
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this.matches("[data-testid='deploys-scroll']")) return new DOMRect(0, 0, 390, 600);
+    if (this.matches("thead, th")) return new DOMRect(0, 0, 100, 60);
+    if (this.textContent === "Roll back d54" && this.matches("button")) {
+      const box = this.closest("[data-testid='deploys-scroll']");
+      return new DOMRect(10, 60 + 53 * LINE_PX + 10 - (box?.scrollTop ?? 0), 60, 13);
+    }
+    return new DOMRect();
+  });
+  restores.push(() => rect.mockRestore());
+  draw(
+    <Deploys
+      focusTarget="d54"
+      pageSize={100}
+      pager={null}
+      rowHeight={LINE_PX}
+      rows={manyDeploys(60)}
+      trailingWidth={104}
+    />
+  );
+  const box = screen.getByTestId("deploys-scroll");
+  box.style.overflowY = "auto";
+  Object.defineProperties(box, {
+    clientWidth: { value: 390 },
+    scrollHeight: { value: 60 + 60 * LINE_PX },
+  });
+  const drawRow = spyOn(box, "scrollTo").mockImplementation(() => {});
+  const correct = spyOn(box, "scrollBy").mockImplementation(
+    (options?: ScrollToOptions | number, y?: number) => {
+      box.scrollTop += (typeof options === "number" ? y : options?.top) ?? 0;
+    }
+  );
+  const focus = spyOn(HTMLElement.prototype, "focus");
+  restores.push(() => {
+    drawRow.mockRestore();
+    correct.mockRestore();
+    focus.mockRestore();
+  });
+  expect(screen.queryByRole("button", { name: "Roll back d54" })).not.toBeInTheDocument();
+  act(() => screen.getByRole("button", { name: "Return to row" }).click());
+  // Before the scroll event the virtualizer still uses the old range. Its index jump aligns the
+  // measured row as if there were no header, leaving the control below the box.
+  expect(drawRow).toHaveBeenCalledWith(expect.objectContaining({ top: 1560 }));
+  expect(screen.queryByRole("button", { name: "Roll back d54" })).not.toBeInTheDocument();
+  scrollBoxTo(box, 1560);
+  const target = screen.getByRole("button", { name: "Roll back d54" });
+  expect(target).toHaveFocus();
+  expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+  expect<readonly unknown[]>(correct.mock.calls).toEqual([[{ top: 43 }]]);
+  expect(target.getBoundingClientRect().bottom).toBe(600);
+  await endWindowScroll();
+  expect(box.scrollTop).toBe(1603);
 });

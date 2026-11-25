@@ -40,7 +40,7 @@ import {
 } from "../theme/classes";
 import { ColumnFilter } from "./ColumnFilter";
 import { CONTROL, type ControlSize } from "./control-names";
-import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
+import { ARM_ON_PRESS, landNearest, useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
 import { reorder, type TableLayoutModel } from "./table-layout";
@@ -145,9 +145,9 @@ export interface DataTableModel<Row> {
   readonly virtualizer: Virtualizer<HTMLDivElement, Element>;
   /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
   readonly anchorEnabled: () => boolean;
-  /** Puts the focus on a row of this page, or on what `selector` names inside it, by the path
-   *  `j` and `k` take: a row the virtualizer has not drawn is scrolled to and focused once it
-   *  lands, and null is handed back meanwhile. */
+  /** Focuses a row or a control inside it. If the row is undrawn, scrolls to draw it and returns
+   *  null until then. A `"nearest"` hand-off places the control whole, measured once drawn,
+   *  rather than letting the row's approximate virtual offset decide where it ends up. */
   readonly focusRow: FocusRow;
   readonly names: DataTableNames;
 }
@@ -306,6 +306,18 @@ export function useDataTable<Row>({
   const focusRow = useRowKeymap({
     displayRows,
     keymap: names.keymap,
+    landNearest: (element, from) => {
+      const box = layout.scrollRef.current;
+      if (box === null) return;
+      // The index scroll only draws the row. Once it is drawn, it must not retarget the box
+      // after the checkbox's measured position has taken over.
+      if (from !== undefined) virtualizer.cancelScroll();
+      landNearest(
+        element,
+        box.querySelector("thead th"),
+        from === undefined ? undefined : { box, top: from }
+      );
+    },
     linkAttribute: names.linkAttribute,
     onMark: selection?.onMark,
     rowAttribute: names.rowAttribute,
