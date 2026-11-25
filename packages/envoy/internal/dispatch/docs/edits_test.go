@@ -347,7 +347,7 @@ func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {
 		t.Fatalf("render retyped paragraph: %v", err)
 	}
 	// A server attribute has no written default, so the retyped block's markdown holds no answer
-	// state: an ask's state is its node's (dispatch://INFRA-1150 R3), never its block's.
+	// state: an ask's state is its node's, never its block's.
 	want := ":::ask{#" + blockID + " urgency=\"high\" multiple=\"true\"}\nWhich transport should we expose?\n:::\n"
 	if got != want {
 		t.Fatalf("retyped markdown = %q, want %q", got, want)
@@ -803,7 +803,7 @@ func TestApplyOperationExplainsRenderedQuoteMatching(t *testing.T) {
 }
 
 // askFixture is an open ask's block as a document holds it: no attribute of the block holds the
-// ask's state, which its node and its asks row hold (dispatch://INFRA-1150 R3).
+// ask's state, which its node and its asks row hold.
 const askFixture = ":::ask{#decision urgency=\"high\" multiple=\"false\"}\nWhich transport?\n:::\n"
 
 func TestApplyOperationDeletesABlockByID(t *testing.T) {

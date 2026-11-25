@@ -60,7 +60,7 @@ const (
 )
 
 // issueDecisions is GET /api/v1/issues/{key}/decisions. entries is the read of the store
-// (dispatch://INFRA-1150 R4): one entry for each node that holds a question the issue asked or a
+// alone: one entry for each node that holds a question the issue asked or a
 // decision of any of its documents (decisionEntries). document, open_questions and decisions are
 // the members the release before answers, read as it reads them: the issue's decisions document,
 // the open questions its spec still holds, and each decision of that document in document order.
@@ -248,7 +248,7 @@ func (s *server) specOpenQuestions(
 	return questions, nil
 }
 
-// decisionEntry is one entry of the Decisions read's `entries` (dispatch://INFRA-1150 R4): the
+// decisionEntry is one entry of the Decisions read's `entries`: the
 // node itself. node is the node that holds it - an ask's own node (kind ask), or an agent's
 // decision's block node (kind block) - and ref that node's dispatch:// address, which is where
 // the entry links; document is the document whose block shows it, null for an ask on the issue
@@ -1148,7 +1148,7 @@ func sortedTimes(set map[int64]time.Time) []time.Time {
 	return times
 }
 
-// waitsForReview is the rule a decision's review state reads (dispatch://INFRA-1150 R2), for the
+// waitsForReview is the rule a decision's review state reads, for the
 // decisions document's sections: an agent's decision waits for a person's review unless it is
 // marked replaced, or the text sum the Keep recorded on it is its text sum as it stands. A
 // person's decision, an answered ask, never waits: the person decided it. A decision node's
@@ -1382,7 +1382,7 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 }
 
 // keepDecisionNode is the Keep of decision, an agent's decision node of document (readDecisionNode),
-// in tx, as two appends on the node (dispatch://INFRA-1150 R2): a kept_by tuple to the person who
+// in tx, as two appends on the node: a kept_by tuple to the person who
 // kept it and a kept_text_sum value holding the text sum they read it at, with decision_keeps, the
 // row the decision's block keys, as their projection, written in the same transaction. The Keep
 // records that the decision has been reviewed and not who else did, so a kept_by to a person
