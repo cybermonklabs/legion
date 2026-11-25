@@ -600,12 +600,16 @@ func shorten(t *testing.T, bound *time.Duration, d time.Duration) {
 // A gh REST read that hangs, as gh did for about 42 s in the busy one-CPU pod, is stopped by the
 // guard's own bound, which leaves the rest of the caller's bound to curl: curl answers private
 // within the caller's bound, and gets what is left of it as its --max-time. The guard's bound is
-// ghReadBound inside a caller's bound, here shortened to 1 s inside 31 s; or the caller's deadline
-// less curlReserve where that is sooner, here a deadline of 33 s and a reserve of 30 s. Either
-// leaves curl 30 s, far from a stand-in curl's own answer on a loaded machine. The guard's bound
-// is counted from before gh starts, and a loaded machine can spend it before gh has logged its
-// read: that run shows nothing of a hanging gh, so the row reads again until a read in which gh
-// logged itself before the bound stopped it, within a minute.
+// ghReadBound inside a caller's bound, here shortened to 1 s inside 15 s; or the caller's deadline
+// less curlReserve where that is sooner, here a deadline of 9 s and a reserve of 6 s, which stops gh
+// at 3 s, sooner than ghReadBound (8 s). Both callers leave curl less than curlBound (20 s), so the
+// caller's deadline is what bounds curl: a curl whose --max-time ignored it would run with nearly
+// 20 s, past what the caller has left. A gh bounded by ghReadBound alone would run to 8 s inside
+// the 9 s caller and leave curl too little to run (errNoTimeForCurl). Curl still gets 13.5 s and
+// 5.5 s, far from a stand-in curl's own answer on a loaded machine. The guard's bound is counted
+// from before gh starts, and a loaded machine can spend it before gh has logged its read: that run
+// shows nothing of a hanging gh, so the row reads again until a read in which gh logged itself
+// before the bound stopped it, within a minute.
 func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -613,8 +617,8 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 		// case; stoppedAt is when the guard's bound stops gh.
 		caller, ghBound, reserve, stoppedAt time.Duration
 	}{
-		{name: "the read's own cap", caller: 31 * time.Second, ghBound: time.Second, reserve: curlReserve, stoppedAt: time.Second},
-		{name: "the caller's deadline less the reserve", caller: 33 * time.Second, ghBound: ghReadBound, reserve: 30 * time.Second, stoppedAt: 3 * time.Second},
+		{name: "the read's own cap", caller: 15 * time.Second, ghBound: time.Second, reserve: curlReserve, stoppedAt: time.Second},
+		{name: "the caller's deadline less the reserve", caller: 9 * time.Second, ghBound: ghReadBound, reserve: 6 * time.Second, stoppedAt: 3 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			shorten(t, &ghReadBound, tc.ghBound)

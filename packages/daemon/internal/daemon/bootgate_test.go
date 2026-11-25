@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/user"
@@ -1141,39 +1142,74 @@ func TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime(t *testing.T) {
 
 // A daemon stopped while its gate waits kills the probe it is running and starts no other. The
 // probe hangs until a signal ends it (held), so a gate that left it running would return only at
-// the end of its attempt's minute budget, which the row reads, never at a span of its own.
+// the end of its attempt's minute budget. The gate returns within gateStopsWithin of its start. A
+// run past that fails where the probe was seen running within half of it, since the stop then took
+// the other half. Where the probe started later, a loaded machine that held up its start cannot be
+// told from a slow stop, so that run is not judged, and the row runs again on a gate of its own,
+// until a run of the right order comes, within a minute.
 func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 	t.Parallel()
-	f := newFakeOmp(t, "hang")
-	gate, _ := gateUnder(t, f, contractCurrent)
-	gate.timeout = time.Minute
-	ctx, cancel := context.WithCancel(context.Background())
-	// The cancellation this test is about is one that lands on a probe in flight, so it waits for
-	// the probe to be running rather than for a span: a fixed delay on a loaded machine fires
-	// before the probe starts, and the gate then cancels having run nothing.
-	go func() {
-		defer cancel()
-		// Read here rather than through attempts: a helper that fails the test belongs to the
-		// test's own goroutine, and this one only needs to know the probe started.
-		testwait.Holds(30*time.Second, testwait.Poll, func() bool {
-			raw, err := os.ReadFile(filepath.Join(f.dir, "count"))
-			return err == nil && strings.TrimSpace(string(raw)) == "1"
-		})
-	}()
+	// The last run may spend its attempt's minute budget and cutRunMargin for the row to fail in.
+	within := testwait.Bounded(t, time.Minute, time.Minute+cutRunMargin)
+	until := time.Now().Add(within)
+	for runs := 1; ; runs++ {
+		f := newFakeOmp(t, "hang")
+		gate, _ := gateUnder(t, f, contractCurrent)
+		gate.timeout = time.Minute
+		ctx, cancel := context.WithCancel(context.Background())
+		// The cancellation this test is about is one that lands on a probe in flight, so it waits
+		// for the probe to be running rather than for a span: a fixed delay on a loaded machine
+		// fires before the probe starts, and the gate then cancels having run nothing. It sends when
+		// it saw the probe running, read after that fact, or the zero time where it never did.
+		running := make(chan time.Time, 1)
+		go func() {
+			defer cancel()
+			// Read here rather than through attempts: a helper that fails the test belongs to the
+			// test's own goroutine, and this one only needs to know the probe started.
+			var seen time.Time
+			if testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+				raw, err := os.ReadFile(filepath.Join(f.dir, "count"))
+				return err == nil && strings.TrimSpace(string(raw)) == "1"
+			}) {
+				seen = time.Now()
+			}
+			running <- seen
+		}()
 
-	started := time.Now()
-	err := gate.verify(ctx)
+		started := time.Now()
+		err := gate.verify(ctx)
+		elapsed := time.Since(started)
+		seen := <-running
 
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want the daemon's cancellation", err)
-	}
-	if elapsed := time.Since(started); elapsed >= gate.timeout {
-		t.Errorf("the gate took %s to stop, its attempt's whole %s budget: the daemon's stop did not end the probe", elapsed, gate.timeout)
-	}
-	if n := f.attempts(t); n != 1 {
-		t.Errorf("Oh My Pi ran %d times, want the one the stop interrupted", n)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("run %d: err = %v, want the daemon's cancellation", runs, err)
+		}
+		if n := f.attempts(t); n != 1 {
+			t.Errorf("run %d: Oh My Pi ran %d times, want the one the stop interrupted", runs, n)
+		}
+		if t.Failed() || elapsed <= gateStopsWithin {
+			return
+		}
+		if !seen.IsZero() && seen.Sub(started) <= gateStopsWithin/2 {
+			t.Errorf("run %d: the gate took %s to stop, past %s, though its probe was seen running %s after the start: the daemon's stop did not end the probe in time", runs, elapsed, gateStopsWithin, seen.Sub(started))
+			return
+		}
+		went := "was never seen running"
+		if !seen.IsZero() {
+			went = fmt.Sprintf("was seen running %s after the start", seen.Sub(started))
+		}
+		if time.Now().Before(until) {
+			t.Logf("run %d is not judged: the gate took %s to stop, past %s, and its probe %s, not within half of it", runs, elapsed, gateStopsWithin, went)
+			continue
+		}
+		t.Fatalf("no run of the right order in %d runs over %s: the last took %s to stop, past %s, and its probe %s, not within half of it", runs, within, elapsed, gateStopsWithin, went)
 	}
 }
+
+// gateStopsWithin is how soon after its start a gate stopped while its probe hangs returns: the
+// probe's start, the stop's SIGTERM, which the hanging stand-in does not handle, and the run's
+// return, well inside five seconds. A stop that reached the probe late, or not at all, ends past it.
+const gateStopsWithin = 5 * time.Second
 
 // The gate runs under the environment a pane gets from the daemon's own (HOME and OMP_PROFILE here)
 // before the daemon boots: a refusal records no boot, and a daemon stopped while the gate waits

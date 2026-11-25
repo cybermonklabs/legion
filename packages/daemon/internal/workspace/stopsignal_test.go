@@ -130,9 +130,12 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 			t.Errorf("RunCommand = %v after %s, want \"Command timed out after 1 s …\": the budget's stop ended a command that ignores SIGTERM", err, elapsed)
 		}
+		// The stop's SIGKILL reaches the helper with the leader, before the run ends, so five
+		// seconds after the run's end is the signal's delivery and nothing else: a helper still
+		// running then was signalled late, or not at all.
 		helperGone := func() bool { return len(gitProcessesUnder(t, marker)) == 0 }
-		if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, helperGone) {
-			t.Errorf("the helper the command forked was still running after the run ended in %s: %v (RunCommand = %v)", elapsed, gitProcessesUnder(t, marker), err)
+		if !testwait.Holds(5*time.Second, testwait.Poll, helperGone) {
+			t.Errorf("the helper the command forked was still running 5s after the run ended in %s: %v (RunCommand = %v)", elapsed, gitProcessesUnder(t, marker), err)
 		}
 	})
 

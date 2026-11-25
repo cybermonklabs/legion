@@ -681,7 +681,9 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 // while the command is still exiting, however loaded the machine: one that passed between the
 // command's reap and Wait's read of its context would still meet procgroup's stop, which the child
 // in the group takes, and the run would report a timeout (procgroup.Configure's doc). No fact
-// outside os/exec orders that window, so no row here asserts either answer there.
+// outside os/exec orders that window for a child in the group, so this row asserts neither answer
+// there; the next row crosses the budget with its child outside the group, where the window has
+// one answer.
 func TestRunReportsTheCommandsOwnExitWhenAChildHoldsItsOutputPastItsExit(t *testing.T) {
 	dir := t.TempDir()
 	pidFile, held := filepath.Join(dir, "lingering.pid"), filepath.Join(dir, "held")
@@ -701,6 +703,97 @@ func TestRunReportsTheCommandsOwnExitWhenAChildHoldsItsOutputPastItsExit(t *test
 	}
 	if elapsed < procgroup.WaitDelay {
 		t.Fatalf("the run returned after %s, inside procgroup.WaitDelay: nothing held the pipe past the command's exit, so this run proves nothing", elapsed)
+	}
+}
+
+// A command that exited on its own did not time out either where its budget passed while
+// procgroup.WaitDelay still held the run open for a child holding its output pipe: a run that read
+// a timeout from its budget's cause alone, and not from whether that budget's stop reached the
+// command (killed), would report "timed out" for a check whose command answered. The budget passes
+// here with its cause (errCommandTimeout) once the command's leader has been reaped, a fact of the
+// run (passedOnceReaped), and the child that holds the pipe runs in a session of its own (setsid)
+// until the budget has passed. So the run returns only after the budget passed, and the budget's
+// stop, where os/exec still runs it in the window between the reap and Wait's read of its context,
+// finds no process group left to signal, which leaves killed false whichever way that window
+// falls. A run that returned before the watch released the child (WaitDelay outlasted a watch a
+// loaded machine held up) crossed no budget, so it is not judged, and the row runs again, within a
+// minute.
+func TestRunReportsTheCommandsOwnExitWhenItsBudgetPassesWhileAChildOutsideItsGroupHoldsItsOutput(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Fatalf("setsid is not on PATH (%v): this row starts the child that holds the pipe in a session of its own", err)
+	}
+	within := testwait.Bounded(t, time.Minute, answerBudget+time.Second)
+	until := time.Now().Add(within)
+	for runs := 1; ; runs++ {
+		dir := t.TempDir()
+		leaderFile, holderFile, held := filepath.Join(dir, "leader.pid"), filepath.Join(dir, "holder.pid"), filepath.Join(dir, "held")
+		t.Cleanup(func() {
+			_ = os.WriteFile(held, nil, 0o644)
+			killPIDFile(t, holderFile)
+		})
+		ctx, releasedAt := passedOnceReaped(t, leaderFile, held)
+		img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+
+		r := img.runWithin(ctx, answerBudget, "sh", "-c", `echo $$ >"$1"; echo 1.2.3; setsid sh -c 'until [ -e "$1" ]; do sleep 0.01; done' sh "$3" & echo $! >"$2"; exit 0`, "sh", leaderFile, holderFile, held)
+		returned := time.Now()
+		released := releasedAt()
+
+		if released.IsZero() || !released.Before(returned) {
+			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: the run returned before the watch saw its leader reaped and passed its budget (run = exit %d, error %v)", runs, r.exit, r.err)
+				continue
+			}
+			t.Fatalf("no run of the right order in %d runs over %s: in each, the run returned before its budget passed (run = exit %d, error %v)", runs, within, r.exit, r.err)
+		}
+		if r.err != nil || r.exit != 0 || strings.TrimSpace(r.stdout) != "1.2.3" {
+			t.Errorf("run %d = exit %d, error %v, stdout %q; want exit 0, no error, and the answer: the command exited on its own before its budget passed, and the budget's stop reached nothing of it", runs, r.exit, r.err, r.stdout)
+		}
+		return
+	}
+}
+
+// passedOnceReaped is a caller's context whose deadline passes with errCommandTimeout, as the
+// command's own budget passes (testwait.StandInDeadline, the context the attempt derives from),
+// once the process whose pid the command writes into leaderFile has been reaped: kill answers
+// ESRCH for it, which it does not for a zombie. Only then does it write held, which releases the
+// child the row leaves holding the command's pipe, so the run cannot return by that child's exit
+// before the budget has passed. releasedAt answers when it wrote held, read after that fact, or
+// the zero time where it never did within answerBudget.
+func passedOnceReaped(t *testing.T, leaderFile, held string) (ctx context.Context, releasedAt func() time.Time) {
+	t.Helper()
+	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
+	t.Cleanup(cancel)
+	bound := testwait.Bounded(t, answerBudget, time.Second)
+	done := make(chan time.Time, 1)
+	go func() {
+		var released time.Time
+		defer func() { done <- released }()
+		pid := 0
+		if !testwait.Holds(bound, testwait.Poll, func() bool {
+			raw, err := os.ReadFile(leaderFile)
+			if err != nil {
+				return false
+			}
+			pid, err = strconv.Atoi(strings.TrimSpace(string(raw)))
+			return err == nil && pid > 0
+		}) {
+			return
+		}
+		if !testwait.Holds(bound, testwait.Poll, func() bool { return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) }) {
+			return
+		}
+		pass(errCommandTimeout)
+		if os.WriteFile(held, nil, 0o644) == nil {
+			released = time.Now()
+		}
+	}()
+	var once time.Time
+	var got bool
+	return ctx, func() time.Time {
+		if !got {
+			once, got = <-done, true
+		}
+		return once
 	}
 }
 
@@ -734,29 +827,71 @@ func passedOnceStarted(t *testing.T, cause error) (ctx context.Context, started,
 
 // A command its budget cuts off is a run that timed out, named with that budget, never an exit of
 // its own, and no run the caller's context cut. The run tells its budget's end from any other by
-// the cause its attempt recorded (errCommandTimeout), so the budget passes here with that cause at
-// a fact, once the command has started (testwait.StandInDeadline, the caller's context the
-// attempt derives from): a budget that passed before the command started, as a clock's can on a
-// loaded machine, would leave nothing to cut, and the run would answer the context's error. The
-// budget's own clock is held by
-// TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDeadline, whose
-// Chromium only commandTimeout cuts. The command runs until the budget's stop or the row's cleanup
-// ends it, never on a timer of its own.
+// the cause its attempt recorded (errCommandTimeout). The first case gives the command its own
+// clock, a budget of a second that runWithin itself must apply: a runWithin that applied none would
+// leave the command running until the row's far bound. That clock starts before the command does,
+// and a loaded machine can spend it first, which leaves nothing to cut; such a run never wrote its
+// started file, so it is not judged, and the case runs again, within a minute. The second case
+// passes the budget with that cause at a fact, once the command has started
+// (testwait.StandInDeadline, the caller's context the attempt derives from), so every run of it is
+// judged. The command runs until the budget's stop or the row's cleanup ends it, never on a timer
+// of its own.
 func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
-	ctx, started, held, bound, ran := passedOnceStarted(t, errCommandTimeout)
-	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+	t.Run("its own clock", func(t *testing.T) {
+		const budget = time.Second
+		within := testwait.Bounded(t, time.Minute, answerBudget+time.Second)
+		until := time.Now().Add(within)
+		for runs := 1; ; runs++ {
+			dir := t.TempDir()
+			started, held := filepath.Join(dir, "started"), filepath.Join(dir, "held")
+			t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
+			img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
-	r := img.runWithin(ctx, answerBudget, "sh", "-c", `: >"$1"; until [ -e "$2" ]; do sleep 0.01; done`, "sh", started, held)
+			done := make(chan ran, 1)
+			go func() {
+				done <- img.runWithin(context.Background(), budget, "sh", "-c", `: >"$1"; until [ -e "$2" ]; do sleep 0.01; done`, "sh", started, held)
+			}()
+			var r ran
+			far := testwait.Bounded(t, answerBudget, time.Second)
+			select {
+			case r = <-done:
+			case <-time.After(far):
+				t.Fatalf("run %d had not returned %s after it started: its own %s budget did not end the command", runs, far, budget)
+			}
 
-	if !<-ran {
-		t.Fatalf("the command never started within %s, so its budget passed at no fact of the run (run = exit %d, error %v)", bound, r.exit, r.err)
-	}
-	if want := "timed out after " + answerBudget.String(); r.err == nil || r.err.Error() != want {
-		t.Errorf("run = exit %d, error %v; want the error %q: the budget cut the command off", r.exit, r.err, want)
-	}
-	if r.cut {
-		t.Error("run is cut, want a run its own budget ended, which the caller's context did not cut")
-	}
+			if _, err := os.Stat(started); err != nil {
+				if time.Now().Before(until) {
+					t.Logf("run %d is not judged: its %s budget passed before the command started (run = exit %d, error %v)", runs, budget, r.exit, r.err)
+					continue
+				}
+				t.Fatalf("no run of the right order in %d runs over %s: in each, the %s budget passed before the command started (run = exit %d, error %v)", runs, within, budget, r.exit, r.err)
+			}
+			if want := "timed out after " + budget.String(); r.err == nil || r.err.Error() != want {
+				t.Errorf("run %d = exit %d, error %v; want the error %q: the command's own budget cut it off", runs, r.exit, r.err, want)
+			}
+			if r.cut {
+				t.Errorf("run %d is cut, want a run its own budget ended, which the caller's context did not cut", runs)
+			}
+			return
+		}
+	})
+
+	t.Run("a budget that passes once the command runs", func(t *testing.T) {
+		ctx, started, held, bound, ran := passedOnceStarted(t, errCommandTimeout)
+		img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+
+		r := img.runWithin(ctx, answerBudget, "sh", "-c", `: >"$1"; until [ -e "$2" ]; do sleep 0.01; done`, "sh", started, held)
+
+		if !<-ran {
+			t.Fatalf("the command never started within %s, so its budget passed at no fact of the run (run = exit %d, error %v)", bound, r.exit, r.err)
+		}
+		if want := "timed out after " + answerBudget.String(); r.err == nil || r.err.Error() != want {
+			t.Errorf("run = exit %d, error %v; want the error %q: the budget cut the command off", r.exit, r.err, want)
+		}
+		if r.cut {
+			t.Error("run is cut, want a run its own budget ended, which the caller's context did not cut")
+		}
+	})
 }
 
 // A command its caller's context ended was not cut off by its budget: the run is no timeout but
