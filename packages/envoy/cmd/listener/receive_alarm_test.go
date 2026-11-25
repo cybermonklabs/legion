@@ -41,8 +41,9 @@ func durableAlarmRecords(logs *cmdtest.LockedBuffer) []map[string]any {
 // (nats.Bind). The pod that takes the lease from an absent record waits that binding out, renewing
 // its lease, alarms at ERROR once it has waited past the alarm threshold and again at each repeat,
 // neither deletes the durable to take it nor rewrites its policy under the old build (whose
-// nats.Bind refuses a durable whose filter is not its own), and receives as soon as the old build
-// lets go, correcting the policy then.
+// nats.Bind refuses a durable whose filter is not its own), receives nothing while the old build
+// holds the durable (a message published then goes to the old build alone), and receives as soon
+// as the old build lets go, correcting the policy then.
 // It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAPreLeaseBindingIsWaitedOutAndAlarmedOn(t *testing.T) {
 	uri := testnats.URL(t)
@@ -73,6 +74,13 @@ func TestAPreLeaseBindingIsWaitedOutAndAlarmedOn(t *testing.T) {
 	if err != nil || !info.Created.Equal(before.Created) || !info.PushBound || !reflect.DeepEqual(info.Config, before.Config) {
 		t.Fatalf("the durable while the new pod waits: %+v %v, want the old build's as it made it, still push-bound", info, err)
 	}
+	publishDurable(t, rig.client, "while the old build holds it")
+	noneReceived(t, received, time.Second, "the pod waiting out the old build's binding")
+	// The old build acks what it took, so none of it comes back to the new pod once it lets go.
+	waitFor(t, 5*time.Second, "the old build to ack the message published while it held the durable", func() bool {
+		info, err := old.JS().ConsumerInfo(bus.Stream, consumer)
+		return err == nil && info.Delivered.Consumer >= 1 && info.NumAckPending == 0
+	})
 
 	old.Close()
 	rig.awaitState(t, receiveActive, 5*time.Second)
@@ -324,8 +332,8 @@ func TestAHolderThatCannotPrepareItsDurableAlarmsAndGivesTheLeaseUp(t *testing.T
 // message before the newer one. A give-up that left pod-x counting the binding it had waited out
 // as its own would keep the term from settling, and pod-x would deliver the newer message first,
 // the dead pod's one ack wait later.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAPodThatGaveTheLeaseUpWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(t *testing.T) {
-	t.Parallel()
 	const machineID = "box-gave-up"
 	seed, public := testnats.User(t)
 	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.ListenerGrant(t, machineID)})
@@ -420,8 +428,8 @@ func TestAPodThatGaveTheLeaseUpWhileWaitingOutABindingSettlesAHardTakeoverAfterI
 // and delivering that before the newer one. A flag that outlived a term ended by losing the
 // lease would keep the term from settling, and pod-x would deliver the newer message first, the
 // dead pod's one ack wait later.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAPodThatLostTheLeaseWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(t *testing.T) {
-	t.Parallel()
 	const machineID = "box-lost-lease"
 	seed, public := testnats.User(t)
 	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.ListenerGrant(t, machineID)})
@@ -512,8 +520,8 @@ func TestAPodThatLostTheLeaseWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(
 // newer one. A release that carried no debt would leave the next holder waiting for a mark that
 // never comes, and its hold would run to the same 7 s - but a term that stopped mid-hold may owe
 // what it held, which only the debt says.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestATermThatNeverSubscribedOwesTheNextHolderAnAckWait(t *testing.T) {
-	t.Parallel()
 	for _, row := range []struct {
 		name, machineID string
 		giveUp          bool
@@ -522,7 +530,6 @@ func TestATermThatNeverSubscribedOwesTheNextHolderAnAckWait(t *testing.T) {
 		{"stops before it subscribed", "box-handback-stop", false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
 			granted, denied := consumerInfoUnansweredNATS(t, row.machineID)
 			// A lost node's connection still push-binds the durable and acknowledges nothing.
 			client := bindAsADeadHolder(t, granted, row.machineID)

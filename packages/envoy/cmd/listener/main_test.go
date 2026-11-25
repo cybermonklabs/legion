@@ -2771,8 +2771,8 @@ func TestTheStoresFollowAConnectionReplacedOnAStandby(t *testing.T) {
 // over in place: the holder corrects it to the consumer policy, whose filter is every subject, and
 // receives from it, and the role lane beside it works as ever. An update that cleared the filter
 // would leave the durable delivering nothing on nats-server 2.10.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestTheHolderMigratesALegacyDurableConsumer(t *testing.T) {
-	t.Parallel()
 	_, uri := testnats.Start(t)
 	legacyConn := testnats.Connect(t, uri)
 	legacyJS, err := legacyConn.JetStream()

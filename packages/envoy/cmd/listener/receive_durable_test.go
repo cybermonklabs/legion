@@ -29,12 +29,12 @@ import (
 // and a listener without a lease, the machine's one deliverer, keeps retrying and answers /healthz
 // 503 unhealthy past the bound, so its runtime counts it unready, as the bounded subscribe that
 // exited did.
-// It must not run in parallel: the alarm must follow /healthz's 503 within 1 s.
+// It must not run in parallel: the alarm must follow /healthz's 503 within 1 s, and its test lease
+// lapses if one renewal is 300 ms late.
 func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
 	timing := testReceiveTiming()
 	timing.alarmAfter, timing.alarmEvery = 5*time.Second, time.Millisecond
 	t.Run("sole holder", func(t *testing.T) {
-		t.Parallel()
 		granted, denied := consumerInfoUnansweredNATS(t, "box-stuck-alone")
 		handle, _ := recordingHandler()
 		rig := newReceiverRigVia(t, denied, granted, "box-stuck-alone", "pod-a", handle, timing, testLeaseTiming())
@@ -106,8 +106,8 @@ func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
 // corrects it to the consumer policy's filter, every subject, and it goes on delivering what is
 // published afterwards on every subject the stream stores. nats-server 2.10 accepts an update that
 // clears a push durable's filter instead, and then delivers nothing published after it.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestADurableFilteredOnTheStreamSubjectsDeliversEverySubjectOnceCorrected(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-filtered"
 	consumer := bus.ListenerDurable(machineID)
@@ -154,8 +154,8 @@ func TestADurableFilteredOnTheStreamSubjectsDeliversEverySubjectOnceCorrected(t 
 // A standby's self-health probe has no durable to check: it stays healthy, and the monitor keeps
 // the standby up however long it waits, well past the three intervals after which a terminal
 // failure would end it. /healthz answers it 200 healthy, as a standby naming the active pod.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAStandbyOutlivesThreeSelfHealthIntervals(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-standby"
 	handle, _ := recordingHandler()
@@ -318,8 +318,8 @@ func TestAListenerWithoutTheLeaseGrantDeliversWithoutALease(t *testing.T) {
 // that healthy: it answers 200 degraded, a standby naming itself, until it resumes or another pod
 // takes the record. A degraded branch that asked only whether the record named a holder would
 // read the lapsed pod's own record as an answer and call the pod delivering nothing healthy.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestALapsedHolderDoesNotAnswerHealthy(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-lapsed-health"
 	handle, _ := recordingHandler()

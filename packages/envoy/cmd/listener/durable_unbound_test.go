@@ -22,8 +22,8 @@ import (
 // subscription still holds the old one: the pod receives nothing at all. Without this the durable
 // still exists, every health surface answers 200 healthy, and delivery to every session stops
 // with no signal anywhere that the listener has gone deaf.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzReportsARecreatedDurableUnhealthy(t *testing.T) {
-	t.Parallel()
 	rig, get := setupUnboundDurableFixture(t, "unbound-health", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() })
 	if code, body := get(); code != http.StatusOK || body["status"] != "healthy" || body["role"] != "active" {
 		t.Fatalf("before the durable is recreated: /healthz = %d %v, want 200 healthy, role active", code, body)
@@ -151,8 +151,8 @@ func recreateListenerDurable(t *testing.T, client *bus.Client, consumer string) 
 // The self-health monitor repairs a durable recreated under the holder: without the resubscribe,
 // the subscription stays on the deleted consumer's inbox and every message published after the
 // recreation is lost while the listener reports itself healthy.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestTheSelfHealthMonitorResubscribesARecreatedDurable(t *testing.T) {
-	t.Parallel()
 	handle, received := recordingHandler()
 	rig, _ := setupUnboundDurableFixture(t, "unbound-resubscribe", handle)
 
@@ -182,8 +182,8 @@ func TestTheSelfHealthMonitorResubscribesARecreatedDurable(t *testing.T) {
 // A durable that is received never fails its own probe: the check compares the consumer's deliver
 // subject against the live subscription's, so a mistake there would make every healthy holder
 // resubscribe every interval and eventually terminate.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestABoundDurableNeverFailsItsProbe(t *testing.T) {
-	t.Parallel()
 	rig, get := setupUnboundDurableFixture(t, "unbound-control", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() })
 
 	// The monitor logs from its own goroutine, so the buffer the test reads back is guarded.

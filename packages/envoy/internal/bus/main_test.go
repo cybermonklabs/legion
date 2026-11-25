@@ -18,10 +18,10 @@ import (
 // shares (t.Setenv, the default logger the bus logs through, lifeCheckEvery, connectedVersion,
 // connectionBuild, the process's goroutines) or that hold a wall-clock bound close to what they
 // wait for, which stay serial and run before the rest. A test that needs a server has a JetStream
-// account of its own on the shared one (testnats.URL) or a server of its own. A run takes about 155
-// accounts, one per test or subtest that asks, under the 256 the server starts with; a run of
-// -count=2 or more passes 256, and the server then declares more by a reload that holds every
-// client while parallel tests run beside it (0.5-0.9 s, measured at -count=4).
+// account of its own on the shared one (testnats.URL) or a server of its own. The shared server
+// starts with testnats' own number of accounts (firstAccounts), since a server's start time grows
+// faster than its account count, and declares more by a reload when a test asks past them; that
+// reload holds every client while parallel tests run beside it (0.5-0.9 s, measured at -count=4).
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const busTestParallelism = 8

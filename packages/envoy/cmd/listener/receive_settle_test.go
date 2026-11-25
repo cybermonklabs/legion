@@ -158,8 +158,8 @@ func (rig *receiverRig) unsettledCount() int {
 // one reached the new holder, and is still delivered first. The hold ends as soon as it has every
 // outstanding message, well before its cap, and the record then says the new holder subscribed
 // beside a stale binding and is no longer unsettled.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestASettleHoldWaitsForAMessageOutstandingWithADeadHolderAndDeliversInStreamOrder(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-expired"
 	putLeaseRecord(t, uri, machineID, `{"holder":"pod-dead","boot":"0123456789abcdef"}`)
@@ -419,8 +419,8 @@ func TestAMarkedHandBacksHoldEndsAtTheHandBackDelayAndNotBefore(t *testing.T) {
 // holder had comes back one ack wait after its delivery, so the next holder's hold must wait that
 // long too, not the hand-back delay a graceful hand-back allows. The next holder then delivers it
 // before the newer message the stopped pod handed back.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAGracefulStopDuringAnAckWaitHoldOwesTheNextHolderAnAckWait(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-stop-in-ack-wait-hold"
 	putLeaseRecord(t, uri, machineID, `{"holder":"pod-dead","boot":"0123456789abcdef"}`)
@@ -590,8 +590,8 @@ func TestAReleasedRecordUnsettledOrWithAStaleBindingSettlesBesideTheBinding(t *t
 // takes the lease, so the next holder settles in its turn: beside the binding it holds the
 // handed-back messages until the message the binding had comes back, and delivers all three in the
 // order they were published.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAGracefulStopDuringASettleHoldHandsTheHoldOn(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-stop-in-hold"
 	putLeaseRecord(t, uri, machineID, `{"holder":"pod-dead","boot":"0123456789abcdef"}`)

@@ -16,8 +16,9 @@ import (
 // example-host-a, written out by hand from Envoy's names as they stand: every notification topic
 // (the stream's subjects, the role lanes, every exception lane and any ad-hoc topic), the stream
 // (its stored-message get, `bus.Client.NextStoredMessage`) and its own durable, then each bucket
-// in turn, the listener state bucket's writes only to the machine's own lease and ledger and to
-// the last-seen records, then the interest bucket's purge and the known-session bucket's.
+// in turn, the listener state bucket's reads and writes only of the machine's own lease, hand-back
+// entries and ledger and of the last-seen records, then the interest bucket's purge and the
+// known-session bucket's.
 // HostPermissions and DispatchPermissions are built on it, so neither holds a session consumer's
 // call; the edge set (EdgePermissions) and the auth service's edge answers (natsgrant.Edge) hold
 // both purges too. TestSessionPermissions's exact list holds none of it: no session gets the
