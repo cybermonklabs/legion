@@ -28,14 +28,16 @@ import (
 
 // drivenStatement is one statement the traced pool ran: its SQL, the writes it makes as
 // driveWritesOf reads them when it is recorded (writes, and whether every write word in it was
-// read, readable), and whether it ran on a context the test marked (countedRead), which is a
+// read, readable), whether it ran on a context the test marked (countedRead), which is a
 // request's own context and the work that request detached from it, and never the server's own
-// context.
+// context, and the backend it ran on (conn, its process id), which places it in a transaction
+// (unrolled).
 type drivenStatement struct {
 	sql      string
 	writes   []string
 	readable bool
 	marked   bool
+	conn     uint32
 }
 
 // poolStatements records every statement run on the pool it traces, whatever context it runs on:
@@ -49,19 +51,25 @@ type poolStatements struct {
 	lastWrite  time.Time
 }
 
-func (p *poolStatements) record(ctx context.Context, sql string) {
+func (p *poolStatements) record(ctx context.Context, conn *pgx.Conn, sql string) {
 	now := time.Now()
 	writes, readable := driveWritesOf(sql)
+	var backend uint32
+	if conn != nil {
+		backend = conn.PgConn().PID()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.statements = append(p.statements, drivenStatement{sql: sql, writes: writes, readable: readable, marked: ctx.Value(countedRead{}) != nil})
+	p.statements = append(p.statements, drivenStatement{
+		sql: sql, writes: writes, readable: readable, marked: ctx.Value(countedRead{}) != nil, conn: backend,
+	})
 	if len(writes) > 0 || !readable {
 		p.lastWrite = now
 	}
 }
 
-func (p *poolStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	p.record(ctx, data.SQL)
+func (p *poolStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	p.record(ctx, conn, data.SQL)
 	return ctx
 }
 
@@ -71,14 +79,14 @@ func (p *poolStatements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx
 	return ctx
 }
 
-func (p *poolStatements) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	p.record(ctx, data.SQL)
+func (p *poolStatements) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
+	p.record(ctx, conn, data.SQL)
 }
 
 func (p *poolStatements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
-func (p *poolStatements) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
-	p.record(ctx, "insert into "+data.TableName.Sanitize()+" (copy from)")
+func (p *poolStatements) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
+	p.record(ctx, conn, "insert into "+data.TableName.Sanitize()+" (copy from)")
 	return ctx
 }
 
@@ -212,12 +220,72 @@ func TestTheDriveReadsOnlyACompactionsUpdateColumnAsNoVerb(t *testing.T) {
 	}
 }
 
+// The drive judges a write by whether a rollback undid it (unrolled), each backend's
+// transactions apart: a write a rollback undid stores nothing, one a commit kept is the read's,
+// and one in a transaction the window holds no end of is the read's too, since nothing showed it
+// undone. The rows with a commit are the red: a walk that called every write in a transaction
+// undone would pass a read that commits a write.
+func TestTheDriveJudgesOnlyTheWritesNoRollbackUndid(t *testing.T) {
+	t.Parallel()
+	statement := func(conn uint32, sql string) drivenStatement {
+		writes, _ := driveWritesOf(sql)
+		return drivenStatement{sql: sql, writes: writes, readable: true, conn: conn}
+	}
+	const (
+		heads = "insert into pull_request_heads (repo, number) values ($1, $2)"
+		texts = "insert into pull_request_texts (repo, number) values ($1, $2)"
+	)
+	for _, row := range []struct {
+		name         string
+		statements   []drivenStatement
+		kept, undone []string
+	}{
+		{"a write a rollback undid", []drivenStatement{
+			statement(1, "begin"), statement(1, heads), statement(1, "rollback"),
+		}, nil, []string{heads}},
+		{"a write a commit kept", []drivenStatement{
+			statement(1, "begin"), statement(1, heads), statement(1, "commit"),
+		}, []string{heads}, nil},
+		{"a savepoint rolled back to inside a commit", []drivenStatement{
+			statement(1, "begin"), statement(1, "savepoint sp_1"), statement(1, heads),
+			statement(1, "rollback to savepoint sp_1"), statement(1, texts), statement(1, "commit"),
+		}, []string{texts}, []string{heads}},
+		{"a released savepoint inside a rollback", []drivenStatement{
+			statement(1, "begin"), statement(1, "savepoint sp_1"), statement(1, heads),
+			statement(1, "release savepoint sp_1"), statement(1, "rollback"),
+		}, nil, []string{heads}},
+		{"another backend's write beside a rollback", []drivenStatement{
+			statement(1, "begin"), statement(1, heads), statement(2, texts), statement(1, "rollback"),
+		}, []string{texts}, []string{heads}},
+		{"a transaction the window holds no end of", []drivenStatement{
+			statement(1, "begin"), statement(1, heads),
+		}, []string{heads}, nil},
+	} {
+		kept, undone := unrolled(row.statements)
+		sqlOf := func(statements []drivenStatement) []string {
+			var sql []string
+			for _, statement := range statements {
+				sql = append(sql, statement.sql)
+			}
+			return sql
+		}
+		if got := sqlOf(kept); !slices.Equal(got, row.kept) {
+			t.Errorf("%s: unrolled kept %q, want %q", row.name, got, row.kept)
+		}
+		if got := sqlOf(undone); !slices.Equal(got, row.undone) {
+			t.Errorf("%s: unrolled undid %q, want %q", row.name, got, row.undone)
+		}
+	}
+}
+
 // readMayWrite is whether a read may write table with verb, statement being the whole statement.
 // A read writes nothing but the spec's closed list, wherever the write runs: the insert that
 // spends a broker token's proof, a personal token's last use, the inserts of the display trees,
 // the route roster and the event horizon (writesOf reads an upsert as the insert it is), a
 // project's term statistics, GitHub's rate limits, and a compaction's rewrite and delete of a
-// document's updates.
+// document's updates. A write a transaction the read opened rolls back stores nothing and is no
+// write of the read's (unrolled): a read-only caller's results read makes the writes of its
+// read-throughs so (delivery.HeadAnswers).
 func readMayWrite(verb, table, statement string) bool {
 	switch table {
 	case "dpop_proofs", "text_trees", "route_roster", "event_horizon":
@@ -247,12 +315,19 @@ func writesIn(statements []drivenStatement) []string {
 }
 
 // requireReadsWrites fails what for every write of statements a read may not make (readMayWrite),
-// and for every statement holding a write this test cannot read a table for. It answers every
-// write it saw, as "<verb> <table>".
+// and for every statement holding a write this test cannot read a table for. A write that a
+// rollback of its transaction undid is no write (unrolled). It answers every write it saw, as
+// "<verb> <table>", each undone one as "rolled back <verb> <table>".
 func requireReadsWrites(t *testing.T, what string, statements []drivenStatement) []string {
 	t.Helper()
+	kept, undone := unrolled(statements)
 	var written []string
-	for _, statement := range statements {
+	for _, statement := range undone {
+		for _, write := range statement.writes {
+			written = append(written, "rolled back "+write)
+		}
+	}
+	for _, statement := range kept {
 		if !statement.readable {
 			t.Errorf("%s: the window holds a write this test cannot read a table for: %s", what, oneLine(statement.sql))
 		}
@@ -265,6 +340,87 @@ func requireReadsWrites(t *testing.T, what string, statements []drivenStatement)
 		}
 	}
 	return written
+}
+
+// transactionControl is the word a statement controls its backend's transaction with: begin,
+// savepoint, release, commit, rollback, or rollback to (a savepoint), and "" for any other
+// statement.
+func transactionControl(statement string) string {
+	words := strings.Fields(strings.ToLower(statement))
+	switch {
+	case len(words) == 0:
+		return ""
+	case words[0] == "begin" || len(words) > 1 && words[0] == "start" && words[1] == "transaction":
+		return "begin"
+	case words[0] == "savepoint":
+		return "savepoint"
+	case words[0] == "release":
+		return "release"
+	case words[0] == "commit" || words[0] == "end":
+		return "commit"
+	case words[0] == "rollback" && len(words) > 1 && words[1] == "to":
+		return "rollback to"
+	case words[0] == "rollback" || words[0] == "abort":
+		return "rollback"
+	}
+	return ""
+}
+
+// unrolled parts statements into those that stand (kept) and those a rollback undid (undone), by
+// each backend's transactions in the order its statements ran: a statement in a transaction, or
+// in a savepoint of one, stands once the transaction commits, and is undone where the transaction
+// rolls back or the savepoint is rolled back to. A statement of a transaction the window holds no
+// end of stands, since nothing showed it undone, and so does one that ran on no backend the
+// tracer could name. The control statements themselves are left out of both.
+func unrolled(statements []drivenStatement) (kept, undone []drivenStatement) {
+	open := map[uint32][][]drivenStatement{}
+	hold := func(statement drivenStatement) {
+		frames := open[statement.conn]
+		if statement.conn == 0 || len(frames) == 0 {
+			kept = append(kept, statement)
+			return
+		}
+		frames[len(frames)-1] = append(frames[len(frames)-1], statement)
+	}
+	for _, statement := range statements {
+		frames := open[statement.conn]
+		switch control := transactionControl(statement.sql); {
+		case statement.conn == 0 || control == "":
+			hold(statement)
+		case control == "begin":
+			open[statement.conn] = [][]drivenStatement{nil}
+		case control == "savepoint":
+			open[statement.conn] = append(frames, nil)
+		case len(frames) == 0:
+		case control == "release" && len(frames) > 1:
+			top := frames[len(frames)-1]
+			frames = frames[:len(frames)-1]
+			frames[len(frames)-1] = append(frames[len(frames)-1], top...)
+			open[statement.conn] = frames
+		case control == "rollback to":
+			undone = append(undone, frames[len(frames)-1]...)
+			open[statement.conn] = frames[:len(frames)-1]
+			if len(frames) == 1 {
+				open[statement.conn] = [][]drivenStatement{nil}
+			}
+		case control == "commit":
+			for _, frame := range frames {
+				kept = append(kept, frame...)
+			}
+			delete(open, statement.conn)
+		case control == "rollback":
+			for _, frame := range frames {
+				undone = append(undone, frame...)
+			}
+			delete(open, statement.conn)
+		}
+	}
+	for _, frames := range open {
+		for _, frame := range frames {
+			kept = append(kept, frame...)
+		}
+	}
+	return kept, undone
 }
 
 // holdsStatement reports whether one of statements matches pattern.
