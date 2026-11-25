@@ -1,10 +1,11 @@
-/** `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>`:
- *  runs one lane of the Dispatch unit suite with every test run `k` times, and reports each row
- *  that failed (INFRA-1511).
+/** `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>]
+ *  [--deadline <s>] --out <dir>`: runs one lane of the Dispatch unit suite with every test run `k`
+ *  times, and reports each row that failed (INFRA-1511).
  *
  *    bun run test:repeat --lane web --out /tmp/repeat-web
  *    bun run test:repeat --lane web-cold --reruns 1 --out /tmp/repeat-web-cold
  *    bun run test:repeat --lane harness --reruns 5 --seed 1234 --out /tmp/repeat-harness
+ *    bun run test:repeat --lane harness --deadline 7800 --out /tmp/repeat-harness
  *
  *  The web lane is `bun run test:web web/src`. The web-cold lane is
  *  `bun run test:web:cold web/src`: the web lane with each module the web app loads lazily held
@@ -63,6 +64,21 @@
  *  beside every result Bun wrote. The tool listens for both signals until its report is written,
  *  so a stop never ends it with no report.
  *
+ *  A file that cannot end in time. Bun runs every run of a test file one after another, in the
+ *  one worker that loaded it, so a file whose one run takes long holds its worker for that run
+ *  times the reruns, whatever the other workers do. With `--deadline <s>`, the leg's deadline in
+ *  seconds, the tool reads what the progress file added, nominally every 5 s, while Bun runs, and
+ *  for each file with a run ended projects the soonest its last run can end: the end of its latest
+ *  ended run, then each run still to come as fast as its fastest ended one. Where that comes past
+ *  the deadline, the leg cannot pass unless a later run of the file is faster than every one
+ *  before it, and the tool stops it then, as a stop at the deadline stops it, rather than run on
+ *  to the deadline: a leg of the harness lane once ran 7,800 s for that, with
+ *  every row passing, and named only the row that happened to be running. The report names each
+ *  such file first, with its runs ended, its fastest run and the projection. The projection counts
+ *  from Bun's start, which comes a little after the step's `timeout` starts its count, so it errs
+ *  toward no stop. A file whose projection stays inside the deadline is never stopped, and without
+ *  `--deadline` the tool projects nothing.
+ *
  *  A worker, or Bun's test process, killed from outside Bun ends Bun early: Bun gives the file a
  *  `(worker crashed)` testcase, or writes no junit file at all, and names no row. The progress
  *  file still says where each worker was, so the report names each file a worker died in by its
@@ -81,11 +97,12 @@
  *  row, or when the run was stopped. It is 2 for a bad command line, and 0 otherwise. An `--out`
  *  that cannot be the output directory - a file, a path under a file, a place the tool may not
  *  write - is a bad command line too, refused before Bun starts, and so is a bound's variable
- *  that holds no whole number of milliseconds. e2e/__tests__/unit-repeat.test.ts runs real Bun
+ *  that holds no whole number of milliseconds, and so is a `--deadline` that is no whole number
+ *  of seconds of at least 1. e2e/__tests__/unit-repeat.test.ts runs real Bun
  *  and checks the reader and the report on the files Bun writes, a stop of a leg whose rows never
  *  end, a stop whose names run hangs in a hook, a stop that comes while the report is written, a
  *  worker and Bun's test process killed in a row, and the workflow's step cancelled as GitHub's
- *  runner cancels it.
+ *  runner cancels it, and a leg stopped when a file's runs cannot end by the deadline.
  */
 import {
   appendFileSync,
@@ -93,6 +110,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   rmSync,
   writeFileSync,
   writeSync,
@@ -162,6 +180,14 @@ const stopBounds = {
   grace: { variable: "DISPATCH_UNIT_REPEAT_STOP_GRACE_MS", defaultMs: 10_000 },
   names: { variable: "DISPATCH_UNIT_REPEAT_NAMES_BOUND_MS", defaultMs: 20_000 },
 } as const;
+/** How often, nominally, the tool reads what the progress file added, to project whether each
+ *  file's runs can end by the deadline, while Bun runs with `--deadline`. Each read decides from
+ *  the runs that had ended by then. Settable with its variable, as the stop bounds are, so a row
+ *  of e2e/__tests__/unit-repeat.test.ts reads within its own marks. */
+const projectionCheck = {
+  variable: "DISPATCH_UNIT_REPEAT_PROJECTION_MS",
+  defaultMs: 5_000,
+} as const;
 /** How long Bun's pipes get to close after Bun ended on a stop, before the tool stops reading
  *  them: a process Bun left behind can hold a pipe open, and the report must not wait on it. */
 const PIPE_GRACE_MS = 2_000;
@@ -176,7 +202,7 @@ const laneChoice = `<${laneNames.join("|")}>`;
 const laneList = `${laneNames.slice(0, -1).join(", ")} or ${laneNames.at(-1)}`;
 
 const usage =
-  `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--seed <n>] --out <dir>\n` +
+  `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--seed <n>] [--deadline <s>] --out <dir>\n` +
   `  --lane ${laneChoice}\n                        ` +
   Object.entries(lanes)
     .map(([lane, { script, target }]) => `${lane} runs \`bun run ${script} ${target}\``)
@@ -185,6 +211,9 @@ const usage =
   `  --reruns <k>          how many times Bun runs each test, at least 1 (default ${DEFAULT_RERUNS})\n` +
   `  --seed <n>            the seed of Bun's random order, from 0 to ${MAX_SEED}\n` +
   "                        (default: a random one)\n" +
+  "  --deadline <s>        the leg's deadline in seconds, at least 1: the tool stops the leg\n" +
+  "                        once a file's ended runs show that its runs cannot end by it\n" +
+  "                        (default: none, and no such stop)\n" +
   "  --out <dir>           where junit.xml, bun.log, report.json and report.md go;\n" +
   "                        made if missing. A relative path is read from the directory the\n" +
   "                        tool runs in, which `bun run` makes packages/dispatch.";
@@ -194,6 +223,9 @@ export interface RepeatOptions {
   readonly reruns: number;
   readonly seed: number;
   readonly out: string;
+  /** The leg's deadline in seconds, which a file's projected runs are held to, or null for no
+   *  projection. */
+  readonly deadlineSeconds: number | null;
 }
 
 /** The options of a good command line, or what is wrong with a bad one. */
@@ -217,11 +249,12 @@ function errorText(error: unknown): string {
 
 /** Reads the command line. `seed` gives the seed when the command line names none. */
 export function parseArguments(argv: readonly string[], seed: () => number = randomSeed): Parsed {
-  let values: { lane?: string; reruns?: string; seed?: string; out?: string };
+  let values: { lane?: string; reruns?: string; seed?: string; deadline?: string; out?: string };
   try {
     ({ values } = parseArgs({
       args: [...argv],
       options: {
+        deadline: { type: "string" },
         lane: { type: "string" },
         out: { type: "string" },
         reruns: { type: "string" },
@@ -246,7 +279,13 @@ export function parseArguments(argv: readonly string[], seed: () => number = ran
   if (chosen === undefined || chosen > MAX_SEED) {
     return { problem: `--seed is a whole number from 0 to ${MAX_SEED}, not ${values.seed}` };
   }
-  return { options: { lane, out, reruns, seed: chosen } };
+  const deadlineSeconds = values.deadline === undefined ? null : wholeNumber(values.deadline);
+  if (deadlineSeconds === undefined || deadlineSeconds === 0) {
+    return {
+      problem: `--deadline is a whole number of seconds, at least 1, not ${values.deadline}`,
+    };
+  }
+  return { options: { lane, out, reruns, seed: chosen, deadlineSeconds } };
 }
 
 export type Outcome = "passed" | "failed" | "skipped";
@@ -529,19 +568,32 @@ function workerCrashed(testcase: Testcase): boolean {
   return testcase.name === WORKER_CRASHED && testcase.describe.length === 0;
 }
 
-/** A SIGTERM or SIGINT the tool received. Where it came while Bun ran: the progress file as it
- *  read at that moment, before the tool passed the signal on to Bun, and the names of the rows of
- *  each file that was running, which it read once Bun had ended. */
-export interface Stop {
-  readonly signal: string;
+/** A stop by a SIGTERM or a SIGINT the tool received. */
+export interface SignalCause {
+  readonly by: "signal";
+  readonly signal: NodeJS.Signals;
+}
+
+/** The tool's own stop, where each file of `overruns` had its runs projected past the leg's
+ *  deadline of `deadlineSeconds`. The tool then passes Bun a SIGTERM, as a stop by a signal
+ *  does, but no signal reached the tool. */
+export interface ProjectionCause {
+  readonly by: "projection";
+  readonly deadlineSeconds: number;
+  readonly overruns: readonly Overrun[];
+}
+
+/** What stopped the leg. */
+export type StopCause = SignalCause | ProjectionCause;
+
+/** What every stop holds. Where it came while Bun ran: the progress file as it read at that
+ *  moment, before the tool passed the stop on to Bun, and the names of the rows of each file that
+ *  was running, which it read once Bun had ended. */
+interface StopReading {
   /** When it came, in milliseconds since the epoch, the clock the progress file writes. */
   readonly at: number;
   /** How long after Bun started it came, in milliseconds. */
   readonly afterMs: number;
-  /** Whether Bun had ended by itself when it came, while the tool wrote its report. Then no file
-   *  was running, every result Bun wrote stands, and the progress file is not read: `progress`
-   *  is empty, and `alive`, `names` and `namesRuns` are too. */
-  readonly afterBun: boolean;
   /** The text of `<out>/progress.jsonl`, or why it could not be read. */
   readonly progress: { readonly text: string } | { readonly unreadable: string };
   /** The pids of the workers the progress file names that were alive at the stop. */
@@ -553,6 +605,34 @@ export interface Stop {
   readonly bunEnd: BoundedEnd | null;
   /** How each run that read a running file's names ended, by file. */
   readonly namesRuns: Readonly<Record<string, NamesRunEnd>>;
+}
+
+/** A stop of the leg, and what stopped it. One that came while Bun ran is a signal or the tool's
+ *  own projection. One that came after Bun had ended by itself, while the tool wrote its report,
+ *  is a signal alone. A read of the projection can still land then, since `runLane` closes its
+ *  watch only in its `finally`, after Bun's process has exited, but `stopFor` drops a projection
+ *  once Bun has ended, as there is nothing left to stop. Then no file was running, every result
+ *  Bun wrote stands, and the progress file is not read, so `progress` is empty, and `alive`,
+ *  `names` and `namesRuns` are too. */
+export type Stop =
+  | (StopReading & { readonly afterBun: false; readonly cause: StopCause })
+  | (StopReading & { readonly afterBun: true; readonly cause: SignalCause });
+
+/** A test file whose runs cannot all end by the leg's deadline, as its ended runs project them:
+ *  its runs ended, its fastest ended run, and the soonest its last run can end, from Bun's start,
+ *  with each run still to come as fast as that fastest one. The reruns and the deadline are the
+ *  leg's, on the report and on the stop's cause. */
+export interface Overrun {
+  readonly file: string;
+  readonly runsEnded: number;
+  readonly fastestSeconds: number;
+  readonly projectedSeconds: number;
+}
+
+/** What the report says of an overrun: the overrun, and the command, run from packages/dispatch,
+ *  that runs every run of its file again under the leg's seed. */
+export interface OverrunReport extends Overrun {
+  readonly reproduce: string;
 }
 
 /** How a process group the tool started ended against its bound: its time, and whether the
@@ -656,12 +736,15 @@ export interface RunningFile {
   readonly reproduce: string;
 }
 
-/** What the report says of a stop. */
-export interface StopReport {
-  readonly signal: string;
+/** The tool's own stop as the report gives it: its cause, each overrun with the command that
+ *  runs its file again. */
+export interface ProjectionReport extends ProjectionCause {
+  readonly overruns: readonly OverrunReport[];
+}
+
+/** What every stop of the report holds. */
+interface StopReportReading {
   readonly afterSeconds: number;
-  /** Whether Bun had ended by itself when the stop came, while the tool wrote its report. */
-  readonly afterBun: boolean;
   readonly running: readonly RunningFile[];
   /** Why the progress file could not be read, or null where it was read. */
   readonly progressUnreadable: string | null;
@@ -675,6 +758,15 @@ export interface StopReport {
   /** How each run that read a running file's names ended, against its bound, by file. */
   readonly namesRuns: Readonly<Record<string, NamesRunEnd>>;
 }
+
+/** What the report says of a stop, and what stopped it, as `Stop` holds them: a stop after Bun
+ *  had ended by itself, while the tool wrote its report, is a signal alone. */
+export type StopReport =
+  | (StopReportReading & {
+      readonly afterBun: false;
+      readonly cause: SignalCause | ProjectionReport;
+    })
+  | (StopReportReading & { readonly afterBun: true; readonly cause: SignalCause });
 
 /** A failure that belongs to no row. */
 export interface RowlessFailure {
@@ -820,7 +912,9 @@ function progressLine(text: string): ProgressLine | undefined {
     : undefined;
 }
 
-/** Where one load of a test file had got to, as its lines in the progress file say. */
+/** Where one load of a test file had got to, as its lines in the progress file say: its runs
+ *  begun and ended, its rows begun and ended in its latest run, and, for the projection, when its
+ *  latest run began and ended and how long its fastest ended run took, in milliseconds. */
 interface LoadState {
   readonly file: string;
   /** Whether the file runs its rows at once. */
@@ -831,49 +925,85 @@ interface LoadState {
   begun: number;
   ended: number;
   lastAt: number;
+  latestRunAt: number;
+  latestDoneAt: number;
+  fastestRunMs: number;
 }
 
-/** Each worker's latest load, from the progress file's `text`, by the worker's pid.
+/** The loads the progress file's lines have named so far: each by its id, and each worker's
+ *  latest by the worker's pid. */
+interface ProgressRead {
+  readonly loads: Map<string, LoadState>;
+  readonly latest: Map<number, LoadState>;
+}
+
+function progressRead(): ProgressRead {
+  return { loads: new Map(), latest: new Map() };
+}
+
+/** Takes one line of the progress file into `read`: the one reader of those lines, for both a
+ *  stop's report of where each file was and the projection of each file's runs.
  *
  *  A row's `end` is written by the preload's `afterEach`, which Bun 1.4.4 runs after the file's
  *  own `afterEach` hooks, and which a throwing one of them skips (both measured on 2026-11-20).
  *  So an `end` can be missing for a row that did end. In a file that runs one row at a time, the
  *  next row's `start` shows that the row before it ended, and counts it so. In a file that runs
- *  its rows at once, a `start` shows nothing of the rows beside it, and only `end`s count. */
-function latestLoads(text: string): Map<number, LoadState> {
-  const loads = new Map<string, LoadState>();
-  const latest = new Map<number, LoadState>();
-  for (const line of text.split("\n")) {
-    const read = progressLine(line);
-    if (read === undefined) continue;
-    if (read.event === "load") {
-      const state = {
-        file: read.file,
-        atOnce: read.atOnce,
-        runs: 0,
-        done: 0,
-        begun: 0,
-        ended: 0,
-        lastAt: read.at,
-      };
-      loads.set(read.load, state);
-      latest.set(read.pid, state);
-      continue;
-    }
-    const state = loads.get(read.load);
-    if (state === undefined) continue;
-    state.lastAt = read.at;
-    if (read.event === "run") {
-      state.runs += 1;
-      state.begun = 0;
-      state.ended = 0;
-    } else if (read.event === "start") {
-      if (!state.atOnce) state.ended = state.begun;
-      state.begun += 1;
-    } else if (read.event === "end") state.ended = Math.min(state.begun, state.ended + 1);
-    else state.done += 1;
+ *  its rows at once, a `start` shows nothing of the rows beside it, and only `end`s count.
+ *
+ *  Bun runs a load's runs one after another, so a `done` shows that every run begun so far has
+ *  ended, and it times the run that began last, from its own `run`. An earlier preload's throwing
+ *  `afterAll` skips the tool's, and so its `done` (`web/src/__tests__/setup.ts:230-232`; the web
+ *  lanes load `register-dom.ts` and `setup.ts` before the tool's preload). That is made up by the
+ *  next `done`: both the stop's report and the projection count every run before it as ended, and
+ *  the projection times only the latest. An earlier preload's throwing `beforeAll` skips the
+ *  tool's, and so its `run`, while its `done` is still written: a `done` that follows no new `run`
+ *  ends no run, so it counts and times nothing, where a time from the run before, or from the
+ *  `load`, would be far too short and keep the file's projection inside any deadline. */
+function takeProgressLine(read: ProgressRead, line: ProgressLine): void {
+  if (line.event === "load") {
+    const state = {
+      file: line.file,
+      atOnce: line.atOnce,
+      runs: 0,
+      done: 0,
+      begun: 0,
+      ended: 0,
+      lastAt: line.at,
+      latestRunAt: line.at,
+      latestDoneAt: line.at,
+      fastestRunMs: Number.POSITIVE_INFINITY,
+    };
+    read.loads.set(line.load, state);
+    read.latest.set(line.pid, state);
+    return;
   }
-  return latest;
+  const state = read.loads.get(line.load);
+  if (state === undefined) return;
+  state.lastAt = line.at;
+  if (line.event === "run") {
+    state.runs += 1;
+    state.begun = 0;
+    state.ended = 0;
+    state.latestRunAt = line.at;
+  } else if (line.event === "start") {
+    if (!state.atOnce) state.ended = state.begun;
+    state.begun += 1;
+  } else if (line.event === "end") state.ended = Math.min(state.begun, state.ended + 1);
+  else if (state.runs > state.done) {
+    state.done = state.runs;
+    state.latestDoneAt = line.at;
+    state.fastestRunMs = Math.min(state.fastestRunMs, line.at - state.latestRunAt);
+  }
+}
+
+/** Each worker's latest load, from the progress file's `text`, by the worker's pid. */
+function latestLoads(text: string): Map<number, LoadState> {
+  const read = progressRead();
+  for (const line of text.split("\n")) {
+    const taken = progressLine(line);
+    if (taken !== undefined) takeProgressLine(read, taken);
+  }
+  return read.latest;
 }
 
 /** The pids of the workers the progress file's `text` names that are alive now, which the stop
@@ -890,6 +1020,114 @@ function liveWorkers(text: string): number[] {
     }
   }
   return alive;
+}
+
+/** Each load of `loads` whose runs cannot all end by the deadline, `deadlineSeconds` after
+ *  `startedAt`, Bun's start in milliseconds since the epoch, as its ended runs project them: one
+ *  with a run ended and runs still to come, whose latest ended run's end, and then each run still
+ *  to come as fast as its fastest ended one, comes past the deadline. Only a later run faster than
+ *  every one before it ends sooner. The latest projection first; each projection is rounded up to
+ *  a tenth of a second, so the report never shows one at or under the deadline it passed. */
+function overrunsOf(
+  loads: Iterable<LoadState>,
+  startedAt: number,
+  reruns: number,
+  deadlineSeconds: number
+): Overrun[] {
+  const deadline = startedAt + deadlineSeconds * 1000;
+  const found: Overrun[] = [];
+  for (const { file, done, latestDoneAt, fastestRunMs } of loads) {
+    if (done === 0 || done >= reruns) continue;
+    const projected = latestDoneAt + (reruns - done) * fastestRunMs;
+    if (projected <= deadline) continue;
+    found.push({
+      file,
+      runsEnded: done,
+      fastestSeconds: Math.round(fastestRunMs / 100) / 10,
+      projectedSeconds: Math.ceil((projected - startedAt) / 100) / 10,
+    });
+  }
+  return found.sort((one, other) => other.projectedSeconds - one.projectedSeconds);
+}
+
+/** The projection of a leg that Bun started at `startedAt`, in milliseconds since the epoch, with
+ *  `reruns` and `deadlineSeconds`: each call takes the progress file's lines read since the last
+ *  one, with the one reader a stop uses (`takeProgressLine`), and answers each file whose runs
+ *  they project past the deadline (`overrunsOf`). Exported for the rows of
+ *  e2e/__tests__/unit-repeat.test.ts that feed it a progress file through `progressTail`, as the
+ *  tool does. */
+export function projection(
+  startedAt: number,
+  reruns: number,
+  deadlineSeconds: number
+): (lines: readonly ProgressLine[]) => Overrun[] {
+  const read = progressRead();
+  return (lines) => {
+    for (const line of lines) takeProgressLine(read, line);
+    return overrunsOf(read.loads.values(), startedAt, reruns, deadlineSeconds);
+  };
+}
+
+/** Until it is closed, reads the lines the progress file at `path` gains every `intervalMs`,
+ *  projects each file's runs (`projection`), and calls `stop` once, with the tool's own cause, at
+ *  the first read that finds a file whose runs it projects past the deadline. Answers what ends the
+ *  watch; `stop` decides whether a projection that lands after Bun has ended stops anything. */
+function watchProjection(
+  path: string,
+  leg: { readonly startedAt: number; readonly reruns: number; readonly deadlineSeconds: number },
+  intervalMs: number,
+  stop: (cause: ProjectionCause) => void
+): { close(): void } {
+  const { startedAt, reruns, deadlineSeconds } = leg;
+  const tail = progressTail(path);
+  const project = projection(startedAt, reruns, deadlineSeconds);
+  const timer = setInterval(() => {
+    const overruns = project(tail.read());
+    if (overruns.length === 0) return;
+    clearInterval(timer);
+    stop({ by: "projection", deadlineSeconds, overruns });
+  }, intervalMs);
+  return {
+    close: () => {
+      clearInterval(timer);
+      tail.close();
+    },
+  };
+}
+
+/** An overrun's numbers in words, with the leg's `reruns` and `deadlineSeconds`: `1 of 20 runs
+ *  ended, the fastest in 448.1 s; at that speed its 20 runs end 9126.4 s after Bun's start, past
+ *  the leg's 7800 s deadline`. */
+function overrunFacts(overrun: Overrun, reruns: number, deadlineSeconds: number): string {
+  const { runsEnded, fastestSeconds, projectedSeconds } = overrun;
+  return (
+    `${runsEnded} of ${reruns} runs ended, the fastest in ${fastestSeconds.toFixed(1)} s; at that ` +
+    `speed its ${reruns} runs end ${projectedSeconds.toFixed(1)} s after Bun's start, past the ` +
+    `leg's ${deadlineSeconds} s deadline`
+  );
+}
+
+/** How many files the tool's own stop projected past the deadline:
+ *  `1 test file's runs are projected past the leg's 7800 s deadline`. */
+function projectedPast({ deadlineSeconds, overruns }: ProjectionCause): string {
+  return (
+    `${counted(overruns.length, "test file's runs are", "test files' runs are")} projected past ` +
+    `the leg's ${deadlineSeconds} s deadline`
+  );
+}
+
+/** Why the tool stopped the leg, file by file, with the leg's `reruns`:
+ *  `1 test file's runs are projected past the leg's 7800 s deadline: <file>: <facts>`. */
+function projectionText(cause: ProjectionCause, reruns: number): string {
+  const files = cause.overruns.map(
+    (overrun) => `${overrun.file}: ${overrunFacts(overrun, reruns, cause.deadlineSeconds)}`
+  );
+  return `${projectedPast(cause)}: ${files.join("; ")}`;
+}
+
+/** Who stopped the leg, as a sentence names it: the signal, or `the tool`. */
+function stopperText(cause: StopCause): string {
+  return cause.by === "signal" ? cause.signal : "the tool";
 }
 
 type LaneOf = { readonly reruns: number; readonly seed: number; readonly script: string };
@@ -1140,12 +1378,14 @@ export function summarise(run: LaneRun): Report {
 
   let stop: StopReport | null = null;
   let failures = rowless;
-  if (run.stop !== null && during === null) {
+  if (run.stop?.afterBun === true) {
     // Bun had ended by itself, and the stop came while the tool wrote this report: the leg ran
     // past its deadline in the tool's own work. It still fails, as the step's `timeout` fails it.
+    const { cause, afterMs } = run.stop;
+    const afterSeconds = Math.round(afterMs / 100) / 10;
     stop = {
-      signal: run.stop.signal,
-      afterSeconds: Math.round(run.stop.afterMs / 100) / 10,
+      cause,
+      afterSeconds,
       afterBun: true,
       running: [],
       progressUnreadable: null,
@@ -1158,7 +1398,7 @@ export function summarise(run: LaneRun): Report {
       {
         kind: "stopped",
         text:
-          `The leg was stopped by ${stop.signal} after ${stop.afterSeconds.toFixed(1)} s, after ` +
+          `The leg was stopped by ${cause.signal} after ${afterSeconds.toFixed(1)} s, after ` +
           "Bun had ended by itself, while the tool wrote this report: no test file was running, " +
           "and every result Bun wrote stands.",
       },
@@ -1166,8 +1406,18 @@ export function summarise(run: LaneRun): Report {
     ];
   } else if (during !== null) {
     const { progress } = during;
+    const cause: SignalCause | ProjectionReport =
+      during.cause.by === "signal"
+        ? during.cause
+        : {
+            ...during.cause,
+            overruns: during.cause.overruns.map((overrun) => ({
+              ...overrun,
+              reproduce: `bun run ${script} ${overrun.file} --seed=${run.seed} --rerun-each=${run.reruns}`,
+            })),
+          };
     stop = {
-      signal: during.signal,
+      cause,
       afterSeconds: Math.round(during.afterMs / 100) / 10,
       afterBun: false,
       running,
@@ -1193,11 +1443,14 @@ export function summarise(run: LaneRun): Report {
       bunEnd?.killed === true
         ? ` Bun did not end within its ${bunEnd.boundMs / 1000} s grace after the stop, so the tool killed its process group, and its junit file can lack rows that ended.`
         : "";
+    const after = `after ${stop.afterSeconds.toFixed(1)} s, before Bun ended`;
+    const stoppedBy =
+      cause.by === "signal"
+        ? `The leg was stopped by ${cause.signal} ${after}: ${named}.`
+        : `The tool stopped the leg ${after}, because ${projectionText(cause, run.reruns)}. ` +
+          `When it stopped, ${named}.`;
     failures = [
-      {
-        kind: "stopped",
-        text: `The leg was stopped by ${stop.signal} after ${stop.afterSeconds.toFixed(1)} s, before Bun ended: ${named}.${unreported}${graceKilled}`,
-      },
+      { kind: "stopped", text: `${stoppedBy}${unreported}${graceKilled}` },
       ...rowless.filter((failure) => !followsFromStop.has(failure.kind)),
     ];
   }
@@ -1290,7 +1543,13 @@ function endText(end: BoundedEnd): string {
  *  a running file's names ended. */
 function stopLines(stop: StopReport): string[] {
   return [
-    `- Stopped: by ${stop.signal} after ${stop.afterSeconds.toFixed(1)} s, ${stop.afterBun ? "after Bun had ended by itself, while the tool wrote this report" : "before Bun ended"}`,
+    `- Stopped: by ${stopperText(stop.cause)} after ${stop.afterSeconds.toFixed(1)} s, ${
+      stop.afterBun
+        ? "after Bun had ended by itself, while the tool wrote this report"
+        : stop.cause.by === "projection"
+          ? `before Bun ended, since ${projectedPast(stop.cause)}`
+          : "before Bun ended"
+    }`,
     ...(stop.bunEnd === null ? [] : [`- Bun, after the stop, ${endText(stop.bunEnd)}`]),
     ...Object.entries(stop.namesRuns).map(
       ([file, end]) =>
@@ -1339,6 +1598,26 @@ export function markdown(report: Report): string {
   ];
   const { stop } = report;
   if (stop !== null) {
+    if (stop.cause.by === "projection") {
+      const { deadlineSeconds, overruns } = stop.cause;
+      lines.push(
+        `### ${counted(overruns.length, "test file's runs", "test files' runs")} projected past the deadline`,
+        ""
+      );
+      for (const overrun of overruns) {
+        lines.push(
+          `#### ${code(overrun.file)}`,
+          "",
+          `${overrunFacts(overrun, report.reruns, deadlineSeconds)}. Bun runs every run of a file one after another in one worker,`,
+          "so the leg cannot end in time unless a later run of the file is faster than every one",
+          "before it. To run its runs again in the same order, run this from",
+          "`packages/dispatch`:",
+          "",
+          ...fenced(overrun.reproduce, "sh"),
+          ""
+        );
+      }
+    }
     lines.push(
       stop.afterBun
         ? "### The leg was stopped after Bun had ended, and no test file was running"
@@ -1425,8 +1704,9 @@ function workflowCommand(
 }
 
 /** The GitHub Actions annotations of the report: one `::error` per failure that belongs to no
- *  row, then one per test file that was running when the leg was stopped, then one per test file
- *  a worker died in, then one per failing row, and one `::notice` with the totals. GitHub keeps
+ *  row, then one per test file whose runs are projected past the deadline, then one per test file
+ *  that was running when the leg was stopped, then one per test file a worker died in, then one
+ *  per failing row, and one `::notice` with the totals. GitHub keeps
  *  ERROR_LIMIT errors a step. So where there are more, the last of the ERROR_LIMIT errors takes
  *  the place of the rest and says how many more failures report.md lists. */
 export function annotations(report: Report): string[] {
@@ -1438,6 +1718,22 @@ export function annotations(report: Report): string[] {
     )
   );
   const { stop } = report;
+  const projected = stop?.cause.by === "projection" ? stop.cause : null;
+  const overruns =
+    stop === null || projected === null
+      ? []
+      : projected.overruns.map((overrun) =>
+          workflowCommand(
+            "error",
+            {
+              file: `packages/dispatch/${overrun.file}`,
+              title: "Runs projected past the deadline",
+            },
+            `${overrun.file}: ${overrunFacts(overrun, report.reruns, projected.deadlineSeconds)}, ` +
+              `so the tool stopped the leg after ${stop.afterSeconds.toFixed(1)} s ` +
+              `(seed ${report.seed}). Run its runs again from packages/dispatch: ${overrun.reproduce}`
+          )
+        );
   const running =
     stop === null
       ? []
@@ -1445,7 +1741,8 @@ export function annotations(report: Report): string[] {
           workflowCommand(
             "error",
             { file: `packages/dispatch/${file.file}`, title: "Running when the leg was stopped" },
-            `${file.file}: in ${placeText(file, report.reruns)}, when ${stop.signal} stopped the ` +
+            `${file.file}: in ${placeText(file, report.reruns)}, when ` +
+              `${stopperText(stop.cause)} stopped the ` +
               `leg after ${stop.afterSeconds.toFixed(1)} s (seed ${report.seed}). Run it again ` +
               `from packages/dispatch: ${file.reproduce}`
           )
@@ -1473,6 +1770,11 @@ export function annotations(report: Report): string[] {
       lines: rowless,
       more: (left: number) =>
         `${counted(left, "more failure that belongs", "more failures that belong")} to no row`,
+    },
+    {
+      lines: overruns,
+      more: (left: number) =>
+        `${counted(left, "more test file", "more test files")} whose runs are projected past the deadline`,
     },
     {
       lines: running,
@@ -1673,15 +1975,56 @@ function progressAt(path: string): Stop["progress"] {
   }
 }
 
+/** A reader of what the progress file at `path` gains: each `read` answers the whole lines
+ *  written since the last one, so the projection reads every line once however long the leg
+ *  runs. A file that is not there yet has none, and a read that fails answers none, so the next
+ *  read takes what this one left. `close` closes the file. Exported for the row of
+ *  e2e/__tests__/unit-repeat.test.ts that splits lines across reads. */
+export function progressTail(path: string): {
+  readonly read: () => ProgressLine[];
+  close(): void;
+} {
+  let fd: number | undefined;
+  let offset = 0;
+  let partial = "";
+  const decoder = new TextDecoder();
+  const buffer = new Uint8Array(1 << 16);
+  return {
+    read: () => {
+      try {
+        fd ??= openSync(path, "r");
+        for (;;) {
+          const count = readSync(fd, buffer, 0, buffer.length, offset);
+          if (count === 0) break;
+          offset += count;
+          partial += decoder.decode(buffer.subarray(0, count), { stream: true });
+        }
+      } catch {
+        return [];
+      }
+      const lines = partial.split("\n");
+      partial = lines.pop() ?? "";
+      return lines.flatMap((line) => progressLine(line) ?? []);
+    },
+    close: () => {
+      if (fd !== undefined) closeSync(fd);
+    },
+  };
+}
+
 /** Prints `problem` and the usage on stderr, and answers the exit status of a bad command line. */
 function refuse(problem: string): 2 {
   console.error(`unit-repeat: ${problem}\n${usage}`);
   return 2;
 }
 
-/** The bound of `bound` in milliseconds: its variable's whole number where it is set, else its
- *  default; or the problem with a value that is no whole number of at least 1. */
-function boundMs(bound: (typeof stopBounds)[keyof typeof stopBounds]): number | string {
+/** The bound of `bound` in milliseconds, or the projection's interval: its variable's whole number
+ *  where it is set, else its default; or the problem with a value that is no whole number of at
+ *  least 1. */
+function boundMs(bound: {
+  readonly variable: string;
+  readonly defaultMs: number;
+}): number | string {
   const text = process.env[bound.variable];
   if (text === undefined || text === "") return bound.defaultMs;
   const value = wholeNumber(text);
@@ -1691,7 +2034,8 @@ function boundMs(bound: (typeof stopBounds)[keyof typeof stopBounds]): number | 
 }
 
 /** Runs the lane once with `options` and writes its report. Answers the exit status: 2, with
- *  nothing run, where `options.out` cannot be the output directory, as for any bad command line.
+ *  nothing run, where `options.out` cannot be the output directory, or where a bound's or the
+ *  projection's variable holds no whole number of milliseconds, as for any bad command line.
  *  `target` is the path the lane tests, its whole directory unless a caller names a narrower one:
  *  that is how a smoke run drives the real path over one file, in a pod where a whole lane may
  *  not run. */
@@ -1699,12 +2043,14 @@ export async function runLane(
   options: RepeatOptions,
   target: string = lanes[options.lane].target
 ): Promise<0 | 1 | 2> {
-  const { lane, reruns, seed } = options;
+  const { lane, reruns, seed, deadlineSeconds } = options;
   const { script } = lanes[lane];
   const graceMs = boundMs(stopBounds.grace);
   const namesBoundMs = boundMs(stopBounds.names);
   if (typeof graceMs === "string") return refuse(graceMs);
   if (typeof namesBoundMs === "string") return refuse(namesBoundMs);
+  const projectionMs = boundMs(projectionCheck);
+  if (typeof projectionMs === "string") return refuse(projectionMs);
   const out = resolve(options.out);
   const junitPath = join(out, "junit.xml");
   const logPath = join(out, "bun.log");
@@ -1721,10 +2067,14 @@ export async function runLane(
   } catch (error) {
     return refuse(`--out ${options.out} cannot be the output directory: ${errorText(error)}`);
   }
-  console.log(`seed=${seed} lane=${lane} reruns=${reruns}`);
+  console.log(
+    `seed=${seed} lane=${lane} reruns=${reruns}${deadlineSeconds === null ? "" : ` deadline=${deadlineSeconds}`}`
+  );
   console.log(`running bun run ${script} ${target} in ${packageDirectory}; its output: ${logPath}`);
 
   const started = performance.now();
+  // Bun's start on the clock the progress file writes, which a file's projected runs count from.
+  const startedAt = Date.now();
   // `detached` makes Bun's `bun run` the leader of a process group of its own, which Bun's test
   // process and its workers stay in, so that the tool can kill all of them at once, at the
   // grace's end after a stop and once Bun has ended, and none of them outlives the report.
@@ -1763,13 +2113,20 @@ export async function runLane(
   // Set once Bun has ended. A stop after that comes while the tool writes its report: there is
   // nothing left to stop, and the report is written again to name it.
   let bunEnded = false;
-  const onStop = (signal: NodeJS.Signals) => {
+  // A stop by a signal the tool received, or the tool's own stop by its projection, for which it
+  // passes Bun a SIGTERM. The watch of the projection is closed only in the `finally` below, after
+  // `await child.exited`, so a read of it can land between Bun's end and that close: the
+  // `bunEnded` check below drops such a projection, and keeps a signal, which the report names.
+  const stopFor = (cause: StopCause) => {
     if (held.stop !== null) return;
     stoppedAt = performance.now();
     const afterMs = stoppedAt - started;
+    const after = `${(afterMs / 1000).toFixed(1)} s`;
     if (bunEnded) {
+      // Bun has ended: a projection has nothing left to stop, so only a signal is a stop now.
+      if (cause.by !== "signal") return;
       held.stop = {
-        signal,
+        cause,
         at: Date.now(),
         afterMs,
         afterBun: true,
@@ -1780,8 +2137,8 @@ export async function runLane(
         namesRuns: {},
       };
       console.log(
-        `unit-repeat: ${signal} after ${(afterMs / 1000).toFixed(1)} s, after Bun had ended by ` +
-          "itself: the report names the stop"
+        `unit-repeat: ${cause.signal} after ${after}, after Bun had ended by itself: the report ` +
+          "names the stop"
       );
       return;
     }
@@ -1790,7 +2147,7 @@ export async function runLane(
     const progress = progressAt(progressPath);
     const alive = "text" in progress ? liveWorkers(progress.text) : [];
     held.stop = {
-      signal,
+      cause,
       at: Date.now(),
       afterMs,
       afterBun: false,
@@ -1801,15 +2158,18 @@ export async function runLane(
       namesRuns: {},
     };
     console.log(
-      `unit-repeat: ${signal} after ${(afterMs / 1000).toFixed(1)} s: Bun is stopped, and the ` +
-        "report names what was running"
+      cause.by === "signal"
+        ? `unit-repeat: ${cause.signal} after ${after}: Bun is stopped, and the report names what ` +
+            "was running"
+        : `unit-repeat: stopped after ${after}, since ${projectionText(cause, reruns)}. Bun is ` +
+            "stopped, and the report names that and what was running"
     );
     // To `bun run` alone, which passes it on to Bun's test process; that process ends its
     // workers, prints the files still running and writes its junit file, and `bun run` can end
     // before it does. So Bun's end is the end of its pipes, which its test process holds. At the
     // grace's end the tool kills the whole group, and a holder of a pipe that left the group gets
     // PIPE_GRACE_MS more before the pipes are read no further.
-    child.kill(signal);
+    child.kill(cause.by === "signal" ? cause.signal : "SIGTERM");
     killer = setTimeout(() => {
       graceKilled = true;
       killGroup(child.pid);
@@ -1819,6 +2179,7 @@ export async function runLane(
     }, graceMs);
     stopped.resolve();
   };
+  const onStop = (signal: NodeJS.Signals) => stopFor({ by: "signal", signal });
   // The listeners stay until the report is written: a signal with none would end the tool at
   // once, with no report, and a second signal during the names runs would too.
   process.on("SIGTERM", onStop);
@@ -1831,6 +2192,17 @@ export async function runLane(
     };
     sample();
     const sampler = setInterval(sample, MEMORY_SAMPLE_MS);
+    // With a deadline, each file's runs are projected from the lines the progress file gains,
+    // and the leg is stopped once one file's runs are projected past the deadline.
+    const watch =
+      deadlineSeconds === null
+        ? null
+        : watchProjection(
+            progressPath,
+            { startedAt, reruns, deadlineSeconds },
+            projectionMs,
+            stopFor
+          );
     try {
       await Promise.race([relays, stopped.promise]);
       const stop = held.stop;
@@ -1851,6 +2223,7 @@ export async function runLane(
       bunEnded = true;
       clearTimeout(killer);
       clearInterval(sampler);
+      watch?.close();
       closeSync(log);
       killGroup(child.pid);
     }

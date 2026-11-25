@@ -16,7 +16,7 @@ name: Dispatch unit suite repeated
 # errors. When there are more failures, the tenth error says how many more report.md lists. The
 # artifact holds report.md, report.json, junit.xml and bun.log, which is Bun's whole output. The
 # leg fails when a row failed, when Bun exited non-zero, when it read no testcase, when a failure
-# belongs to no row, or when it reached its deadline.
+# belongs to no row, when it reached its deadline, or when a test file's runs could not end by it.
 #
 # A leg's deadline. The step runs the tool under `timeout` with a deadline inside the step's
 # budget, so a leg that hangs or runs long is stopped by a signal the tool reads: its report and
@@ -28,6 +28,16 @@ name: Dispatch unit suite repeated
 # Bun's test process killed from outside, as the out-of-memory killer kills one, is named by the
 # file and the row it was in.
 # why: .github/ci-notes/dispatch-unit-repeat.md#a-legs-deadline-and-what-a-stopped-leg-names
+#
+# A file that cannot end by the deadline. Bun runs every run of a test file one after another in
+# one worker, so one slow file can hold a leg past its deadline while every row passes. The step
+# gives the tool the same deadline as `timeout`, and the tool stops the leg as soon as one file's
+# ended runs project its runs past it (its latest ended run, then each run to come as fast as its
+# fastest), naming the file, its runs ended, its fastest run and the projection; a file whose
+# projection stays inside the deadline is never stopped. Before that stop, the Codex leg's file
+# (e2e/__tests__/outside-agent-codex.test.ts, then about 450 s a run) held every harness leg of
+# five runs on 2026-11-23 to its 7,800 s deadline, naming only the row then running.
+# why: .github/ci-notes/dispatch-unit-repeat.md#a-file-whose-runs-cannot-end-by-the-deadline
 #
 # Why a workflow of its own. GitHub starts a `schedule` from the default branch alone. It offers
 # `workflow_dispatch` only once the default branch holds the file. After that,
@@ -231,6 +241,10 @@ jobs:
       # to a child it waits for. `timeout` passes it on to `bun run`, and so to the tool.
       # why: .github/ci-notes/dispatch-unit-repeat.md#a-legs-deadline-and-what-a-stopped-leg-names
       #
+      # `--deadline` gives the tool the same deadline_seconds, which it holds each test file's
+      # projected runs to, so it stops a leg that cannot end in time before `timeout` would.
+      # why: .github/ci-notes/dispatch-unit-repeat.md#a-file-whose-runs-cannot-end-by-the-deadline
+      #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
       # new snapshot (Bun's snapshot documentation).
@@ -239,7 +253,7 @@ jobs:
         run: >-
           exec timeout --foreground --signal=TERM --kill-after=60 ${{ matrix.deadline_seconds }}
           bun run test:repeat --lane ${{ matrix.lane }} --reruns ${{ matrix.reruns }}
-          --out "$RUNNER_TEMP/unit-repeat"
+          --deadline ${{ matrix.deadline_seconds }} --out "$RUNNER_TEMP/unit-repeat"
         working-directory: packages/dispatch
         env:
           CI: "true"

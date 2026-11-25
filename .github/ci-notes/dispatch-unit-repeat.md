@@ -342,3 +342,49 @@ reading short.
 - **Inside the kill-after:** the grace, the 2 s the tool then gives a pipe to close, the names
   bound and the 2 s it gives that run's pipe come to 34 s, inside the 60 s that the step's
   `timeout --kill-after` gives the tool after the stop.
+
+## A file whose runs cannot end by the deadline
+
+Bun runs every run of a test file one after another, in the one worker that loaded it, so a file
+whose one run takes long holds its worker for that run times the reruns, whatever the other
+workers do. A deadline then stops the leg with every row passing, and names only the row that was
+running at that moment, which reads as a hang.
+
+That is what held every harness leg of runs 45178675944, 45187075981, 45219952088, 45274062391
+and 45276453023 (2026-11-23) to its 7,800 s deadline. In each of their 15 legs
+`e2e/__tests__/outside-agent-codex.test.ts` was in its run 13 to 18 of 20 at the stop, with no
+row failed and the row in hand 2.1 to 24.4 s in. Read from each leg's `progress.jsonl`, each run
+of that file that ended took 439 to 493 s, from its first run to its last, and no row of it more
+than 57 s: its 20 runs alone take at least 8,780 s. In the 59 to 65 file legs, every other file
+had ended by 3,853 to 5,951 s. Its rows waited on fixed sleeps in the leg and its stand-ins, which
+#5247 ended on their facts. At a merge of main with #5247 the same file took about 66 to 78 s a
+run, and three harness legs in build-cluster pods on 4 CPUs ended by themselves in 1,961, 2,119
+and 2,514 s.
+
+So the tool takes the leg's deadline too (`--deadline`, the same `deadline_seconds` the step gives
+`timeout`). While Bun runs it reads the lines the progress file gained, nominally every 5 s, and
+for each file with a run ended projects the soonest its last run can end: the end of its latest
+ended run, then each run still to come as fast as its fastest ended one. Where that comes past the
+deadline, the leg cannot pass unless a later run of the file is faster than every one before it,
+and the tool stops it then, as the deadline's SIGTERM would: the report, the
+step summary and one `::error` for each such file name the file, its runs ended of the reruns, its
+fastest run and the projection, before the files that were running, with the command that runs its
+runs again. The tool exits 1.
+
+What the projection does not do:
+
+- It never stops a file whose projection stays inside the deadline. It takes each run to come as
+  fast as the fastest that ended, so it stops a file only where the file could end in time only
+  by a later run faster than every earlier one: a first run much slower than all the runs after
+  it can stop a leg that would have fit. It counts from Bun's start, a little after the step's
+  `timeout` starts its count (the contracts build runs first), which errs toward no stop too.
+- It reads one file's runs, not the lane's: a leg whose files each fit but whose sum on the
+  runner's workers does not still runs to the deadline, which names the files then running.
+- It decides no row's verdict. Like the budgets, it only ends a leg its projection says will not
+  end in time.
+- It needs one run of the file to end. A first run that never ends is the deadline's to stop.
+- Without `--deadline`, as in a run by hand, it projects nothing.
+
+`DISPATCH_UNIT_REPEAT_PROJECTION_MS` sets how often it reads, nominally (5,000 ms by default), as
+`unit-repeat.test.ts`'s rows set it so that their verdicts rest on their own marks. Each read
+decides from the runs that had ended by then.

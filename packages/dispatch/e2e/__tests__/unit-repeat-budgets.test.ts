@@ -10,7 +10,9 @@
  *
  *  This file reads no Bun run: it parses the workflow and holds each budget to exactly its rule,
  *  so a budget raised or cut with no new measurement fails, and so does a measurement written
- *  with no budget set again from it. The row says which lie of a weekly result it catches.
+ *  with no budget set again from it. It also holds the test step to run the tool under `timeout`
+ *  at the deadline and to give the tool that same deadline (`--deadline`), which the tool holds
+ *  each test file's projected runs to. The row says which lie of a weekly result it catches.
  */
 
 import { expect, test } from "bun:test";
@@ -44,6 +46,7 @@ type BudgetRule =
   | "job-timeout"
   | "step-timeout"
   | "step-run"
+  | "step-deadline"
   | "unread"
   | "deadline"
   | "step"
@@ -92,6 +95,10 @@ function testStep(workflow: RepeatWorkflow | null): WorkflowEntry | undefined {
 
 /** What the test step's `run:` holds: test:repeat under `timeout` at the matrix's deadline. */
 const DEADLINE_RUN = `timeout --foreground --signal=TERM --kill-after=${KILL_AFTER} \${{ matrix.deadline_seconds }} bun run test:repeat `;
+/** What the test step's `run:` also gives the tool: the same deadline, which the tool holds each
+ *  test file's projected runs to (`--deadline`), so a leg that cannot end in time is stopped
+ *  before `timeout` would stop it. */
+const TOOL_DEADLINE = `--deadline \${{ matrix.deadline_seconds }} `;
 
 /** Each budget of `leg` by its rule, from the value the rule takes as it is written: the deadline
  *  from the slowest leg, the step from the deadline, the job from the step and the other steps. */
@@ -141,6 +148,20 @@ function budgetProblems(workflow: RepeatWorkflow | null): {
       lane: null,
       rule: "step-run",
       text: `the test step does not run test:repeat under timeout at the matrix's deadline_seconds with --kill-after=${KILL_AFTER}`,
+    });
+  }
+  // Once, and as the matrix's deadline: a second `--deadline` later on the line would be the one
+  // the tool takes, and a `#` that starts a word would make the rest of the line a comment.
+  if (
+    typeof step?.run !== "string" ||
+    !step.run.includes(TOOL_DEADLINE) ||
+    step.run.split("--deadline").length !== 2 ||
+    /(^|\s)#/.test(step.run)
+  ) {
+    problems.push({
+      lane: null,
+      rule: "step-deadline",
+      text: "the test step does not give test:repeat the matrix's deadline_seconds as its one --deadline",
     });
   }
   for (const row of matrixRows(workflow)) {
@@ -295,6 +316,22 @@ test(
         }
       })
     ).toEqual([{ lane: null, rule: "step-run" }]);
+    // The tool given another deadline than `timeout`'s, none, a second one after it, or one a
+    // shell comment hides: its projection would hold the files' runs to a deadline the leg does
+    // not have. Each replaces the step's `--deadline` with the text beside it.
+    const otherDeadlines = {
+      another: "--deadline 600 ",
+      none: "",
+      "a second after it": `${TOOL_DEADLINE}--deadline 600 `,
+      "behind a comment": `# ${TOOL_DEADLINE}`,
+    };
+    for (const [how, replacement] of Object.entries(otherDeadlines)) {
+      const problems = broken((copy) => {
+        const step = testStep(copy);
+        if (step !== undefined) step.run = String(step.run).replace(TOOL_DEADLINE, replacement);
+      });
+      expect({ how, problems }).toEqual({ how, problems: [{ lane: null, rule: "step-deadline" }] });
+    }
   },
   rowLimit()
 );

@@ -23,8 +23,8 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     ("scripts/e2e/lib/process-tree.sh", "packages/dispatch/e2e/acceptance/replace-blocks.sh:109 sources it, and "
                                         f"e2e/__tests__/replace-blocks-guard.test.ts, which {at('dispatch-ui', 'Test dispatch dashboard')} runs, runs that script"),
     (".github/workflows/dispatch-unit-repeat.yaml",
-     "packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts:207, the new URL there, holds the workflow's "
-     "budgets to the measurements beside them, and e2e/__tests__/unit-repeat.test.ts:1364 runs the test step's own "
+     "packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts:228, the new URL there, holds the workflow's "
+     "budgets to the measurements beside them, and e2e/__tests__/unit-repeat.test.ts:1651 runs the test step's own "
      f"text as GitHub's runner cancels it, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
     (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/__tests__/psql-password.test.ts:161 sources it, and "
                                        "packages/dispatch/e2e/acceptance/replace-blocks.sh:113 does, which e2e/__tests__/replace-blocks-guard.test.ts runs; "
