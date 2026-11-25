@@ -33,9 +33,7 @@ exit "${RECORDED_STATUS:-0}"
 // TestARowWhoseTestQuotesTheTimeoutPanicIsNotPastItsBound: a run went past its bound when a line
 // of its output starts with the test binary's timeout panic or the go command's kill line, where
 // they print them (ranPast). A row's test whose t.Log line quotes the panic, and which passed,
-// passes stage 4. Before, stages 4 and 5 counted any output event holding the phrase as a run past
-// its bound (UNKNOWN), while the check script's judge read only a line's start. The control, the
-// panic go1.27.3 prints, is still a run past its bound.
+// passes stage 4. The control, the panic go1.27.3 prints, is still a run past its bound.
 func TestARowWhoseTestQuotesTheTimeoutPanicIsNotPastItsBound(t *testing.T) {
 	standIn(t, "go", recordedGo)
 	for _, tc := range []struct {
@@ -92,11 +90,8 @@ exit "${RECORDED_STATUS:-0}"
 
 // TestABunRowIsReadFromItsReportAsTheCheckReadsIt: a Bun row's testcase is found by its full name
 // with each XML reference in it decoded, a numeric one too, and of testcases that share the name
-// the first that did not pass decides, a self-closing one after it included (junitStates). Before,
-// stages 4 and 5 decoded only the five named references, so a row whose name Bun wrote with &#39;
-// was missing, and counted a passing self-closing testcase after a failed one of the same name a
-// pass, where the check script's judge read both as it does now. The controls, a passing and a
-// skipped testcase, read as before.
+// the first that did not pass decides, a self-closing one after it included (junitStates). The
+// controls are a passing and a skipped testcase.
 func TestABunRowIsReadFromItsReportAsTheCheckReadsIt(t *testing.T) {
 	standIn(t, "bun", recordedBun)
 	for _, tc := range []struct {

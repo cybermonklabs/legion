@@ -8,9 +8,7 @@ import (
 
 // TestTheBaselineLineSaysEachKindOfRowsBound: stage 4's PASS line says what bounds each kind of
 // row it ran, as its run takes it: a Go row's run row_timeout plus four times its start-up run
-// (runBound), a Bun row's row_timeout alone (runBun), and names no kind it did not run. The line
-// said every run's bound was row_timeout plus four times its start-up run, which is false for a
-// Bun row.
+// (runBound), a Bun row's row_timeout alone (runBun), and names no kind it did not run.
 func TestTheBaselineLineSaysEachKindOfRowsBound(t *testing.T) {
 	const goBound = "each Go row's run is bounded by row_timeout, 48s, plus four times its start-up run"
 	const bunBound = "each Bun row's run is bounded by row_timeout, 48s, alone"
