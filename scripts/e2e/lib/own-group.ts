@@ -1,5 +1,6 @@
 import { readlinkSync, realpathSync } from "node:fs";
 import { hostTool } from "@legion/test-fixtures/host-tools";
+import { untilTrue } from "./row-waits";
 
 /**
  * ownGroup(argv) is argv, run as the leader of a process group of its own inside the test runner's
@@ -44,24 +45,21 @@ export function ownGroup(argv: readonly string[]): string[] {
 }
 
 /**
- * untilRunning(pid, program) resolves once pid runs program (its /proc/<pid>/exe, the kernel's
- * record), and rejects naming the pid, the program and what the pid ran instead when it does not
- * within 10 s: the shape and the bound of claude-backend-guards.test.ts's await_child (200 reads,
- * 50 ms apart). A process ownGroup started leads its own group only once its perl has called
- * setpgrp, and runs its program only after that, so a sweep row waits on this before it sweeps:
- * a sweep that stopped the perl before its setpgrp would stop a member of the runner's own group.
+ * untilRunning(pid, program, end) resolves once pid runs program (its /proc/<pid>/exe, the kernel's
+ * record), and fails at END (lib/row-waits.ts's RowWaits.end, 20 s before the row's bound) naming
+ * the pid, the program and what the pid ran instead: how soon a process the runner started runs
+ * its program is the kernel's, and a loaded host's. A process ownGroup started leads its own group
+ * only once its perl has called setpgrp, and runs its program only after that, so a sweep row waits
+ * on this before it sweeps: a sweep that stopped the perl before its setpgrp would stop a member of
+ * the runner's own group.
  */
-export async function untilRunning(pid: number, program: string): Promise<void> {
+export async function untilRunning(pid: number, program: string, end: number): Promise<void> {
   const want = realpathSync(hostTool(program) ?? program);
-  let seen = "";
-  for (let i = 0; i < 200; i++) {
+  await untilTrue(`pid ${pid} to run ${want}`, end, () => {
+    let seen = "";
     try {
       seen = readlinkSync(`/proc/${pid}/exe`);
-    } catch {
-      seen = "";
-    }
-    if (seen === want) return;
-    await Bun.sleep(50);
-  }
-  throw new Error(`pid ${pid} did not run ${want} within 10 s (running ${seen || "nothing"})`);
+    } catch {}
+    return seen === want || `it runs ${seen || "nothing"}`;
+  });
 }

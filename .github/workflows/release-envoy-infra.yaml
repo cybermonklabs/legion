@@ -362,7 +362,7 @@ jobs:
           TAG: ${{ steps.assets.outputs.tag }}
           VERSION: ${{ needs.build.outputs.version }}
           FILES: ${{ steps.assets.outputs.files }}
-        # release-push.sh `release`: creates the release, reuses a published one, or publishes a
+        # `.github/scripts/release-push.sh#release)`: creates the release, reuses a published one, or publishes a
         # draft an earlier attempt left, with the files the check above listed.
         run: |
           assets=()
