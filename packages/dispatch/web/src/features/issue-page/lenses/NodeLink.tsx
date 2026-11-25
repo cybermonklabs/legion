@@ -34,8 +34,8 @@ import { lensPlaceOf, rowPathIn } from "./lens-reads";
  */
 export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean }): ReactNode {
   const { pathname, search } = useLocation();
-  const place = lensPlaceOf(pathname, search);
   const id = chip.id;
+  const place = id === undefined ? undefined : lensPlaceOf(pathname, search);
   const marks = chip.chrome === true ? pageChrome : authorText;
   const view =
     place?.outline === "conversation" && chip.graphOnly !== true ? "conversation" : "graph";

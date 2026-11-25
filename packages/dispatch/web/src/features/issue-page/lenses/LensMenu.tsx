@@ -37,14 +37,14 @@ import {
 
 /**
  * What the focused row needs to offer the Lens act: the issue the page is on, the outline the
- * address opens - Conversation or Graph, the two places the act is drawn, and none in a filter or
- * any other view (R4) - and where the reader stands now, which a pick's answer reads as it lands.
- * `TreeRows.tsx` provides it (`useLensAct`); a route that names no issue provides none, and
- * `LensMenu` then draws no act.
+ * address opens - Conversation or Graph, the two places the act is drawn (R4) - and where the
+ * reader stands now, which a pick's answer reads as it lands. `TreeRows.tsx` provides it
+ * (`useLensAct`); a route that names no issue, and an address that opens no outline - a filter
+ * or any other view - provide none, and `LensMenu` then draws no act.
  */
 export interface LensAct {
   readonly issueKey: string;
-  readonly outline: Outline | undefined;
+  readonly outline: Outline;
   readonly standing: StandingAddress;
 }
 
@@ -53,8 +53,9 @@ export const LensActContext = createContext<LensAct | undefined>(undefined);
 /**
  * The Lens act the focused row offers, as `TreeRows.tsx` provides it to its rows: the issue the
  * address names and the outline it opens, read as the page's slots read their address
- * (`lensPlaceOf`), and where the reader stands now. A route that names no issue offers no act.
- * One value while the address stands, so no row draws again.
+ * (`lensPlaceOf`), and where the reader stands now. A route that names no issue, and an address
+ * that opens no outline, offer no act. One value while the address stands, so no row draws
+ * again.
  */
 export function useLensAct(): LensAct | undefined {
   const { pathname, search } = useLocation();
@@ -66,7 +67,8 @@ export function useLensAct(): LensAct | undefined {
   // focus.
   const standing = useStandingAddress();
   return useMemo(
-    () => (issueKey === undefined ? undefined : { issueKey, outline, standing }),
+    () =>
+      issueKey === undefined || outline === undefined ? undefined : { issueKey, outline, standing },
     [issueKey, outline, standing]
   );
 }
@@ -99,17 +101,17 @@ const INVOKED_ON: Readonly<Record<NodeType, boolean>> = {
 };
 
 /**
- * Whether a row offers the Lens act: in Conversation and in Graph alone (`LensAct.outline`), on a
- * node of a kind the invoke route takes, whose address names this issue - `dispatch://<key>` and
- * then `/` or `#`, so a key that merely starts with this one is another issue - or is a uuid
- * address of the node store that the route takes: a lens, a block of a lens (a finding), a risk
- * or a constraint (`lensStoreAddress`), so not an interaction's or a lens kind's. A child issue, a
- * result, the issue, a document, a handoff and a node of another issue get none. A closed issue
- * keeps the act: the server decides.
+ * Whether a row offers the Lens act, which an address of Conversation or Graph alone provides
+ * (`useLensAct`): on a node of a kind the invoke route takes, whose address names this issue -
+ * `dispatch://<key>` and then `/` or `#`, so a key that merely starts with this one is another
+ * issue - or is a uuid address of the node store that the route takes: a lens, a block of a lens
+ * (a finding), a risk or a constraint (`lensStoreAddress`), so not an interaction's or a lens
+ * kind's. A child issue, a result, the issue, a document, a handoff and a node of another issue
+ * get none. A closed issue keeps the act: the server decides.
  */
-export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey" | "outline">): boolean {
+export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey">): boolean {
   const reference = node.reference;
-  if (act.outline === undefined || !INVOKED_ON[node.type] || reference === undefined) return false;
+  if (!INVOKED_ON[node.type] || reference === undefined) return false;
   const issue = `dispatch://${act.issueKey}`;
   if (reference.startsWith(`${issue}/`) || reference.startsWith(`${issue}#`)) return true;
   return lensStoreAddress(reference) !== undefined;
@@ -147,19 +149,8 @@ export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey" | "outl
 export function LensMenu({ node, tabStops }: { node: TreeNode; tabStops: boolean }): ReactNode {
   const act = useContext(LensActContext);
   const on = node.reference;
-  const outline = act?.outline;
-  if (act === undefined || outline === undefined || on === undefined || !lensActFor(node, act)) {
-    return null;
-  }
-  return (
-    <ActAndMenu
-      issueKey={act.issueKey}
-      on={on}
-      outline={outline}
-      standing={act.standing}
-      tabStops={tabStops}
-    />
-  );
+  if (act === undefined || on === undefined || !lensActFor(node, act)) return null;
+  return <ActAndMenu act={act} on={on} tabStops={tabStops} />;
 }
 
 /** What a refused invocation says: the node is gone (404, or 409 `NODE_GONE`), or anything else. */
@@ -174,19 +165,15 @@ function refusalOf(error: Error | undefined): Refusal | undefined {
 }
 
 function ActAndMenu({
-  issueKey,
+  act,
   on,
-  outline,
-  standing,
   tabStops,
 }: {
-  issueKey: string;
+  act: LensAct;
   on: string;
-  outline: Outline;
-  standing: StandingAddress;
   tabStops: boolean;
 }): ReactNode {
-  const invocation = useInvokeLens(issueKey, on, outline, standing);
+  const invocation = useInvokeLens(act.issueKey, on, act.outline, act.standing);
   const refusal = refusalOf(invocation.refusal);
   const [open, setOpen] = useState(false);
   // Whether a pick is out, as the menu's line says it and as `pick` reads it. On the menu that

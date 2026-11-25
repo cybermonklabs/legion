@@ -1217,7 +1217,6 @@ async function drawsLensAct(path: string, isClosed = false): Promise<boolean> {
 test("the Lens act is offered in Conversation and in Graph alone, on the kinds the route takes", async () => {
   const conversation = { issueKey: KEY, outline: "conversation" } as const;
   const graph = { issueKey: KEY, outline: "graph" } as const;
-  const view = { issueKey: KEY, outline: undefined };
   const elsewhere = { issueKey: "CORE-2", outline: "conversation" } as const;
   for (const type of NODE_TYPES) {
     const takes = OFFERED.includes(type);
@@ -1228,14 +1227,12 @@ test("the Lens act is offered in Conversation and in Graph alone, on the kinds t
       const drawn = node({ id: "n", reference, type });
       expect(lensActFor(drawn, conversation), `${type} at ${reference}`).toBe(takes);
       expect(lensActFor(drawn, graph), `${type} at ${reference} in Graph`).toBe(takes);
-      expect(lensActFor(drawn, view), `${type} at ${reference} in a view`).toBe(false);
       expect(lensActFor(drawn, elsewhere), `${type} at ${reference} of another issue`).toBe(false);
     }
     for (const reference of OF_THE_STORE) {
       const drawn = node({ id: "n", reference, type });
       expect(lensActFor(drawn, conversation), `${type} at ${reference}`).toBe(takes);
       expect(lensActFor(drawn, graph), `${type} at ${reference} in Graph`).toBe(takes);
-      expect(lensActFor(drawn, view), `${type} at ${reference} in a view`).toBe(false);
     }
     for (const reference of NOT_TAKEN) {
       const drawn = node({ id: "n", reference, type });

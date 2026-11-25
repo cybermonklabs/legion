@@ -44,10 +44,11 @@ import {
   type TreeAnswerWatch,
   treeAnswerOf,
   treeReadGate,
+  treeReadRoute,
 } from "./issue-page-t-tree";
 import {
-  childPageRow,
   drawnIdOf,
+  drawsChildPageRow,
   findingGate,
   focusedRowReadId,
   heldTreeAnswer,
@@ -427,9 +428,10 @@ async function landOn(
  * of issue `key`, as a reader does - the focus on the row, `f` to the Lens act, Enter, Enter on
  * the first kind - and reads the new lens's row: focused, under the row of `target`, and at the
  * view's own address of the new lens (`?node=`). The row is reached by its own address in the
- * view (`landOn`): below 1024 px the outline a landing roots at its node's parent, the last
- * invocation's included, may draw no row for `target`. `what` names the node as the messages
- * name it ("the open question", "statement 2"). Answers the new lens's read id.
+ * view (`landOn`), unless the caller `landed` on it already: below 1024 px the outline a landing
+ * roots at its node's parent, the last invocation's included, may draw no row for `target`.
+ * `what` names the node as the messages name it ("the open question", "statement 2"). Answers
+ * the new lens's read id.
  */
 async function invokeThroughMenu(
   page: Page,
@@ -437,9 +439,10 @@ async function invokeThroughMenu(
   key: string,
   view: Outline,
   target: string,
-  what: string
+  what: string,
+  landed = false
 ): Promise<string> {
-  await landOn(page, key, view, target, what);
+  if (!landed) await landOn(page, key, view, target, what);
   const held = await heldAnswer(tree, "the tree read");
   expect(
     (held.nodes ?? []).some((node) => node.id === target),
@@ -923,10 +926,9 @@ function readOf(path: string): string {
 /** The read of issue `key`'s tree `requests` hold the first request of (`readOf`), or undefined
  *  where they hold none: what a load sends the tree route. */
 function treeReadOf(requests: readonly ApiRequest[], key: string): string | undefined {
-  const path = `/api/v1/issues/${encodeURIComponent(key)}/tree`;
+  const matches = treeReadRoute(key);
   const first = requests.find(
-    (request) =>
-      request.method === "GET" && new URL(request.path, "http://page.invalid").pathname === path
+    (request) => request.method === "GET" && matches(new URL(request.path, "http://page.invalid"))
   );
   return first === undefined ? undefined : readOf(first.path);
 }
@@ -1342,7 +1344,7 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
           await unfoldEveryBranch(page);
           return {
             children: childrenOf(await drawnRows(page), statementThree).length,
-            rest: (await childPageRow(page, statementThree)) !== null,
+            rest: await drawsChildPageRow(page, statementThree),
           };
         },
         {
@@ -1357,7 +1359,8 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
       key,
       "conversation",
       statementThreeRead,
-      "statement 3"
+      "statement 3",
+      true
     );
     const pagedId = await drawnId(page, paged, "the lens invoked on statement 3");
     await expect(

@@ -440,12 +440,11 @@ export function focusedRowReadId(page: Page): Promise<string | null> {
   }, SELECTORS.nodeRow);
 }
 
-/** The words of the row that stands for the children the row drawn as `id` (`data-node-id`)
+/** Whether the row drawn as `id` (`data-node-id`) draws a row that stands for the children it
  *  draws no row for yet (`[data-tree-page]`, part T's page of a node's children, `tree-fold.ts`'s
- *  `CHILD_PAGE`): the row one level under it after the last child it draws, before the next row
- *  at its own level or above. Null where it draws every child, or where the page draws no row
- *  `id`. */
-export function childPageRow(page: Page, id: string): Promise<string | null> {
+ *  `CHILD_PAGE`): one level under it after the last child it draws, before the next row at its
+ *  own level or above. False where it draws every child, or where the page draws no row `id`. */
+export function drawsChildPageRow(page: Page, id: string): Promise<boolean> {
   return issuePage(page)
     .locator(`${SELECTORS.nodeRow}, ${SELECTORS.treePage}`)
     .evaluateAll(
@@ -453,16 +452,14 @@ export function childPageRow(page: Page, id: string): Promise<string | null> {
         const at = rows.findIndex(
           (row) => row.matches(nodeRow) && row.getAttribute("data-node-id") === own
         );
-        if (at === -1) return null;
+        if (at === -1) return false;
         const level = Number(rows[at]?.getAttribute("aria-level") ?? "");
         for (const row of rows.slice(at + 1)) {
           const depth = Number(row.getAttribute("aria-level") ?? "");
-          if (depth <= level) return null;
-          if (depth === level + 1 && row.matches(treePage)) {
-            return (row.textContent ?? "").replace(/\s+/g, " ").trim();
-          }
+          if (depth <= level) return false;
+          if (depth === level + 1 && row.matches(treePage)) return true;
         }
-        return null;
+        return false;
       },
       { nodeRow: SELECTORS.nodeRow, own: id, treePage: SELECTORS.treePage }
     );
@@ -603,6 +600,14 @@ export interface LensReadIds {
   readonly tradeOff: string;
 }
 
+/** The nodes of `answer` that belong to issue `key` itself: neither a node of another issue nor
+ *  the context (`role: "context"`) a view or a catalogue tuple brings in. */
+function ownNodes(answer: IssueTreeRead, key: string): IssueTreeNode[] {
+  return (answer.nodes ?? []).filter(
+    (node) => (node.issue === undefined || node.issue === key) && node.role !== "context"
+  );
+}
+
 /**
  * The read id of each node `seedLenses` wrote on issue `key`, found in `answer` by what the seed
  * wrote into it and by the server's own tuples, never built: the pre-mortem by its verdict, the
@@ -613,9 +618,7 @@ export interface LensReadIds {
  * the node, where the answer holds none.
  */
 export function lensReadIds(answer: IssueTreeRead, key: string, seeded: LensSeed): LensReadIds {
-  const own = (answer.nodes ?? []).filter(
-    (node) => (node.issue === undefined || node.issue === key) && node.role !== "context"
-  );
+  const own = ownNodes(answer, key);
   const idOf = (what: string, node: IssueTreeNode | undefined): string => {
     if (node === undefined) throw new Error(`the tree read of ${key} holds no ${what}`);
     return node.id;
@@ -677,11 +680,7 @@ async function requestedTreeRead(
   kind?: readonly string[]
 ): Promise<IssueTreeRead> {
   const pageAt = async (cursor: string | null): Promise<IssueTreeRead> => {
-    const path = routeUrl(
-      "/api/v1/issues/{key}/tree",
-      { key },
-      { cursor: cursor ?? undefined, kind }
-    );
+    const path = routeUrl("/api/v1/issues/{key}/tree", { key }, { cursor, kind });
     const response = await page.request.get(path);
     if (!response.ok()) {
       throw new Error(`GET ${path} failed: ${response.status()} ${await response.text()}`);
@@ -734,11 +733,9 @@ export async function findingGate(page: Page, key: string, seeded: LensSeed): Pr
  */
 export async function kindFilterGate(page: Page, key: string): Promise<Gate> {
   const answer = await requestedTreeRead(page, key, ["ask"]);
-  const others = (answer.nodes ?? []).filter(
+  const others = ownNodes(answer, key).filter(
     (node) =>
       node.supertag !== "ask" &&
-      node.role !== "context" &&
-      (node.issue === undefined || node.issue === key) &&
       !(node.supertag === "issue" && (node.id === key || node.parent === null))
   );
   return {

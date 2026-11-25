@@ -15,7 +15,7 @@ import { parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { issueAddress, presetPath } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
-import { type Outline, outlineOf, outlineQuery } from "../tree-read/tree-read";
+import { type Outline, outlineQuery } from "../tree-read/tree-read";
 import { outlineRowPath } from "./store-link";
 
 /**
@@ -101,9 +101,9 @@ export function useStandingAddress(): StandingAddress {
 
 /** The issue an address names and the outline it opens, read as the page's slots read their
  *  address: Conversation or Graph, and none in a filter or any other view (`outline`), beside
- *  which the page may hold Conversation's read but draws no outline (`outlineOf`). What `TreeRows`
- *  offers the Lens act by, what a chip links by, and the one address a landing moves. Undefined
- *  for an address that names no issue. */
+ *  which the page may hold Conversation's read but draws no outline (`tree-read/tree-read.ts`'
+ *  `outlineOf`). What `TreeRows` offers the Lens act by, what a chip links by, and the one
+ *  address a landing moves. Undefined for an address that names no issue. */
 export function lensPlaceOf(
   pathname: string,
   search: string
@@ -111,8 +111,8 @@ export function lensPlaceOf(
   const route = parseIssuePath(pathname, search);
   if (route === undefined) return undefined;
   const { preset } = issueAddress(route, search, "", undefined);
-  const outline = outlineOf(preset);
-  return { issueKey: route.key, outline: outline === preset ? outline : undefined };
+  const outline = preset === "conversation" || preset === "graph" ? preset : undefined;
+  return { issueKey: route.key, outline };
 }
 
 /** The address of the row of the node whose id in the tree read is `readId` in `outline` of the

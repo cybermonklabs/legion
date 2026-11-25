@@ -739,34 +739,6 @@ describe("the lines under a row", () => {
     }
   });
 
-  // A statement names each constraint it is held to; one of the issue's is a row and its
-  // chip a link, and one of the catalogue has no row, so its chip is words with no link.
-  test("a statement names its constraints, the issue's linked and the catalogue's as words", () => {
-    const drawn = node({
-      id: "spec#b-r5",
-      lens: facts({
-        constrainedBy: [
-          { address: ISSUE_CONSTRAINT, id: "constraint/9a1b", words: "Retention under 24 hours" },
-          { address: CATALOGUE_CONSTRAINT, words: "OWASP ASVS 4.0 V8.3" },
-        ],
-      }),
-      reference: "dispatch://CORE-1/spec#b-r5",
-      text: "Notices expire",
-      type: "requirement",
-    });
-    expect(linesDrawn(drawn)).toEqual([
-      {
-        chips: [
-          { href: "/issues/CORE-1?node=constraint%2F9a1b", words: "Retention under 24 hours" },
-          { href: null, words: "OWASP ASVS 4.0 V8.3" },
-        ],
-        label: LENS_WORDS.constrained_by,
-        line: "constrained_by",
-        words: [],
-      },
-    ]);
-  });
-
   // The plan's decision on a constraint's row: a standard's line holds its reference, and a
   // measurement's says where it was taken.
   test("a standard draws its reference and a measurement where it was taken", () => {

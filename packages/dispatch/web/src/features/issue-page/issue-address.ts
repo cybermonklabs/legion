@@ -200,31 +200,26 @@ export function issueAddress(
   const addressed = routeDocument(route, specSlug);
   // `?node=` names a node by its id in the tree read. It is read only on an address whose
   // preset is Conversation or Graph and which opens no document, so a filter's reads none, and
-  // there it wins over `#b-`, `?ask=` and `?comment=`.
+  // there it wins over `#b-`, `?ask=` and `?comment=`. On Graph's own address it names the node
+  // Graph lands on, as the issue's own address names Conversation's (R7), and a zoom address
+  // (`/graph/<node id>`) keeps its zoom.
   const nodeId = query.get("node") ?? "";
-  if (nodeId !== "" && ROUTE_PRESETS[route.kind] === undefined && addressed === undefined) {
+  const nodePreset =
+    route.kind === "graph"
+      ? "graph"
+      : ROUTE_PRESETS[route.kind] === undefined && addressed === undefined
+        ? "conversation"
+        : undefined;
+  if (nodeId !== "" && nodePreset !== undefined) {
     return {
       document: undefined,
       documentItem: undefined,
       filter: query.get("q") ?? "",
       nodeMenu: false,
-      preset: "conversation",
+      preset: nodePreset,
       target: { id: nodeId, kind: "node" },
       version,
-    };
-  }
-  // On Graph's own address `?node=` names the node Graph lands on, as the issue's own address
-  // names Conversation's (R7). A zoom address (`/graph/<node id>`) keeps its zoom.
-  if (nodeId !== "" && route.kind === "graph") {
-    return {
-      document: undefined,
-      documentItem: undefined,
-      filter: query.get("q") ?? "",
-      nodeMenu: false,
-      preset: "graph",
-      target: { id: nodeId, kind: "node" },
-      version,
-      ...(route.node === undefined ? {} : { zoom: route.node }),
+      ...(route.kind === "graph" && route.node !== undefined ? { zoom: route.node } : {}),
     };
   }
   const marked = query.get("mark") ?? "";

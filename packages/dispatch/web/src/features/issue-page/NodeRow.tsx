@@ -1113,10 +1113,7 @@ export function RowActs({
           {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
         </span>
       )}
-      {focused ? (
-        // The Lens act is the focused row's alone, as part G's acts of the focused row gain it.
-        <LensMenu node={node} tabStops={tabStops} />
-      ) : null}
+      {focused ? <LensMenu node={node} tabStops={tabStops} /> : null}
     </p>
   );
 }
