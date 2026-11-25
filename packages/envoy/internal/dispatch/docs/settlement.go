@@ -281,6 +281,9 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		return settle.stoppedShort(fmt.Errorf("begin document transaction: %w", err))
 	}
 	defer tx.Rollback(ctx)
+	if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
+		return settle.stoppedShort(err)
+	}
 	// Settlement decides everything before it writes anything: every write of the stages below
 	// goes through write and queues on this ledger, and the queue runs back to back right before
 	// the commit, so the transaction holds a transaction id only for those statements, not while
@@ -1086,8 +1089,10 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// byte of the spec. Such a version is no part of this transaction: its write phase marks the
 	// issue's queries owed last, after the events and the tuples it appends (queueSettledQueryMark),
 	// and the drain writes the versions once the settlement has committed (DrainOwedQueries).
+	// This also covers a settlement that opens an ask without versioning its fragment: the ask's
+	// node changes the decisions query even if that settlement writes no Markdown version.
 	marked := false
-	if versioning && len(st.layout) > 0 && st.owner.IssueKey != nil {
+	if len(st.layout) > 0 && st.owner.IssueKey != nil {
 		if err := st.queueSettledQueryMark(ctx, *st.owner.IssueKey, caused, &marked); err != nil {
 			return settleDone, st.abandon(err)
 		}
