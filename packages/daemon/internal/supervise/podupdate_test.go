@@ -1,7 +1,8 @@
 package supervise
 
-// An update round is the daemon asking a claim's role to push its work and answer
-// ready_for_update before the process holding that claim is replaced. These tests pin what the
+// An update round is the daemon asking a claim's role to do the steps of its update message
+// (UpdateTask) and answer ready_for_update before the process holding that claim is replaced.
+// These tests pin what the
 // machine does with the round's events: a round that opens once, records its terms once and asks
 // nothing of the machine's own — the sweep enqueues the ask to the role's Envoy topic, and the
 // outbox marks it on the claim once it reached a session (PublishUpdateAsk) — a suspended claim
@@ -106,7 +107,7 @@ func (h *harness) unsentAsk(round string) Delivery {
 func (h *harness) olderDaemonsAsk(round string, sent bool, set ...func(*Delivery)) Delivery {
 	h.t.Helper()
 	h.markAsked(round)
-	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(round, testReasons, epoch.Add(time.Hour)),
+	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(claim.RoleImplementer, round, testReasons, epoch.Add(time.Hour)),
 		QueuedAt: h.clock.Now()}
 	if sent {
 		if err := h.conn.Prompt(h.ctx, ask.ID, ask.Task); err != nil {
@@ -392,6 +393,20 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 		}
 	})
 
+	t.Run("a claim that has answered its round is published nothing and marked nothing", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		h.signalUpdate("c0ffee")
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAnswered {
+			t.Fatalf("the ask to a claim that answered = %v, %v; want UpdateAskAnswered", outcome, err)
+		}
+		if c, stored := h.claim(), h.store.load(h.token); reached.calls != 0 || c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+			t.Fatalf("the ask to a claim that answered published %d times and marked %v, stored %v; want neither", reached.calls, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+		}
+	})
+
 	t.Run("a publish that fails marks nothing and answers the publisher's error", func(t *testing.T) {
 		h := updateHarness(t, PodUpdateContract)
 		h.reach(StateReady)
@@ -474,6 +489,78 @@ func TestPodUpdatePublishUpdateAskWaitsForNoLock(t *testing.T) {
 	}
 
 	h.markAsked(testRound)
+}
+
+// An ask of the round to a claim the daemon suspended publishes nothing and marks nothing
+// (dispatch://INFRA-4109 R1): the outbox's row ends at UpdateAskSuspended before the publish.
+// Such a claim runs no process and no turn in the pod, so the ask would reach no session. A
+// publish to a role with no holder is not free either: the Envoy listener raises a role wake for
+// it, and that wake would bring back a pod the daemon released. Every source but the operator's
+// is such a suspension: the daemon's, a root's exit, an idle release, and one older than its
+// source. A root's exit and a source-less suspension reach no claim through RequestSuspend, so
+// the store holds them and a restart restores them, as a boot does.
+//
+// The control is the operator's suspension, which the round still asks (dispatch://INFRA-2981
+// R5): its ask is published as before, and the claim is marked asked.
+func TestPublishUpdateAskPublishesNothingToAClaimTheDaemonSuspended(t *testing.T) {
+	suspend := func(h *harness, by SuspendSource) {
+		h.t.Helper()
+		switch by {
+		case SuspendedByOperator, SuspendedByDaemon, SuspendedByReleased:
+			h.must(RequestSuspend{Claim: h.token, By: by})
+		default:
+			h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon})
+			c := h.claim()
+			c.SuspendedBy = by
+			if err := h.store.PutClaim(h.ctx, c); err != nil {
+				h.t.Fatal(err)
+			}
+			h.restart()
+		}
+		if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != by {
+			h.t.Fatalf("the claim is %s, suspended by %q, want it suspended by %q", c.State, c.SuspendedBy, by)
+		}
+	}
+	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, SuspendedByUnknown} {
+		t.Run(string(by), func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract)
+			h.reach(StateIdle)
+			suspend(h, by)
+			h.openUpdate(testRound, testReasons)
+			h.wantRound(testRound)
+
+			reached := &askPublisher{delivered: true}
+			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskSuspended {
+				t.Fatalf("the ask to a claim suspended by %s = %v, %v; want UpdateAskSuspended", by, outcome, err)
+			}
+			if reached.calls != 0 {
+				t.Fatalf("the ask to a claim suspended by %s was published %d times, want none", by, reached.calls)
+			}
+			if c, stored := h.claim(), h.store.load(h.token); c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+				t.Fatalf("UpdateTaskedAt = %v, stored %v; want no mark: no ask reached the claim", c.UpdateTaskedAt, stored.UpdateTaskedAt)
+			}
+			h.wantState(StateSuspended)
+		})
+	}
+
+	t.Run(string(SuspendedByOperator), func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateIdle)
+		suspend(h, SuspendedByOperator)
+		h.openUpdate(testRound, testReasons)
+		h.wantRound(testRound)
+
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskDelivered {
+			t.Fatalf("the ask to a claim the operator suspended = %v, %v; want it delivered", outcome, err)
+		}
+		if reached.calls != 1 {
+			t.Fatalf("the ask to a claim the operator suspended was published %d times, want once", reached.calls)
+		}
+		if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil {
+			t.Fatal("stored UpdateTaskedAt = nil, want the ask marked")
+		}
+	})
 }
 
 // An ask an older daemon queued as a task for the round the claim is still in is dropped and
@@ -710,14 +797,23 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 
 // The ask says when the pod goes and what that costs. It keeps the round's id, the drift and the
 // push instruction, names the moment the round ends in RFC 3339 UTC, says that every answer
-// brings that moment forward and that no answer delays it, and names what goes with the pod
-// then. It says that only the role's own push keeps its work, and that work not pushed before
-// the pod goes is lost; it names no check of the disk and no rescue branch. A role whose tool
-// has no ready_for_update is told to push, because the round ends at that moment whatever it
-// does: the end of its turn is no answer.
+// brings that moment forward only while no role is in a turn and no role reports background work,
+// and that no answer delays it, and names what goes with the pod then, each subagent, each
+// background job and each named service that still runs included. It names the five steps in
+// their order (dispatch://INFRA-4203 R2): push every commit to keep, let each subagent and each
+// background job finish or stop it and push what it made, put a scratch file needed as evidence
+// on Dispatch, answer, and end the turn. It says the four things beside the steps: the round does
+// not end early while a role reports background work, a service started with a name is in no
+// report and goes with the pod, the pod goes when the round ends whatever runs in it, and work
+// that finishes after the answer is pushed and answered again with the same round. It says that
+// only the role's own push keeps its work, and that work not pushed before the pod goes is lost;
+// it names no check of the disk and no rescue branch. A role whose tool has no ready_for_update is
+// told to do the first three steps, because the round ends at that moment whatever it does: the
+// end of its turn is no answer. It does not say that the round ends early once no role is in a
+// turn, or that only the background jobs of the turn in progress go with the pod.
 func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
-	text := UpdateTask(testRound, `image "sha256:1"`, endsAt)
+	text := UpdateTask(claim.RoleImplementer, testRound, `image "sha256:1"`, endsAt)
 	for _, want := range []string{
 		"The round is " + testRound + ".",
 		`The reasons are: image "sha256:1".`,
@@ -725,11 +821,17 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		`Call the ` + "`legion`" + ` tool with op: "ready_for_update" and round: "` + testRound + `".`,
 		"The round ends at 2026-11-13T12:30:00Z (UTC).",
 		"If every role answers, the round can end before that moment.",
+		"It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn.",
+		"Your plugin sends that report at the end of each turn.",
 		"If a role does not answer, the round still ends at 2026-11-13T12:30:00Z.",
 		"A turn in progress does not delay that moment.",
+		"A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.",
+		"If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again with round: \"" + testRound + "\" before you end that turn.",
+		"A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.",
+		`If your ` + "`legion`" + ` tool has no "ready_for_update" operation, do steps 1, 2 and 3 now. Then end your turn.`,
 		"The round ends at 2026-11-13T12:30:00Z whatever you do.",
 		"- The turn that is in progress.",
-		"- The background jobs of that turn.",
+		"- Each subagent, each background job and each named service that still runs.",
 		"- Each commit and each file that you did not push.",
 		"- The pod's test database.",
 		"- The pod's caches.",
@@ -740,7 +842,33 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 			t.Errorf("the ask does not say %q:\n%s", want, text)
 		}
 	}
-	for _, gone := range []string{"reads the end of this turn as your answer", "WAITING", "Each commit that the workspace holds and the remote does not have.", "Each file that .gitignore ignores.", "push check", "rescue"} {
+	// The five steps, each a line of its own, in this order: the push comes before the background
+	// work, so a job that outlives the bound never keeps a role from pushing its own commits, and
+	// the answer comes after that work.
+	last := -1
+	for _, step := range []string{
+		"Do these five steps, in this order:\n",
+		"\n1. Push every commit that you want to keep to this issue's branch.\n",
+		"\n2. Let each subagent and each background job that you started finish. Stop one that cannot finish before 2026-11-13T12:30:00Z. Then commit and push what it made.\n",
+		"\n3. If you need a scratch file as evidence, put it on Dispatch.\n",
+		"\n4. Call the `legion` tool with op: \"ready_for_update\" and round: \"" + testRound + "\".\n",
+		"\n5. End your turn.\n",
+	} {
+		at := strings.Index(text, step)
+		switch {
+		case at < 0:
+			t.Errorf("the ask does not give the step %q:\n%s", step, text)
+		case at < last:
+			t.Errorf("the ask gives the step %q before the step that comes ahead of it:\n%s", step, text)
+		default:
+			last = at
+		}
+	}
+	for _, gone := range []string{
+		"reads the end of this turn as your answer", "WAITING", "Each commit that the workspace holds and the remote does not have.",
+		"Each file that .gitignore ignores.", "push check", "rescue",
+		"- The background jobs of that turn.", "The round then ends when no role is in a turn.",
+	} {
 		if strings.Contains(text, gone) {
 			t.Errorf("the ask still says %q, which this round does not do:\n%s", gone, text)
 		}

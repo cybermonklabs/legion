@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { cp, mkdir, mkdtemp, readdir, readlink, rm, symlink } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { memoryRoot } from "@legion/test-fixtures/temporary-directories"
 
 // What the first tarball of this package held: no package/skills member at all. skills/<name> is
 // a link into the repository's skills/, `bun pm pack` packs a link as nothing, and so every
@@ -84,19 +84,37 @@ function tracked(): Record<string, string> {
   return Object.fromEntries(skillNames.map((name) => [name, `../../../skills/${name}`]))
 }
 
+// The scratch makes about 16,300 entries (two listings of 8,000 files each, `longListing`), so it
+// goes on the memory root (`memoryRoot`): on the shared disk of a loaded dev box one of those
+// listings once took 203.7 s against its row's 60 s. One run held at most 5,032 KiB there, so it
+// asks for six runs of 6 MiB, the runs that may share a host, as the dispatch e2e scratch does;
+// with less free it stays under `TMPDIR`. A run killed before its afterAll leaves its 5 MiB there.
 beforeAll(async () => {
-  scratch = await mkdtemp(join(tmpdir(), "claude-envoy-packed-skills-"))
+  scratch = await mkdtemp(
+    join(memoryRoot({ need: 6 * 6 * 2 ** 20 }), "claude-envoy-packed-skills-"),
+  )
   skillNames = (await readdir(join(packageRoot, "skills"))).sort()
   packageCopy = await copyPackage("packed")
-  await ran([process.execPath, "pm", "pack"], packageCopy)
+  // As a checkout and a pack under umask 0002 leave them, the umask a systemd user unit runs
+  // with: every file of the copy group-writable, the repository's skills the prepack copies in
+  // among them (a copy of its own here, so the checkout's are not touched), and the pack's own
+  // writes too. The modes the tarball carries then come from the prepack's normalization alone.
+  const repositorySkills = join(scratch, "packed", "repository", "skills")
+  await rm(repositorySkills)
+  await cp(join(repoRoot, "skills"), repositorySkills, { recursive: true })
+  await ran(["chmod", "-R", "g+w", join(scratch, "packed")], scratch)
+  await ran(["bash", "-c", 'umask 0002 && exec "$0" pm pack', process.execPath], packageCopy)
   const packed = (await readdir(packageCopy)).filter((entry) => entry.endsWith(".tgz"))
   expect(packed).toHaveLength(1)
   tarball = join(packageCopy, packed[0] as string)
 }, 60_000)
 
+// The rm of every copy and tarball takes seconds on a loaded host (619 to 3,251 ms at a load of
+// 1,298), past Bun's 5 s default for a hook when this file runs alone. Its verdict is the rm's own
+// success; 60 s is the package script's --timeout, here a hang guard that decides no verdict.
 afterAll(async () => {
   await rm(scratch, { recursive: true, force: true })
-})
+}, 60_000)
 
 /** The tarball's members, one name a line. */
 async function members(tar: string): Promise<string[]> {
@@ -124,6 +142,15 @@ test("the pack resolves every skills link into the skill's own files", async () 
 
 test("the pack puts the links back, leaving the package as it found it", async () => {
   expect(await links(packageCopy)).toEqual(tracked())
+})
+
+// The tarball keeps each member's mode as the disk had it, so the published modes would be the
+// packer's umask's: a pack from a umask 0002 checkout shipped package.json and every staged skill
+// file group-writable. No member may be writable by group or others, whatever umask packed it.
+test("no packed member is writable by group or others, though the copy was packed under umask 0002", async () => {
+  const listed = (await ran(["tar", "-tvzf", tarball], scratch)).stdout.split("\n")
+  expect(listed.filter((line) => /^.{5}w|^.{8}w/.test(line))).toEqual([])
+  expect(listed.find((line) => line.endsWith(" package/package.json"))).toStartWith("-rw-r--r-- ")
 })
 
 test("the check passes a tarball the pack made, naming what it carries", async () => {
@@ -163,6 +190,86 @@ test("the check refuses a skill packed without its SKILL.md", async () => {
   expect(result.stderr).toContain("packs package/skills/envoy with no SKILL.md")
 })
 
+/** A tarball whose listing is far longer than a pipe holds, with `first` packed ahead of the rest:
+ *  the members every lookup of the two checks below finds, then 8,000 padding files of 200-byte
+ *  names, about 1.7 MB of listing. A lookup written `printf '%s\n' "$members" | grep -qxF …` finds
+ *  its member in the first lines and exits while printf still has most of the listing to write,
+ *  so printf dies of SIGPIPE and, under pipefail, the lookup reads as a member the tarball lacks.
+ *  The release's 127-name listing lost that race about once in a thousand runs; this one loses
+ *  it on every run, so the case fails on the old form every time rather than now and then. */
+async function longListing(name: string, files: Record<string, string>): Promise<string> {
+  const root = join(scratch, name)
+  for (const [member, body] of Object.entries(files)) {
+    await mkdir(join(root, member, ".."), { recursive: true })
+    await Bun.write(join(root, member), body)
+  }
+  const pad = join(root, "package", "pad")
+  await mkdir(pad, { recursive: true })
+  for (let i = 0; i < 8000; i++) {
+    await Bun.write(join(pad, `${String(i).padStart(4, "0")}-${"x".repeat(195)}`), "")
+  }
+  const tar = join(scratch, `${name}.tgz`)
+  await ran(["tar", "-czf", tar, "-C", root, ...Object.keys(files), "package/pad"], scratch)
+  return tar
+}
+
+test("the check passes a listing longer than a pipe holds, whose skill comes first", async () => {
+  const tar = await longListing("long-listing", {
+    "package/skills/dispatch-first/SKILL.md": "---\nname: dispatch-first\n---\n",
+  })
+  expect((await members(tar))[0]).toBe("package/skills/dispatch-first/SKILL.md")
+  const result = await run(["bash", checkScript, tar], scratch)
+  expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" })
+  expect(result.stdout.trim()).toBe(`check-packed-skills.sh: ${tar} carries 1 skills as real files`)
+}, 60_000)
+
+// release.yaml's claude_envoy_build step runs .github/scripts/release-claude-envoy-check-packed.sh
+// over the tarball it hands the publish job, and that script looks two members up in the listing
+// before it runs the check above. It reads packages/claude-envoy/*.tgz from the repository root,
+// so it runs here from a root of its own, which holds the three scripts it runs and the tarball.
+test("the release's check of the packed tarball passes a listing longer than a pipe holds", async () => {
+  const version = "9.9.9"
+  const url = (
+    await ran(
+      ["bash", join(repoRoot, ".github", "scripts", "repo-paths.sh"), "repository_url"],
+      scratch,
+    )
+  ).stdout.trim()
+  const manifest = (extra: Record<string, unknown>) => JSON.stringify({ version, ...extra })
+  const tar = await longListing("release-long-listing", {
+    "package/dist/envoy-channel.js": "",
+    "package/legion/.claude-plugin/plugin.json": "{}",
+    "package/skills/dispatch-first/SKILL.md": "---\nname: dispatch-first\n---\n",
+    "package/package.json": manifest({ repository: { type: "git", url } }),
+    "package/.claude-plugin/plugin.json": manifest({}),
+    "package/.omp-plugin/plugin.json": manifest({}),
+  })
+  const root = join(scratch, "release-root")
+  await mkdir(join(root, ".github", "scripts"), { recursive: true })
+  await mkdir(join(root, "packages", "claude-envoy", "scripts"), { recursive: true })
+  for (const script of ["release-claude-envoy-check-packed.sh", "repo-paths.sh"]) {
+    await cp(join(repoRoot, ".github", "scripts", script), join(root, ".github", "scripts", script))
+  }
+  await cp(checkScript, join(root, "packages", "claude-envoy", "scripts", "check-packed-skills.sh"))
+  await cp(tar, join(root, "packages", "claude-envoy", "claude-envoy-9.9.9.tgz"))
+  const child = Bun.spawn(["bash", ".github/scripts/release-claude-envoy-check-packed.sh"], {
+    cwd: root,
+    env: { ...process.env, VERSION: version },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  expect({ exitCode, stderr, stdout: stdout.includes("::error::") }).toEqual({
+    exitCode: 0,
+    stderr: "",
+    stdout: false,
+  })
+}, 60_000)
+
 // The two ways a pack can stop with the links already swapped. The links are tracked files, so
 // what the prepack leaves behind is what the working copy holds: jj's next command would record
 // eight deleted links and eight copied skill trees.
@@ -177,6 +284,38 @@ test("a prepack refused by one entry leaves every link as it found it", async ()
   expect(packed.exitCode).not.toBe(0)
   expect(packed.stderr).toContain(`skills/${last} points at ../../../skills/nowhere`)
   expect(await links(copy)).toEqual({ ...tracked(), [last]: "../../../skills/nowhere" })
+})
+
+test("a prepack refused by a files pattern it cannot set the modes of leaves every link as it found it", async () => {
+  const copy = await copyPackage("files-pattern")
+  const manifest = JSON.parse(await Bun.file(join(copy, "package.json")).text()) as {
+    files: string[]
+  }
+  manifest.files.push("dist/*.js")
+  await Bun.write(join(copy, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`)
+  const packed = await run([process.execPath, "pm", "pack"], copy)
+  expect(packed.exitCode).not.toBe(0)
+  expect(packed.stderr).toContain('files entry "dist/*.js" is a pattern')
+  expect(await links(copy)).toEqual(tracked())
+})
+
+test("a prepack whose chmod fails after the swap puts every link back", async () => {
+  const copy = await copyPackage("chmod-fails")
+  // A chmod first on PATH that fails: the prepack's last step, after every link is swapped.
+  const shims = join(scratch, "chmod-fails-shims")
+  await mkdir(shims)
+  await Bun.write(join(shims, "chmod"), "#!/bin/sh\necho planted chmod failure >&2\nexit 1\n")
+  await ran(["/bin/chmod", "0755", join(shims, "chmod")], scratch)
+  const child = Bun.spawn([process.execPath, "pm", "pack"], {
+    cwd: copy,
+    env: { ...process.env, PATH: `${shims}:${process.env["PATH"] ?? ""}` },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
+  expect(exitCode).not.toBe(0)
+  expect(stderr).toContain("planted chmod failure")
+  expect(await links(copy)).toEqual(tracked())
 })
 
 test("a pack that fails after its prepack is repaired by --restore, which the refusal names", async () => {

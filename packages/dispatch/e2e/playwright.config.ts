@@ -15,7 +15,6 @@ import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
-import { inVisualOrder, visualOrder } from "./visual-order";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -26,7 +25,7 @@ import { inVisualOrder, visualOrder } from "./visual-order";
 const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone` (or the
 // `@phone-only` below it), `@webkit` and `@firefox`, written at the end of the test's title.
-// Which tests take `@phone` is in `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine
+// Which tests take `@phone` is in `packages/dispatch/README.md`, "Projects"; an engine
 // tag names a row for one of two reasons, and a comment above the row says which. Either the
 // row exercises one engine behaviour the comment above those projects lists - the usual reason
 // - or every measured failure of that row was in that engine, so the row is kept where its
@@ -77,7 +76,7 @@ const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
 // since a project's overrides this one's. A moved row lives in such a file rather than carrying an
 // annotation, because a real-stack spec takes its `test` from e2e/test.ts, which resets the
 // database before every row and signs the default context in: a stubbed row left among them would
-// pay that fixture for nothing (packages/dispatch/AGENTS.md, "The stubbed layer").
+// pay that fixture for nothing (packages/dispatch/README.md, "The stubbed layer").
 const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
@@ -495,9 +494,10 @@ const parallelProjects = [
  *
  * Each still caps its own workers at one, which holds a project's own rows to one at a time
  * however wide the run is: the `workers: 1` below is this config's default, which a command
- * line replaces, and CI names its own (.github/workflows/dispatch-browser.yaml). Playwright
- * 1.64.1 takes that cap per project - `testProject.workers`, "The maximum number of concurrent
- * worker processes to use for parallelizing tests from this project"
+ * line replaces, and CI names its own (.github/scripts/dispatch-browser-shard-suite.sh and
+ * dispatch-browser-alone-suite.sh). Playwright 1.64.1 takes that cap per project -
+ * `testProject.workers`, "The maximum number of concurrent worker processes to use for
+ * parallelizing tests from this project"
  * (node_modules/.bun/playwright@1.64.1/node_modules/playwright/types/test.d.ts:761), which its
  * dispatcher holds a project's running jobs to (`_workerLimitPerProjectId`,
  * `playwright/lib/runner/index.js`) - and the run's own `workers` stays what it was given, so
@@ -716,12 +716,17 @@ export default defineConfig({
   // (e2e/run-outcome.ts says why no other way reaches it). It is in every run that takes this
   // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
   // which is why a run given one keeps its logs whatever it did, and why
-  // .github/workflows/dispatch-browser.yaml names this file in both of its own. With
+  // .github/scripts/dispatch-browser-shard-suite.sh and dispatch-browser-alone-suite.sh name
+  // this file in theirs. `shard-reporter.ts` does nothing in a run without `--shard`, and in one
+  // with it places the files on the legs by measured row time in place of Playwright's split by
+  // count (e2e/shard-split.ts says why), so a local `--shard` run holds the rows the CI leg of
+  // that number holds; the shard job names it in its own list for the same reason as above. With
   // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list
   // reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
   reporter: [
     ["list"],
     [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],
+    [fileURLToPath(new URL("./shard-reporter.ts", import.meta.url))],
     ...(measuring
       ? [[fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))] as const]
       : []),
@@ -741,6 +746,14 @@ export default defineConfig({
     // `retry === 1`), and a row is flaky exactly when its retry passed, so that mode would keep
     // a trace of a green run and leave the failure none. Locally, with `retries: 0`, the first
     // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
+    //
+    // Recording every first attempt leaves each worker's trace files in its artifacts directory
+    // (`<outputDir>/.playwright-artifacts-<n>/traces`) until the worker exits: about 5,500 files
+    // after a hundred rows. Playwright 1.64.1's runner removed them before it let the worker's
+    // stop end, and timed that wait by heartbeats of a worker that had already exited, so a slow
+    // disk printed "worker-<n> process did not exit within 300000ms after stop" for a worker that
+    // had exited. patches/playwright@1.64.1.patch removes them in the background instead, and
+    // e2e/__tests__/playwright-worker-exit.test.ts holds that.
     trace: "retain-on-first-failure",
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and
@@ -790,9 +803,8 @@ export default defineConfig({
       : [
           ...parallelProjects,
           ...aloneProjects,
-          // The phone project first in a reverse run, so the whole run is the other way round
-          // (e2e/visual-order.ts). Both are declared in every run, as their comment says.
-          ...inVisualOrder(visualProjects, visualOrder()),
+          // Both are declared in every run, as their comment says.
+          ...visualProjects,
           ...(stub.declared ? stubProjects : []),
         ],
 });

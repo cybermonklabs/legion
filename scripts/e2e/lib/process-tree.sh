@@ -10,8 +10,8 @@
 # (/proc/<pid>/exe).
 #
 # Sourced, never run, by lib/rig.sh, by lib/leftovers.sh when no script has sourced it yet (for
-# proc_walk_complaint), and by stage2-tmux-supervision.sh, which sources no rig. It needs nothing
-# of its caller's.
+# proc_walk_complaint), by stage2-tmux-supervision.sh, which sources no rig, and by
+# packages/dispatch/e2e/acceptance/replace-blocks.sh. It needs nothing of its caller's.
 
 # record_pid_sh is the POSIX sh a tmux pane's command runs as
 # `sh -c "$record_pid_sh" record-pid FILE COMMAND…`: it writes its own pid and its start time (stat
@@ -52,7 +52,8 @@ recorded_pid() {
 # from whichever thread runs the call. None reads every process on the machine as `ps -p` and
 # `pgrep -P` do: procps-ng's `ps -o args= -p PID` opened /proc/<pid>/stat 12,564 times for one pid
 # at about 13,000 processes, about a second on a loaded devbox. Each prints nothing for a process
-# that is gone. A host with no /proc (macOS) asks ps and pgrep. The files are read with `read`:
+# that is gone, and succeeds, on either path: a caller under `set -e` assigns the answer bare. A host
+# with no /proc (macOS) asks ps and pgrep. The files are read with `read`:
 # under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open FILE, even on the left of `||`.
 #
 # proc_children's list is complete only while the children are stopped or frozen:
@@ -76,7 +77,7 @@ proc_stat_field() {
     read -r -a fields <<<"${stat##*) }"
     printf '%s\n' "${fields[$2 - 3]}"
   else
-    ps -o "$3=" -p "$1" 2>/dev/null | tr -d ' '
+    ps -o "$3=" -p "$1" 2>/dev/null | tr -d ' ' || :
   fi
 }
 proc_parent() { proc_stat_field "$1" 4 ppid; }
@@ -304,6 +305,24 @@ env_length() {
     esac
   done
   printf '0\n'
+}
+# environ_laid_out PID succeeds once PID's environment holds a variable, and fails until then. Linux
+# names the program an exec starts (/proc/PID/exe) before it has laid out that program's arguments
+# and environment: in Linux 7.0, begin_new_exec sets the exe and installs the new memory
+# (fs/exec.c), load_elf_binary then maps the program, and create_elf_tables lays out the arguments,
+# sets the environment's bounds to an empty range, lays out the environment and only then sets its
+# end (fs/binfmt_elf.c). /proc/PID/cmdline reads nothing until those bounds are first set, and
+# /proc/PID/environ reads nothing until that end is (fs/proc/base.c). On a devbox at load 1065, a
+# poll saw an exe naming the program and an empty environment in 91 of 200 starts of a copy of
+# sleep, for up to 62 ms. So a caller that found PID by the program it runs (launched, a wait on
+# /proc/PID/exe) waits on this before it reads PID's environment: in that window env_of, env_has
+# and env_length answer 2, an environment that could not be read, for a process that will run with
+# a full one. Read the exe first: before that exec, PID runs another program (env, a shell) with an
+# environment of its own. It fails, too, for a process that has gone, and for one started with an
+# empty environment, which no wait makes readable.
+environ_laid_out() {
+  local -a entries=()
+  process_environ "$1" entries
 }
 
 # incarnation_pid INCARNATION prints the pid of the tmux runtime's incarnation `<pid>:<start ticks>`

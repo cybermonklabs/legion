@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -22,10 +23,10 @@ import (
 // only the DialOptions among them.
 type ConnectOption interface{ apply(*connectOpts) }
 
-// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection
-// and WithReconnectErrClock. Dial's name and environment are its parameters, so WithName and
-// WithEnvironment are not DialOptions, and neither are the options of a client's JetStream
-// (WithReplicas, WithPublishAcknowledgementClock).
+// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
+// WithPromptReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment
+// are its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the
+// options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -47,22 +48,31 @@ type connectOpts struct {
 	streamSubjectsRefresh       time.Duration
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
+	beforeCoreSendFlush         func()
+	afterCoreSendFlush          func()
+	requestExpiry               func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
 	background                  bool
 	silentCutDetection          bool
-	immediateReconnect          bool
+	promptReconnect             bool
+	inboxPrefix                 string
+	streamMessageReads          bool
+	keeperStepGuard             time.Duration
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection and the retry of WithImmediateReconnect, each when the client asked for
-// it.
+// WithSilentCutDetection, the redial waits of WithPromptReconnect and the inbox prefix of
+// WithInboxPrefix, each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
 		settings = append(settings, detectSilentCuts)
 	}
-	if o.immediateReconnect {
-		settings = append(settings, nats.ReconnectWait(0), nats.ReconnectJitter(reconnectJitterImmediate, reconnectJitterImmediate))
+	if o.promptReconnect {
+		settings = append(settings, promptRedial)
+	}
+	if o.inboxPrefix != "" {
+		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
 	}
 	if len(settings) == 1 {
 		return credential
@@ -77,6 +87,34 @@ func parseConnectOptions[O ConnectOption](options []O) connectOpts {
 		o.apply(&opts)
 	}
 	return opts
+}
+
+// connectionBuild is the build every connection of this binary names after its name
+// (buildversion.ConnectionBuild): legion@<commit>, or "" for a build that holds no commit. A test of
+// this package replaces it.
+var connectionBuild = buildversion.ConnectionBuild
+
+// PrivacyRequiredSuffix is natsgrant.PrivacyRequiredSuffix, spelled here because natsgrant imports
+// this package and this one cannot import it back; natsgrant's tests hold the two equal. The auth
+// service admits a listener on a hub with private projects only when its client name ends with
+// it, so connectionName keeps it last.
+const PrivacyRequiredSuffix = " privacy-required"
+
+// connectionName is the name a connection presents: the client's name, then a space and this
+// binary's build when it has one, before PrivacyRequiredSuffix when the client's name ends with it
+// (`<name> legion@<commit> privacy-required`). legacy-subjects-gate.sh reads each connection's
+// build from the end of its name in the hub's census of connections ($SYS.REQ.SERVER.PING.CONNZ),
+// the last word or the one before a trailing privacy-required, and a connection that names none
+// keeps the gate from opening.
+func connectionName(name string) string {
+	build := connectionBuild()
+	if build == "" {
+		return name
+	}
+	if client, required := strings.CutSuffix(name, PrivacyRequiredSuffix); required {
+		return client + " " + build + PrivacyRequiredSuffix
+	}
+	return name + " " + build
 }
 
 // streamConfig is the stream ConnectOwningStream ensures: streamCfg at the deployment's replica
@@ -122,9 +160,12 @@ func WithReplicas(n int) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.replicas = n })
 }
 
-// withStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
-// client read the deployed subjects again without waiting a minute.
-func withStreamSubjectsRefresh(every time.Duration) ConnectOption {
+// WithStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
+// client read the deployed subjects again without waiting a minute, or hold that read off for the
+// whole of a window in which it counts what the client's connection sends. It is exported for the
+// tests of the programs that connect through this package, as WithKeepInterval is: no deployment
+// sets it, and no caller outside a test may.
+func WithStreamSubjectsRefresh(every time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamSubjectsRefresh = every })
 }
 
@@ -159,11 +200,12 @@ func WithEnvironment(lookup func(string) (string, bool)) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.environment = lookup })
 }
 
-// WithName names the client, in place of "envoy": the name the NATS server's connection listings
-// (its /connz endpoint, `nats server report connections`) show for the connection the client dials
-// first and for each one it dials to replace a closed one, and the name field of the client's
-// lifecycle log lines (`envoy nats disconnected`, `envoy nats recovery attempt` and the rest). Dial
-// takes its name as a parameter, and not this option.
+// WithName names the client, in place of "envoy": the name, with this binary's build after it or
+// before its trailing PrivacyRequiredSuffix (connectionName), that the NATS server's connection
+// listings (its /connz endpoint, `nats server report connections`, $SYS.REQ.SERVER.PING.CONNZ)
+// show for the connection the client dials first and for each one it dials to replace a closed
+// one, and the name field of the client's lifecycle log lines (`envoy nats disconnected`, `envoy
+// nats recovery attempt` and the rest). Dial takes its name as a parameter, and not this option.
 func WithName(name string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.name = name })
 }
@@ -201,14 +243,44 @@ func WithSilentCutDetection() DialOption {
 	return func(o *connectOpts) { o.silentCutDetection = true }
 }
 
-// WithImmediateReconnect has every connection the client makes retry at once after a cut, with a
-// jitter of reconnectJitterImmediate rather than the second every other client waits. It is for
-// the one client a hub's other clients wait on: the NATS auth service
-// (internal/broker/natscallout), which is itself a client of the hub it admits connections to, so
-// a restart drops its connection too and every client that comes back before it is refused until
-// it returns. The jitter keeps two replicas from dialling in the same instant.
-func WithImmediateReconnect() DialOption {
-	return func(o *connectOpts) { o.immediateReconnect = true }
+// WithPromptReconnect has every connection the client makes redial at once after a cut, within a
+// jitter of 50 ms where every other client waits a second, and back off while the hub stays away
+// or refuses it: each later wait is drawn anew between half and all of a bound that starts at
+// 250 ms and doubles with each redial up to 2 s, and the next outage starts at once again
+// (promptRedialWait). It is for the one client a hub's other clients wait on: the NATS auth
+// service (internal/cipher/natscallout), which is itself a client of the hub it admits
+// connections to, so a restart drops its connection too and every client that comes back before
+// it is refused until it returns. So the cap is short: it bounds each wait at 2 s, whatever the
+// outage's length, and a dial follows each wait; that dial, like one already in flight when the
+// hub returns, takes its own time, up to its 5 s timeout when it hangs (connectTimeout). The
+// backoff is for a hub that refuses the service's own user, as one whose auth_callout does not
+// list it yet does: redialling within 50 ms each time, a replica connected to it 35 times a second
+// for as long as it refused (1,055 times in 30 s against an in-process nats-server 2.15.1); with
+// the backoff it connects 24 times in its first 30 s and at most once in any second after its
+// first, for one URL (each wait is followed by a dial of every URL of the pool), which for two
+// replicas is nothing to the hub. The jitter keeps two replicas from dialling in the same instant.
+func WithPromptReconnect() DialOption {
+	return func(o *connectOpts) { o.promptReconnect = true }
+}
+
+// WithInboxPrefix has every connection the client makes name its inboxes under prefix in place
+// of nats.go's _INBOX (nats.CustomInboxPrefix): its request replies, and every inbox named by the
+// connection's NewInbox, which is how this module names each one. An edge listener takes it
+// (cmd/listener, natsgrant.EdgeInboxPrefix), so its user may subscribe its own inboxes and no other
+// client's.
+func WithInboxPrefix(prefix string) DialOption {
+	return func(o *connectOpts) { o.inboxPrefix = prefix }
+}
+
+// WithStreamMessageReads has every KV bucket handle opened on the client's connection read a key
+// with a stream message get ($JS.API.STREAM.MSG.GET.KV_<bucket>), which the JetStream API answers,
+// in place of the direct get ($JS.API.DIRECT.GET.KV_<bucket>.>) nats.go sends for every bucket
+// this module creates (streamMessageReads). An edge listener takes it (cmd/listener,
+// natsgrant.Edge), whose grant holds no direct get: the stream itself publishes a direct get's
+// answer, the stored value, on whatever reply subject the request names, and a value aimed at
+// $JS.API. is taken by the JetStream API as a request of the account's.
+func WithStreamMessageReads() ConnectOption {
+	return clientOption(func(o *connectOpts) { o.streamMessageReads = true })
 }
 
 type subscriptionTransport uint8
@@ -255,10 +327,19 @@ type recoverableSubscription struct {
 	binding chan struct{}
 	// refused is set when the server refused the subscription the client last sent for this
 	// registration on its current connection (onAsyncError), and cleared each time it is sent
-	// again: by a bind, and by nats.go itself on a reconnect in place (onReconnect). nats.go keeps
-	// a refused subscription valid, so without it a lane the server will not deliver to would read
-	// as subscribed. Only the core registration is ever marked.
+	// again: by the bind of a registration or of a restore, and by nats.go itself on a reconnect in
+	// place (onReconnect). ResendRefusedCore clears it only once the server has accepted what it
+	// sent. nats.go keeps a refused subscription valid, so without it a lane the server will not
+	// deliver to would read as subscribed. Only the core registration is ever marked.
 	refused bool
+	// sentOn and sentReconnects name the connection session the subscription was last sent on: the
+	// connection and its reconnect count (nats.Conn.Stats) at that send. Each bind records them, and
+	// so does each reconnect in place (onReconnect), where nats.go sends every subscription again.
+	// ResendRefusedCore answers only a refusal on that session. Once nats.go has reconnected, and
+	// until onReconnect runs, the mark it would read is the previous session's, of a subscription
+	// nats.go has already sent again to the new server.
+	sentOn         *nats.Conn
+	sentReconnects uint64
 	// pendingMsgs and pendingBytes, when set, are the pending limits of a core subscription,
 	// applied on every bind: the role lane's are far above any backlog its handler can build
 	// (ConnectRoleLane), so nats.go queues what the server delivers rather than dropping it as a
@@ -273,7 +354,10 @@ type recoverableSubscription struct {
 // other is refused with ErrSubscriptionHeld, so a caller that needs two durables takes one Client
 // per durable.
 type Client struct {
-	Conn                        *nats.Conn
+	Conn *nats.Conn
+	// severable is Conn with its dialer, set with Conn (noteSeverable), so Sever reaches them
+	// without mu, which a caller can hold while it waits for nats.go's lock (Connected).
+	severable                   atomic.Pointer[severableConnection]
 	js                          nats.JetStreamContext
 	urls                        []string
 	name                        string
@@ -293,7 +377,22 @@ type Client struct {
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
-	mu                 sync.Mutex
+	// beforeCoreSendFlush and afterCoreSendFlush, when not nil, run on the goroutine of a send of the
+	// core subscription (sendCore), right before the flush that waits for the server's answer and
+	// right after it returns. They are nil outside tests: a test sets them
+	// (WithBeforeCoreSendFlush, WithAfterCoreSendFlush, export_test.go) to lose or replace the
+	// connection while the send is open, the interleavings in which the answer comes from another
+	// session of the connection than the one the send began in.
+	beforeCoreSendFlush func()
+	afterCoreSendFlush  func()
+	// requestExpiry, when not nil, gives each Request the channel its timeout fires on, in place of
+	// a timer at the request's deadline, or nil to keep that timer, and a func the request calls
+	// once it has settled a flush that returned before its timeout fired, or nil (window.request).
+	// It is nil outside tests: a test sets it (WithRequestExpiry, export_test.go) to choose which
+	// of the request's timeout and its flush it settles first, so the order of the two is the
+	// test's and not the scheduler's.
+	requestExpiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
+	mu            sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -383,6 +482,17 @@ type Client struct {
 	// slowConsumers counts the slow-consumer errors the client's connections reported
 	// (SlowConsumers).
 	slowConsumers atomic.Uint64
+	// coreQueues, set by ConnectRoleLane, are the queue groups the core subscription may be sent in,
+	// in the order ResendRefusedCore tries them: the shared group first, then the machine's, as the
+	// lane's start does. It is nil on any other client, whose core subscription keeps the queue group
+	// it registered.
+	coreQueues []string
+	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
+	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
+	streamMessageReads bool
+	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
+	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
+	keeperStepGuard time.Duration
 
 	// recovery state
 	recovering int32
@@ -393,6 +503,11 @@ type Client struct {
 	// client that runs none, or none yet: one that connects in the background starts it on its first
 	// reconcile (ensureStreamOnce). It is written and read under mu (startKeeper, awaitKeeper).
 	keeperDone chan struct{}
+	// keepPasses counts the keeper's passes that have ended, a pass that failed included (keep,
+	// keepPass), for a test that must know a pass ran after a change it made: a pass that finds
+	// nothing to restore logs nothing and sends no update, so the count is the one sign it ran. It
+	// says nothing of whether the pass did what it set out to; a failed pass logs that.
+	keepPasses atomic.Uint64
 }
 
 // Dial opens a tuned core NATS connection using envoy's standard options (5s connect timeout,
@@ -406,12 +521,13 @@ type Client struct {
 //
 // It takes the DialOptions: WithConnectInBackground, which returns the connection before it has
 // connected (a core subscription made on it before then is sent once it connects),
-// WithSilentCutDetection and WithReconnectErrClock.
+// WithSilentCutDetection, WithPromptReconnect and WithReconnectErrClock.
 //
 // For JetStream-backed publishing or a durable consumer, use Connect; to reconcile the stream
 // this codebase owns, ConnectOwningStream.
 func Dial(name string, urls []string, environment func(string) (string, bool), options ...DialOption) (*nats.Conn, error) {
 	opts := parseConnectOptions(options)
+	name = connectionName(name)
 	if err := refuseRemoteNATS(urls, environment); err != nil {
 		return nil, err
 	}
@@ -497,13 +613,18 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	}
 	c := &Client{
 		urls:                        urls,
-		name:                        opts.name,
+		name:                        connectionName(opts.name),
 		connectionSettings:          opts.connectionSettings(credential),
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
+		afterCoreSendFlush:          opts.afterCoreSendFlush,
+		streamMessageReads:          opts.streamMessageReads,
+		keeperStepGuard:             opts.keeperStepGuard,
+		requestExpiry:               opts.requestExpiry,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()
@@ -527,8 +648,8 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		}
 		// onConnect counts the first connection only once it is c.Conn, which install makes it. An
 		// install that fails returns no client, so it stops the client before
-		// connectFirstInBackground closes the connection, as the foreground path does below. At the
-		// pinned nats.go (v1.50.0) it cannot fail: JetStream with these options returns no error, and
+		// connectFirstInBackground closes the connection, as the foreground path does below. At
+		// nats.go v1.55.0 it cannot fail: JetStream with these options returns no error, and
 		// there is no stream to ensure here. The stop guards a nats.go whose JetStream can.
 		install := func(nc *nats.Conn) error {
 			if err := c.install(nc, false); err != nil {
@@ -604,7 +725,8 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 		}
 	}
 	c.mu.Lock()
-	c.Conn, c.js = nc, c.readsOwnRefusals(js)
+	c.Conn, c.js = nc, c.readsOwnRefusals(nc, js)
+	c.noteSeverable(nc)
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so the record holds
 	// at most what the stream's ensure on nc left unread (recordPublishDenial records for the
@@ -677,7 +799,7 @@ func (c *Client) ensureStreamReported(versionCtx, ctx context.Context, conn *nat
 	if err != nil {
 		return err
 	}
-	return c.ensureStream(ctx, c.readsOwnRefusals(js), defaultsAnUnsetCap, at)
+	return c.ensureStream(ctx, c.readsOwnRefusals(conn, js), defaultsAnUnsetCap, at)
 }
 
 // lookOnce is a context already done, for a read of the server version that must not wait: given
@@ -1002,6 +1124,7 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 	// next is unrefused: the bind below sends its subscription anew, and a refusal of it arrives
 	// only after the send.
 	*subscription = next
+	subscription.sentOn, subscription.sentReconnects = conn, reconnectsOf(conn)
 	subscription.binding = make(chan struct{})
 	c.subscriptionsMu.Unlock()
 	if replaced != nil {
@@ -1033,7 +1156,7 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 // is Connected(), which is false for every status but CONNECTED, so a client whose connection is
 // reconnecting, draining or closed takes this branch, not only one whose link has just dropped.
 // The two cases differ because of what a drain begun while the link is down leaves behind. In
-// nats.go v1.53.1, Conn.unsubscribe in drain mode keeps the subscription in the connection's list,
+// nats.go v1.55.0, Conn.unsubscribe in drain mode keeps the subscription in the connection's list,
 // starts checkDrained on a goroutine, and writes the UNSUB only when the connection is not
 // reconnecting. checkDrained opens with a flush, which does not return until the connection is
 // back; meanwhile doReconnect's resendSubscriptions sends a SUB for every subscription the
@@ -1051,15 +1174,16 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 // connection's list for its flush's round trip and then passes of 100 ms, until the handler has
 // taken what was buffered. The drop itself releases that flush (processOpError clears the pending
 // flush calls), so what holds the window open past it is a handler still inside a delivery, which
-// is what a drain is for. So the drain is watched (watchDrain): at the client's next connection
-// event, while the handle is still valid, the watch unsubscribes it, and the resend finds nothing
-// to send. That event is taken (ConnectionChanged) before the Connected() read below, which is
-// that method's contract, so a drop between the read and the drain wakes the watch rather than
-// being missed by it. The returned handle keeps its meaning: a caller waiting for the drain's end
-// waits for the handle to turn invalid, which is what an unsubscribe by the watch leaves it. What
-// the handler had not yet been handed is dropped with the drain, which is the price of leaving
-// the durable free: those deliveries were buffered against a link that is gone, and the server
-// redelivers them to whoever binds the durable next.
+// is what a drain is for. So the drain is watched (watchDrain): at the first connection event after
+// which the connection no longer reads the session the drain began in, while the handle is still
+// valid, the watch unsubscribes it, and the resend finds nothing to send. The watch's first event
+// is taken (ConnectionChanged) before the connection's state is read below, which is that method's
+// contract, so a drop between the read and the drain wakes the watch rather than being missed by
+// it. The returned handle keeps its meaning: a caller waiting for the drain's end waits for the
+// handle to turn invalid, which is what an unsubscribe by the watch leaves it. What the handler had
+// not yet been handed is dropped with the drain, which is the price of leaving the durable free:
+// those deliveries were buffered against a link that is gone, and the server redelivers them to
+// whoever binds the durable next.
 func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, error) {
 	if sub == nil {
 		return nil, nil
@@ -1080,16 +1204,18 @@ func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, 
 	// Taken before the state it guards is read, so that an event between the two still wakes the
 	// watch below.
 	changed := c.ConnectionChanged()
-	if !c.Connected() {
+	conn := c.Connection()
+	if conn == nil || conn.Status() != nats.CONNECTED {
 		if err := active.Unsubscribe(); err != nil {
 			return nil, err
 		}
 		return nil, nil
 	}
+	reconnects := reconnectsOf(conn)
 	if err := active.Drain(); err != nil {
 		return nil, err
 	}
-	go c.watchDrain(active, changed)
+	go c.watchDrain(active, conn, reconnects, changed)
 	return active, nil
 }
 
@@ -1099,19 +1225,32 @@ func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, 
 // holds to its flush's round trip plus passes of 100 ms.
 const drainWatchStep = 10 * time.Millisecond
 
-// watchDrain turns the drain DrainSubscription began on a live link into an unsubscribe at the
-// client's next connection event, while the handle is still valid: a drain still in the
-// connection's subscription list when a reconnect lands is re-sent by resendSubscriptions and then
-// dropped by checkDrained with no UNSUB ever written, which is what DrainSubscription's doc
-// describes. An unsubscribe takes the subscription out of that list, so the resend finds nothing.
-// changed is the channel taken before DrainSubscription's Connected() read, so a drop between that
-// read and the drain wakes the watch too. With one NATS URL there is room for it: doReconnect
-// queues the disconnect callback this channel reports and then waits a full ReconnectWait (1 s)
-// before the resend.
+// watchDrain turns the drain DrainSubscription (or releaseAttempt) began on a live link into an
+// unsubscribe once that link has dropped or reconnected, while the handle is still valid: a drain
+// still in the connection's subscription list when a reconnect lands is re-sent by
+// resendSubscriptions and then dropped by checkDrained with no UNSUB ever written, which is what
+// DrainSubscription's doc describes. An unsubscribe takes the subscription out of that list, so the
+// resend finds nothing. changed is the channel taken before the caller read conn's state, so a
+// drop between that read and the drain wakes the watch too. With one NATS URL there is room for
+// it: doReconnect queues the disconnect callback this channel reports and then waits a full
+// ReconnectWait (1 s) before the resend.
+//
+// The session the drain began in is conn read CONNECTED with reconnects as its count, both read
+// after changed was taken and before the drain. A wake does not by itself say that session ended:
+// nats.go queues a reconnect's callback, which reports the event (onReconnect), under the
+// connection's lock and runs it later on its callback goroutine, so a flush that waited for that
+// lock can return, and a drain begin, on the reconnected session before the callback has run. The
+// event it then reports is that reconnect, one the drain began after, and an unsubscribe there
+// would drop what the session delivered to the drain. So at each wake the watch takes the next
+// channel first and then reads conn's status and then its count, in sendCore's order: it
+// unsubscribes when conn no longer reads CONNECTED or its count has moved, and goes on watching
+// otherwise. nats.go counts a reconnect and re-sends the subscriptions under one hold of the
+// connection's lock, so a resend the drain is in shows as a moved count; a connection the client
+// replaced is closed, so it no longer reads CONNECTED.
 //
 // The watch ends with the drain, so it is never a goroutine parked for the life of the process.
 // The drain always ends: checkDrained opens with nc.Flush(), which carries the client's flush
-// timeout (10 s in nats.go v1.53.1) and so returns whether or not the link came back, and its loop
+// timeout (10 s in nats.go v1.55.0) and so returns whether or not the link came back, and its loop
 // then ends at the first pass where the handler has taken what was buffered, or the subscription
 // or the connection is closed -- each of which leaves the handle invalid, which the watch reads at
 // its next step. An unsubscribe here ends it too: checkDrained's next pass finds the subscription
@@ -1119,12 +1258,16 @@ const drainWatchStep = 10 * time.Millisecond
 // would have, and checkDrained's pass then asks for a delete the server answers not found, which
 // reaches the async error callback; Dispatch's intakes bind durables they add themselves, which
 // nats.go deletes for neither.
-func (c *Client) watchDrain(active *nats.Subscription, changed <-chan struct{}) {
+func (c *Client) watchDrain(active *nats.Subscription, conn *nats.Conn, reconnects uint64, changed <-chan struct{}) {
 	step := time.NewTicker(drainWatchStep)
 	defer step.Stop()
 	for {
 		select {
 		case <-changed:
+			changed = c.ConnectionChanged()
+			if conn.Status() == nats.CONNECTED && reconnectsOf(conn) == reconnects {
+				continue
+			}
 			if active.IsValid() {
 				// Its error would be the handle's own end -- the drain ended between the read and
 				// here, or the connection closed under it -- which is all this watch waits for.
@@ -1253,6 +1396,242 @@ func (c *Client) CoreSubOK() bool {
 	return c.subscriptionOK(coreSubscription)
 }
 
+// ResendRefusedCore sends the client's core subscription to the server again when the server has
+// refused it on the connection the client holds and that connection is connected. Nothing else
+// does. A reload of the server's configuration that takes the grant away revokes the subscription
+// and keeps the connection, and a later reload that gives the grant back does not restore it: the
+// server keeps no record of a subscription it refused, and nats.go sends a subscription again only
+// when it reconnects. Without a new send the subscription stays refused for the life of the
+// connection, whatever grant the server holds now.
+//
+// It sends the subscription in each queue group of coreQueues in turn, or in the registration's
+// own when the client has none, and waits for the server's answer to each one (sendCore). It
+// stops at the first group the server accepts. The new subscription replaces the refused one,
+// which it then unsubscribes; the server holds no subscription under that sid, so it ignores the
+// UNSUB. Each subscription the server refused is unsubscribed at once. When no group accepts it,
+// the refused subscription the client held stays the one it holds, in its own queue group, so a
+// reconnect sends that one again, as nats.go sends every subscription the connection holds: a
+// refused attempt in another group left in its place would move the lane to that group for good.
+// The mark stays set until the server has accepted a send, so CoreSubOK never reads true for a
+// subscription the server refuses. A send whose answer does not come back leaves the refused
+// subscription in place. So does every attempt that leaves the session of the connection this
+// method read at its start, whichever group it was in (sendCore, errSendSuperseded): a verdict
+// counts only from an attempt that began and ended inside that session. The reconnect sent the
+// refused subscription again, and the new server's answer to it decides.
+//
+// It sends nothing in four cases. While a bind of the registration is in flight, that bind sends
+// the subscription again itself. While the refused subscription still holds messages that the
+// server delivered before the revocation, the unsubscribe would drop them, and its handler takes
+// them first. On a connection that is not connected, the reconnect sends every subscription again.
+// And when the refusal is of an earlier session of the connection (sentOn, sentReconnects):
+// nats.go has reconnected and sent the subscription again, and onReconnect has not run yet.
+func (c *Client) ResendRefusedCore() error {
+	c.mu.Lock()
+	conn, js := c.Conn, c.js
+	// The status is read before the reconnect count: nats.go counts a reconnect before it reads
+	// CONNECTED again, so a reconnect between the two reads changes the count and refuses the
+	// send, where the other order could pair the new session's status with the old one's count.
+	connected := conn != nil && conn.Status() == nats.CONNECTED
+	reconnects := reconnectsOf(conn)
+	c.subscriptionsMu.Lock()
+	subscription := &c.subscriptions[coreSubscription]
+	refused := subscription.active
+	send := !c.stopped() && connected && subscription.refused &&
+		subscription.binding == nil && refused != nil && refused.IsValid() &&
+		subscription.sentOn == conn && subscription.sentReconnects == reconnects
+	if send {
+		pending, _, err := refused.Pending()
+		send = err == nil && pending == 0
+	}
+	if !send {
+		c.subscriptionsMu.Unlock()
+		c.mu.Unlock()
+		return nil
+	}
+	subscription.binding = make(chan struct{})
+	registration := *subscription
+	c.subscriptionsMu.Unlock()
+	c.mu.Unlock()
+
+	queues := c.coreQueues
+	if len(queues) == 0 {
+		queues = []string{registration.queue}
+	}
+	var (
+		sub      *nats.Subscription
+		queue    string
+		accepted bool
+		err      error
+	)
+	for _, queue = range queues {
+		if sub != nil {
+			// The server refused the subscription in the previous group.
+			_ = sub.Unsubscribe()
+		}
+		attempt := registration
+		attempt.queue = queue
+		// Every attempt is measured against the session read above, not one of its own: a
+		// reconnect between two groups' attempts would otherwise let the machine's group be tried,
+		// and kept, on a new server that may accept the shared group the client held.
+		if sub, accepted, err = c.sendCore(attempt, conn, js, reconnects); err != nil || accepted {
+			break
+		}
+	}
+	if err == nil && !accepted {
+		// No group accepted it: the last refused attempt is dropped like the others, and the
+		// refused subscription the client held stays in place, still marked.
+		_ = sub.Unsubscribe()
+		sub, err = nil, errNoQueueAccepted
+	}
+	if err == nil {
+		// The registration takes the accepted subscription's queue group before endBind installs
+		// it, so a refusal of it after a reconnect in between names the queue group the
+		// registration holds and is marked (onAsyncError). Should endBind then install nothing, the
+		// client is stopped, and no refusal is read again.
+		c.subscriptionsMu.Lock()
+		subscription.queue = queue
+		c.subscriptionsMu.Unlock()
+	}
+	if err := c.endBind(subscription, sub, err, false); err != nil {
+		// No group accepted it, or a reconnect overtook the send (errSendSuperseded): the refused
+		// subscription the client held stays in place, and so does its mark. After a reconnect,
+		// nats.go has sent that subscription again and onReconnect has cleared the mark, so the
+		// new server's answer to it decides, as for any reconnect.
+		if errors.Is(err, errNoQueueAccepted) || errors.Is(err, errSendSuperseded) {
+			return nil
+		}
+		// A send that failed leaves the refused subscription as the one the client holds, still
+		// marked. A bind that ended after Drain or Close stopped the client leaves both to them.
+		return err
+	}
+	c.mu.Lock()
+	c.subscriptionsMu.Lock()
+	if subscription.active == sub {
+		// A reconnect during the send has cleared the mark (onReconnect), and the new server's
+		// answer to the subscriptions nats.go sent it again is the one that counts.
+		if c.Conn == conn && reconnectsOf(conn) == reconnects {
+			subscription.refused = false
+		}
+	}
+	c.subscriptionsMu.Unlock()
+	c.mu.Unlock()
+	if queue != registration.queue {
+		slog.Warn("envoy nats core subscription sent again in another queue group, since the server refused it in its own",
+			slog.String("name", c.name),
+			slog.String("subject", registration.subject),
+			slog.String("queue", queue),
+			slog.String("refused_queue", registration.queue))
+	}
+	// The new subscription is the one the client holds now. The unsubscribe can only fail on a
+	// connection that closed meanwhile, which the recovery replaces with every subscription bound.
+	_ = refused.Unsubscribe()
+	return nil
+}
+
+// coreSendAnswerWait bounds sendCore's wait for the server's answer to a subscription it sends.
+const coreSendAnswerWait = 2 * time.Second
+
+// errNoQueueAccepted is how ResendRefusedCore ends a bind no queue group accepted: it installs
+// nothing, so the refused subscription the client held stays in place. It never leaves that method.
+var errNoQueueAccepted = errors.New("bus: the server accepted the core subscription in no queue group")
+
+// errSendSuperseded is sendCore's error for a send that left the session of the connection it
+// was measured against: the connection did not read CONNECTED and that session's reconnect count
+// as the send began, or no longer did once the server's answer was read. It never leaves
+// ResendRefusedCore.
+var errSendSuperseded = errors.New("bus: the connection reconnected during the core subscription's send")
+
+// sendCore binds registration on conn and waits, within coreSendAnswerWait, until the server has
+// read the subscription, and reports whether it accepted it. The server answers a flush only after
+// every line the client sent before it, and nats.go records a refusal as the connection's last
+// error as it reads the -ERR (processTransientError), before the PONG that ends the flush. So the
+// server accepted the subscription when that error is still the one the connection held before
+// the bind (sameError); any other error, a refusal among them, counts as not accepted. A flush
+// that fails leaves the answer unknown: the subscription is released (releaseAttempt) and the
+// failure returned.
+//
+// That comparison holds only within one session of the connection, since nats.go sets the last
+// error anew within a reconnect: to nil as the reconnect begins (doReconnect), to nil after each
+// failed attempt, and to the handshake's result once an attempt connects. Compared across that, a
+// refusal before and nil after counts as refused a subscription the new server accepted, and nil
+// before and nil after counts as accepted an answer no server gave in the session the client
+// keeps. A flush begun while the connection reconnects waits in the reconnect buffer and succeeds
+// on the new server, and a drop after the flush returned clears the error with the count still
+// unchanged, so neither the flush nor the count alone catches a reconnect. So the whole send must
+// stay inside the session ResendRefusedCore read at its start, reconnects: the connection reads
+// CONNECTED and that count both before the bind and after the answer is read. The status is read
+// before the count each time. nats.go turns a connection RECONNECTING before it clears the error,
+// and counts a reconnect once a dial succeeds, before the connection reads CONNECTED again; so a
+// connection that dropped reads RECONNECTING until a dial succeeds, and one that reconnected reads
+// a higher count. A send outside the session ends with errSendSuperseded and its subscription
+// released, and leaves the subscription the client held, which a reconnect sends again, to the
+// new server's answer.
+func (c *Client) sendCore(registration recoverableSubscription, conn *nats.Conn, js nats.JetStreamContext, reconnects uint64) (*nats.Subscription, bool, error) {
+	if conn.Status() != nats.CONNECTED || reconnectsOf(conn) != reconnects {
+		return nil, false, errSendSuperseded
+	}
+	before := conn.LastError()
+	sub, err := bind(registration, conn, js)
+	if err != nil {
+		return nil, false, err
+	}
+	if hook := c.beforeCoreSendFlush; hook != nil {
+		hook()
+	}
+	if err := conn.FlushTimeout(coreSendAnswerWait); err != nil {
+		c.releaseAttempt(conn, sub)
+		return nil, false, err
+	}
+	if hook := c.afterCoreSendFlush; hook != nil {
+		hook()
+	}
+	after := conn.LastError()
+	if conn.Status() != nats.CONNECTED || reconnectsOf(conn) != reconnects {
+		c.releaseAttempt(conn, sub)
+		return nil, false, errSendSuperseded
+	}
+	return sub, sameError(after, before), nil
+}
+
+// releaseAttempt ends a subscription sendCore made and gives no verdict on, which a server may have
+// accepted and delivered to: a reconnect sends it again with every other subscription, and the new
+// server may accept it. On a connection that reads CONNECTED it drains it: nats.go sends the UNSUB
+// at once and hands the messages the subscription holds to its handler before it removes it, where
+// Unsubscribe would drop them. A drain keeps the subscription in nats.go's set until the handler
+// has taken what it holds, and a reconnect in that time sends it again, after which checkDrained
+// removes it with no UNSUB ever written (resendSubscriptions, checkDrained). That would leave the
+// server a member of the queue group that the client no longer reads, taking a share of the
+// group's messages. So the drain is watched, as DrainSubscription's is (watchDrain): once the
+// connection no longer reads the session the drain began in, while the subscription is still
+// valid, the watch unsubscribes it, and the reconnect's resend finds nothing to send. The watch's
+// first event is taken (ConnectionChanged) before the status is read, so a drop between the read
+// and the drain wakes the watch too; the count is read after the status, and both before the
+// drain, as sendCore reads them. On a connection that does not read CONNECTED it unsubscribes it
+// at once, for the same reason. Either way, the messages it still holds when it is unsubscribed
+// are lost with the session that delivered them.
+func (c *Client) releaseAttempt(conn *nats.Conn, sub *nats.Subscription) {
+	changed := c.ConnectionChanged()
+	if conn.Status() != nats.CONNECTED {
+		_ = sub.Unsubscribe()
+		return
+	}
+	reconnects := reconnectsOf(conn)
+	if err := sub.Drain(); err != nil {
+		_ = sub.Unsubscribe()
+		return
+	}
+	go c.watchDrain(sub, conn, reconnects, changed)
+}
+
+// reconnectsOf is conn's reconnect count, 0 for no connection: the session of a subscription's
+// send (recoverableSubscription.sentReconnects).
+func reconnectsOf(conn *nats.Conn) uint64 {
+	if conn == nil {
+		return 0
+	}
+	return conn.Stats().Reconnects
+}
+
 func (c *Client) subscriptionOK(transport subscriptionTransport) bool {
 	c.mu.Lock()
 	connOK := c.Conn != nil && c.Conn.Status() != nats.CLOSED
@@ -1273,7 +1652,7 @@ func (c *Client) subscriptionOK(transport subscriptionTransport) bool {
 // The server writes each name with %q, so each is matched as a whole Go-quoted string, escapes
 // included, and unquoted before it is compared: a name holding a double quote or a backslash
 // reaches the text escaped. nats.go's own reading (permissionsRe and permissionsQueueRe, nats.go
-// v1.50.0 nats.go:3795-3833) keeps the escapes, so it compares unequal to such a name.
+// v1.55.0 nats.go:4162-4182) keeps the escapes, so it compares unequal to such a name.
 var subscriptionRefusal = regexp.MustCompile(`Subscription to ("(?:[^"\\]|\\.)*")(?: using queue ("(?:[^"\\]|\\.)*"))?(?: \(sid ("(?:[^"\\]|\\.)*")\))?`)
 
 // onAsyncError is wired as the connection's async error callback, after the error is logged. A
@@ -1426,18 +1805,18 @@ func (c *Client) Close() {
 
 // Drain stops the client and drains it, letting the deliveries already in their handlers finish,
 // and returns once the connection has closed, at the latest once timeout passes, so a blocked
-// drain cannot keep a process alive. A connection closed while nats.go drains it can read
-// DRAINING_PUBS again for about 5 s after Drain returns (see the wait below). It stops the client
-// first, so neither the drain's close nor a recovery already under way reconnects or re-subscribes
-// a process that is shutting down. It then drains the delivery subscriptions while the connection
-// still accepts new ones: a handler finishing its delivery may subscribe (a forward's reply
-// inbox, StartRequestStoredTo), which a draining connection refuses. Next it runs the drain hooks
-// (AddDrainHook), which end the KV watchers with requests of their own while the connection still
-// carries them, even when the deliveries ran out their share of the timeout (drainHookReserve) or
-// failed to drain. Only then does it drain the connection, whose Drain only starts the drain, and
-// wait for it to close itself. A connection that is reconnecting is closed at once and runs no
-// hook: nothing it sends reaches the server, so no subscription would drain and a reconnect
-// would re-send them. A bind in flight at the stop is not waited for: one that ends while the
+// drain cannot keep a process alive. It stops the client first, so neither the drain's close nor a
+// recovery already under way reconnects or re-subscribes a process that is shutting down. It then
+// drains the delivery subscriptions while the connection still accepts new ones: a handler
+// finishing its delivery may subscribe (a forward's reply inbox, StartRequestStoredTo), which a
+// draining connection refuses. Next it runs the drain hooks (AddDrainHook), which end the KV
+// watchers with requests of their own while the connection still carries them, even when the
+// deliveries ran out their share of the timeout (drainHookReserve) or failed to drain. Only then
+// does it drain the connection, whose Drain only starts the drain, and waits for it to close
+// itself. A connection that is reconnecting is closed at once, once the hooks have run on a
+// context that has already ended: nothing it sends reaches the server, so no subscription would
+// drain and a reconnect would re-send them, but each hook still ends what it holds and says what
+// it left to the server. A bind in flight at the stop is not waited for: one that ends while the
 // subscriptions drain installs its own, which the next pass drains, and one that ends after the
 // last pass drains its own, which the connection's drain takes (endBind). The close ends one
 // still in flight. A reconnect nats.go reports once the client has stopped closes the connection
@@ -1464,6 +1843,12 @@ func (c *Client) Drain(timeout time.Duration) error {
 	defer c.awaitKeeper()
 	defer conn.Close()
 	if conn.IsReconnecting() {
+		// Nothing sent while reconnecting reaches the server, so no subscription would drain and
+		// a reconnect would re-send them: the connection is closed at once. The drain hooks still
+		// run first, on a context that has already ended (runDrainHooks reads the connection as
+		// lost), so each ends what it holds and says what it left to the server; a drain that ran
+		// none ended no KV watcher and said nothing of any.
+		c.runDrainHooks(conn, deadline)
 		return fmt.Errorf("drain NATS: %w", nats.ErrConnectionReconnecting)
 	}
 	if err := c.drainDeliveries(deliveriesDeadline); err != nil {
@@ -1476,16 +1861,10 @@ func (c *Client) Drain(timeout time.Duration) error {
 	// ordered consumers, whose delete would race the connection's drain (AddDrainHook), and they
 	// run while the connection still carries their requests.
 	c.runDrainHooks(conn, deadline)
-	// nats.go's Drain only starts the drain, and the wait for it to close the connection takes the
-	// connection's CLOSED event rather than polling for the state. A close that lands while nats.go
-	// drains the connection (a lost server, a reconnect callback closing it) is undone at the
-	// pinned nats.go (v1.50.0) and in every release through v1.54.0: drainConnection marks the
-	// closed connection DRAINING_PUBS again and waits 5 s for a PONG on the socket close() shut, so
-	// a poll can miss the moment the connection was closed and wait out the deadline. For the same
-	// reason the connection can read DRAINING_PUBS for about 5 s after Drain returns; the deferred
-	// Close finds it already closed and does not end that wait. nats-io/nats.go#2163 fixes it and
-	// is unreleased; re-check on a nats.go bump. Once a release that carries it is pinned, only this
-	// explanation goes: the CLOSED-event wait stays correct.
+	// nats.go's Drain only starts the drain, and the CLOSED event decides when it ends. nats.go
+	// v1.55.0 keeps Close terminal when it races Drain, so this event does not rely on a transient
+	// DRAINING_PUBS state. The wait stays necessary because Drain returns before the connection
+	// closes.
 	closed := conn.StatusChanged(nats.CLOSED)
 	defer conn.RemoveStatusListener(closed)
 	if err := conn.Drain(); err != nil {
@@ -1660,7 +2039,8 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
-		c.js = c.readsOwnRefusals(js)
+		c.noteSeverable(nc)
+		c.js = c.readsOwnRefusals(nc, js)
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()
 		c.mu.Unlock()
@@ -1731,9 +2111,10 @@ func (c *Client) ReachesNoSession(topic string) bool {
 }
 
 // ErrRefused is returned for an envelope that is refused the same way however often it is
-// published, or a KV key refused however often a call names it, so a caller answers it as a
-// refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey or
-// ErrNoForwardMsgID.
+// published, or a KV key or value refused however often a call names it, so a caller answers it as
+// a refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey,
+// ErrNoForwardMsgID, or internal/kvchunk's ReservedKey, a KV key under the chunk keys' prefix that
+// a store laying its records out in chunks takes for no record.
 var ErrRefused = errors.New("refused")
 
 // refusal is a kind of ErrRefused. Its text names only the kind, since every line and answer that
@@ -1746,7 +2127,8 @@ func (r refusal) Is(target error) bool { return target == ErrRefused }
 
 // ErrTooLarge is the ErrRefused of an envelope too large to publish whole: a message past the NATS
 // server's max payload, which nats.go refuses before sending it, a subject past maxSubjectBytes, a
-// KV key whose subject would be, or a CI record or settlement past the bound its store keeps below
+// KV key whose subject would be, a KV value past the server's max payload or its bucket's largest
+// value (KeyValue.tooLarge), or a CI record or settlement past the bound its store keeps below
 // those. Its error names the size and the bound.
 var ErrTooLarge error = refusal("too large to publish whole")
 
@@ -1796,12 +2178,14 @@ func streamFull(err error) error {
 // names the one it will hold (nats-server's JSStreamDuplicateMessageConflict). It is not an
 // ErrRefused: the same publish sent again once the earlier one is stored is answered as a
 // duplicate with that copy's sequence, which is what a caller that reads the acknowledgement
-// retries for (PublishStoredAck; the listener's keep, cmd/listener/role_keep.go). The error still
-// matches nats-server's *nats.APIError.
+// retries for (PublishStoredAck, PublishAckWithin; cmd/listener's publishPastInProcess, which the
+// listener's message routes, role forwards, keep and takeover copy take, and whose doc names the
+// publishes that do not, the webhook routes' among them). The error still matches nats-server's
+// *nats.APIError.
 var ErrDuplicateInProcess = errors.New("a publish under the same message id is still in process")
 
 // jsStreamDuplicateMessageConflict is nats-server's code for a publish whose message id is a
-// duplicate of one still in process (JSStreamDuplicateMessageConflict). nats.go v1.53.1 names no
+// duplicate of one still in process (JSStreamDuplicateMessageConflict). nats.go v1.55.0 names no
 // constant for it.
 const jsStreamDuplicateMessageConflict = 10158
 
@@ -1916,6 +2300,24 @@ func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contr
 	return ack.Duplicate, err
 }
 
+// PublishEachWithin publishes item on its own topic as PublishAckWithin does, and once the
+// publish succeeds calls published, when it is not nil, with that topic and the stream's
+// acknowledgement: its duplicate verdict, and whether the verdict answers a resend
+// (StoredAck.Resent), which can make a duplicate this call's own first copy. It is the webhook
+// handlers' publisher (webhook.Publisher), which a publisher that also puts copies on other
+// topics implements by calling published once for each topic it published on
+// (ghrename.Publisher).
+func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	ack, err := c.PublishAckWithin(ctx, item)
+	if err != nil {
+		return err
+	}
+	if published != nil {
+		published(item.Topic, ack.Duplicate, ack.Resent)
+	}
+	return nil
+}
+
 // PublishAckWithin publishes item on its own topic as PublishReportingDuplicateWithin does, over
 // the same two transports and within ctx's bound, and returns the stream's whole acknowledgement
 // rather than its duplicate verdict alone: the sequence, the verdict, and whether the verdict
@@ -1941,7 +2343,9 @@ func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) 
 // (sendStored). The first may have reached the stream before the close, so a Duplicate that comes
 // with Resent may name the copy this very call stored: a caller that charges nothing for a repeat
 // of an earlier message (cmd/listener's sender limit, and its keep of a role message) reads such a
-// verdict as the call's own copy rather than as a repeat.
+// verdict as the call's own copy rather than as a repeat. cmd/listener's publishPastInProcess sets
+// it for the same reason on the answer to a publish it made again after the stream refused, as
+// still in process, a send of the same call that nothing had answered (ErrUnacknowledged).
 type StoredAck struct {
 	Sequence  uint64
 	Duplicate bool
@@ -2017,7 +2421,7 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 //
 // A ctx that has already ended never puts the message on the wire here, and that protection is
 // the dependency's rather than this repository's: js.Publish under nats.Context is a request, and
-// nats.go's requestWithContext returns ctx.Err() before it sends anything (nats.go v1.53.1,
+// nats.go's requestWithContext returns ctx.Err() before it sends anything (nats.go v1.55.0,
 // context.go), on the first attempt, on each of its no-responders retries and on the reconnect
 // retry below alike. That read comes after ensureConnWithContext has returned, so it also refuses
 // a ctx cancelled as a reconnect wait ends. So the core path's own check (publishConfirmed's read
@@ -2042,7 +2446,7 @@ func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) 
 // (sendUnanswered). The stream may hold the message, or store it yet from bytes still on their way
 // to the server, so a caller that counts what it stored counts this one too (cmd/listener's sender
 // limit). It wraps the failure itself, so every comparison the failure answered
-// (context.DeadlineExceeded, nats.ErrConnectionClosed and the rest) still holds.
+// (context.DeadlineExceeded, nats.ErrConnectionClosed, nats.ErrDisconnected and the rest) still holds.
 //
 // A failure before anything was sent does not wrap it: a subject or an envelope refused before the
 // send, a wait for a reconnect that ended before any send, and a context that had already ended,
@@ -2055,19 +2459,19 @@ var ErrUnacknowledged = errors.New("the stream did not acknowledge the publish, 
 
 // sendUnanswered reports whether err, from a JetStream publish handed to nats.go under a live
 // context, leaves the send unanswered rather than refused, so that it may have reached the stream.
-// It is a positive list of what nats.go v1.53.1's js.PublishMsg returns once its request is out
+// It is a positive list of what nats.go v1.55.0's js.PublishMsg returns once its request is out
 // and no answer came: under nats.Context, the context's own error when it ends during the
-// acknowledgement wait, and nats.ErrConnectionClosed when the connection closes with the request
-// outstanding (clearPendingRequestCalls closes the reply's channel); nats.ErrTimeout is the same
-// wait's end where a publish takes a timeout instead of a context. nats.ErrDisconnected is not on
-// the list: no publish returns it, and it names a connection that sends nothing. Two of the list
-// also come back before a send, nats.ErrConnectionClosed from a connection that closed between the
-// connect and the send and the context's error from one that ended in the instant before nats.go's
-// own check, and they count all the same, since telling them apart would race the close and the
-// deadline. Every other error is the server's answer or a refusal before the send.
+// acknowledgement wait, nats.ErrConnectionClosed when the connection closes with the request
+// outstanding (clearPendingRequestCalls closes the reply's channel), and nats.ErrDisconnected
+// when reconnect interrupts that request. nats.ErrTimeout is the same wait's end where a publish
+// takes a timeout instead of a context. Two of the list also come back before a send,
+// nats.ErrConnectionClosed from a connection that closed between the connect and the send and the
+// context's error from one that ended in the instant before nats.go's own check, and they count all
+// the same, since telling them apart would race the close and the deadline. Every other error is
+// the server's answer or a refusal before the send.
 func sendUnanswered(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
-		errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrConnectionClosed)
+		errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrDisconnected)
 }
 
 // unacknowledged is err wrapped in ErrUnacknowledged when a send of the call may have stored the
@@ -2096,7 +2500,7 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 	ack, err := c.JS().Publish(subject, data, options...)
 	mayHold := live && sendUnanswered(err)
 	resent := false
-	if err != nil && errors.Is(err, nats.ErrConnectionClosed) {
+	if err != nil && (errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrDisconnected)) {
 		if err := c.ensureConnWithContext(ctx); err != nil {
 			return StoredAck{}, unacknowledged(err, mayHold)
 		}
@@ -2136,6 +2540,9 @@ var ErrCursorMoved = errors.New("the cursor moved under this write")
 // connection's user may not make, ErrTooLarge for a subject or body past the server's bounds,
 // ErrStreamFull while the stream holds its byte limit, and ctx's error when ctx ends first, which
 // wraps ErrUnacknowledged once the write went out, since the stream may then hold it (sendStored).
+// A write whose first send went unanswered and whose resend the stream refused for the cursor's
+// sequence wraps ErrUnacknowledged too, not ErrCursorMoved: the first send may have stored it and
+// moved the cursor itself, so the caller reads the cursor back to tell (cursorMoved).
 func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byte, expected uint64) (uint64, error) {
 	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
 	if err != nil {
@@ -2172,10 +2579,15 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 }
 
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did
-// not match as the ErrCursorMoved it is, and returns any other error as it is.
+// not match as the ErrCursorMoved it is, and returns any other error as it is. The refusal is
+// either code JetStream answers a lost conditional write with (IsCASConflict): on a stream of more
+// than one copy a write that meets another listener's cursor write still being replicated is
+// answered 10164, not 10071, and has lost the cursor all the same. A refusal that wraps
+// ErrUnacknowledged is returned as it is too: it refused a resend after a send that went
+// unanswered (sendStored), and that first send may have stored this write, so it is no proof the
+// write stored nothing.
 func cursorMoved(err error) error {
-	var apiErr *nats.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence {
+	if IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged) {
 		return fmt.Errorf("%w: %w", ErrCursorMoved, err)
 	}
 	return err
@@ -2286,7 +2698,7 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	deadline, _ := ctx.Deadline()
 	conn := c.Conn
-	inbox := nats.NewInbox()
+	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		return nil, err
@@ -2316,11 +2728,19 @@ type PendingForward struct {
 }
 
 // Wait reads the forward's replies until the stream has acknowledged storing it or its window
-// ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
-// error answer, and the server's no-responders answer (nothing captured the subject) are each
-// ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that.
-func (f *PendingForward) Wait() error {
+// ends, releases its reply subscription, and returns the stream's acknowledgement: the sequence
+// of the copy it holds under the forward's Nats-Msg-Id, and Duplicate where an earlier forward
+// stored that copy. No acknowledgement by the deadline is ErrForwardNotStored, wrapping, when
+// publishConfirmed could not confirm the publish, the reason for that. The stream's error answer,
+// the server's no-responders answer (nothing captured the subject), and the stream's duplicate
+// acknowledgement that names no sequence are each ErrForwardNotStored wrapping that answer. A
+// clustered stream's refusal of a forward whose Nats-Msg-Id an earlier forward still has in
+// process wraps ErrDuplicateInProcess too, since the same forward sent again once the earlier one
+// is stored is acknowledged as its duplicate (cmd/listener's publishPastInProcess). The duplicate
+// that names no sequence wraps ErrDuplicateWithoutSequence, which says the stream answered and no
+// later reply comes, so a caller that answers for the forward can say so at once rather than wait
+// out its window. Any other reply is not the stream's acknowledgement and is passed over.
+func (f *PendingForward) Wait() (StoredAck, error) {
 	defer f.replies.Unsubscribe()
 	for {
 		remaining := time.Until(f.deadline)
@@ -2334,32 +2754,46 @@ func (f *PendingForward) Wait() error {
 		if err != nil {
 			// The server's no-responders answer: nothing, not even a stream, took the forward.
 			if errors.Is(err, nats.ErrNoResponders) {
-				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
+				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, err)
 			}
-			return err
+			return StoredAck{}, err
 		}
 		ack, ok := readPublishAcknowledgement(response.Data)
 		if !ok {
+			// A stream's duplicate with sequence 0 names no copy (nats-server v2.10.29 sent one for
+			// an id it had staged at 0; the 2.11 line answers that with the in-process error, and
+			// later lines stage nothing): nothing says the forward is stored, and no later reply
+			// comes. Any other reply that is no acknowledgement (readPublishAcknowledgement) is
+			// passed over.
+			if ack.Stream != "" && ack.Duplicate {
+				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, ErrDuplicateWithoutSequence)
+			}
 			continue
 		}
 		// The stream's error answer to the forward, which no later reply changes.
 		if ack.Error != nil {
-			return fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error)
+			return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, duplicateInProcess(ack.Error))
 		}
-		return nil
+		return StoredAck{Sequence: ack.Seq, Duplicate: ack.Duplicate}, nil
 	}
 	if f.unconfirmed != nil {
-		return fmt.Errorf("%w: %w", ErrForwardNotStored, f.unconfirmed)
+		return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, f.unconfirmed)
 	}
-	return ErrForwardNotStored
+	return StoredAck{}, ErrForwardNotStored
 }
 
-// publishAcknowledgement is a stream's answer to a publish it captured: the stream and the sequence
-// it stored the message at (a duplicate's earlier sequence), or its error.
+// ErrDuplicateWithoutSequence is wrapped by a forward's Wait when the stream answered it as a
+// duplicate of a copy it named no sequence of, so no copy can be read back (PendingForward.Wait).
+var ErrDuplicateWithoutSequence = errors.New("the stream acknowledged a duplicate with no sequence")
+
+// publishAcknowledgement is a stream's answer to a publish it captured: the stream, the sequence
+// it stored the message at (a duplicate's earlier sequence) and whether it was a duplicate, or its
+// error.
 type publishAcknowledgement struct {
-	Stream string         `json:"stream"`
-	Seq    uint64         `json:"seq"`
-	Error  *nats.APIError `json:"error"`
+	Stream    string         `json:"stream"`
+	Seq       uint64         `json:"seq"`
+	Duplicate bool           `json:"duplicate"`
+	Error     *nats.APIError `json:"error"`
 }
 
 // readPublishAcknowledgement reads data as a stream's publish acknowledgement, reporting false for

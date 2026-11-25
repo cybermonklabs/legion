@@ -184,14 +184,17 @@ envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --packag
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
 want_contract=$(jq -r .legion.daemonApiVersion "$root/packages/pi-legion/package.json")
 note "plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile, daemonApiVersion $want_contract"
-# The boot gate resolves the model of every task agent the prompts dispatch, so the profile names
-# their roles and the default one model, served by a static-key provider that listens nowhere: the
-# controller's one model turn, the start message (LEGION_CONTROLLER_START_MESSAGE) that pi-legion's
-# `/legion-controller-start`, the word `legion controller start` puts on Oh My Pi's command line,
-# sends once Oh My Pi's startup is over, fails against it, no check reads its answer, and no
-# credential the machine carries decides the gate.
-mkdir -p "$profile_agent"
-cat >"$profile_agent/models.yml" <<'EOF'
+# write_controller_profile AGENT writes the controller's profile settings into AGENT, the profile's
+# agent directory (lib/omp-home.test.ts reads what it writes). The boot gate resolves the model of
+# every task agent the prompts dispatch, so the profile names their roles and the default one model,
+# served by a static-key provider that listens nowhere: the controller's one model turn, the start
+# message (LEGION_CONTROLLER_START_MESSAGE) that pi-legion's `/legion-controller-start`, the word
+# `legion controller start` puts on Oh My Pi's command line, sends once Oh My Pi's startup is over,
+# fails against it, no check reads its answer, and no credential the machine carries decides the
+# gate.
+write_controller_profile() {
+  mkdir -p "$1"
+  cat >"$1/models.yml" <<'EOF'
 providers:
   offline:
     baseUrl: http://127.0.0.1:9
@@ -202,9 +205,11 @@ providers:
       - id: m1
         name: M1
 EOF
-printf 'modelRoles:\n  default: offline/m1\n  review: offline/m1\n  oracle: offline/m1\n  deep: offline/m1\n' >"$profile_agent/config.yml"
-# The controller is an interactive Oh My Pi in a pane, which a fresh profile's setup wizard would hold.
-omp_setup_wizard_off "$profile_agent/config.yml"
+  printf 'modelRoles:\n  default: offline/m1\n  review: offline/m1\n  oracle: offline/m1\n  deep: offline/m1\n' >"$1/config.yml"
+  # The controller is an interactive Oh My Pi in a pane, which a fresh profile's setup wizard would hold.
+  omp_setup_wizard_off "$1/config.yml"
+}
+write_controller_profile "$profile_agent"
 
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token")
 cat >"$work/legion.yaml" <<EOF
@@ -221,9 +226,11 @@ envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
 # The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
 # default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
-# wake keys add no line to legion config check, which prints the renames, the open
-# capability rows and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
-# config-check-passes below compares everything after the OK line with a fixed string.
+# wake keys add no line to legion config check, which prints the renames, the open capability
+# rows, the pause line and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
+# under tmux the pause line names runtime: tmux whatever the pacing is (pause.Unavailable reads
+# the runtime first). config-check-passes below compares everything after the OK line with a fixed
+# string.
 worker_wakes_per_minute: 0
 EOF
 printf 'Always answer in one sentence.\n' >"$work/instructions.md"
@@ -247,10 +254,13 @@ out=$(legion config check --config "$work/legion.yaml")
 [ "$(head -1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec" ] || fail "got $out"
 # After the OK line, one line per deployment capability the file alone leaves open, in boot's words
 # (LEGION-578): under tmux the secrets and resource-limits rows, each ending with the legion.yaml
-# line that records a decision. A report, so the exit stayed 0.
+# line that records a decision. Then the line that says this daemon cannot pause its project and
+# names the setting, which under tmux is the runtime (checkConfig in cmd/legion,
+# pause.Unavailable). A report, so the exit stayed 0.
 want_gaps='capability secrets is open: the tmux runtime enrolls no process with the secrets broker; to record a decision, add to legion.yaml: capabilities.decided.secrets: "<reason>"
-capability resource-limits is open: the tmux runtime sets no requests or limits on a pane; to record a decision, add to legion.yaml: capabilities.decided.resource-limits: "<reason>"'
-[ "$(tail -n +2 <<<"$out")" = "$want_gaps" ] || fail "the lines after the OK line are not the two open gaps: $out"
+capability resource-limits is open: the tmux runtime sets no requests or limits on a pane; to record a decision, add to legion.yaml: capabilities.decided.resource-limits: "<reason>"
+pause unavailable: runtime: tmux'
+[ "$(tail -n +2 <<<"$out")" = "$want_gaps" ] || fail "the lines after the OK line are not the two open gaps and the pause line: $out"
 note "$out"
 pass
 

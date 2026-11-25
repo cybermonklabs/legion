@@ -12,7 +12,7 @@
     ]
   },
   "legion": {
-    "daemonApiVersion": 168
+    "daemonApiVersion": 256
   },
   "repository": {
     "type": "git",
@@ -27,7 +27,7 @@
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --parallel --timeout 300000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

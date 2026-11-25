@@ -1,9 +1,15 @@
-import { DISPATCH_SCOPES } from "@legion/contracts";
+import { DISPATCH_SCOPES, DISPATCH_TOKEN_SCOPES } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
-import type { AgentToken, CreatedAgentToken, DispatchScope } from "../../api/types";
+import { replaceQueryData } from "../../api/query-client";
+import type {
+  AgentToken,
+  CreatedAgentToken,
+  DispatchScope,
+  DispatchTokenScope,
+} from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -27,7 +33,7 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsSubmitButton,
   settingsTableHead,
@@ -60,76 +66,99 @@ function lostTokens(
     .sort((a, b) => compareTimestamps(b.created_at, a.created_at));
 }
 
-/** The OAuth scope a personal token holds, as its checkbox reads it: what the reader ticks, and
+/** A word a personal token's scopes can hold, as its checkbox reads it: what the reader ticks, and
  *  the line under it saying what a token holding it may do. */
-interface TokenScope {
-  readonly id: DispatchScope;
+interface TokenScope<Id extends DispatchTokenScope> {
+  readonly id: Id;
   readonly label: string;
   readonly allows: string;
 }
 
-/** Both scopes a personal token can hold, in the order a row shows them. The ids are the
- *  contract's own (`DISPATCH_SCOPES`), so a row cannot offer a scope the server does not mint. */
-const TOKEN_SCOPES: readonly TokenScope[] = [
-  {
-    allows: "Reads and writes as you: issues, comments, asks, documents and messages.",
-    id: "person",
-    label: "Act as you",
-  },
-  {
-    allows: "Answers approvals for you, and approves the credentials agents ask you for.",
-    id: "approve",
-    label: "Approve and control credentials",
-  },
-];
+const ACT_AS_YOU: TokenScope<"person"> = {
+  allows: "Reads and writes as you: issues, comments, asks, documents and messages.",
+  id: "person",
+  label: "Act as you",
+};
+
+const APPROVE: TokenScope<"approve"> = {
+  allows:
+    "Reviews documents, answers approvals and keeps decisions for you, and approves the credentials agents ask you for.",
+  id: "approve",
+  label: "Approve and control credentials",
+};
+
+const READ_ONLY: TokenScope<"read"> = {
+  allows: "Only reads: Dispatch refuses it every write, whatever else it holds.",
+  id: "read",
+  label: "Read only",
+};
+
+/** The two scopes a token that writes can hold, in the order a row shows them. The ids are the
+ *  contract's own (`DISPATCH_SCOPES`), so a row cannot offer a scope the server does not mint, and
+ *  a row offers no Read only: no token that writes becomes read only (the server refuses it, 400
+ *  TOKEN_SCOPES_INPUT), since a person makes a new token for that. */
+const WRITING_SCOPES: readonly TokenScope<DispatchScope>[] = [ACT_AS_YOU, APPROVE];
+
+/** Every word the mint form offers, in the order it shows them (`DISPATCH_TOKEN_SCOPES`). */
+const MINT_SCOPES: readonly TokenScope<DispatchTokenScope>[] = [ACT_AS_YOU, APPROVE, READ_ONLY];
 
 /** Both scopes: what a new token holds unless the reader clears one. */
-const BOTH_SCOPES: readonly DispatchScope[] = DISPATCH_SCOPES;
+const BOTH_SCOPES: readonly DispatchTokenScope[] = DISPATCH_SCOPES;
 
-/** The scopes a token holds, as the boxes read them. The route table carries them as plain
- *  strings; `DISPATCH_SCOPES` is the closed list each is one of, so a scope this build has no
- *  box for is left out rather than drawn as a box nobody can clear, and a token whose list came
- *  back absent holds none. */
-function heldScopes(scopes: readonly string[] | null): DispatchScope[] {
-  return DISPATCH_SCOPES.filter((known) => scopes !== null && scopes.includes(known));
+/** The words a token holds, `read` among them. The route table carries them as plain strings;
+ *  `DISPATCH_TOKEN_SCOPES` is the closed list each is one of, so a word this build does not know
+ *  is left out rather than drawn as a box nobody can clear, and a token whose list came back
+ *  absent holds none. A lost mint is replaced by a token holding this set, so a read-only token's
+ *  replacement is read only too. */
+function heldScopes(scopes: readonly string[] | null): DispatchTokenScope[] {
+  return DISPATCH_TOKEN_SCOPES.filter((known) => scopes?.includes(known) ?? false);
 }
 
-/** The whole set a token holds after one box is ticked or cleared, in `TOKEN_SCOPES` order.
- *  No token holds `approve` without `person`, so ticking Approve ticks Act as you and clearing
- *  Act as you clears Approve: the server refuses every other pair (400 TOKEN_SCOPES_INPUT), and
- *  a row that offered one would be a refusal waiting to happen. */
-function scopesAfterChoice(
-  held: readonly DispatchScope[],
-  scope: DispatchScope,
+/** The whole set after one box is ticked or cleared, in the order `offered` shows them. No token
+ *  holds `approve` without `person`, so ticking Approve ticks Act as you and clearing Act as you
+ *  clears Approve; and no token holds `read` beside `approve`, since approving is a write, so
+ *  ticking either clears the other. The server refuses every such pair (400 TOKEN_SCOPES_INPUT),
+ *  and a form that offered one would be a refusal waiting to happen. No box is ever disabled for
+ *  these rules: each press is taken, and the other boxes follow it. */
+function scopesAfterChoice<Id extends DispatchTokenScope>(
+  offered: readonly TokenScope<Id>[],
+  held: readonly Id[],
+  scope: Id,
   ticked: boolean
-): DispatchScope[] {
-  const next = new Set(held);
+): Id[] {
+  const next = new Set<DispatchTokenScope>(held);
   if (ticked) {
     next.add(scope);
-    if (scope === "approve") next.add("person");
+    if (scope === "approve") {
+      next.add("person");
+      next.delete("read");
+    }
+    if (scope === "read") next.delete("approve");
   } else {
     next.delete(scope);
     if (scope === "person") next.delete("approve");
   }
-  return TOKEN_SCOPES.filter((each) => next.has(each.id)).map((each) => each.id);
+  return offered.filter((each) => next.has(each.id)).map((each) => each.id);
 }
 
-/** The two scope boxes, for a token's row and for the mint form. `subject` is the token they
- *  belong to, so the boxes of one row are told from another row's by name. */
-function TokenScopeChoices({
+/** The scope boxes `offered`, for a token's row and for the mint form. `subject` is the token
+ *  they belong to, so the boxes of one row are told from another row's by name. */
+function TokenScopeChoices<Id extends DispatchTokenScope>({
   chosen,
   disabled,
+  offered,
   onChoose,
   subject,
 }: {
-  chosen: readonly DispatchScope[];
+  chosen: readonly Id[];
   disabled: boolean;
-  onChoose: (scopes: DispatchScope[]) => void;
+  offered: readonly TokenScope<Id>[];
+  onChoose: (scopes: Id[]) => void;
   subject: string;
 }): ReactNode {
   return (
     <div className="space-y-2">
-      {TOKEN_SCOPES.map((scope) => (
+      {offered.map((scope) => (
         <div key={scope.id}>
           <label
             className={`flex items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
@@ -140,7 +169,7 @@ function TokenScopeChoices({
               className={`size-4 shrink-0 rounded ${checkboxAccent}`}
               disabled={disabled}
               onChange={(event) =>
-                onChoose(scopesAfterChoice(chosen, scope.id, event.target.checked))
+                onChoose(scopesAfterChoice(offered, chosen, scope.id, event.target.checked))
               }
               type="checkbox"
             />
@@ -153,11 +182,31 @@ function TokenScopeChoices({
   );
 }
 
+/** A read-only token's scopes, shown as words with no box: no token changes to or from read
+ *  only, and a read-only token's scopes never change, so a person makes a new token instead. */
+function ReadOnlyScopes({
+  held,
+  subject,
+}: {
+  held: readonly DispatchTokenScope[];
+  subject: string;
+}): ReactNode {
+  return (
+    <ul aria-label={`What ${subject} may do`} className="space-y-1">
+      {MINT_SCOPES.filter((scope) => held.includes(scope.id)).map((scope) => (
+        <li className={`text-sm font-medium ${textSecondaryOnSurface}`} key={scope.id}>
+          {scope.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function AgentTokensSection(): ReactNode {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
-  /** What the mint form's boxes hold: both scopes until the reader clears one. */
-  const [newScopes, setNewScopes] = useState<readonly DispatchScope[]>(BOTH_SCOPES);
+  /** What the mint form's boxes hold: both scopes until the reader changes them. */
+  const [newScopes, setNewScopes] = useState<readonly DispatchTokenScope[]>(BOTH_SCOPES);
   const [shownToken, setShownToken] = useState<CreatedAgentToken>();
   /** When the token list was last read again after a mint whose answer was lost. */
   const [rereadAt, setRereadAt] = useState<number | undefined>(undefined);
@@ -166,8 +215,13 @@ export function AgentTokensSection(): ReactNode {
   // The form shows a refused mint beside the name it was refused over.
   const createToken = useKeyedWrite({
     inline: true,
-    label: (input: { name: string; before: readonly string[]; scopes: readonly DispatchScope[] }) =>
-      `New agent token ${input.name}`,
+    label: (input: {
+      name: string;
+      before: readonly string[];
+      scopes: readonly DispatchTokenScope[];
+    }) => `New agent token ${input.name}`,
+    method: "POST",
+    // The whole set the boxes hold, `read` among them for a read-only token.
     write: ({ name: label, scopes }, bounds) =>
       api.createAgentToken({ name: label, scopes: [...scopes] }, bounds),
     onSuccess: (created) => {
@@ -184,7 +238,9 @@ export function AgentTokensSection(): ReactNode {
         return;
       }
       const { token, ...safeToken } = created;
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) => [
+      // Each write's answer goes over any read of the list still out, which was asked before the
+      // write and would put back the list without it (`replaceQueryData`).
+      replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) => [
         safeToken,
         ...current,
       ]);
@@ -194,23 +250,26 @@ export function AgentTokensSection(): ReactNode {
   });
   const revokeToken = useKeyedWrite({
     label: (id: string) => `Agent token ${id} revoked`,
+    method: "DELETE",
     write: (id: string, bounds) => api.revokeAgentToken(id, bounds),
     onSuccess: (_result, id) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === id ? { ...token, revoked_at: new Date().toISOString() } : token
         )
       );
     },
   });
-  /** One row's two boxes, written as the whole set the token is to hold. The row reads the set
-   *  back from the list, so the boxes follow the write rather than the press. */
+  /** One writing token's two boxes, written as the whole set the token is to hold, which never
+   *  holds `read`. The row reads the set back from the list, so the boxes follow the write rather
+   *  than the press. */
   const setTokenScopes = useKeyedWrite({
     label: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
       `What agent token ${input.name} may do`,
+    method: "PATCH",
     write: (input, bounds) => api.setAgentTokenScopes(input.id, input.scopes, bounds),
     onSuccess: (updated, input) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === input.id ? (updated ?? { ...token, scopes: input.scopes }) : token
         )
@@ -327,51 +386,59 @@ export function AgentTokensSection(): ReactNode {
                   </td>
                 </tr>
               ) : (
-                tokens.data.map((token) => (
-                  <tr className={settingsTableRow} key={token.id}>
-                    <td className={`px-4 py-3 font-medium ${textPrimaryOnSurface}`}>
-                      {token.name}
-                    </td>
-                    <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
-                      {`dsp_${token.prefix}…`}
-                    </td>
-                    <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                      <Timestamp at={token.created_at} />
-                    </td>
-                    <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                      {token.last_used_at === null ? (
-                        "Never used"
-                      ) : (
-                        <Timestamp at={token.last_used_at} />
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <TokenScopeChoices
-                        chosen={heldScopes(token.scopes)}
-                        disabled={token.revoked_at !== null || setTokenScopes.isPending}
-                        onChoose={(scopes) =>
-                          setTokenScopes.mutate({ id: token.id, name: token.name, scopes })
-                        }
-                        subject={token.name}
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {token.revoked_at === null ? (
-                        <button
-                          aria-label={`Revoke ${token.name}`}
-                          className={`min-h-11 px-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                          disabled={revokeToken.isPending}
-                          onClick={() => revoke(token)}
-                          type="button"
-                        >
-                          Revoke
-                        </button>
-                      ) : (
-                        <span className={textMutedOnSurface}>Revoked</span>
-                      )}
-                    </td>
-                  </tr>
-                ))
+                tokens.data.map((token) => {
+                  const held = heldScopes(token.scopes);
+                  return (
+                    <tr className={settingsTableRow} key={token.id}>
+                      <td className={`px-4 py-3 font-medium ${textPrimaryOnSurface}`}>
+                        {token.name}
+                      </td>
+                      <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
+                        {`dsp_${token.prefix}…`}
+                      </td>
+                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
+                        <Timestamp at={token.created_at} />
+                      </td>
+                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
+                        {token.last_used_at === null ? (
+                          "Never used"
+                        ) : (
+                          <Timestamp at={token.last_used_at} />
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {held.includes("read") ? (
+                          <ReadOnlyScopes held={held} subject={token.name} />
+                        ) : (
+                          <TokenScopeChoices
+                            chosen={DISPATCH_SCOPES.filter((scope) => held.includes(scope))}
+                            disabled={token.revoked_at !== null || setTokenScopes.isPending}
+                            offered={WRITING_SCOPES}
+                            onChoose={(scopes) =>
+                              setTokenScopes.mutate({ id: token.id, name: token.name, scopes })
+                            }
+                            subject={token.name}
+                          />
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {token.revoked_at === null ? (
+                          <button
+                            aria-label={`Revoke ${token.name}`}
+                            className={`min-h-11 px-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
+                            disabled={revokeToken.isPending}
+                            onClick={() => revoke(token)}
+                            type="button"
+                          >
+                            Revoke
+                          </button>
+                        ) : (
+                          <span className={textMutedOnSurface}>Revoked</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -407,6 +474,7 @@ export function AgentTokensSection(): ReactNode {
         <TokenScopeChoices
           chosen={newScopes}
           disabled={createToken.isPending}
+          offered={MINT_SCOPES}
           onChoose={setNewScopes}
           subject="new token"
         />
@@ -462,12 +530,11 @@ export function AgentTokensSection(): ReactNode {
       {createToken.isError ? (
         <div className="mt-4">
           <QueryError
-            message="Couldn't create the agent token."
-            onRetry={() =>
-              createToken.mutate(
-                createToken.variables ?? { before: listedIds(), name, scopes: newScopes }
-              )
+            message={
+              stoppedNote(createToken, "the new agent token", "made") ??
+              "Couldn't create the agent token."
             }
+            onRetry={createToken.retry}
             retrying={createToken.isPending}
           />
         </div>

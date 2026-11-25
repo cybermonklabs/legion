@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
+import type { PageWords } from "../../components/tooltips";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   dangerText,
@@ -18,19 +19,21 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import type { EVENT_FRESH } from "../refs/reference-target";
+import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { focusOnDocument } from "../shell/roving";
 import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The grammar a repository GitHub could hold is written in, which is the grammar the server
- *  holds an issue's repository to (`githubCouldHoldRepo`, `issue_repo.go`, itself copied from the
- *  daemon's `ghrepo`): an owner is a letter or digit and then up to 38 letters, digits, hyphens
- *  and underscores - as GitHub serves logins, which is looser than its sign-up form, since
- *  `hello--world`, `artofcode-` and a managed user's `mona-cat_octo` are all served - and a
- *  repository name is at most 100 letters, digits, `.`, `-` and `_`, and is neither `.` nor
- *  `..`. It is written here rather than taken from `ownerRepoPattern`, the looser `owner/name`
- *  shape the settings forms share, because those forms write a repository mapping, which the
- *  server holds to that looser shape alone.
+ *  holds an issue's repository to (`parseIssueRepo`, `issue_repo.go`, through
+ *  `refs.ParseGitHubRepo`, whose rule is copied from the daemon's `ghrepo`): an owner is a letter
+ *  or digit and then up to 38 letters, digits, hyphens and underscores - as GitHub serves logins,
+ *  which is looser than its sign-up form, since `hello--world`, `artofcode-` and a managed user's
+ *  `mona-cat_octo` are all served - and a repository name is at most 100 letters, digits, `.`,
+ *  `-` and `_`, and is neither `.` nor `..`. It is written here rather than taken from
+ *  `ownerRepoPattern`, the looser `owner/name` shape the Settings forms share, because those
+ *  forms leave a name outside GitHub's grammar to the server, and show its refusal.
  *
  *  The hyphen is written `\-` in both classes because this is also the box's `pattern`, which a
  *  browser compiles with the `v` flag, and under that flag a bare hyphen in a class is a syntax
@@ -38,13 +41,10 @@ import { useIssueRepo } from "./useIssueRepo";
  *  holds the box. */
 const ownerRepoPattern = "[A-Za-z0-9][A-Za-z0-9_\\-]{0,38}/(?!\\.{1,2}$)[A-Za-z0-9._\\-]{1,100}";
 
-/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes,
- *  so a typo shows at the box rather than coming back as the server's 400 a round trip later. */
-const ownerRepo = new RegExp(`^(?:${ownerRepoPattern})$`);
-
-/** What the box says about a value GitHub could hold no repository at. The server says the same
- *  thing in its own words for anything that reaches it. */
-const NOT_OWNER_NAME = "Write the repository as owner/name.";
+/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes.
+ *  The server says the same thing as `NOT_OWNER_NAME` in its own words for anything that reaches
+ *  it. */
+const ownerRepo = wholeValue(ownerRepoPattern);
 
 /** What clearing the issue's own repository does: the clear control's `title`, and inside
  *  `NoTooltips`, where no control carries a `title`, that control's description. */
@@ -75,20 +75,49 @@ export function repoControlName(issueKey: string): string {
   return `Repository of ${issueKey}`;
 }
 
+/** The name of the button a row of Details draws in the box's place: the text it shows, then the
+ *  box's name - `None, Repository of <KEY>` while the issue resolves to no repository, else
+ *  `<owner/name>, Repository of <KEY>`. It takes the issue's state rather than the text, so the
+ *  rule for which text the button shows is written here once, and the new issue page's add menu,
+ *  which finds the button by this name, names the text the button draws. The words are the
+ *  page's list's, passed in, since this file imports nothing of that list
+ *  (`components/tooltips.tsx`). */
+export function repoTextControlName(
+  issueKey: string,
+  state: {
+    readonly resolvedRepo: string | null;
+    readonly words: Pick<PageWords, "CONTROL_LABELS">;
+  }
+): string {
+  return `${state.resolvedRepo ?? state.words.CONTROL_LABELS.none}, ${repoControlName(issueKey)}`;
+}
+
+/** What the repository control hands a host that says its failures in a line of its own
+ *  (`sayFailure`): a write that stands refused. */
+export type RepoControlFailure = {
+  readonly message: string;
+  /** Makes the refused pick again; undefined where a newer write of the repository is live
+   *  (`IssueFieldWrite.retry`). */
+  readonly retry: (() => void) | undefined;
+  /** Whether the reader stopped the pick, which `message` then says may have been saved
+   *  (`IssueFieldWrite.stopped`), rather than Dispatch refusing it. */
+  readonly stopped: boolean;
+};
+
 /**
  * The issue's repository in the details rail: `Repository:` and one combobox, labelled
- * `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` of the
- * repositories Dispatch maps to this issue's project. The mappings are suggestions rather than the set
- * of values: any `owner/name` may be typed, one this project maps, one another project maps, or
- * one no project maps, which is what the server takes, and that is why this is a text box with a
- * list and not a `<select>`, which cannot hold a value its options lack.
+ * `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` that suggests
+ * the project's default repository. The suggestion is not the set of values: any `owner/name`
+ * may be typed, which is what the server takes, and that is why this is a text box with a list
+ * and not a `<select>`, which cannot hold a value its options lack.
  *
  * The box shows the issue's own repository and nothing else, so the repository it resolves to -
- * its nearest ancestor's, else the project's default - is its placeholder, which is what an empty
- * box stands for; the description (`aria-describedby`, an `sr-only` span) says the same in words,
- * with `, inherited or the project's default` after it when it is not the issue's own, and
- * `No repository` when none resolves. A clear control inside the box, shown only while the issue
- * has a repository of its own, puts it back to inheriting; emptying the box does the same.
+ * its nearest ancestor's in its own project, else the project's default - is its placeholder,
+ * which is what an empty box stands for; the description (`aria-describedby`, an `sr-only` span)
+ * says the same in words, with `, inherited or the project's default` after it when it is not the
+ * issue's own, and `No repository` when none resolves. A clear control inside the box, shown only
+ * while the issue has a repository of its own, puts it back to inheriting; emptying the box does
+ * the same.
  *
  * What is typed is written when the box is left or Enter is pressed, never per keystroke, since
  * `owner/name` is only a repository once the whole of it is there; Escape restores what the issue
@@ -98,12 +127,11 @@ export function repoControlName(issueKey: string): string {
  * `useIssueFieldWrite`) is unchanged, so the optimistic write, the rollback and the server's own
  * refusal - `INVALID_ISSUE` for anything that reaches it - show as they did.
  *
- * The item renders whenever the issue can carry a repository, which is always: a project that
- * maps none has nothing to suggest, and its issues still take any repository. The mappings are
- * read once the reader reaches for the control (pointer over it, a touch on it, or focus), and at
- * once while the issue resolves to no repository at all, which is the issue most likely to be
- * given one. A read that fails costs the suggestions and nothing else: the failure and a Retry
- * show beside the box, which takes a typed repository as ever.
+ * The item renders whenever the issue can carry a repository, which is always: a project with no
+ * default repository has nothing to suggest, and its issues still take any repository. The
+ * default comes from the project list (`projectsQuery`), the read the sidebar and the issue
+ * header share, so the control reads no route of its own. A failed project list costs the
+ * suggestion and nothing else: the box takes a typed repository as ever.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the same box says that
  * page's words with their marks and carries no `title`. `Repository:` is the page's label, and
@@ -114,8 +142,9 @@ export function repoControlName(issueKey: string): string {
  * assistive technology because the description already says it. The clear control's `title` is
  * its description there (`aria-describedby`), so its name stays `Clear the repository of <KEY>`
  * and a reader still hears that the issue then inherits a repository. The refusal keeps its
- * words, which the page's list has none for; a failed read or write shows `QueryError` as on
- * every page. Each colour is the page's: the box is the page's field, the repository the issue
+ * words, which the page's list has none for; a failed write shows `QueryError`, as on every
+ * page, unless the host says it in a line of its own (`sayFailure`), as Details does. Each
+ * colour is the page's: the box is the page's field, the repository the issue
  * inherits (its placeholder) in the quiet grey; the clear control is the muted grey that turns
  * ink under the pointer; a refusal is the failed red; and the line is the ink in a row of Details
  * and the muted grey elsewhere. Nothing there keeps its width: the line wraps, the box, at most
@@ -156,8 +185,10 @@ export function RepoControl({
   inRow = false,
   issueKey,
   project,
+  projectsFreshness,
   repo: hostRepo,
   resolvedRepo: hostResolvedRepo,
+  sayFailure,
 }: {
   disabled?: boolean;
   /** Whether the control is the value of a row of the new issue page's Details. It acts inside
@@ -165,13 +196,26 @@ export function RepoControl({
   inRow?: boolean;
   issueKey: string;
   project: string;
+  /** The options of the read of the project list the suggestion comes from (`projectsQuery`), in
+   *  place of the app's defaults. A host whose reads events keep fresh passes their options,
+   *  since a project's event reads the list again (`api/event-refresh.ts`), and a window focus
+   *  30 s after the read, the app's staleness, would read it again for nothing. Without it the
+   *  read keeps the app's defaults. The host passes the options rather than this file importing
+   *  them because the new page's browser tests load this file in Node
+   *  (`e2e/issue-page-h.e2e.ts`), and `EVENT_FRESH`'s module reaches the document schema's JSON
+   *  (`refs/markdown-engine.ts`, `doc/schema.ts`), which stops that test file from loading. Only
+   *  its type is imported, which the build removes. */
+  projectsFreshness?: typeof EVENT_FRESH;
   repo: string | null;
   resolvedRepo: string | null;
+  /** Says a failed write in the host's own line, in place of `QueryError`, while it stands
+   *  refused. The host draws the line, so the control imports nothing of the new issue page that
+   *  passes it, and the page's word list loads with that page alone (`components/tooltips.tsx`). */
+  sayFailure?: (failure: RepoControlFailure) => ReactNode;
 }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
   const inDetails = page !== null && inRow;
-  const [wanted, setWanted] = useState(false);
   /** What the reader has typed since the box was last written, left or restored; null while the
    *  box shows the issue's own repository. */
   const [draft, setDraft] = useState<string | null>(null);
@@ -192,21 +236,16 @@ export function RepoControl({
       ? hostResolvedRepo
       : (pickLook({ field: "repo", issueKey, value: repo }).fields.resolved_repo ??
         hostResolvedRepo);
-  const mappings = useQuery({
-    enabled: wanted || resolvedRepo === null,
-    queryKey: ["repo-projects"],
-    queryFn: () => api.listRepoProjects(),
-  });
-  const want = () => setWanted(true);
+  const defaultRepo = useQuery({
+    ...projectsQuery(),
+    ...projectsFreshness,
+    select: (projects) => projects.find((candidate) => candidate.key === project)?.default_repo,
+  }).data;
   const descriptionId = useId();
   const suggestionsId = useId();
   // Inside `NoTooltips` the clear control's description, named after the box's own so that the
   // control asks React for no id `main` does not.
   const clearDescriptionId = `${descriptionId}clear`;
-  const mapped = (mappings.data ?? [])
-    .filter((mapping) => mapping.project === project)
-    .map((mapping) => mapping.repo)
-    .sort();
   const description =
     resolvedRepo === null
       ? "No repository"
@@ -266,12 +305,22 @@ export function RepoControl({
   // Whether the focus is on the row's text or in the box, its clear control included. Whichever
   // of them takes the other's place takes the focus the other held, which the one leaving the
   // page drops to the document: a press of the text leaves it in the box; Escape, or a write that
-  // lands, on the text, which then says what the issue resolves to; and "None" and the
-  // repository's text, each drawn in the other's place when the issue's repository changes under
-  // them, hand it on alike. Only a focus still on the document is taken (`focusOnDocument`):
+  // lands, on the text, which then says what the issue resolves to. "None" and the repository's
+  // text, drawn in each other's place as the issue's repository changes under them, hand nothing
+  // on, since that change is no press of the reader's: where the row drew text in its last commit
+  // (`wasText`) and draws text again, the focus the one leaving held stays on the page's body, as
+  // for every change the reader did not make, and the row no longer counts it as held. Between
+  // the text and the box, only a focus still on the document is taken (`focusOnDocument`):
   // anywhere else, the reader put it there.
   const focusHeld = useRef(false);
+  const wasText = useRef(showsText);
   useEffect(() => {
+    const drewText = wasText.current;
+    wasText.current = showsText;
+    if (drewText && showsText) {
+      focusHeld.current = false;
+      return;
+    }
     if (!focusHeld.current || !focusOnDocument()) return;
     (showsNone ? noneControl : showsText ? textControl : box).current?.focus();
   }, [showsNone, showsText]);
@@ -346,7 +395,7 @@ export function RepoControl({
       )}
       {showsNone ? (
         <button
-          aria-label={`${page.CONTROL_LABELS.none}, ${repoControlName(issueKey)}`}
+          aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
           className={`min-h-11 rounded-sm outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${ON_PAGE.none} ${focusVisibleRing}`}
           disabled={disabled}
           ref={noneControl}
@@ -393,7 +442,7 @@ export function RepoControl({
             // the text did, breaking anywhere so that a name with no space in it wraps too.
             <button
               aria-describedby={descriptionId}
-              aria-label={`${resolvedRepo}, ${repoControlName(issueKey)}`}
+              aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
               className={`min-h-11 min-w-0 max-w-full rounded-sm text-left font-mono text-xs [overflow-wrap:anywhere] outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? ON_PAGE.inherited : ON_PAGE.own} ${focusVisibleRing}`}
               disabled={disabled}
               ref={textControl}
@@ -438,7 +487,6 @@ export function RepoControl({
                 }}
                 onFocus={() => {
                   focusHeld.current = true;
-                  want();
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
@@ -452,11 +500,7 @@ export function RepoControl({
                 }}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
-                onPointerEnter={want}
-                onTouchStart={(event) => {
-                  event.stopPropagation();
-                  want();
-                }}
+                onTouchStart={(event) => event.stopPropagation()}
                 pattern={ownerRepoPattern}
                 placeholder={resolvedRepo ?? "owner/name"}
                 ref={box}
@@ -516,9 +560,7 @@ export function RepoControl({
                 </button>
               )}
               <datalist id={suggestionsId}>
-                {mapped.map((candidate) => (
-                  <option key={candidate} value={candidate} />
-                ))}
+                {defaultRepo === undefined ? null : <option value={defaultRepo} />}
               </datalist>
             </>
           )}
@@ -550,23 +592,20 @@ export function RepoControl({
           {NOT_OWNER_NAME}
         </p>
       ) : null}
-      {mappings.isError ? (
-        <QueryError
-          message={apiErrorMessage(
-            mappings.error,
-            `Could not load the repositories mapped to ${project}.`
-          )}
-          onRetry={() => void mappings.refetch()}
-          retrying={mappings.isFetching}
-        />
-      ) : null}
-      {write.failed ? (
+      {sayFailure === undefined && write.failed ? (
         <QueryError
           message={write.error ?? `Could not update the repository of ${issueKey}.`}
           onRetry={write.retry}
           retrying={write.pending}
         />
       ) : null}
+      {write.failed && sayFailure !== undefined
+        ? sayFailure({
+            message: write.error ?? `Could not update the repository of ${issueKey}.`,
+            retry: write.retry,
+            stopped: write.stopped !== undefined,
+          })
+        : null}
     </div>
   );
 }

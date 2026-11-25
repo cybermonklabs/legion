@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Tests for the issue-key rule: `check-private-names.sh`'s rules 6 and 7 (an issue key of the
-# deployment's own projects, named by the `key:` lines of PRIVATE_NAME_TERMS, and a Dispatch link),
-# which `check-pr-text.sh` runs over a pull request's new text from a cutoff it derives at each
+# Tests for the issue-key rule: `check-private-names.sh`'s rule 6 (an issue key of the
+# deployment's own projects, named by the `key:` lines of PRIVATE_NAME_TERMS), which
+# `check-pr-text.sh` runs over a pull request's new text from a cutoff it derives at each
 # run. The cases: the rule inactive until a release carries its marker commit; the cutoff, from
 # the release history; a pull request and a commit before the cutoff not read; the title, body,
-# comments, reviews, commits and the paths and lines they add read after it; a diff GitHub's REST
-# answer does not hold whole read from git, and one neither holds whole refused as UNKNOWN; a key
-# or a link the same diff also removes carried over; a merge's own diff passed over for the pull
-# request's net diff; a key beside a "_"; and a list with terms and no `key:` line refused.
+# comments, reviews, commits and the paths and lines they add read after it; a Dispatch link,
+# which is no private name, passing where a key beside it or inside it is refused; a diff GitHub's
+# REST answer does not hold whole read from git, and one neither holds whole refused as UNKNOWN; a
+# key the same diff also removes carried over; a merge's own diff passed over for the pull
+# request's net diff; a key beside a "_"; a list with terms and no `key:` line refused; and a keys
+# run under no list at all saying it checked nothing.
 #
 # The terms and the project key are placeholders this file and check-private-names-test-lib.sh
 # set, never a real one, and every case is named by a neutral label, since this script's own
@@ -23,13 +25,13 @@ set +x
 # shellcheck source=.github/scripts/check-private-names-test-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-private-names-test-lib.sh"
 
-# THE ISSUE-KEY RULE (check-private-names.sh's rules 6 and 7, from check-pr-text.sh's cutoff).
+# THE ISSUE-KEY RULE (check-private-names.sh's rule 6, from check-pr-text.sh's cutoff).
 # QUILL is a placeholder project key, given as a `key:` line beside the placeholder terms; its
 # issue keys are spelled from pieces, so this file holds none whole, and no case label prints one.
 key_project=QUILL
 planted_key="$key_project-""123"
 key_terms=$(printf '%s\n' "$planted_terms" "key:$key_project" key:LEGION)
-link="dispatch"':''//'
+link='dispatch://'
 cutoff_at=2026-11-20T00:00:00Z
 # git_fixture <dir> <git args...>: git in a fixture repository, with no user or system
 # configuration of this machine (a signing setting, say) in the way.
@@ -115,7 +117,7 @@ as_merge() {
   mv "$work/compare.next" "$work/compare"
 }
 # pr_files <status> <path> <patch> [...]: the pull request's files route, one page holding those
-# files (a patch of "-" is none at all), and the pull request route's totals to match them.
+# files (a patch of "-" is none at all), and the pull request's totals to match them.
 pr_files() {
   local list='[]' additions
   while [ $# -gt 0 ]; do
@@ -274,11 +276,42 @@ echo "case: a pull request opened after the cutoff is read in its comments and r
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 opened_after
 items 501 "Fine." 502 "Tracked as $planted_key." > "$work/comments.1"
-items 601 "See ${link}x/spec." > "$work/reviews.1"
+items 601 "$(printf 'See %sx/spec.\nTracked as %s.\n' "$link" "$planted_key")" > "$work/reviews.1"
 key_run
-check "a key in a comment and a link in a review fail" "$(is "$status" 1)"
+check "a key in a comment and one in a review fail" "$(is "$status" 1)"
 check "names the comment" "$(contains "$out" "comment:502:1: $key_refused")"
-check "names the review's link" "$(contains "$out" 'review:601:1: holds a Dispatch link')"
+check "names the review's key line" "$(contains "$out" "review:601:2: $key_refused")"
+check "and not the review's link line" "$(is "$(contains "$out" 'review:601:1:')" false)"
+
+echo "case: a Dispatch link in new text passes, and a key beside it or inside it is still refused"
+write_pr_text "fix(dispatch): keep the inbox order" \
+  "$(printf 'See %sLEGION-7/ask/x for the decision.\nTracked as %s.\n' "$link" "$planted_key")" \
+  "fix: keep the order"
+opened_after
+commits new-sha 2026-11-21T01:00:00Z "fix: keep the order, as ${link}LEGION-7 says"
+commit_file new-sha modified docs/notes.md $'@@ -1,1 +1,1 @@\n+See '"$link"'example/1.'
+items 701 "Answered at ${link}example/ask/1." > "$work/comments.1"
+key_run
+check "a body with a link and a key fails, on the key" "$(is "$status" 1)"
+check "names the key's line" "$(contains "$out" "body:2: $key_refused")"
+check "and not the link's line" "$(is "$(contains "$out" 'body:1:')" false)"
+check "and not the commit's message, which holds only a link" "$(is "$(contains "$out" 'commit:new-sha:1:')" false)"
+check "and not the line it adds, which holds only a link" "$(is "$(contains "$out" 'docs/notes.md:1:')" false)"
+check "and not the comment, which holds only a link" "$(is "$(contains "$out" 'comment:701')" false)"
+check "and the run over the text, the first, reports one finding, the key" \
+  "$(is "$(grep -m 1 -o '^check-private-names: [0-9]* finding(s)' <<< "$out" || true)" 'check-private-names: 1 finding(s)')"
+check "and none over the added line, which holds only a link" \
+  "$(contains "$out" "^check-private-names: no text names an issue key of the deployment's own projects")"
+write_pr_text "fix(dispatch): keep the inbox order" "See ${link}LEGION-7/ask/x." "fix: keep the order"
+opened_after
+key_run
+check "the same link with no key beside it passes" "$(is "$status" 0)"
+write_pr_text "fix(dispatch): keep the inbox order" "See ${link}$planted_key/ask/x." "fix: keep the order"
+opened_after
+key_run
+check "a link that holds a key fails" "$(is "$status" 1)"
+check "names its line as a key" "$(contains "$out" "body:1: $key_refused")"
+check "prints no key" "$(is "$(contains "$out" "$planted_key")" false)"
 
 echo "case: a commit is read after the cutoff and not before it"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
@@ -294,6 +327,43 @@ check "names the line the new commit adds, at its line in the file" \
   "$(contains "$out" "commit:new-sha:docs/notes.md:5: $key_refused")"
 check "reads nothing of the commit dated before the cutoff" "$(is "$(contains "$out" 'old-sha')" false)"
 check "and never asks GitHub for its files" "$(is "$(contains "$(< "$work/calls")" 'commits/old-sha')" false)"
+
+echo "case: a commit's date is compared in UTC, whatever offset its committer's clock wrote"
+# GitHub's GraphQL committer { date } keeps the committer's own offset, where the cutoff is in UTC;
+# the script reads committedDate, which is in UTC. The first commit was made 4 hours after the
+# cutoff on a clock 8 hours behind UTC, so its date as written sorts before the cutoff's; the
+# second 2 hours before the cutoff on a clock 8 hours ahead, so its date as written sorts after.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits west-sha 2026-11-19T20:00:00-08:00 "fix: as $planted_key said" \
+  east-sha 2026-11-20T06:00:00+08:00 "fix: as $planted_key said"
+commit_file west-sha modified docs/notes.md $'@@ -3,0 +4,1 @@\n+new '"$planted_key"' line'
+key_run
+check "fails on the commit made after the cutoff on a clock behind UTC" "$(is "$status" 1)"
+check "names its message" "$(contains "$out" "commit:west-sha:1: $key_refused")"
+check "names the line it adds" "$(contains "$out" "commit:west-sha:docs/notes.md:4: $key_refused")"
+check "reads nothing of the commit made before the cutoff on a clock ahead of UTC" \
+  "$(is "$(contains "$out" 'east-sha')" false)"
+check "and never asks GitHub for its files" "$(is "$(contains "$(< "$work/calls")" 'commits/east-sha')" false)"
+
+echo "case: the marker commit is found past the first page of its history"
+# The marker commit is the oldest that touches the marker, the last listed; here 100 later commits
+# touch it too, so it is on the second page.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+jq -nc --arg sha "$marker_sha" '[range(100) | {sha: "later-\(.)"}] + [{sha: $sha}]
+  | map(. + {commit: {committer: {date: "2026-11-18T00:00:00Z"}}})' > "$work/cutoff-commits"
+key_run
+check "the rule is active since the release that holds it" \
+  "$(contains "$out" "^check-pr-text: the issue-key rule is active since legion-v9.0.0, published $cutoff_at\$")"
+check "reads the history's second page by its cursor" \
+  "$(contains "$(< "$work/calls")" '^graphql PrText .*"history":true.*"historyAfter":"1"')"
+echo 1 > "$work/cut.history"
+key_run
+check "a history GitHub lists short of its total exits 1" "$(is "$status" 1)"
+check "names the list and both counts" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API reports 101 commits on main that touch .github/issue-key-cutoff but listed 100")"
 
 echo "case: a path a new commit adds is new text, and a path it only changes is not"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
@@ -510,7 +580,7 @@ key_run
 check "a symlink whose target holds a key, from a file, fails: its new side is read" "$(is "$status" 1)"
 check "names the link's one line" "$(contains "$out" "commit:${pr_sha:0:12}:docs/link.md:1: $key_refused")"
 
-echo "case: a key or a link the same diff also removes is carried over, not new"
+echo "case: a key the same diff also removes is carried over, not new"
 # carry_commit <status> <path> <patch>: a pull request opened after the cutoff whose one commit is
 # that one file, as GitHub answers it.
 carry_commit() {
@@ -524,7 +594,7 @@ carry_commit modified docs/notes.md \
   "$(printf '@@ -2,1 +2,1 @@\n-Tracked as %s, see %sexample/1.\n+Now tracked as %s, see %sexample/1.' \
     "$planted_key" "$link" "$planted_key" "$link")"
 key_run
-check "a line re-worded around the key and the link it held passes" "$(is "$status" 0)"
+check "a line re-worded around the key it held, beside a link, passes" "$(is "$status" 0)"
 carry_commit modified docs/notes.md \
   "$(printf '@@ -2,1 +2,2 @@\n-Tracked as %s.\n+Now tracked as %s.\n+And again as %s.' \
     "$planted_key" "$planted_key" "$planted_key")"
@@ -534,8 +604,16 @@ check "names the second copy's line" "$(contains "$out" "commit:new-sha:docs/not
 check "and not the carried one's" "$(is "$(contains "$out" "commit:new-sha:docs/notes.md:2:")" false)"
 carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-See %sexample/1.\n+See %sexample/2.' "$link" "$link")"
 key_run
-check "a link to another place is new: fails" "$(is "$status" 1)"
-check "names its line" "$(contains "$out" 'commit:new-sha:docs/notes.md:2: holds a Dispatch link')"
+check "a link to another place passes: a link is no private name" "$(is "$status" 0)"
+carry_commit modified docs/notes.md \
+  "$(printf '@@ -2,1 +2,1 @@\n-See %s%s/ask/1.\n+See %s%s/comment/2.' "$link" "$planted_key" "$link" "$planted_key")"
+key_run
+check "a key a re-pointed link keeps is carried by the key alone: passes" "$(is "$status" 0)"
+carry_commit modified docs/notes.md \
+  "$(printf '@@ -2,1 +2,1 @@\n-See %sexample/1.\n+See %s%s/ask/1.' "$link" "$link" "$planted_key")"
+key_run
+check "a key a link gains, which no removed line carries, fails" "$(is "$status" 1)"
+check "names its line as a key" "$(contains "$out" "commit:new-sha:docs/notes.md:2: $key_refused")"
 carry_commit added docs/new.md "$(printf '@@ -0,0 +1,1 @@\n+Tracked as %s.' "$planted_key")"
 jq -c --arg old "$(printf '@@ -1,1 +0,0 @@\n-Tracked as %s.' "$planted_key")" \
   '.files = [{filename: "docs/old.md", status: "removed", additions: 0, changes: 1, patch: $old}] + .files
@@ -562,17 +640,12 @@ check "names the added key's line" "$(contains "$out" "commit:new-sha:docs/notes
 carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-Filed as fix_%s.\n+Filed as %s.' "$planted_key" "$planted_key")"
 key_run
 check "a removed key beside a \"_\", which is a key, carries it: passes" "$(is "$status" 0)"
-carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-See d\xc4\xb0spatch://example/1.\n+See %sexample/1.' "$link")"
-key_run
-check "a removed scheme spelled with a dotted capital I, which rule 7 reads as no link, carries no link: fails" \
-  "$(is "$status" 1)"
-check "names the added link's line" "$(contains "$out" 'commit:new-sha:docs/notes.md:2: holds a Dispatch link')"
 for mark in . ',' ';' :; do
   carry_commit modified docs/notes.md \
-    "$(printf '@@ -2,1 +2,1 @@\n-Tracked at %sexample/1 today.\n+Recorded at %sexample/1%s which the operator answered' \
-      "$link" "$link" "$mark")"
+    "$(printf '@@ -2,1 +2,1 @@\n-Tracked at %s%s today.\n+Recorded at %s%s%s which the operator answered' \
+      "$link" "$planted_key" "$link" "$planted_key" "$mark")"
   key_run
-  check "a link the line already held, now followed by '$mark', is carried: passes" "$(is "$status" 0)"
+  check "a key in a link the line already held, now followed by '$mark', is carried: passes" "$(is "$status" 0)"
   carry_commit modified docs/notes.md \
     "$(printf '@@ -2,1 +2,1 @@\n-Tracked as %s today.\n+Now %s%s as before' "$planted_key" "$planted_key" "$mark")"
   key_run
@@ -781,6 +854,19 @@ keys_run_in() {
   set -e
 }
 
+echo "case: a keys run passes a file that holds only a Dispatch link"
+root=$(fixture key-link)
+printf 'Decided at %sexample/ask/1.\n' "$link" > "$root/docs/notes.md"
+keys_run_in "$root" "$key_terms" docs
+check "exits 0" "$(is "$status" 0)"
+check "says no text names a key" \
+  "$(contains "$out" "^check-private-names: no text names an issue key of the deployment's own projects (1 keys;")"
+printf 'Tracked as %s.\n' "$planted_key" >> "$root/docs/notes.md"
+keys_run_in "$root" "$key_terms" docs
+check "the same file with a key on its next line exits 1" "$(is "$status" 1)"
+check "names the key's line alone" "$(contains "$out" '^check-private-names: 1 finding(s)')"
+check "names line 2" "$(contains "$out" "docs/notes.md:2: $key_refused")"
+
 echo "case: a key beside a \"_\" is a key, in a line and in a path"
 # GNU grep's \b counts "_" as a word character, so a key glued to a "_" passed a \b pattern.
 root=$(fixture key-underscore)
@@ -811,6 +897,20 @@ keys_run_in "$root" "$key_terms" docs
 check "the same run with the project's key: line finds the key: exits 1" "$(is "$status" 1)"
 run_check_as merge_group "$planted_terms" "$root"
 check "a names run of the tree, which reads no key, still passes with no key: line" "$(is "$status" 0)"
+# A fork's pull request runs with no list at all, which its event allows: a keys run then reads no
+# project, and says that it checked nothing rather than that no text names a key.
+PRIVATE_NAME_RULES=keys run_check_as pull_request '' "$root" docs
+check "a keys run under no list on a pull_request event exits 0" "$(is "$status" 0)"
+check "warns that no issue key was checked" \
+  "$(contains "$out" '^::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so no issue key')"
+check "and its last line says it checked none" \
+  "$(contains "${out##*$'\n'}" '^check-private-names: no issue key was checked: PRIVATE_NAME_TERMS is unset or empty')"
+check "and never that no text names a key" "$(is "$(contains "$out" 'no text names an issue key')" false)"
+# A list of key: lines alone holds no term, so the script reads it as an empty list; but it names a
+# project, so a keys run reads that project's keys, and warns of nothing.
+PRIVATE_NAME_RULES=keys run_check_as pull_request "key:$key_project" "$root" docs
+check "a keys run under a list of key: lines alone finds the key: exits 1" "$(is "$status" 1)"
+check "and warns of nothing" "$(is "$(contains "$out" '^::warning::')" false)"
 
 echo "case: no issue key's project reaches a command's arguments"
 # argv_grep (check-private-names-test-lib.sh) logs each pattern a grep is handed on its command
@@ -827,7 +927,8 @@ argv_grep "$argv_dir/grep" "$argv_log"
 PATH="$argv_dir:$PATH" keys_run_in "$root" "$key_terms" docs
 check "the keys run still finds the key: fails" "$(is "$status" 1)"
 check "the path's report is masked" "$(contains "$out" "docs/<name>/notes.md: $key_refused")"
-check "the fake grep logged the link rule, so it saw the run's greps" "$(is "$([ -s "$argv_log" ] && echo yes)" yes)"
+check "the run's search grep, its pattern from a file, reached the fake grep" \
+  "$(contains "$(< "$argv_log")" '^<search grep -f>$')"
 check "no grep was handed the project's key in its arguments" "$(is "$(contains "$(< "$argv_log")" "$key_project")" false)"
 
 finish_self_log

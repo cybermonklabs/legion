@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,18 +109,47 @@ import (
 // question that A did not hold, or held open, makes the rendering differ from A and carries
 // nothing either.
 
+// CarriedReviewReasonPrefix opens the reason of every review Dispatch carries forward to a later
+// version, and is what tells such a review from one a person wrote on the version it names: the
+// number that follows it is the version the person approved. The Legion daemon reads the same
+// words from its own module (intake.CarriedApprovalReasonPrefix), which no import can share.
+const CarriedReviewReasonPrefix = "Carried forward from the approval of version "
+
 // carryReason is the reason a carried review records, naming the approval it follows.
-const carryReason = "Carried forward from the approval of version %d: the answer to a decision block was the whole change since it."
+const carryReason = CarriedReviewReasonPrefix + "%d: the answer to a decision block was the whole change since it."
 
 // restoreReason is the reason a review carried to a version restoring the approved text records,
-// naming the approval it follows. It opens as carryReason does, which is how the Legion daemon
-// tells a carry from a person's own approval (intake.CarriedApprovalReasonPrefix).
-const restoreReason = "Carried forward from the approval of version %d: this version's text is that version's, unchanged."
+// naming the approval it follows.
+const restoreReason = CarriedReviewReasonPrefix + "%d: this version's text is that version's, unchanged."
+
+// CarriedFromVersion reads the version a carried review's reason names, out of the sentence
+// carryReason and restoreReason write, and reports false for every reason a person wrote. It
+// stands beside the two sentences because a reader that took a carried review for a person's
+// own would quote Dispatch's own words back as the reviewer's, and nothing would report it: the
+// writer and its reader are changed together here. A reason that opens with the prefix but
+// names no number there is read as a person's, since the number is all such a line would say.
+// The Legion daemon reads the same sentence in its own module, which no import can share.
+func CarriedFromVersion(reason string) (int, bool) {
+	rest, found := strings.CutPrefix(reason, CarriedReviewReasonPrefix)
+	if !found {
+		return 0, false
+	}
+	digits, _, found := strings.Cut(rest, ":")
+	if !found {
+		return 0, false
+	}
+	version, err := strconv.Atoi(digits)
+	if err != nil || version < 1 {
+		return 0, false
+	}
+	return version, true
+}
 
 // reopenReason is the reason a review carried to a version holding the approved text with
-// questions open again records (reopenedApproval), naming the approval it follows. It opens as
-// carryReason does.
-const reopenReason = "Carried forward from the approval of version %d: this version's text is that version's, with the questions it showed resolved open again."
+// questions open again records (reopenedApproval), naming the approval it follows. Like the two
+// above it, it is written from CarriedReviewReasonPrefix rather than spelling that opening
+// itself, so the sentence and its reader (CarriedFromVersion) cannot drift apart.
+const reopenReason = CarriedReviewReasonPrefix + "%d: this version's text is that version's, with the questions it showed resolved open again."
 
 // carryInput is what the rule is decided on once H, the version he approved, A, and when he
 // approved it are known: the blocks of N by block id, each its row (rowBackedBlocks); the block
@@ -469,10 +499,16 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	}
 	// The carry's own approval is this document's newest review from here on, and no read of the
 	// table sees it until the write phase runs, so the read of the newest review that the write
-	// advice makes later in this transaction (supersededApprovalAdvice) takes it off the ledger.
-	// The carry makes no such read itself: it runs at most once for a document in a transaction
-	// (refuseSecondCarry).
-	recordPendingReview(ctx, tx, artifactID, model.ArtifactReview{
+	// advice makes later in this transaction (supersededApprovalAdvice, the standing review a
+	// question's advice names) takes it off the ledger. The carry makes no such read itself: it
+	// runs at most once for a document in a transaction (refuseSecondCarry).
+	//
+	// The ledger's review is dated with tx's now() (recordPendingReview, Ledger.Now), and the row
+	// QueueReview inserts is dated by its column's default, now() (artifact_reviews.created_at,
+	// migration 0014_artifact_reviews). Postgres holds now() at the transaction's start for the
+	// whole transaction, and the insert runs in tx, so the two are one value: a reader before the
+	// write phase names the carry at the time the stored row carries.
+	return recordPendingReview(ctx, tx, artifactID, model.ArtifactReview{
 		ArtifactID: artifactID,
 		Version:    number,
 		State:      "approved",
@@ -481,7 +517,6 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 		Reason:     &reason,
 		AskID:      askID,
 	})
-	return nil
 }
 
 // restoresVersionText reports whether markdown, the text a new version of artifactID is written
@@ -843,7 +878,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// row they describe. A version write that moved the request first has planned its parts
 	// already, and this plan runs against what that one leaves, so the answer takes a revision
 	// of its own.
-	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, serverURL),
+	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL),
 		answered, answer.At, model.ReferenceChanges{})
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
@@ -895,15 +930,17 @@ func CutDecisionBlocks(markdown string) (string, error) {
 	return renderWithoutAskBlocks(tree)
 }
 
-// renderWithoutAskBlocks renders a copy of tree with its ask blocks left out (withoutAskBlocks).
+// renderWithoutAskBlocks renders a copy of tree with its ask blocks left out (WithoutAskBlocks).
 func renderWithoutAskBlocks(tree *pmdoc.Node) (string, error) {
-	return pmdoc.Render(withoutAskBlocks(tree))
+	return pmdoc.Render(WithoutAskBlocks(tree))
 }
 
-// withoutAskBlocks is a copy of node's tree with every ask block left out. Each container on the
-// way is a fresh node with its own children; the nodes below the last container - text, inline
-// nodes, leaves - are the parsed tree's own, which nothing here changes.
-func withoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
+// WithoutAskBlocks is a copy of node's tree with every ask block left out: the tree
+// CutDecisionBlocks renders, for a reader that goes on to read the cut tree itself and not only
+// its text, as the change set of two versions does (GET /api/v1/artifacts/{id}/changes). Each
+// container on the way is a fresh node with its own children; the nodes below the last
+// container - text, inline nodes, leaves - are the parsed tree's own, which nothing here changes.
+func WithoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
 	if node.Type == "text" || len(node.Children) == 0 {
 		return node
 	}
@@ -913,7 +950,7 @@ func withoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
 		if child.Type == "ask" {
 			continue
 		}
-		copied.Children = append(copied.Children, withoutAskBlocks(child))
+		copied.Children = append(copied.Children, WithoutAskBlocks(child))
 	}
 	if len(copied.Children) == 0 {
 		copied.Children = append(copied.Children, &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}})

@@ -29,7 +29,8 @@ name: CI job text-checks
 # docs/, a skill under skills/, the committed extract beside the code it pins - and Go's test
 # cache keys on neither, so a cached pass would say nothing about the text as it now stands.
 #
-# The job restores no Actions cache. The six Go cache families ci.yaml's header lists are each
+# The job restores no Actions cache. Each of the six Go cache families
+# .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs lists is
 # filled for a job that builds a whole module's binaries or test binaries, and this job builds
 # five packages: measured here, the four calls this job ran before the supervise pins joined it
 # take 4 minutes 4 seconds with an empty build cache and 34 seconds with a warm one, which is
@@ -76,6 +77,8 @@ jobs:
     # no build cache does on every run - the supervise pins' call, a quarter more cold time on
     # the pod that measured the five against the four, left that nearly as it was.
     timeout-minutes: 15
+    env:
+      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,6 +88,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       - name: Check the text packages/envoy pins
         run: go test -count=1 ./internal/textcheck/

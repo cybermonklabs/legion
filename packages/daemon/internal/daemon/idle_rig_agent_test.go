@@ -330,6 +330,7 @@ func writeIdleRigJSON(w http.ResponseWriter, body any) {
 // Run by anything but that launcher it does nothing: with no rig service named in its
 // environment there is no rig to serve.
 func TestIdleRigRoleProcess(t *testing.T) {
+	// Not parallel: it is the idle rig role process and exits the test binary.
 	rig := os.Getenv(idleRigURLVariable)
 	if rig == "" {
 		return
@@ -646,7 +647,8 @@ func (p *idleRigRoleProcess) dial(bootToken string) error {
 }
 
 // openDelivery opens the session's own NATS connection and takes the one subject a session is
-// reached on, as a plugin in consumer mode does (packages/envoy's "Session consumers", and the
+// reached on, as a plugin in consumer mode does (packages/envoy/docs/architecture.md, "Runtime
+// shape", its "Session consumers" item, and the
 // Go stand-ins of packages/envoy/cmd/listener's session_relay_test.go and
 // current_registration_test.go's captureLaneForwards, neither of which answers anything on the
 // agent subject either): its relay subject, notifications.envoy.deliver.<session id>, where the
@@ -896,11 +898,11 @@ func (p *idleRigRoleProcess) serve() error {
 			if err := p.prompted(f); err != nil {
 				return err
 			}
-		case shimwire.BundleWorkspace:
-			// The release's save of the workspace's unpushed work. This workspace has none, which
-			// is the empty bundle a clean workspace saves.
-			if err := p.writer.WriteFrame(shimwire.BundleWorkspaceResult{
-				ID: f.ID, OK: true, Head: "0000000000000000000000000000000000000000", At: time.Now().UTC(),
+		case shimwire.WorkspaceWork:
+			// The release's check of the workspace for work origin does not hold. This workspace
+			// holds none: its working copy is empty and every commit under it is on origin.
+			if err := p.writer.WriteFrame(shimwire.WorkspaceWorkResult{
+				ID: f.ID, OK: true, Head: "0000000000000000000000000000000000000000",
 			}); err != nil {
 				return err
 			}
@@ -957,7 +959,7 @@ func (p *idleRigRoleProcess) prompted(prompt shimwire.Prompt) error {
 	}
 	// The report that follows every turn, and every task acknowledged without one: the idle rule
 	// releases no pod whose session has said nothing since its last turn, and a task
-	// acknowledged is a turn as far as that rule reads it (pods.IdleClaim.Reported).
+	// acknowledged is a turn as far as that rule reads it (claim.ReadSessionWork).
 	return p.reportActivity()
 }
 

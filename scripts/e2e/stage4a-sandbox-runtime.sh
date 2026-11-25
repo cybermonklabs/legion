@@ -111,10 +111,10 @@
 # BROKER_SERVICE_LOGINS lets log in as legion-daemon and no pod runs as: each account holds one
 # launcher credential, so logging in as a running daemon's account would take that daemon's). The
 # run logs in as the daemon does, with that account's token, which the operator context mints with
-# `kubectl create token` for the broker's audience, an hour long, and mints again every half hour
-# while the run lasts; no person approves it. The run asks nothing of a person: secrets-approval-ask
-# cancels the one request it makes rather than waiting for an approval. See
-# scripts/e2e/README.md's Stage 4a section.
+# `kubectl create token` for the broker audience the namespace's daemons use
+# (lib/broker-audience.ts), an hour long, and mints again every half hour while the run lasts; no
+# person approves it. The run asks nothing of a person: secrets-approval-ask cancels the one request
+# it makes rather than waiting for an approval. See scripts/e2e/README.md's Stage 4a section.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -313,7 +313,10 @@ if [ -n "$agent_secrets_account" ]; then
   # The run's login token: what the kubelet projects into the daemon's pod, minted here by the
   # operator context for the broker's audience and written owner-only; never printed. The broker
   # refuses a token that lives longer than an hour, so the run mints one every half hour, and its
-  # login reads the file afresh each time, as the daemon reads the kubelet's.
+  # login reads the file afresh each time, as the daemon reads the kubelet's. The audience is the
+  # one the namespace's daemons use, read from their ConfigMaps' legion.yaml, or the daemon's default
+  # where none names one, as the harness reads it for the pods it enrolls: the run proves enrollment
+  # against the broker the deployment enrolls with.
   account_namespace=${agent_secrets_account%%/*}
   account_name=${agent_secrets_account#*/}
   [ -n "$account_namespace" ] && [ -n "$account_name" ] && [ "$account_namespace" != "$agent_secrets_account" ] ||
@@ -323,11 +326,18 @@ if [ -n "$agent_secrets_account" ]; then
     fail "the operator context could not list the pods of $account_namespace to check that no daemon runs as $agent_secrets_account"
   [ -z "$account_pods" ] ||
     fail "LEGION_E2E_AGENT_SECRETS_ACCOUNT $agent_secrets_account is the account pod(s) ${account_pods% } run as: a login as it would take that daemon's one launcher credential; list a ServiceAccount of the proof's own in BROKER_SERVICE_LOGINS and name it here"
+  # shellcheck disable=SC2016  # the key table's literal backquotes around the value, not an expansion
+  agent_secrets_default=$(go -C "$root/packages/daemon" run ./cmd/legion config reference --json |
+    jq -r '.[].nested[] | select(.path == "runtime.kubernetes.agent_secrets" and .name == "audience") | .default | ltrimstr("`") | rtrimstr("`")') ||
+    fail "reading the daemon's default broker audience from legion config reference failed"
+  agent_secrets_audience=$(op get configmaps -o json | bun "$root/scripts/e2e/lib/broker-audience.ts" "$agent_secrets_default") ||
+    fail "the namespace's daemons name no one broker audience to mint the run's login token for (the reason is above)"
+  note "[operator] the namespace's daemons enroll their pods for the broker audience $agent_secrets_audience; the run's login token is minted for it"
   agent_secrets_token_file=$work/agent-secrets-token
   mint_agent_secrets_token() {
     (
       umask 077
-      timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" create token "$account_name" --audience agent-secrets --duration 1h >"$agent_secrets_token_file.next"
+      timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" create token "$account_name" --audience "$agent_secrets_audience" --duration 1h >"$agent_secrets_token_file.next"
     ) && mv -f "$agent_secrets_token_file.next" "$agent_secrets_token_file"
   }
   mint_agent_secrets_token || fail "the operator could not mint a token for $agent_secrets_account"
@@ -472,7 +482,7 @@ pass
 
 begin build
 go -C "$root/packages/daemon" test -c -tags e2e -o "$work/stage4a.test" ./internal/runtime/sandbox
-go -C "$root/packages/envoy" build -o "$work/agent-secrets" ./cmd/agent-secrets
+go -C "$root/packages/envoy" build -o "$work/agent-secrets" ./cmd/cipher
 note "built the e2e harness and agent-secrets from the checkout"
 # previous-layout's fixture: the previous release's own Stage 4a harness (LEGION_E2E_PREVIOUS_IMAGE's revision), with testdata/previouslayout's
 # one test added, built from an archive of that commit so no worktree or branch is made. That

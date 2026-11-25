@@ -15,12 +15,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
 
-// liveRepo is the repository the project's Dispatch mapping serves (workflowConfig's
-// servedBootCall), which every issue a live proof and the idle rig seed is on.
+// liveRepo is the repository every issue a live proof and the idle rig seed is on.
 const liveRepo = "acme/widgets"
 
-// liveDispatch is workflowConfig's Dispatch stand-in — the repository mapping and an empty issue
-// list — grown into the board the daemon reads and writes: it holds each issue's status, parent and
+// liveDispatch is workflowConfig's Dispatch stand-in — the calls every boot makes and an empty
+// issue list — grown into the board the daemon reads and writes: it holds each issue's status, parent and
 // labels, as Dispatch's own board does, answers the issue reads the daemon makes (the outbox's
 // before a status write, a release's walk up an issue's parent chain, an event's walk up its
 // Dispatch chain to the top) and 404s an issue it does not hold, records every status and message
@@ -152,6 +151,14 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		b.record(write, w)
 	case req.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/handoffs/"):
 		b.showHandoff(strings.TrimPrefix(path, "/api/v1/handoffs/"), w)
+	// The reconcile of a tree's news of its approved design reads what changed between two
+	// approved versions of a gated document (dispatch.Client's ArtifactChanges). This board keeps
+	// no document, so it answers as Dispatch answers for a document it does not hold, which the
+	// reconcile records unreadable at once (dispatch.ErrDocumentNotFound): the news then names the
+	// two versions and says why it lists no change.
+	case req.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/artifacts/") && strings.HasSuffix(path, "/changes"):
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"artifact not found"}`)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/rating"):
 		b.putRating(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/rating"), req, w)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/"):
@@ -462,6 +469,7 @@ func issueOfDispatchPath(path string) string {
 // its id (workflowstore's PutPlan): a plan with no task, and a task with no step, under the other
 // issue's key.
 func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
+	t.Parallel()
 	b := newLiveDispatch(t, "SR1")
 	first, other := "SR1-1", "SR1-2"
 	put := func(key, path string, write map[string]any) (int, string) {

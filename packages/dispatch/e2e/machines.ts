@@ -3,7 +3,7 @@
  *
  *  Two spec files share this: `machines.e2e.ts`, whose rows read a drawing against the clock,
  *  and `machines.stub.e2e.ts`, whose rows read only what the page draws from a fixed answer
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The layout strings, the cells they name
+ *  (packages/dispatch/README.md, "The stubbed layer"). The layout strings, the cells they name
  *  and the proportions each pane must hold live here so the two cannot drift apart.
  */
 import { expect, type Locator, type Page } from "@playwright/test";

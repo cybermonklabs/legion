@@ -1,13 +1,17 @@
 package oidc
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,7 +41,7 @@ func newCodeFlowFor(t *testing.T) (*oidctest.Issuer, *CodeFlow) {
 func newCodeFlowForDomain(t *testing.T, domain string) (*oidctest.Issuer, *CodeFlow) {
 	t.Helper()
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret, flowRedirect)
 	return issuer, NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, domain)
 }
 
@@ -309,7 +313,9 @@ func TestCodeFlowRefreshClassifiesItsFailure(t *testing.T) {
 		{"a revoked refresh token", func(issuer *oidctest.Issuer) { issuer.RevokeGrants() }, true},
 		{"400 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusBadRequest, "invalid_grant") }, true},
 		{"401 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusUnauthorized, "invalid_grant") }, true},
+		// A 403 naming invalid_grant is a refusal, but not one that ends a grant (oauthrefusal.EndsGrant).
 		{"403 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusForbidden, "invalid_grant") }, false},
+		{"408 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusRequestTimeout, "invalid_grant") }, false},
 		{"500", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusInternalServerError, "") }, false},
 		{"503", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusServiceUnavailable, "") }, false},
 		{"429", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusTooManyRequests, "") }, false},
@@ -331,6 +337,211 @@ func TestCodeFlowRefreshClassifiesItsFailure(t *testing.T) {
 				t.Errorf("Refresh's error carries the refresh token: %v", err)
 			}
 		})
+	}
+}
+
+// The client authenticates at the token endpoint as the issuer's discovery document lists
+// (token_endpoint_auth_methods_supported): by HTTP Basic where the list names
+// client_secret_basic, RFC 8414's default, whatever else it names and in whatever order, and in
+// the form where it names client_secret_post alone. Every grant is then one request: a code
+// exchange the issuer refuses, one it grants, a refresh it refuses, and a refused refresh on a code
+// flow made after the sign-in, as a process that restarted since the sign-in has. A document that
+// names neither, or no list at all, leaves x/oauth2 to find the style itself: it asks by HTTP Basic
+// and, when that fails, again in the form, until a grant has succeeded in one. So there a code
+// flow's first grant, refused, is two requests (the control that shows TokenRequests sees a second
+// one), and once the sign-in has succeeded every later grant of that flow is one, since each
+// starts from the one config discovery built.
+func TestCodeFlowAuthenticatesAtTheTokenEndpointAsTheDiscoveryDocumentLists(t *testing.T) {
+	basic, form := []string{"client_secret_basic"}, []string{"client_secret_post"}
+	guessed := []string{"client_secret_basic", "client_secret_post"}
+	for _, tc := range []struct {
+		name    string
+		methods []string
+		// first is the token requests of a refused grant that is its code flow's first: a code
+		// exchange on a new flow, and a refresh on another flow made after the sign-in.
+		first []string
+		// signedIn is the token requests of the sign-in's code exchange, and of a refused refresh
+		// on the flow that signed the person in.
+		signedIn []string
+	}{
+		{"client_secret_basic alone", []string{"client_secret_basic"}, basic, basic},
+		{"client_secret_post alone", []string{"client_secret_post"}, form, form},
+		{"both, in Google's order", []string{"client_secret_post", "client_secret_basic"}, basic, basic},
+		{"both, client_secret_basic first", []string{"client_secret_basic", "client_secret_post"}, basic, basic},
+		{"neither", []string{"private_key_jwt"}, guessed, basic},
+		{"no list", nil, guessed, basic},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issuer, flow := newCodeFlowFor(t)
+			issuer.AdvertiseTokenAuthMethods(tc.methods...)
+			seen := 0
+			requests := func(grant string, want []string) {
+				t.Helper()
+				all := issuer.TokenRequests()
+				if got := all[seen:]; !slices.Equal(got, want) {
+					t.Errorf("%s: token requests = %q, want %q", grant, got, want)
+				}
+				seen = len(all)
+			}
+			if _, err := flow.Exchange(context.Background(), flowRedirect, "a-code-the-issuer-never-issued", "nonce-1"); err == nil {
+				t.Fatal("Exchange of a code the issuer never issued succeeded")
+			}
+			requests("the refused code exchange on a new flow", tc.first)
+			session := exchange(t, issuer, flow, personClaims("dispatch-members"))
+			requests("the sign-in's code exchange", tc.signedIn)
+			issuer.RevokeGrants()
+			if _, err := flow.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrGrantRefused) {
+				t.Fatalf("Refresh with a revoked refresh token: err = %v, want ErrGrantRefused", err)
+			}
+			requests("the refused refresh on the flow that signed in", tc.signedIn)
+			restarted := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
+			if _, err := restarted.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrGrantRefused) {
+				t.Fatalf("Refresh with a revoked refresh token on a flow made after the sign-in: err = %v, want ErrGrantRefused", err)
+			}
+			requests("the refused refresh on a flow made after the sign-in", tc.first)
+		})
+	}
+}
+
+// Every grant starts from the one config discovery built, never from a copy of it: a copy taken
+// while a refresh first uses the config races with that use (x/oauth2's config holds a
+// sync/atomic.Value, which must not be copied after first use). Run with -race, sign-ins and
+// refreshes made at once report no race.
+func TestCodeFlowGrantsUseTheDiscoveredConfigWithoutARace(t *testing.T) {
+	_, flow := newCodeFlowFor(t)
+	if err := flow.Discover(context.Background()); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			_, _ = flow.Refresh(context.Background(), "not-a-refresh-token")
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = flow.AuthURL(context.Background(), flowRedirect, "state-1", "nonce-1")
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = flow.Exchange(context.Background(), flowRedirect, "a-code-the-issuer-never-issued", "nonce-1")
+		}()
+	}
+	wg.Wait()
+}
+
+// formRecorder is a transport that keeps the form of every request it carries, then sends the
+// request on unchanged.
+type formRecorder struct {
+	mu    sync.Mutex
+	forms []url.Values
+}
+
+func (r *formRecorder) RoundTrip(request *http.Request) (*http.Response, error) {
+	var body []byte
+	if request.Body != nil {
+		read, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		body = read
+		request.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	r.forms = append(r.forms, form)
+	r.mu.Unlock()
+	return http.DefaultTransport.RoundTrip(request)
+}
+
+func (r *formRecorder) all() []url.Values {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.forms)
+}
+
+// A caller that names no redirect sends none: neither authorization URL and no token request of
+// either exchange carries a redirect_uri. A caller that names one sends it in each token request
+// of its exchange.
+func TestCodeFlowSendsNoRedirectWhenTheCallerNamesNone(t *testing.T) {
+	_, flow := newCodeFlowFor(t)
+	recorder := &formRecorder{}
+	flow.http.Transport = recorder
+	ctx := context.Background()
+	authorization, err := flow.AuthURL(ctx, "", "state-1", "nonce-1")
+	if err != nil {
+		t.Fatalf("AuthURL: %v", err)
+	}
+	online, err := flow.OnlineAuthURL(ctx, "", onlineSignIn("nonce-1"))
+	if err != nil {
+		t.Fatalf("OnlineAuthURL: %v", err)
+	}
+	for name, location := range map[string]string{"AuthURL": authorization, "OnlineAuthURL": online} {
+		parsed, err := url.Parse(location)
+		if err != nil {
+			t.Fatalf("%s %q: %v", name, location, err)
+		}
+		if parsed.Query().Has("redirect_uri") {
+			t.Errorf("%s with no redirect = %s, want no redirect_uri", name, location)
+		}
+	}
+	seen := 0
+	sent := func(exchange string) []url.Values {
+		t.Helper()
+		all := recorder.all()
+		forms := all[seen:]
+		seen = len(all)
+		if len(forms) == 0 {
+			t.Fatalf("%s made no token request the recorder saw", exchange)
+		}
+		return forms
+	}
+	if _, err := flow.Exchange(ctx, "", "a-code-the-issuer-never-issued", "nonce-1"); err == nil {
+		t.Fatal("Exchange of a code the issuer never issued succeeded")
+	}
+	exchanged := sent("Exchange with no redirect")
+	if _, err := flow.OnlineExchange(ctx, "", "a-code-the-issuer-never-issued", onlineSignIn("nonce-1")); err == nil {
+		t.Fatal("OnlineExchange of a code the issuer never issued succeeded")
+	}
+	for i, form := range append(exchanged, sent("OnlineExchange with no redirect")...) {
+		if form.Has("redirect_uri") {
+			t.Errorf("token request %d with no redirect = %v, want no redirect_uri", i+1, form)
+		}
+	}
+	if _, err := flow.Exchange(ctx, flowRedirect, "a-code-the-issuer-never-issued", "nonce-1"); err == nil {
+		t.Fatal("Exchange of a code the issuer never issued succeeded")
+	}
+	for i, form := range sent("Exchange naming a redirect") {
+		if got := form.Get("redirect_uri"); got != flowRedirect {
+			t.Errorf("token request %d naming a redirect has redirect_uri %q, want %q", i+1, got, flowRedirect)
+		}
+	}
+}
+
+// A client whose secret holds characters the form reserves signs in, refreshes and revokes by
+// HTTP Basic, each in one request: the client form-encodes its id and secret before it joins
+// them (RFC 6749 section 2.3.1), and the issuer decodes them.
+func TestCodeFlowSendsASecretTheFormReservesByHTTPBasic(t *testing.T) {
+	const secret = "s+e/c=r%t &x"
+	issuer := oidctest.New(t)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, secret, flowRedirect)
+	flow := NewCodeFlow(issuer.URL(), flowClientID, secret, "")
+	session := exchange(t, issuer, flow, personClaims("dispatch-members"))
+	if _, err := flow.Refresh(context.Background(), session.RefreshToken); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got := issuer.TokenRequests(); !slices.Equal(got, []string{"client_secret_basic", "client_secret_basic"}) {
+		t.Fatalf("the exchange's and the refresh's token requests = %q, want one each, by HTTP Basic", got)
+	}
+	if err := flow.Revoke(context.Background(), session.RefreshToken); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if got := issuer.RevocationRequests(); !slices.Equal(got, []string{session.RefreshToken}) {
+		t.Fatalf("the revocation endpoint received %d tokens, want the one refresh token", len(got))
 	}
 }
 
@@ -420,6 +631,69 @@ func TestCodeFlowDiscoveryRefusesAnIssuerWithNoCodeFlowEndpoints(t *testing.T) {
 	}
 }
 
+// A discovery document whose token_endpoint_auth_methods_supported is not an array of strings, or
+// whose revocation_endpoint is not a string, is one the code flow cannot read: its discovery fails,
+// naming the member, rather than guessing how the client authenticates or where it revokes. A null
+// is neither, and an array holding a null holds something that is not a string, though Go's
+// encoding/json reads a null into a []string as no list and into a string as the empty one, and a
+// null element as the empty string. An array of strings, an empty one included, a string endpoint
+// and a document with no such member are read.
+func TestCodeFlowDiscoveryRefusesAMemberItCannotRead(t *testing.T) {
+	const methods, revocation = "token_endpoint_auth_methods_supported", "revocation_endpoint"
+	for _, c := range []struct {
+		name     string
+		member   string // the member's name, which a refusal names
+		value    string // the member's JSON, or empty for a document with no such member
+		readable bool
+	}{
+		{"auth methods: a string", methods, `"client_secret_basic"`, false},
+		{"auth methods: null", methods, `null`, false},
+		{"auth methods: an array holding null alone", methods, `[null]`, false},
+		{"auth methods: client_secret_basic and null", methods, `["client_secret_basic",null]`, false},
+		{"auth methods: client_secret_basic and a number", methods, `["client_secret_basic",1]`, false},
+		{"auth methods: client_secret_basic alone", methods, `["client_secret_basic"]`, true},
+		{"auth methods: an empty array", methods, `[]`, true},
+		{"revocation endpoint: null", revocation, `null`, false},
+		{"revocation endpoint: a number", revocation, `1`, false},
+		{"revocation endpoint: an array", revocation, `["https://issuer.example/revoke"]`, false},
+		{"revocation endpoint: a string", revocation, `"https://issuer.example/revoke"`, true},
+		{"revocation endpoint: no member", revocation, ``, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			member := ""
+			if c.value != "" {
+				member = `,"` + c.member + `":` + c.value
+			}
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/openid-configuration" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"issuer":"` + server.URL + `","jwks_uri":"` + server.URL + `/keys",` +
+					`"authorization_endpoint":"` + server.URL + `/authorize","token_endpoint":"` + server.URL + `/token"` +
+					member + `}`))
+			}))
+			t.Cleanup(server.Close)
+			flow := NewCodeFlow(server.URL, flowClientID, flowClientSecret, "")
+			err := flow.Discover(context.Background())
+			if c.readable {
+				if err != nil || !flow.Discovered() {
+					t.Fatalf("Discover against a document with %q: err = %v, discovered = %t, want it read", member, err, flow.Discovered())
+				}
+				return
+			}
+			if !errors.Is(err, ErrIssuerUnavailable) || !strings.Contains(err.Error(), c.member) {
+				t.Fatalf("Discover against a document with %q: err = %v, want ErrIssuerUnavailable naming %s", member, err, c.member)
+			}
+			if flow.Discovered() {
+				t.Fatal("a document the code flow cannot read reads as discovered")
+			}
+		})
+	}
+}
+
 // onlineSignIn is an online-mode sign-in hinting the account of googleClaims, with a fresh PKCE
 // verifier and nonce as its ID token's nonce.
 func onlineSignIn(nonce string) OnlineSignIn {
@@ -500,7 +774,7 @@ func TestCodeFlowOnlineAuthURLCarriesPKCEAndAsksForNoOfflineAccess(t *testing.T)
 // does.
 func TestCodeFlowOnlineExchangeSignsInWithNoRefreshToken(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret, flowRedirect)
 	issuer.OmitRefreshTokens()
 	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, flowDomain)
 
@@ -606,7 +880,7 @@ func TestCodeFlowOnlineExchangeRefusesAnIDTokenNotForThisSignIn(t *testing.T) {
 		published := issuer.PublishKey(t, "signing-key")
 		// A foreign key under the published key's id: the key set resolves, and only the
 		// signature fails.
-		issuer.EnableCodeFlow(oidctest.NewKey(t, published.KeyID()), flowClientID, flowClientSecret)
+		issuer.EnableCodeFlow(oidctest.NewKey(t, published.KeyID()), flowClientID, flowClientSecret, flowRedirect)
 		flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, flowDomain)
 		issuer.SignInAs(googleClaims(true))
 		signIn := onlineSignIn("nonce-1")

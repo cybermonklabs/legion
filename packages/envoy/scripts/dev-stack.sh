@@ -2,14 +2,15 @@
 # shellcheck disable=SC2317,SC2329 # cleanup is trap-invoked and each reader is invoked by name
 # packages/envoy/scripts/dev-stack.sh
 #
-# The whole local stack a session is driven against, on one machine, with no cluster, no AWS and
-# no container runtime: cmd/dev-oidc-issuer (the local stand-in for a cluster's ServiceAccount
-# token issuer and for the identity provider a person signs in at), cmd/broker on a fake secrets
-# file, internal/testnats/cmd/natsd (one throwaway NATS with JetStream), cmd/listener on that
-# NATS, and cmd/dispatch, the real Dispatch server, pointed at that broker and that listener. It
-# is dev-broker.sh's broker with the two things that script has no room for -- a real Dispatch and
-# a real Envoy listener -- so a session on it gets a broker access token, writes to Dispatch with
-# it and sends an Envoy message, all against the processes production runs.
+# The whole local stack a session is driven against, on one machine, with no cluster, no AWS and,
+# but for the one container --project-access runs (below), no container runtime:
+# cmd/dev-oidc-issuer (the local stand-in for a cluster's ServiceAccount token issuer and for the
+# identity provider a person signs in at), cmd/cipherd on a fake secrets file,
+# internal/testnats/cmd/natsd (one throwaway NATS with JetStream), cmd/listener on that NATS, and
+# cmd/dispatch, the real Dispatch server, pointed at that broker and that listener. It is
+# dev-broker.sh's broker with the two things that script has no room for -- a real Dispatch and a
+# real Envoy listener -- so a session on it gets a broker access token, writes to Dispatch with it
+# and sends an Envoy message, all against the processes production runs.
 #
 # It takes one input, the URL of a Postgres server it may create databases on: --database-url,
 # else LEGION_TEST_PG_DSN (a Legion pod has one), else DATABASE_URL. With none it refuses, naming
@@ -26,10 +27,19 @@
 # a Go build out to the builds farm rather than running it itself. Then it runs those in place of
 # its go build, and needs no go on PATH. It requires each of them in that directory, broker,
 # dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper, natsd and natsprobe,
-# each an executable file, and refuses before it creates or starts anything -- no database, no
-# port, no process -- when one is missing or is not, naming each such file. It copies them into
-# this run's own bin directory, where a build would have put them, so everything after that step
-# is the same either way.
+# and dev-airlock-stands as well under --project-access, each an executable file, and refuses
+# before it creates or starts anything -- no database, no port, no process -- when one is missing
+# or is not, naming each such file. It copies them into this run's own bin directory, where a
+# build would have put them, so everything after that step is the same either way.
+#
+# With --project-access the broker asks this run's Dispatch whether a project is private and who
+# may see it, and the stack runs the airlock beside it: the broker's own proxy, and
+# cmd/dev-proxy-stands, the stand-in host a private project's secret may go to. The stands run
+# in one docker container (DEV_STACK_AIRLOCK_IMAGE), the one container this script starts,
+# because a bound host must listen on port 443; so that run needs docker on PATH, and is refused
+# before anything is created or started without it. A run without the option builds no stands
+# and starts no container. What the option adds to a run, and PRIV's pod every run has, are
+# scripts/lib/project-access-stack.sh's.
 #
 # Every port is chosen by the kernel and read back from the process that holds it: the issuer's
 # "issuer listening url=", the broker's JSON "broker listening" addr, natsd's "Listening for
@@ -111,14 +121,24 @@
 #
 # One trap stops every process by the pid this script started it as, drops the two databases it
 # created and nothing else, and leaves the logs; it runs on a normal exit, on Ctrl-C, on SIGTERM
-# and on a failure part way through, so a start that fails before "ready" leaves nothing running.
-# A SIGTERM sent to the whole process group, as a supervisor's stop sends it, is that same stop,
-# and so is the same signal repeated while the stop runs. The exception is a signal this script
-# cannot take: a run ended by SIGKILL, which no process can trap, leaves its two databases on the
-# server for someone to drop by hand, as does any other signal this script does not trap.
+# and on a failure part way through, so a start that fails before "ready" leaves nothing running,
+# and ends within seconds of the process that failed, one that exited after it reported its port
+# among them: every readiness request gives up after 5 s (DEV_STACK_READINESS_REQUEST_SECONDS sets
+# another whole number of seconds). Each process gets 10 s after its SIGTERM
+# (DEV_STACK_STOP_GRACE_SECONDS sets another) and is then killed, which the log says, so one that
+# ignores the signal delays the drops and does not prevent them. Only a process this script started
+# and that is still running is signalled, never whatever holds the pid of one that exited earlier,
+# and one that has exited is never waited on. A SIGTERM sent to the whole process
+# group, as a supervisor's stop sends it, is that same stop, and so is the same signal repeated
+# while the stop runs, and so is either with this script's standard error piped to a reader the
+# signal stops too (`dev-stack.sh 2>&1 | tee`: the stop writes its lines there), and so is a closed
+# terminal's SIGHUP arriving while the stop runs. The exception is a signal this script cannot
+# take: a run ended by SIGKILL, which no process can trap, leaves its two databases on the server
+# for someone to drop by hand, as does any other signal this script does not trap.
 #
 # With --callout the hub runs behind the NATS auth service, in two brokers, which
-# scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds.
+# scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds. It
+# is refused beside --project-access, since both brokers would take the airlock proxy's one port.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
@@ -128,8 +148,8 @@
 #     --database-url 'postgres://postgres:dispatch@127.0.0.1:55432/postgres?sslmode=disable'
 #
 # Both from packages/envoy. It needs go (unless --binaries names the binaries), psql, curl, jq and
-# python3, and nothing else from the machine: no credential, no private hostname, no production
-# service.
+# python3, and docker under --project-access, and nothing else from the machine: no credential,
+# no private hostname, no production service.
 set -euo pipefail
 
 # refuse_old_bash MAJOR MINOR VERSION: exits 2, in one line naming the bash this script needs and
@@ -149,29 +169,64 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$ENVOY_DIR/../.." && pwd)"
 HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
+# Each process this script starts with a secret in its settings gets them through its own
+# environment, never through a process's arguments (start_with_only, below).
+# shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
+. "$SCRIPT_DIR/lib/exec-env.sh"
+
+# The stop's grace and a readiness request's bound when the caller sets neither
+# DEV_STACK_STOP_GRACE_SECONDS nor DEV_STACK_READINESS_REQUEST_SECONDS (usage, below). Each is a
+# line of its own: scripts/dev-stack.test.sh reads both here rather than copying the numbers.
+DEFAULT_STOP_GRACE_SECONDS=10
+DEFAULT_READINESS_REQUEST_SECONDS=5
 
 usage() {
   cat <<'EOF'
-Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout] [--help]
+Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout]
+                    [--project-access] [--help]
 
 Boot dev-oidc-issuer, the secrets broker, a throwaway NATS, the Envoy listener and the Dispatch
 server on one machine, each on a port the kernel chooses, and print the exports a second shell
 drives them with. The Postgres URL is this one option, else LEGION_TEST_PG_DSN, else
-DATABASE_URL; this run creates and drops two databases of its own on that server.
+DATABASE_URL; this run creates and drops two databases of its own on that server. Prefer either
+variable to the option for a URL that holds a password: a process's arguments are in the process
+list for any user of the machine to read, and its environment is not.
 
 With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, agent-secrets,
-agent-secrets-helper, natsd and natsprobe in <dir> in place of building them; a directory short
-of any of them, or holding one that is not an executable file, is refused, naming each, before
-anything is created or started.
+agent-secrets-helper, natsd and natsprobe in <dir> in place of building them, and
+dev-airlock-stands too under --project-access; a directory short of any of them, or holding one
+that is not an executable file, is refused, naming each, before anything is created or started.
 
 With --callout, run the hub behind the NATS auth service in two brokers, and the listener and
 Dispatch with NATS service tokens rather than no credential.
+
+With --project-access, the broker asks this run's Dispatch whether a project is private and who
+may see it (BROKER_PROJECT_ACCESS_URL, with a token of its own account for Dispatch's audience),
+and Dispatch admits that account to its access routes. The run also starts the airlock: the
+broker's proxy, and dev-airlock-stands in a docker container, so it needs docker. Without the
+option none of this runs, as before.
+
+--callout and --project-access cannot run together: both of --callout's brokers would take the
+airlock proxy's one port. The pair is refused with exit 2 before anything is created or started.
+
+EOF
+  cat <<EOF
+DEV_STACK_STOP_GRACE_SECONDS ($DEFAULT_STOP_GRACE_SECONDS unless set) is how long the stop gives
+each process after its SIGTERM before it kills it, and DEV_STACK_READINESS_REQUEST_SECONDS
+($DEFAULT_READINESS_REQUEST_SECONDS unless set) how long each readiness request waits for an
+answer. Each is a whole number of seconds from 1 to 9999, written without a leading zero; any
+other value, an empty one among them, is refused with exit 2 before anything is created or
+started.
 EOF
 }
 
 CALLOUT=false
 DATABASE_URL_OPTION=""
 BINARIES_OPTION=""
+PROJECT_ACCESS=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --database-url)
@@ -206,6 +261,10 @@ while [ "$#" -gt 0 ]; do
       fi
       shift
       ;;
+    --project-access)
+      PROJECT_ACCESS=true
+      shift
+      ;;
     --help | -h)
       usage
       exit 0
@@ -217,6 +276,28 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+# --- --callout starts two brokers with one set of settings, and --project-access gives every
+# broker the one airlock proxy port this run picks (BROKER_AIRLOCK_LISTEN_ADDR), so the second
+# broker could not bind it and its start would stop the run. The pair is refused here, before
+# anything is created or started. ---
+if [ "$CALLOUT" = true ] && [ "$PROJECT_ACCESS" = true ]; then
+  echo "dev-stack: --callout and --project-access cannot run together: both of --callout's brokers would take the airlock proxy's one port" >&2
+  exit 2
+fi
+
+# --- The stop's grace and a readiness request's bound (usage, above), checked before anything is
+# created: a value bash arithmetic cannot read would end the stop between the kills and the drops,
+# and one with a leading zero it reads as octal. A variable that is set is checked even when
+# empty, which would otherwise read as unset. The stop reads its grace where it runs
+# (stop_bounded), so scripts/dev-stack.test.sh can run it alone. ---
+for bound in DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS; do
+  if [[ -v $bound ]] && ! [[ ${!bound} =~ ^[1-9][0-9]{0,3}$ ]]; then
+    echo "dev-stack: $bound must be a whole number of seconds from 1 to 9999, not '${!bound}'" >&2
+    exit 2
+  fi
+done
+READINESS_REQUEST_SECONDS="${DEV_STACK_READINESS_REQUEST_SECONDS:-$DEFAULT_READINESS_REQUEST_SECONDS}"
 
 # --- The one input, checked before anything is created, so a missing or malformed URL leaves
 # nothing behind. The three sources in order, as the header names them. ---
@@ -238,14 +319,23 @@ fi
 POSTGRES_SERVER="${BASH_REMATCH[1]}"
 POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 
-# --- The packages of the binaries this stack runs, the one list of them: go build names each
-# binary for its package's last path element, so the build's arguments and the names --binaries
-# checks and copies all come from here. The header and the usage name them for a reader. ---
-STACK_PACKAGES=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
+# --- The binaries this stack runs and their packages, the one list of them, as
+# <binary>=<package>: the build's arguments and the names --binaries checks and copies all come
+# from here. go build names each binary for its package's last path element, so a package whose
+# directory is not its binary's name is renamed after the build. The header and the usage name
+# them for a reader. dev-airlock-stands is --project-access's alone, since only that run starts
+# the airlock's stands. ---
+STACK_ENTRIES=(broker=./cmd/cipherd dev-oidc-issuer=./cmd/dev-oidc-issuer dispatch=./cmd/dispatch
+  listener=./cmd/listener agent-secrets=./cmd/cipher agent-secrets-helper=./cmd/cipher-helper
+  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe)
+if [ "$PROJECT_ACCESS" = true ]; then
+  STACK_ENTRIES+=(dev-airlock-stands=./cmd/dev-proxy-stands)
+fi
+STACK_PACKAGES=()
 STACK_BINARIES=()
-for stack_package in "${STACK_PACKAGES[@]}"; do
-  STACK_BINARIES+=("${stack_package##*/}")
+for stack_entry in "${STACK_ENTRIES[@]}"; do
+  STACK_BINARIES+=("${stack_entry%%=*}")
+  STACK_PACKAGES+=("${stack_entry#*=}")
 done
 
 # --- The prebuilt binaries --binaries names, checked here for the reason the URL is: a directory
@@ -269,10 +359,14 @@ if [ -n "$BINARIES_OPTION" ]; then
   fi
 fi
 
-# go builds the binaries, so a run given them needs none.
+# go builds the binaries, so a run given them needs none; docker runs the airlock's stands, which
+# only --project-access starts.
 required_tools=(psql curl jq python3)
 if [ -z "$BINARIES_OPTION" ]; then
   required_tools=(go "${required_tools[@]}")
+fi
+if [ "$PROJECT_ACCESS" = true ]; then
+  required_tools+=(docker)
 fi
 for tool in "${required_tools[@]}"; do
   command -v "$tool" >/dev/null || {
@@ -303,7 +397,7 @@ LISTENER_KEEPER_LOG="$LOG_DIR/listener-port-keeper.log"
 LISTENER_KEEPER_SOCKET="$WORK_DIR/listener-port.sock"
 LISTENER_KEEPER_PORT_FILE="$WORK_DIR/listener-port"
 
-# The issuer and what it mints for, as dev-broker.sh names them (internal/broker/brokertest's rig):
+# The issuer and what it mints for, as dev-broker.sh names them (internal/cipher/ciphertest's rig):
 # the audience every listed caller's and every enrolment's token carries, the exchange's own
 # audience, and the accounts. The pod's two token files are one pod, since dev-oidc-issuer binds
 # one pod uid per service account.
@@ -320,9 +414,20 @@ LISTENER_TOKEN_FILE="$WORK_DIR/listener-token"
 EXCHANGE_TOKEN_FILE="$WORK_DIR/exchange-token"
 REGISTRAR_TOKEN_FILE="$WORK_DIR/registrar-token"
 POD_TOKEN_FILE="$WORK_DIR/pod-token"
+# Dispatch's identity at the listener: its own account's token for the listener's audience, which
+# the listener verifies to take a send's role mark from Dispatch alone (ENVOY_DISPATCH_PRINCIPAL),
+# as the cluster's projected token is; without it Dispatch refuses every send for a `role:` route.
+LISTENER_AUDIENCE="legion-envoy-listener"
+DISPATCH_LISTENER_TOKEN_FILE="$WORK_DIR/dispatch-listener-token"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
+# PRIV's pod and the broker's own access account, which every run mints tokens for, and the
+# airlock --project-access starts: their names, and what the option does with them, are
+# scripts/lib/project-access-stack.sh's. It names paths in the work directory, so it is sourced
+# here, once that is made, on every run.
+# shellcheck source=lib/project-access-stack.sh
+. "$SCRIPT_DIR/lib/project-access-stack.sh"
 # The namespace the fake secrets sit under and an example KMS key in AWS's documentation account;
 # nothing here calls AWS.
 SECRETS_PREFIX="example/agent-secrets/"
@@ -394,7 +499,11 @@ DISPATCH_DATABASE_URL="${POSTGRES_SERVER}/${DISPATCH_DB}${POSTGRES_QUERY}"
 # shellcheck source-path=SCRIPTDIR source=lib/callout-stack.sh
 . "$SCRIPT_DIR/lib/callout-stack.sh"
 
-admin_psql() { psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q "$@"; }
+# server_psql URL ARGS...: psql on URL, a database of POSTGRES_SERVER, as POSTGRES_SERVER's user,
+# with the password in psql's environment alone (lib/pg-url.sh's pg_url_run).
+server_psql() { pg_url_run "$1" psql "${@:2}"; }
+
+admin_psql() { server_psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q "$@"; }
 
 KEEPER_PID=""
 ISSUER_PID=""
@@ -409,41 +518,119 @@ DISPATCH_PID=""
 BROKER_DB_CREATED=false
 DISPATCH_DB_CREATED=false
 
+# running_child PID: whether PID is a process this shell started that is still there, the one test
+# each stop below makes before every signal it sends. Bash must still count it as running (jobs
+# -rp): a process of the stack that exited early, a crash during a long run or the second broker
+# callout-check.sh kills, has been reaped and is listed no longer, and its pid is free: on a busy
+# box the kernel hands it to another process within minutes, which kill -0 cannot tell from the one
+# this run started, so a stop that signalled by pid alone could SIGTERM, and 10 s later SIGKILL, a
+# process of someone else's. And the kernel must still name this shell its parent (field 4 of
+# /proc/PID/stat, read past the last `) ` because a process names itself; ps on a host with no
+# /proc): bash 5.2 loses the exit of a child that ends while a trapped signal interrupts the
+# `wait -n` below, which a group's SIGTERM does to every child at once, and then lists that child
+# as running for good although the kernel has reaped it. The stop of such a run waited out the
+# whole grace on the Dispatch port keeper, gone since the signal, and logged that it killed it.
+# A child that has exited and is not yet reaped still holds its pid and its parent, so it is
+# running here and a signal to it reaches no one else. Each answer is an explicit return 0 or 1:
+# cleanup runs inside a trap, where a bare `return` gives the status of the command the trap
+# interrupted (130 from the `wait -n` an INT cut short), not that of the test before it.
+running_child() {
+  local child stat=""
+  local -a fields
+  for child in $(jobs -rp); do
+    [ "$child" = "$1" ] || continue
+    if [ -d /proc/self ]; then
+      { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
+      [ -n "$stat" ] || return 1
+      read -r -a fields <<<"${stat##*) }"
+      [ "${fields[1]}" = "$$" ] && return 0
+      return 1
+    fi
+    [ "$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')" = "$$" ] && return 0
+    return 1
+  done
+  return 1
+}
+
+# stop_bounded NAME PID stops one process of the stack for cleanup: SIGTERM, then up to the grace,
+# DEV_STACK_STOP_GRACE_SECONDS or DEFAULT_STOP_GRACE_SECONDS, for it to exit, then SIGKILL, which
+# the log names with the time from the SIGTERM to the kill, so a process that ignores or outlives
+# its SIGTERM holds the stop that long at most and the drops below still run. Cleanup ignores every
+# further INT and TERM, so a `wait` on such a process would have held the stop, and both
+# databases, for good. The look is running_child every 0.1 s, so a process that exits during the
+# grace is never signalled again, whatever holds its pid by then. The grace is counted in
+# microseconds of the wall clock (EPOCHREALTIME, its decimal mark dropped, which a locale may make
+# a comma), so it is the whole grace: SECONDS counts whole seconds, and a deadline of SECONDS plus
+# 10 came up to a second short.
+stop_bounded() {
+  local name="$1" pid="$2" grace="${DEV_STACK_STOP_GRACE_SECONDS:-$DEFAULT_STOP_GRACE_SECONDS}"
+  local termed deadline waited
+  if [ -z "$pid" ] || ! running_child "$pid"; then
+    return 0
+  fi
+  kill "$pid" 2>/dev/null
+  termed=${EPOCHREALTIME//[!0-9]/}
+  deadline=$((termed + grace * 1000000))
+  while running_child "$pid" && ((${EPOCHREALTIME//[!0-9]/} < deadline)); do
+    sleep 0.1
+  done
+  if running_child "$pid"; then
+    waited=$((${EPOCHREALTIME//[!0-9]/} - termed))
+    printf 'dev-stack: %s (pid %s) did not stop within %s s of its SIGTERM; killing it %d.%03d s after it\n' \
+      "$name" "$pid" "$grace" $((waited / 1000000)) $((waited % 1000000 / 1000)) >&2
+    kill -KILL "$pid" 2>/dev/null
+  fi
+  wait "$pid" 2>/dev/null
+}
+
 # cleanup stops what this run started and exits with rc, the status the trap that ran it passes:
 # this script's own for EXIT, and the conventional 128 plus the signal's number for INT and TERM,
 # so an interrupted run never reports success. Each process is stopped by the pid this script
-# started it as, in the reverse of the order they were started, and each database is dropped with
-# (force) once its server has no connection of this run's left to lose.
+# started it as, in the reverse of the order they were started (stop_bounded, below), and each
+# database is dropped with (force) once its server has no connection of this run's left to lose.
 #
 # A stop by signal reaches this shell more than once: a process group's SIGTERM is delivered to
 # this shell as well as to every process of the stack, a supervisor repeats the signal, and a run
 # already on its way out through the EXIT trap (a process of the stack took that same signal
-# first) has its own still to take. So the first thing cleanup does is ignore INT and TERM for
-# the rest of the run, and it returns at once when it is already running. What it must not do is
-# put either signal back on its default disposition, as `trap - INT TERM` here once did: a repeat
-# arriving then kills the run between the kills and the drops below, and a signal bash has taken
-# but not yet run the handler for is re-raised by bash at its next trap check, the `wait` in the
-# loop below among them ("run_pending_traps: bad value in trap_list[15]: (nil)", then "signal
+# first) has its own still to take. So the first thing cleanup does is ignore HUP, INT, TERM and
+# PIPE for the rest of the run, and it returns at once when it is already running. What it must not
+# do is put any of them back on its default disposition, as `trap - INT TERM` here once did: a
+# repeat arriving then kills the run between the kills and the drops below, and a signal bash has
+# taken but not yet run the handler for is re-raised by bash at its next trap check, the `wait` in
+# the loop below among them ("run_pending_traps: bad value in trap_list[15]: (nil)", then "signal
 # handler is SIG_DFL, resending 15 (SIGTERM) to myself"). Either way the two databases outlived
-# the run. Ignoring is also the one disposition a child inherits through the exec, so the psql
+# the run. HUP because a terminal that closes sends it to the whole group, and its default action
+# ends the run as TERM's does, between the kills and the drops. PIPE because the same stop can take
+# this script's output reader first: a group's SIGTERM stops the tee of `dev-stack.sh 2>&1 | tee`
+# too, the stop writes each of its lines to standard error, and a run whose reader is gone comes
+# here through the EXIT trap, which bash runs on the SIGPIPE of the next line it writes. Every line
+# cleanup writes then raises SIGPIPE, and left as it was that ended the run at the first of them,
+# after the broker's drop and before Dispatch's; ignored, a line nobody reads fails and the stop
+# goes on. Ignoring is also the one disposition a child inherits through the exec, so the psql
 # each drop runs is out of the reach of a signal sent to the whole group too, and no drop is
 # killed half done.
 cleanup_running=false
 cleanup() {
-  local rc="$1" pid
+  local rc="$1"
   if [ "$cleanup_running" = true ]; then
     return 0
   fi
   cleanup_running=true
   trap - EXIT
-  trap '' INT TERM
+  trap '' HUP INT TERM PIPE
   set +e
-  for pid in "$DISPATCH_PID" "$LISTENER_PID" "$LISTENER_KEEPER_PID" "$BROKER2_PID" "$BROKER_PID" "$NATS_PID" "$ISSUER_PID" "$KEEPER_PID"; do
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null
-      wait "$pid" 2>/dev/null
-    fi
-  done
+  stop_bounded dispatch "$DISPATCH_PID"
+  stop_bounded listener "$LISTENER_PID"
+  stop_bounded 'the listener port keeper' "$LISTENER_KEEPER_PID"
+  stop_bounded 'the second broker' "$BROKER2_PID"
+  stop_bounded broker "$BROKER_PID"
+  stop_bounded natsd "$NATS_PID"
+  stop_bounded dev-oidc-issuer "$ISSUER_PID"
+  stop_bounded 'the Dispatch port keeper' "$KEEPER_PID"
+  # The stands' container, when this run started one (airlock_stands_stop is the library's).
+  if [ -n "${AIRLOCK_STANDS_CONTAINER:-}" ]; then
+    airlock_stands_stop
+  fi
   # Best-effort: cleanup runs on every exit path and must never itself fail, even if the server is
   # already gone or a drop fails for some other reason.
   if [ "$BROKER_DB_CREATED" = true ]; then
@@ -460,6 +647,12 @@ cleanup() {
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
+# A shell cannot trap a signal it was started with ignored: a background job of a shell without
+# job control, or a command under nohup, starts so, and its INT trap above does not take. Such a
+# run cannot be stopped by Ctrl-C, and says so, before anything is created.
+if [ "$(trap -p INT)" = "trap -- '' SIGINT" ]; then
+  echo "dev-stack: SIGINT was ignored when this run started, so Ctrl-C cannot stop it; stop it with TERM" >&2
+fi
 # The two in-place restarts, asked for by signal and run by the wait at the end of this script
 # once the stack is up: a request that arrives during the start waits for it. Trapped from here
 # on, so neither signal can end the run past the trap above, which their default action would.
@@ -482,14 +675,14 @@ echo "dev-stack: created databases $BROKER_DB and $DISPATCH_DB" >&2
 for url in "$BROKER_DATABASE_URL" "$DISPATCH_DATABASE_URL"; do
   want="${url%%\?*}"
   want="${want##*/}"
-  connected="$(psql "$url" -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
+  connected="$(server_psql "$url" -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
   if [ "$connected" != "$want" ]; then
     echo "dev-stack: refused: a database URL of this run connects to '$connected', not $want; drop any dbname= from the Postgres URL's query string" >&2
     exit 1
   fi
 done
 # The banner names the databases without any password their URL carries.
-DISPLAY_SERVER="$(printf '%s' "$POSTGRES_SERVER" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
+DISPLAY_SERVER="$(pg_url_without_password "$POSTGRES_SERVER")"
 
 # --- Every binary this stack runs, in this run's own directory. One go build: the packages share
 # most of their closure, so building them together is one compile of it. With --binaries, a copy
@@ -506,12 +699,18 @@ else
     cd "$ENVOY_DIR"
     GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"
   )
+  for stack_entry in "${STACK_ENTRIES[@]}"; do
+    built="${stack_entry#*=}"
+    built="${built##*/}"
+    [ "$built" = "${stack_entry%%=*}" ] || mv "$BIN_DIR/$built" "$BIN_DIR/${stack_entry%%=*}"
+  done
 fi
 
-# --- Each process's readiness is read from its own log, never from a port this script chose:
-# await runs one reader until it prints a value, and fails the moment the process it watches is
-# gone. The readers each end in `|| true` territory: under this script's pipefail a grep that has
-# not matched yet is the normal case on every pass before the line is written, not a failure. ---
+# --- Each process's readiness is read from its own log, or from its answer at the port it reported
+# there, never from a port this script chose: await runs one reader until it prints a value, and
+# fails once a read comes back empty and the process it watches is gone. The readers each end in
+# `|| true` territory: under this script's pipefail a grep that has not matched yet is the normal
+# case on every pass before the line is written, not a failure. ---
 awaited=""
 await() {
   local name="$1" pid="$2" log="$3" source="$4" what="$5"
@@ -535,21 +734,16 @@ await() {
   return 1
 }
 
-# until_true runs a command until it succeeds, for the reason await exists: nothing here waits on
-# a fixed delay.
-until_true() {
-  local name="$1"
-  shift
-  local deadline=$((SECONDS + 60))
-  while ((SECONDS < deadline)); do
-    if "$@" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 0.25
-  done
-  echo "dev-stack: $name did not answer within 60s" >&2
-  return 1
-}
+# answered_at URL is await's reader for a server's answer: it prints "answered" once URL answers
+# with no HTTP error (curl -f), so a server is watched by its process as well as by its port. Each
+# request gives up after READINESS_REQUEST_SECONDS, 5 s unless DEV_STACK_READINESS_REQUEST_SECONDS
+# sets another, over the listener's own 3 s health budget, and that bound is what lets await's
+# deadline and its look at the process hold: the listener and Dispatch serve on a socket their
+# keeper holds for the whole run, so once either has exited the kernel still queues a request on
+# its port and no process ever answers it. A request with no bound waited there for good, and a
+# stop signal to this script with it, since bash runs a trap only once the command in the
+# foreground has returned.
+answered_at() { curl -sf --max-time "$READINESS_REQUEST_SECONDS" "$1" >/dev/null && echo answered; }
 
 issuer_url_in() { grep -o 'issuer listening url=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
 broker_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$1"; }
@@ -578,9 +772,10 @@ DISPATCH_URL="http://127.0.0.1:${DISPATCH_PORT}"
 # --- The local issuer. It writes every token file before it logs its URL, so once that line is
 # there the files are there to be read. Every sign-in it serves, through the code flow or the
 # device grant, signs the approver in: nothing here queues another person at its
-# POST /_dev/sign-in-as control route. The two client secrets are written under umask 077, so
-# neither is readable by anyone else even for a moment, and neither process takes one on its
-# command line. ---
+# POST /_dev/sign-in-as control route. The code flow's one callback is the broker's approval page
+# on loopback, which the issuer takes at the port the broker binds below. The two client secrets
+# are written under umask 077, so neither is readable by anyone else even for a moment, and
+# neither process takes one on its command line. ---
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$SIGNIN_SECRET_FILE")
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$DEVICE_SECRET_FILE")
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$MACHINE_SECRET_FILE")
@@ -592,7 +787,11 @@ env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
-  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
+  --token "$EXCHANGE_AUDIENCE=$PRIV_ACCOUNT=$PRIV_EXCHANGE_TOKEN_FILE" \
+  --token "$BROKER_AUDIENCE=$PRIV_ACCOUNT=$PRIV_POD_TOKEN_FILE" \
+  --token "$DISPATCH_AUDIENCE=$BROKER_ACCESS_ACCOUNT=$BROKER_ACCESS_TOKEN_FILE" \
+  --token "$LISTENER_AUDIENCE=$API_ACCOUNT=$DISPATCH_LISTENER_TOKEN_FILE" \
+  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE=http://127.0.0.1/signin/callback" \
   --device-flow "$DEVICE_CLIENT_ID=$DEVICE_SECRET_FILE" \
   --device-flow "$MACHINE_CLIENT_ID=$MACHINE_SECRET_FILE" \
   --sign-in-as "$APPROVER_LOGIN" \
@@ -603,7 +802,7 @@ ISSUER_URL="$awaited"
 echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
 
 # --- The bus: one nats-server in a process of this run's own (internal/testnats/cmd/natsd), with
-# JetStream in the work directory, since an agent's machine has no container runtime. -1 is
+# JetStream in the work directory, since an agent's machine may have no container runtime. -1 is
 # nats-server's own "choose a port". With --callout it runs behind the auth callout, whose seeds
 # it makes before it serves, so it starts before the brokers that read them.
 #
@@ -635,7 +834,7 @@ callout_after_natsd
 # --- The broker, on a fake Secrets Manager holding one agent-tier secret its owner's sessions get
 # without asking, one human-tier secret its owner approves — both owned by the person the issuer
 # signs in — and one the fleet's service owns, which this stack's machine reads and no person's
-# session does. BROKER_LISTEN_ADDR and BROKER_PUBLIC_URL are port 0: cmd/broker reads a public URL
+# session does. BROKER_LISTEN_ADDR and BROKER_PUBLIC_URL are port 0: cmd/cipherd reads a public URL
 # whose port is 0 as "derive it from whatever address I bind", and the real one is read from its
 # own listening line below. BROKER_METRICS_LISTEN_ADDR is port 0 too, so two stacks on one machine
 # never contend for the metrics port's fixed default. BROKER_DRAIN_SECONDS=0 turns off the
@@ -657,12 +856,28 @@ cat >"$FAKE_SECRETS_FILE" <<EOF
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
+# The broker's --project-access settings (PROJECT_ACCESS_ENV and AIRLOCK_ENV), and the airlock's
+# stands they name, started; without the option both are empty and nothing is started.
+project_access_broker_setup
+# start_with_only LOG SETTING... -- COMMAND [ARG...] starts COMMAND in the background, its standard
+# output and error to LOG, with exactly the SETTINGs (NAME=value) as its environment, which env -i
+# gave the processes this script starts, and sets started_pid. The settings reach it through the
+# environment of a subshell that execs it (lib/exec-env.sh's exec_with_env, which first takes the
+# export off every variable and function this script exports), never through a process's
+# arguments: env -i takes them as arguments, which are in the process list for any user of the
+# machine to read, and a database URL's password or a bearer token must not be.
+started_pid=""
+start_with_only() {
+  local log="$1"
+  shift
+  (exec_with_env "$@") >"$log" 2>&1 &
+  started_pid=$!
+}
 # start_broker starts one broker logging to $1 and sets started_pid: every broker of a run, as
 # every replica of one deployment, is the same binary and settings on the same database.
-started_pid=""
 start_broker() {
   : >"$1"
-  env -i PATH="$PATH" \
+  start_with_only "$1" PATH="$PATH" \
     BROKER_DATABASE_URL="$BROKER_POOL_DATABASE_URL" \
     BROKER_ACCESS_TOKEN_SECONDS="${BROKER_ACCESS_TOKEN_SECONDS:-900}" \
     BROKER_LISTEN_ADDR="127.0.0.1:0" \
@@ -681,25 +896,28 @@ start_broker() {
     BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
     BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
     BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
-    BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
+    BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN $PRIV_ACCOUNT=$PRIV_PROJECT=$PRIV_OWNER=$PRIV_SESSION" \
     BROKER_GOOGLE_OIDC_ISSUER="$ISSUER_URL" \
     BROKER_GOOGLE_OIDC_AUDIENCE="$MACHINE_CLIENT_ID" \
     BROKER_VM_SERVICES="$FLEET_SERVICE=$FLEET_ACCOUNT $PERSON_FLEET_SERVICE=$PERSON_FLEET_ACCOUNT" \
     BROKER_VM_EXCHANGE_ACCOUNTS="$PERSON_FLEET_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
     BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
-    BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
+    BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT $PRIV_SERVICE=$PRIV_ACCOUNT" \
     BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
+    "${PROJECT_ACCESS_ENV[@]}" \
+    "${AIRLOCK_ENV[@]}" \
     "${callout_broker_env[@]}" \
-    "$BIN_DIR/broker" >"$1" 2>&1 &
-  started_pid=$!
+    -- "$BIN_DIR/broker"
 }
 echo "dev-stack: starting broker..." >&2
 start_broker "$BROKER_LOG"
 BROKER_PID=$started_pid
 await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broker_addr_in
 BROKER_URL="http://$awaited"
-until_true "the broker's health check" curl -sf "$BROKER_URL/healthz"
+await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_URL/healthz" 'its health check answering' answered_at
 echo "dev-stack: broker $BROKER_URL" >&2
+# Under --project-access, the broker's proxy must be on the port this run picked, or the run stops.
+project_access_proxy_check
 callout_after_first_broker
 
 # --- This stack's pod, registered for the session name it exchanges under. The broker binds a
@@ -744,24 +962,41 @@ python3 "$HELD_PORT" keep --host 127.0.0.1 --port-file "$LISTENER_KEEPER_PORT_FI
 LISTENER_KEEPER_PID=$!
 await 'the listener port keeper' "$LISTENER_KEEPER_PID" "$LISTENER_KEEPER_LOG" \
   "$LISTENER_KEEPER_PORT_FILE" 'the port it holds' kept_port_in
+# The listener takes a bearer: the shared token every session and the banner's shell present, and
+# Dispatch's own account token for its audience, the identity it takes a send's role mark from
+# (ENVOY_DISPATCH_PRINCIPAL), as a deployment's listener does. A verifier closes /v1 to a caller
+# with no bearer, so the shared token is exported in the banner (ENVOY_TOKEN).
+LISTENER_API_TOKEN="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+# The listener's settings, its bearer token among them, reach held-port.py as start_with_only
+# gives them, and the listener as held-port.py hands on the ones it names with --pass, so the
+# token is in no process's arguments; ENVOY_LISTEN_FD and ENVOY_PUBLIC_URL, which hold the port,
+# are held-port.py's own (--fd-env, --env).
 start_listener() {
-  : >"$LISTENER_LOG"
-  python3 "$HELD_PORT" exec --from "$LISTENER_KEEPER_SOCKET" --fd-env ENVOY_LISTEN_FD -- \
-    env -i PATH="$PATH" \
-    ENVOY_LISTEN_FD=3 \
-    ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$LISTENER_MACHINE_ID" \
-    ENVOY_HOST_BRIDGE=127.0.0.1 \
-    ENVOY_PUBLIC_URL="http://127.0.0.1:{port}" \
-    ENVOY_AGENT_SECRETS_URL="$BROKER_URL" \
-    ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$LISTENER_TOKEN_FILE" \
-    NATS_URLS="$NATS_URL" \
-    "${callout_listener_env[@]}" \
-    "$BIN_DIR/listener" >"$LISTENER_LOG" 2>&1 &
-  LISTENER_PID=$!
+  local -a listener_settings=(PATH="$PATH"
+    ENVOY_LISTEN_HOST=127.0.0.1
+    ENVOY_API_TOKEN="$LISTENER_API_TOKEN"
+    ENVOY_OIDC_ISSUER="$ISSUER_URL"
+    ENVOY_OIDC_AUDIENCE="$LISTENER_AUDIENCE"
+    ENVOY_DISPATCH_PRINCIPAL="$API_ACCOUNT"
+    ENVOY_MACHINE_ID="$LISTENER_MACHINE_ID"
+    ENVOY_HOST_BRIDGE=127.0.0.1
+    ENVOY_AGENT_SECRETS_URL="$BROKER_URL"
+    ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$LISTENER_TOKEN_FILE"
+    NATS_URLS="$NATS_URL"
+    "${callout_listener_env[@]}")
+  local -a listener_passed=()
+  local setting
+  for setting in "${listener_settings[@]}"; do
+    listener_passed+=(--pass "${setting%%=*}")
+  done
+  start_with_only "$LISTENER_LOG" "${listener_settings[@]}" -- \
+    python3 "$HELD_PORT" exec --from "$LISTENER_KEEPER_SOCKET" --fd-env ENVOY_LISTEN_FD \
+    --env 'ENVOY_PUBLIC_URL=http://127.0.0.1:{port}' "${listener_passed[@]}" -- "$BIN_DIR/listener"
+  LISTENER_PID=$started_pid
   await listener "$LISTENER_PID" "$LISTENER_LOG" "$LISTENER_LOG" 'its address' listener_addr_in
   LISTENER_ADDRESS="$awaited"
-  until_true "the listener's health check" curl -sf "http://$LISTENER_ADDRESS/healthz"
+  await listener "$LISTENER_PID" "$LISTENER_LOG" "http://$LISTENER_ADDRESS/healthz" \
+    'its health check answering' answered_at
 }
 echo "dev-stack: starting listener..." >&2
 start_listener
@@ -775,33 +1010,45 @@ echo "dev-stack: listener $LISTENER_URL" >&2
 # deployment's. HOME and the XDG directories are this run's own, so the server reads no app.json
 # and writes no key where a developer keeps theirs. ---
 DISPATCH_TOKEN_VALUE="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+# Dispatch's --project-access settings (DISPATCH_ACCESS_ENV); empty without the option.
+project_access_dispatch_env
 echo "dev-stack: starting dispatch at $DISPATCH_URL..." >&2
 : >"$DISPATCH_LOG"
-python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD -- \
-  env -i PATH="$PATH" \
-  HOME="$WORK_DIR/dispatch-home" \
-  XDG_CONFIG_HOME="$WORK_DIR/dispatch-home/config" \
-  XDG_DATA_HOME="$WORK_DIR/dispatch-home/data" \
-  XDG_CACHE_HOME="$WORK_DIR/dispatch-home/cache" \
-  DATABASE_URL="$DISPATCH_DATABASE_URL" \
-  DISPATCH_LISTEN_FD=3 \
-  DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_SERVER_URL="$DISPATCH_URL" \
-  DISPATCH_IDENTITY=cookie \
-  DISPATCH_DEV_SIGNIN=1 \
-  DISPATCH_INSECURE_COOKIE=1 \
-  DISPATCH_AGENT_TOKEN="$DISPATCH_TOKEN_VALUE" \
-  DISPATCH_AGENT_SECRETS_URL="$BROKER_URL" \
-  DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$ACCOUNT_TOKEN_FILE" \
-  DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist" \
-  ENVOY_URL="$LISTENER_URL" \
-  NATS_URLS="$NATS_URL" \
-  "${callout_dispatch_env[@]}" \
-  "$BIN_DIR/dispatch" >"$DISPATCH_LOG" 2>&1 &
-DISPATCH_PID=$!
+dispatch_settings=(PATH="$PATH"
+  HOME="$WORK_DIR/dispatch-home"
+  XDG_CONFIG_HOME="$WORK_DIR/dispatch-home/config"
+  XDG_DATA_HOME="$WORK_DIR/dispatch-home/data"
+  XDG_CACHE_HOME="$WORK_DIR/dispatch-home/cache"
+  DATABASE_URL="$DISPATCH_DATABASE_URL"
+  DISPATCH_LISTEN_FD=3
+  DISPATCH_LISTEN_HOST=127.0.0.1
+  DISPATCH_SERVER_URL="$DISPATCH_URL"
+  DISPATCH_IDENTITY=cookie
+  DISPATCH_DEV_SIGNIN=1
+  DISPATCH_INSECURE_COOKIE=1
+  DISPATCH_AGENT_TOKEN="$DISPATCH_TOKEN_VALUE"
+  DISPATCH_AGENT_SECRETS_URL="$BROKER_URL"
+  DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$ACCOUNT_TOKEN_FILE"
+  DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist"
+  ENVOY_URL="$LISTENER_URL"
+  ENVOY_TOKEN="$LISTENER_API_TOKEN"
+  ENVOY_ACCOUNT_TOKEN_FILE="$DISPATCH_LISTENER_TOKEN_FILE"
+  NATS_URLS="$NATS_URL"
+  "${DISPATCH_ACCESS_ENV[@]}"
+  "${callout_dispatch_env[@]}")
+# held-port.py runs with exactly those settings (start_with_only) and hands Dispatch the ones it
+# names with --pass and nothing else, not what python3 adds to its own environment: the names are
+# its arguments, and the values, the database URL's password among them, are in no process's.
+dispatch_passed=()
+for setting in "${dispatch_settings[@]}"; do
+  dispatch_passed+=(--pass "${setting%%=*}")
+done
+start_with_only "$DISPATCH_LOG" "${dispatch_settings[@]}" -- \
+  python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD "${dispatch_passed[@]}" -- "$BIN_DIR/dispatch"
+DISPATCH_PID=$started_pid
 await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_LOG" 'the address it serves on' dispatch_addr_in
 DISPATCH_URL="http://$awaited"
-until_true "Dispatch's route index" curl -sf "$DISPATCH_URL/api/v1"
+await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_URL/api/v1" 'its route index answering' answered_at
 echo "dev-stack: dispatch $DISPATCH_URL" >&2
 
 # --- The stand-in for a Compute Engine metadata server, written here and started by whoever
@@ -945,6 +1192,7 @@ dev-stack: ready.
   export DISPATCH_URL=$DISPATCH_URL
   export DISPATCH_TOKEN=$DISPATCH_TOKEN_VALUE
   export ENVOY_URL=$LISTENER_URL
+  export ENVOY_TOKEN=$LISTENER_API_TOKEN
   export NATS_URLS=$NATS_URL
   export DEV_STACK_DIR=$WORK_DIR
   export DEV_STACK_PID=$$
@@ -956,6 +1204,7 @@ dev-stack: ready.
   export DEV_STACK_MACHINE_ACCOUNT=$FLEET_ACCOUNT
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
   export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$callout_exports
+$(project_access_exports)
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for
@@ -1067,11 +1316,15 @@ dev-stack: ready.
   Press Ctrl-C to stop every process and drop both databases.
 EOF
 
-# stop_process PID stops one process of the stack by its pid and reaps it. The wait is repeated
-# because a restart signal arriving meanwhile ends a wait early, with the process still there.
+# stop_process PID stops one process of the stack by its pid and reaps it, when it is still a
+# running child of this shell (running_child). The wait is repeated because a restart signal
+# arriving meanwhile ends a wait early, with the process still there; the look before each pass is
+# running_child too, since kill -0 on a pid another process now holds would never fail and the
+# wait on it would fail at once, a loop with no end.
 stop_process() {
+  running_child "$1" || return 0
   kill "$1" 2>/dev/null || true
-  while kill -0 "$1" 2>/dev/null; do
+  while running_child "$1"; do
     wait "$1" 2>/dev/null || true
   done
 }

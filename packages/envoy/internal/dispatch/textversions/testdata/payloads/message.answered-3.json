@@ -1,0 +1,53 @@
+{
+  "id": 29670,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 308,
+  "type": "message.answered",
+  "actor": {
+    "kind": "session",
+    "id": "01a13b68-d957-74b8-ad2b-b642fd17bfd9",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor ",
+      "tmux": "lorem ipsu",
+      "pane": "lore",
+      "session_title": "lorem ipsum dolor sit am"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-25T18:03:46.634817Z",
+  "payload": {
+    "id": "3350fd80-212c-4d81-98f7-55a4110c1dfe",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit",
+    "author": {
+      "id": "01a13b68-d957-74b8-ad2b-b642fd17bfd9",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor ",
+        "host": "lor",
+        "pane": "lore",
+        "tmux": "lorem ipsu",
+        "machine": "lorem ipsum d",
+        "session_title": "lorem ipsum dolor sit am"
+      }
+    },
+    "target": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-25T18:03:46.634817Z",
+    "deliveries": [],
+    "reply_body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+    "in_reply_to": "e0e56fca-e2ce-47e8-abd1-9cd505cb281c",
+    "broadcast_id": null,
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ]
+  }
+}

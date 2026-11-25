@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -62,14 +63,16 @@ const (
 	// the proof's 'jti' and target URI, so a captured proof presented a second time inside its
 	// acceptance window is refused by whichever listener of a deployment receives it
 	// (cmd/listener/brokerauth.go). Its records are the only ones Envoy keeps on a bucket TTL
-	// alone: nothing reads a record back, and a key that has outlived the window its proof could
-	// be presented in says nothing, so each key expires rather than being deleted.
+	// alone: nothing but a create of the same key reads a record back, and a key that has outlived
+	// the window its proof could be presented in says nothing, so each key expires rather than being
+	// deleted, except the record an edge listener deletes to give a proof back after a 503 it
+	// answered before serving anything (proofSpend.release in cmd/listener).
 	DPoPProofBucket = "envoy_dpop_proofs"
 	// WebhookRedeliveryBucket holds the cursor and records of Dispatch's sweep of the GitHub App
 	// webhook's failed deliveries (internal/dispatch/redeliver).
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
 	// PrivateProjectsBucket holds one key per private project, its value the repositories
-	// Dispatch maps to it, and a key exists exactly while its project is private: Dispatch writes
+	// Dispatch names for it, and a key exists exactly while its project is private: Dispatch writes
 	// it and the listeners read it to hold each session to its token's projects
 	// (dispatch://INFRA-3862). It is deliberately in no list of the buckets a static grant
 	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
@@ -81,10 +84,11 @@ const (
 // them: the interest and role-claim buckets (internal/store), the session registry and the
 // known-session store (internal/session), the Legion agent registry (internal/legionagents), the
 // CI state bucket, which only a listener with the GitHub webhook route opens (internal/cistore),
-// and the spent-proof bucket, which only a listener that takes broker access tokens opens
-// (cmd/listener/brokerauth.go). The listener's keeper raises each of them (WithKeptBuckets), and
-// envoy-infra grants the listener and the host each one's calls
-// (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and granted.
+// and the spent-proof bucket, which every listener opens at its start so an edge listener, whose
+// grant creates no bucket, finds it (cmd/listener/brokerauth.go). The listener's keeper raises
+// each of them (WithKeptBuckets), and envoy-infra grants the listener and the host each one's
+// calls (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and
+// granted.
 // A bucket named here is granted to the host and Dispatch users too; the note on that file's
 // ListenerBuckets loop (listenerGrant) says where what that widens is written down.
 // Each call returns a fresh slice, so no caller changes another's list.
@@ -144,9 +148,61 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 // DeliverSubject is the relay subject of session sessionID: the subject the listener that owns the
 // session publishes each message of its consumer (SessionConsumerName) on, and the session
 // subscribes to. Every message a session on NATS gets travels on it: no session takes a message
-// from a plain NATS subscription of its own ("Session consumers" in packages/envoy/AGENTS.md).
+// from a plain NATS subscription of its own (packages/envoy/docs/architecture.md, "Session
+// consumers" under "Runtime shape").
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
+}
+
+// RelayReplyPrefix begins the receipt family of the edge listeners: an edge machine's relay frame
+// receipts are this prefix and its machine id, then a nuid, the session id and a token
+// (relayreply.<machine>.<nuid>.<session id>.<token>; natsgrant.EdgeRelayReplyPrefix).
+// Its grant subscribes only its own machine's and publishes every machine's, since the listener
+// serving a session's relay socket answers on the family of the machine holding the session's
+// consumer (natsgrant.Edge). The edge's session relay names its frames' receipts here, and the
+// relay socket publishes each receipt its client sends on the subject the frame named
+// (cmd/listener's startSessionRelays and relay_socket.go). No stream subject captures it
+// (StreamCaptures), so a receipt travels over core NATS, as the frame does, and the stream stores
+// none.
+const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
+
+// SessionReplySubject is the reply subject of one request made of session sessionID,
+// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), then
+// the session's id, then a token of 128 random bits (crypto/rand.Text, 26 base32 characters).
+// Every request a session answers carries one - the relay's frames (cmd/listener's
+// sessionRelays), the listener's connection probe and Dispatch's agent stream replay
+// (internal/dispatch/agentstream). The id is there so that a grant can admit a session's own
+// replies alone (SessionReplies) and the relay can refuse a reply that names another session
+// than its frame's; the token is random so that no session can guess the subject of a request
+// made of another, since it is derived from nothing a session can see, and a session's grant
+// reads no other session's relay or control subject. A session's own grant, the one the NATS auth
+// service gives it (natsgrant.Session), publishes SessionReplies in place of every _INBOX.
+// subject, so a session on that grant can neither answer a request made of another session nor
+// guess the subject of one. The relay moves a frame only on a reply whose subject names the
+// session the frame was sent to (sessionRelays.onReply), and logs the first reply that names
+// another at WARN, then at most one a minute. A holder of the shared session user or of a host
+// user reads every session's relay subject and may publish to every _INBOX. subject, so none of
+// this holds against it: the relay reads the session a reply subject names, not who published the
+// reply. sessionID is one subject token, as every session with a consumer's is
+// (SessionConsumerName).
+func SessionReplySubject(inbox, sessionID string) string {
+	return inbox + "." + sessionID + "." + rand.Text()
+}
+
+// SessionReplies is the one publish entry under _INBOX. a grant of session sessionID needs: it
+// admits every reply subject SessionReplySubject makes for that session, and none it makes for
+// another, nor a requester's plain inbox (_INBOX.<id> or nats.go's _INBOX.<id>.<token>).
+//
+// sessionID must be one subject token: no dot, no wildcard (* or >) and no whitespace, the rule
+// SessionConsumerName holds a session's id to. SessionReplies does not check it, so its caller
+// must: an id of * admits every session's replies, and since the entry ends in >, the entry of an
+// id also admits the replies of every id that extends it by a dot (a's entry admits a.b's, and
+// a.b's admits a.b.c's), so no session id may hold a dot. An id such as a* is one plain token and
+// admits nothing extra. The one builder of a session grant checks it first: natsgrant.Session
+// calls natsgrant.SessionToken before it calls SessionReplies, and the NATS auth service refuses
+// such an id as bad_session_id (natscallout's decideSession).
+func SessionReplies(sessionID string) string {
+	return nats.InboxPrefix + "*." + sessionID + ".>"
 }
 
 // ConnectionProbeHeader is the one header the listener's connection probe carries on a session's
@@ -234,14 +290,16 @@ var streamSubjects = []string{
 
 // listenerOwnStreamLanes are the subjects the stream carries for the listener itself: the kept
 // lane, holding the role messages it could not deliver and the per-role drain cursors over them
-// (KeptTopicPrefix), and the resume lane, holding where each deleted session consumer stopped
-// (SessionResumeSubjectPrefix). Each is the stream's alone and no consumer filter takes one
-// (consumerFilterSubjects): a kept copy still carries its role topic in the envelope, so a
-// consumer handed one would deliver it as a role message and re-trigger role delivery on every
-// listener, and a drain cursor and a resume record are no envelope at all. The listener reads
-// both lanes itself instead (cmd/listener/role_keep.go, SessionConsumers). A lane added here is
-// carried by the stream and kept out of every consumer's filter by that one list.
-var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"}
+// (KeptTopicPrefix), the resume lane, holding where each deleted session consumer stopped
+// (SessionResumeSubjectPrefix), and the takeover lane, holding each role a session took from
+// another and how far the copy of the other's role messages has gone (TakeoverSubjectPrefix).
+// Each is the stream's alone and no consumer filter takes one (consumerFilterSubjects): a kept
+// copy still carries its role topic in the envelope, so a consumer handed one would deliver it as
+// a role message and re-trigger role delivery on every listener, and a drain cursor, a resume
+// record and a takeover record are no envelope at all. The listener reads the lanes itself instead
+// (cmd/listener/role_keep.go, cmd/listener/role_takeover.go, SessionConsumers). A lane added here
+// is carried by the stream and kept out of every consumer's filter by that one list.
+var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">", TakeoverSubjectPrefix + ">"}
 
 // ListenerOwnLanes reports the lanes the stream carries for the listener itself
 // (listenerOwnStreamLanes), each as the prefix every topic of that lane begins with
@@ -315,6 +373,10 @@ var privateStreamSubjects = []string{
 	// the stream sequence its delivery stopped at (SessionResumeSubject): no session may
 	// register a topic under it and no replay hands one out.
 	SessionResumeSubjectPrefix + ">",
+	// A role a session took from another, which names both sessions and how far the copy of the
+	// previous holder's role messages has read (TakeoverSubject): the listener alone reads the
+	// lane, and no session may register a topic under it.
+	TakeoverSubjectPrefix + ">",
 }
 
 // ControllerNoticeRole reports the Legion role token whose holder topic's notices are for, and
@@ -336,6 +398,26 @@ func ControllerNoticeRole(topic string) (string, bool) {
 		return "", false
 	}
 	return contracts.ControllerRoleToken(project), true
+}
+
+// ControllerNoticeLane is ControllerNoticeRole read backwards: the notice lane whose holder role
+// is, and whether role is a Legion project's controller role at all. The project is read out of
+// role by the shape contracts.ControllerRoleToken gives it, taken from that func itself, and the
+// lane built from it must name role again, so a role token of any other shape names no lane.
+func ControllerNoticeLane(role string) (string, bool) {
+	prefix, suffix, _ := strings.Cut(contracts.ControllerRoleToken("\x00"), "\x00")
+	project, found := strings.CutPrefix(role, prefix)
+	if !found {
+		return "", false
+	}
+	if project, found = strings.CutSuffix(project, suffix); !found {
+		return "", false
+	}
+	lane := contracts.LegionNoticeTopicPrefix + project + contracts.ControllerNoticeSuffix
+	if named, isLane := ControllerNoticeRole(lane); !isLane || named != role {
+		return "", false
+	}
+	return lane, true
 }
 
 // NamesControllerNoticeLane reports whether any of topics is a controller notice lane
@@ -367,7 +449,7 @@ func NamesControllerNoticeLane(topics []string) bool {
 // holding `*` or `>` makes a wildcard of its "own" agent subject, which is no session's alone and
 // counts too.
 func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
-	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) }) {
+	if !OverlapsPrivateStreamSubject(topic) {
 		return false
 	}
 	if role, lane := ControllerNoticeRole(topic); lane {
@@ -376,6 +458,14 @@ func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	own := contracts.LegacyAgentSubject(sessionID)
 	twin, _ := contracts.LegacyTwin(topic)
 	return (topic != own && twin != own) || strings.ContainsAny(sessionID, "*>")
+}
+
+// OverlapsPrivateStreamSubject reports whether topic overlaps a private stream subject
+// (privateStreamSubjects) under NATS wildcard rules, whoever's that subject is: the first question
+// ReachesPrivateStreamSubject asks, so a topic it answers false for reaches no session's private
+// subject, whatever session or roles a caller would weigh it for.
+func OverlapsPrivateStreamSubject(topic string) bool {
+	return slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) })
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes
@@ -448,7 +538,7 @@ func readStreamSubjects(js nats.JetStreamContext) ([]string, error) {
 // (keepStream), so while two builds run, the older one never reverts what the newer one set.
 // The consumer cap (streamMaxConsumers) takes none: like the copies and the byte limit it is
 // only ever raised, so two builds that compile different caps never lower each other's.
-const streamConfigGeneration = 4
+const streamConfigGeneration = 5
 
 // streamGenerationKey is the stream metadata key that holds the generation of its settings. A
 // stream without it was last set by a build before generations: generation 0.

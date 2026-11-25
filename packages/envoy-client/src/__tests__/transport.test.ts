@@ -1,17 +1,35 @@
 import { describe, expect, test } from "bun:test";
-import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import { readFileSync } from "node:fs";
+import {
+  type Envelope,
+  EnvelopeSchema,
+  ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  MINTED_DEDUPE_KEY_PATTERN,
+} from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import envelopeWithoutRole from "../../../contracts/fixtures/envelope-without-role.json";
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
+import { delivered } from "../../test/delivered";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
+import { createConsumerDelivery, RelayHeader, type RelayReply } from "../consumer-delivery";
+import { DedupeIdentitySchema, renderInbound } from "../delivery";
+import { createDeliveryLedger, type FailureNotice } from "../delivery-ledger";
+import { subscriptionRemovedTopics } from "../dispatch-subscribe";
 import { machineID } from "../machine";
 import type { TmuxPlace } from "../tmux-place";
+import {
+  publishConfirmationText,
+  publishResultDetails,
+  sendConfirmationText,
+} from "../tool-contract";
 import {
   createEnvoyClient,
   type DeliveryAnswer,
   EnvoyApiError,
   EnvoySendUnconfirmedError,
+  type KeyTakenResult,
   mayActOnRoleRecord,
   newClientInstanceID,
   parseSubscribeAnswer,
@@ -491,11 +509,13 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const result = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_target",
-      message: "hello",
-    });
+    const result = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hello",
+      })
+    );
 
     expect(result.envelope.topic).toBe("notifications.agent.ses_target");
     expect(result.recipient).toBe("ses_target");
@@ -539,6 +559,128 @@ describe("EnvoyClient", () => {
     });
   });
 
+  // The listener answers a repeat of a key another sender's message holds with that message's ids
+  // and times alone, its text fields empty (`requestSender.answer`), on a send, a publish's 200
+  // and a role publish's 202 kept. Each reads as a key-taken result, not delivered, naming that
+  // message's event id. The control is the envelope schema every answer was read by before,
+  // which throws on that body; and a whole duplicate answer still reads as a delivered result.
+  test("a send or a publish whose key another sender's message holds reads as key taken, not as a delivery", async () => {
+    const taken = {
+      event_id: "event-alice",
+      source: "",
+      source_event_id: "",
+      topic: "notifications.agent.ses_target",
+      dedupe_key: "agent.ses_target.key",
+      issued_at: 7,
+      payload_summary: "",
+      trace_id: "",
+      duplicate: true,
+    };
+    expect(() => EnvelopeSchema.parse(taken)).toThrow();
+    const whole = {
+      ...taken,
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-alice",
+      payload_summary: "hello",
+      trace_id: "trace-alice",
+    };
+    const recorded = recordFetch([
+      jsonResponse({
+        ...taken,
+        recipient: "ses_target",
+        recipient_state: "live",
+        state: "connected",
+      }),
+      jsonResponse(taken),
+      new Response(
+        JSON.stringify({ ...taken, kept: true, kept_reason: "unclaimed", kept_until: 9 }),
+        { status: 202, headers: { "Content-Type": "application/json" } }
+      ),
+      jsonResponse({ ...whole, recipient: "ses_target" }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+    const keyTaken: KeyTakenResult = {
+      keyTaken: { eventId: "event-alice", topic: "notifications.agent.ses_target", issuedAt: 7 },
+      delivered: false,
+    };
+
+    expect(
+      await client.send({
+        sourceSessionID: "ses_bob",
+        targetSessionID: "ses_target",
+        message: "hi",
+      })
+    ).toEqual(keyTaken);
+    expect(
+      await client.publish({
+        sourceSessionID: "ses_bob",
+        topic: "notifications.team.x",
+        message: "hi",
+      })
+    ).toEqual(keyTaken);
+    expect(
+      await client.publish({
+        sourceSessionID: "ses_bob",
+        topic: "notifications.role.r",
+        message: "hi",
+      })
+    ).toEqual(keyTaken);
+    const repeat = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hi",
+      })
+    );
+    expect(repeat).toMatchObject({ duplicate: true, envelope: { event_id: "event-alice" } });
+  });
+
+  // The listener gives the key-taken answer only to a request that names it (`Envoy-Reads:
+  // key-taken`, listenerwire.ReadsHeader), and any other the envelope it built for the repeat. A
+  // send or a publish that names its source session names it; one that names none does not, since
+  // the listener cannot tell its own retry from another sessionless sender's request. The control
+  // is the sessionless call, which carries no such header.
+  test("a send or a publish that names its session says it reads the key-taken answer, and one that names none does not", async () => {
+    const whole = {
+      event_id: "event-own",
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-own",
+      topic: "notifications.agent.ses_target",
+      dedupe_key: "agent.ses_target.key",
+      issued_at: 7,
+      payload_summary: "hello",
+      trace_id: "trace-own",
+      recipient: "ses_target",
+    };
+    const recorded = recordFetch([
+      jsonResponse(whole),
+      jsonResponse(whole),
+      jsonResponse(whole),
+      jsonResponse(whole),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_target",
+      message: "hi",
+    });
+    await client.publish({
+      sourceSessionID: "ses_sender",
+      topic: "notifications.team.x",
+      message: "hi",
+    });
+    await client.send({ sourceSessionID: "", targetSessionID: "ses_target", message: "hi" });
+    await client.publish({ sourceSessionID: "", topic: "notifications.team.x", message: "hi" });
+
+    expect(recorded.requests.map((request) => request.headers.get("Envoy-Reads"))).toEqual([
+      "key-taken",
+      "key-taken",
+      null,
+      null,
+    ]);
+  });
+
   test("a send reads the target's state", async () => {
     const envelope = {
       event_id: "event-stopped",
@@ -565,16 +707,20 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const stopped = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_target",
-      message: "hello",
-    });
-    const connected = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_target",
-      message: "hello",
-    });
+    const stopped = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hello",
+      })
+    );
+    const connected = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hello",
+      })
+    );
 
     expect(stopped).toMatchObject({
       recipientState: "gone",
@@ -603,11 +749,13 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const result = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_target",
-      message: "hello",
-    });
+    const result = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hello",
+      })
+    );
 
     expect(result.state).toBe("connected");
     expect(result.lastSeen).toBeUndefined();
@@ -631,12 +779,14 @@ describe("EnvoyClient", () => {
       jsonResponse(envelope),
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
-    const publish = () =>
-      client.publish({
-        sourceSessionID: "ses_sender",
-        topic: "notifications.team.deploy-squad.all",
-        message: "broadcast",
-      });
+    const publish = async () =>
+      delivered(
+        await client.publish({
+          sourceSessionID: "ses_sender",
+          topic: "notifications.team.deploy-squad.all",
+          message: "broadcast",
+        })
+      );
 
     expect(await publish()).toMatchObject({ recipients: 3, recipientsConnected: 2 });
     // Zero is a count the listener sends, not an absence: it is the answer that says the message
@@ -721,12 +871,14 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const result = await client.publish({
-      sourceSessionID: "ses_sender",
-      topic: "notifications.role.controller",
-      message: "broadcast",
-      payload: `{"kind":"role-event"}`,
-    });
+    const result = delivered(
+      await client.publish({
+        sourceSessionID: "ses_sender",
+        topic: "notifications.role.controller",
+        message: "broadcast",
+        payload: `{"kind":"role-event"}`,
+      })
+    );
     expect(result).toMatchObject({ envelope: { event_id: "event-2" } });
     expect(result.holder).toBeUndefined();
 
@@ -766,8 +918,10 @@ describe("EnvoyClient", () => {
       jsonResponse(envelope),
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
-    const publish = (topic: string) =>
-      client.publish({ sourceSessionID: "ses_sender", topic, message: "broadcast" });
+    const publish = async (topic: string) =>
+      delivered(
+        await client.publish({ sourceSessionID: "ses_sender", topic, message: "broadcast" })
+      );
 
     const role = await publish("notifications.role.controller");
     const taken = await publish("notifications.team.deploy-squad.all");
@@ -812,12 +966,14 @@ describe("EnvoyClient", () => {
       }),
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
-    const publish = (role: string) =>
-      client.publish({
-        sourceSessionID: "ses_sender",
-        topic: `notifications.role.${role}`,
-        message: "the worker is stalled",
-      });
+    const publish = async (role: string) =>
+      delivered(
+        await client.publish({
+          sourceSessionID: "ses_sender",
+          topic: `notifications.role.${role}`,
+          message: "the worker is stalled",
+        })
+      );
 
     const result = await publish("legion-architect");
     expect(result.kept).toBe(true);
@@ -845,7 +1001,7 @@ describe("EnvoyClient", () => {
           headers: { "Content-Type": "application/json" },
         }
       );
-    const delivered = jsonResponse({
+    const accepted = jsonResponse({
       event_id: "event-delivered",
       source: "agent",
       source_event_id: "agent.ses_sender.event-delivered",
@@ -857,15 +1013,17 @@ describe("EnvoyClient", () => {
       trace_id: "trace-delivered",
       holder: "ses_architect",
     });
-    const recorded = recordFetch([delivered, refused()]);
+    const recorded = recordFetch([accepted, refused()]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
     // An unset `keep` sends no field at all, so an older listener sees an unchanged request.
-    const plain = await client.publish({
-      sourceSessionID: "ses_sender",
-      topic: "notifications.role.legion-architect",
-      message: "ping",
-    });
+    const plain = delivered(
+      await client.publish({
+        sourceSessionID: "ses_sender",
+        topic: "notifications.role.legion-architect",
+        message: "ping",
+      })
+    );
     expect(plain.kept).toBeUndefined();
     expect(plain.keptReason).toBeUndefined();
     expect(await recorded.requests[0]?.json()).not.toHaveProperty("keep");
@@ -1294,16 +1452,20 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const stalled = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_stalled",
-      message: "hello",
-    });
-    const older = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_stalled",
-      message: "hello",
-    });
+    const stalled = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_stalled",
+        message: "hello",
+      })
+    );
+    const older = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_stalled",
+        message: "hello",
+      })
+    );
 
     expect(stalled.recipientState).toBe("unresponsive");
     expect(older.recipientState).toBe("live");
@@ -1331,16 +1493,20 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const timed = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_stalled",
-      message: "hello",
-    });
-    const untimed = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_stalled",
-      message: "hello",
-    });
+    const timed = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_stalled",
+        message: "hello",
+      })
+    );
+    const untimed = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_stalled",
+        message: "hello",
+      })
+    );
 
     expect(timed.lastSeen).toBe(1_700_000_000_000);
     expect(untimed.lastSeen).toBeUndefined();
@@ -2358,5 +2524,288 @@ describe("mayActOnRoleRecord", () => {
     expect(mayActOnRoleRecord("another-process", undefined, true)).toBe(false);
     expect(mayActOnRoleRecord("another-process", "", true)).toBe(false);
     expect(mayActOnRoleRecord("", "", true)).toBe(true);
+  });
+});
+
+/**
+ * Every reader of an envelope a listener delivers in this package, given one that carries `role`:
+ * the field the listener stores on a message Dispatch's API sent to a role's holder for a route to
+ * that role, and echoes in the answer to that send. Each row reads one envelope with the field and
+ * without it, and checks that the reader reads every other field as before. A reader that parses
+ * with `EnvelopeSchema` knows the field now, and the builds released before it did not: the row
+ * named "released builds" reads the envelope with the schema those builds parse with. A reader
+ * with a schema of its own (`InboundEnvelopeSchema`, `DedupeIdentitySchema`) or with none names no
+ * `role` in this build either, so its row is also how a released build reads the field.
+ */
+describe("an envelope that carries the role field", () => {
+  const ROLE = "legion-legion-legion-1-architect";
+  const ROLE_TOPIC = `notifications.role.${ROLE}`;
+  const SESSION = "ses_target";
+  const AGENT = `notifications.agent.${SESSION}`;
+  /** Every field `EnvelopeSchema` names except `role`, each one set, on `SESSION`'s own subject. */
+  const withoutRole = {
+    ...(envelopeWithoutRole as Omit<Envelope, "role">),
+    topic: AGENT,
+    dedupe_key: `agent.${SESSION}.0123456789abcdef0123456789abcdef`,
+  } satisfies Omit<Envelope, "role">;
+  const withRole = { ...withoutRole, role: ROLE };
+
+  /**
+   * Checks that `read`, one reader's read of `withRole`, carries the field on its envelope and is
+   * otherwise `expected`, the same reader's read of `withoutRole`.
+   */
+  function expectReadAsWithout(read: { readonly envelope?: object }, expected: unknown): void {
+    const { role, ...envelope } = (read.envelope ?? {}) as Record<string, unknown>;
+    expect(role).toBe(ROLE);
+    const rest: unknown = { ...read, envelope };
+    expect(rest).toEqual(expected);
+  }
+
+  const targetedDispatchPayload = readFileSync(
+    new URL("../../../contracts/fixtures/dispatch-targeted-delivery.json", import.meta.url),
+    "utf8"
+  );
+
+  test("the envelope these rows read names every field of the contract, and the contract reads it whole", () => {
+    expect(Object.keys(withRole).sort()).toEqual(Object.keys(EnvelopeSchema.shape).sort());
+    expect(EnvelopeSchema.parse(withRole)).toEqual(withRole);
+  });
+
+  // Commit 9d258a95ea added `role` to `EnvelopeSchema` and changed nothing else in it, so the
+  // schema without that key is the one every build released before it parses with, and the one a
+  // send's and a publish's answer extend there (`EnvelopeResponseSchema`, `PublishResponseSchema`).
+  // `z.object` strips a key it does not name, and `.extend` keeps that.
+  test("released builds (EnvelopeSchema before the field): the field is dropped, and every other field reads as before", () => {
+    const released = EnvelopeSchema.omit({ role: true });
+    const read = released.parse(withRole);
+
+    expect("role" in read).toBe(false);
+    expect(read).toEqual(released.parse(withoutRole));
+    expect(read).toEqual(withoutRole);
+  });
+
+  /** What a send's answer adds to the envelope it echoes (`sendResponse`, `cmd/listener/api.go`). */
+  const sendAnswer = {
+    recipient: SESSION,
+    recipient_state: "unresponsive",
+    state: "connected",
+    last_seen: Date.parse("2026-11-18T08:58:00Z"),
+    duplicate: false,
+  } as const;
+
+  async function sendAnswered(envelope: object) {
+    const recorded = recordFetch([jsonResponse({ ...envelope, ...sendAnswer })]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+    return delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: SESSION,
+        message: "Review the plan",
+      })
+    );
+  }
+
+  test("send (transport.ts, EnvelopeResponseSchema): an answer with the field reads as the answer without it, and its tool line is the same", async () => {
+    const before = await sendAnswered(withoutRole);
+    const after = await sendAnswered(withRole);
+
+    expectReadAsWithout(after, before);
+    expect(before.envelope).toEqual({ ...withoutRole, ...sendAnswer });
+    expect(before).toMatchObject({
+      recipient: SESSION,
+      confirmed: true,
+      recipientState: "unresponsive",
+      state: "connected",
+      lastSeen: sendAnswer.last_seen,
+      duplicate: false,
+    });
+    expect(sendConfirmationText(after)).toBe(sendConfirmationText(before));
+  });
+
+  for (const [label, status, answer] of [
+    ["stored for the role's live holder", 200, { holder: "ses_holder", holder_state: "live" }],
+    [
+      "kept for the role's next holder",
+      202,
+      {
+        holder: "ses_holder",
+        holder_state: "unresponsive",
+        last_seen: Date.parse("2026-11-18T08:50:00Z"),
+        kept: true,
+        kept_reason: "holder_lapsed",
+        kept_until: Date.parse("2026-11-18T10:00:00Z"),
+      },
+    ],
+  ] as const) {
+    test(`publish (transport.ts, PublishResponseSchema): an answer ${label} with the field reads as the answer without it, and its tool line and details are the same`, async () => {
+      const published = async (envelope: object) => {
+        const recorded = recordFetch([
+          Response.json({ ...envelope, topic: ROLE_TOPIC, ...answer }, { status }),
+        ]);
+        const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+        return delivered(
+          await client.publish({
+            sourceSessionID: "ses_sender",
+            topic: ROLE_TOPIC,
+            message: "Review the plan",
+          })
+        );
+      };
+      const before = await published(withoutRole);
+      const after = await published(withRole);
+
+      expectReadAsWithout(after, before);
+      expect(before.envelope).toEqual({ ...withoutRole, topic: ROLE_TOPIC, ...answer });
+      expect(before.holder).toBe("ses_holder");
+      expect(publishConfirmationText(after, { senderNamed: true })).toBe(
+        publishConfirmationText(before, { senderNamed: true })
+      );
+      expect(publishResultDetails(after)).toEqual(publishResultDetails(before));
+    });
+  }
+
+  test("renderInbound (delivery.ts, InboundEnvelopeSchema): a frame with the field renders the card it renders without it, and keeps the field on the envelope it hands on", () => {
+    const before = renderInbound(JSON.stringify(withoutRole), SESSION, AGENT);
+    const after = renderInbound(JSON.stringify(withRole), SESSION, AGENT);
+
+    expectReadAsWithout(after, before);
+    expect(before.envelope).toEqual(withoutRole);
+    expect(before.content).toContain("id: evt-role-field");
+    expect(before.content).not.toContain("unrecognised");
+  });
+
+  test("renderInbound (delivery.ts): a Dispatch delivery with the field, as Dispatch's API sends one for a route to a role, reads its delivery, actor and card as without it", () => {
+    const dispatchFrame = (envelope: object) =>
+      JSON.stringify({ ...envelope, source: "dispatch", payload: targetedDispatchPayload });
+    const before = renderInbound(dispatchFrame(withoutRole), SESSION, AGENT);
+    const after = renderInbound(dispatchFrame(withRole), SESSION, AGENT);
+
+    expectReadAsWithout(after, before);
+    expect(before.delivery).toMatchObject({ resource: "message", mode: "btw" });
+    expect(before.dispatchActor).toEqual({ kind: "user", id: "alice" });
+  });
+
+  test("renderInbound's tolerant read (TolerantInboundEnvelopeSchema): a frame with the field and a member it cannot read renders as without the field", () => {
+    const unreadable = { issued_at: "not a time" };
+    const before = renderInbound(JSON.stringify({ ...withoutRole, ...unreadable }), SESSION, AGENT);
+    const after = renderInbound(JSON.stringify({ ...withRole, ...unreadable }), SESSION, AGENT);
+
+    expectReadAsWithout(after, before);
+    expect(before.content).toContain("unrecognised: issued_at");
+    expect(before.content).toContain("id: evt-role-field");
+  });
+
+  test("the relay's repeat check (consumer-delivery.ts parseIdentity, DedupeIdentitySchema): a frame with the field is looked up under the identity it has without it", () => {
+    const lookedUp = (envelope: object) => {
+      const asked: unknown[] = [];
+      const replies: RelayReply[] = [];
+      const delivery = createConsumerDelivery({
+        sessionID: SESSION,
+        host: { deliver: () => undefined, gap: () => undefined, log: () => undefined },
+        publish: (_reply, body) => {
+          replies.push(body);
+        },
+        ledger: {
+          // Written already: the relay answers the frame done and hands the host nothing.
+          delivered: (identity) => {
+            asked.push(identity);
+            return true;
+          },
+          liveFailed: async () => true,
+        },
+        persist: () => true,
+        every: () => () => undefined,
+      });
+      const headers: Record<string, string> = {
+        [RelayHeader.subject]: AGENT,
+        [RelayHeader.streamSeq]: "7",
+        [RelayHeader.streamID]: "stream-1",
+        [RelayHeader.delivered]: "1",
+        [RelayHeader.storedAt]: "2026-11-18T09:00:01Z",
+      };
+      delivery.receive({
+        data: new TextEncoder().encode(JSON.stringify(envelope)),
+        headers: { get: (name) => headers[name] ?? "" },
+        reply: "_INBOX.7",
+      });
+      delivery.close();
+      return { asked, replies };
+    };
+    const before = lookedUp(withoutRole);
+
+    expect(lookedUp(withRole)).toEqual(before);
+    expect(before).toEqual({
+      asked: [
+        {
+          event_id: withoutRole.event_id,
+          dedupe_key: withoutRole.dedupe_key,
+          source: "agent",
+          source_event_id: withoutRole.source_event_id,
+        },
+      ],
+      replies: ["received", "done"],
+    });
+    expect(DedupeIdentitySchema.parse(withRole)).toEqual(DedupeIdentitySchema.parse(withoutRole));
+  });
+
+  test("the failure notice (delivery-ledger.ts liveFailed): a frame with the field that the relay gives up on is named as without it", async () => {
+    const shown = async (envelope: object) => {
+      const notices: FailureNotice[] = [];
+      const ledger = createDeliveryLedger({
+        host: {
+          sessionID: () => SESSION,
+          followedSubjects: () => [AGENT],
+          showFailureNotice: async (_session, notice) => {
+            notices.push(notice);
+          },
+          failureNoticeFailed: () => undefined,
+          log: () => undefined,
+          write: () => undefined,
+        },
+        now: () => Date.parse("2026-11-18T09:10:00Z"),
+      });
+      const rendered = renderInbound(JSON.stringify(envelope), SESSION, AGENT).envelope;
+      if (rendered === undefined) throw new Error("the frame rendered no envelope");
+      expect(
+        await ledger.liveFailed(SESSION, rendered, new Error("the host refused the card"))
+      ).toBe(true);
+      return notices;
+    };
+    const before = await shown(withoutRole);
+    const after = await shown(withRole);
+
+    expect(after).toHaveLength(1);
+    expect(before).toHaveLength(1);
+    expectReadAsWithout(after[0] ?? {}, before[0]);
+    expect(before[0]).toMatchObject({
+      eventId: withoutRole.event_id,
+      sender: "ses_sender (Planner)",
+      summary: "Review the plan",
+      publishedAt: "2026-11-18T09:00:00Z",
+      readWith: "envoy_inbox",
+    });
+  });
+
+  test("subscriptionRemovedTopics (dispatch-subscribe.ts): a removal frame with the field names the topics it names without it", () => {
+    const removal = {
+      ...withoutRole,
+      source: "dispatch",
+      payload: JSON.stringify({
+        issue_key: "DSP-1",
+        type: "subscription.removed",
+        actor: { kind: "user", id: "alice" },
+        payload: {
+          session_id: SESSION,
+          by: { kind: "user", id: "alice" },
+          topics: ["notifications.dispatch.issue.DSP-1.>"],
+        },
+      }),
+    };
+    const before = subscriptionRemovedTopics(JSON.stringify(removal), SESSION);
+
+    expect(before).toEqual(["notifications.dispatch.issue.DSP-1.>"]);
+    expect(subscriptionRemovedTopics(JSON.stringify({ ...removal, role: ROLE }), SESSION)).toEqual(
+      before
+    );
   });
 });

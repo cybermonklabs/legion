@@ -16,13 +16,16 @@ import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
+import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
+import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
+import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { useInboxCount } from "./features/inbox/useInboxCount";
@@ -53,8 +56,10 @@ import {
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   buildInboxPath,
+  buildPersonPath,
   buildProjectPath,
   liveViewSessionOf,
+  PERSON_PATH,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -93,10 +98,11 @@ import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userP
 import { Sidebar } from "./features/sidebar/Sidebar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
+import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-write";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
-import { useKeyedWrite } from "./features/writes/useKeyedWrite";
+import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
-import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { DOCUMENT_SCROLL_ATTRIBUTE, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -187,6 +193,9 @@ const PipelinePage = lazy(() =>
 
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
+);
+const PersonPage = lazy(() =>
+  import("./features/people/PersonPage").then((module) => ({ default: module.PersonPage }))
 );
 const SettingsPage = lazy(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
@@ -375,6 +384,18 @@ function ShellSkeleton(): ReactNode {
   );
 }
 
+/** What the rail says of a sign-out that did not land, with its Retry beside it. One Dispatch
+ *  refused left the person signed in. One the reader stopped may have ended the session, which the
+ *  page cannot know: it says so, and that Retry - a sign-out of its own, which lands on finding
+ *  the session ended (`isNoIdentity`) - signs them out either way. Neither discarded a change. */
+function signOutFailure(error: Error): string {
+  return error instanceof SendStoppedError
+    ? stoppedWriteNote("the sign-out", "made", {
+        anew: "Every change is still here. Retry ends your session, or finds it ended, and signs you out here.",
+      })
+    : "The sign-out did not go through. You are still signed in, with every change.";
+}
+
 function NavigationContents({
   closeButtonRef,
   compact,
@@ -396,7 +417,8 @@ function NavigationContents({
   onOpenInboxDrawer: () => void;
   onSearch: () => void;
   onSignOut: () => void;
-  signOutError: boolean;
+  /** What the rail says of the last sign-out where it did not land (`signOutFailure`). */
+  signOutError: string | undefined;
   signOutPending: boolean;
   user: AuthenticatedUser;
 }): ReactNode {
@@ -449,7 +471,19 @@ function NavigationContents({
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
           above is read on every visit, so the footer sits under it rather than over it. */}
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
-        <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
+        {/* The login is the way in to the reader's own page: what they wrote and what reached
+            them, which no other surface lists. The underline is what tells the link from the
+            text around it, which colour alone does not. */}
+        <p className={`px-2 text-sm ${railMutedText}`}>
+          Signed in as{" "}
+          <Link
+            className={`underline ${railAccentText} ${railAccentHoverText}`}
+            onClick={onClose}
+            to={buildPersonPath(user.login)}
+          >
+            {user.login}
+          </Link>
+        </p>
         <button
           className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
           disabled={signOutPending}
@@ -458,15 +492,15 @@ function NavigationContents({
         >
           Sign out
         </button>
-        {signOutError ? (
+        {signOutError === undefined ? null : (
           // A sign-out Dispatch did not answer as done discarded nothing: every write is as it was.
           <p className={`mt-1 px-2 text-sm ${railDangerText}`} role="alert">
-            The sign-out did not go through. You are still signed in, with every change.{" "}
+            {signOutError}{" "}
             <button className="font-medium underline" onClick={onSignOut} type="button">
               Retry
             </button>
           </p>
-        ) : null}
+        )}
       </div>
     </>
   );
@@ -649,13 +683,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  // The status corner floats over the foot of the screen as the composers it sits above do, so
-  // it publishes its own reach the same way: a control floating at that foot - the
-  // Conversation's `Jump to latest` - rides above the whole corner rather than under the
-  // pending-writes indicator or the connection pill. An empty corner has no box, so it publishes
-  // nothing and the property is unset.
+  // The status corner is the one float of the foot's status layer (`hooks/useFootInset.ts` lists
+  // the foot's layers and the elements in each). The hook holds its height and its floor, so the
+  // top layer's floats keep clear of the whole corner rather than sit over the pending-writes
+  // indicator or the connection pill. An empty corner has no box, so it counts nothing.
   const statusCornerRef = useRef<HTMLDivElement>(null);
-  useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
+  useFootInset(statusCornerRef, true, "status");
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
@@ -768,16 +801,19 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
   ]);
   const login = user.login;
+  // Each press signs out the person signed in when it was made, and carries their login: the
+  // channel's words of how it ended name that person, and its refusal is theirs alone (below).
   const signOut = useKeyedWrite({
     // A session that lapses while the sign-out is still out has ended as it asked: the sign-out
     // lands, and its landing discards (`Writes.signedIn`).
     endsWithSession: true,
     inline: true,
-    label: () => "Sign out",
+    keyed: false,
+    label: (_signingOut: string) => "Sign out",
     // Refused or stopped, the sign-out discarded nothing: the person is still signed in, and every
     // other tab lets their writes go on, as this one's store does (`Writes.release`).
-    onError: () => signIns.stillSignedIn(login),
-    onSuccess: () => {
+    onError: (_error, signingOut) => signIns.stillSignedIn(signingOut),
+    onSuccess: (_answer, signingOut) => {
       // `resetQueries` (not `clear`) forces the active `["whoami"]` observer in AuthGate to
       // refetch immediately — a signed-out user must land on sign-in without a manual reload.
       void queryClient.resetQueries({ queryKey: ["whoami"] });
@@ -785,9 +821,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       // Only now, with Dispatch's answer, are the person's writes discarded, in every tab of this
       // browser: none outlives their session, the next person to sign in here resumes nothing of
       // theirs and sees none of their refusals, and the page stops asking to confirm leaving.
-      writesOf(queryClient).clear();
-      signIns.signedOut(login);
+      // Their drafts go with them (`Writes.onSignedOut`, which `AuthGate` listens to).
+      writesOf(queryClient).signedOut(signingOut);
+      signIns.signedOut(signingOut);
     },
+    // A reload never takes the sign-out up again: no request of it goes through `api.send` to be
+    // kept.
+    method: "POST",
     // Dispatch's own 401 (`NO_IDENTITY`) says the session the sign-out would end is already gone
     // - an earlier attempt ended it and its answer was lost, or a sign-out in another browser
     // revoked it - so the sign-out has done what it was for, whatever the sign-in check can be
@@ -801,6 +841,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           isNoIdentity(error) ? { ok: true as const } : Promise.reject(error)
         ),
   });
+  // A sign-out's refusal, and the Retry beside it, are the person's it was pressed for, so they go
+  // once someone else is signed in: under their name the refusal would say a false thing, and its
+  // Retry would sign them out (`useRefusalOfSubject`). Another person signed in from another tab
+  // is drawn a shell of their own (`AuthGate`), which unmounts this one; the check holds the
+  // refusal to its person in any render that still draws it for someone else.
+  const signOutRefused = useRefusalOfSubject(signOut, (signingOut) => signingOut === login);
   // A page that goes while its sign-out is out says nothing of how it ended, because it does not
   // know: its `{gone}` leaves every other tab to read who is signed in and decide (`holderGone`).
   //
@@ -855,10 +901,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           const question = signOutQuestion([...unsent.values()], elsewhere.unanswered);
           if (ask && !window.confirm(question)) return;
           signIns.signingOut(login);
-          signOut.mutate();
+          signOut.mutate(login);
         });
       }}
-      signOutError={signOut.isError}
+      signOutError={
+        signOutRefused && signOut.error !== null ? signOutFailure(signOut.error) : undefined
+      }
       signOutPending={signOut.isPending || askingTabs}
       user={user}
     />
@@ -885,17 +933,21 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         >
           Skip to content
         </a>
-        {/* The shell's status corner: the pending-writes indicator above the connection pill.
-            Above the highest composer fixed at the foot of the screen (`--foot-composer-inset`,
-            `useFootInset`), so neither sits over its controls; otherwise just above the phone's
-            bottom bar. Only what it shows takes the pointer. A socket Dispatch refuses carries no
-            status the page can read, so nothing in the pill is terminal: once reconnecting has
-            gone on for two minutes it offers a reload, and the page keeps trying underneath. */}
+        {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
+            cannot keep for a reload above the connection pill. It is a float of the foot's status
+            layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each): it
+            stands 1rem above the banner layer's property, which the hook chooses so the corner
+            lies over nothing else fixed or stuck at the foot of the screen, and never lower than
+            its floor (`--foot-floor`, which its classes set per breakpoint). Only what it shows
+            takes the pointer. A socket Dispatch refuses carries no status the page can read, so
+            nothing in the pill is terminal: once reconnecting has gone on for two minutes it
+            offers a reload, and the page keeps trying underneath. */}
         <div
-          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
+          className="pointer-events-none fixed right-4 bottom-[max(var(--foot-floor),calc(var(--foot-banner-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 [--foot-floor:5rem] xl:[--foot-floor:0px] *:pointer-events-auto"
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
+          <DraftsNotKept />
           {connection === "stuck" ? (
             <p
               aria-live="polite"
@@ -1025,7 +1077,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
             Contents pane and its column each keep the inset the prototype gives them, the pane
             against the rail, which `md:pl-14` makes room for. Its references open no card on
-            hover (R6). */}
+            hover (R6). Outside the frame, on a page that does not fill the screen, `main`
+            carries `data-document-scroll`, so the foot's end room goes here; in the frame the
+            column beside the Contents pane carries it (`IssueOutlinePage.tsx`; `FOOT_LAYERS` in
+            `hooks/useFootInset.ts` says why). */}
         <main
           className={
             issueFrame
@@ -1034,6 +1089,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
           {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
+          {...(!issueFrame && !fillsViewport ? { [DOCUMENT_SCROLL_ATTRIBUTE]: "" } : {})}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}
@@ -1071,6 +1127,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<SettingsPage />} path="/settings" />
                 <Route element={<DeliveryPage />} path="/delivery" />
                 <Route element={<PipelinePage />} path="/pipeline" />
+                <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
             </Suspense>
@@ -1192,7 +1249,7 @@ async function heldWritesOfGoneHolder(queryClient: QueryClient, login: string): 
   if (who === null) writes.dropLogin(login);
   else if (who === login) writes.releaseUnsettled(login, held);
   else writes.release(login, held);
-  if (who !== login) void queryClient.invalidateQueries({ queryKey: ["whoami"] });
+  if (who !== login) void askSignInAgain(queryClient);
 }
 
 export function AuthGate(): ReactNode {
@@ -1208,22 +1265,49 @@ export function AuthGate(): ReactNode {
     if (!signedOut) return;
     queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "whoami" });
   }, [queryClient, signedOut]);
+  // A sign-out that lands ends the person's session at this browser, whichever way it lands: this
+  // tab's, another tab's, or one a lapse lands (`Writes.onSignedOut`). Whoever signs in next here
+  // must find nothing they typed, so every draft store forgets their drafts, in the page and in
+  // the tab's storage, and takes none until someone signs in, the ones a field hands it as the
+  // shell goes among them (`DraftStore.signedOut`). It listens before the effect below tells the
+  // write store who is signed in, since a lapse that effect tells of can land a sign-out.
+  useEffect(
+    () => writesOf(queryClient).onSignedOut((person) => draftStoresSignedOut(queryClient, person)),
+    [queryClient]
+  );
   // A write belongs to the person who pressed it: once someone else is signed in here - in place,
   // from another tab - every write of another login is dropped and stops trying, and once no one
   // is (the session lapsed), every write stops trying and waits, kept, for the sign-in that
   // follows: the same person's takes them up again (`Writes.signedIn`). Every other tab of this
-  // browser is told to read who is signed in again, so it does the same.
+  // browser is told to read who is signed in again, so it does the same. A draft the person typed
+  // and has not sent is theirs too, in every draft store, which outlives the shell as the write
+  // store does and keeps each draft in the tab's storage for a reload: another person's sign-in
+  // forgets it there too, a lapse keeps it (a sign-out is no lapse, above), and the first sign-in
+  // of a page that loaded takes up only the drafts that person kept (`DraftStore.signedIn`).
   const login = signedOut ? undefined : whoAmI.data?.login;
   const known = signedOut || whoAmI.data !== undefined;
+  // Whose shell is drawn: only ever the person the stores were last told of, in the commit after
+  // they were told. What the person typed into a field on screen is held by the field, not by a
+  // store, and the shell would otherwise stay mounted for someone signed in from another tab,
+  // showing them those words; so another person's shell is drawn only once the stores have let go
+  // of what the person before kept: the one before unmounts the shell and every field in it, and
+  // the shell drawn next reads nothing of theirs. The first sign-in of a page waits the same one
+  // commit, since that is when the draft stores take up what the tab kept for the person before a
+  // reload (`DraftStore.signedIn`): a composer reads its field from the store as it mounts, and
+  // React runs this effect after its children's, so a shell drawn sooner could open a composer
+  // whose reads are cached on an empty field, before the store holds the draft the tab kept.
+  const [shellFor, setShellFor] = useState<string>();
   useEffect(() => {
     if (!known) return;
     writesOf(queryClient).signedIn(login);
+    draftStoresSignedIn(queryClient, login);
     signIns.signedIn(login ?? null);
+    if (login !== undefined) setShellFor(login);
   }, [known, login, queryClient]);
   useEffect(() => {
     const writes = writesOf(queryClient);
     return signIns.listen({
-      changed: () => void queryClient.invalidateQueries({ queryKey: ["whoami"] }),
+      changed: () => void askSignInAgain(queryClient),
       holderGone: (gone) => void heldWritesOfGoneHolder(queryClient, gone),
       // The person signed out in another tab: every write they pressed goes here too, its file
       // with it, so no tab holds a write whose file another tab let go of.
@@ -1244,7 +1328,11 @@ export function AuthGate(): ReactNode {
     return <SignInPage />;
   }
   if (whoAmI.data !== undefined) {
-    return <AuthenticatedApp user={whoAmI.data} />;
+    return shellFor === whoAmI.data.login ? (
+      <AuthenticatedApp user={whoAmI.data} />
+    ) : (
+      <ShellSkeleton />
+    );
   }
   return <ConnectionErrorPage onRetry={() => void whoAmI.refetch()} />;
 }

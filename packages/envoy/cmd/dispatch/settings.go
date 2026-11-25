@@ -38,9 +38,10 @@ type setting struct {
 
 // settings is every Dispatch setting, in the order an operator meets them: storage, identity,
 // where the server listens and how many document rooms and connections it holds, NATS, the Envoy
-// listener, projects and the issues the search bar files, the GitHub App, cookies,
-// service-account tokens, the secrets broker, meaning search's model service, the model the
-// server generates text with, the dashboard, and local and test runs.
+// listener, projects, the issues the search bar files and the rule between a parent's status and
+// its children's, the GitHub App, cookies, service-account tokens, the secrets broker, meaning
+// search's model service, the model the server generates text with, the dashboard, and local and
+// test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
 		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
@@ -101,19 +102,21 @@ var settings = []setting{
 	{Name: "ENVOY_URL", Default: "`" + defaultEnvoyURL + "`", Required: "no",
 		Description: "Base URL of the Envoy listener Dispatch delivers mentions and messages through and reads live sessions from."},
 	{Name: "ENVOY_TOKEN", Required: "no",
-		Description: "Bearer token Dispatch sends on every Envoy listener call; unset, it sends none."},
+		Description: "Bearer token Dispatch sends on every Envoy listener call; unset, it sends none. Beside Dispatch's identity (`ENVOY_ACCOUNT_TOKEN_FILE` or `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`) it is sent only on a call that carries no role mark and whose identity token the listener did not take on two tries (401, or a token that could not be read): a listener that does not verify Dispatch's account yet, as one of the release before does while a deploy rolls it. A send for a `role:` route is never made on it."},
+	{Name: "ENVOY_ACCOUNT_TOKEN_FILE", Required: "no",
+		Description: "File holding Dispatch's own projected Kubernetes service-account token for the Envoy listener's audience, which every listener call presents as its bearer in `ENVOY_TOKEN`'s place. The listener verifies it and takes a send's role mark from that account alone (`ENVOY_DISPATCH_PRINCIPAL`), so with this set a message or mention for a `role:` route carries its role, and the session that takes the role from the one Dispatch sent it to receives it and may answer it. The file is read at each call, and once more after a 401 or a read that failed, so the kubelet's rotation of it needs no restart; a token whose own expiry has passed, or is ten seconds away, is not presented. With neither it nor `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`, every message or mention for a `role:` route is refused, its attempt recording why (deploy/README.md, \"Dispatch's identity at the Envoy listener\"). In the cluster it is the projected-token volume's path."},
+	{Name: "ENVOY_ACCOUNT_GOOGLE_AUDIENCE", Required: "no",
+		Description: "On Google Cloud, the audience of the identity token Dispatch's machine's service account presents to the Envoy listener in `ENVOY_TOKEN`'s place: the listener's `ENVOY_OIDC_GOOGLE_AUDIENCE`, with that account's address its `ENVOY_DISPATCH_PRINCIPAL` and among its `ENVOY_OIDC_GOOGLE_ACCOUNTS`. The metadata server mints the token, which Dispatch keeps until ten seconds before its own expiry. A machine no Google metadata server answers for has no identity, and every message or mention for a `role:` route is then refused, never sent unmarked. Set it or `ENVOY_ACCOUNT_TOKEN_FILE`, not both: both refuse startup."},
 	{Name: "ENVOY_SESSION_LIVE_WINDOW", Default: "`5m`", Required: "no",
 		Description: "How long after its last registration a session counts as live, as a positive Go duration. Dispatch judges a role route's holder by it, as the Envoy listener judges every session: within it the holder is live and the event is forwarded. Give the listeners of a deployment and Dispatch the same value, or Dispatch calls a holder the listener still serves lapsed, and the other way round. A value that is not a positive duration refuses startup; one no Go duration can be read from is a warning and the default."},
 	{Name: "ENVOY_SESSION_GONE_HORIZON", Default: "`1h`", Required: "no",
 		Description: "How long after its last registration a session reads unresponsive before it reads gone, as a positive Go duration. Dispatch holds a role-routed event pending for an unresponsive holder, with its claim untouched, and counts the route reached with nothing sent only for a gone one. Give the listeners of a deployment and Dispatch the same value: with a horizon only the listener carries, Dispatch marks an event sent to nobody while the listener still calls that holder unresponsive and keeps its role, so the event reaches it never. A value that is not a positive duration refuses startup; one no Go duration can be read from is a warning and the default."},
-	{Name: "DISPATCH_REPO_PROJECTS", Required: "no",
-		Description: "Comma-separated `owner/repo=KEY` mappings seeded at startup; a mapping saved in the dashboard wins."},
-	{Name: "DISPATCH_DEFAULT_PROJECT", Required: "no",
-		Description: "Project an external issue from an unmapped repository is created in; it must already exist."},
 	{Name: "DISPATCH_NEW_ISSUE_LABEL", Default: "the issue carries no label", Required: "no",
 		Description: "Label an issue carries that the search bar files from the words a person typed, when those words match nothing the bar found; it is added to that issue alone."},
 	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made and no conversation is started on it", Required: "no",
 		Description: "Envoy session an issue the search bar files from a person's typed words is routed to, written as the session's own id: the bar sets the issue's route to it and posts the person's words to it as the issue's first message."},
+	{Name: "DISPATCH_PARENT_STATUS_RULE", Default: "`off`", Required: "no",
+		Description: "`on` refuses a write that leaves a parent's status out of line with its children's, and runs the one-time fix of the pairs that break it at boot. Turn it on only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs the releases with the daemon's side of the rule, which send the options of `POST /api/v1/issues/{key}/status-change`. Second, each project's instructions retry a failed root architect with a status write of `todo` alone, not `backlog` and then `todo`, and that project's daemon and controller have read them. The rule refuses that `backlog` while an issue under the root is in work. Turn it on by a rollout that stops every process of the earlier setting first. The fix runs once per database, so turning the setting off and on again runs nothing: a parent and a child that came to break the rule while it was off still break it once it is on again. The rule judges each status change of such a child against its parent, a move within a group too, so a daemon's move of the child from `in_progress` to `testing` under a `done` parent is refused with `409 PARENT_STATUS_CONFLICT` until a person takes the child off that parent (`dispatch issue-update <child> --parent \"\"`, or another parent) or closes it. A value other than `on` or `off` refuses startup."},
 	{Name: "DISPATCH_APP_CLIENT_ID", Required: "no",
 		Description: "GitHub App client ID, which names the App in the JWT its private key signs. Set, the App comes from the `DISPATCH_APP_*` variables instead of `~/.local/share/dispatch/app.json`."},
 	{Name: "DISPATCH_APP_PEM_B64", Required: "no",
@@ -122,6 +125,8 @@ var settings = []setting{
 		Description: "The GitHub App's numeric ID."},
 	{Name: "DISPATCH_REVIEWER_APP_ID", Required: "no",
 		Description: "The review App's numeric ID, the App that posts the `tester` and `architect` verdict check runs, which the CI reconcile pass compares a check run's `app.id` against; unset, the pass records no verdict check run."},
+	{Name: "DISPATCH_VERDICT_APP_ID", Required: "no",
+		Description: "The verdict App's numeric ID, the App that writes the `legion-verdict` check run: the CI reconcile pass leaves that App's check suites out of the record, as the listener does under `ENVOY_VERDICT_APP_ID`, so its completed suite does not publish a settled head a second time. Give it the listener's value; unset, the pass records every App's completed suite."},
 	{Name: "DISPATCH_APP_SLUG", Required: "no",
 		Description: "The GitHub App's slug."},
 	{Name: "DISPATCH_APP_NAME", Required: "no",
@@ -140,6 +145,8 @@ var settings = []setting{
 		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no path; set, the credential-request pages are on."},
 	{Name: "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", Required: "when `DISPATCH_AGENT_SECRETS_URL` is set",
 		Description: "File holding Dispatch's own projected Kubernetes service-account token, which every call to the secrets broker presents; the broker verifies it and reads the caller from `BROKER_API_ACCOUNTS`. In the cluster it is the projected-token volume's path (`/var/run/secrets/…/token`), which the kubelet rewrites in place; the file is read at call time, so a rotation needs no restart, and a local run writes a token into a file of its own and names that."},
+	{Name: "DISPATCH_SEARCH_FILL", Default: "`on`", Required: "no",
+		Description: "`on` starts the keyword fill, which writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log while the server serves; `off` defers it: the process starts no fill, takes no hold and writes no row of that table or its cursor, and logs `dispatch: the keyword fill is deferred` once at boot, with whether that table and its cursor each hold a row (`none`, `some`, or `unknown` with the read's error, which never stops the boot). No route reads the table yet, so search answers alike either way. Read once at boot; any other value refuses startup."},
 	{Name: "DISPATCH_EMBEDDER", Default: "`bedrock`", Required: "no",
 		Description: "Where meaning search reaches Cohere Embed v4: `bedrock` (AWS Bedrock, on the AWS SDK's own region and credentials; with no region, search is keyword-only) or `azure` (Azure AI Foundry, configured by the `DISPATCH_AZURE_EMBED_*` settings, each of which `bedrock` refuses, and by the shared Azure sign-in, which `DISPATCH_ANSWERER=azure` reads too)."},
 	{Name: "DISPATCH_AZURE_EMBED_ENDPOINT", Required: "when `DISPATCH_EMBEDDER` is `azure`",
@@ -231,6 +238,8 @@ var removedSettings = []struct{ Name, Replacement string }{
 	{"DISPATCH_AGENT_SECRETS_TOKEN", noSharedBrokerBearer},
 	{"DISPATCH_AGENT_SECRETS_TOKEN_FILE", noSharedBrokerBearer},
 	{"DISPATCH_ASSET_STORE_BUCKET", "every server process now keeps its build's dashboard assets in Dispatch's database"},
+	{"DISPATCH_REPO_PROJECTS", "a project's default repository: `PUT /api/v1/projects/{key}/default-repository`, or Settings → Projects"},
+	{"DISPATCH_DEFAULT_PROJECT", "an import names its project in the create's `project`"},
 }
 
 // noSharedBrokerBearer is why the secrets broker's shared bearer and its file are gone: the

@@ -48,24 +48,27 @@ func pinLeakCheck(t *testing.T, tag string) {
 
 // packedLeakCheck is what the daemon serves of the check's repository: a tarball shaped as
 // GitHub's (every member under one `<owner>-<repo>-<sha>` directory, the check's own under its
-// leak-check directory, one file of the repository outside it), whose check is launcher, with a
-// python file beside it and a fixture of incompressible bytes large enough that the packed body
-// takes two slices, packed as the daemon packs it (leakguard.PackTarball).
+// leak-check directory, one file of the repository outside it), whose check is launcher, with
+// every other file of its manifest beside it (the python file, the README and the must-pass lines)
+// and a fixture of incompressible bytes large enough that the packed body takes two slices,
+// packed as the daemon packs it (leakguard.PackTarballManifest).
 func packedLeakCheck(t *testing.T, launcher string) []byte {
 	t.Helper()
-	fixture := make([]byte, shimwire.LauncherBundlePayloadBytes+4096)
+	fixture := make([]byte, shimwire.LauncherSlicePayloadBytes+4096)
 	_, _ = rand.NewChaCha8([32]byte{}).Read(fixture)
 	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName:  {Body: "#!/bin/sh\n" + launcher, Mode: 0o755},
-		"public_leak_check.py":   {Body: "# the check itself\n", Mode: 0o644},
-		"fixtures/must-pass.bin": {Body: string(fixture), Mode: 0o644},
+		leakguardtest.CheckName:    {Body: "#!/bin/sh\n" + launcher, Mode: 0o755},
+		leakguardtest.ProgramName:  {Body: leakguardtest.Program, Mode: 0o644},
+		leakguardtest.ReadmeName:   {Body: leakguardtest.Readme, Mode: 0o644},
+		leakguardtest.MustPassName: {Body: leakguardtest.MustPass, Mode: 0o644},
+		"fixtures/must-pass.bin":   {Body: string(fixture), Mode: 0o644},
 	})
-	body, err := leakguard.PackTarball(bytes.NewReader(raw))
+	body, _, err := leakguard.PackTarballManifest(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("pack the test's tarball: %v", err)
 	}
-	if files := packedFiles(t, body); files != 3 {
-		t.Fatalf("the pack holds %d files, want the check's 3", files)
+	if files := packedFiles(t, body); files != 5 {
+		t.Fatalf("the pack holds %d files, want the check's 5", files)
 	}
 	return body
 }
@@ -186,14 +189,22 @@ func installLines(log string) []string {
 	return lines
 }
 
-// requireInstalledAt holds that dir holds the check of pin, read the way every role's shim reads it.
+// requireInstalledAt holds that dir holds the check of pin, read the way every role's shim reads it
+// under a deployment that runs a shared leak check: with the pin and the deployment's manifest
+// digest (leakguard.CheckerVar) in its environment. The digest is the install's own: this test is
+// of the install landing whole at its pin, and the comparison itself, with every file of the
+// manifest spoiled in turn, is leakguard's (TestInstalledAnswersTheCheckOfThePinAlone).
 func requireInstalledAt(t *testing.T, dir, pin string) {
 	t.Helper()
 	recorded, err := os.ReadFile(filepath.Join(dir, ".installed-tag"))
 	if err != nil || string(recorded) != pin+"\n" {
 		t.Fatalf("the install's .installed-tag holds %q (%v), want %q", recorded, err, pin+"\n")
 	}
-	check, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + pin}, dir)
+	digest, err := leakguard.Manifest(func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, name)) })
+	if err != nil {
+		t.Fatalf("the install at %s holds no whole manifest: %v", dir, err)
+	}
+	check, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + pin, leakguard.CheckerVar + "=" + digest}, dir)
 	if err != nil || check != filepath.Join(dir, leakguardtest.CheckName) {
 		t.Fatalf("a role's shim reads the install as %q, %v; want the check at %s", check, err, dir)
 	}
@@ -230,6 +241,17 @@ func tree(t *testing.T, root string) map[string]string {
 		t.Fatal(err)
 	}
 	return entries
+}
+
+// A role's guard under the deployment's digest runs its private copy of the shared check under
+// leakguard.PrivateCopyBase, which that package spells itself, since this one imports it: the
+// role's own private directory as role-init binds it back inside the role's namespaces alone, and
+// as the controller's pod mounts its one role's. A layout that moved the directory would leave the
+// guard copying under a root-owned mount point no role can write, or into /tmp.
+func TestTheGuardsPrivateCopyIsMadeInTheRolesOwnPrivateDirectory(t *testing.T) {
+	if want := FixedRoot + "/" + RolePrivateDir; leakguard.PrivateCopyBase != want {
+		t.Fatalf("leakguard.PrivateCopyBase = %s, want the private directory role-init binds for the role alone, %s", leakguard.PrivateCopyBase, want)
+	}
 }
 
 // The launcher names its own pin in every hello, so the daemon knows to push it the check; a
@@ -520,6 +542,9 @@ func testerRolesDir(t *testing.T) string {
 // process may have taken by then. The reaper takes every exited child of the test process, so a
 // test that runs it is not parallel, and runs its own commands through guard or while the reaper
 // is stopped.
+//
+// stop does not wait on the reaper past 30 s before the test binary's deadline (reaperBound): a
+// pass that never ends fails t by name there rather than hold the test until Go's alarm.
 func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func()) {
 	t.Helper()
 	orphan := exec.Command("/bin/sh", "-c", "exit 0")
@@ -539,14 +564,30 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 			}
 		}
 	})
-	return func() {
+	stop = func() {
 		t.Helper()
 		cancel()
-		reaping.Wait()
+		ended := make(chan struct{})
+		go func() { reaping.Wait(); close(ended) }()
+		select {
+		case <-ended:
+		case <-time.After(reaperBound(t)):
+			t.Errorf("the reaper's pass never ended after its stop, to 30 s before the test binary's deadline")
+			return
+		}
 		if err := orphan.Wait(); !reapedByAnother(err) {
 			t.Errorf("the orphan %d's own wait answered %v, want ECHILD or ESRCH: the reaper left it unreaped, so it never ran while the test's commands did", orphan.Process.Pid, err)
 		}
 	}
+	return stop
+}
+
+// reaperBound is how long a wait on PID 1's reaper that begins now may last: until 30 s before
+// the test binary's deadline, three years at most under -timeout 0, so every such wait in a row
+// gives up at the same moment however many there are, and the failure and the row's cleanups
+// still run before Go's alarm.
+func reaperBound(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second)
 }
 
 // While the install's verification runs — the served check's `--help`, a child of the launcher,
@@ -572,17 +613,19 @@ func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *t
 		err  error
 	}
 	read := make(chan reading, 1)
+	// The bound is read here, on the test's goroutine: beforeDeadline fails t when no time is left.
+	bound := beforeDeadline(t)
 	go func() {
 		// The check is let go on every path, so the install the test waits on below ends.
 		defer func() { _ = os.WriteFile(release, nil, 0o600) }()
 		var pid int
-		if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		if !testwait.Holds(bound, 10*time.Millisecond, func() bool {
 			body, err := os.ReadFile(pidFile)
 			n, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
 			pid = n
 			return err == nil && convErr == nil && pid > 0
 		}) {
-			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s within 10s", pidFile)}
+			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s under the test's hang guard", pidFile)}
 			return
 		}
 		guard.mu.Lock()

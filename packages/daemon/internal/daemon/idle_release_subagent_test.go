@@ -45,6 +45,7 @@ const idleRigHeldPasses = 4
 // runs, and the next pass that reads the pod quiet releases it: the hold stood exactly as long as
 // the report did.
 func TestIdleReleaseHoldsForARunningSubagent(t *testing.T) {
+	t.Parallel()
 	rig := newIdleWakeRig(t, nil, idleRigSubagent)
 	issue := rig.issue(idleRigSubagent)
 	token := rig.token(issue)
@@ -102,6 +103,7 @@ func TestIdleReleaseHoldsForARunningSubagent(t *testing.T) {
 // quiet past the idle bound the daemon's idle tick releases it, and nothing held it for
 // background work on the way.
 func TestIdleReleaseReleasesASessionWithNothingRunning(t *testing.T) {
+	t.Parallel()
 	rig := newIdleWakeRig(t, nil, idleRigNothingRunning)
 	issue := rig.issue(idleRigNothingRunning)
 	token := rig.token(issue)
@@ -192,7 +194,7 @@ func (r *idleWakeRig) awaitReported(token claim.Token, kinds string) {
 // to (store.Store.PodReleaseRecords). It is read from the store and not through that route
 // because the route authenticates by a live claim, and every claim of a released pod is
 // suspended. The release writes its record only after the runtime has deleted the pod and its
-// Sandbox and its claims read suspended (the outbox's releaseIssue: SuspendIssue, then
+// Sandbox and its claims read suspended (the outbox's releaseIssue: ReleaseIssue, then
 // recordPodRelease), which is what awaitReleased reads, so the record is waited for rather than
 // read once: a read at that moment can find no release yet. One store is opened for the whole
 // wait, not one a poll.

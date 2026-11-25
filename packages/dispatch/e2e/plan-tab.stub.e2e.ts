@@ -1,5 +1,5 @@
 /** The Plan tab's own drawing of a plan and its review: what the page renders from one fixed
- *  answer, so it runs against a recording (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  answer, so it runs against a recording (packages/dispatch/README.md, "The stubbed layer").
  */
 import { expect } from "@playwright/test";
 
@@ -41,7 +41,7 @@ Draw the panel.
 });
 
 // The row reads what the Plan tab draws from the plan the server already stored, so it runs
-// against a recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed
+// against a recording rather than against a harness (packages/dispatch/README.md, "The stubbed
 // layer").
 // SLOW(>=2s): 2.0 s on replay - one load of the Plan tab, which opens the plan's live document
 // room and resolves the four references the two tasks draw (each task's own block title, both

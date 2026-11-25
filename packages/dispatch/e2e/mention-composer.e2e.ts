@@ -558,6 +558,23 @@ test("a duplicated mention delivery says the listener already had it, and offers
     delivery: "steer",
     mentions: [{ target: "session:planner" }],
   });
+  // The retry is a duplicate only once the first attempt has reached the listener. The comment
+  // answers when it commits, and its mention is sent after that answer, on the mention sender's
+  // lane (mentionSender, packages/envoy/internal/dispatch/api/comment_mention_sender.go). A retry
+  // made while that send still waits on the lane is sent first, under a key the stand-in does not
+  // hold yet, so it is answered as a fresh delivery, and the first attempt is then settled
+  // superseded and never sent (supersedeCommentDelivery in comment_delivery.go). So the row waits
+  // until Dispatch records the first attempt sent. How long the lane takes is the machine's, not
+  // the row's: the poll has no deadline of its own, and the row's timeout ends it.
+  await expect
+    .poll(
+      async () =>
+        (await listComments(issue.key))
+          .find(({ id }) => id === comment.id)
+          ?.deliveries?.map(({ attempt, duplicate, state }) => ({ attempt, duplicate, state })),
+      { message: "the mention's first attempt was not recorded sent", timeout: 0 }
+    )
+    .toEqual([{ attempt: 1, duplicate: false, state: "sent" }]);
   // The same mention, the same mode: the stand-in recognises the repeated key exactly as
   // JetStream would and answers `duplicate`.
   await retryCommentDelivery(comment.id, { delivery: "steer", target: "session:planner" });

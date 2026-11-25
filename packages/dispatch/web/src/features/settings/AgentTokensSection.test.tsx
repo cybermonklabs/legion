@@ -1,14 +1,21 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
-import type { AgentToken, DispatchScope } from "../../api/types";
+import { ApiError, api, NetworkError } from "../../api/client";
+import type {
+  AgentToken,
+  CreatedAgentToken,
+  DispatchScope,
+  DispatchTokenScope,
+} from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AgentTokensSection } from "./AgentTokensSection";
 
 const token: AgentToken = {
@@ -140,7 +147,8 @@ function box(label: string, subject: string): HTMLInputElement {
 // A token's two scopes are what it may do: act as its person, and settle what its person
 // settles. The row shows the set the token holds and writes back the whole set, since the PATCH
 // replaces it rather than adding to it; no token holds Approve without Act as you, so each box
-// carries the other where the server would refuse the pair.
+// carries the other where the server would refuse the pair. A token that writes is offered no Read
+// only box, and no PATCH sends `read`: no token that writes becomes read only.
 test("a token's row shows the scopes it holds, and each change sends the whole set", async () => {
   const user = userEvent.setup();
   const personOnly: AgentToken = { ...token, scopes: ["person"] };
@@ -173,6 +181,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
       expect(box("Approve and control credentials", "architect").checked).toBe(true)
     );
     expect(box("Act as you", "architect").checked).toBe(true);
+    expect(screen.queryByRole("checkbox", { name: "Read only (architect)" })).toBeNull();
 
     await user.click(box("Act as you", "architect"));
     await waitFor(() =>
@@ -180,6 +189,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
     );
     await waitFor(() => expect(box("Act as you", "architect").checked).toBe(false));
     expect(box("Approve and control credentials", "architect").checked).toBe(false);
+    for (const call of setAgentTokenScopes.mock.calls) expect(call[1]).not.toContain("read");
   } finally {
     cleanup();
     queryClient.clear();
@@ -233,6 +243,215 @@ test("the mint form starts with both scopes and sends the set the reader chose",
   }
 });
 
+/** The label of each word's box on the mint form. */
+const LABELS: Readonly<Record<DispatchTokenScope, string>> = {
+  person: "Act as you",
+  approve: "Approve and control credentials",
+  read: "Read only",
+};
+
+/** Each word the mint form offers, by the label of its box, in the form's order. */
+const MINT_BOXES: readonly (readonly [DispatchTokenScope, string])[] = (
+  ["person", "approve", "read"] as const
+).map((scope) => [scope, LABELS[scope]] as const);
+
+/** The set the mint form's boxes hold now, in the form's order. */
+function formHolds(): DispatchTokenScope[] {
+  return MINT_BOXES.filter(([, label]) => box(label, "new token").checked).map(([id]) => id);
+}
+
+/** The boxes to press to take the mint form from its start (person and approve on) to the set
+ *  each key names. Each test checks the form holds that set before its own press, so a setup that
+ *  went wrong fails as a setup and not as the row. */
+const SETUP: Record<string, readonly DispatchTokenScope[]> = {
+  "person,approve": [],
+  read: ["person", "read"],
+  "person,read": ["approve", "read"],
+};
+
+/** The Settings token section with no token listed, its mint form at its start. */
+function renderMintForm(): () => void {
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <AgentTokensSection />
+    </QueryClientProvider>
+  );
+  return () => {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+  };
+}
+
+// The mint form's state table, one test a row: from the state the row names, the one press it
+// names leaves the boxes holding the result it names. A read-only token holds read alone or beside
+// person and never beside approve, so ticking Read only clears Approve and ticking Approve clears
+// Read only and ticks Act as you; clearing Act as you clears Approve. No box is ever disabled for
+// these rules: each press is taken, and the other boxes follow it. The rows that submit the form
+// are the tests after this loop.
+const STATE_TABLE: readonly {
+  state: string;
+  holds: readonly DispatchTokenScope[];
+  press: DispatchTokenScope;
+  result: readonly DispatchTokenScope[];
+}[] = [
+  {
+    state: "at its start (person and approve on)",
+    holds: ["person", "approve"],
+    press: "read",
+    result: ["person", "read"],
+  },
+  { state: "with read on alone", holds: ["read"], press: "approve", result: ["person", "approve"] },
+  {
+    state: "with read and person on",
+    holds: ["person", "read"],
+    press: "approve",
+    result: ["person", "approve"],
+  },
+  { state: "with read on alone", holds: ["read"], press: "person", result: ["person", "read"] },
+  {
+    state: "with read and person on",
+    holds: ["person", "read"],
+    press: "person",
+    result: ["read"],
+  },
+  {
+    state: "with approve and person on",
+    holds: ["person", "approve"],
+    press: "person",
+    result: [],
+  },
+  { state: "with read on alone", holds: ["read"], press: "read", result: [] },
+];
+
+for (const row of STATE_TABLE) {
+  const ticks = !row.holds.includes(row.press);
+  const event = `${ticks ? "ticking" : "clearing"} ${LABELS[row.press]}`;
+  const result = row.result.length === 0 ? "nothing" : row.result.join(" and ");
+  test(`the mint form ${row.state}: ${event} leaves ${result} on`, async () => {
+    const user = userEvent.setup();
+    const restore = renderMintForm();
+    try {
+      for (const scope of SETUP[row.holds.join(",")] ?? []) {
+        await user.click(box(LABELS[scope], "new token"));
+      }
+      expect(formHolds()).toEqual([...row.holds]);
+
+      await user.click(box(LABELS[row.press], "new token"));
+      expect(formHolds()).toEqual([...row.result]);
+      for (const [, label] of MINT_BOXES) expect(box(label, "new token").disabled).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+}
+
+// A read-only token's mint sends the set its boxes hold, read among them.
+test("the mint form sends read and person for a token that reads as its person", async () => {
+  const user = userEvent.setup();
+  const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
+    ...token,
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "reader",
+    scopes: ["person", "read"],
+    token: "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG",
+  });
+  const restore = renderMintForm();
+
+  try {
+    await user.click(box("Approve and control credentials", "new token"));
+    await user.click(box("Read only", "new token"));
+    expect(formHolds()).toEqual(["person", "read"]);
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reader");
+    await user.click(screen.getByRole("button", { name: "New token" }));
+    await waitFor(() =>
+      expect(createAgentToken).toHaveBeenCalledWith(
+        { name: "reader", scopes: ["person", "read"] },
+        keyedAttempt
+      )
+    );
+    // The form is back at its start for the next token.
+    await waitFor(() => expect(formHolds()).toEqual(["person", "approve"]));
+  } finally {
+    restore();
+    createAgentToken.mockRestore();
+  }
+});
+
+// A token that only reads and acts for nobody: the mint sends read alone.
+test("the mint form sends read alone for a token that only reads", async () => {
+  const user = userEvent.setup();
+  const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
+    ...token,
+    id: "44444444-4444-4444-4444-444444444444",
+    name: "plain-reader",
+    scopes: ["read"],
+    token: "dsp_abcdefghijklmnopqrstuvwxyz0123456789-HIJKLMN",
+  });
+  const restore = renderMintForm();
+
+  try {
+    for (const scope of SETUP.read ?? []) await user.click(box(LABELS[scope], "new token"));
+    expect(formHolds()).toEqual(["read"]);
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("plain-reader");
+    await user.click(screen.getByRole("button", { name: "New token" }));
+    await waitFor(() =>
+      expect(createAgentToken).toHaveBeenCalledWith(
+        { name: "plain-reader", scopes: ["read"] },
+        keyedAttempt
+      )
+    );
+  } finally {
+    restore();
+    createAgentToken.mockRestore();
+  }
+});
+
+// A read-only token's scopes never change, so its row shows them as words and offers no box; the
+// row of a token that writes beside it keeps its Act as you and Approve boxes and offers no Read
+// only.
+test("a read-only token's row shows its scopes and offers no box to change them", async () => {
+  const reader: AgentToken = {
+    ...token,
+    id: "33333333-3333-3333-3333-333333333333",
+    name: "reader",
+    scopes: ["read", "person"],
+  };
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([reader, token]);
+  const setAgentTokenScopes = spyOn(api, "setAgentTokenScopes");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    const shown = await screen.findByRole("list", { name: "What reader may do" });
+    expect(Array.from(shown.querySelectorAll("li"), (item) => item.textContent)).toEqual([
+      "Act as you",
+      "Read only",
+    ]);
+    for (const [, label] of MINT_BOXES) {
+      expect(screen.queryByRole("checkbox", { name: `${label} (reader)` })).toBeNull();
+    }
+    expect(box("Act as you", "architect").checked).toBe(true);
+    expect(box("Approve and control credentials", "architect").checked).toBe(true);
+    expect(screen.queryByRole("checkbox", { name: "Read only (architect)" })).toBeNull();
+    expect(setAgentTokenScopes).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+    setAgentTokenScopes.mockRestore();
+  }
+});
+
 /** A live token labelled `name`, made `offsetMs` from now: after a press when positive, before
  *  it when negative. */
 function madeAt(id: string, name: string, offsetMs: number): AgentToken {
@@ -242,13 +461,19 @@ function madeAt(id: string, name: string, offsetMs: number): AgentToken {
 /** The Settings token section, its mint answered `409 KEY_COMMITTED` and its list then read as
  *  `listed`; the list read before the press holds those of `listed` made before it, which the page
  *  tells apart from the lost mint's by id. `confirmAnswers` answers each `window.confirm` in
- *  turn. */
-async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswers: boolean[] = []) {
+ *  turn, and `boxes` are the mint form's boxes pressed before New token. */
+async function mintLostWith(
+  user: UserEvent,
+  listed: AgentToken[],
+  confirmAnswers: boolean[] = [],
+  boxes: readonly DispatchTokenScope[] = []
+) {
   const now = Date.now();
   const listAgentTokens = spyOn(api, "listAgentTokens")
     .mockResolvedValueOnce(listed.filter((made) => Date.parse(made.created_at) <= now))
     .mockResolvedValue(listed);
-  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
   const lostMint = Promise.withResolvers<never>();
   const createAgentToken = spyOn(api, "createAgentToken")
     .mockReturnValueOnce(lostMint.promise)
@@ -272,6 +497,7 @@ async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswer
   const label = screen.getByLabelText<HTMLInputElement>("Token label");
   await user.click(label);
   await user.paste("reviewer");
+  for (const scope of boxes) await user.click(box(LABELS[scope], "new token"));
   await user.click(screen.getByRole("button", { name: "New token" }));
   await act(async () => {
     lostMint.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }));
@@ -407,5 +633,225 @@ test("a lost mint with several tokens made since the press lists them and revoke
     expect(page.revokeAgentToken).toHaveBeenCalledTimes(1);
   } finally {
     page.restore();
+  }
+});
+
+// A lost mint's replacement holds what the lost token held, read included: a read-only token's
+// replacement is read only too, never a token that writes.
+test("a lost read-only mint is replaced by a read-only token", async () => {
+  const lost: AgentToken = { ...madeAt("lost", "reviewer", 60_000), scopes: ["read", "person"] };
+  const page = await mintLostWith(userEvent.setup(), [lost, token], [true], ["approve", "read"]);
+
+  try {
+    // The lost mint asked for a read-only token.
+    expect(page.createAgentToken.mock.calls[0]?.[0]).toEqual({
+      name: "reviewer",
+      scopes: ["person", "read"],
+    });
+    await page.user.click(
+      await screen.findByRole("button", { name: "Revoke it and mint another" })
+    );
+    await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(lost.id, keyedAttempt));
+    await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
+    expect(page.createAgentToken.mock.calls[1]?.[0]).toEqual({
+      name: "reviewer",
+      scopes: ["person", "read"],
+    });
+  } finally {
+    page.restore();
+  }
+});
+
+/** The token section with `listed` read, and the list then asked again - as another tab's
+ *  change or a refresh would ask it - with that read's answer held on `staleRead`, so it is still
+ *  out when a write the row makes lands. */
+async function renderWithListReadOut(listed: AgentToken[]): Promise<{
+  listAgentTokens: Mock<typeof api.listAgentTokens>;
+  restore: () => void;
+  staleRead: ReturnType<typeof Promise.withResolvers<AgentToken[]>>;
+}> {
+  const staleRead = Promise.withResolvers<AgentToken[]>();
+  const listAgentTokens = spyOn(api, "listAgentTokens")
+    .mockResolvedValueOnce(listed)
+    .mockReturnValueOnce(staleRead.promise);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <AgentTokensSection />
+    </QueryClientProvider>
+  );
+  await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
+  await act(async () => {
+    void queryClient.invalidateQueries({ queryKey: ["agent-tokens"] });
+  });
+  expect(listAgentTokens).toHaveBeenCalledTimes(2);
+  return {
+    listAgentTokens,
+    restore: () => {
+      cleanup();
+      queryClient.clear();
+      listAgentTokens.mockRestore();
+    },
+    staleRead,
+  };
+}
+
+/** The prefix cell of every token the section lists, top to bottom. */
+function listedPrefixes(): (string | null)[] {
+  return screen.getAllByRole("cell", { name: /^dsp_/ }).map((cell) => cell.textContent);
+}
+
+// A list read still out when a mint's answer lands was asked before the token existed: landing
+// after the answer, it would drop the new token from the list the reader just saw it join.
+test("a list read asked before a mint answered does not drop the token the mint made", async () => {
+  const user = userEvent.setup();
+  const page = await renderWithListReadOut([token]);
+  const reviewer: AgentToken = {
+    ...token,
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "reviewer",
+    prefix: "ZyXw9876",
+  };
+  const minted = Promise.withResolvers<CreatedAgentToken>();
+  const createAgentToken = spyOn(api, "createAgentToken").mockReturnValue(minted.promise);
+
+  try {
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reviewer");
+    await user.click(screen.getByRole("button", { name: "New token" }));
+    await waitFor(() => expect(createAgentToken).toHaveBeenCalledTimes(1));
+    // The answer gives up the read still out and asks for the list again, after the mint: Dispatch
+    // lists the new token then.
+    page.listAgentTokens.mockResolvedValueOnce([reviewer, token]);
+    await act(async () => {
+      minted.resolve({ ...reviewer, token: "dsp_ZyXw9876abcdefghijklmnopqrstuvwxyz0123456789" });
+    });
+    await waitFor(() => expect(listedPrefixes()).toEqual(["dsp_ZyXw9876…", "dsp_AbCdEf12…"]));
+
+    // The read asked before the mint answers the list without the new token.
+    await act(async () => {
+      page.staleRead.resolve([token]);
+      await settle();
+    });
+    expect(listedPrefixes()).toEqual(["dsp_ZyXw9876…", "dsp_AbCdEf12…"]);
+    expect(page.listAgentTokens).toHaveBeenCalledTimes(3);
+  } finally {
+    page.restore();
+    createAgentToken.mockRestore();
+  }
+});
+
+// A list read still out when a revoke's answer lands was asked while the token was live: landing
+// after the answer, it would show the revoked token live again, with its Revoke offered.
+test("a list read asked before a revoke answered does not show the revoked token live again", async () => {
+  const user = userEvent.setup();
+  const page = await renderWithListReadOut([token]);
+  const revoked = Promise.withResolvers<void>();
+  const revokeAgentToken = spyOn(api, "revokeAgentToken").mockReturnValue(revoked.promise);
+  const originalConfirm = window.confirm;
+  window.confirm = () => true;
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Revoke architect" }));
+    await waitFor(() => expect(revokeAgentToken).toHaveBeenCalledWith(token.id, keyedAttempt));
+    // The answer gives up the read still out and asks for the list again, after the revoke:
+    // Dispatch lists the token revoked then.
+    page.listAgentTokens.mockResolvedValueOnce([{ ...token, revoked_at: "2026-09-13T00:00:00Z" }]);
+    await act(async () => {
+      revoked.resolve();
+    });
+    await waitFor(() => expect(screen.queryByText("Revoked")).not.toBeNull());
+
+    // The read asked before the revoke answers the token live.
+    await act(async () => {
+      page.staleRead.resolve([token]);
+      await settle();
+    });
+    expect(screen.queryByText("Revoked")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Revoke architect" })).toBeNull();
+    expect(page.listAgentTokens).toHaveBeenCalledTimes(3);
+  } finally {
+    window.confirm = originalConfirm;
+    page.restore();
+    revokeAgentToken.mockRestore();
+  }
+});
+
+// A list read still out when a scope change's answer lands was asked before the change: landing
+// after the answer, it would clear the box the reader just saw the change tick.
+test("a list read asked before a scope change answered does not put back the scopes it replaced", async () => {
+  const user = userEvent.setup();
+  const personOnly: AgentToken = { ...token, scopes: ["person"] };
+  const both: AgentToken = { ...personOnly, scopes: ["person", "approve"] };
+  const page = await renderWithListReadOut([personOnly]);
+  const changed = Promise.withResolvers<AgentToken>();
+  const setAgentTokenScopes = spyOn(api, "setAgentTokenScopes").mockReturnValue(changed.promise);
+
+  try {
+    await user.click(box("Approve and control credentials", "architect"));
+    await waitFor(() =>
+      expect(setAgentTokenScopes).toHaveBeenCalledWith(
+        personOnly.id,
+        ["person", "approve"],
+        keyedAttempt
+      )
+    );
+    // The answer gives up the read still out and asks for the list again, after the change:
+    // Dispatch lists the token with both scopes then.
+    page.listAgentTokens.mockResolvedValueOnce([both]);
+    await act(async () => {
+      changed.resolve(both);
+    });
+    await waitFor(() =>
+      expect(box("Approve and control credentials", "architect").checked).toBe(true)
+    );
+
+    // The read asked before the change answers the token with Act as you alone.
+    await act(async () => {
+      page.staleRead.resolve([personOnly]);
+      await settle();
+    });
+    expect(box("Approve and control credentials", "architect").checked).toBe(true);
+    expect(box("Act as you", "architect").checked).toBe(true);
+    expect(page.listAgentTokens).toHaveBeenCalledTimes(3);
+  } finally {
+    page.restore();
+    setAgentTokenScopes.mockRestore();
+  }
+});
+
+// A mint the reader stopped may have been made: the form says so, and that its Retry asks again
+// under the mint's key, rather than a failure it cannot know of.
+test("a mint the reader stopped says Retry asks again under its key", async () => {
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
+  const createAgentToken = spyOn(api, "createAgentToken").mockRejectedValue(
+    new NetworkError("/api/v1/me/agent-tokens", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reviewer");
+    await user.click(screen.getByRole("button", { name: "New token" }));
+    await stopTheLateWrite(queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the new agent token", "made", {
+        method: "POST",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+    createAgentToken.mockRestore();
   }
 });

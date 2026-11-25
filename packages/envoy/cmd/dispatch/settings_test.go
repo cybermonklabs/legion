@@ -36,11 +36,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
+	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/session"
@@ -49,6 +52,7 @@ import (
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
+	t.Parallel()
 	name := regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
 	seen := map[string]bool{}
 	for _, row := range settings {
@@ -86,6 +90,7 @@ func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
 // `envoy-dispatch settings` is what the docs site's configuration reference is generated from, so
 // it carries every row whole: the _FILE form by name, and null where a row has no default.
 func TestSettingsSubcommandPrintsEveryRow(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	if code := runSubcommand(context.Background(), []string{"settings"}, envGetter(nil), &stdout, &stderr); code != 0 {
 		t.Fatalf("envoy-dispatch settings: exit %d, stderr %q", code, stderr.String())
@@ -120,6 +125,7 @@ func TestSettingsSubcommandPrintsEveryRow(t *testing.T) {
 }
 
 func TestSettingValuesRefuseAVariableTheTableDoesNotList(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if recovered := recover(); recovered == nil || !strings.Contains(recovered.(string), "DISPATCH_NOT_A_SETTING") {
 			t.Fatalf("recovered %v, want a panic naming DISPATCH_NOT_A_SETTING", recovered)
@@ -132,6 +138,36 @@ func TestSettingValuesRefuseAVariableTheTableDoesNotList(t *testing.T) {
 // of "" leaves the variable empty. It is a production cookie server: signInEnvironment's.
 func bootEnvironment(overrides map[string]string) settingValues {
 	return envGetter(signInEnvironment(overrides))
+}
+
+// listenerBearers serves GET /api/v1/agents with Dispatch resolved from overrides against a listener
+// stand-in that answers 401 to every bearer but taken, and returns every Authorization it received.
+func listenerBearers(t *testing.T, overrides map[string]string, taken string) []string {
+	t.Helper()
+	authorizations := make(chan string, 8)
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations <- r.Header.Get("Authorization")
+		if r.Header.Get("Authorization") != taken {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer listener.Close()
+	overrides["ENVOY_URL"] = listener.URL
+	request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/agents", nil), "alice")
+	response := httptest.NewRecorder()
+	routerFor(t, resolveWith(t, overrides), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/agents: %d %s", response.Code, response.Body.String())
+	}
+	close(authorizations)
+	var got []string
+	for authorization := range authorizations {
+		got = append(got, authorization)
+	}
+	return got
 }
 
 func resolveWith(t *testing.T, overrides map[string]string) bootConfig {
@@ -178,7 +214,7 @@ func envoyJSONHome(t *testing.T) string {
 func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) http.Handler {
 	t.Helper()
 	built.Lifetime = t.Context()
-	appCtx, err := appContextFor(boot, built)
+	appCtx, err := appContextFor(t, boot, built)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}
@@ -193,15 +229,31 @@ var testSigningKey = auth.SingleSigningKey("signing-key")
 // appContextFor is routes.BuildAppContext as main calls it, with the signing key, the session store
 // and the request identity main builds for boot (requestIdentityFor) filled in, so a request
 // carrying signedIn's cookie is that person's. built.People is a store with no database unless the
-// case's requests record people (dev sign-in, a pool sign-in, header identity).
-func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+// case's requests record people (dev sign-in, a pool sign-in, header identity). A case that gives no
+// document service (built.Docs) gets one over the router's store, event broker, identity and
+// server URL, which is shut down once t ends.
+func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+	t.Helper()
 	built.SigningKey = testSigningKey
 	if built.People == nil {
 		built.People = store.NewPgPeopleStore(nil, built.SigningKey, nil)
 	}
 	built.Sessions = currentSessions{}
 	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn)
-	return routes.BuildAppContext(appContextOptions(boot, built))
+	options := appContextOptions(boot, built)
+	if options.Docs == nil {
+		if options.Events == nil {
+			options.Events = events.NewBroker()
+		}
+		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, ServerURL: options.ServerURL})
+		t.Cleanup(func() {
+			if err := documents.Shutdown(context.Background()); err != nil {
+				t.Errorf("shut the document service down: %v", err)
+			}
+		})
+		options.Docs = documents
+	}
+	return routes.BuildAppContext(options)
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a
@@ -255,11 +307,12 @@ func devSignIn(t *testing.T, boot bootConfig, login string) *httptest.ResponseRe
 }
 
 // signInPool is a sign-in pool on this machine with Dispatch's app client, clientID and
-// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case.
+// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case, registering the callback the
+// router signInRouter builds names for the Host startSignIn's request carries, dispatch.test.
 func signInPool(t *testing.T, clientID, clientSecret string) *oidctest.Issuer {
 	t.Helper()
 	pool := oidctest.New(t)
-	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret)
+	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret, "http://dispatch.test/auth/callback")
 	return pool
 }
 
@@ -372,6 +425,8 @@ func errorCode(response *httptest.ResponseRecorder) string {
 // each case hands its variable to the reader main hands it to, through the settings read alone,
 // never the process environment, so a reader that reads around the table fails its case.
 func TestEverySettingReachesItsReader(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it sets
+	// environment variables for the whole process.
 	appJSON := func(t *testing.T) string {
 		return filepath.Dir(writeFile(t, "app.json", `{"clientId":"Iv1.file"}`))
 	}
@@ -956,6 +1011,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("NATS on: the router is handed OutboxPublishes = false, want true: the outbox publishes, and a mention's send keeps its order behind the events it still owes")
 			}
 		},
+		"DISPATCH_SEARCH_FILL": func(t *testing.T) {
+			for value, off := range map[string]bool{"": false, "on": false, "off": true} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_SEARCH_FILL": value}); boot.SearchFillOff != off {
+					t.Errorf("DISPATCH_SEARCH_FILL=%q: SearchFillOff = %v, want %v", value, boot.SearchFillOff, off)
+				}
+			}
+			for _, value := range []string{"OFF", "Off", " off", "0", "false", "no", "yes", "1"} {
+				refusedWith(t, map[string]string{"DISPATCH_SEARCH_FILL": value}, `DISPATCH_SEARCH_FILL="`+value+`" (expected on or off)`)
+			}
+		},
 		"ENVOY_URL": func(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.EnvoyURL != "http://127.0.0.1:9020" {
 				t.Errorf("unset: EnvoyURL = %q", boot.EnvoyURL)
@@ -1027,41 +1092,47 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: the listener received Authorization %q, want none", got)
 			}
 		},
-		"DISPATCH_REPO_PROJECTS": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": " acme/widgets=WID "}); boot.RepoProjects != "acme/widgets=WID" {
-				t.Errorf("RepoProjects = %q", boot.RepoProjects)
+		"ENVOY_ACCOUNT_TOKEN_FILE": func(t *testing.T) {
+			// The bearer the Envoy listener receives on GET /api/v1/agents's read of its sessions:
+			// what the file holds when the call is made, trimmed, in ENVOY_TOKEN's place; beside
+			// ENVOY_TOKEN, the file's token, again after the listener's 401 (the file read once
+			// more), and the shared token only once the listener has refused it twice, as a
+			// listener of the release before refuses it.
+			tokenFile := writeFile(t, "listener-account-token", "account-token\n")
+			if got := listenerBearers(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": " " + tokenFile + " "}, "Bearer account-token"); strings.Join(got, ",") != "Bearer account-token" {
+				t.Errorf("ENVOY_ACCOUNT_TOKEN_FILE: the listener received Authorization %q, want the file's token alone", got)
 			}
-			// Its one reader is api.SeedRepoProjects, which main runs before it builds the router: a
-			// malformed mapping is refused there, naming the variable, before anything is written.
-			if err := api.SeedRepoProjects(context.Background(), nil, nil, resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": "acme/widgets"}).RepoProjects); err == nil || !strings.Contains(err.Error(), "DISPATCH_REPO_PROJECTS") {
-				t.Errorf("DISPATCH_REPO_PROJECTS=acme/widgets: seeding the repository mappings: err = %v, want a refusal naming DISPATCH_REPO_PROJECTS", err)
+			if got := listenerBearers(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": tokenFile, "ENVOY_TOKEN": "listener-token"}, "Bearer listener-token"); strings.Join(got, ",") != "Bearer account-token,Bearer account-token,Bearer listener-token" {
+				t.Errorf("both set: the listener received Authorization %q, want the file's token twice, then on its second 401 the shared token", got)
 			}
 		},
-		"DISPATCH_DEFAULT_PROJECT": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_DEFAULT_PROJECT": " WID "}); boot.DefaultProject != "WID" {
-				t.Errorf("DefaultProject = %q", boot.DefaultProject)
+		"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": func(t *testing.T) {
+			// The bearer the Envoy listener receives is the identity token the metadata server
+			// minted for the audience, trimmed; set with ENVOY_ACCOUNT_TOKEN_FILE, startup is
+			// refused, naming both.
+			const minted = "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.c2ln"
+			audiences := make(chan string, 1)
+			metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Metadata-Flavor", "Google")
+				if r.URL.Path == "/computeMetadata/v1/instance/service-accounts/default/identity" {
+					select {
+					case audiences <- r.URL.Query().Get("audience"):
+					default:
+					}
+					_, _ = w.Write([]byte(minted))
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer metadata.Close()
+			t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(metadata.URL, "http://"))
+			if got := listenerBearers(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": " envoy-listener "}, "Bearer "+minted); strings.Join(got, ",") != "Bearer "+minted {
+				t.Errorf("ENVOY_ACCOUNT_GOOGLE_AUDIENCE: the listener received Authorization %q, want the minted token alone", got)
 			}
-			// The project the router files an external issue in when no mapping names its
-			// repository: a create naming another project is refused naming that one, and with
-			// no default the repository is unmapped.
-			t.Run("router", func(t *testing.T) {
-				database := storetest.Open(t)
-				create := func(overrides map[string]string) *httptest.ResponseRecorder {
-					t.Helper()
-					request := httptest.NewRequest(http.MethodPost, "/api/v1/issues", strings.NewReader(`{"external":"acme/unmapped#7","project":"OTHER","actor":{"kind":"session","id":"settings-test"}}`))
-					request.Header.Set("Authorization", "Bearer agent-token")
-					request.Header.Set("Content-Type", "application/json")
-					response := httptest.NewRecorder()
-					routerFor(t, resolveWith(t, overrides), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
-					return response
-				}
-				if response := create(map[string]string{"DISPATCH_DEFAULT_PROJECT": "WID"}); errorCode(response) != "EXTERNAL_PROJECT_MISMATCH" || !strings.Contains(response.Body.String(), "project WID") {
-					t.Errorf("DISPATCH_DEFAULT_PROJECT=WID: POST /api/v1/issues answered %d %s, want the unmapped repository's project to be WID", response.Code, response.Body.String())
-				}
-				if response := create(nil); errorCode(response) != "PROJECT_UNMAPPED" {
-					t.Errorf("unset: POST /api/v1/issues answered %d %s, want PROJECT_UNMAPPED", response.Code, response.Body.String())
-				}
-			})
+			if got := <-audiences; got != "envoy-listener" {
+				t.Errorf("the metadata server was asked for audience %q, want envoy-listener", got)
+			}
+			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": "envoy-listener", "ENVOY_ACCOUNT_TOKEN_FILE": "/run/token"}, "ENVOY_ACCOUNT_GOOGLE_AUDIENCE")
 		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
@@ -1167,12 +1238,38 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			_, url := testnats.Start(t)
 			_, pemText := githubapptest.Key(t)
 			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
-				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{})
+				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, "", cireconcile.Interval, &registeredInstance{}, refs.Renames{})
 			if err != nil || reconciler == nil {
 				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
 			}
 			if reconciler.ReviewerAppID != "5341243" {
 				t.Errorf("the pass's ReviewerAppID = %q, want %q", reconciler.ReviewerAppID, "5341243")
+			}
+		},
+		"DISPATCH_VERDICT_APP_ID": func(t *testing.T) {
+			if boot := resolveWith(t, nil); boot.VerdictAppID != "" {
+				t.Errorf("unset: VerdictAppID = %q, want empty, which leaves no App's suites out", boot.VerdictAppID)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": "  "}); boot.VerdictAppID != "" {
+				t.Errorf("blank: VerdictAppID = %q, want empty", boot.VerdictAppID)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": " 5341240 "})
+			if boot.VerdictAppID != "5341240" {
+				t.Errorf("VerdictAppID = %q, want %q", boot.VerdictAppID, "5341240")
+			}
+			for _, value := range []string{"x", "0", "-1", "5341240x", "5 341 240"} {
+				refusedWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": value}, "DISPATCH_VERDICT_APP_ID")
+			}
+			// Its reader: the pass main starts, which leaves that App's suites out of the record.
+			_, url := testnats.Start(t)
+			_, pemText := githubapptest.Key(t)
+			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
+				&auth.AppConfig{ClientID: "Iv1.verdict", PEM: pemText}, "", "", boot.VerdictAppID, cireconcile.Interval, &registeredInstance{}, refs.Renames{})
+			if err != nil || reconciler == nil {
+				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
+			}
+			if reconciler.VerdictAppID != "5341240" {
+				t.Errorf("the pass's VerdictAppID = %q, want %q", reconciler.VerdictAppID, "5341240")
 			}
 		},
 		"DISPATCH_APP_SLUG": func(t *testing.T) {
@@ -2065,6 +2162,37 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
 		},
+		"DISPATCH_PARENT_STATUS_RULE": func(t *testing.T) {
+			// Its reader: R25's fix at boot (api.RunParentStatusFixAtBoot), whose answer is the rule
+			// main builds the server with (TestTheServerAnswersOnlyAfterTheParentStatusFix boots the
+			// binary with it). Unset or off, the fix answers the rule off and reads nothing, so it is
+			// given no database.
+			for _, overrides := range []map[string]string{{}, {"DISPATCH_PARENT_STATUS_RULE": "off"}} {
+				boot := resolveWith(t, overrides)
+				if boot.ParentStatusRule {
+					t.Errorf("%v: ParentStatusRule true, want the rule off", overrides)
+				}
+				if rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{}, nil, boot.ParentStatusRule); err != nil || rule.On() {
+					t.Errorf("%v: the boot's fix answered the rule on=%t and %v, want the rule off and no error", overrides, rule.On(), err)
+				}
+			}
+			// On, the fix runs over the database, which holds no issue, and answers the rule on once
+			// its record is there.
+			boot := resolveWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "on"})
+			if !boot.ParentStatusRule {
+				t.Error("DISPATCH_PARENT_STATUS_RULE=on: ParentStatusRule false, want the rule on")
+			}
+			database := storetest.Open(t)
+			rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{Store: database}, storetest.Leases(t, database.Pool), boot.ParentStatusRule)
+			if err != nil || !rule.On() {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the boot's fix answered the rule on=%t and %v, want the rule on and no error", rule.On(), err)
+			}
+			var recorded bool
+			if err := database.Pool.QueryRow(t.Context(), `select exists (select 1 from parent_status_fix)`).Scan(&recorded); err != nil || !recorded {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the record of the fix is there=%t (%v), want it written", recorded, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "yes"}, `DISPATCH_PARENT_STATUS_RULE="yes"`)
+		},
 		"DISPATCH_TEST_EMBEDDER_OFF": func(t *testing.T) {
 			// Azure's own environment, the one shape that builds an embedder with no AWS SDK and
 			// no model service reachable, so the switch is what decides and not the credentials.
@@ -2101,6 +2229,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 // (newDocumentService, through documentDeps): boot's seven values, each one distinct, are each
 // found on the dependencies the service is built from.
 func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
+	t.Parallel()
 	boot := bootConfig{
 		SettleDelay:       11 * time.Second,
 		MarkWait:          12 * time.Second,
@@ -2137,7 +2266,13 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		if got := capOf(newDocumentService(boot, docs.Deps{}).RoomCapsForTest()); got != want {
+		documents := newDocumentService(boot, docs.Deps{})
+		t.Cleanup(func() {
+			if err := documents.Shutdown(context.Background()); err != nil {
+				t.Errorf("shut the document service down: %v", err)
+			}
+		})
+		if got := capOf(documents.RoomCapsForTest()); got != want {
 			t.Errorf("%s=%q: the document service's cap is %d, want %d", name, value, got, want)
 		}
 	}
@@ -2227,6 +2362,7 @@ func sharedAgentTokenListReachesTheAPI(t *testing.T) {
 // unreachable: what is wrong is Dispatch's own credential, which the operator fixes in Dispatch's
 // deployment, not in the broker's.
 func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *testing.T) {
+	t.Parallel()
 	for name, tokenFile := range map[string]string{
 		"a path that does not exist": filepath.Join(t.TempDir(), "missing"),
 		"an empty file":              writeFile(t, "account-token", "\n"),

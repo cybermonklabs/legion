@@ -20,8 +20,10 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -31,6 +33,13 @@ import (
 // init containers do.
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
+// testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
+// the leak guard's curl reads run (leakguardCurl). A run that names none has leakguardtest.NoCurl,
+// a path with no file, and so has every guard of this binary's own process unless its test sets
+// leakguardCurl: no guard here runs the system's /usr/bin/curl (INFRA-3904). The `legion` these
+// tests build links the same path (legionBuild).
+const testCurlEnv = "LEGION_CMD_TEST_CURL"
+
 func TestMain(m *testing.M) {
 	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
 	// run of this binary as `legion`: a test that means to hand one over sets it itself. They are
@@ -39,12 +48,28 @@ func TestMain(m *testing.M) {
 	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
 		os.Unsetenv(name)
 	}
+	// No guard of this binary reads through the system's curl (leakguardtest.NoCurl); a run as
+	// `legion` whose test names a stand-in takes it below.
+	leakguardCurl = leakguardtest.NoCurl
 	if os.Getenv(testMainEnv) == "1" {
 		// A test's stand-in shared check is no copy of the pinned one, so the test names the
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
 		// (ghCheckAt). Only this test binary reads the variable; the legion binary has none.
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
 			ghReadsProvenCheck.sha256 = proven
+		}
+		// A test's stand-in curl for the guard's curl reads, which reach no network. Only this
+		// test binary reads the variable; the legion binary has none, and its guards run the
+		// system's own curl.
+		if curl := os.Getenv(testCurlEnv); curl != "" {
+			leakguardCurl = curl
+		}
+		// The bounds legion sets on a program it starts, at what is left of the deadline of the
+		// test binary that started this run (boundByTheDeadline). Only this test binary reads the
+		// variable; the legion binary has none.
+		if err := boundByTheEnvironment(); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			os.Exit(2)
 		}
 		// The environment these tests hand gh beside ghChildEnviron's allowlist
 		// (testGhChildEnviron); the legion binary has no such hook.
@@ -58,7 +83,19 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
-	os.Exit(runWithoutTheOperatorsJJConfig(m))
+	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
+	// here and in every run of it as `legion` (boundByTheDeadline). After MustGuard, which takes
+	// LEGION_* variables out of the environment.
+	if deadline, ok := testBinaryDeadline(); ok {
+		if err := boundByTheDeadline(deadline); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			os.Exit(1)
+		}
+	}
+	// testpg.Main lets TestPauseCommands clone a migrated database of its own, and drops what it
+	// cloned once the run ends; a run that clones nothing, as every other test here, costs nothing,
+	// and with no LEGION_TEST_PG_DSN the cloning test is skipped (testpg.Clone).
+	os.Exit(testpg.Main("legion_cmd_test", func() int { return runWithoutTheOperatorsJJConfig(m) }))
 }
 
 // runWithoutTheOperatorsJJConfig runs the package's tests with a jj configuration directory of
@@ -119,7 +156,9 @@ func legionConfig(t *testing.T, project string, port int) string {
 
 // runningLegion is a live process named `legion`, which is what the registry's pids point at and
 // what registry.Alive answers true for. A copy of sleep: Alive reads argv[0], and a shell
-// script's argv[0] is the shell.
+// script's argv[0] is the shell. It sleeps without end, and the test's cleanup kills it: a probe
+// that ended on its own, once a loaded machine made the test outlast its sleep, would read as a
+// legion that had stopped.
 func runningLegion(t *testing.T) int {
 	t.Helper()
 	sleep, err := exec.LookPath("sleep")
@@ -135,7 +174,7 @@ func runningLegion(t *testing.T) int {
 		t.Fatalf("write the probe: %v", err)
 	}
 
-	probe := exec.Command(path, "300")
+	probe := exec.Command(path, "infinity")
 	if err := probe.Start(); err != nil {
 		t.Fatalf("start the probe: %v", err)
 	}
@@ -143,7 +182,9 @@ func runningLegion(t *testing.T) int {
 		_ = probe.Process.Kill()
 		_, _ = probe.Process.Wait()
 	})
-	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
+	// The exec is waited for with no span of its own, only what is left of the test binary's
+	// deadline less 30 s (testwait.Bounded): a loaded machine's slow exec passes.
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
 		t.Fatalf("the probe at %s never exec'd", path)
 	}
 	return probe.Process.Pid
@@ -171,7 +212,9 @@ func reapedPID(t *testing.T) int {
 }
 
 // healthzOn serves /healthz on one address and returns the port, so a status can be told to dial
-// somewhere other than 127.0.0.1 and be wrong about it.
+// somewhere other than 127.0.0.1 and be wrong about it. A client's headers have what is left of
+// the test binary's deadline less 30 s to arrive: a status a loaded machine makes slow to write
+// them is still answered.
 func healthzOn(t *testing.T, host string) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
@@ -182,7 +225,7 @@ func healthzOn(t *testing.T, host string) int {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: testwait.Bounded(t, 1<<60, 30*time.Second)}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close() })
 	return listener.Addr().(*net.TCPAddr).Port
@@ -352,12 +395,15 @@ func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, s
 		_ = command.Wait()
 		close(exited)
 	}()
+	// The exit is waited for with no span of its own, only what is left of the test binary's
+	// deadline less 30 s (testwait.Bounded): a loaded machine's slow start passes, and one that
+	// never exits is killed and fails by name.
 	select {
 	case <-exited:
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
 		_ = command.Process.Kill()
 		<-exited
-		t.Fatalf("legion start did not exit within 30s; stderr = %q", stderr.String())
+		t.Fatalf("legion start did not exit 30s before the test binary's deadline; stderr = %q", stderr.String())
 	}
 	return command.ProcessState.ExitCode(), stderr.String()
 }
@@ -657,24 +703,40 @@ github_apps:
 const tmuxCapabilityGaps = "capability secrets is open: the tmux runtime enrolls no process with the secrets broker; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n" +
 	"capability resource-limits is open: the tmux runtime sets no requests or limits on a pane; to record a decision, add to legion.yaml: capabilities.decided.resource-limits: \"<reason>\"\n"
 
+// tmuxPauseUnavailable is the line `legion config check` prints after the capability gaps for
+// every tmux configuration: a pause stops and wakes roles through the idle release, which runs
+// only under kubernetes (pause.Unavailable, TestPauseCommands).
+const tmuxPauseUnavailable = "pause unavailable: runtime: tmux\n"
+
 // productionCheckTesterLine is the production-check line `legion config check` prints
-// for a project that names no `production_check` and so gets the tester, and deploysIgnoredLine
-// the warning it prints, and boot logs, for one that still sets `deploys`.
+// for a project that names no `production_check` and so gets the tester, defaultStepsTodayLine
+// the default-steps line it prints for a project that names no `default_steps` and so runs
+// today's line, projectLines the two together, and deploysIgnoredLine the warning it prints, and
+// boot logs, for one that still sets `deploys`.
 func productionCheckTesterLine(key string) string {
 	return "projects." + key + ".production_check: tester — a merge that closes one of its issues opens a production check the tester works\n"
+}
+
+func defaultStepsTodayLine(key string) string {
+	return "projects." + key + ".default_steps: [planner, implementer, tester, reviewer, acceptance:owner] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge\n"
+}
+
+func projectLines(key string) string {
+	return productionCheckTesterLine(key) + defaultStepsTodayLine(key)
 }
 
 func deploysIgnoredLine(key string) string {
 	return "projects." + key + ".deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml\n"
 }
 
-// demoProductionCheck is the production-check line of the one DEMO project workflowConfig and
-// kubernetesCheckConfig declare, which names no `production_check`
-// (TestConfigCheckPrintsEachProjectsProductionCheck); demoCheckConfigOK is it after the OK
+// demoProjectLines are the two lines of the one DEMO project workflowConfig and
+// kubernetesCheckConfig declare, which names neither `production_check` nor `default_steps`
+// (TestConfigCheckPrintsEachProjectsProductionCheck,
+// TestConfigCheckPrintsEachProjectsDefaultSteps); demoCheckConfigOK is them after the OK
 // line, which is what every check here prints before its first capability line.
-var demoProductionCheck = productionCheckTesterLine("DEMO")
+var demoProjectLines = projectLines("DEMO")
 
-var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck
+var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines
 
 // tmuxCheckKeys are the top-level keys of a tmux legion.yaml `legion config check`
 // passes: the Stage 1 keys, the operator bearer and the github_apps a file with projects must
@@ -771,7 +833,7 @@ func TestConfigCheckWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" + deploysIgnoredLine("DEMO") + deploysIgnoredLine("OTHER") +
-		demoProductionCheck + productionCheckTesterLine("OTHER") + tmuxCapabilityGaps
+		demoProjectLines + projectLines("OTHER") + tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -809,9 +871,29 @@ func TestConfigCheckPrintsEachProjectsProductionCheck(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck +
-		"projects.OTHER.production_check: off — a merge that closes one of its issues opens no production check\n" +
-		tmuxCapabilityGaps
+	want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines +
+		"projects.OTHER.production_check: off — a merge that closes one of its issues opens no production check\n" + defaultStepsTodayLine("OTHER") +
+		tmuxCapabilityGaps + tmuxPauseUnavailable
+	if code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
+// `legion config check` prints each project's `default_steps` beside its `production_check`, in
+// key order: the steps the file names, and today's line up to the owner's acceptance for the
+// project that names none, each list as the file would write it.
+func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
+	legionState(t)
+	config := projectsConfig(t, "projects:\n  DEMO: {}\n  OTHER:\n    default_steps: [implementer, \"reviewer\"]\n")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+	const runs = " — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge\n"
+	want := "Config OK: project=DEMO design-gate-steps=spec\n" +
+		productionCheckTesterLine("DEMO") + "projects.DEMO.default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + runs +
+		productionCheckTesterLine("OTHER") + "projects.OTHER.default_steps: [implementer, reviewer]" + runs +
+		tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -829,7 +911,7 @@ func TestConfigCheckValidatesAndStartsNothing(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("legion config check = %d, stderr %q", code, errb.String())
 	}
-	if want := demoCheckConfigOK + tmuxCapabilityGaps; out.String() != want {
+	if want := demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable; out.String() != want {
 		t.Fatalf("stdout = %q, want %q", out.String(), want)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -957,7 +1039,7 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
-	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -967,9 +1049,11 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 
 // `legion config check` makes every refusal boot makes from the configuration, the environment and the
 // files they name before boot writes anything (daemon.CheckStart, which boot's prepare shares): the
-// operator bearer's file, the Dispatch bearer's file, the instructions file, the OMP invocation and
-// the real gh every pane's `legion gh` runs, which a script heading PATH (a gh wrapper) is not.
-// Each is refused in boot's words, no App key command runs, and no state directory is made.
+// operator bearer's file, the Dispatch bearer's file, the instructions file, the OMP invocation, the
+// real gh every pane's `legion gh` runs, which a script heading PATH (a gh wrapper) is not, and a
+// postgres_dsn pgx cannot parse. Each is refused in boot's words, written through the URL rule boot
+// writes its own refusals through (printRefusal), so the refusal of such a DSN names neither the
+// DSN's user name nor its query. No App key command runs, and no state directory is made.
 func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct {
@@ -1014,6 +1098,13 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 			func(dir string) string {
 				return "legion config check: the first gh on PATH, " + filepath.Join(dir, "shims", "gh") + ", is a script, not the real gh"
 			}},
+		{"a postgres_dsn pgx cannot parse", "", func(t *testing.T, dir string) {
+			replaceLine(t, filepath.Join(dir, "legion.yaml"), "postgres_dsn: ",
+				"postgres_dsn: postgres://legion-reader@127.0.0.1:1/legion?token=planted-query-token-4193&pool_max_conns=not-a-number")
+		},
+			func(string) string {
+				return "legion config check: connect to Postgres at 127.0.0.1:1: cannot parse `postgres://127.0.0.1:1/legion`: "
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config, marker := workflowConfig(t, 13370, tc.extra)
@@ -1023,6 +1114,14 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
+			// Only the postgres_dsn row writes the DSN's user name and its query into the
+			// configuration; no other row's files hold them. Every row checks for both all the
+			// same, so each shows that its stderr prints neither.
+			for _, never := range []string{"legion-reader", "planted-query-token-4193"} {
+				if strings.Contains(errb.String(), never) {
+					t.Fatalf("stderr %q holds %q, which the URL rule removes", errb.String(), never)
+				}
+			}
 			if want := tc.says(dir); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
 			}
@@ -1050,6 +1149,24 @@ func rewrite(t *testing.T, path, old, replacement string) {
 		t.Fatalf("%s does not hold %q (%v)", path, old, err)
 	}
 	if err := os.WriteFile(path, []byte(strings.Replace(string(body), old, replacement, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// replaceLine replaces the whole line of path that starts with prefix by line.
+func replaceLine(t *testing.T, path, prefix, line string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	start := strings.Index(string(body), "\n"+prefix)
+	if err != nil || start < 0 {
+		t.Fatalf("%s holds no line starting %q (%v)", path, prefix, err)
+	}
+	end := strings.IndexByte(string(body[start+1:]), '\n')
+	if end < 0 {
+		end = len(body) - start - 1
+	}
+	replaced := string(body[:start+1]) + line + string(body[start+1+end:])
+	if err := os.WriteFile(path, []byte(replaced), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1108,9 +1225,9 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			}
 			want := demoCheckConfigOK
 			if tc.key == seedKey {
-				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProductionCheck
+				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProjectLines
 			}
-			want += tmuxCapabilityGaps
+			want += tmuxCapabilityGaps + tmuxPauseUnavailable
 			if tc.refusal == nil {
 				if code != 0 || out.String() != want || errb.Len() != 0 {
 					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
@@ -1169,7 +1286,7 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 				t.Fatalf("the check printed a seed: stdout %q stderr %q", out.String(), errb.String())
 			}
 			if tc.refusal == nil {
-				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProjectLines + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 				}
 			} else if want := "legion config check: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
@@ -1426,7 +1543,7 @@ func TestConfigCheckNamesTheDerivedProbeBudget(t *testing.T) {
 		config, _ := workflowConfig(t, 13370, "")
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-		if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+		if want := demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 		}
 	})
@@ -1434,11 +1551,11 @@ func TestConfigCheckNamesTheDerivedProbeBudget(t *testing.T) {
 
 // defaultCacheLine is the line `legion config check` prints under kubernetes for the repository cache at
 // its defaults, before the plugins line.
-const defaultCacheLine = "repository cache: a 20Gi volume per mapped repository, fetched from GitHub every 10 minutes, kept 168 hours after its repository leaves the mapping; its container reserves cpu 1, memory 4Gi, ephemeral storage 1Gi under 2Gi\n"
+const defaultCacheLine = "repository cache: a 20Gi volume for each repository a live record names, fetched from GitHub every 10 minutes, kept 168 hours after no live record names it; its container reserves cpu 1, memory 4Gi, ephemeral storage 1Gi under 2Gi\n"
 
-// `legion config check` names the repository cache each mapped repository gets, as the file settles it:
-// the defaults, or the file's own members over them, a raised limit alone requested in full and a
-// lower request named under its limit, as a role's.
+// `legion config check` names the repository cache each repository a live record names gets, as
+// the file settles it: the defaults, or the file's own members over them, a raised limit alone
+// requested in full and a lower request named under its limit, as a role's.
 func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 	legionState(t)
 	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
@@ -1446,7 +1563,7 @@ func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 	config := kubernetesCheckConfig(t, "    repository_cache: {volume: 50Gi, refresh_minutes: 5, retain_hours: 24, resources: {cpu: \"2\", memory: 8Gi, memory_request: 4Gi}}\n")
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-	cache := "repository cache: a 50Gi volume per mapped repository, fetched from GitHub every 5 minutes, kept 24 hours after its repository leaves the mapping; its container reserves cpu 2, memory 4Gi under 8Gi, ephemeral storage 1Gi under 2Gi\n"
+	cache := "repository cache: a 50Gi volume for each repository a live record names, fetched from GitHub every 5 minutes, kept 24 hours after no live record names it; its container reserves cpu 2, memory 4Gi under 8Gi, ephemeral storage 1Gi under 2Gi\n"
 	if want := demoCheckConfigOK + secretsGap + cache + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -1458,7 +1575,7 @@ func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 func TestConfigCheckRefusesAnUnknownCapabilityDecision(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct{ name, extra, want string }{
-		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity\n"},
+		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room\n"},
 		{"a blank reason", "capabilities: {decided: {secrets: \"\"}}\n", "legion config check: capabilities.decided.secrets must not be empty\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1614,7 +1731,9 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made
-// it is in none; with no agent in a call the line says so.
+// it is in none; with no agent in a call the line says so. Only a working claim's agent is in a
+// turn: a retired or suspended claim keeps the step it was last in on its record, on purpose, so
+// a call open there is no agent in a call, and the line names only the working claims.
 func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1624,11 +1743,28 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 		`"callId":"toolu_impl_3","argsBytes":128,"argsHash":"9b2e45c0d1f8a673","startedAt":"2026-09-23T01:14:00Z"}`
 	ended := `"step":{"at":"2026-09-23T01:12:00Z","turnStartedAt":"2026-09-23T01:10:00Z","tool":"read",` +
 		`"callId":"toolu_arch_2","argsBytes":74,"argsHash":"3f7c1a9d62b40e58","startedAt":"2026-09-23T01:11:00Z","endedAt":"2026-09-23T01:12:00Z"}`
-	stepping := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},` +
-		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0,` + open + `},"rounds":1}}}}`
-	idle := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},"workers":{}}}`
+	// claim is one claim view in a state with a step; issue is LEGION-208 with its architect's
+	// claim and, unless implementer is empty, an implementer's claim on its first round. Each row
+	// below names only its claims' states and steps.
+	claim := func(session, state, step string) string {
+		return `{"session":"` + session + `","state":"` + state + `","pluginContract":0,` + step + `}`
+	}
+	issue := func(architect, implementer string) string {
+		workers := `{}`
+		if implementer != "" {
+			workers = `{"implementer":{"claim":` + implementer + `,"rounds":1}}`
+		}
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+			`"architect":` + architect + `,"workers":` + workers + `}}`
+	}
+	stepping := issue(claim("ses_a", "working", ended), claim("ses_i", "working", open))
+	idle := issue(claim("ses_a", "working", ended), "")
+	// The architect's claim is retired and the implementer's working, each with a call that has a
+	// start and no end: the retired claim's call is the one its record kept, not an agent in one.
+	openArchitect := `"step":{"at":"2026-09-22T18:40:00Z","turnStartedAt":"2026-09-22T18:30:00Z","tool":"edit",` +
+		`"callId":"toolu_arch_7","argsBytes":96,"argsHash":"5d0e8a1c7b3f2946","startedAt":"2026-09-22T18:40:00Z"}`
+	retiredBeside := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "working", open))
+	noneWorking := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "suspended", open))
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -1636,6 +1772,16 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 			name:   "one agent in a call, one whose call ended",
 			issues: stepping,
 			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{
+			name:   "a working claim in a call beside a retired claim whose record keeps one",
+			issues: retiredBeside,
+			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{
+			name:   "open calls only on retired and suspended claims",
+			issues: noneWorking,
+			want:   "agents in a tool call: none\n",
 		},
 		{name: "every call ended", issues: idle, want: "agents in a tool call: none\n"},
 		{name: "no issues", issues: `{}`, want: "agents in a tool call: none\n"},
@@ -1969,10 +2115,10 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 // it exists to catch. (INFRA-2554.)
 func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 	const (
-		returned = "Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back," +
-			" and it takes the free slots first."
-		starting = "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank," +
-			" and 1 issue whose work came back stands ahead of all of them."
+		returned = "Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back," +
+			" and it takes the free slots before the issues at P1 that have not started."
+		starting = "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank," +
+			" and 1 issue at P1 whose work came back stands ahead of all of them."
 	)
 	waiting := []string{"WIDGETS-14", "WIDGETS-15"}
 	issues := map[string]api.Issue{
@@ -2449,45 +2595,129 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 	}
 }
 
-// An operator reading plain `legion state` is told each served repository Dispatch's GitHub App is
-// not known to be installed on, one line each with why, as the daemon serves the state; with none
-// the one line says so. The body is the one contract 152 serves: a served repository carries each
-// role App's installation (`apps`) beside its `default`.
+// An operator reading plain `legion state` is told each repository a live record names that
+// Dispatch's GitHub App is not known to be installed on, one line each with why, as the daemon
+// serves the state; with none the one line says so. The body is the one this contract serves:
+// `withoutWebhookApp` lists each such repository with its reason, in contract 152's shape, and is
+// the block's one report of the webhook App, so it is the list the lines are read from. A block
+// with no such list says nothing of the webhook App and gets no line at all.
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
 	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
+	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
+	both := `"apps":{"implement":true,"review":true}`
+	live := `[{"repo":"acme/tools",` + both + `},{"repo":"acme/widgets",` + both + `},{"repo":"zeta/tools",` + both + `}]`
 	for _, tc := range []struct {
-		name, gaps, want string
+		name, block, want string
 	}{
 		{
 			name: "two repositories",
-			gaps: `[{"repo":"acme/widgets","reason":"` + missing + `"},{"repo":"zeta/tools","reason":"the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"}]`,
+			block: `{"live":` + live + `,"withoutWebhookApp":[{"repo":"acme/widgets","reason":"` + missing + `"},` +
+				`{"repo":"zeta/tools","reason":"` + failed + `"}],"caches":[]}`,
 			want: "webhook App missing on acme/widgets: " + missing + "\n" +
-				"webhook App missing on zeta/tools: the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500\n",
+				"webhook App missing on zeta/tools: " + failed + "\n",
 		},
-		{name: "none", gaps: `[]`, want: "webhook App missing: none\n"},
+		{name: "none", block: `{"live":` + live + `,"withoutWebhookApp":[],"caches":[]}`, want: "webhook App missing: none\n"},
+		{name: "a block with no list", block: `{"live":` + live + `,"caches":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + `,"repositories":{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true,"apps":{"implement":true,"review":true}}],"refused":[],"withoutWebhookApp":` + tc.gaps + `,"caches":[]}}`
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(served))
-			}))
-			defer server.Close()
-			t.Chdir(t.TempDir())
-			t.Setenv("LEGION_DAEMON_URL", server.URL)
-			t.Setenv("LEGION_ISSUE", "")
-
-			var out, errb bytes.Buffer
-			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
-				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			out := plainStateOf(t, "{"+daemon+`,"repositories":`+tc.block+"}")
+			if tc.want == "" {
+				if strings.Contains(out, "webhook App missing") {
+					t.Fatalf("legion state printed %q, want no webhook App line from a block with no withoutWebhookApp", out)
+				}
+				return
 			}
-			if !strings.Contains(out.String(), tc.want) {
-				t.Fatalf("legion state printed %q, want the lines %q", out.String(), tc.want)
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("legion state printed %q, want the lines %q", out, tc.want)
+			}
+			if strings.Contains(out, "webhook App missing on acme/tools") {
+				t.Fatalf("legion state printed %q, which names acme/tools, which withoutWebhookApp does not list", out)
 			}
 		})
 	}
+}
+
+// An operator whose `legion` is of this contract and whose daemon is of an earlier one, as during
+// a rollout, reads that daemon's state: its `repositories` block has no `live` key, but it writes
+// `withoutWebhookApp`, a key both releases write in one shape, and that list is what this CLI's
+// webhook App lines are read from (webhookAppLines). So the CLI prints the line that daemon's
+// list names, for acme/widgets here, and never says that no repository lacks the webhook App.
+// Found by the tester of dispatch://INFRA-4401 at a8076cb487b2, against a running daemon of
+// contract 152, whose own `legion state` printed `webhook App missing on sjawhar/legion-smoke: …`
+// where this CLI printed `webhook App missing: none`.
+//
+// The control is the CLI that read the gaps from the `live` block: webhookAppLines is then fed
+// nothing for this body, and the line this test reads is gone.
+func TestPlainStateDoesNotSayNoWebhookAppIsMissingFromADaemonWithNoLiveBlock(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
+	block := `{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true,"apps":{"implement":true,"review":true}}],` +
+		`"refused":[],"withoutWebhookApp":[{"repo":"acme/widgets","reason":"` + failed + `"}],"caches":[]}`
+	out := plainStateOf(t, "{"+daemon+`,"repositories":`+block+"}")
+	if want := "webhook App missing on acme/widgets: " + failed + "\n"; !strings.Contains(out, want) {
+		t.Fatalf("legion state printed %q, want the line %q: the daemon's withoutWebhookApp names acme/widgets", out, want)
+	}
+	if strings.Contains(out, "webhook App missing: none") {
+		t.Fatalf("legion state printed %q: it says no repository lacks the webhook App, while the daemon it read names acme/widgets as one", out)
+	}
+}
+
+// An operator reading plain `legion state` is told each repository a live record names that
+// GitHub's last read did not name or a role App is not installed on, one line each with why — the
+// entry's `readError`, the Apps GitHub answered are not installed on the name it is served under,
+// or both — in the state's order, and the name its pair serves it as where the rename rule serves
+// it under the other name. A repository both Apps are installed on, and one GitHub has not yet
+// answered, have no line.
+//
+// The control is the property put back: the plain state before this contract printed no line
+// for such a repository, only the webhook App lines, and every line this test reads is then gone.
+func TestPlainStateNamesEachLiveRepositoryGitHubDidNotReadOrAnAppIsMissingFrom(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	unread := "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
+	live := `[{"repo":"acme/fresh"},` +
+		`{"repo":"acme/gadgets","apps":{"implement":true,"review":false}},` +
+		`{"repo":"acme/widgets","apps":{"implement":true,"review":true}},` +
+		`{"repo":"sjawhar/legion","servedAs":"cybermonklabs/legion","apps":{"implement":false,"review":true}},` +
+		`{"repo":"zeta/archive","readError":"` + unread + `"},` +
+		`{"repo":"zeta/gone","readError":"GitHub answered 404 for zeta/gone","apps":{"implement":false,"review":false}}]`
+	out := plainStateOf(t, "{"+daemon+`,"repositories":{"live":`+live+`,"caches":[]}}`)
+
+	want := "repository acme/gadgets: the review App is not installed on acme/gadgets\n" +
+		"repository sjawhar/legion (served as cybermonklabs/legion): the implement App is not installed on cybermonklabs/legion\n" +
+		"repository zeta/archive: " + unread + "\n" +
+		"repository zeta/gone: GitHub answered 404 for zeta/gone; the implement and review Apps are not installed on zeta/gone\n"
+	if !strings.Contains(out, want) {
+		t.Fatalf("legion state printed %q, want the lines %q", out, want)
+	}
+	for _, repo := range []string{"acme/fresh", "acme/widgets"} {
+		if strings.Contains(out, "repository "+repo) {
+			t.Errorf("legion state printed %q, which names %s: it has no read error and no App missing", out, repo)
+		}
+	}
+}
+
+// plainStateOf is what plain `legion state` prints of served, the body a stand-in daemon answers
+// GET /legion/v1/state with, read from no pane.
+func plainStateOf(t *testing.T, served string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	return out.String()
 }
 
 // An operator reading plain `legion state` is told, one line per durable consumer, how many
@@ -2535,6 +2765,87 @@ func TestPlainStateGivesEachDurableConsumersLag(t *testing.T) {
 				t.Fatalf("consumerLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(tc.want, "\n"))
 			}
 		})
+	}
+}
+
+// An operator reading plain `legion state` is told, one line per consumer with an open give-up,
+// how many it has and the newest stream sequence among them, which `legion intake` takes as
+// --through-seq; then the newest give-ups, at most plainStateGiveUps, each with its id, consumer,
+// subject, sequence, when and after how many deliveries it was given up, why, and the first line of
+// its error. With none open the one line says so.
+func TestPlainStateGivesTheOpenGiveUps(t *testing.T) {
+	gaveUpAt := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	t.Run("none", func(t *testing.T) {
+		if got := intakeGiveUpLines(api.IntakeGiveUpsView{}); !slices.Equal(got, []string{"intake give-ups: none"}) {
+			t.Fatalf("intakeGiveUpLines = %q, want the one line saying none", got)
+		}
+	})
+	t.Run("twelve open across two consumers print the counts and ten records", func(t *testing.T) {
+		giveUps := api.IntakeGiveUpsView{Consumers: []api.IntakeGiveUpCountView{
+			{Name: "legion-go-LEGION-dispatch", Open: 11, NewestSeq: 6044896},
+			{Name: "legion-go-LEGION-github", Open: 1, NewestSeq: 812004},
+		}}
+		for i := range 12 {
+			giveUps.Newest = append(giveUps.Newest, api.IntakeGiveUpView{
+				ID: int64(60 - i), Consumer: "legion-go-LEGION-dispatch", Subject: fmt.Sprintf("notifications.dispatch.issue.LEGION-%d.issue.updated", 300-i),
+				StreamSeq: uint64(6044896 - i), Deliveries: 21, GaveUpAt: gaveUpAt.Add(-time.Duration(i) * time.Minute), Reason: "bound",
+				LastError: "apply the issue event: context deadline exceeded\ngoroutine 7 [running]",
+			})
+		}
+		got := intakeGiveUpLines(giveUps)
+		want := []string{
+			"intake give-ups legion-go-LEGION-dispatch: 11 open, newest seq 6044896",
+			"intake give-ups legion-go-LEGION-github: 1 open, newest seq 812004",
+		}
+		for i := range plainStateGiveUps {
+			want = append(want, fmt.Sprintf("intake give-up %d legion-go-LEGION-dispatch notifications.dispatch.issue.LEGION-%d.issue.updated seq %d gave up %s after 21 deliveries (bound): apply the issue event: context deadline exceeded",
+				60-i, 300-i, 6044896-i, gaveUpAt.Add(-time.Duration(i)*time.Minute).Format(time.RFC3339)))
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("intakeGiveUpLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	})
+}
+
+// A give-up's subject is the publisher's text, which Envoy and NATS refuse only for whitespace,
+// and its error can quote that text. So plain `legion state` writes each character of the subject
+// and of the error that does not print as its Go escape: an ESC or a BEL in them reaches the
+// operator's terminal as text, and does not clear the screen or set the window title. The rest of
+// the line stays as the guides show it.
+func TestPlainStatePrintsNoControlCharacterOfAGiveUp(t *testing.T) {
+	giveUps, err := json.Marshal(api.IntakeGiveUpsView{
+		Consumers: []api.IntakeGiveUpCountView{{Name: "legion-go-LEGION-dispatch", Open: 1, NewestSeq: 48213}},
+		Newest: []api.IntakeGiveUpView{{
+			ID: 412, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.\x1b[2J.issue.updated",
+			StreamSeq: 48213, Deliveries: 1, GaveUpAt: time.Date(2026, 10, 3, 8, 55, 2, 0, time.UTC), Reason: "undecodable",
+			LastError: "issue name \x1b]0;x\x07 is in neither form\ngoroutine 7 [running]",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[],"blocked":[]},"issues":{},"pendingStatusWrites":[],"intakeGiveUps":` + string(giveUps) + `}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	if i := bytes.IndexAny(out.Bytes(), "\x1b\x07"); i >= 0 {
+		t.Fatalf("legion state printed the byte %q of a give-up to the terminal, in %q", out.Bytes()[i], out.String())
+	}
+	want := `intake give-up 412 legion-go-LEGION-dispatch notifications.dispatch.issue.\x1b[2J.issue.updated seq 48213 ` +
+		`gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): issue name \x1b]0;x\a is in neither form` + "\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
 	}
 }
 
@@ -2611,6 +2922,16 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 			name: "one issue no word is true of",
 			held: `[{"issue":"LEGION-209","reason":"unclassified"}]`,
 			want: "admission.held: 1 issue — unclassified 1\n",
+		},
+		{
+			// The two holds of an owner's plan stand after accepted_ancestor and before at_work and
+			// unclassified in the ladder, so they are counted there, whatever order the rows come in.
+			name: "the two holds of a plan, in the ladder's order",
+			held: `[{"issue":"LEGION-214","reason":"unclassified"},` +
+				`{"issue":"LEGION-215","reason":"task_stopped"},` +
+				`{"issue":"LEGION-216","reason":"children_before_retro","heldBy":["LEGION-217"]},` +
+				`{"issue":"LEGION-218","reason":"accepted_ancestor","heldBy":["LEGION-216"]}]`,
+			want: "admission.held: 4 issues — accepted_ancestor 1, children_before_retro 1, task_stopped 1, unclassified 1\n",
 		},
 		{name: "none", held: `[]`, want: "admission.held: none\n"},
 	} {

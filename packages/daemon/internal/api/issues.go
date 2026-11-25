@@ -15,11 +15,11 @@ type IssueStatusResponse struct{}
 
 func (s *server) issueStatus(w http.ResponseWriter, r *http.Request) {
 	var req IssueStatusRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"status", req.Status}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"status", req.Status}) {
 		return
 	}
 	if req.Status != "todo" && req.Status != "backlog" && req.Status != "icebox" {
-		writeFailure(w, http.StatusBadRequest, "INVALID_STATUS", "status must be todo, backlog, or icebox")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_STATUS", "status must be todo, backlog, or icebox")
 		return
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
@@ -27,10 +27,10 @@ func (s *server) issueStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !grant.Controller {
-		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED", "issue status requires a controller grant")
+		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED", "issue status requires a controller grant")
 		return
 	}
 	if written, ok := s.setDispatchStatus(w, r, req.Issue, req.Status); ok && s.applyOwnStatusWrite(w, r, written) {
-		writeJSON(w, http.StatusOK, IssueStatusResponse{})
+		s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, IssueStatusResponse{})
 	}
 }

@@ -90,7 +90,7 @@ var ErrCarryUnanswered = errors.New("the secrets broker did not answer which of 
 var ErrCarryRefused = errors.New("the secrets broker refused the question of which of the names it still carries")
 
 // UnlistedCarryError is an answer of the secrets broker's too long for the daemon to read whole
-// (agentsecrets' CarriedAnswerTooLargeError): the broker answered, and an answer that long names
+// (cipher's CarriedAnswerTooLargeError): the broker answered, and an answer that long names
 // at least one enrollment, so a release reads it as a carry it cannot list (NamesCarriedError's
 // Unlisted), never as an outage (side review of #4355).
 type UnlistedCarryError interface{ UnlistedCarry() bool }
@@ -195,9 +195,9 @@ func (e *NamesCarriedError) Error() string {
 func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	m.mu.Lock()
 	defer m.unlock()
-	// The read is bounded as a claim write is, as HoldsItsSession bounds its own, so a database
-	// that has stopped answering does not hold the machine's lock for the outage.
-	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	// The read is bounded as a claim write is (bounded), as HoldsItsSession bounds its own, so a
+	// database that has stopped answering does not hold the machine's lock for the outage.
+	reading, cancel := m.bounded(ctx)
 	holds, err := m.deps.Store.ClaimHolds(reading, m.claim.Project, m.claim.Token)
 	cancel()
 	if err != nil {
@@ -387,6 +387,23 @@ func RecordedHolds(session, sessionFile string) []Hold {
 	return holds
 }
 
+// byIDHolds is every name a resume of session by its id alone runs under (Machine.start, for a
+// claim that records a session and no file): the session id, and the id an Oh My Pi file
+// `<timestamp>_<id>.jsonl` gives (HoldFileID), since that resume continues the file whose name
+// ends in `_<id>.jsonl` — the newest such row of the launcher's session table, the newest such
+// file one folder below the tmux pane's sessions directory, or the file Oh My Pi's own
+// `--resume=<id>` finds. The file's base name is not known before the agent registers it, and
+// that registration holds it with the rest (register, RecordedHolds). RecordedHolds(session, "")
+// gives the session id alone, which is all its callers need: each acts on a registered process or
+// its session, and a claim with no file has no registered process. An empty session, or one past
+// claim.MaxSessionNameBytes, names nothing, as in RecordedHolds.
+func byIDHolds(session string) []Hold {
+	if session == "" || len(session) > claim.MaxSessionNameBytes {
+		return nil
+	}
+	return []Hold{{Kind: HoldSessionID, Name: session}, {Kind: HoldFileID, Name: session}}
+}
+
 // invalidName is one name of a session that no hold can cover, with what makes it one (why, as a
 // refusal's error and log line say it) and the refusal a registration of it answers.
 type invalidName struct {
@@ -473,8 +490,27 @@ func UnholdableNames(session, sessionFile string) []Hold {
 // one that needs a new session starts none until an operator runs the command the line gives
 // (ReleaseNamesCommand). A store that does not answer refuses nothing: its error wraps
 // errHoldUnanswered, which a launch tries again at the probe interval charging nothing
-// (launchNow), and any other decision is asked again by the next one.
+// (launchTries), and any other decision is asked again by the next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
+	return m.holdNames(ctx, session, sessionFile, RecordedHolds(session, sessionFile))
+}
+
+// holdByID is holdRecorded for a resume of session by its id alone, under the same rule: it holds
+// the names that resume runs under (byIDHolds), the file-id name beside the session id. start asks
+// it before such a resume, which only an Oh My Pi claim makes: start sends a Claude Code claim with
+// a session and no file straight to the forget (startFresh) and asks no hold. resumeRefusal asks it
+// of every claim that records a session and no file, a Claude Code claim's included, which is
+// stricter than that claim's launch: an operator's resume of such a claim whose by-id names another
+// claim holds is refused, though its launch would forget the session rather than resume it.
+func (m *Machine) holdByID(ctx context.Context, session string) error {
+	return m.holdNames(ctx, session, "", byIDHolds(session))
+}
+
+// holdNames is the hold holdRecorded and holdByID make: names are the names of session and
+// sessionFile that the caller's resume or record runs under, and each is held to the claim, or the
+// call is refused, by the rule holdRecorded gives. The session and file it admits are the ones
+// HoldsItsSession and Admits read (Machine.admitted).
+func (m *Machine) holdNames(ctx context.Context, session, sessionFile string, names []Hold) error {
 	if invalid := invalidSessionNames(session, sessionFile); len(invalid) > 0 {
 		n := invalid[0]
 		what := "session id"
@@ -486,7 +522,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		return fmt.Errorf("%s as %s %s: %w", m.claim.Token, what, n.why, claim.SessionNameUnheldRefusal(what))
 	}
 	var ask []Hold
-	for _, h := range RecordedHolds(session, sessionFile) {
+	for _, h := range names {
 		if !m.heldNames[h] {
 			ask = append(ask, h)
 		}
@@ -556,6 +592,19 @@ type heldElsewhereError struct {
 
 func (e *heldElsewhereError) Error() string { return e.err.Error() }
 func (e *heldElsewhereError) Unwrap() error { return e.err }
+
+// IsSessionHeldElsewhere is whether err, anywhere in its chain, is holdRecorded's refusal of a
+// name held for another claim or for none (claim.SessionHeldRefusal, carried by
+// heldElsewhereError), whichever of the session's names was refused: its id, its file's name, or
+// an id the file's name gives. It matches the refusal by its kind, not by its value or its status:
+// the two other refusals of a hold, claim.SessionNameUnheldRefusal and claim.HeldNamesCapRefusal,
+// are 409s of the same claim.Refusal type, and neither is this. The controller keeper reads it to
+// ask for a new session when a retry's resume of the recorded session is refused for that alone
+// (internal/daemon's controllerKeeper.keep).
+func IsSessionHeldElsewhere(err error) bool {
+	var held *heldElsewhereError
+	return errors.As(err, &held)
+}
 
 // mayForget is nil when the claim may clear the session it records (forgetSession, retry's fresh
 // session), and otherwise why not. A claim holding its session, or recording none, forgets as
@@ -708,7 +757,7 @@ func (m *Machine) HoldsItsSession(ctx context.Context) error {
 	}
 	holds := RecordedHolds(c.Session, c.SessionFile)
 	if len(holds) > 0 {
-		asking, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+		asking, cancel := m.bounded(ctx)
 		holders, err := m.deps.Store.HoldSessions(asking, c.Project, c.Token, holds)
 		cancel()
 		switch {

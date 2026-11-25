@@ -1,13 +1,14 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
+import { type MutationKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { jump } from "../../__tests__/fake-clock";
-import { graphNode } from "../../__tests__/graph-fixture";
+import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
+import { jump, settle } from "../../__tests__/fake-clock";
 import {
   dwellOn,
   type IntersectionControl,
@@ -15,10 +16,14 @@ import {
   type Placement,
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { ownReplies } from "../../__tests__/own-replies";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
+import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
+import { userStateQuery } from "../../api/queries";
 import type {
   Actor,
   Agent,
@@ -37,14 +42,16 @@ import type {
   UserState,
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
-import { stubMatchMedia } from "../margin/margin-fixture";
+import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
+import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
+import { threadReplySendKey } from "./usePhoneThread";
 
 const alice: Actor = { id: "alice", kind: "user" };
 
@@ -86,6 +93,7 @@ function message(id: string, overrides: Partial<Message> = {}): Message {
     body: `Body of ${id}`,
     created_at: "2026-09-09T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: "CORE-1",
@@ -224,86 +232,6 @@ const secondaryDocument: Artifact = {
   primary: false,
   slug: "supporting-document",
 };
-
-interface Lists {
-  agents?: Agent[];
-  asks?: IssueAskThreadRow[];
-  comments?: Comment[];
-  /** The issue's handoffs with their bodies: the list answers them as they are (a body is extra
-   *  to a summary), and `getHandoff` answers one by id. */
-  handoffs?: Handoff[];
-  /** The issue's newest event, which a dwell on the newest card marks read through. */
-  head?: DispatchEvent[];
-  messages?: MessageRead[];
-  /** The first event the reader has not read: its moment is the unread boundary. */
-  unread?: DispatchEvent[];
-}
-
-/** The four reads the Conversation builds its list from, plus the two one-row event reads that
- *  carry the unread boundary and the issue's head, the read of one handoff's body, and the blocks
- *  read an opened comment editor makes, answered with no block ids. The returned `lists` is live:
- *  a test that changes it changes what the next refetch answers. */
-function stubLists(initial: Lists = {}): { lists: Lists; restore: () => void } {
-  const lists: Lists = { ...initial };
-  const spies = [
-    spyOn(api, "listIssueAskThreads").mockImplementation(async () => lists.asks ?? []),
-    spyOn(api, "listComments").mockImplementation(async () => lists.comments ?? []),
-    spyOn(api, "listIssueMessages").mockImplementation(async () => lists.messages ?? []),
-    spyOn(api, "listHandoffs").mockImplementation(async () => lists.handoffs ?? []),
-    spyOn(api, "getHandoff").mockImplementation(async (id) => {
-      const found = lists.handoffs?.find((row) => row.id === id);
-      if (found === undefined) throw new ApiError(404, { error: `no handoff ${id}` });
-      return found;
-    }),
-    spyOn(api, "listAgents").mockImplementation(async () => lists.agents ?? []),
-    spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
-      blocks: [],
-      indexed: false,
-      item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
-    })),
-    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options = {}) =>
-      options.order === "desc" ? (lists.head ?? []) : (lists.unread ?? [])
-    ),
-  ];
-  return {
-    lists,
-    restore: () => {
-      for (const spy of spies) spy.mockRestore();
-    },
-  };
-}
-
-function newQueryClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-}
-
-function tab(
-  state: UserState,
-  visible: boolean,
-  queryClient: QueryClient,
-  isClosed = false,
-  issueArtifacts: ReadonlyMap<string, Artifact> = new Map(),
-  focusItemId?: string
-): ReactNode {
-  return (
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <KeymapProvider>
-        <QueryClientProvider client={queryClient}>
-          <ConversationTab
-            focusItemId={focusItemId}
-            issueArtifacts={issueArtifacts}
-            isClosed={isClosed}
-            issueKey="CORE-1"
-            state={state}
-            visible={visible}
-          />
-        </QueryClientProvider>
-      </KeymapProvider>
-    </MemoryRouter>
-  );
-}
 
 // The sticky composer sits at document top 0 and the newest card below it. `useFollowLatest`
 // reads their bounding rectangles only to place the newest card beneath the composer, so these
@@ -621,6 +549,36 @@ test("agent authors render the registry title and fall back to a short id", asyn
   }
 });
 
+// Each issue a status change's option moves or unlinks, and each issue R25's fix changes, gets a
+// comment written as Dispatch's system actor: no person and no session. Its thread names it as
+// `AgentName` names every actor that is not a session, by its id, and reads no registry for it.
+test("a comment from Dispatch's system actor shows its author", async () => {
+  const user = userEvent.setup();
+  const body =
+    "Dispatch moved this issue from `todo` to `done`, because alice's status change of its parent passed `include_children`.";
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", { author: { id: "parent-status-rule", kind: "system" }, body }),
+    ],
+  });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const turns = await screen.findByRole("list", { name: "Conversation turns" });
+    const turn = (await within(turns).findByText(/Dispatch moved this issue/)).closest<HTMLElement>(
+      "[data-turn]"
+    );
+    if (turn === null) throw new Error("the comment is drawn in no turn");
+    // A thread names its comments' authors once it is open.
+    await user.click(within(turn).getByRole("button", { name: "Expand thread" }));
+    expect(await within(turn).findByText(/^parent-status-rule ·/)).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
 // A closed issue takes a message's retry and replies, so its card offers them as an open one does.
 test("offers targeted-message retries and Reply on a closed issue", async () => {
   const stub = stubLists({
@@ -738,6 +696,78 @@ test("a mention its session answered with an error is pointed at a new comment, 
         `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
       )
     );
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A delete ends each send of its post still pending, with its own words, and Dispatch refuses
+// every new delivery of a deleted post (409 POST_DELETED). So the attempt a comment's delete
+// ended reads the delete's words alone, never that it failed, with no Retry, while a standing
+// comment's failed mention still reads as failed and keeps its Retry; and a deleted targeted
+// message's card says the delete ended it and offers neither Retry nor a mode change.
+test("an attempt a post's delete ended offers no Retry or mode change, and a standing post's still does", async () => {
+  const deletion = { deleted_at: "2026-09-20T00:05:00Z", deleted_by: alice };
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", {
+        ...deletion,
+        body: "",
+        deliveries: [
+          mentionAttempt({
+            comment_id: "comment-1",
+            error: DELETED_POST_DELIVERY_ERROR,
+            session_id: "worker",
+            target: "session:worker",
+          }),
+        ],
+        mentions: [{ delivery: "btw", session_id: "worker", target: "session:worker" }],
+      }),
+      comment("comment-2", {
+        body: "@reviewer take a look",
+        deliveries: [
+          mentionAttempt({
+            comment_id: "comment-2",
+            error: "reviewer failed",
+            session_id: "reviewer",
+            target: "session:reviewer",
+          }),
+        ],
+        mentions: [{ delivery: "btw", session_id: "reviewer", target: "session:reviewer" }],
+      }),
+    ],
+    messages: [
+      thread(
+        message("message-1", {
+          ...deletion,
+          body: "",
+          deliveries: [attempt({ error: DELETED_POST_DELIVERY_ERROR, state: "failed" })],
+          target: "session:s1",
+        })
+      ),
+    ],
+  });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await screen.findByText(wholeText("session:worker… · Ended by the post's delete"));
+    expect(
+      screen.queryByText(wholeText(`session:worker… · failed · ${DELETED_POST_DELIVERY_ERROR}`))
+    ).toBeNull();
+    screen.getByText(
+      wholeText(
+        `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
+      )
+    );
+    const card = (await screen.findByText("Ended by the post's delete")).closest(
+      "[data-turn]"
+    ) as HTMLElement;
+    expect(within(card).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /instead/ })).not.toBeInTheDocument();
+    // The one Retry on the page is the standing comment's.
     expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
   } finally {
     view.unmount();
@@ -1277,7 +1307,7 @@ const refusedText = "Couldn't send — the server is down";
 // Resolve on a phone as they do at a desktop width.
 test("on a phone, the reader's own Resolve keeps the thread composer's refused reply and its comment", async () => {
   const user = userEvent.setup();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const resolve = ownResolveOverAReply();
 
   try {
@@ -1314,7 +1344,7 @@ test("on a phone, the reader's own Resolve keeps the thread composer's refused r
 // that already shows the refusal.
 test("on a phone, a thread reply refused while the reader's Resolve is out outlives the Resolve", async () => {
   const user = userEvent.setup();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const resolve = ownResolveOverAReply();
 
   try {
@@ -1352,7 +1382,7 @@ test("on a phone, a thread reply refused while the reader's Resolve is out outli
 for (const width of ["phone", "desktop"] as const) {
   test(`at a ${width} width, the reader's own Resolve keeps the card's refused reply and its comment`, async () => {
     const user = userEvent.setup();
-    const restoreViewport = width === "phone" ? stubMatchMedia(true) : () => {};
+    const restoreViewport = width === "phone" ? stubViewport(PHONE_WIDTH) : () => {};
     const resolve = ownResolveOverAReply();
 
     try {
@@ -1392,7 +1422,7 @@ for (const width of ["phone", "desktop"] as const) {
 // the composer, and its draft, to the other comment.
 test("on a phone, another comment's Reply opens the thread whose reply was refused after Back", async () => {
   const user = userEvent.setup();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const stub = stubLists({
     comments: [
       comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" }),
@@ -1593,6 +1623,338 @@ test("another message's Reply redirects onto the one whose refusal the docked co
     stub.restore();
   }
 });
+
+// The docked composer is one box for the issue, whose reply its Reply and Cancel reply move. Cancel
+// reply is the reader's own move, so a reply Dispatch refused goes with it: the box shows the draft
+// as a new comment, with its Retry at once, and that Retry posts it as one, a new write under a
+// key of its own.
+test("a reply the docked composer holds refused is posted as a new comment after Cancel reply", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({
+    comments: [comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" })],
+  });
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }))
+    .mockResolvedValue(comment("comment-b"));
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const turn = () => {
+    const element = view.container.querySelector<HTMLElement>('[data-turn="comment:comment-a"]');
+    if (element === null) throw new Error("expected comment-a's turn");
+    return element;
+  };
+
+  try {
+    await screen.findByText("Comment A");
+    await user.click(within(turn()).getByRole("button", { name: "Reply" }));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Reply meant for A");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await within(composer).findByText(refusedText);
+
+    await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
+    expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    expect(field.value).toBe("Reply meant for A");
+    expect(within(composer).queryByText(/This message was written/)).not.toBeInTheDocument();
+    await user.click(within(composer).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply meant for A", reply_to: "comment-a" },
+      { body: "Reply meant for A" },
+    ]);
+    const [first, retried] = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+    expect(retried).not.toBe(first);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+    stub.restore();
+  }
+});
+
+/** The Conversation at a phone width over one comment, `Comment A`, whose comment writes
+ *  `createComment` answers. */
+function phoneOverCommentA(
+  createComment: Mock<typeof api.createComment>,
+  queryClient = newQueryClient()
+) {
+  const restoreViewport = stubViewport(PHONE_WIDTH);
+  const stub = stubLists({
+    comments: [comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" })],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  return {
+    restore: () => {
+      view.unmount();
+      createComment.mockRestore();
+      stub.restore();
+      restoreViewport();
+    },
+    turn: () => {
+      const element = view.container.querySelector<HTMLElement>('[data-turn="comment:comment-a"]');
+      if (element === null) throw new Error("expected comment-a's turn");
+      return element;
+    },
+  };
+}
+
+/** Opens the thread of `turn`'s comment with its Reply, and writes `body` in the thread
+ *  composer. Answers the thread view. */
+async function writeInThread(
+  user: UserEvent,
+  turn: HTMLElement,
+  body: string
+): Promise<HTMLElement> {
+  await user.click(within(turn).getByRole("button", { name: "Reply" }));
+  const dialog = await screen.findByRole("dialog", { name: "Thread" });
+  const field = within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+  await user.clear(field);
+  await user.click(field);
+  await user.paste(body);
+  return dialog;
+}
+
+// On a phone a comment's Reply answers in its thread, by a composer of its own that Cancel reply
+// ends. Cancel reply is the reader's own move to the issue's address all the same, so a reply
+// Dispatch refused goes with it, as it goes with the docked composer's own Cancel reply: the
+// docked composer the reader comes back to shows the text and the refusal, and its Retry posts a
+// new comment under a key of its own.
+test("on a phone, a thread reply refused is posted as a new comment from the docked composer after Cancel reply", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }))
+    .mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
+    await within(dialog).findByText(refusedText);
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    expect(field.value).toBe("Reply meant for A");
+    expect(within(composer).getByText(refusedText)).toBeTruthy();
+    expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    expect(within(composer).queryByText(/This message was written/)).not.toBeInTheDocument();
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    await user.click(within(composer).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply meant for A", reply_to: "comment-a" },
+      { body: "Reply meant for A" },
+    ]);
+    const [first, retried] = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+    expect(retried).not.toBe(first);
+  } finally {
+    phone.restore();
+  }
+});
+
+// The draft goes with the reader's own move whether or not it was ever sent: a reply typed in the
+// thread and cancelled is the docked composer's draft, and nothing goes until Send there.
+test("on a phone, a thread reply never sent is the docked composer's draft after Cancel reply", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const dialog = await writeInThread(user, phone.turn(), "Reply never sent");
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    expect(field.value).toBe("Reply never sent");
+    expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    expect(createComment).not.toHaveBeenCalled();
+
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply never sent" },
+    ]);
+  } finally {
+    phone.restore();
+  }
+});
+
+// A docked composer holding a draft of its own is never written over. The thread composer's
+// Cancel reply then puts it away as it stands, its refusal with it: Back keeps both, the docked
+// draft is as the reader left it, the docked composer says the reply is kept and how to go on with
+// it, and the comment's Reply brings the thread's reply back and the line goes.
+test("on a phone, Cancel reply over a docked draft of its own keeps both, and the comment's Reply brings the thread reply back", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValueOnce(
+    new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const docked = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(docked);
+    await user.paste("Docked draft");
+    let dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
+    await within(dialog).findByText(refusedText);
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+    expect(docked.value).toBe("Docked draft");
+    expect(within(composer).queryByText(refusedText)).not.toBeInTheDocument();
+    // The thread covers the docked composer until Back, so this is the line's first time on
+    // screen; a status the reader cannot see is no role the query finds.
+    expect(within(composer).getByRole("status").textContent).toBe(
+      "Your reply to the comment by alice is kept. Press Reply on that comment to go on with it."
+    );
+
+    await user.click(within(phone.turn()).getByRole("button", { name: "Reply" }));
+    dialog = await screen.findByRole("dialog", { name: "Thread" });
+    expect(
+      within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value
+    ).toBe("Reply meant for A");
+    expect(within(dialog).getByText(refusedText)).toBeTruthy();
+    expect(docked.value).toBe("Docked draft");
+    expect(within(composer).queryByText(/is kept/)).not.toBeInTheDocument();
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    phone.restore();
+  }
+});
+
+/** What a send the reader stopped says in its composer at its own address: Dispatch has not
+ *  confirmed it, and its Retry asks again under its own key. */
+const stoppedText = new SendStoppedError().message;
+
+/** The phone thread composer's send name, and the one of `Comment A`'s thread card's own reply. */
+const threadComposerKey: MutationKey = ["conversation-composer", "CORE-1", "phone-thread"];
+const cardReplyKey = threadReplySendKey(["conversation-composer", "CORE-1"], "comment-a");
+
+/** The reply to `Comment A` a stopped send answers (`stopReplySend`). */
+const commentAReply = {
+  actor: alice,
+  excerpt: "Comment A",
+  id: "comment-a",
+  parentKind: "comment",
+} as const;
+
+// Back is a move of the host's, not one the reader makes with the composer's own controls, so it
+// carries the thread composer's draft nowhere: the draft is held for the comment it answers, and
+// that comment's Reply brings it back - its text, a refusal's note, and a stopped send's note
+// that it may have been delivered. Nothing is sent meanwhile.
+for (const held of ["typed", "refused", "stopped"] as const) {
+  test(`on a phone, a thread reply ${heldDraftWords[held]} comes back with the comment's Reply after Back`, async () => {
+    const user = userEvent.setup();
+    const createComment = spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+    );
+    const queryClient = newQueryClient();
+    const body = `Reply ${heldDraftWords[held]}, then Back`;
+    if (held === "stopped") {
+      await stopReplySend(queryClient, createComment, threadComposerKey, body, commentAReply);
+    }
+    const phone = phoneOverCommentA(createComment, queryClient);
+    const reply = async () => {
+      await user.click(within(phone.turn()).getByRole("button", { name: "Reply" }));
+      return screen.findByRole("dialog", { name: "Thread" });
+    };
+
+    try {
+      await screen.findByText("Comment A");
+      let dialog: HTMLElement;
+      if (held === "stopped") {
+        dialog = await reply();
+        expect(within(dialog).getByText(stoppedText)).toBeTruthy();
+      } else {
+        dialog = await writeInThread(user, phone.turn(), body);
+        if (held === "refused") {
+          await user.click(within(dialog).getByRole("button", { name: "Send" }));
+          await within(dialog).findByText(refusedText);
+        }
+      }
+      const sent = createComment.mock.calls.length;
+      await user.click(within(dialog).getByRole("button", { name: "Back" }));
+      expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+
+      dialog = await reply();
+      // The text and the note in one comparison, so a row that fails says which of them is gone.
+      expect({
+        refusal: within(dialog).queryByText(refusedText) !== null,
+        stopped: within(dialog).queryByText(stoppedText) !== null,
+        text: within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value,
+      }).toEqual({ refusal: held === "refused", stopped: held === "stopped", text: body });
+      expect(createComment).toHaveBeenCalledTimes(sent);
+    } finally {
+      phone.restore();
+    }
+  });
+}
+
+// The thread card's own reply lives in the thread view, which Back takes off the page: Back is the
+// host's move all the same, so the card's draft is held for its thread, and opening the thread
+// again brings it back, with a refusal's note or a stopped send's.
+for (const held of ["typed", "refused", "stopped"] as const) {
+  test(`on a phone, the thread card's own reply ${heldDraftWords[held]} comes back in its thread after Back`, async () => {
+    const user = userEvent.setup();
+    const createComment = spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+    );
+    const queryClient = newQueryClient();
+    const body = `Card reply ${heldDraftWords[held]}, then Back`;
+    if (held === "stopped") {
+      await stopReplySend(queryClient, createComment, cardReplyKey, body, commentAReply);
+    }
+    const phone = phoneOverCommentA(createComment, queryClient);
+    const openThread = async () => {
+      await user.click(within(phone.turn()).getByRole("button", { name: "Expand thread" }));
+      return screen.findByRole("dialog", { name: "Thread" });
+    };
+
+    try {
+      await screen.findByText("Comment A");
+      let dialog = await openThread();
+      const field = within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+      if (held === "stopped") {
+        expect(within(dialog).getByText(stoppedText)).toBeTruthy();
+      } else {
+        await user.click(field);
+        await user.paste(body);
+        if (held === "refused") {
+          const form = field.closest("form");
+          if (form === null) throw new Error("expected the card's reply form");
+          await user.click(within(form).getByRole("button", { name: "Send" }));
+          await within(dialog).findByText(refusedText);
+        }
+      }
+      const sent = createComment.mock.calls.length;
+      await user.click(within(dialog).getByRole("button", { name: "Back" }));
+      expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+
+      dialog = await openThread();
+      expect({
+        refusal: within(dialog).queryByText(refusedText) !== null,
+        stopped: within(dialog).queryByText(stoppedText) !== null,
+        text: within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value,
+      }).toEqual({ refusal: held === "refused", stopped: held === "stopped", text: body });
+      expect(createComment).toHaveBeenCalledTimes(sent);
+    } finally {
+      phone.restore();
+    }
+  });
+}
 
 test(
   "shows Jump to latest until the reader returns to the top",
@@ -2250,7 +2612,7 @@ test("on a phone, landing on a comment opens its thread dialog and reading it ma
   // The reply is read in the commit that mounts the dialog, which only a loaded engine draws
   // (`MarkdownBody`): the first body of a file takes the asynchronous path.
   await warmMarkdownRenderer();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", {
     body: "Reply comment",
@@ -2324,6 +2686,86 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     await waitFor(() =>
       expect(queryClient.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(7)
     );
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    putIssueState.mockRestore();
+    stub.restore();
+    viewport.restore();
+  }
+});
+
+const NO_ARTIFACTS: ReadonlyMap<string, Artifact> = new Map();
+
+/** CORE-1's Conversation under the viewer's states as the issue page's read of them holds them
+ *  (`IssuePage`), so a write into that read reaches the tab as it does on the page. */
+function ConversationUnderReadStates(): ReactNode {
+  const state = useQuery(userStateQuery()).data;
+  return (
+    <ConversationTab
+      issueArtifacts={NO_ARTIFACTS}
+      isClosed={false}
+      issueKey="CORE-1"
+      state={state}
+      visible
+    />
+  );
+}
+
+// A read of the viewer's issue states that was out when the read mark answered was answered from
+// the states before the mark. When it lands after the mark's answer, it must not put back the
+// issue's old read mark, which would count the conversation the reader just read unread again.
+test("a read asked before the read mark answered does not put back the mark it replaced", async () => {
+  const viewport = installIntersectionObserver();
+  const stub = stubLists({
+    comments: [comment("comment-1", { body: "Newest" })],
+    head: [headEvent(7)],
+  });
+  const asked: ReturnType<typeof Promise.withResolvers<UserState>>[] = [];
+  const getMyState = spyOn(api, "getMyState").mockImplementation(() => {
+    const read = Promise.withResolvers<UserState>();
+    asked.push(read);
+    return read.promise;
+  });
+  const putIssueState = answerIssueStates().mockImplementation(async (_key, input) =>
+    issueState([], input.last_read_seq ?? 0)
+  );
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const lastReadSeq = () =>
+    queryClient.getQueryData<UserState>(userStateQuery().queryKey)?.["CORE-1"]?.last_read_seq;
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <KeymapProvider>
+        <QueryClientProvider client={queryClient}>
+          <ConversationUnderReadStates />
+        </QueryClientProvider>
+      </KeymapProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await waitFor(() => expect(asked).toHaveLength(1));
+    await act(async () => asked[0]?.resolve({ "CORE-1": issueState([], 1) }));
+    await screen.findByText("Newest");
+    const card = view.container.querySelector('[data-turn="comment:comment-1"]');
+    if (card === null) throw new Error("expected the newest card");
+
+    // A read of the states goes out, as an event's refresh asks one, and is still out at the mark.
+    act(() => {
+      void queryClient.invalidateQueries({ queryKey: userStateQuery().queryKey });
+    });
+    await waitFor(() => expect(asked).toHaveLength(2));
+    await dwellOnFakeClock(viewport, card);
+    expect(putIssueState).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(lastReadSeq()).toBe(7));
+
+    // The read asked before the mark answers the states from before it.
+    await act(async () => {
+      asked[1]?.resolve({ "CORE-1": issueState([], 1) });
+      await settle();
+    });
+    expect(lastReadSeq()).toBe(7);
   } finally {
     view.unmount();
     getMyState.mockRestore();
@@ -2458,5 +2900,222 @@ test("a Conversation turn links the `#q2` the question map of its message names"
     stub.restore();
     getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
+  }
+});
+
+test("the Conversation marks an edited message and reads a deleted one as deleted", async () => {
+  const root = message("message-1", { edited_at: "2026-09-09T01:00:00Z" });
+  // The deleted reply keeps its body, "Body of message-2", beside the marks, so only the
+  // Conversation's own reading of the marks keeps it off the page.
+  const deletedReply = message("message-2", {
+    created_at: "2026-09-09T02:00:00Z",
+    deleted_at: "2026-09-09T03:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+    in_reply_to: "message-1",
+  });
+  const stub = stubLists({ messages: [thread(root, [deletedReply])] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const turn = await screen.findByText("Body of message-1");
+    const card = turn.closest("[data-turn]") as HTMLElement;
+    expect(card.textContent).toContain("edited");
+    await waitFor(() => expect(card.textContent).toContain("Deleted by alice"));
+    expect(card.textContent).not.toContain("Body of message-2");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// An author who edits a reply and then deletes it leaves both marks on the record, and the
+// reader meets only the deleted line: ` · edited` points at a body no read of the reply gives any more.
+test("a deleted reply its author had edited reads as deleted, with no edited mark", async () => {
+  const root = message("message-1");
+  const deletedReply = message("message-2", {
+    body: "",
+    created_at: "2026-09-09T02:00:00Z",
+    deleted_at: "2026-09-09T04:00:00Z",
+    deleted_by: alice,
+    edited_at: "2026-09-09T03:00:00Z",
+    in_reply_to: "message-1",
+  });
+  const stub = stubLists({ messages: [thread(root, [deletedReply])] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const deletedLine = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>("[data-post-deleted]");
+      if (found === null) throw new Error("the deleted reply is not on the page yet");
+      return found;
+    });
+    const reply = deletedLine.closest("[data-reply]") as HTMLElement;
+    expect(reply.textContent).toContain("Deleted by alice");
+    expect(reply.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// The quote under a reply prints its parent, so a parent its author edited carries ` · edited`
+// there too, as its own byline does; a parent nobody edited does not.
+test("a reply's quote of an edited parent marks the parent as edited, and of a standing one does not", async () => {
+  const reply = (id: string, parent: string) =>
+    message(id, { body: `Answer ${id}.`, created_at: "2026-09-09T02:00:00Z", in_reply_to: parent });
+  const stub = stubLists({
+    messages: [
+      thread(message("message-1", { body: "Alpha.", edited_at: "2026-09-09T01:00:00Z" }), [
+        reply("message-2", "message-1"),
+      ]),
+      thread(message("message-3", { body: "Gamma." }), [reply("message-4", "message-3")]),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  const turn = (id: string) => view.container.querySelector(`[data-turn="message:${id}"]`);
+
+  try {
+    await waitFor(() =>
+      expect(turn("message-2")?.textContent).toContain("Replying to alice · edited — Alpha.")
+    );
+    await waitFor(() =>
+      expect(turn("message-4")?.textContent).toContain("Replying to alice — Gamma.")
+    );
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// Reply takes the message as it stands when it is pressed, and a draft can be open when its
+// author deletes it. The composer's quote reads the message from the Conversation's own read, so
+// once the delete lands it says the message is deleted and gives no part of the body the draft
+// took; until then it quotes the standing message as ever.
+test("the composer's quote of a message deleted while the draft is open reads as deleted, with no part of its body", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({ messages: [thread(message("message-1", { body: "Alpha." }))] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const composer = () => screen.getByRole("form", { name: "Comment composer" });
+
+  try {
+    const turn = (await screen.findByText("Alpha.")).closest("[data-turn]") as HTMLElement;
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(composer().textContent).toContain("Replying to alice — Alpha."));
+
+    stub.lists.messages = [
+      thread(
+        message("message-1", { body: "", deleted_at: "2026-09-09T03:00:00Z", deleted_by: alice })
+      ),
+    ];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+
+    await waitFor(() => expect(composer().textContent).toContain("Deleted by alice"));
+    expect(composer().textContent).toContain("Replying to alice");
+    expect(composer().textContent).not.toContain("Alpha.");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A post its author deleted takes no reply (409 POST_DELETED), so the Conversation offers no
+// Reply on one - a message, a reply to one, a comment - as the margin's card draws no reply
+// composer under a deleted root; a standing post beside each keeps its Reply.
+test("the Conversation offers no Reply on a deleted message, reply or comment, and a standing one keeps it", async () => {
+  const deleted = { deleted_at: "2026-09-21T00:00:00Z", deleted_by: alice };
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", deleted),
+      comment("comment-2", { created_at: "2026-09-20T01:00:00Z" }),
+    ],
+    messages: [
+      thread(message("message-1", deleted), [
+        message("message-2", { created_at: "2026-09-09T01:00:00Z", in_reply_to: "message-1" }),
+      ]),
+      thread(message("message-3", { created_at: "2026-09-09T02:00:00Z" }), [
+        message("message-4", {
+          ...deleted,
+          created_at: "2026-09-09T03:00:00Z",
+          in_reply_to: "message-3",
+        }),
+      ]),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  const turn = (id: string) => view.container.querySelector(`[data-turn="${id}"]`);
+
+  try {
+    await screen.findByText("Body of message-2");
+    await screen.findByText("Body of comment-2");
+    expect({
+      deletedComment: ownReplies(turn("comment:comment-1")),
+      deletedMessage: ownReplies(turn("message:message-1")),
+      deletedReply: ownReplies(turn("message:message-4")),
+      standingComment: ownReplies(turn("comment:comment-2")),
+      standingMessage: ownReplies(turn("message:message-3")),
+      standingReply: ownReplies(turn("message:message-2")),
+    }).toEqual({
+      deletedComment: 0,
+      deletedMessage: 0,
+      deletedReply: 0,
+      standingComment: 1,
+      standingMessage: 1,
+      standingReply: 1,
+    });
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A reply open when its message is deleted can no longer go: the message takes no reply (409
+// POST_DELETED), so Send says so and sends nothing, and Cancel reply takes the words the reader
+// wrote to the issue's own address, where they go as a message that answers none.
+test("a reply open when its message is deleted sends nothing, and Cancel reply takes its words to the issue", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({ messages: [thread(message("message-1", { body: "Alpha." }))] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const composer = () => screen.getByRole("form", { name: "Comment composer" });
+  const send = () => within(composer()).getByRole("button", { name: "Send" });
+  const field = () =>
+    within(composer()).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+
+  try {
+    const turn = (await screen.findByText("Alpha.")).closest("[data-turn]") as HTMLElement;
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await user.click(field());
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Ship it.");
+    stub.lists.messages = [
+      thread(
+        message("message-1", { body: "", deleted_at: "2026-09-09T03:00:00Z", deleted_by: alice })
+      ),
+    ];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+    await waitFor(() => expect(composer().textContent).toContain("Deleted by alice"));
+    const deleted = { refusal: send().getAttribute("title"), text: field().value };
+    await user.click(within(composer()).getByRole("button", { name: "Cancel reply" }));
+    expect({
+      cancelled: {
+        quoted: composer().textContent?.includes("Replying to") ?? false,
+        refusal: send().getAttribute("title"),
+        text: field().value,
+      },
+      deleted,
+    }).toEqual({
+      cancelled: { quoted: false, refusal: null, text: "Ship it." },
+      deleted: {
+        refusal:
+          "The message this reply answers was deleted, so it takes no reply. Press Cancel reply to send it as a message that answers none.",
+        text: "Ship it.",
+      },
+    });
+  } finally {
+    view.unmount();
+    stub.restore();
   }
 });

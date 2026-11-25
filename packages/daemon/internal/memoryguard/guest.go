@@ -98,12 +98,17 @@ import (
 // aside, and counts against no kill, so that the set-aside does not block another role's real
 // victim. The kills stay pending, to end unnamed, unless a pass names another process in the
 // victim's place within the rule's one limit (below). A process of that role that the watch counts
-// already is not set aside, and goes on counting, within the same limit. The launcher sets
-// SessionDrain to 3 s, role-init's 2 s drain and a second more for its kill to land. The launcher's
-// classifier counts every direct child of the shim as a session process, since it cannot tell the
-// agent from the shim's other children (the secrets renewer, the working copy's adoption, the
-// CodeGraph warm-up), which costs kills left unnamed, and a wrong name only within the rule's one
-// limit (below). A session process that shows the kill before it leaves, as an agent the kernel
+// already is not set aside, and goes on counting, within the same limit. In an issue pod the
+// launcher sets SessionDrain to 3 s, role-init's 2 s drain and a second more for its kill to land.
+// The controller's pod has no role-init: once its shim has exited, the launcher, PID 1, drains the
+// exited generation itself, with SIGTERM over the container's processes, up to its stop grace for
+// them to go, and SIGKILL to each one left. That drain's SIGKILL is the session's end there, read
+// as role-init's is above, so there the launcher sets SessionDrain to its stop grace and a second
+// more (controllerSessionDrain, packages/daemon/internal/launcher/memoryguard.go). The launcher's
+// classifier counts every direct child of the shim as a session process, by its place in the tree,
+// the agent and the shim's other children (the secrets renewer, the working copy's adoption, the
+// CodeGraph warm-up) alike, which costs kills left unnamed, and a wrong name only within the rule's
+// one limit (below). A session process that shows the kill before it leaves, as an agent the kernel
 // killed does while it is a zombie its shim has not reaped, is named as any process is, unless the
 // watch sees a session process of its role leave, itself among them, before the pass that settles
 // it has read the session processes after its status reads: that departure sets it aside, as above.
@@ -132,8 +137,10 @@ import (
 //
 // Each killed process has the guard's own endedLine, with its resident size at the last scan whose
 // snapshot came before the pass that showed its kill and the pod's memory at the burst's first
-// rise, and a Kill to the sink with its role, "" for a process of no role, the watch's id and its
-// own sequence from 1, as the guard's kills have (writeKill), and Cause
+// rise, the kernel as its rule and its sizes (ruleKernel, sizesKernel: the kernel chose it, by
+// sizes of its own), no parent's size taken off (less_parent=0) and no read at the mark
+// (new_read=-), and a Kill to the sink with its role, "" for a process of no role, the watch's id
+// and its own sequence from 1, as the guard's kills have (writeKill), and Cause
 // shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process the
 // classifier protected: one of the processes that run the role's session, whose end the role is
 // told of in its own words.
@@ -236,9 +243,11 @@ type GuestConfig struct {
 	// the watch's own process, and gives no process a role, so the watch raises nothing.
 	Classify Classifier
 	// Sink takes each kill, on the watch's loop, so it must not block, as the guard's Sink takes
-	// its own: a kill of a process of no role has an empty Role. The launcher's sink keeps a role's
-	// kills alone (serveMemoryGuard's byRole, packages/daemon/internal/launcher/memoryguard.go), so
-	// a process of no role has its line and no report.
+	// its own: a kill of a process of no role has an empty Role. An issue pod's launcher's sink
+	// keeps a role's kills alone (serveMemoryGuard's byRole,
+	// packages/daemon/internal/launcher/memoryguard.go), so a process of no role has its line and
+	// no report; the controller pod's classifier gives every process to the controller, whose sink
+	// reports each kill.
 	Sink func(Kill)
 	// Logf writes one line of the watch's; nil discards them.
 	Logf func(format string, args ...any)
@@ -249,8 +258,10 @@ type GuestConfig struct {
 	// role's shim has exited, role-init sends SIGTERM over the role's namespace, waits up to its
 	// drain for the role's processes to go, and then sends SIGKILL to each one left. A burst whose
 	// first rise comes no later than SessionDrain after such a departure, or that sees one during
-	// its wait, names no process of that role (Guest). The launcher sets it to role-init's drain
-	// and a margin for its kill to land; zero takes in a departure during the wait alone.
+	// its wait, names no process of that role (Guest). In an issue pod the launcher sets it to
+	// role-init's drain and a margin for its kill to land, and in the controller's pod, which has no
+	// role-init, to its own drain of the exited generation, its stop grace, and the same margin
+	// (controllerSessionDrain); zero takes in a departure during the wait alone.
 	SessionDrain time.Duration
 }
 
@@ -272,13 +283,6 @@ const guestKillWait = 2 * time.Second
 const raisedScore = 1000
 
 var raisedScoreText = []byte(strconv.Itoa(raisedScore))
-
-// procKey is a process by its pid and its start time, which tells it from a process that takes
-// its pid later.
-type procKey struct {
-	pid   int
-	start uint64
-}
 
 // watched is one process the watch read: what the classifier said of it (its role, whether it is
 // protected, whether it runs its role's session), its name, and its resident size, at the watch's
@@ -384,17 +388,23 @@ func (g *Guest) ID() string { return g.id }
 // scans a wake at each file-modified event of memory.events (wake), on this one goroutine, so the
 // wake and the scan share the watch's state with no lock. A wake does not move the next scan, which
 // comes guestInterval after the last one however many events come between. Where the event's watch
-// ends, the watch has one line, with the error that ended it, and goes on with the scan alone.
+// ends, the watch has one line, with the error that ended it, and goes on with the scan alone. A
+// step that panics turns the watch off for good with one line and stops its wake (step), and Run
+// waits for ctx.
 func (g *Guest) Run(ctx context.Context) {
 	defer g.cgroup.close()
-	g.begin()
 	defer g.stopWake()
+	if !g.step(g.begin) {
+		<-ctx.Done()
+		return
+	}
 	scan := g.clock.After(guestInterval)
 	for {
 		var modified <-chan struct{}
 		if g.wakes != nil {
 			modified = g.wakes.modified
 		}
+		on := true
 		select {
 		case <-ctx.Done():
 			return
@@ -405,12 +415,35 @@ func (g *Guest) Run(ctx context.Context) {
 				g.logf(guestWakeOffLine, fmt.Sprintf("the watch of %s ended: %v", g.cgroup.kills.path, ended))
 				continue
 			}
-			g.wake(g.clock.Now())
+			on = g.step(func() { g.wake(g.clock.Now()) })
 		case <-scan:
-			g.tick(g.clock.Now())
-			scan = g.clock.After(guestInterval)
+			if on = g.step(func() { g.tick(g.clock.Now()) }); on {
+				scan = g.clock.After(guestInterval)
+			}
+		}
+		if !on {
+			<-ctx.Done()
+			return
 		}
 	}
+}
+
+// step runs one step of the watch, its begin, a wake or a scan, and is false where the step
+// panicked: the watch then logs one off line, with the panic and where it was raised, stops its
+// wake at once (stopWake), and reads nothing more, since the launcher runs it on a goroutine of
+// its own and a panic that left it would end the launcher, PID 1 of the pod, which ends every
+// role's turn. A panic in begin's first scan comes after begin has started the wake (watchKills),
+// whose inotify descriptor and reader would otherwise run until ctx ends.
+func (g *Guest) step(run func()) (on bool) {
+	defer func() {
+		if p := recover(); p != nil {
+			g.logf(guestOffLine, panicReason("panic", p))
+			g.stopWake()
+			on = false
+		}
+	}()
+	run()
+	return true
 }
 
 // begin finds the cgroup and the starting score, logs the start line and what the watch cannot
@@ -545,7 +578,7 @@ func (g *Guest) look() (*Table, map[int]Class) {
 	if !g.watching {
 		return nil, nil
 	}
-	t, err := scan(g.proc)
+	t, err := Scan(g.proc)
 	if err != nil {
 		g.watching = false
 		clear(g.known)
@@ -592,7 +625,7 @@ func (g *Guest) score(t *Table, classes map[int]Class) {
 		} else if adj >= raisedScore {
 			continue
 		}
-		if start, err := readStartTime(g.proc, pid); err != nil || start != p.StartTime {
+		if start, err := ReadStartTime(g.proc, pid); err != nil || start != p.StartTime {
 			continue
 		}
 		if err := g.writeScore(path, text); err != nil {
@@ -805,7 +838,7 @@ func (g *Guest) sessionEnded(role string) bool {
 // which took w's pid. A zombie has not left: its stat stays, with its start time, until its parent
 // reaps it. A read that fails otherwise does not say that w left.
 func (g *Guest) gone(w *watched) bool {
-	start, err := readStartTime(g.proc, w.key.pid)
+	start, err := ReadStartTime(g.proc, w.key.pid)
 	if err != nil {
 		return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
 	}
@@ -822,7 +855,7 @@ func (g *Guest) showsKill(w *watched) bool {
 	if err != nil || !sigkillPending(status) {
 		return false
 	}
-	start, err := readStartTime(g.proc, w.key.pid)
+	start, err := ReadStartTime(g.proc, w.key.pid)
 	return err == nil && start == w.key.start
 }
 
@@ -848,9 +881,9 @@ func sigkillPending(status []byte) bool {
 
 // report writes the guard's own line for w, which the kernel killed, and gives its kill to the
 // sink, as the guard writes and reports its own (writeKill): with w's role, "" for a process of no
-// role, and the kernel's cause, or, for a process the classifier protected, one of those that run
-// the role's session, the kernel's protected cause. Every kill counts in the sequence, as the
-// guard's do.
+// role, the kernel as its rule and its sizes, and the kernel's cause, or, for a process the
+// classifier protected, one of those that run the role's session, the kernel's protected cause.
+// Every kill counts in the sequence, as the guard's do.
 func (g *Guest) report(w *watched) {
 	m := g.riseMemory
 	cause := shimwire.MemoryKillCauseKernel
@@ -862,7 +895,7 @@ func (g *Guest) report(w *watched) {
 			PID: w.key.pid, Executable: w.executable, SizeBytes: w.resident,
 			ReadingBytes: m.reading, CounterBytes: m.counter, LimitBytes: m.limit, At: g.riseAt, Cause: cause,
 		},
-		Role: w.class.Role,
+		Role: w.class.Role, Rule: ruleKernel, Sizes: sizesKernel,
 	}, m.shmem)
 }
 

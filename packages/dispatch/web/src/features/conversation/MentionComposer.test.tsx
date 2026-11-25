@@ -4,11 +4,12 @@ import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/re
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, a key and an edit into the control a send holds disabled, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { createRef, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
@@ -28,9 +29,18 @@ import {
   SendExpiredError,
   SendStoppedError,
 } from "../writes/keyed-write";
-import type { ComposerOwner, ReplyTarget } from "./composer-model";
+import type {
+  ComposerOwner,
+  DraftIntake,
+  ListedReplies,
+  ListedReply,
+  ReplyParent,
+  ReplyTarget,
+} from "./composer-model";
 import { MentionComposer, reconcileMentions, stoppedRoleOptions } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
+import { unsentDraftsOf } from "./unsent-drafts";
+import { composerNameOf } from "./useKeptDrafts";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
  *  key that names the press, sent as `Idempotency-Key`. */
@@ -85,6 +95,8 @@ const createdComment: Comment = {
   author: { id: "alice", kind: "user" },
   body: "sent",
   created_at: "2026-09-18T00:00:00Z",
+  deleted_at: null,
+  deleted_by: null,
   deliveries: [],
   edited_at: null,
   id: "comment-1",
@@ -110,6 +122,8 @@ interface ComposerOptions {
   onSent?: () => void;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
+  /** The host's copy of the post `replyTo` answers, as its read holds it now. */
+  replyParent?: ReplyParent;
 }
 
 /** Renders the composer, and hands back `rerender` for a host that changes its props on the live
@@ -133,6 +147,7 @@ function renderComposer(options: ComposerOptions = {}) {
           onKindChange={props.onKindChange}
           onSent={props.onSent ?? (() => {})}
           owner={props.owner ?? { issueKey: "CORE-1", kind: "issue" }}
+          replyParent={props.replyParent}
           replyTo={
             props.replyTo === null
               ? null
@@ -373,6 +388,190 @@ test("reopening the same reply restores its canonical prefills after cancel", as
   }
 });
 
+/** A composer at the issue's own address that keeps a reply for Planner's message `message-1`
+ *  (`answered`), drawn while its host lists that message standing: `composer` draws it under
+ *  another listing, `lines` reads its status lines and `offersUse` whether it offers Use it here. */
+function renderKeptReply() {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const sendKey: MutationKey = ["conversation-composer", "CORE-1"];
+  const owner: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
+  const answered: ReplyTarget = {
+    actor: plannerAuthor,
+    excerpt: "Status?",
+    id: "message-1",
+    parentKind: "message",
+  };
+  const kept = "Reply to the status";
+  unsentDraftsOf(queryClient).keepAway(composerNameOf(sendKey), {
+    draft: { body: kept, mentions: [], replacement: "" },
+    owner,
+    replyTo: answered,
+  });
+  const composer = (listed: ListedReplies) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer
+          listed={listed}
+          mutationKey={sendKey}
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={owner}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const lines = () => screen.queryAllByRole("status").map((status) => status.textContent ?? "");
+  const offersUse = () => screen.queryByRole("button", { name: "Use it here" }) !== null;
+  const view = render(composer(new Map<string, ListedReply>([[answered.id, "standing"]])));
+  return { answered, composer, kept, lines, offersUse, view };
+}
+
+// A draft the composer keeps for another reply draws the line naming that reply's Reply while the
+// host lists the reply. Once the host lists it no longer, that Reply is gone, so the draft is
+// drawn itself, with Discard my draft and, on the issue's own address, Use it here, which never
+// writes over words of the reader's own in the field: it shows once the field is empty, as the
+// line says.
+test("a reply kept for a message its host no longer lists waits for an empty field before Use it here", async () => {
+  const user = userEvent.setup();
+  const { composer, kept, lines, offersUse, view } = renderKeptReply();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    const whileListed = { lines: lines(), use: offersUse() };
+    await user.click(field);
+    await user.paste("Words of my own");
+    view.rerender(composer(new Map()));
+    const overOwnWords = { lines: lines(), text: field.value, use: offersUse() };
+    await user.clear(field);
+    const overEmptyField = { lines: lines(), use: offersUse() };
+    await user.click(screen.getByRole("button", { name: "Use it here" }));
+    expect({
+      overEmptyField,
+      overOwnWords,
+      taken: { lines: lines(), text: field.value, use: offersUse() },
+      whileListed,
+    }).toEqual({
+      overEmptyField: {
+        lines: [
+          `The message by Planner that your reply answered is no longer listed. Your reply is kept here:${kept}`,
+        ],
+        use: true,
+      },
+      overOwnWords: {
+        lines: [
+          `The message by Planner that your reply answered is no longer listed. Your reply is kept here, to use in this field once it is empty:${kept}`,
+        ],
+        text: "Words of my own",
+        use: false,
+      },
+      taken: { lines: [], text: kept, use: false },
+      whileListed: {
+        lines: [
+          "Your reply to the message by Planner is kept. Press Reply on that message to go on with it.",
+        ],
+        use: false,
+      },
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// A message its author deleted keeps its place in the host's list, but Dispatch takes no reply to
+// it (409 POST_DELETED), so a reply kept for it has no Reply to go on with: it is drawn itself,
+// saying the message was deleted and giving no word of it - not the excerpt its Reply took - with
+// Discard my draft and, at the issue's own address, Use it here, which puts it in the field as a
+// message that answers none.
+test("a reply kept for a message its host lists deleted is drawn itself, saying the message was deleted", async () => {
+  const user = userEvent.setup();
+  const { answered, composer, kept, lines, offersUse, view } = renderKeptReply();
+
+  try {
+    const whileStanding = { lines: lines(), use: offersUse() };
+    view.rerender(composer(new Map<string, ListedReply>([[answered.id, "deleted"]])));
+    const deleted = { lines: lines(), use: offersUse() };
+    const shownWords = view.container.textContent ?? "";
+    const use = screen.queryByRole("button", { name: "Use it here" });
+    if (use !== null) await user.click(use);
+    expect({
+      deleted,
+      excerptShown: shownWords.includes(answered.excerpt),
+      taken: {
+        lines: lines(),
+        text: screen.getByLabelText<HTMLTextAreaElement>("Comment").value,
+      },
+      whileStanding,
+    }).toEqual({
+      deleted: {
+        lines: [
+          `The message by Planner that your reply answered was deleted, so it takes no reply. Your reply is kept here:${kept}`,
+        ],
+        use: true,
+      },
+      excerptShown: false,
+      taken: { lines: [], text: kept },
+      whileStanding: {
+        lines: [
+          "Your reply to the message by Planner is kept. Press Reply on that message to go on with it.",
+        ],
+        use: false,
+      },
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// Reply takes the post it answers as it stands at the press (`ReplyTarget`), and a held send or a
+// kept draft keeps that copy in the tab across a reload. The quote gives the copy's words only
+// while the host holds the post now (`replyParent`): until the host's read answers, or once it
+// fails, it names the author alone, so a post deleted since never shows the words it had; once
+// the read answers, the quote reads the post as it stands - standing, then deleted.
+test("a reply's quote gives no word of its parent until the host holds the parent, then reads it as it stands", async () => {
+  // The quote is read in the commit that mounts the composer, which only a loaded engine draws
+  // (`MarkdownPreview`).
+  await warmMarkdownRenderer();
+  const replyTo = {
+    actor: plannerAuthor,
+    excerpt: "Once the build is green.",
+    id: "comment-9",
+    parentKind: "comment",
+  } as const;
+  const { rerender, view } = renderComposer({ replyTo });
+  const quote = () => {
+    const words = screen.getByRole("form", { name: "Comment composer" }).textContent ?? "";
+    return {
+      author: words.includes("Replying to Planner"),
+      deleted: words.includes("Deleted by Planner"),
+      excerpt: words.includes(replyTo.excerpt),
+    };
+  };
+
+  try {
+    const unread = quote();
+    rerender({ replyParent: { deleted_at: null, deleted_by: null, edited_at: null }, replyTo });
+    const standing = quote();
+    rerender({
+      replyParent: {
+        deleted_at: "2026-09-18T01:00:00Z",
+        deleted_by: plannerAuthor,
+        edited_at: null,
+      },
+      replyTo,
+    });
+    const deleted = quote();
+    expect({ deleted, standing, unread }).toEqual({
+      deleted: { author: true, deleted: true, excerpt: false },
+      standing: { author: true, deleted: false, excerpt: true },
+      unread: { author: true, deleted: false, excerpt: false },
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
 /** Send's refusal as a reader meets it: `aria-disabled`, and the reason on `title` and in the
  *  element `aria-describedby` names. */
 interface SendRefusal {
@@ -391,6 +590,70 @@ function sendRefusal(): SendRefusal {
     title: send.getAttribute("title"),
   };
 }
+
+// A refusal the composer holds for a reply its host has moved it off stays with that reply, and
+// Send says where it was written and the way out: that message's Reply, while it stands. A message
+// its author deleted keeps its place, but Dispatch takes no reply to it, so Send names no Reply
+// that would bring the refusal back, and says the message was deleted: Discard is the way out.
+test("a refusal held for a reply to a message deleted since names no Reply to go back by", async () => {
+  const user = userEvent.setup();
+  const createMessage = spyOn(api, "createMessage").mockRejectedValue(
+    new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const owner: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
+  const status: ReplyTarget = {
+    actor: plannerAuthor,
+    excerpt: "Status?",
+    id: "message-1",
+    parentKind: "message",
+  };
+  const done: ReplyTarget = { ...status, excerpt: "Done?", id: "message-2" };
+  const composer = (replyTo: ReplyTarget, first: ListedReply) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer
+          listed={
+            new Map<string, ListedReply>([
+              [status.id, first],
+              [done.id, "standing"],
+            ])
+          }
+          mutationKey={["conversation-composer", "CORE-1"]}
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={owner}
+          replyParent={{ deleted_at: null, deleted_by: null, edited_at: null }}
+          replyTo={replyTo}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(composer(status, "standing"));
+
+  try {
+    await user.click(screen.getByLabelText("Comment"));
+    await user.paste("Reply to the status");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText("Couldn't send — Dispatch refused the message");
+    // The host moves the composer to another message's reply, as another message's Reply does.
+    view.rerender(composer(done, "standing"));
+    const standing = sendRefusal().title;
+    view.rerender(composer(done, "deleted"));
+    const deleted = sendRefusal().title;
+    expect({ deleted, standing }).toEqual({
+      deleted:
+        "This message was written as a reply to a message that was deleted, which takes no reply. Discard it to write here.",
+      standing:
+        "This message was written as a reply. Reply to that message again to send it, or discard it.",
+    });
+  } finally {
+    view.unmount();
+    createMessage.mockRestore();
+  }
+});
 
 /** Presses Send both ways a reader can - the button, and Ctrl+Enter in the box - then moves the
  *  fake clock a task on. TanStack awaits `onMutate` before it calls the mutation function, so an
@@ -1445,6 +1708,8 @@ test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape"
     onCancelReply: () => {
       cancelled += 1;
     },
+    // The host holds the post the reply answers, standing: the quote gives its words only then.
+    replyParent: { deleted_at: null, deleted_by: null, edited_at: null },
     replyTo: {
       actor: plannerAuthor,
       excerpt: "Once the build is green.",
@@ -1785,6 +2050,7 @@ const createdMessage: Message = {
   reply_block: null,
   created_at: "2026-09-18T00:00:00Z",
   deliveries: [],
+  ...messageCorrectionFields(),
   id: "message-1",
   in_reply_to: null,
   issue_key: null,
@@ -2647,8 +2913,10 @@ test("a Retry after Dispatch's refusal goes under a new key, even of the same te
   }
 });
 
-// After Dispatch's refusal every Retry is a new action: another body, another mode, another reply,
-// and the same message again, each under a key of its own.
+// After Dispatch's refusal every Retry is a new action: another body, another mode, and the same
+// message again, each under a key of its own. Another reply the host moves the composer onto is
+// another address, which the refused message was not written for: from there it has no Retry at
+// all.
 test("after Dispatch's refusal every Retry, edited or not, gets a key of its own", async () => {
   const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(messageRefused);
   const direct = { kind: "session" as const, sessionId: "A" };
@@ -2684,32 +2952,28 @@ test("after Dispatch's refusal every Retry, edited or not, gets a key of its own
       await user.keyboard("{Control>}a{/Control}");
       await user.paste("/aside Status please, now");
     });
-    await retry(4, async () => {
-      // Another reply, which the reader starts afresh, in its thread's mode.
-      rerender({
-        owner: direct,
-        replyTo: {
-          actor: { id: "A", kind: "session", origin: { session_title: "Planner" } },
-          excerpt: "Question",
-          id: "message-9",
-          thread: { delivery: "btw", target: "session:A" },
-        },
-      });
-      await user.click(field);
-      await user.keyboard("{Control>}a{/Control}");
-      await user.paste("Status please, now");
+    await screen.findByText(refusedText);
+    rerender({
+      owner: direct,
+      replyTo: {
+        actor: { id: "A", kind: "session", origin: { session_title: "Planner" } },
+        excerpt: "Question",
+        id: "message-9",
+        thread: { delivery: "btw", target: "session:A" },
+      },
     });
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    rerender({ owner: direct, replyTo: null });
     // And nothing changed since: the same message, under a key of its own all the same.
-    await retry(5);
+    await retry(4);
 
     const keys = sentKeys(createAgentMessage);
-    expect(new Set(keys).size).toBe(5);
+    expect(new Set(keys).size).toBe(4);
     expect(createAgentMessage.mock.calls.map(([, input]) => input)).toEqual([
       { body: "Status please", delivery: "steer" },
       { body: "Status please, now", delivery: "steer" },
       { body: "Status please, now", delivery: "aside" },
-      { body: "Status please, now", delivery: "btw", in_reply_to: "message-9" },
-      { body: "Status please, now", delivery: "btw", in_reply_to: "message-9" },
+      { body: "Status please, now", delivery: "aside" },
     ]);
   } finally {
     view.unmount();
@@ -2862,6 +3126,209 @@ test("a stopped send the reader comes back to a day later says its key has run o
   }
 });
 
+/** A question of Planner's in its direct thread, whose replies go as BTW. */
+const plannerQuestion: ReplyTarget = {
+  actor: plannerAuthor,
+  excerpt: "Question",
+  id: "message-9",
+  parentKind: "message",
+  thread: { delivery: "btw", target: "session:A" },
+};
+
+/**
+ * One composer answering `plannerQuestion` in a direct message, whose address moves to one place
+ * - the session itself, the reply ended - by either of two controls: the composer's own Cancel
+ * reply, and `Host move`, a control of the host's, as another row or another thread takes a
+ * composer elsewhere. Only who moved the address differs, and that decides where a refused or
+ * stopped draft goes.
+ */
+function renderMovingReply() {
+  function Host(): ReactNode {
+    const [replyTo, setReplyTo] = useState<ReplyTarget | null>(plannerQuestion);
+    return (
+      <>
+        <button onClick={() => setReplyTo(null)} type="button">
+          Host move
+        </button>
+        <MentionComposer
+          onCancelReply={() => setReplyTo(null)}
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={{ kind: "session", sessionId: "A" }}
+          replyTo={replyTo}
+        />
+      </>
+    );
+  }
+  return render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider
+        client={
+          new QueryClient({
+            defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+          })
+        }
+      >
+        <Host />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+/** Writes the reply and sends it, and answers the field it was written in. */
+async function sendReply(user: UserEvent): Promise<HTMLTextAreaElement> {
+  const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+  await user.click(field);
+  await user.paste("Status please");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  return field;
+}
+
+/** What Send says while the host has moved the composer off the reply its held draft answers. */
+const WRITTEN_AS_REPLY =
+  "This message was written as a reply. Reply to that message again to send it, or discard it.";
+
+/** What a stopped reply says once the reader has taken its draft off the reply. */
+const STOPPED_AS_REPLY =
+  "Dispatch has not confirmed this message, sent as a reply: it may have been delivered there. " +
+  "Sending it from here is a new message, which can be delivered a second time if the first one was.";
+
+/** The first send of a message the server keeps failing, Stop trying pressed once it is late;
+ *  answers how many attempts `createAgentMessage` saw go out under its key. */
+async function stopReply(
+  user: UserEvent,
+  createAgentMessage: Mock<typeof api.createAgentMessage>
+): Promise<number> {
+  await sendReply(user);
+  await failToTheDeadline();
+  await user.click(screen.getByRole("button", { name: "Stop trying" }));
+  await tick(0);
+  expect(screen.getByText(stoppedText)).toBeTruthy();
+  return createAgentMessage.mock.calls.length;
+}
+
+// Who moved the address decides, refused. The host moving the composer off the reply leaves the
+// draft with the reply it was written for: no Retry, Send says where it was written, and nothing
+// goes from the new address.
+test("a refused reply the host moves off its question stays held for that question", async () => {
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(messageRefused);
+  const user = userEvent.setup();
+  const view = renderMovingReply();
+
+  try {
+    const field = await sendReply(user);
+    await screen.findByText("Couldn't send — Dispatch refused the message");
+    await user.click(screen.getByRole("button", { name: "Host move" }));
+    expect(screen.queryByRole("button", { name: "Cancel reply" })).not.toBeInTheDocument();
+
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(sendRefusal().title).toBe(WRITTEN_AS_REPLY);
+    expect(field.value).toBe("Status please");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await act(settle);
+    expect(createAgentMessage).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    createAgentMessage.mockRestore();
+  }
+});
+
+// The same refusal and the same move, made with the composer's own Cancel reply: the draft goes
+// with it, and its Retry sends it from the session itself, under a key of its own.
+test("a refused reply the reader cancels goes with them, and its Retry goes from there", async () => {
+  const createAgentMessage = spyOn(api, "createAgentMessage")
+    .mockRejectedValueOnce(messageRefused)
+    .mockResolvedValueOnce(createdMessage);
+  const user = userEvent.setup();
+  const view = renderMovingReply();
+
+  try {
+    const field = await sendReply(user);
+    await screen.findByText("Couldn't send — Dispatch refused the message");
+    await user.click(screen.getByRole("button", { name: "Cancel reply" }));
+
+    expect(field.value).toBe("Status please");
+    expect(sendRefusal().title).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createAgentMessage).toHaveBeenCalledTimes(2));
+    expect(createAgentMessage.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Status please", delivery: "btw", in_reply_to: "message-9" },
+      { body: "Status please", delivery: "steer" },
+    ]);
+    const [first, retried] = sentKeys(createAgentMessage);
+    expect(retried).toMatch(SEND_KEY);
+    expect(retried).not.toBe(first);
+  } finally {
+    view.unmount();
+    createAgentMessage.mockRestore();
+  }
+});
+
+// Who moved the address decides, stopped: the reply may have been delivered as a reply. The host
+// moving the composer off it holds it there as it holds a refusal, so its key goes nowhere else:
+// no Retry from the new address, and Send sends nothing.
+test("a stopped reply the host moves off its question stays held for that question", async () => {
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const view = renderMovingReply();
+
+  try {
+    const tried = await stopReply(user, createAgentMessage);
+    await user.click(screen.getByRole("button", { name: "Host move" }));
+
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(sendRefusal().title).toBe(WRITTEN_AS_REPLY);
+    expect(screen.getByText(stoppedText)).toBeTruthy();
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    expect(field.value).toBe("Status please");
+    await pressSend(user, field);
+    expect(createAgentMessage).toHaveBeenCalledTimes(tried);
+  } finally {
+    realClock();
+    view.unmount();
+    createAgentMessage.mockRestore();
+  }
+});
+
+// The same stopped reply and the same move, made with Cancel reply: the draft goes with it. The
+// first write may have been delivered as the reply, so the composer says so, and its Retry sends
+// a new message from the session itself, under a key none of the reply's attempts went out under.
+test("a stopped reply the reader cancels is sent anew from there, saying the first may have gone", async () => {
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const view = renderMovingReply();
+
+  try {
+    const tried = await stopReply(user, createAgentMessage);
+    await user.click(screen.getByRole("button", { name: "Cancel reply" }));
+
+    expect(screen.getByText(STOPPED_AS_REPLY)).toBeTruthy();
+    expect(screen.queryByText(stoppedText)).not.toBeInTheDocument();
+    createAgentMessage.mockResolvedValueOnce(createdMessage);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await tick(0);
+    expect(createAgentMessage).toHaveBeenCalledTimes(tried + 1);
+    expect(createAgentMessage.mock.calls.at(-1)?.[1]).toEqual({
+      body: "Status please",
+      delivery: "steer",
+    });
+    const keys = sentKeys(createAgentMessage);
+    expect(new Set(keys.slice(0, tried)).size).toBe(1);
+    expect(keys.at(-1)).toMatch(SEND_KEY);
+    expect(keys.slice(0, tried)).not.toContain(keys.at(-1));
+  } finally {
+    realClock();
+    view.unmount();
+    createAgentMessage.mockRestore();
+  }
+});
+
 // A closed issue takes comments: its composer shows and sends one, and a refusal still shows,
 // with Retry, as on an open issue. It refuses suggestions and asks, so the kind switch offers
 // neither there.
@@ -2946,10 +3413,13 @@ test("a closed suggestion composer shows only a send of its own still out, then 
   }
 });
 
-// An upload carries its target from the paste that starts it: a host that re-addresses the
-// composer in the paste's own task - before React re-renders - moves where the next upload goes,
-// never this one, and the reference it appends names where the file went.
-test("a pick in the paste's own task cannot move the upload", async () => {
+// An upload carries its target from the paste that starts it: a host move that re-addresses the
+// composer in the paste's own task - before React re-renders, and with no count in `ownMoves` -
+// moves where the next upload goes, never this one, and the reference names where the file went.
+// That reference belongs to the draft the file was pasted into, which the host move leaves where
+// it was: it waits, and the composer says so, while the composer is on CORE-2, and joins the
+// message once the composer is back on CORE-1.
+test("a host move in the paste's own task cannot move the upload", async () => {
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({
     artifact: { slug: "notes-md" } as never,
     version: {} as never,
@@ -2968,10 +3438,66 @@ test("a pick in the paste's own task cannot move the upload", async () => {
 
     await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
     expect(uploadArtifact.mock.calls[0]?.[0]).toEqual({ issue: "CORE-1" });
+    expect(
+      await screen.findByText(
+        "The file pasted for CORE-1 is uploaded. Its reference joins the message when you go back to it."
+      )
+    ).toBeTruthy();
+    expect(field.value).toBe("");
+
+    rerender({});
     await waitFor(() => expect(field.value).toBe("dispatch://CORE-1/artifact/notes-md"));
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();
+  }
+});
+
+// A draft the reader carried here from another composer goes in the field only while this
+// composer holds nothing of its own (`DraftIntake`): a refusal it holds is a send of its own,
+// even once the reader has emptied the field over it, so the carried draft is turned down and
+// the field stays as the reader left it. The phone thread composer's Cancel reply puts its draft
+// away instead (`usePhoneThread`), and its refusal is never carried in over this one.
+test("a composer holding a refused send of its own takes no carried draft, even over an empty field", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValueOnce(
+    new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const user = userEvent.setup();
+  const intake = createRef<DraftIntake>();
+  const owner: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer intake={intake} onClose={() => {}} onSent={() => {}} owner={owner} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("Docked");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText("Couldn't send — the server is down");
+    await user.clear(field);
+    expect(field.value).toBe("");
+
+    let took: boolean | undefined;
+    act(() => {
+      took = intake.current?.take(
+        { body: "Carried", mentions: [], replacement: "" },
+        { owner, replyTo: null }
+      );
+    });
+    expect(took).toBe(false);
+    expect(field.value).toBe("");
+    expect(screen.getByText("Couldn't send — the server is down")).toBeTruthy();
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
   }
 });
 

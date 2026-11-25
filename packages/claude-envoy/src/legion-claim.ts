@@ -6,7 +6,7 @@ import { messageFor } from "@legion/envoy-client/errors"
 import { readSecretFile } from "@legion/envoy-client/secret-file"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
 import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound"
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { legion } from "../package.json" with { type: "json" }
@@ -35,10 +35,10 @@ export interface LegionPane {
 /**
  * The Legion pane this server runs in, or undefined when no boot token is on its environment (a
  * Claude Code session outside Legion). A set `LEGION_BOOT_TOKEN_FILE` is authoritative, as in
- * every pane: a missing or blank file throws naming it. A pane without `LEGION_DAEMON_URL` or
- * `CLAUDE_CONFIG_DIR` throws naming the variable.
+ * every pane, and read without holding the event loop: a missing or blank file rejects naming it.
+ * A pane without `LEGION_DAEMON_URL` or `CLAUDE_CONFIG_DIR` rejects naming the variable.
  */
-export function legionPane(env: NodeJS.ProcessEnv): LegionPane | undefined {
+export async function legionPane(env: NodeJS.ProcessEnv): Promise<LegionPane | undefined> {
   const pointer = env["LEGION_BOOT_TOKEN_FILE"]
   if (pointer === undefined && configuredValue(env["LEGION_BOOT_TOKEN"]) === undefined) {
     return undefined
@@ -56,9 +56,19 @@ export function legionPane(env: NodeJS.ProcessEnv): LegionPane | undefined {
     bootToken:
       pointer === undefined
         ? required("LEGION_BOOT_TOKEN")
-        : readSecretFile("LEGION_BOOT_TOKEN_FILE", pointer),
+        : await readSecretFile("LEGION_BOOT_TOKEN_FILE", pointer),
     launcherSaves: configuredValue(env["LEGION_CLAUDE_SESSION_ID"]) !== undefined,
   }
+}
+
+/**
+ * The pane's client for the daemon. It states this build's own `legion.daemonApiVersion` on
+ * every request, read from the manifest of the module this process loaded, as the claim's
+ * registration below reads it: the daemon serves each answer in the shape the contract the
+ * caller states describes, so a pane an older or newer daemon answers still reads its answers.
+ */
+export function paneDaemonClient(daemonUrl: string): LegionDaemonClient {
+  return createLegionDaemonClient(daemonUrl, { pluginContract: legion.daemonApiVersion })
 }
 
 /** Writes one line to the pane's log, the server's stderr. */
@@ -319,6 +329,8 @@ export function startLegionClaim(deps: {
       firstTurnBoundMs: claimFirstTurnBoundMs(deps.env ?? process.env, paneReminderLog(deps.log)),
       onRoleRegained: (listener) => deps.session.onRoleRegained(listener),
       log: deps.log,
+      // The server's shutdown: a claim answered 503 is not made again once it aborts.
+      signal: deps.signal,
       stopping: "stopping the pane so the daemon launches it again",
       // A boot the shutdown aborted stops nothing: this server is already going, and `stop`
       // would SIGTERM the `claude` it runs under on its way out.

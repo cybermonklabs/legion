@@ -12,6 +12,7 @@ import (
 
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Dispatch's Envoy listener client is a cross-service HTTP call bounded only by its five
@@ -207,12 +208,24 @@ const noLiveSessionPrefix = "no live session"
 // refuses, or an answer that does not decode.
 const listenerAnsweredPrefix = "envoy listener answered: "
 
+// listenerAccountTokenPrefix begins the failure deliveryErrorText records for a call Dispatch did
+// not make because its own identity token could not be presented (dispatchenvoy.ErrAccountToken):
+// the client read its token file twice and found no live token either time, or the metadata
+// server minted no Google identity token for it on either try. The listener said nothing, and
+// the kubelet rewrites the file in place and the metadata server answers again, so
+// retryableDeliveryFailure tries again.
+const listenerAccountTokenPrefix = "envoy listener account token: "
+
 // deliveryErrorText is the failure a delivery records for a listener error. Its prefix keeps a
-// take-over's failures (listenerUnreachablePrefix) apart from the listener's own answers
-// (listenerAnsweredPrefix), because retryableDeliveryFailure reads the recorded text.
+// take-over's failures (listenerUnreachablePrefix) and an account token Dispatch could not present
+// (listenerAccountTokenPrefix), which a later try can outlast, apart from the listener's own
+// answers (listenerAnsweredPrefix), because retryableDeliveryFailure reads the recorded text. The
+// account token's failure names its file, never the token.
 func deliveryErrorText(err error) string {
 	reason := strings.TrimPrefix(err.Error(), "envoy listener unavailable: ")
 	switch {
+	case errors.Is(err, dispatchenvoy.ErrAccountToken):
+		return listenerAccountTokenPrefix + err.Error()
 	case errors.Is(err, dispatchenvoy.ErrUnreachable):
 		return listenerUnreachablePrefix + reason
 	case errors.Is(err, dispatchenvoy.ErrUnavailable):
@@ -238,16 +251,19 @@ const (
 	takeoverMaxBackoff   = 2 * time.Second
 )
 
-// retryableDeliveryFailure reports whether a failure a try recorded is one a listener take-over
-// gives, which a later try can outlast: the listener unreachable (listenerUnreachablePrefix - a
+// retryableDeliveryFailure reports whether a failure a try recorded is one a later try can
+// outlast: a listener take-over's - the listener unreachable (listenerUnreachablePrefix - a
 // connection refused, reset or timed out, a 502, 503 or 504 - but never
-// listenerNotConfiguredText), a receipt timeout, or the listener holding no record of the session
-// yet - "no live session", as the registry read is recorded and as the send's own 404 words it. A
-// receipt timeout is safe to repeat because the retry carries the same idempotency key, which the
-// listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). Anything
-// else is the listener's answer - a session that does not take this mode, a send it refused, a
-// status it chose such as a 401 for a token it refuses (listenerAnsweredPrefix) - which no
-// successor answers differently, and the attempt settles with it at once.
+// listenerNotConfiguredText), a receipt timeout, a send whose store the listener could not confirm
+// (storeUnconfirmedText), or the listener holding no record of the session yet - "no live session",
+// as the registry read is recorded and as the send's own 404 words it - and an account token
+// Dispatch could not present (listenerAccountTokenPrefix), which the next try reads again. A
+// receipt timeout and an unconfirmed store are safe to repeat because the retry carries the same
+// idempotency key, which the listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in
+// packages/contracts). Anything else is the listener's answer - a session that does not take this
+// mode, a send it refused, a status it chose such as a 401 for a token it refuses
+// (listenerAnsweredPrefix) - which no successor answers differently, and the attempt settles with
+// it at once.
 //
 // It reads the recorded text rather than the error behind it because a resumed mention's first
 // try sends with the resolve error its row already holds (mentionResolutionFor), which survives
@@ -257,7 +273,9 @@ func retryableDeliveryFailure(failure string) bool {
 	case failure == listenerNotConfiguredText:
 		return false
 	case failure == receiptTimeoutText,
+		failure == storeUnconfirmedText,
 		strings.HasPrefix(failure, listenerUnreachablePrefix),
+		strings.HasPrefix(failure, listenerAccountTokenPrefix),
 		strings.HasPrefix(failure, noLiveSessionPrefix):
 		return true
 	}
@@ -332,7 +350,7 @@ func (s *server) resolveThroughTakeover(
 	takeover := s.newTakeoverRetry()
 	var resolved ResolvedMention
 	resolve := func() string {
-		resolved = s.resolveMentionTarget(ctx, target, delivery, mentionLookupTimeout)
+		resolved = s.resolveMentionTarget(ctx, target, delivery, s.commentLookupBound(target))
 		return resolved.ResolveError
 	}
 	if !wait {
@@ -342,6 +360,16 @@ func (s *server) resolveThroughTakeover(
 	// A try that holds nothing has nothing to renew, so retry answers no error.
 	_ = takeover.retry(ctx, resolve, nil)
 	return resolved, takeover
+}
+
+// commentLookupBound is the bound on one try of a comment's listener lookup of target, read as
+// that try starts: mentionLookupTimeout on every server the deployment builds, which sets no
+// mentionLookupBound, and whatever a test set for that target otherwise.
+func (s *server) commentLookupBound(target string) time.Duration {
+	if s.mentionLookupBound != nil {
+		return s.mentionLookupBound(target)
+	}
+	return mentionLookupTimeout
 }
 
 // again reports whether the sender tries once more after a try that recorded failure, having
@@ -444,6 +472,15 @@ func receiptError(failure *string) string {
 // the row whose claim it still holds carries a reply_id, and answeredReceipt builds that
 // receipt from the row, stating what the reply recorded rather than what this send reported -
 // so every attempt carries exactly one receipt and that receipt agrees with its row.
+//
+// stated queues what the attempt states in the node and tuple store in the batch that appends the
+// receipt, right after the receipt: the node of the session a sent attempt reached
+// (graphstore.QueueReached), caused by the receipt as the id sequence left it
+// (graphstore.LatestEvent), as a comment's node is caused by the event that stored it. The
+// receipt and the facts are one statement batch, so the store costs the settle no statement of
+// its own. It runs only where settle itself wrote the row; an owed receipt the answered branch
+// appends states nothing, the reply that answered the attempt having written its own facts. A
+// settle that states nothing passes nil.
 func settleDeliveryAttempt[T any](
 	ctx context.Context,
 	s *server,
@@ -451,6 +488,7 @@ func settleDeliveryAttempt[T any](
 	settle func(context.Context, pgx.Tx) (T, error),
 	answered func(context.Context, pgx.Tx) (row T, mine bool, replyID *string, err error),
 	answeredReceipt func(T) model.Event,
+	stated func(b *store.WriteBatch, attempt T) error,
 ) (T, error) {
 	var zero T
 	tx, err := s.begin(ctx)
@@ -462,6 +500,7 @@ func settleDeliveryAttempt[T any](
 		return zero, err
 	}
 	attempt, err := settle(ctx, tx)
+	wrote := err == nil
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		settled, mine, replyID, err := answered(ctx, tx)
@@ -480,8 +519,16 @@ func settleDeliveryAttempt[T any](
 	case err != nil:
 		return zero, err
 	}
-	event, err := s.appendEvent(ctx, tx, receipt)
-	if err != nil {
+	var event model.Event
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, receipt, func(written model.Event) { event = written }); err != nil {
+			return err
+		}
+		if stated == nil || !wrote {
+			return nil
+		}
+		return stated(b, attempt)
+	}); err != nil {
 		return zero, err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -80,7 +80,7 @@ func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	const withCommit, withNone = "a row with a commit", "a row with none"
 	both := []string{withCommit, withNone}
-	resume := "Continue root. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work."
+	resume := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work."
 	for _, tc := range []struct {
 		name string
 		// rows is each kind of row the path is run for: one that holds a commit, one that holds
@@ -100,7 +100,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			name: "a transition's start of the first round", rows: []string{withNone}, raises: true,
 			walk: func(t *testing.T, _ bool) (*pgxpool.Pool, string) {
 				pool, _, _ := reviewRoundOne(t)
-				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1)." +
+				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1)." +
 					" Tester's verdict: pass. Pull request: #42."
 			},
 		},
@@ -113,7 +113,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 						t.Fatalf("the %s's row holds the task %q, want round 2's task with no sentence of the review round: only the reviewer is told them", role, task)
 					}
 				}
-				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
+				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
 					" Tester's verdict: pass. Pull request: #42."
 			},
 		},
@@ -126,7 +126,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					readmitsTheTree(t, pool, engine, engine.now().Add(time.Hour))
 					outboxRan(t, pool)
 					promotesTheReviewer(t, pool, engine, engine.now().Add(time.Hour))
-					return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work."
+					return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work."
 				}
 				// A carried hand-over keeps its rows and the commit with them (admit's readmit
 				// returns before the clear), and its promotion raises the reviewer's entry.
@@ -162,7 +162,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				seedIssue(t, pool, *held)
 				outboxRan(t, pool)
 				apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: "the claim failed"})
-				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42. Reason: the claim failed."
+				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Reason: the claim failed."
 			},
 		},
 		{
@@ -222,7 +222,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
 				})
-				return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work."
+				return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work."
 			},
 		},
 	} {
@@ -401,7 +401,7 @@ func TestATaskWhoseTextQuotesTheRoundsSentencesIsStillGivenThem(t *testing.T) {
 			outboxRan(t, pool)
 			reason := tc.reason(row.Entry)
 			apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: reason})
-			before := "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42. Reason: " + reason + "."
+			before := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Reason: " + reason + "."
 			want := before + reviewedPartOf(commit) + reviewEntryPartOf(row.Entry)
 			if delivered := deliveredTask(t, pool, tc.name); delivered != want {
 				t.Fatalf("the retry is delivered as %q, want %q: the task's text, then the daemon's sentence naming %s, then its sentence naming entry %d",
@@ -452,8 +452,10 @@ func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
 }
 
 // aKindStillToCome is a wake no fact reports today: WakeTask's default, which the one act of every
-// wake (wakeReleased) gives any kind it is handed.
-const aKindStillToCome = "a wake of a kind still to come"
+// wake (wakeReleased) gives any kind it is handed. A start names only a kind of the pods wake kinds
+// (record.SuperviseRequest's WakeKind), so the delivery kind, which no workflow wake takes and
+// WakeTask names no sentence of its own for, stands in for a kind still to come.
+const aKindStillToCome = pods.WakeDelivery
 
 // wakeKinds is each kind of wake that brings a released role back (wake.go): the CI settlement,
 // the role message, the agent message, the backstop, and any other.
@@ -484,17 +486,17 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 	case pods.WakeChecks:
 		fact := settlement(head)
 		apply("wake-checks", fact)
-		return WakeTask(kind, settlementDetail(fact))
+		return WakeTask(kind, settlementDetail(fact), StoppedByRelease)
 	case pods.WakeRoleMessage:
 		apply("wake-role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: token, At: reviewTestedAt, Report: "report-role"})
-		return WakeTask(kind, token)
+		return WakeTask(kind, token, StoppedByRelease)
 	case pods.WakeAgentMessage:
 		apply("wake-agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: session, At: reviewTestedAt, Report: "report-agent"})
-		return WakeTask(kind, session)
+		return WakeTask(kind, session, StoppedByRelease)
 	case pods.WakeBackstop:
 		id := armBackstop(t, pool, role, reviewTestedAt)
 		apply("wake-backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: role})
-		return WakeTask(kind, fmt.Sprintf("the backstop armed for LEGION-208's %s came due", role))
+		return WakeTask(kind, fmt.Sprintf("the backstop armed for LEGION-208's %s came due", role), StoppedByRelease)
 	}
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		released, found, err := engine.cfg.Pods.ReleasedClaimOfRole(ctx, tx, "LEGION-208", role)
@@ -507,7 +509,7 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 		}
 		return err
 	})
-	return WakeTask(kind, "its detail")
+	return WakeTask(kind, "its detail", StoppedByRelease)
 }
 
 // wakesTheReviewerInRoundTwo is the walk of a wake of kind: LEGION-208's reviewer in its second

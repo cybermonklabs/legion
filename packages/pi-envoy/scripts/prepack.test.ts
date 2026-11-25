@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { chmod, readdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 import { stageSkills } from "@legion/pi-shared/test/skills-guard";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -111,15 +111,41 @@ describe("the dispatch CLI the package ships", () => {
     const work = temporaryDirectory("pi-envoy-pack");
     let tarball = "";
     let unpacked = "";
+    const plantedModes = new Map<string, number>();
 
     beforeAll(async () => {
       // The pack builds `dist/`, which .gitignore hides, so `git status` would never report it
       // left behind: a checkout that had none must have none again. A developer who had already
       // run `bun run build` keeps theirs.
       distWasBuilt = existsSync(dist);
+      // A checkout made under umask 0002, the one a systemd user unit runs with, leaves group write
+      // on every file it writes. The row makes that checkout itself, whatever umask checked this
+      // one out: each file of the package root and of bin/ gets group write until the pack is done
+      // (git keeps no group bit, so `git status` does not change). The pack also runs under umask
+      // 0002, so what the build writes is group-writable too. The modes the tarball carries below
+      // then come from the prepack's own normalization alone.
+      for (const dir of [PACKAGE_ROOT, path.join(PACKAGE_ROOT, "bin")]) {
+        for (const name of await readdir(dir)) {
+          const file = path.join(dir, name);
+          const entry = await stat(file);
+          if (!entry.isFile()) continue;
+          plantedModes.set(file, entry.mode & 0o7777);
+          await chmod(file, (entry.mode & 0o7777) | 0o020);
+        }
+      }
+      // The planting took: the files every pack ships, whatever `files` says, and the executable
+      // the package ships are group-writable now, as a umask 0002 checkout leaves them.
+      const notGroupWritable: string[] = [];
+      for (const file of ["package.json", "README.md", "bin/dispatch"]) {
+        if (((await stat(path.join(PACKAGE_ROOT, file))).mode & 0o020) === 0)
+          notGroupWritable.push(file);
+      }
+      expect(notGroupWritable).toEqual([]);
       const pack = Bun.spawnSync(
         [
           "bash",
+          "-c",
+          'umask 0002 && exec bash "$0" "$@"',
           path.join(REPO_ROOT, "scripts/e2e/lib/pack-plugin.sh"),
           "pi-envoy",
           path.join(work, "out"),
@@ -138,7 +164,8 @@ describe("the dispatch CLI the package ships", () => {
       ).toBe(0);
     }, 120_000);
 
-    afterAll(() => {
+    afterAll(async () => {
+      for (const [file, mode] of plantedModes) await chmod(file, mode);
       if (!distWasBuilt) rmSync(dist, { recursive: true, force: true });
     });
 
@@ -146,7 +173,10 @@ describe("the dispatch CLI the package ships", () => {
       const listing = Bun.spawnSync(["tar", "tvzf", tarball]).stdout.toString().split("\n");
       const entry = (name: string) => listing.find((line) => line.endsWith(` package/${name}`));
       expect(entry("bin/dispatch")).toStartWith("-rwxr-xr-x ");
-      expect(entry("dist/dispatch.js")).toBeDefined();
+      expect(entry("dist/dispatch.js")).toStartWith("-rw-r--r-- ");
+      // No packed file or directory is writable by group or others, whatever umask packed it.
+      const writable = listing.filter((line) => /^.{5}w|^.{8}w/.test(line));
+      expect(writable).toEqual([]);
 
       expect(await readdir(path.join(unpacked, "bin"))).toEqual(["dispatch"]);
       const help = Bun.spawnSync([path.join(unpacked, "bin/dispatch"), "--help"], {
@@ -159,6 +189,25 @@ describe("the dispatch CLI the package ships", () => {
       });
       expect(help.exitCode).toBe(0);
       expect(help.stdout.toString()).toStartWith("Usage: dispatch ");
+    });
+
+    // A shell profile may export CDPATH=.:<dirs>; a `cd` whose operand CDPATH resolves prints the
+    // directory it entered, which the shim's `$(cd … && pwd)` would then hold as well.
+    test("bin/dispatch started by a relative path from the plugin's directory runs under an exported CDPATH", () => {
+      const help = Bun.spawnSync(["sh", "-c", 'cd "$1" && bin/dispatch --help', "sh", unpacked], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: work,
+          CDPATH: ".",
+          DISPATCH_HOST: "omp",
+          DISPATCH_SESSION_ID: "pack-check",
+        },
+      });
+      expect({
+        exitCode: help.exitCode,
+        stderr: help.stderr.toString(),
+        usage: help.stdout.toString().startsWith("Usage: dispatch "),
+      }).toEqual({ exitCode: 0, stderr: "", usage: true });
     });
 
     test("carries AskGate's prompt files inlined, so no session reads them from disk", async () => {

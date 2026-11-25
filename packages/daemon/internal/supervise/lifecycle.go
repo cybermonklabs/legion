@@ -22,7 +22,9 @@ import (
 // launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
 // cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced.
+// its own event, so a request that carries no such field is paced. turn is the moment the request
+// already reserved for this launch in the pacing (RequestSpawn.Turn), the zero time for every
+// request that reserved none (launchAfter).
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
@@ -30,8 +32,10 @@ import (
 // it was (retry, whose failure record and budgets go there).
 //
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
-// process, so its launch lets none go and records nothing of one (noEnd).
-func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) error {
+// process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
+// request, which the pod's start gate puts first among the starts waiting in the claim's pod
+// (launchAfter's requested, podQueue.next).
+func (m *Machine) revive(ctx context.Context, exempt bool, turn time.Time, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
@@ -40,7 +44,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 	if admitted != nil {
 		admitted()
 	}
-	return m.launchAfter(ctx, false, exempt, noEnd)
+	return m.launchAfter(ctx, false, exempt, true, turn, noEnd)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -87,7 +91,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // refreshStalePlugins in internal/daemon).
 //
 // Two roads reach this line with an intent on the machine, and each is a retry of this lane
-// refused a second time: the retry a failed write of StateLaunching armed (launchNow), and the
+// refused a second time: the retry a failed write of StateLaunching armed (launchTries), and the
 // retry the refused turn of this lane's own parked wake armed (runWake). Both put the intent
 // back as they run and raise the same launch anew from the top, whose own lifecycle check is
 // refused here (launchAfter, retryHolding).
@@ -126,7 +130,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 	}
 	if errors.Is(err, treelifecycle.ErrCleanupReserved) {
 		m.log.Warn("supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the claim for the tree's close", "error", err)
-		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon))
+		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
 	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(m.pluginRelaunch, relaunch))
@@ -194,13 +198,14 @@ func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Contex
 }
 
 // relaunchAgain is the relaunch relaunchLater left waiting (TimerRelaunch). A suspension held
-// meanwhile ends here, with no process left to stop, rather than in a relaunch; otherwise the
+// meanwhile ends here, with no process left to stop, rather than in a relaunch — a stop that meets
+// the relaunch it ends, which a project pause's stop owes the role (suspendedFor); otherwise the
 // relaunch is tried again as it was first made, charged as that call charges it.
 func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	relaunch := m.relaunch
 	m.relaunch = nil
 	if m.held != nil {
-		return m.suspendedFor(ctx, *m.held)
+		return m.suspendedFor(ctx, *m.held, true)
 	}
 	return relaunch(ctx)
 }
@@ -208,6 +213,10 @@ func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 // RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates):
 // only such a claim may move to another tree.
 func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State) }
+
+// Gone is whether the claim is suspended, failed or retired (GoneStates): its process has been
+// let go, so a project's pause has nothing of it to stop.
+func (c Claim) Gone() bool { return IsGone(c.State) }
 
 // Retree re-points a claim to tree, the tree its issue belongs to now: a child of a closed tree
 // re-admitted as a root of its own keeps its roles' claims, which still name the tree it left. The

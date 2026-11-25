@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -100,7 +99,7 @@ func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 	return fmt.Errorf("%w: durable consumer %s has %s, which the listener's consumer policy forbids and NATS cannot change in place; "+
 		"deleting it lets the listener recreate it at deliver policy all, which replays every retained message, "+
 		"so to keep its cursor recreate it from its own config without %s, at deliver policy by_start_sequence "+
-		"with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/AGENTS.md, Operational notes)",
+		"with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/deploy/README.md, Recreating a listener's durable)",
 		errListenerDurableRefused, consumer, strings.Join(settings, " and "), without)
 }
 
@@ -140,10 +139,12 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		// The deliver subject is a random inbox, not a derivable name: on a
 		// shared NATS account a predictable subject would let any client
 		// hold interest on it — shadow-reading deliveries and making the
-		// consumer look push-bound so the listener could never attach.
+		// consumer look push-bound so the listener could never attach. It is
+		// the connection's own inbox, under the connection's inbox prefix, which
+		// an edge listener's grant subscribes in place of every reply inbox.
 		config := nats.ConsumerConfig{
 			Durable:        consumer,
-			DeliverSubject: nats.NewInbox(),
+			DeliverSubject: client.Connection().NewInbox(),
 		}
 		applyListenerConsumerPolicy(&config, subjects)
 		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
@@ -367,21 +368,6 @@ func waitUnlessDone(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	case <-timer.C:
 		return nil
-	}
-}
-
-// waitWithin waits for wg within ctx and reports whether wg finished before ctx ended.
-func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-ctx.Done():
-		return false
 	}
 }
 

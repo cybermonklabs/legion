@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -198,7 +199,7 @@ func TestTheRecordedSessionRegisteringAgainIsReissuedASecret(t *testing.T) {
 func TestRegisterAnswers500AndNoSecretWhenTheStoreRefusesTheWrite(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
-	err := h.store.Tx(h.ctx, func(tx pgx.Tx) error {
+	err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(h.ctx, `create function refuse_capability() returns trigger language plpgsql as
 			$$ begin raise exception 'the capability write is refused'; end $$;
 			create trigger refuse_capability before update on claims for each row

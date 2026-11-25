@@ -6,7 +6,7 @@
 // refused for good, and that it never trades the machine in the person's place, unless the
 // process turned the person trade off. With nobody signed in, both callers trade the machine.
 
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import * as path from "node:path";
@@ -14,7 +14,7 @@ import {
   PERSON_TRADE_VAR,
   type SignInRecord,
   signInSessionName,
-} from "@legion/broker-client/signins";
+} from "@legion/cipher-client/signins";
 import {
   type IssuerAnswer,
   signedIn,
@@ -22,17 +22,22 @@ import {
   stubIssuer,
   thumbprintOf,
   writeSignIn,
-} from "@legion/broker-client/test/sign-ins";
+} from "@legion/cipher-client/test/sign-ins";
 import {
   SUBJECT_TOKEN_TYPE_KUBERNETES,
   SUBJECT_TOKEN_TYPE_PERSON,
-} from "@legion/broker-client/wire";
+} from "@legion/cipher-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient, DispatchWriteUnsettledError } from "../dispatch-http";
 import { envoySettings } from "../envoy-settings";
 import { brokerStandIns } from "./broker-stand-ins";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const { noFile, podEnvironment, projectedToken, servers, stubBroker, stubDispatch, tempDir } =
   brokerStandIns("broker-credential-signins");
@@ -146,8 +151,12 @@ async function signedInPod(
 }
 
 /** A Dispatch client of `env` for a caller acting as `session`, or as none. */
-function dispatchOf(env: DispatchEnvironment, session?: string): DispatchClient {
-  const resolution = dispatchSettings(env, noFile(env), session === undefined ? {} : { session });
+async function dispatchOf(env: DispatchEnvironment, session?: string): Promise<DispatchClient> {
+  const resolution = await dispatchSettings(
+    env,
+    await noFile(env),
+    session === undefined ? {} : { session }
+  );
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
   return new DispatchClient(resolution.url, resolution.credential);
 }
@@ -171,8 +180,8 @@ test("a person's trade asks under the caller's own session, else the sign-in's n
   const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
 
-  await dispatchOf(env).listAllIssues({});
-  await dispatchOf(env, "ses_01a9").listAllIssues({});
+  await (await dispatchOf(env)).listAllIssues({});
+  await (await dispatchOf(env, "ses_01a9")).listAllIssues({});
 
   expect(
     broker.trades.map((trade) => [
@@ -200,8 +209,8 @@ test("a caller acting as no session and one acting as AGENT_SECRETS_SESSION's se
   const issuer = await issuerFor();
   const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
-  const asNone = () => dispatchOf(env).listAllIssues({});
-  const asMachineSession = () => dispatchOf(env, MACHINE_SESSION).listAllIssues({});
+  const asNone = async () => (await dispatchOf(env)).listAllIssues({});
+  const asMachineSession = async () => (await dispatchOf(env, MACHINE_SESSION)).listAllIssues({});
 
   await asNone();
   await asMachineSession();
@@ -241,11 +250,11 @@ test("with nobody signed in, a caller acting as no session and one acting as AGE
     AGENT_SECRETS_SESSION: MACHINE_SESSION,
   };
 
-  await dispatchOf(env).listAllIssues({});
-  await dispatchOf(env, MACHINE_SESSION).listAllIssues({});
+  await (await dispatchOf(env)).listAllIssues({});
+  await (await dispatchOf(env, MACHINE_SESSION)).listAllIssues({});
   forgetBrokerClients();
-  await dispatchOf(env, MACHINE_SESSION).listAllIssues({});
-  await dispatchOf(env).listAllIssues({});
+  await (await dispatchOf(env, MACHINE_SESSION)).listAllIssues({});
+  await (await dispatchOf(env)).listAllIssues({});
 
   // Every trade is the machine's identity under the session AGENT_SECRETS_SESSION names, and every
   // call presents a token the broker answered.
@@ -270,7 +279,7 @@ test("a client the factory failed to make is not kept: a store the person correc
   const ada = await signedIn(PERSON, { client_id: CLIENT_ID });
   const grace = await signedIn("grace@example.com", { client_id: CLIENT_ID });
   const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [ada, grace]);
-  const client = dispatchOf(env, "ses_01a9");
+  const client = await dispatchOf(env, "ses_01a9");
 
   expect(await refusalOf(client.listAllIssues({}))).toBe(
     "2 people are signed in on this machine (ada@example.com, grace@example.com), so this session must say which one it acts for: set AGENT_SECRETS_PERSON to one of them"
@@ -293,7 +302,7 @@ test("a sign-in the broker refused for good fails every later call in its words,
   const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
   broker.revoked.add(record.thumbprint);
 
-  const refused = await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
+  const refused = await refusalOf((await dispatchOf(env, "ses_01a9")).listAllIssues({}));
   expect(refused).toBe(
     `the secrets broker refused ${PERSON}'s sign-in on this machine: HTTP 400 invalid_grant: ${REVOKED}`
   );
@@ -301,8 +310,11 @@ test("a sign-in the broker refused for good fails every later call in its words,
 
   // The same session's later calls, Dispatch's and the listener's alike, are refused in the same
   // words with no refresh at the issuer, no trade at the broker and no request to Dispatch.
-  expect(await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}))).toBe(refused);
-  const listener = envoySettings(env, noFile(env), { nats: false, session: "ses_01a9" });
+  expect(await refusalOf((await dispatchOf(env, "ses_01a9")).listAllIssues({}))).toBe(refused);
+  const listener = await envoySettings(env, await noFile(env), {
+    nats: false,
+    session: "ses_01a9",
+  });
   if (!listener.enabled) throw new Error("Envoy is off");
   expect(
     await refusalOf(
@@ -324,7 +336,7 @@ test("after a refusal, a new sign-in with a new box key gets a client of its own
   const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
   broker.revoked.add(record.thumbprint);
-  const client = dispatchOf(env, "ses_01a9");
+  const client = await dispatchOf(env, "ses_01a9");
   expect(await refusalOf(client.listAllIssues({}))).toContain("agent-secrets login");
 
   // `agent-secrets login` again: a new box key, written over the person's record.
@@ -358,9 +370,6 @@ test("a write whose person signs out between two attempts ends unsettled, presen
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
-      if (new URL(request.url).pathname === "/healthz") {
-        return Response.json({ status: "ok", idempotency_keys: true });
-      }
       const key = request.headers.get("Idempotency-Key") ?? "";
       asked.push({ authorization: request.headers.get("Authorization") ?? "", key });
       if (request.method === "POST" && asked.length === 1) {
@@ -384,7 +393,7 @@ test("a write whose person signs out between two attempts ends unsettled, presen
   signins = pod.signins;
   // A sign-in refused for good, so every later call reads the store again.
   broker.revoked.add(revoked.thumbprint);
-  const client = dispatchOf(pod.env, "ses_01a9");
+  const client = await dispatchOf(pod.env, "ses_01a9");
   expect(await refusalOf(client.listAllIssues({}))).toContain("agent-secrets login");
   // Signed in again: the write's first attempt goes as the person.
   renewed = await signedIn(PERSON, { client_id: CLIENT_ID });
@@ -426,7 +435,7 @@ test("a new sign-in closes the client it replaces, so a client whose trades were
   const revoked = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [revoked]);
   broker.revoked.add(revoked.thumbprint);
-  const client = dispatchOf(env, "ses_01a9");
+  const client = await dispatchOf(env, "ses_01a9");
   expect(await refusalOf(client.listAllIssues({}))).toContain("agent-secrets login");
   // Signed in again, with a key the broker is down for.
   const failing = await signedIn(PERSON, { client_id: CLIENT_ID });
@@ -456,14 +465,14 @@ test("a sign-in the issuer has ended is remembered too: no trade at the broker, 
   const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
 
-  const ended = await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
+  const ended = await refusalOf((await dispatchOf(env, "ses_01a9")).listAllIssues({}));
   expect(ended).toBe(
     `${issuer.url} no longer honours ${PERSON}'s sign-in on this machine; run: agent-secrets login`
   );
   const refreshes = issuer.requests.filter((one) => one.path === "/token").length;
   expect(refreshes).toBe(1);
 
-  expect(await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}))).toBe(ended);
+  expect(await refusalOf((await dispatchOf(env, "ses_01a9")).listAllIssues({}))).toBe(ended);
   expect(issuer.requests.filter((one) => one.path === "/token")).toHaveLength(refreshes);
   expect(broker.trades).toHaveLength(0);
   expect(dispatch.asked).toHaveLength(0);
@@ -478,12 +487,12 @@ test("a process that turns the person trade off writes Dispatch as the machine w
   const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
 
-  await dispatchOf({ ...env, [PERSON_TRADE_VAR]: "off" }, "ses_01a9").listAllIssues({});
+  await (await dispatchOf({ ...env, [PERSON_TRADE_VAR]: "off" }, "ses_01a9")).listAllIssues({});
   // Nobody's sign-in was renewed for it.
   expect(issuer.requests).toHaveLength(0);
   // The setting is in the client's key, so the process without it is answered a client of its
   // own, which trades the person.
-  await dispatchOf(env, "ses_01a9").listAllIssues({});
+  await (await dispatchOf(env, "ses_01a9")).listAllIssues({});
 
   expect(
     broker.trades.map((trade) => [

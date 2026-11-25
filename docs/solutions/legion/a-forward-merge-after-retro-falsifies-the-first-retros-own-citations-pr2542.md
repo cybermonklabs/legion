@@ -7,7 +7,7 @@ tags:
   - learnings
   - citations
 date: 2026-10-30
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: docs/solutions
 related_issues:
   - "sjawhar/legion#2542"

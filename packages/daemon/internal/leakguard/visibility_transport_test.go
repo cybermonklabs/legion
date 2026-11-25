@@ -147,8 +147,9 @@ func (r *transportRig) kept(t *testing.T) bool {
 // gh's is. A rate limit that curl meets goes on to the rate-limit reads, whose first is GraphQL's
 // (here it answers). A curl that fails on its connection too sends the read on to ls-remote, whose
 // refs read public and whose `could not read Username` at exit 128 refuses the call. Any other curl
-// answer refuses the call with no ls-remote, a curl that heard GitHub's status line and then lost
-// its connection among them.
+// answer refuses the call with no ls-remote: GitHub's 404, which the refusal tells as GitHub's
+// answer for the repository, and a curl that heard GitHub's status line and then lost its
+// connection among them.
 func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -209,7 +210,7 @@ func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 			graphql: noGraphQL,
 			curl:    curlNotFound,
 			git:     answersTheRefs,
-			fails:   []string{"gh could not reach GitHub", "curl could not answer", "answered the status 404", "Not Found"},
+			fails:   []string{"gh could not reach GitHub", "curl could not answer", "GitHub answers 404 for " + maskPath(theRepo)},
 		},
 		{
 			name:    "curl hears GitHub and then loses its connection",
@@ -274,10 +275,11 @@ func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 }
 
 // Each of gh's transport failures (ghTransportFailures), in the line gh prints for it, sends the
-// read on to curl. Every other failure of gh's REST read is refused as before, and runs neither
-// curl, nor GraphQL, nor git: a GitHub error body, a 403 that is not a rate limit, a malformed
-// answer, a refusal by `legion gh`, a failed DNS lookup, and a transport failure's words beside a
-// status line, beside another line, for another repository's URL or at exit 0.
+// read on to curl. Every other failure of gh's REST read is refused, and runs neither curl, nor
+// GraphQL, nor git: a GitHub error body (a 404, whose refusal tells it as GitHub's answer for the
+// repository), a 403 that is not a rate limit, a malformed answer, a refusal by `legion gh`, a
+// failed DNS lookup, and a transport failure's words beside a status line, beside another line,
+// for another repository's URL or at exit 0.
 func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 	included := func(status string, body string, headers ...string) string {
 		return printsResponse(status, append([]string{"Content-Type: application/json; charset=utf-8"}, headers...), body)
@@ -299,7 +301,7 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 			name: "a GitHub error body",
 			rest: included("HTTP/2.0 404 Not Found", `{"message":"Not Found","status":"404"}`, "X-Ratelimit-Remaining: 4999") +
 				printsToStderr("gh: Not Found (HTTP 404)") + "exit 1\n",
-			fails: "exited 1",
+			fails: "GitHub answers 404 for " + maskPath(theRepo),
 		},
 		{
 			name: "a 403 that is not a rate limit",
@@ -366,11 +368,12 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 // The curl read carries the token on its standard input, as the one header `--header @-` reads,
 // and never in its argv or its environment. The token is the caller's GH_TOKEN, else its
 // GITHUB_TOKEN, which gh would have sent, and else what `gh auth git-credential get` answers, which
-// is asked only then. curl reads no .curlrc (-q first) and no netrc, takes https alone, and asks
-// GitHub's REST API for the repository with GitHub's media type. Of the caller's environment its
-// proxy reaches it, so a host that reaches GitHub through one reaches it the same way, and no trust
-// store and no TLS key log do: a proxy the caller names with a CA curl trusted would read the
-// token's header, where with the system's own CAs it sees only a TLS tunnel.
+// is asked only then. curl reads no .curlrc (-q first) and no netrc, takes https alone, reads no
+// range or set in the URL (--globoff), so one read is one request, and asks GitHub's REST API for
+// the repository with GitHub's media type. Of the caller's environment its proxy reaches it, so a
+// host that reaches GitHub through one reaches it the same way, and no trust store and no TLS key
+// log do: a proxy the caller names with a CA curl trusted would read the token's header, where
+// with the system's own CAs it sees only a TLS tunnel.
 func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -405,7 +408,7 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 				t.Errorf("curl ran as %q, want -q first and then --no-netrc", argv)
 			}
 			for _, want := range []string{
-				" --include --suppress-connect-headers ", " --proto =https ", " --max-time ", " --header @- ",
+				" --include --suppress-connect-headers ", " --globoff ", " --proto =https ", " --max-time ", " --header @- ",
 				" --header Accept: application/vnd.github+json ", " https://api.github.com/repos/" + theRepo,
 			} {
 				if !strings.Contains(" "+argv, want) {
@@ -564,11 +567,11 @@ func TestTransportPathLeavesTheCallersStopAnError(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			started := filepath.Join(t.TempDir(), "started")
-			rig := newTransportRig(t, ": > "+shQuote(started)+"\nsleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+			rig := newTransportRig(t, ": > "+shQuote(started)+"\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
 			ctx := tc.caller(t, started)
-			began := time.Now()
-			visibility, err := rig.guard.Visibility(ctx, theRepo)
-			answeredWithin10s(t, began)
+			var visibility Visibility
+			var err error
+			answered(t, "the visibility read whose gh never answers", func() { visibility, err = rig.guard.Visibility(ctx, theRepo) })
 			if err == nil {
 				t.Fatalf("read %q, want the call refused", visibility)
 			}
@@ -651,10 +654,11 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 // curl nor git runs. The guard's bound is shortened to 1 s inside the caller's minute.
 func TestTransportBoundRefusesAGhThatHeardGitHub(t *testing.T) {
 	shorten(t, &ghReadBound, time.Second)
-	rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\nsleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
-	began := time.Now()
-	visibility, err := rig.guard.Visibility(bound(t), theRepo)
-	answeredWithin10s(t, began)
+	rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+	ctx := bound(t)
+	var visibility Visibility
+	var err error
+	answered(t, "the visibility read whose gh heard GitHub and then hung", func() { visibility, err = rig.guard.Visibility(ctx, theRepo) })
 	if err == nil {
 		t.Fatalf("read %q, want the call refused", visibility)
 	}

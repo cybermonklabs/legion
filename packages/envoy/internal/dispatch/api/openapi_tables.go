@@ -8,7 +8,7 @@ package api
 import (
 	"reflect"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -134,11 +134,13 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.DeliveryWaitingPRView{}):     "DeliveryWaitingPR",
 	reflect.TypeOf(itemblocks.Carried{}):                 "CarriedBlock",
 
-	// The Legion daemon setting's shape, whose Go package carries the word `Legion` in its import
-	// path and not in its type name: `Settings` is what legion calls it, and `LegionSetting` is
-	// what a client imports. The board's own types (legionBoardResponse and its members) already
-	// carry the word and take their Go names.
-	reflect.TypeOf(legion.Settings{}): "LegionSetting",
+	// The Legion package's shapes an answer carries, whose Go package carries the word `Legion` in
+	// its import path and not in their type names: `Settings` and `RoleClaim` are what legion calls
+	// them, and `LegionSetting` and `LegionRoleClaim` are what a client imports. The board's own
+	// types (legionBoardResponse and its members) and one issue's (legionIssueResponse and its
+	// members) already carry the word and take their Go names.
+	reflect.TypeOf(legion.Settings{}):  "LegionSetting",
+	reflect.TypeOf(legion.RoleClaim{}): "LegionRoleClaim",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an
@@ -190,9 +192,12 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// parseIssuePriority (issue_create.go), read by create and update alike.
 	{reflect.TypeOf(createIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
-	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name".
-	{reflect.TypeOf(createIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
-	{reflect.TypeOf(updateIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
+	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name". The
+	// project's default repository is read by the same rule; its handler refuses a body without
+	// the field, which the field's own `required:"true"` says.
+	{reflect.TypeOf(createIssueInput{}), "repo"}:              rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "repo"}:              rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(projectDefaultRepositoryInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
 	// An upload refuses `primary` whenever it carries one, JSON or multipart (artifacts.go):
 	// primary is fixed at issue creation. The field is described so a client reading the document
 	// knows what the bytes would have to be, never because one may send them.
@@ -209,6 +214,12 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency " +
 			"key is the Idempotency-Key header and never a body member",
 	}},
+	// GET /api/v1/issues/{key}/legion's waiting_on (legion_issue.go): null is an issue that waits
+	// on nothing, and an object is the daemon's own as the sampler stored it, which the answer
+	// sends unparsed so that a field a later daemon adds reaches the page. The fragment names the
+	// fields the daemon writes today and leaves the object open, so the generated type has them.
+	// The answer always carries the field, which its `required:"true"` says.
+	{reflect.TypeOf(legionIssueState{}), "waiting_on"}: rawField{Fragment: openAPILegionWaitingOn, Nullable: true},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
@@ -232,6 +243,43 @@ var (
 	openAPIRepository = map[string]any{
 		"type":        "string",
 		"description": `a GitHub repository as "owner/name"`,
+	}
+	// The daemon's api.WaitingOnView (packages/daemon/internal/api/state.go), what a root in
+	// awaiting_person waits on from a person: kind is `ask`, with the ask's id, or `gate`, with the
+	// spec version of a document no person reviewed; since is when the wait began; answeredAt and
+	// answeredBy come once the wait was answered. The daemon writes kind on every wait and each
+	// other field only where it has a value, and the object is open: a field a later daemon adds
+	// is sent as stored.
+	openAPILegionWaitingOn = map[string]any{
+		"type": "object",
+		"description": "what the issue waits on from a person, the Legion daemon's waitingOn " +
+			"object exactly as Dispatch stored it; a field a later daemon adds is sent too",
+		"properties": map[string]any{
+			"kind": map[string]any{
+				"type":        "string",
+				"description": "the kind of wait: ask, gate, or a kind a later daemon names",
+			},
+			"ask": map[string]any{
+				"type":        "string",
+				"description": "for an ask, the id of the oldest question of the issue's tree still with a person",
+			},
+			"gateVersion": map[string]any{
+				"type":        "integer",
+				"description": "for a gate, the spec version no person has reviewed",
+			},
+			"artifactId": map[string]any{
+				"type":        "string",
+				"description": "for a gate, the id of the document whose version no person has reviewed",
+			},
+			"since":      openAPITimestamp,
+			"answeredAt": openAPITimestamp,
+			"answeredBy": map[string]any{
+				"type":        "string",
+				"description": "how the wait was answered, once it was, and not always by a person",
+			},
+		},
+		"required":             []string{"kind"},
+		"additionalProperties": true,
 	}
 )
 
@@ -257,6 +305,11 @@ var openAPIMultipartSchema = map[string]any{
 		"actor": map[string]any{
 			"type":        "string",
 			"description": "the acting session as one JSON object, as the JSON body's `actor` field",
+		},
+		"precondition": map[string]any{
+			"type": "string",
+			"description": "the base this upload replaces as one JSON object, as the JSON body's " +
+				"`precondition` field",
 		},
 	},
 	"required": []any{"file"},

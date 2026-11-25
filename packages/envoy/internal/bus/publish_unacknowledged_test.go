@@ -42,6 +42,7 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 // what an unacknowledged publish sent once the server answers again, and holds nothing of a
 // publish that waited for a reconnect.
 func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -141,6 +142,105 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		t.Logf("the resend's acknowledgement: %+v", got.ack)
 		if stored := storedOn(t, topic); stored != 1 {
 			t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent twice", stored, topic)
+		}
+	})
+
+	t.Run("a publish interrupted by reconnect is sent again after its first copy is stored", func(t *testing.T) {
+		topic := contracts.LegacyAgentSubject("ses_unacknowledged_reconnect")
+		proxy := testnats.StartProxy(t, uri)
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect through the reply gate: %v", err)
+		}
+		t.Cleanup(reconnecting.Close)
+		before := reconnecting.Connection().Stats().OutMsgs
+		proxy.FreezeServerReplies()
+		type answer struct {
+			ack bus.StoredAck
+			err error
+		}
+		answered := make(chan answer, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			ack, err := reconnecting.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
+			answered <- answer{ack, err}
+		}()
+		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the publish to reach the server before reconnecting",
+			func() bool { return reconnecting.Connection().Stats().OutMsgs > before && storedOn(t, topic) == 1 })
+		first, err := client.JS().GetLastMsg(bus.Stream, topic)
+		if err != nil {
+			t.Fatalf("read the first stored copy: %v", err)
+		}
+		if err := reconnecting.Connection().ForceReconnect(); err != nil {
+			t.Fatalf("force reconnect: %v", err)
+		}
+		proxy.Restore()
+		var got answer
+		select {
+		case got = <-answered:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the publish interrupted by reconnect did not return")
+		}
+		if got.err != nil {
+			t.Fatalf("a publish sent again after reconnect = %v, want it acknowledged", got.err)
+		}
+		if !got.ack.Resent || !got.ack.Duplicate || got.ack.Sequence != first.Sequence {
+			t.Fatalf("a publish sent again after reconnect answered %+v, want resent duplicate at sequence %d", got.ack, first.Sequence)
+		}
+		if stored := storedOn(t, topic); stored != 1 {
+			t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent twice", stored, topic)
+		}
+	})
+
+	// A cursor write under a precondition is sent again after a reconnect cuts its answer, and the
+	// stream refuses the resend because the first send already moved the cursor. That refusal is
+	// no ErrCursorMoved, which says the write stored nothing: the error wraps ErrUnacknowledged, so
+	// the listener reads the cursor back (roleKeepLaneCursor.confirm) and finds this write.
+	t.Run("a cursor write stored before a reconnect cut its answer is no ErrCursorMoved", func(t *testing.T) {
+		subject := bus.KeptRoleCursorSubject("unacknowledged-cursor-reconnect")
+		proxy := testnats.StartProxy(t, uri)
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect through the reply gate: %v", err)
+		}
+		t.Cleanup(reconnecting.Close)
+		proxy.FreezeServerReplies()
+		body := []byte(`{"kept":7}`)
+		answered := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := reconnecting.PublishCursorAt(ctx, subject, body, 0)
+			answered <- err
+		}()
+		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the cursor write to be stored before reconnecting",
+			func() bool { return storedOn(t, subject) == 1 })
+		if err := reconnecting.Connection().ForceReconnect(); err != nil {
+			t.Fatalf("force reconnect: %v", err)
+		}
+		proxy.Restore()
+		var got error
+		select {
+		case got = <-answered:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the cursor write interrupted by reconnect did not return")
+		}
+		if errors.Is(got, bus.ErrCursorMoved) {
+			t.Fatalf("a cursor write the stream stored before the reconnect = %v, want no ErrCursorMoved: the cursor holds this write", got)
+		}
+		if !errors.Is(got, bus.ErrUnacknowledged) {
+			t.Fatalf("a cursor write whose answer the reconnect cut = %v, want ErrUnacknowledged", got)
+		}
+		stored, err := client.JS().GetLastMsg(bus.Stream, subject)
+		if err != nil {
+			t.Fatalf("read the cursor back: %v", err)
+		}
+		if string(stored.Data) != string(body) {
+			t.Fatalf("the cursor reads back %q, want this write's %q", stored.Data, body)
+		}
+		if n := storedOn(t, subject); n != 1 {
+			t.Fatalf("the stream holds %d cursor writes on %s, want the one this call stored", n, subject)
 		}
 	})
 

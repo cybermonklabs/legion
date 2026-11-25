@@ -22,10 +22,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// ReconcileInterval is how often reconcile re-imports GitHub facts. The Delivery page's
+// ReconcileInterval is the longest reconcile waits after a pass before it re-imports GitHub facts
+// again: each wait is more than 0.9 of it and at most it (duty.RunJittered). The Delivery page's
 // freshness row promises a missed event appears "by the next five-minute reconcile".
 const ReconcileInterval = 5 * time.Minute
 
@@ -44,26 +46,29 @@ const reconcileOverlap = time.Hour
 // (RecordDeployedEvents). A nil GitHub client (no App credentials) leaves it idle, exactly like
 // architecture.Importer and Intake.
 type Reconcile struct {
-	pool     *store.Pool
-	github   *githubapp.Client
-	events   *events.Broker
-	atStart  bool
-	interval time.Duration
+	pool       *store.Pool
+	github     *githubapp.Client
+	events     *events.Broker
+	attributor *Attributor
+	atStart    bool
+	interval   time.Duration
 	// gitHubReads is what RecordGitHubReads set: each leased pass's attempt at reading GitHub
 	// goes through it, and nil records nothing.
 	gitHubReads githubreads.Recorder
 }
 
-// NewReconcile builds a Reconcile.
-func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker) *Reconcile {
-	return &Reconcile{pool: pool, github: github, events: broker}
+// NewReconcile builds a Reconcile, which attributes pull requests and keys their head rows with
+// attributor, the Attributor of the rename pairs the process read at boot.
+func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker, attributor *Attributor) *Reconcile {
+	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor}
 }
 
 // FirstPassAtStart makes Run run one pass as it starts, before its jittered ticks, for an
 // end-to-end test that must see a pass inside its window (DISPATCH_TEST_RECONCILE_AT_START, under
-// the test hooks). The pass takes the lease for the current interval as any tick's does, so a
-// jittered tick inside that interval finds it served. A deployment never sets it: the jitter is
-// what keeps a restart from stampeding GitHub.
+// the test hooks). The pass takes the lease for the period its start falls in, as any tick's does:
+// a bucket of duty.LeasePeriod of the tick interval, aligned to the epoch. The first jittered tick
+// comes within one tick interval of the start, so it can land in that bucket and find it served.
+// A deployment never sets it: the jitter is what keeps a restart from stampeding GitHub.
 func (r *Reconcile) FirstPassAtStart() *Reconcile {
 	r.atStart = true
 	return r
@@ -86,10 +91,14 @@ func (r *Reconcile) RecordGitHubReads(record githubreads.Recorder) *Reconcile {
 	return r
 }
 
-// tickInterval is how often the loop ticks, ReconcileInterval unless TickEvery shortened it. It
-// is also the lease period one pass takes, and the two must be the same value: duty.Exclusive
-// refuses a pass whose period another pass already served, so a loop ticking every second under
-// five-minute lease periods would run one pass and then be refused for five minutes.
+// tickInterval is the longest the loop waits between two ticks, ReconcileInterval unless TickEvery
+// shortened it: each wait is more than 0.9 of it and at most it (duty.RunJittered). The lease
+// period one pass takes is duty.LeasePeriod of it, shorter than any of those waits, so a lone
+// loop's tick is never refused as a period its own last pass served. A period of the tick interval
+// itself would refuse a tick that came less than an interval after the one before whenever both
+// fell in one bucket. And the period must follow the tick interval: duty.Exclusive refuses a pass
+// whose period another pass already served, so a loop ticking every second under five-minute lease
+// periods would run one pass and then be refused for five minutes.
 func (r *Reconcile) tickInterval() time.Duration {
 	if r.interval > 0 {
 		return r.interval
@@ -107,16 +116,17 @@ func (r *Reconcile) HasApp() bool {
 // requests - so N processes reconciling is N times those calls for one result.
 const deliveryReconcileLease = "delivery-reconcile"
 
-// Run re-imports delivery facts on the interval it ticks on (ReconcileInterval unless TickEvery
-// shortened it) until ctx is cancelled. The first tick is jittered so a restart does not stampede
-// GitHub, and a server without App credentials logs once and stops: no import can be signed.
+// Run re-imports delivery facts about every interval it ticks on (ReconcileInterval unless
+// TickEvery shortened it), and never waits longer than that interval after a pass, until ctx is
+// cancelled. The first tick is jittered so a restart does not stampede GitHub, and a server
+// without App credentials logs once and stops: no import can be signed.
 //
-// Each pass runs under deliveryReconcileLease for one such interval, so one process reconciles
-// per interval however many serve the database: the two tickers are jittered to phases of their
-// own, so the second's tick lands between the first's rather than on it, and finds the interval
-// reconciled. leases is required: unlike StartIntakes, which opens the lease pool itself
-// because it is the boot's error-returning constructor, Run has no error to return, so it takes
-// the pool cmd/dispatch has already opened (and exits at boot without).
+// Each pass runs under deliveryReconcileLease for one period of duty.LeasePeriod of that interval,
+// so one process reconciles per period however many serve the database: the two tickers are
+// jittered to phases of their own, so the second's tick lands between the first's rather than on
+// it, and finds the period reconciled. leases is required: unlike StartIntakes, which opens the
+// lease pool itself because it is the boot's error-returning constructor, Run has no error to
+// return, so it takes the pool cmd/dispatch has already opened (and exits at boot without).
 func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 	if r.atStart && r.HasApp() {
 		r.leasedPass(ctx, leases, time.Now())
@@ -130,10 +140,10 @@ func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 	}, func(ctx context.Context, due time.Time) { r.leasedPass(ctx, leases, due) })
 }
 
-// leasedPass runs one reconcile pass under the lease, for the interval this loop ticks on and
-// the tick due at due.
+// leasedPass runs one reconcile pass under the lease, for the tick due at due. Its period is
+// duty.LeasePeriod of the interval this loop ticks on (tickInterval).
 func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, deliveryReconcileLease, due, r.tickInterval(), r.runOnce)
+	duty.Exclusive(ctx, leases, deliveryReconcileLease, due, duty.LeasePeriod(r.tickInterval()), r.runOnce)
 }
 
 // runOnce performs one reconcile pass: the pull-request head refresh, then — where delivery is
@@ -190,7 +200,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
 	// logged. At the GetSettings arm there is no delivery_settings row to write it in, or none
-	// that could be read; at the splitRepo and permission arms below, r.fail does write
+	// that could be read; at the deploy_repo split and permission arms below, r.fail does write
 	// last_error into that row, but last_error holds the one failure that ended the pass and the
 	// step list that would carry a second one (failures, record) does not exist yet. It is a
 	// step that reads GitHub all the same, so the pass's attempt notes it, as recordRead does.
@@ -211,7 +221,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		return
 	}
 	production := settings.Production()
-	owner, repo, err := splitRepo(settings.DeployRepo)
+	owner, repo, err := refs.SplitGitHubRepo(settings.DeployRepo)
 	if err != nil {
 		logHeadFailure()
 		slog.Error("dispatch delivery: deploy_repo setting", "error", err)
@@ -277,7 +287,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	// The attribution backfill runs last, within its own call budget: it is the one step whose
 	// work can wait a pass, so the timeline's own facts take the rate limit first.
 	recordRead("read attribution inputs of stored pull requests", r.reconcileAttributionInputs(ctx))
-	if changed, err := AttributePullRequests(ctx, r.pool, AttributionResolveBatch); err != nil {
+	if changed, err := r.attributor.AttributePullRequests(ctx, r.pool, AttributionResolveBatch); err != nil {
 		record("attribute stored pull requests", err)
 	} else if changed > 0 {
 		slog.Info("dispatch delivery: attributed stored pull requests", "changed", changed)
@@ -455,19 +465,20 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 
 // searchResultRepo recovers "owner/repo" from a search result's HTML URL
 // (https://github.com/<owner>/<repo>/pull/<n>): GitHub's search-issues response does not carry a
-// separate repository field, only the issue/PR's own URL.
+// separate repository field, only the issue/PR's own URL. It cuts the URL itself rather than
+// through refs.SplitGitHubRepo, whose name rule refuses the "repo/pull/N" the URL's tail is; the
+// name it answers meets that rule again where any read splits it into a GitHub path.
 func (r *Reconcile) searchResultRepo(pr FetchedPullRequest) (string, error) {
 	const prefix = "https://github.com/"
 	if len(pr.URL) <= len(prefix) || pr.URL[:len(prefix)] != prefix {
 		return "", fmt.Errorf("pull request URL %q does not start with %s", pr.URL, prefix)
 	}
-	rest := pr.URL[len(prefix):]
-	owner, repoTail, err := splitRepo(rest)
-	if err != nil {
-		return "", fmt.Errorf("pull request URL %q: %w", pr.URL, err)
-	}
-	// repoTail is "repo/pull/N"; keep only the repo segment.
+	// The tail is "owner/repo/pull/N"; keep only the owner and repo segments.
+	owner, repoTail, _ := strings.Cut(pr.URL[len(prefix):], "/")
 	repoName, _, found := strings.Cut(repoTail, "/")
+	if owner == "" || repoName == "" {
+		return "", fmt.Errorf("pull request URL %q: no owner/repo", pr.URL)
+	}
 	if !found {
 		return "", fmt.Errorf("pull request URL %q: no /pull/ segment", pr.URL)
 	}
@@ -581,7 +592,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
+		err := r.attributor.RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
 		if err == nil {
 			return nil
 		}
@@ -704,7 +715,7 @@ func (r *Reconcile) reconcileAttributionInputs(ctx context.Context) error {
 // a row GitHub no longer has unfetchable, and logs and skips any other failure, leaving the row
 // unread for a later pass.
 func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRequest, budget *callBudget) error {
-	owner, repo, err := splitRepo(pr.Repo)
+	owner, repo, err := refs.SplitGitHubRepo(pr.Repo)
 	if err != nil {
 		slog.Warn("dispatch delivery: read attribution inputs", "repo", pr.Repo, "number", pr.Number, "error", err)
 		return nil
@@ -731,8 +742,8 @@ func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRe
 		githubreads.NoteFailuref(ctx, "read attribution inputs of %s PR #%d: %w", pr.Repo, pr.Number, err)
 		return nil
 	}
-	inputs := attributionInputsFrom(facts)
-	issueKey, _, err := resolveStoredIssueKey(ctx, r.pool, pr.Repo, pr.URL, inputs)
+	inputs := r.attributor.attributionInputsFrom(facts)
+	issueKey, _, err := r.attributor.resolveStoredIssueKey(ctx, r.pool, pr.Repo, pr.URL, inputs)
 	if err != nil {
 		slog.Warn("dispatch delivery: resolve the issue of a backfilled pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
 		return nil
@@ -753,7 +764,7 @@ func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRe
 // its own doc comment already names as exactly this case) both mark the row unfetchable instead
 // of logging a transient-looking warning every pass forever.
 func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryPullRequest) error {
-	owner, repo, err := splitRepo(pr.Repo)
+	owner, repo, err := refs.SplitGitHubRepo(pr.Repo)
 	if err != nil {
 		slog.Warn("dispatch delivery: partial pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
 		return nil
@@ -780,7 +791,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 	if fetched.MergedAt == nil {
 		return nil
 	}
-	if err := completePullRequest(ctx, r.pool, r.github, owner, repo, pr.Repo, pr.Number, fetched, nil); err != nil {
+	if err := r.attributor.completePullRequest(ctx, r.pool, r.github, owner, repo, pr.Repo, pr.Number, fetched, nil); err != nil {
 		if limited, ok := githubapp.AsRateLimit(err); ok {
 			slog.Warn("dispatch delivery: stopped completing partial pull requests: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
 			return limited

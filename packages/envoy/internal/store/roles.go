@@ -15,7 +15,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -26,6 +25,17 @@ type RoleClaim struct {
 	HolderSessionID   string `json:"holder_session_id"`
 	ClaimedAt         int64  `json:"claimed_at"`
 	PreviousSessionID string `json:"previous_session_id"`
+	// GrantID names the grant that wrote this claim: an id each grant draws at random for the
+	// record it writes (SetRoleWithPrevious), which the holder's renewals, the adoption of a
+	// claim that names no process and the hand-back's mark carry over untouched. It is what
+	// tells a claim granted again from the claim a release read before its write lost - the
+	// delete that frees the claim and the hand-back's mark alike (RoleClaim.sameGrant,
+	// Registry.releaseReadRoleClaim, Registry.markRoleClaimHandedBack) - which ClaimedAt cannot:
+	// a grant stamped in the millisecond of the claim before it carries that claim's moment.
+	// Empty on a claim an earlier build wrote: that build draws no grant id, and its renewal and
+	// its mark write back a claim decoded without the field, so a record it rewrites loses the
+	// id. Such a claim renews, is adopted, released and marked as it was.
+	GrantID string `json:"grant_id,omitempty"`
 	// ClientInstanceID is the client instance of the process that holds the claim, which the
 	// claimant named when it took the role. A session id alone does not name that process: a
 	// second process can resume a live session's id, and it carries a client instance of its
@@ -99,6 +109,24 @@ func (c RoleClaim) LastAnsweredAt() int64 {
 // where an absent id on either side is a client predating the field and the claim goes through.
 func (c RoleClaim) HeldByProcess(instance string) bool {
 	return instance != "" && c.ClientInstanceID == instance
+}
+
+// sameGrant reports whether c is the grant read is, as the holder's renewals and the adoption
+// leave it: the question a release asks of the claim it reads again after a write of its own lost
+// its compare-and-swap, the delete that frees the claim (Registry.releaseReadRoleClaim) and the
+// mark a hand-back leaves on it (Registry.markRoleClaimHandedBack) alike. Where c carries a grant
+// id, that id decides, so a grant made since read, which drew an id of its own, is never read's,
+// whatever millisecond it was stamped in. Where c carries none, an earlier build wrote it - its
+// grant draws no id, and its renewal drops the one it read - so ClaimedAt decides, as it did in
+// that build. Two grants in read's own millisecond therefore read as read while such a build
+// writes the bucket: one that build wrote, and one this build wrote that such a build renewed
+// before this read, which has lost its id. No code here can tell either apart; both end when no
+// such build writes the bucket.
+func (c RoleClaim) sameGrant(read RoleClaim) bool {
+	if c.GrantID != "" {
+		return c.GrantID == read.GrantID
+	}
+	return c.ClaimedAt == read.ClaimedAt
 }
 
 // ExpiredRoleClaimRelease reports what releaseReadExpiredRoleClaim's conditional delete did to
@@ -409,7 +437,7 @@ const (
 	// gone when it arrived.
 	roleClaimWriteMissing
 	// roleClaimWriteRaced is every attempt lost to a write that landed since the read it was
-	// conditional on (nats.ErrKeyExists), the last of them at the attempt bound.
+	// conditional on (bus.IsCASConflict), the last of them at the attempt bound.
 	roleClaimWriteRaced
 )
 
@@ -440,7 +468,7 @@ func (r *Registry) writeRoleClaim(ctx context.Context, claim RoleClaim, w roleCl
 			return roleClaimWriteLanded, at, nil
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleClaimWriteMissing, claim, nil
-		case !errors.Is(err, nats.ErrKeyExists):
+		case !bus.IsCASConflict(err):
 			return roleClaimWriteFailed, claim, err
 		case attempt == w.attempts:
 			return roleClaimWriteRaced, claim, nil
@@ -561,294 +589,6 @@ func (e *ErrRoleClaimRevisionMismatch) Error() string {
 	return fmt.Sprintf("role %s's claim is at revision %d, not the %d this claim required", e.Role, e.Actual, e.Expected)
 }
 
-// RoleClaimRequest is one claim of a role, as SetRoleWithPrevious takes it: who is claiming,
-// under which process, what it is claiming, and the preconditions it is claiming under. The
-// fields are named because a claim states five strings in a row - the session, the machine, the
-// process, the role and the predecessor - and any two of them swapped would still compile and
-// would still write a claim, naming the wrong session or taking the role from the wrong one.
-//
-// The zero value of a field is a caller that states nothing there: no process, no predecessor,
-// no precondition and nothing supersedable, which is the hard last-claim-wins claim SetRole
-// makes.
-type RoleClaimRequest struct {
-	// SessionID is the session the claim makes the holder of Role, and MachineID the machine
-	// its interest record is written for (UpsertWithin).
-	SessionID string
-	MachineID string
-	// ClientInstanceID is the client instance of the claimant's own process, which the claim
-	// records as the process that holds the role (RoleClaim.ClientInstanceID). A caller with
-	// no instance to give states none, and the claim then names no process.
-	ClientInstanceID string
-	// Role is the role claimed, whose lane topic the claim writes onto the holder's interest
-	// record (contracts.RoleTopicPrefix).
-	Role string
-	// PreviousSessionID is the session a soft claim continues, recorded as the claim's own
-	// provenance and weighed nowhere here. It is written only on a soft claim.
-	PreviousSessionID string
-	// Soft is a claim that takes the role only from a holder listed in Supersedable; a hard
-	// claim takes it from whoever holds it.
-	Soft bool
-	// IfClaimRevision, when it is not nil, is the revision the caller read the role's claim
-	// at, and the claim lands only while the bucket still holds that very revision; 0 names a
-	// role with no claim record at all.
-	IfClaimRevision *uint64
-	// Supersedable lists the holders a soft claim may take the role from, which the caller has
-	// established may lose it. A soft claim that finds any other holder is refused.
-	Supersedable []string
-}
-
-// SetRole makes sessionID the holder of role. A hard claim (soft=false) is
-// last-claim-wins: it takes the role from whoever holds it. A soft claim
-// succeeds only if the role is unheld or held by a session listed in
-// supersedable; any other holder returns *ErrRoleHeld and leaves the claim
-// untouched, and a holder that is sessionID itself is no exception. A session
-// id names no process - a second process can resume a live session's id - so
-// a claim whose holder is the claimant's own session id is weighed by the
-// caller like any other holder's, and reaches here listed in supersedable or
-// refused. Callers decide what "supersedable" means — the listener passes the
-// ids it has established may lose the role: a holder that is not live; the
-// claimant's own declared predecessor when that predecessor is not live
-// either, when its record carries the claimant's own client instance id, or
-// when either it or the claimant carries no client instance id; and the
-// claimant's own session id when the standing claim names the claimant's own
-// process, or when nobody has renewed that claim inside the live window
-// (Registry.ClaimRenewedWithin). So a resumed session can recover a role its
-// own earlier session held without ever taking one from a live peer, from a
-// live session of another client instance, or from another process holding
-// the role under the very session id it is claiming as its own.
-//
-// The claim it writes names no client instance (RoleClaim.ClientInstanceID): its callers hold
-// none to give, so each leaves RoleClaimRequest.ClientInstanceID empty, and the claim says which
-// session holds the role without saying which process does.
-func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, supersedable ...string) (Interest, error) {
-	return r.SetRoleWithPrevious(context.Background(), RoleClaimRequest{
-		SessionID:    sessionID,
-		MachineID:    machineID,
-		Role:         role,
-		Soft:         soft,
-		Supersedable: supersedable,
-	})
-}
-
-// SetRoleWithPrevious writes req's claim, and records the session ID that a successful soft claim
-// continues (RoleClaimRequest.PreviousSessionID). The predecessor is provenance only: the
-// listener has already evaluated the soft-claim rules against it, and a predecessor it decided
-// may not lose the role reaches this call as provenance with no place in Supersedable, so this
-// call answers *ErrRoleHeld naming the holder exactly as it does for any other live holder.
-//
-// A soft claim is refused the role whenever its holder is not listed in Supersedable, and a
-// holder equal to req.SessionID is weighed like any other: the claimant's own session id buys it
-// nothing here, because a session id names no process and a second process that resumed that id
-// would otherwise take the role from the first by claiming under the id it shares. The one
-// caller that can tell the two apart lists that holder itself (POST /v1/roles/set, which reads
-// the standing claim's own process and renewal), so a claim arriving with its own session id as
-// the holder and nothing in Supersedable is *ErrRoleHeld naming that holder.
-//
-// req.ClientInstanceID is the client instance of the claimant's own process, which the claim
-// records as the process that holds the role (RoleClaim.ClientInstanceID), and the claim is
-// stamped claimed and renewed at the same moment (ClaimedAt and RenewedAt, one reading of this
-// registry's clock), so a claim is live from the instant it lands. A caller with no instance to
-// give states none, and the claim then names no process.
-//
-// The record it writes is a fresh claim and never the standing one amended, so the hand-back
-// mark goes with the claim it was written on (RoleClaim.HandedBack): a role granted again to
-// the very process that handed it back is that process's to renew from this write on, which is
-// how a holder takes back a role it gave up without waiting out the role claim reaper.
-//
-// Each bucket call waits no longer than ctx (bus.Bounded): POST /v1/roles/set passes its request's
-// own context. A call ctx abandoned may still land after this answer. A hard claim that names no
-// IfClaimRevision is last-claim-wins, so its write names no revision: it lands whatever the bucket
-// holds, and two honest concurrent claimants both land, the later write holding the role. A soft
-// claim's create or update is conditional on the revision its claim was read at, so it lands only
-// if no other claim did since; the loser of that race is answered *ErrRoleHeld for the holder it
-// then reads, never a storage failure. A claim that names an IfClaimRevision is conditional too,
-// hard or soft, since that revision is the precondition described below. Either way the claim that
-// lands makes req.SessionID the holder it asked to be; the interest write is UpsertWithin's.
-//
-// The claim alone says who holds the role (RolesHeldBy, and role delivery), so the two cleanups
-// that follow are best-effort tidying of interest topics, within ctx like the rest: the rollback of
-// req.SessionID's topic when its claim did not land, and the removal of the role's topic from the
-// old holder's record once it did. A topic either leaves behind gives nobody the role. A claim that
-// landed is a success whatever its old holder's cleanup did: one that failed is logged at WARN, and
-// one ctx ended before it finished at INFO, since nothing failed there.
-//
-// req.IfClaimRevision, when it is not nil, is the revision the caller read the role's claim at,
-// and this call takes the role only while the bucket still holds that very revision: another one,
-// a record where the caller expected none (IfClaimRevision 0), or none where it expected one is
-// *ErrRoleClaimRevisionMismatch, and so is a claim that passed that check and then lost the
-// write's own compare-and-swap to a claim that landed in between. It writes no claim record
-// either way, so the role is left exactly as the claim that stands left it: the precondition is
-// weighed before the claimant's interest record is touched, and a claim that lost the
-// compare-and-swap rolls that record's topic back unless the winning claim names that same
-// session, whose record then keeps the lane topic of the role it now holds. It is the
-// precondition a scheduler needs that last-claim-wins and the soft rules cannot give it: a read of
-// the role and the claim that follows are one decision, and a claim that landed between them
-// refuses this one rather than being overwritten by it. A nil IfClaimRevision claims as before.
-func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest) (Interest, error) {
-	roleTopic := contracts.RoleTopicPrefix + req.Role
-	oldClaim, err := r.RoleClaim(ctx, req.Role)
-	if err != nil {
-		return Interest{}, err
-	}
-	// Before the soft rules and before any write: the caller's own precondition, weighed on the
-	// read this call made itself, so the revision compared is the one its conditional write is
-	// conditional on.
-	if req.IfClaimRevision != nil && *req.IfClaimRevision != oldClaim.Revision {
-		return Interest{}, &ErrRoleClaimRevisionMismatch{
-			Role:     req.Role,
-			Expected: *req.IfClaimRevision,
-			Actual:   oldClaim.Revision,
-			Holder:   oldClaim.HolderSessionID,
-		}
-	}
-
-	oldSessionID := oldClaim.HolderSessionID
-	if req.Soft && oldSessionID != "" && !slices.Contains(req.Supersedable, oldSessionID) {
-		return Interest{}, &ErrRoleHeld{Role: req.Role, Holder: oldSessionID}
-	}
-
-	item, err := r.UpsertWithin(ctx, Interest{SessionID: req.SessionID, MachineID: req.MachineID}, []string{roleTopic})
-	if err != nil {
-		return Interest{}, err
-	}
-
-	now := r.now().UnixMilli()
-	claim := RoleClaim{
-		HolderSessionID:   req.SessionID,
-		ClaimedAt:         now,
-		PreviousSessionID: "",
-		ClientInstanceID:  req.ClientInstanceID,
-		RenewedAt:         now,
-	}
-	if req.Soft {
-		claim.PreviousSessionID = req.PreviousSessionID
-	}
-	data, err := json.Marshal(claim)
-	if err != nil {
-		return Interest{}, err
-	}
-	epoch := r.roleViewEpoch()
-	roles := r.roles()
-	// A hard claim that names no precondition writes unconditionally. The conditional write this
-	// once made refused the loser of two honest concurrent claims with JetStream's wrong last
-	// sequence (error 10071, which nats.go answers as an *nats.APIError matching
-	// nats.ErrKeyExists), which storeAnswered counts as the store's own answer, so POST
-	// /v1/roles/set wrote it as a 500 - an answer that route's contract does not have, since a hard
-	// claim has no refusal at all. A bounded retry over a freshly read revision would only narrow
-	// the window: one conditional write lands per revision, so N claimants of one role need N
-	// rounds and the unluckiest loses N-1 of them, which no constant bound covers. Writing the
-	// claim the way its contract reads - the last write wins - removes the race instead of
-	// shrinking it, and leaves the holder one of the claimants either way.
-	//
-	// A soft claim keeps the conditional write, because its refusal is the point: it read a holder
-	// it was allowed to take the role from, and a claim that landed since must not be taken
-	// silently. A claim carrying IfClaimRevision keeps it for the same reason, hard or soft: the
-	// revision it requires is weighed a second time by the write itself, so a claim that landed
-	// between this call's read and its write refuses this one rather than being overwritten by it.
-	// Both losers are answered below.
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) {
-		switch {
-		case !req.Soft && req.IfClaimRevision == nil:
-			return roles.Put(req.Role, data)
-		case oldClaim.Revision == 0:
-			return roles.Create(req.Role, data)
-		default:
-			return roles.Update(req.Role, data, oldClaim.Revision)
-		}
-	})
-	if !answered {
-		err = fmt.Errorf("write role %s's claim: %w", req.Role, err)
-	}
-	if err != nil {
-		current, holderErr := r.RoleClaim(ctx, req.Role)
-		holder := current.HolderSessionID
-		// A conditional claim that lost the write's own compare-and-swap (nats.ErrKeyExists)
-		// lost it to a claim that landed after the read this call weighed its precondition on:
-		// the precondition failing a moment later, not a storage failure, and the caller is
-		// told exactly that rather than reading an unexplained failure or another session's
-		// name. A winner naming the claimant itself is no exception here, where it is one for
-		// an unconditional claim just below: the revision the caller sequenced its decision on
-		// is gone either way, and the claim that stands is not the one it made.
-		//
-		// The claim that stands is this claimant's own concurrent success only where it names
-		// the claimant's session and the very process the claimant stated
-		// (RoleClaim.HeldByProcess): a session id names no process, so a second process that
-		// resumed this id could be the one holding that claim, and answering success over it
-		// tells this claimant it holds a role another process holds - which is how two
-		// processes of one session id came to answer for one role. A claimant that states no
-		// process is told success by no claim at all: an absent instance names no process and
-		// matches nothing, here as everywhere else a claim is weighed against a process, and a
-		// claim naming none is the one record any process of that session id could have
-		// written. Such a claimant is answered the failure its write met, and the role stays
-		// with whatever claim stands.
-		heldBySession := holderErr == nil && holder == req.SessionID
-		heldByClaimant := heldBySession && current.HeldByProcess(req.ClientInstanceID)
-		conditionalLoss := req.IfClaimRevision != nil && holderErr == nil && errors.Is(err, nats.ErrKeyExists)
-		if heldByClaimant && !conditionalLoss {
-			return item, nil
-		}
-		// The topic goes back only where the role did not end up with this session, which is
-		// the session's and not the process's: one interest record serves every process
-		// running under one session id, so a claim refused because the claim that won names
-		// this session - the claimant's own process's, another process's, or a claim that
-		// names none - leaves that record alone. It carries the lane topic of the role that
-		// session now holds, the interest half of the claim that stands.
-		if !heldBySession {
-			if rollbackErr := r.removeInterestTopics(ctx, req.SessionID, []string{roleTopic}); rollbackErr != nil {
-				return Interest{}, errors.Join(err, holderErr, rollbackErr)
-			}
-		}
-		if holderErr != nil {
-			return Interest{}, errors.Join(err, holderErr)
-		}
-		if conditionalLoss {
-			return Interest{}, &ErrRoleClaimRevisionMismatch{
-				Role:     req.Role,
-				Expected: *req.IfClaimRevision,
-				Actual:   current.Revision,
-				Holder:   holder,
-			}
-		}
-		// A soft claim that lost its conditional write (wrong last sequence, nats.ErrKeyExists)
-		// lost to a concurrent claimant; report that as held rather than as a storage failure.
-		if req.Soft && holder != "" {
-			return Interest{}, &ErrRoleHeld{Role: req.Role, Holder: holder}
-		}
-		return Interest{}, err
-	}
-	r.setOwnRoleHolder(req.Role, req.SessionID, revision, epoch)
-
-	if oldSessionID != "" && oldSessionID != req.SessionID {
-		err := r.removeInterestTopics(ctx, oldSessionID, []string{roleTopic})
-		switch {
-		case err == nil, errors.Is(err, nats.ErrKeyNotFound):
-		case errors.Is(err, bus.ErrRefused):
-			// The old holder's id is a key NATS refuses (too long, or outside its key alphabet): an
-			// earlier build registered it, or a stored claim names it. The interest reaper removes
-			// the old holder's interest once its session is gone, or skips one no KV call can delete.
-			r.logger().Warn("registry role claim left an old holder's interest it cannot write to the reaper",
-				slog.String("role", req.Role),
-				slog.Int("key_bytes", len(oldSessionID)),
-				slog.String("error", err.Error()),
-			)
-		case ctx.Err() != nil:
-			r.logger().Info("registry role claim left its old holder's topic: the request ended first",
-				slog.String("role", req.Role),
-				slog.String("old_session_id", oldSessionID),
-				slog.String("new_session_id", req.SessionID),
-			)
-		default:
-			r.logger().Warn("registry role claim old holder cleanup failed",
-				slog.String("role", req.Role),
-				slog.String("old_session_id", oldSessionID),
-				slog.String("new_session_id", req.SessionID),
-				slog.String("error", err.Error()),
-			)
-		}
-	}
-	return item, nil
-}
-
 // RoleClaim reads role's claim from the bucket, waiting no longer than ctx (bus.Bounded). The
 // claim it returns carries the entry's revision (RoleClaim.Revision), which is what a conditional
 // claim and GET /v1/roles/<role> compare against; a role with no claim record returns a zero
@@ -876,6 +616,32 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 		return RoleClaim{}, err
 	}
 	claim.Revision = entry.Revision()
+	return claim, nil
+}
+
+// RoleClaimFromLeader reads role's claim as RoleClaim does, from the role bucket stream's leader
+// (bus.KeyValue.ReadFromLeader) rather than by a direct get, which on a replicated bucket any copy
+// near enough to current answers: a copy that has not applied a takeover answers the previous
+// holder's claim. It is the read for a decision a stale claim would get wrong for good, such as the
+// session relay's judgement of whether a role message still belongs to the session it was stored
+// for. A role with no claim, or a delete or purge marker, is the zero claim without an error; a
+// message the server wrote under the role's key is ErrMalformedRoleClaim, as a value no claim
+// decodes from is.
+func (r *Registry) RoleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
+	leader, err := r.roles().ReadFromLeader(ctx, role)
+	switch {
+	case err != nil:
+		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
+	case leader.Kind == bus.LeaderAbsent || leader.Kind == bus.LeaderMarker:
+		return RoleClaim{}, nil
+	case leader.Kind == bus.LeaderServerWritten:
+		return RoleClaim{}, fmt.Errorf("%w: role %s's key holds a message the server wrote", ErrMalformedRoleClaim, role)
+	}
+	claim, err := DecodeRoleClaim(leader.Value)
+	if err != nil {
+		return RoleClaim{}, err
+	}
+	claim.Revision = leader.Revision
 	return claim, nil
 }
 

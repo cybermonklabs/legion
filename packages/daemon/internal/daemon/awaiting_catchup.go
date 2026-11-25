@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The boot catch-up of the roots whose own architect runs or waits on a person (at admitted in a
@@ -63,8 +64,9 @@ const (
 	catchUpRetryDelay = 2 * time.Second
 )
 
-// catchesUp says whether the boot's catch-up reads issue: a tree root of the daemon's project,
-// not lingering, and one of three things —
+// catchesUp says whether the boot's catch-up reads issue: a tree root, which the records it is
+// read from hold of the daemon's project alone (projectRecords), not lingering, and one of three
+// things —
 //
 //   - a root in awaiting_person;
 //   - a root ReconcileAwaiting could move into it — at admitted, with a row of its own saying the
@@ -99,10 +101,10 @@ const (
 // own admission pass — no pass decides whether it waits on a person, and none resumes it once
 // answered, until the catch-up applies its window and releases it, which the same boot does. It
 // keeps its place in the waiting line while held,
-// among the issues whose work came back, oldest first, so the cost is the boot's reads
+// within its priority, among the issues whose work came back, oldest first, so the cost is the boot's reads
 // and a pass of latency, not a lost turn, and that is what buys the hold.
 func (w *workflowRuntime) catchesUp(issue record.Issue, gate record.TreeGate, slotted map[string]struct{}) bool {
-	if issue.Project != w.dispatchProject || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
 		return false
 	}
 	if issue.Phase == phase.AwaitingPerson {
@@ -187,28 +189,30 @@ func caughtUpKey(issue record.Issue) string {
 // fit one boot attempt, and a root it finished — caught up, or skipped — is remembered across the
 // boot's retries (caughtUp), so a retry resumes after it. A root whose own deadline passes, or one
 // Dispatch does not answer for at all (dispatch.TransientError), makes the attempt transient: the
-// boot's readiness retry waits it out and starts at that root again, still held. A root Dispatch
-// answers with an error, or one the catch-up cannot read for another reason, is logged and skipped,
-// after catchUpAttempts reads for an error Dispatch may stop giving (a 5xx, 408, 429) and at once
-// for a credential refusal (401, 403) or anything else: its hold is released and admission decides
-// it on the record as it stands, and its live events still reach it. A root the boot held that the
-// catch-up no longer reads (the reconcile moved it out) is released too.
+// boot's readiness retry waits it out and starts at that root again, still held. A TLS failure of
+// Dispatch's transport (dispatch.TransportRefusal) stops the start, even beside a read of the root
+// Dispatch did not answer, as it does at every other boot probe of Dispatch, with the root still
+// held. A root Dispatch answers with an error, or one the catch-up cannot read for another reason,
+// is logged and skipped, after catchUpAttempts reads for an error Dispatch may stop giving (a 5xx,
+// 408, 429) and at once for a credential refusal (401, 403) or anything else: its hold is released
+// and admission decides it on the record as it stands, and its live events still reach it. A root
+// the boot held that the catch-up no longer reads (the reconcile moved it out) is released too.
 func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 	if w.dispatch == nil {
 		return nil
 	}
 	var roots []catchUpRoot
 	listing, cancel := context.WithTimeout(ctx, bootTimeout)
-	err := pgx.BeginFunc(listing, w.pool, func(tx pgx.Tx) error {
-		issues, err := w.records.Issues(listing, tx)
+	err := store.TransactWith(listing, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issues, err := w.records.Issues(ctx, tx)
 		if err != nil {
 			return err
 		}
-		gates, err := w.rootGates(listing, tx, issues)
+		gates, err := w.rootGates(ctx, tx, issues)
 		if err != nil {
 			return err
 		}
-		slotted, err := w.slottedIssues(listing, tx)
+		slotted, err := w.slottedIssues(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -222,11 +226,11 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 					root.gates = append(root.gates, gate)
 				}
 			}
-			if root.cursor, root.hasCursor, err = w.records.CaughtUpSeq(listing, tx, issue.Key); err != nil {
+			if root.cursor, root.hasCursor, err = w.records.CaughtUpSeq(ctx, tx, issue.Key); err != nil {
 				return err
 			}
 			if len(root.gates) > 0 {
-				asks, err := w.records.RootAsks(listing, tx, []string{issue.Key})
+				asks, err := w.records.RootAsks(ctx, tx, []string{issue.Key})
 				if err != nil {
 					return err
 				}
@@ -275,8 +279,11 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 }
 
 // catchUpWithRetries catches up one root, reading Dispatch again for an error it may stop giving,
-// and returns only what makes the boot's attempt fail: the boot's own end, or Dispatch not
-// answering at all. Every other error is logged, and the root is released as it stands.
+// and returns only what makes the boot's attempt fail: the boot's own end, Dispatch not answering
+// at all, which the boot waits out, or a TLS failure of Dispatch's transport
+// (dispatch.TransportRefusal), which stops the start, even beside a read of the root Dispatch did
+// not answer, as it does at every other boot probe of Dispatch. Every other error is logged, and
+// the root is released as it stands.
 func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRoot) error {
 	bound := w.catchUpRootTimeout
 	if bound == 0 {
@@ -296,6 +303,8 @@ func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRo
 			return ctx.Err()
 		case err == nil:
 			return nil
+		case dispatch.TransportRefusal(err):
+			return err
 		case answered && retriable(refusal) && attempt < catchUpAttempts:
 			w.log.Warn("boot catch-up reads a root again after Dispatch refused it", "issue", root.issue.Key, "attempt", attempt, "error", err)
 			select {
@@ -434,10 +443,11 @@ func (w *workflowRuntime) bindGateRequest(ctx context.Context, root catchUpRoot,
 // The catch-up treats each event as the live Dispatch consumer does. An event of a type the
 // catch-up does not read is passed over before it is decoded (an issue's own events are the boot
 // listing's), and one the decoder refuses is logged and passed over for good: the live consumer
-// terminates it as poison. An event whose fact fails to apply — a handler's error, or the
-// database's (its transaction or its commit) — is logged, and the rest of the window is still
-// applied, so one event never stops a root's catch-up, but the event is not passed over: the
-// live consumer retries such an event until it applies, and the cursor stops just below it
+// gives it up at its first delivery and terminates it. An event whose fact fails to apply — a
+// handler's error, or the database's (its transaction or its commit) — is logged, and the rest of
+// the window is still applied, so one event never stops a root's catch-up, but the event is not
+// passed over: the live consumer retries such an event until it applies or the intake gives it up
+// at its bound and keeps it for a replay, and the cursor stops just below it
 // (catchUpRoot), so the next boot reads it again. That matters once an outage outlasts the
 // notification stream's retention, when the event log is the only place the event is still
 // held. An event that fails at every boot keeps the cursor below it, so each boot reads the

@@ -106,7 +106,7 @@ func launchTestDeleter(t *testing.T, follows bool) {
 		// A binary built with -race sleeps atexit_sleep_ms before it exits, which a deleter
 		// reaped inside the sweep's grace would spend on every sweep (roleInitHelperLaunch).
 		gorace := strings.TrimSpace(os.Getenv("GORACE") + " atexit_sleep_ms=0")
-		return []string{self, "-test.run=^TestVolumeTrimDeleteHelper$"},
+		return append([]string{self}, reentry(t, "TestVolumeTrimDeleteHelper")...),
 			[]string{volumeTrimDeleteEnv + "=" + string(body), "GORACE=" + gorace}, nil
 	}
 	t.Cleanup(func() { trimDeleteLaunch = previous })
@@ -168,7 +168,7 @@ func TestVolumeTrimDeleteHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "volume-trim-delete:", err)
 		os.Exit(2)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // baitFile is one file a sweep that escaped would delete, with what it held.
@@ -494,8 +494,9 @@ func TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped(t *testing.
 // (volumedir.go). The open answers at once instead, the fstat refuses what it opened, and the
 // root is skipped with a line while the rest of the volume is swept.
 //
-// The sweep runs in a goroutine under a bound of its own so that a trimmer which blocks again
-// fails here rather than hanging the package until the test binary's deadline.
+// The sweep runs in a goroutine and its answer is waited for with no span of its own
+// (testwait.Receive), so a trimmer which blocks again fails here by name before the test binary's
+// deadline, and a sweep that a loaded host makes slow passes.
 func TestAFifoWhereACacheRootBelongsIsSkippedAndDoesNotBlockTheSweep(t *testing.T) {
 	f := newTrimFixture(t, 4)
 	piped := f.roots[3]
@@ -521,12 +522,7 @@ func TestAFifoWhereACacheRootBelongsIsSkippedAndDoesNotBlockTheSweep(t *testing.
 	swept := make(chan sweepOutcome, 1)
 	go func() { swept <- tr.sweep(context.Background(), *trimSettings(), steady(90)(0)) }()
 
-	var out sweepOutcome
-	select {
-	case out = <-swept:
-	case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-		t.Fatalf("the sweep did not return: an open of the named pipe at %s is waiting for a writer that never comes, and the launcher's Run waits on this goroutine at the container's stop", piped.Path)
-	}
+	out := testwait.Receive(t, "the sweep over the named pipe at "+piped.Path, swept)
 
 	if out.deletions != len(kept) {
 		t.Errorf("the sweep deleted %d entries, want the %d of the roots that are directories: %s", out.deletions, len(kept), out.reason)
@@ -636,6 +632,8 @@ func raceSwaps(t *testing.T, victim, target string, enough, tries int, at time.T
 		trials++
 		buildRacedEntry(t, victim, sub, at)
 		swapped := make(chan bool, 1)
+		// The racer's 30 s is part of the claim, not a hang guard: it is how long the racer keeps
+		// swapping (beforeDeadline).
 		go raceTheSwap(sub, target, time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second)), swapped)
 		if trial(trials, swapped) {
 			landed++
@@ -811,7 +809,7 @@ func TestTheDeleterOverTheImagesOwnPathsDeletesWhatTheSweepLists(t *testing.T) {
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	f := newTrimFixture(t, 4)
-	f.cover = coverUnder(t, namespaceScratch(t))
+	f.cover = coverUnder(t, namespaceScratch(t, ""))
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
 	tr := f.trimmer()

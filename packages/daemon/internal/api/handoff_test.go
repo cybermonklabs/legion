@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -52,8 +53,8 @@ func (t handoffTokens) ReadToken(_ context.Context, role appauth.AppRole, owner 
 }
 
 // InstalledOwners is the owner accounts each App is installed on, which the controller's gh
-// bundle reads from GitHub at every build (appauth.OwnerInstallations): the two accounts these
-// harnesses' project serves repositories under.
+// bundle reads at every build (appauth.OwnerInstallations): the two accounts these harnesses'
+// project serves repositories under.
 func (handoffTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
 	return []string{"acme", "sjawhar"}, nil
 }
@@ -211,7 +212,7 @@ func seedIssueAt(t *testing.T, h *harness, key string, at phase.Phase) {
 // seedIssueOn records key as a root at the given phase on repo, the repository its record names.
 func seedIssueOn(t *testing.T, h *harness, key string, at phase.Phase, repo string) {
 	t.Helper()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: key, Repo: repo, DefaultBranch: "main", GitHubRepo: repo, Tree: key, Project: testProject, Title: key, Phase: at, Generation: 1, Status: "in_progress",
 		})
@@ -231,7 +232,7 @@ func seedPullRequest(t *testing.T, h *harness, key, head string) {
 // request's updated_at at.
 func seedPullRequestAt(t *testing.T, h *harness, key, head string, at time.Time) {
 	t.Helper()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{
 			State: record.PullRequestOpen, Issue: key, Repo: "acme/widgets", Number: 42, Branch: "legion/" + key, HeadSHA: head, HeadUpdatedAt: at,
 		})
@@ -245,7 +246,7 @@ func seedPullRequestAt(t *testing.T, h *harness, key, head string, at time.Time)
 // approval names the head the round approved, and nil is a round that recorded none.
 func seedReviewDecision(t *testing.T, h *harness, key string, decision *record.ReviewDecision) {
 	t.Helper()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Decision: decision})
 	})
 	if err != nil {
@@ -332,7 +333,7 @@ func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.P
 	var at phase.Phase
 	var pr *record.PullRequest
 	records := record.NewStore()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(context.Background(), tx, key)
 		if err != nil {
 			return err
@@ -350,7 +351,7 @@ func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.P
 func phaseRowOf(t *testing.T, h *harness, key string, role claim.Role) *record.PhaseRow {
 	t.Helper()
 	var found *record.PhaseRow
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := record.NewStore().Phases(context.Background(), tx, key)
 		for _, row := range rows {
 			if row.Role == role {
@@ -370,8 +371,9 @@ func phaseRowOf(t *testing.T, h *harness, key string, role claim.Role) *record.P
 // commit, or without a record, is refused before anything is recorded or read. The completion also
 // reads its branch's open pull request on GitHub, as the implement App minted for the repository's
 // owner: one the daemon has not recorded - its opened webhook lost, or still waiting behind the
-// GitHub consumer's backlog - is recorded, and the completion moves the issue to testing, where
-// without the read it would wait in implementing for that webhook.
+// GitHub consumer's backlog - is recorded, and the completion moves the issue to its task's next
+// step, testing in the default steps this issue walks, where without the read it would wait in
+// implementing for that webhook.
 func TestHandoffCompleteRecordsTheImplementersRecordAndTheOpenPullRequestGitHubShows(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newWorkflowHandoffHarness(t, github, io.Discard)
@@ -428,9 +430,72 @@ func TestHandoffCompleteRetriedNamingTheSameRecordIsTheSameFact(t *testing.T) {
 	}
 }
 
+// A plugin from contract 46 to 85 sends `ready` on every handoff_complete, `false` on a phase
+// completion and on a check report. The daemon reads `false` by name and ignores it, so such a
+// completion is applied as any completion is, rather than refused for a member the request type
+// does not name.
+func TestHandoffCompleteAsAPluginAt85SendsItWithReadyFalseIsApplied(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	written := implementer.writeHandoff("implement", 2)
+
+	// The body the plugin at 85 builds (pi-shared's legion-phase-ops.ts, completeHandoff): every
+	// member its strict request schema names, `verdict` empty for an implementer and `ready`
+	// false.
+	completion(t, h.request(http.MethodPost, "/legion/v1/handoff/complete", map[string]any{
+		"grantId": implementer.grant(t), "summary": "implemented", "verdict": "", "ready": false,
+		"commit": headSHA, "handoffId": written, "handoffVersion": 2,
+	}, nil))
+	if fact := lastCompletion(t, facts); fact.Commit != headSHA || fact.HandoffRecord != written || fact.HandoffVersion != 2 || fact.Role != claim.RoleImplementer || fact.Summary != "implemented" {
+		t.Fatalf("completion = %+v, want the implementer's naming %s version 2 at the commit it reported, %s", fact, written, headSHA)
+	}
+}
+
+// A merger's READY from a plugin below contract 86 sends `ready: true`, which at 85 armed the
+// daemon's merge. No daemon at 86 or later merges, so accepting it would record a completion that
+// merges nothing: the call is refused with a code of its own, and nothing is recorded.
+func TestHandoffCompleteWithReadyTrueIsRefused(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Merging)
+	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
+
+	message := refused(t, h.request(http.MethodPost, "/legion/v1/handoff/complete", map[string]any{
+		"grantId": merger.grant(t), "summary": "READY", "verdict": "", "ready": true, "commit": headSHA,
+	}, nil), http.StatusBadRequest, "READY_RETIRED")
+	if message != readyRetired {
+		t.Fatalf("the refusal is %q, want %q", message, readyRetired)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refused READY = %#v, want none", got)
+	}
+}
+
+// `ready` is read by name as a boolean, which is what every plugin from 46 to 85 sends. A `ready`
+// of another type is no body any plugin builds, and the decoder's type check refuses it before
+// the route reads anything: the refusal names the field's type, and nothing is recorded.
+func TestHandoffCompleteWithReadyNotABooleanIsRefused(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Merging)
+	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
+
+	message := refused(t, h.request(http.MethodPost, "/legion/v1/handoff/complete", map[string]any{
+		"grantId": merger.grant(t), "summary": "READY", "verdict": "", "ready": "true", "commit": headSHA,
+	}, nil), http.StatusBadRequest, "")
+	for _, want := range []string{"invalid request body", "HandoffCompleteRequest.ready", "of type bool"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("the refusal is %q, want it to say %q", message, want)
+		}
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refused ready of a string = %#v, want none", got)
+	}
+}
+
 // An implementer's completion with no open pull request on its branch is refused before anything
 // is applied: the implementer's phase row and the pull request record stay as they were, so the
-// same completion, once the pull request is open, is applied and moves the issue to testing.
+// same completion, once the pull request is open, is applied and moves the issue to its task's
+// next step (testing, in the default steps this issue walks).
 func TestHandoffCompleteWithNoOpenPullRequestRecordsNothing(t *testing.T) {
 	github := newHandoffGitHub(t)
 	github.set(func(g *handoffGitHub) { g.pullState = "closed" })
@@ -489,7 +554,7 @@ func TestHandoffCompleteAppliesTheCompletionWhenGitHubFailsTheRead(t *testing.T)
 func recordPullRequest(t *testing.T, h *harness, state record.PullRequestState) {
 	t.Helper()
 	recorded := record.PullRequest{State: state, Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headSHA, Failing: []string{}}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(context.Background(), tx, recorded)
 	}); err != nil {
 		t.Fatalf("record the %s pull request: %v", state, err)
@@ -522,8 +587,9 @@ func TestHandoffCompleteNamesTheClosedPullRequestTheRecordHolds(t *testing.T) {
 
 // A pull request merged while the issue was in implementing told the architect (pr-merged), and
 // the workflow runs on: GitHub lists no open pull request on the branch, and the completion is
-// applied and moves the issue to testing on the merged record, where a refusal would leave it in
-// implementing with nothing recorded and nobody told.
+// applied and moves the issue to its task's next step (testing, in the default steps this issue
+// walks) on the merged record, where a refusal would leave it in implementing with nothing
+// recorded and nobody told.
 func TestHandoffCompleteOnAMergedPullRequestMovesTheIssueToTesting(t *testing.T) {
 	github := newHandoffGitHub(t)
 	github.set(func(g *handoffGitHub) { g.pullState, g.merged = "closed", true })
@@ -716,12 +782,12 @@ func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testi
 	}
 }
 
-// The reviewer's own approval moves the issue on as well: the review event takes reviewing to
-// accepting, the architect's sign-off and a phase that ends with no handoff record, before the
-// reviewer's completion lands. That completion is still of reviewing, the phase the reviewer left,
-// so the route reads its own new review record back against reviewing's word rather than refusing
-// a record for accepting, and the engine records it on the reviewer's row and leaves the issue in
-// accepting for the architect.
+// The reviewer's own approval moves the issue on as well: the review event takes reviewing to the
+// task's next step, accepting in the default steps this issue walks, the architect's sign-off and
+// a phase that ends with no handoff record, before the reviewer's completion lands. That
+// completion is still of reviewing, the phase the reviewer left, so the route reads its own new
+// review record back against reviewing's word rather than refusing a record for accepting, and
+// the engine records it on the reviewer's row and leaves the issue in accepting for the architect.
 func TestHandoffCompleteRecordsALateCompletionOfReviewingWhileTheIssueIsAccepting(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Accepting)
@@ -925,7 +991,7 @@ func seedCheck(t *testing.T, h *harness, key string, role claim.Role, closed, la
 	if closed {
 		check.LookOpen, check.ClosedAt, check.Outcome = false, &woke, record.CheckRecorded
 	}
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutProductionCheck(context.Background(), tx, check)
 	})
 	if err != nil {
@@ -1064,7 +1130,7 @@ func TestHandoffCompleteTakesAReportOnALaterChecksLookAsANewFact(t *testing.T) {
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	put := func(check record.ProductionCheck) {
 		t.Helper()
-		if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return record.NewStore().PutProductionCheck(context.Background(), tx, check)
 		}); err != nil {
 			t.Fatalf("put the production check: %v", err)
@@ -1111,7 +1177,7 @@ func TestHandoffCompleteTakesAReportOnALaterChecksLookAsANewFact(t *testing.T) {
 func recordedCheck(t *testing.T, h *harness, key string) record.ProductionCheck {
 	t.Helper()
 	var check *record.ProductionCheck
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		check, err = record.NewStore().ProductionCheck(context.Background(), tx, key)
 		return err
@@ -1456,7 +1522,7 @@ func TestAMoveBacksCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "LEGION-208",
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
 	h.recordIssue(issue)
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208",
 			Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
 	}); err != nil {

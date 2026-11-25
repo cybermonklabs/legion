@@ -489,11 +489,9 @@ type relatedTerms struct {
 // relatedTermsSQL reads, for every lexeme of the text, its frequency there (tf), its df from the
 // project's statistics, and its surface word in the title, in one statement.
 //
-// The text is tokenized as a document version's vector is built (0087_search_vector_bound):
-// search_text, then ask blocks stripped, then search_vector, in that order, so its lexemes are the
-// ones stored vectors hold: stripping a block first can join the underscore runs either side of it
-// into one search_text breaks, which the stored vector holds unbroken. Each lexeme's tf is its
-// position count.
+// The text is tokenized as a document version's vector is built (20261121060636): the ask blocks
+// removed and then search_text, both through search_document_text, and then search_vector, so its
+// lexemes are the ones stored vectors hold. Each lexeme's tf is its position count.
 //
 // df is null for a lexeme the statistics do not hold, and for every lexeme when the project has
 // no totals row; the caller probes those. Otherwise it is ndoc less the excluded owner's items
@@ -516,7 +514,7 @@ type relatedTerms struct {
 // artifact id (null for none), $5 the title.
 const relatedTermsSQL = `
 with body as (
-  select regexp_replace(search_text($2::text), '(?s):::ask\{.*?:::', '', 'g') as text
+  select search_document_text($2::text) as text
 ),
 text_lexemes as (
   select u.lexeme, coalesce(array_length(u.positions, 1), 1) as tf

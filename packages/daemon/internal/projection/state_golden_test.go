@@ -1,5 +1,7 @@
 package projection
 
+//ci:reads packages/contracts/fixtures/daemon-api/* golden
+
 import (
 	"bytes"
 	"context"
@@ -105,7 +107,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 		ArgsHash:      "5a1c7e03b94d26f8",
 		StartedAt:     admitted.Add(50 * time.Second),
 	}
-	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{
+	state, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{
 		{
 			Token: architect, Project: "legion", Tree: issue, Issue: issue, Role: claim.RoleArchitect,
 			State: supervise.StateReady, Session: "ses_architect_208", Locator: architectLocator,
@@ -120,7 +122,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 				StartedAt: admitted.Add(55 * time.Second),
 			},
 		},
-	}, nil, reports, admitted.Add(time.Minute))
+	}, Reports: reports, Now: admitted.Add(time.Minute)})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

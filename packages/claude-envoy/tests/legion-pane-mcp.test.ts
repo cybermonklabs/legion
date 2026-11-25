@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import { tmpdir } from "node:os"
@@ -12,9 +12,15 @@ import { legion } from "../package.json" with { type: "json" }
 import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
 import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
+import { connectedToServer } from "./mcp-connect"
+import { ROW_GUARD_MS, rowStarted, untilTheGuard } from "./row-deadline"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+
+beforeEach(rowStarted)
+setDefaultTimeout(ROW_GUARD_MS)
 
 async function daemonFixture(name: string): Promise<Record<string, unknown>> {
   const file = resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name)
@@ -25,7 +31,12 @@ async function daemonFixture(name: string): Promise<Record<string, unknown>> {
 // the daemon's address, its own CLAUDE_CONFIG_DIR and the bridge's inbox socket on its
 // environment. It registers once the transcript exists, claims the claim token's role, says
 // ready, offers the `legion` tool beside the Envoy tools, advertises the Send (steer) the bridge
-// serves, and hands an Envoy delivery to the inbox.
+// serves, and hands an Envoy delivery to the inbox. The server runs with Bun's transpiler cache off
+// (`./transpiler-cache.ts`), and each wait on it, its MCP requests included, gives up by name 5 s
+// inside the row's hang guard, this file's default (`ROW_GUARD_MS`, 120 s; `untilTheGuard`,
+// `./row-deadline.ts`), where a fixed 20 s and
+// 5 s waits stood before: the start that writes that cache into an empty HOME first is what failed
+// the other server rows (`envoy-channel-mcp.test.ts`).
 test("a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox", async () => {
   const root = await mkdtemp(join(tmpdir(), "claude-envoy-legion-pane-"))
   const configDir = join(root, "claude")
@@ -43,6 +54,12 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       if (path === "/legion/v1/claims/register") return Response.json(registered)
       if (path === "/legion/v1/claims/ready") return new Response(null, { status: 204 })
       if (path === "/legion/v1/state") return Response.json(await daemonFixture("state.json"))
+      // `read_record` and the reminder's record check read one issue's record
+      // (dispatch://INFRA-2694).
+      if (path === "/legion/v1/issues/LEGION-208/record") {
+        const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
+        return Response.json(state.issues["LEGION-208"])
+      }
       return Response.json({ error: "unexpected" }, { status: 500 })
     },
   })
@@ -125,29 +142,42 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       // Ten minutes, so the role below can only have been claimed by the turn this case
       // submits and never by the claim's own bound (INFRA-1573).
       LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000",
+      ...NO_TRANSPILER_CACHE,
     },
     stderr: "pipe",
   })
+  let stderr = ""
+  transport.stderr?.on("data", (chunk: Buffer | string) => {
+    stderr += String(chunk)
+  })
 
   try {
-    await client.connect(transport)
-    const { tools } = await client.listTools()
+    await connectedToServer(client, transport, () => stderr)
+    const { tools } = await client.listTools(undefined, { timeout: untilTheGuard() })
     expect(tools.map(({ name }) => name)).toEqual([
       ...envoyToolSpecs.map(({ name }) => name),
       "legion",
       "legion_phase_hook",
     ])
     await expect(
-      client.callTool({ name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } }),
+      client.callTool(
+        { name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } },
+        undefined,
+        { timeout: untilTheGuard() },
+      ),
     ).rejects.toThrow("this session has no Legion claim yet")
 
     // The bridge's /rename seed, as a fresh pane's Claude Code submits it: a prompt before any
     // claim exists, since the seed is what writes the transcript the pane registers with. It
     // says a turn started, and the server has no step to run for it yet (INFRA-1573).
-    const seed = await client.callTool({
-      name: PHASE_HOOK_TOOL_NAME,
-      arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
-    })
+    const seed = await client.callTool(
+      {
+        name: PHASE_HOOK_TOOL_NAME,
+        arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
+      },
+      undefined,
+      { timeout: untilTheGuard() },
+    )
     expect(seed.content).toEqual([{ type: "text", text: "{}" }])
     const transcript = join(configDir, "projects", "-work", `${SESSION}.jsonl`)
     await mkdir(join(configDir, "projects", "-work"), { recursive: true })
@@ -155,6 +185,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     await waitFor(
       async () => daemonCalls.some(({ path }) => path === "/legion/v1/claims/ready"),
       "the pane to say it is ready",
+      () => stderr,
+      untilTheGuard(),
     )
     expect(daemonCalls).toEqual([
       {
@@ -182,12 +214,21 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     // the role is handed over inside a running turn rather than ahead of the daemon's task
     // (INFRA-1573).
     expect(roles).toEqual([])
-    const turn = await client.callTool({
-      name: PHASE_HOOK_TOOL_NAME,
-      arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
-    })
+    const turn = await client.callTool(
+      {
+        name: PHASE_HOOK_TOOL_NAME,
+        arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
+      },
+      undefined,
+      { timeout: untilTheGuard() },
+    )
     expect(turn.content).toEqual([{ type: "text", text: "{}" }])
-    await waitFor(async () => roles.length > 0, "the pane to claim its role at its first turn")
+    await waitFor(
+      async () => roles.length > 0,
+      "the pane to claim its role at its first turn",
+      () => stderr,
+      untilTheGuard(),
+    )
     // The claim names the process that made it — the one id this server minted and registers
     // with — so the listener holds the role for this `claude` alone (dispatch://INFRA-783).
     const instance = instances[0]
@@ -201,17 +242,30 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     expect(advertised.length).toBeGreaterThan(0)
     for (const modes of advertised) expect(modes).toEqual(["aside", "steer"])
 
-    const record = await client.callTool({
-      name: "legion",
-      arguments: { op: "read_record", issue: "LEGION-208" },
-    })
+    const record = await client.callTool(
+      {
+        name: "legion",
+        arguments: { op: "read_record", issue: "LEGION-208" },
+      },
+      undefined,
+      { timeout: untilTheGuard() },
+    )
     const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
     expect(record.content).toEqual([
       { type: "text", text: JSON.stringify({ record: state.issues["LEGION-208"] }) },
     ])
     // A read that leaves `issue` out answers the claim's own issue, LEGION-208 here.
-    const own = await client.callTool({ name: "legion", arguments: { op: "read_record" } })
+    const own = await client.callTool(
+      { name: "legion", arguments: { op: "read_record" } },
+      undefined,
+      { timeout: untilTheGuard() },
+    )
     expect(own.content).toEqual(record.content)
+
+    // Nothing this pane's server asks the daemon is the whole project body: `read_record` and
+    // the phase reminder's own check both read one issue's record (dispatch://INFRA-2694).
+    expect(daemonCalls.map(({ path }) => path)).toContain("/legion/v1/issues/LEGION-208/record")
+    expect(daemonCalls.map(({ path }) => path)).not.toContain("/legion/v1/state")
 
     // The session receives only what its own consumer holds, which the listener relays to it.
     broker.deliverRelay(SESSION, {
@@ -228,7 +282,12 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
         payload_summary: "Start implementing",
       }),
     })
-    await waitFor(async () => inboxLines.length > 0, "the delivery to reach the inbox")
+    await waitFor(
+      async () => inboxLines.length > 0,
+      "the delivery to reach the inbox",
+      () => stderr,
+      untilTheGuard(),
+    )
     expect(inboxLines[0]?.id).toBe("evt-legion-1")
     expect(inboxLines[0]?.content).toContain("Start implementing")
   } finally {
@@ -239,4 +298,4 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     await broker.stop()
     await rm(root, { recursive: true, force: true })
   }
-}, 20_000)
+})

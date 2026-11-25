@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -22,6 +23,7 @@ func newWorkspaceCacheCommand(stdout, stderr io.Writer) *cobra.Command {
 	listen := cmd.Flags().String("listen", fmt.Sprintf(":%d", repocache.Port), "the address the cache serves /healthz and /tar on")
 	refresh := cmd.Flags().Duration("refresh", 10*time.Minute, "how long between fetches from GitHub")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		defer podLogs(stderr)()
 		return workspaceInitExit(cmd, workspaceCache(ctx, *repo, *root, *listen, *refresh, stdout), stderr)
 	})
 	return cmd
@@ -58,6 +60,6 @@ func workspaceCache(ctx context.Context, repo, root, listen string, refresh time
 	return repocache.Serve(ctx, repocache.Options{
 		Repo: repository, Root: root, TokenFile: tokenFile, CacheTokenFile: bearerFile, CredentialDir: os.TempDir(), Refresh: refresh, Listen: listen,
 		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init cache: "+line) },
-		Run: workspace.NewRunner(workspace.CommandTimeout, tools),
+		Run: workspace.NewRunner(programbound.Of(&commandBudget), tools),
 	})
 }

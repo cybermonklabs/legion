@@ -106,12 +106,17 @@ export interface OwnerResolution {
   readonly owner: Owner | null;
   /** The conversation upload a `dispatch://agent/...` ref names; it has no issue or project. */
   readonly agentArtifact?: AgentArtifactRef;
+  /** Set when the call needed an owner and the resolution pushed that it found none: no issue and
+   *  no LEGION_ISSUE, a LEGION_ISSUE that is not an issue, or a bare number with no GitHub
+   *  repository in cwd. Unset whenever the call names its owner or rightly has none. */
+  readonly ownerMissing?: true;
 }
 export interface CheckedCall {
   /** Every problem the check found; the call is refused once, listing them all. */
   readonly problems: string[];
   readonly owner: OwnerResolution;
-  /** The arguments as the schema parsed them (the owner-resolved ones when it refused them). */
+  /** The arguments as the schema parsed them: the owner-resolved ones when it refused them, or
+   *  when it parsed them with the stand-in issue. */
   readonly args: ToolArguments;
   readonly pictures: LocalPicture[];
 }
@@ -159,6 +164,15 @@ export function optionalBoolean(args: Record<string, unknown>, name: string): bo
 export function optionalNumber(args: Record<string, unknown>, name: string): number | undefined {
   const value = args[name];
   return typeof value === "number" ? value : undefined;
+}
+
+/** The optimistic-concurrency guard a call carries, under whichever shape its tool takes: an
+ *  edit's `EditPrecondition`, an upload's `UploadPrecondition`. The tool's own schema already
+ *  held the value to that shape, so this only reads it off `args`, which carries an index
+ *  signature a package built with `noPropertyAccessFromIndexSignature` denies a dotted read of. */
+export function optionalPrecondition<Guard>(args: Record<string, unknown>): Guard | undefined {
+  const { precondition } = args;
+  return precondition as Guard | undefined;
 }
 
 /** One field of a call's input, or no field at all when the argument was absent. An input whose

@@ -1,7 +1,7 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_PATTERN } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
-import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 
 // Every write the `dispatch` command makes carries one key because every request DispatchClient
 // makes goes through its one request function. This drives every method of the class through a
@@ -40,6 +40,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   related: (client) => client.related("DSP", { title: "A title", text: "Some text." }),
   getIssue: (client) => client.getIssue("DSP-1"),
   updateIssue: (client) => client.updateIssue("DSP-1", { status: "testing", actor }),
+  changeIssueStatus: (client) =>
+    client.changeIssueStatus("DSP-1", { status: "in_progress", include_parent: true, actor }),
   claimIssue: (client) => client.claimIssue("DSP-1", { actor }),
   releaseIssueClaim: (client) => client.releaseIssueClaim("DSP-1", { actor }),
   getIssueEvents: (client) => client.getIssueEvents("DSP-1"),
@@ -101,6 +103,10 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   deliveryReply: (client) => client.deliveryReply("message", "message-1", { body: "Done." }),
   getMessage: (client) => client.getMessage("DSP-1", "message-1"),
   getMessageThread: (client) => client.getMessageThread("message-1", "session-1"),
+  editMessage: (client) => client.editMessage("message-1", { body: "Corrected.", actor }),
+  deleteMessage: (client) => client.deleteMessage("message-1", actor),
+  messageHistory: (client) => client.messageHistory("message-1", "session-1"),
+  issueMessages: (client) => client.issueMessages("DSP-1"),
   messageBlocks: (client) => client.messageBlocks("message-1", "session-1"),
   acceptMessageDelivery: (client) => client.acceptMessageDelivery("message-1", 1, { actor }),
   artifact: (client) => client.artifact("DSP-1", file),
@@ -123,6 +129,9 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   getComment: (client) => client.getComment("comment-1"),
   commentBlocks: (client) => client.commentBlocks("comment-1"),
   resolveComment: (client) => client.resolveComment("comment-1", actor),
+  editComment: (client) => client.editComment("comment-1", { body: "Corrected.", actor }),
+  deleteComment: (client) => client.deleteComment("comment-1", actor),
+  commentHistory: (client) => client.commentHistory("comment-1"),
   getComments: (client) => client.getComments("DSP-1"),
   getIssueReferences: (client) => client.getIssueReferences("DSP-1"),
   getReferences: (client) => client.getReferences({ to: "DSP-1" }),
@@ -137,8 +146,6 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       until: "2026-11-17T00:00:00Z",
     }),
 };
-
-afterEach(forgetKeyedLayerMemory);
 
 test("every DispatchClient method reaches Dispatch through its one request function, every write keyed", async () => {
   // Every method, which is every own property of the prototype that is one: `token` is an

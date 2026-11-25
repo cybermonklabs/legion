@@ -21,6 +21,7 @@ func (p *forkHistoryStore) Load(context.Context, string) (persistence.LoadResult
 }
 
 func TestAFirstForkTracksTheClientIDItsHistoryLeavesIt(t *testing.T) {
+	t.Parallel()
 	for _, cold := range []bool{false, true} {
 		name := "warm"
 		if cold {

@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
@@ -66,8 +67,9 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // and read no help at all.
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
-// refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
-// guard's own message, and gh never runs. A call that writes nothing, by the rule ghWritesNothing
+// refuses, one whose checks could not be made to run, and one whose destination GitHub answers
+// 404 for, are refused here, exit 2, with the guard's own message, and gh never runs. A call that
+// writes nothing, by the rule ghWritesNothing
 // holds and under the shared check that rule was proven against (ghReadsProvenCheck), is read by
 // that check alone and gets no read of a repository's visibility and no private-name pass. Three
 // calls pass unchecked: `legion gh auth git-credential`, which answers above before any of this,
@@ -89,7 +91,9 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // through the credential helper gh names after its own executable, GH_PATH: runGh sets it to the
 // `gh` wrapper first on PATH, so that helper is `legion gh auth git-credential`, which answers as
 // `legion git-credential` does, from the directory of the owner in git's path (useHttpPath set
-// for github.com through GIT_CONFIG_COUNT), never with GH_CONFIG_DIR's token; when PATH's first gh
+// for github.com through GIT_CONFIG_COUNT), or, for a fork whose owner has no directory, from the
+// directory of its parent's or else its source's owner (forkUpstreamDir), and never with
+// GH_CONFIG_DIR's token merely because it is the default; when PATH's first gh
 // is no such wrapper it refuses. That git reads no configuration file but the repository's own
 // (ghChildForced), takes of the caller's GIT_CONFIG pairs only the runtime's own
 // (ghChildGitConfig), and gets http.sslVerify on; a repository whose own configuration names a
@@ -111,10 +115,11 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // gh under the variable again, so a real gh that leads back is still refused one start later, with
 // or without a caller's GH_TOKEN.
 //
-// Everything this command starts before gh — the help reads (readGhHelp), and the leak guard's
-// children, the shared check and the visibility reads, which the guard starts under the context
-// it is given (leakguard's Guard.run) — runs in a process group of its own, which none of the
-// terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
+// Everything this command starts before gh — the git reads of the repository's configuration and
+// remotes (ghRepoGitConfigRefusal, readGitRemotes), the help reads (readGhHelp), and the leak
+// guard's children, the shared check and the visibility reads, which the guard starts under the
+// context it is given (leakguard's Guard.run) — runs in a process group of its own, which none of
+// the terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
 // cancel its context (main's signal.NotifyContext), and on a SIGHUP, which it catches until it
 // hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends the command with
 // 128+<signal> (endedBySignal), and gh is never started, as for a signal that came before
@@ -182,7 +187,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// The two exact reads run `gh api` on an endpoint with no placeholder, which starts no git at
 	// all, so they read none: each stays the one gh process the guard counts on.
 	if !rateLimitRead && !isVisibilityRead {
-		if err := ghRepoGitConfigRefusal(helpEnv); err != nil {
+		err := ghRepoGitConfigRefusal(beforeGh, helpEnv)
+		if status, ok := signalled(beforeGh); ok {
+			return status
+		}
+		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
 		}
@@ -227,7 +236,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// reads anything of it. gh's help of each command on the way is read once per gh binary
 		// and kept for the calls after (ghHelpKeep).
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
-		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, readGitRemotes,
+		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, func() ([]ghRemote, error) { return readGitRemotes(beforeGh) },
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
 		if status, ok := signalled(beforeGh); ok {
 			return status
@@ -267,20 +276,23 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	//
 	// A call that writes nothing (ghWritesNothing, decided from the words it is typed with) is
 	// handed to the guard as one (leakguard.GhRequest.WritesNothing), with the sha256 of the
-	// shared check its rule was proven against (ghReadsProvenCheck). Under that check the guard
-	// runs the check and nothing more, and says so (leakguard.GhAnswer.CheckedOnly), and the log
-	// line says checked-only; under any other it runs whole. Every other call is guarded whole,
-	// the visibility read and the private-name pass included.
+	// shared check its rule was proven against, which this binary holds (ghReadsProvenCheck).
+	// Under that check the guard runs the check and nothing more, and says so
+	// (leakguard.GhAnswer.CheckedOnly), and the log line says checked-only; under any other it
+	// runs whole. The checker a role is told (leakguard.CheckerVar) plays no part in it. Every
+	// other call is guarded whole, the visibility read and the private-name pass included.
 	//
-	// A *leakguard.Refusal and a *leakguard.SetupFailure each refuse the call: a check that did
-	// not run has cleared nothing. Both exit 2, this command's status for a refusal made before
-	// gh runs, which is what an unreadable command and an unset variable already exit with, and
-	// both print the guard's own message, which names the record and the class and never the
-	// text it refused.
+	// A *leakguard.Refusal, a *leakguard.SetupFailure and a *leakguard.NotFound each refuse the
+	// call: a check that did not run has cleared nothing, and neither has a visibility read GitHub
+	// answered 404. All three exit 2, this command's status for a refusal made before gh runs,
+	// which is what an unreadable command and an unset variable already exit with, and all three
+	// print the guard's own message, which never holds the text it refused.
 	//
 	// The files the call would send go with it, read out of the parse above, which knew each
 	// option's arity from the leaf's own help (ghSentFiles): the guard reads the text of each,
-	// and needs no second reader of the argv for a call this command checked.
+	// and needs no second reader of the argv for a call this command checked. So does whether
+	// the call sends its standard input as content, which the guard reads itself where no shared
+	// check runs to ask for it (leakguard.GhRequest.StdinSent).
 	var buffered []byte
 	checkedOnly := false
 	mode := ghCallModeOf(rateLimitRead, isVisibilityRead, target.writesNothing)
@@ -295,12 +307,14 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			OnVisibility: func(source leakguard.VisibilitySource) {
 				visibilitySource = string(source)
 			},
+			Curl: leakguardCurl,
 		})
 		answer, err := guard.GhCall(beforeGh, leakguard.GhRequest{
 			Args:          args,
 			Stdin:         os.Stdin,
 			Repo:          repo,
 			Files:         target.files,
+			StdinSent:     target.stdinSent,
 			WritesNothing: mode == ghReadCall,
 			ProvenCheck:   ghReadsProvenCheck.sha256,
 		})
@@ -576,7 +590,7 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 	// and SIGINT alone where they were inherited as SIG_IGN and marks them ignored
 	// (runtime's sigInitIgnored). agent-secrets asks the same question of the job-control
 	// signals with a raw sigaction, for which that bookkeeping holds no answer
-	// (packages/envoy/cmd/agent-secrets/secret_signal_linux.go's promptSignalIgnored).
+	// (packages/envoy/cmd/cipher/secret_signal_linux.go's promptSignalIgnored).
 	forwarded := []os.Signal{syscall.SIGTERM}
 	if !signal.Ignored(syscall.SIGHUP) {
 		forwarded = append(forwarded, syscall.SIGHUP)
@@ -722,15 +736,17 @@ func ghWrapperFile(path string) (bool, error) {
 // of it where every selector of the command named that one repository of that owner and "" where
 // they named more than one, where one named the owner alone, and where none named a repository
 // at all. command is the resolved command path with no arguments. files are the files the
-// command would send to GitHub as content (ghSentFiles), which the leak guard reads the text of.
-// writesNothing is whether the call is in a read grammar (ghWritesNothing), so that under the
-// shared check that rule was proven against the guard runs that check alone for it (runGh's
-// ghReadCall). Such a call sends no file: no grammar names an option of ghSentFileOptions
+// command would send to GitHub as content (ghSentFiles), which the leak guard reads the text of,
+// and stdinSent whether it sends its standard input as content as well. writesNothing is whether
+// the call is in a read grammar (ghWritesNothing), so that under the shared check that rule was
+// proven against the guard runs that check alone for it (runGh's ghReadCall). Such a call sends
+// no file: no grammar names an option of ghSentFileOptions
 // (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
 type ghTarget struct {
 	dir, owner, repo string
 	command          string
 	files            []leakguard.GhFile
+	stdinSent        bool
 	writesNothing    bool
 }
 
@@ -752,16 +768,17 @@ var ghSentFileOptions = map[string]bool{
 
 // ghSentFiles are the files the parsed command would send to GitHub as content, each named once
 // and each named by the option it came from, for the leak guard to read the text of
-// (leakguard.GhRequest.Files). The answer is never nil, so a command that sends no file is a
-// command the guard reads no file of, rather than one it reads the argv of again with a table
-// of its own.
+// (leakguard.GhRequest.Files), and whether it sends its standard input as content as well. The
+// files are never nil, so a command that sends no file is a command the guard reads no file of,
+// rather than one it reads the argv of again with a table of its own.
 //
-// A value of `-`, and an `@-`, is standard input, which the guard reads through the shared
-// check's own handshake and never opens as a file. The options are read in the order their
-// names sort, since a parse holds each option's values together and not the argv's order
-// across options, and a report that named two files must name them the same way twice.
-func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
-	files := []leakguard.GhFile{}
+// A value of `-`, and an `@-`, is standard input, which is no file to open: the guard reads it
+// through the shared check's own handshake, and reads it itself where no shared check runs
+// (leakguard.GhRequest.StdinSent). The options are read in the order their names sort, since a
+// parse holds each option's values together and not the argv's order across options, and a
+// report that named two files must name them the same way twice.
+func ghSentFiles(parsed ghArgs) (files []leakguard.GhFile, stdin bool) {
+	files = []leakguard.GhFile{}
 	for _, name := range slices.Sorted(maps.Keys(ghSentFileOptions)) {
 		whole := ghSentFileOptions[name]
 		for _, value := range parsed.values[name] {
@@ -775,7 +792,11 @@ func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
 				}
 				path = strings.TrimPrefix(after, "@")
 			}
-			if path == "" || path == "-" {
+			if path == "-" {
+				stdin = true
+				continue
+			}
+			if path == "" {
 				continue
 			}
 			if slices.ContainsFunc(files, func(file leakguard.GhFile) bool { return file.Path == path }) {
@@ -784,7 +805,7 @@ func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
 			files = append(files, leakguard.GhFile{Option: "--" + name, Path: path})
 		}
 	}
-	return files
+	return files, stdin
 }
 
 // ghCallerToken is the first of GH_TOKEN and GITHUB_TOKEN that env sets, in gh's own order,
@@ -918,7 +939,7 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if err := sel.fromOwnRepository(cmd, parsed, env, remotes); err != nil {
 		return ghTarget{}, err
 	}
-	files := ghSentFiles(parsed)
+	files, stdinSent := ghSentFiles(parsed)
 	command := strings.Join(cmd.path, " ")
 	writesNothing := ghWritesNothing(argv, cmd.path)
 	fallback := ""
@@ -929,7 +950,7 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if err != nil {
 		return ghTarget{}, err
 	}
-	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: command, files: files, writesNothing: writesNothing}, nil
+	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: command, files: files, stdinSent: stdinSent, writesNothing: writesNothing}, nil
 }
 
 // cannotPlace is ghTargetOf's refusal of an argument it cannot place: what it is and why, and how
@@ -1233,7 +1254,17 @@ func refuseLegionGhAsRealGh(gh string) error {
 	return nil
 }
 
+// ghHelpTimeout is the longest readGhHelp waits for the real gh to print a command's help. The
+// real gh prints it from its own binary in well under a second; a gh that has not in 30 s is
+// hung, and the person running `legion gh` gets a refusal that names the wait rather than a call
+// that never returns. A test shortens it to read that the stop comes. It is a variable so that
+// this package's tests can give it their own deadline otherwise (programbound); readGhHelp reads
+// it through programbound.Of.
 var ghHelpTimeout = 30 * time.Second
+
+func init() {
+	programbound.Register(&ghHelpTimeout)
+}
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
 // gh's own), run with env (runGh's ghChildEnviron of the caller's GH_CONFIG_DIR) and refused when
@@ -1242,10 +1273,13 @@ var ghHelpTimeout = 30 * time.Second
 // is stopped whole when the read outlives ghHelpTimeout or ctx ends (procgroup.Configure): a stop
 // that killed gh alone would leave whatever gh started running, reparented and unwaited for. That
 // group is not the terminal's, so none of the terminal's signals reach it, and ctx is how they do:
-// runGh's, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a SIGHUP. It runs
-// under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there.
+// runGh's, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a SIGHUP. A timeout or
+// an end of ctx that came before gh started, which exec then never starts, is said as such, and
+// never as an answer of gh's. It runs under leakguard.RunByRealGhVar, so a gh that leads back to
+// `legion gh` is refused there.
 func readGhHelp(ctx context.Context, gh string, env, path []string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, ghHelpTimeout)
+	bound := programbound.Of(&ghHelpTimeout)
+	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)
 	killed := procgroup.Configure(cmd)
@@ -1255,9 +1289,13 @@ func readGhHelp(ctx context.Context, gh string, env, path []string) (string, err
 	if err := cmd.Run(); err != nil {
 		switch {
 		case killed() && errors.Is(ctx.Err(), context.DeadlineExceeded):
-			return "", fmt.Errorf("gh did not answer its help within %s, and its process group was stopped", ghHelpTimeout)
+			return "", fmt.Errorf("gh did not answer its help within %s, and its process group was stopped", bound)
 		case killed():
 			return "", fmt.Errorf("gh's help read was stopped, with its process group: %v", context.Cause(ctx))
+		case errors.Is(err, context.DeadlineExceeded):
+			return "", fmt.Errorf("gh did not answer its help within %s: the time passed before gh started", bound)
+		case ctx.Err() != nil && errors.Is(err, ctx.Err()):
+			return "", fmt.Errorf("gh's help read was stopped before gh started: %v", context.Cause(ctx))
 		}
 		return "", fmt.Errorf("gh answered its help with %v: %s", err, strings.TrimSpace(stderr.String()))
 	}

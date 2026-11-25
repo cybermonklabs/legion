@@ -7,7 +7,10 @@
 // five-minute reconcile", LEGION-567). The one failure that mechanism does not cover is a pull
 // request's head row that was never written, which no pass can offer because the passes read
 // the rows that exist: that envelope is handed back to NATS for a bounded number of
-// redeliveries instead (ErrHeadNotStored, Intake.deliver, headWriteMaxDeliveries).
+// redeliveries instead (ErrHeadNotStored, Intake.deliver, headWriteMaxDeliveries). The intake also
+// hands a push of a branch to the architecture importer (PushImports), so a component source's
+// branch is imported when it moves rather than at the importer's next five-minute pass; a hand-off
+// that fails is logged and the message acked too, and that five-minute pass is its catch-up.
 package delivery
 
 import (
@@ -27,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -40,34 +44,59 @@ var ompSessionTrailer = regexp.MustCompile(`(?m)^Omp-Session:\s*(\S+)\s*$`)
 // both are unexported in their own packages and this package does not depend on either.
 var issueKeyCandidate = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
 
-// Intake wires the NATS consumer to the database, the GitHub App client and the event broker the
-// issue.deployed events go through (RecordDeployedEvents). StartIntakes builds it, and only with
-// the App configured.
+// Intake wires the NATS consumer to the database, the GitHub App client, the event broker the
+// issue.deployed events go through (RecordDeployedEvents) and the importer a push of a branch is
+// handed to (PushImports). StartIntakes builds it, and only with the App configured.
 type Intake struct {
 	pool   *store.Pool
 	github *githubapp.Client
 	events *events.Broker
+	// pushes is what a push of a branch is handed to (handlePushEnvelope): the architecture
+	// importer in the server, which StartIntakes sets. nil hands pushes nowhere. A field, and not
+	// a parameter of newIntake, so a test that needs pushes sets it on the intake it builds.
+	pushes PushImports
 	// settings is the delivery settings every message is routed by, shared with the job intake
 	// (StartIntakes).
 	settings *SettingsCache
+	// attributor attributes each pull request an envelope reports and keys its head row, by the
+	// rename pairs the process read at boot.
+	attributor *Attributor
 	// heldDurable is this intake's delivery from bus.DispatchDeliveryDurable under the durable's
 	// hold: the subscription, StopDelivering and the take-over.
 	heldDurable
 }
 
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
-// holding its durable and taking it over under a hold and a lease it takes on leases, and routing
-// by settings.
-func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
-	in := &Intake{pool: pool, github: github, events: broker, settings: settings}
-	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
+// holding its durable and taking it over under a hold and a lease it takes on leases, routing by
+// settings, and attributing each pull request by attributor, timed by tuning (intakeTuning):
+// production's values, which StartIntakes passes, or a test's.
+func newIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor}
+	in.heldDurable = newHeldDurable(tuning, natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	return in
+}
+
+// PushImports is what the intake hands a push of a branch to: the architecture importer
+// (architecture.Importer.Pushed), which imports every enabled component source on that repository
+// and branch. repo is the push's payload's, `owner/name` in GitHub's case, and branch is the ref
+// without `refs/heads/`. The delivery package declares it rather than importing the importer, so
+// that it depends on no architecture package.
+//
+// Pushed runs on the push's key's goroutine (intakeKey) under the message's deadline, and the
+// message holds one of the intake's in-flight slots (intakeMaxAckPending) until it returns, so it
+// returns without waiting for the import it starts. ctx holds no connection of the pool (deliver),
+// so Pushed may read through the pool. A failure it answers is logged at WARN (`process event`)
+// and the message acknowledged, as deliver does for a handler's error other than ErrHeadNotStored.
+type PushImports interface {
+	Pushed(ctx context.Context, repo, branch string) error
 }
 
 // Run delivers GitHub events from the durable consumer while this process holds the durable's
 // hold, and stands by for the hold while another process holds it, until ctx is cancelled; then
 // it stops delivering and releases the hold (heldDurable.stop) under intakeStopBudget from ctx's
-// end before it returns. Idle until the settings cache holds settings.
+// end before it returns. Idle until the settings cache holds settings. A push of a branch is one
+// more message it routes (handlePushEnvelope), so an intake idle for want of settings hands the
+// importer no push, and the importer's five-minute pass imports the source then.
 //
 // The durable carries one filter subject, githubIntakeSubject, which no setting changes, so no
 // setting rebinds it. Each message is routed by the settings the cache holds when its handler
@@ -97,18 +126,21 @@ func (in *Intake) Run(ctx context.Context) {
 }
 
 // route dispatches one envelope payload by its kind field: a pull request to
-// handlePullRequestEnvelope, a workflow run to routeWorkflowEnvelope, any other kind nowhere. It is
-// the whole filter: the durable is handed every GitHub notification on the bus
-// (githubIntakeSubject), CI settlements and comments among them, and an envelope with no payload
-// that a caller of the listener's publish route can still put there. The payload is decoded once,
-// into its fields. An empty payload, or one of a kind route does not handle, is discarded before
-// any GitHub call or write, whatever its other fields hold (a CI
-// settlement's hold arrays, cistore.Summary); only a pull request's or a workflow run's string
-// fields are read, as the flat string map its handler takes (flatPayload), and every other member
-// is skipped. handled reports whether the kind is one route hands to a handler, whatever that
-// handler then decides, so deliver records the event's time for a pull request that was not
-// merged or another repository's run as well. A payload that is not a JSON object, and a kind that
-// is not a string, are errMalformedPayload.
+// handlePullRequestEnvelope, a workflow run to routeWorkflowEnvelope, a push to
+// handlePushEnvelope, any other kind nowhere. It is the whole filter: the durable is handed every
+// GitHub notification on the bus (githubIntakeSubject), CI settlements and comments among them,
+// and an envelope with no payload that a caller of the listener's publish route can still put
+// there. The payload is decoded once, into its fields. An empty payload, or one of a kind route
+// does not handle, is discarded before any GitHub call or write, whatever its other fields hold (a
+// CI settlement's hold arrays, cistore.Summary); only a pull request's, a workflow run's or a
+// push's string fields are read, as the flat string map its handler takes (flatPayload), and every
+// other member is skipped. handled reports whether the kind is one route hands to a handler of the
+// delivery timeline, whatever that handler then decides, so deliver records the event's time for a
+// pull request that was not merged or another repository's run as well. A push is no delivery
+// fact: route hands it to its handler and answers it not handled, with the handler's error, so it
+// records no issue.deployed and does not move the Delivery page's event freshness
+// (RecordEventAt). A payload that is not a JSON object, and a kind that is not a string, are
+// errMalformedPayload.
 //
 // An envelope whose handler stored a fact the issue.deployed rule reads (a pull request's row, a
 // run, its jobs) ends with recordDeployed, whether or not the handler then failed: a run written
@@ -133,6 +165,8 @@ func (in *Intake) route(ctx context.Context, settings DeliverySettings, raw stri
 		handle = in.handlePullRequestEnvelope
 	case "workflow":
 		handle = in.routeWorkflowEnvelope
+	case "push":
+		return false, in.handlePushEnvelope(ctx, flatPayload(fields))
 	default:
 		return false, nil
 	}
@@ -141,6 +175,25 @@ func (in *Intake) route(ctx context.Context, settings DeliverySettings, raw stri
 		in.recordDeployed(ctx, settings)
 	}
 	return true, err
+}
+
+// handlePushEnvelope hands a push of a branch to the importer (PushImports): the payload's repo,
+// and its ref without `refs/heads/`. A push of any other ref, a tag's above all, is handed nowhere,
+// and so is every push where no importer is wired (in.pushes is nil). It reads no setting and
+// writes nothing of the delivery timeline, and the importer's failure is its answer, which deliver
+// logs before it acknowledges the envelope: the importer's five-minute pass imports the source
+// all the same.
+//
+// ctx is the message's own context (deliver), which derives from the delivery's handling context,
+// made from context.Background (heldDurable.subscribe), and nothing between holds a connection of
+// the pool on it, so the importer's read of its sources through the pool is not refused as a
+// second connection (store.ErrNestedAcquire).
+func (in *Intake) handlePushEnvelope(ctx context.Context, payload map[string]string) error {
+	branch, isBranch := strings.CutPrefix(payload["ref"], "refs/heads/")
+	if !isBranch || in.pushes == nil {
+		return nil
+	}
+	return in.pushes.Pushed(ctx, payload["repo"], branch)
 }
 
 // recordDeployed writes the issue.deployed of every pull request the envelope just handled may have
@@ -182,10 +235,10 @@ func (in *Intake) routeWorkflowEnvelope(ctx context.Context, settings DeliverySe
 // is not a string.
 var errMalformedPayload = errors.New("malformed envelope payload")
 
-// flatPayload is a pull request's or workflow run's string fields as the flat string map its
-// handler reads. A field that is not a string is left out: payload members are additive, so a
-// newer publisher may add one, and no handler reads it. A handler reads a field left out as the
-// empty string, as it reads a field the payload does not carry.
+// flatPayload is a pull request's, a workflow run's or a push's string fields as the flat string
+// map its handler reads. A field that is not a string is left out: payload members are additive,
+// so a newer publisher may add one, and no handler reads it. A handler reads a field left out as
+// the empty string, as it reads a field the payload does not carry.
 func flatPayload(fields map[string]json.RawMessage) map[string]string {
 	payload := make(map[string]string, len(fields))
 	for name, field := range fields {
@@ -199,9 +252,9 @@ func flatPayload(fields map[string]json.RawMessage) map[string]string {
 
 // githubIntakeSubject is the durable's one filter subject: every GitHub event Envoy relays. The
 // subscription's callback reads each message's subject first (intakeKey) and acknowledges every
-// subject that is not a pull request's own or a workflow run's without decoding it; the handler
-// decides what to do with the rest (route), and fetches nothing for the ones this slice does not
-// want.
+// subject that is not a pull request's own, a workflow run's or a push of a branch's without
+// decoding it; the handler decides what to do with the rest (route), and fetches nothing for the
+// ones this slice does not want.
 //
 // One subject rather than the set this once carried -- the wildcard pull-request subject
 // notifications.github.*.*.pr.* beside one notifications.github.<owner>.<repo>.workflow.<file>.>
@@ -226,24 +279,26 @@ const githubIntakeSubject = "notifications.github.>"
 // failure it does not cover is a deadline that falls on a pull request's head write, or on
 // either of the reads before it, which leaves a head row no pass can offer (ErrHeadNotStored);
 // that envelope is handed back instead, for the bounded number of redeliveries deliver allows.
-// A var so a test can shrink it.
-var intakeMessageTimeout = time.Minute
+// It is the default of the intake's own messageTimeout (intakeTuning), which a test shortens on
+// the intakes it builds.
+const intakeMessageTimeout = time.Minute
 
 // intakeMaxAckPending bounds how many messages NATS may have outstanding with this consumer at
 // once, and so how many handlers run at once: one per key (intakeKey), and every message of a key
 // waits for the one before it. All of them can be one key's, so the bound has to be what one
-// handler can acknowledge in turn well inside intakeAckWait; the server's own default of 1,000 is
-// far past it, and messages it redelivers under a handler still working accumulate in the
-// client's pending buffer until that buffer drops them. A var so a test can shrink it.
-var intakeMaxAckPending = 4
+// handler can acknowledge in turn well inside the ack wait (intakeTuning.ackWait); the server's
+// own default of 1,000 is far past it, and messages it redelivers under a handler still working
+// accumulate in the client's pending buffer until that buffer drops them. It is the default of
+// the intake's own maxAckPending (intakeTuning).
+const intakeMaxAckPending = 4
 
-// intakeAckWait is how long NATS waits for an acknowledgement before redelivering. Derived from
-// the two values above rather than chosen: when every outstanding message is one key's, the last
-// of intakeMaxAckPending waits for the ones before it, so the bound is their total handling time,
-// plus a minute for the acknowledgement itself to land. A function rather than a value so a test
-// that shrinks either input gets an ack wait derived from it.
-func intakeAckWait() time.Duration {
-	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + time.Minute
+// ackWait is how long NATS waits for an acknowledgement before redelivering. Derived from the
+// intake's maxAckPending and messageTimeout rather than chosen: when every outstanding message is
+// one key's, the last of maxAckPending waits for the ones before it, so the bound is their total
+// handling time, plus a minute for the acknowledgement itself to land. A test that shortens either
+// on its intakes gets an ack wait derived from what it set.
+func (t *intakeTuning) ackWait() time.Duration {
+	return time.Duration(t.maxAckPending)*t.messageTimeout + time.Minute
 }
 
 // deliveryConsumerConfig is the policy a take-over creates the durable with
@@ -256,15 +311,16 @@ func intakeAckWait() time.Duration {
 // build's processes, still running during a rolling release, update a durable whose three differ
 // from theirs in place on every settings poll, so a change to any of them waits until no such
 // process is left. A change to this config takes a new consumerConfigGeneration and a new row in
-// TestTheConsumerConfigEqualsItsGenerationsPinnedRow.
-func deliveryConsumerConfig() natsgo.ConsumerConfig {
+// TestTheConsumerConfigEqualsItsGenerationsPinnedRow. Its AckWait and MaxAckPending are tuning's,
+// production's values outside tests.
+func deliveryConsumerConfig(tuning *intakeTuning) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchDeliveryDurable,
 		DeliverSubject: natsgo.NewInbox(),
 		FilterSubject:  githubIntakeSubject,
 		AckPolicy:      natsgo.AckExplicitPolicy,
-		AckWait:        intakeAckWait(),
-		MaxAckPending:  intakeMaxAckPending,
+		AckWait:        tuning.ackWait(),
+		MaxAckPending:  tuning.maxAckPending,
 		Metadata:       consumerGenerationMetadata(),
 	}
 }
@@ -286,15 +342,17 @@ func consumerGenerationMetadata() map[string]string {
 }
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
-// settings the cache holds under intakeMessageTimeout, and acks: a malformed envelope has nothing
-// to retry, and a route error (a failed GitHub call, or that deadline passing) is caught up by the
-// next reconcile pass rather than by NATS redelivery -- see the package doc comment. One route
-// error is not, and is the second case below. The deadline is what makes intakeAckWait a bound
-// rather than a hope: without it one stuck GitHub call could hold an in-flight slot past the ack
-// wait and have the message redelivered underneath it. An envelope route does not handle (an
-// empty payload, or a kind route sends to no handler) is acknowledged and nothing else: no log
-// line and no freshness write. One it handles records the event's time, whatever its handler
-// decided.
+// settings the cache holds under the intake's messageTimeout, and acks: a malformed envelope has
+// nothing to retry, and a route error (a failed GitHub call, or that deadline passing) is caught
+// up by the next reconcile pass rather than by NATS redelivery -- see the package doc comment --
+// as a push the importer failed to take is by the importer's own five-minute pass. One route error
+// is not, and is the second case below. The deadline is what makes the ack wait
+// (intakeTuning.ackWait) a bound rather than a hope: without it one stuck GitHub call could hold an
+// in-flight slot past the ack wait and have the message redelivered underneath it. An envelope
+// route answers not handled (an empty payload, a kind route sends to no handler, or a push, which
+// is no delivery fact) is acknowledged with no
+// freshness write, and with no log line unless its handler failed. One it handles records the
+// event's time, whatever its handler decided.
 //
 // The one message it does not ack is one whose handling the stop gave up (handling cancelled,
 // StopDelivering): that is handed back, so the next holder of the durable redoes it at once
@@ -309,20 +367,22 @@ func consumerGenerationMetadata() map[string]string {
 // handlePullRequestEnvelope): no reconcile pass catches that up, because the passes read the
 // rows that exist (ListStalePullRequestHeads), so an acknowledged envelope loses that pull
 // request's head for good and with it every `before_merge` result measured against it. It is
-// handed back with a delay (redeliverAfter), and handed back now rather than at the stop: this
-// message wants redelivering to this same process, which still holds the durable's hold and
-// still routes that key to the one goroutine it is on. The delay is what keeps a failure that
-// repeats from spinning: the write is the same write each time, so asking again within the
-// second would buy nothing. The write is idempotent (both its statements are `on conflict … do
-// update`), so a redelivery of an envelope whose write had in fact landed writes the same pair
-// again.
+// handed back with a delay (intakeDelivery.handBackOwn), and handed back now rather than at the
+// stop: this message wants redelivering to this same process, which still holds the durable's
+// hold and still routes that key to the one goroutine it is on. The delay is what keeps a
+// failure that repeats from spinning: the write is the same write each time, so asking again
+// within the second would buy nothing. The write is idempotent (both its statements are `on
+// conflict … do update`), so a redelivery of an envelope whose write had in fact landed writes
+// the same pair again.
 //
 // That hand-back is this process's own answer to the durable, and it is made only while the
 // hold still covers it (intakeDelivery.mayAnswer): a hand-back a process makes after its hold
 // has lapsed reaches the durable a take-over recreated under the same name, where it would move
 // the new holder's pending entry for that message and have it delivered a second time. Withheld,
 // the message is not lost: it stays outstanding, and the take-over's recreate at the durable's
-// ack floor hands it to the new holder once.
+// ack floor hands it to the new holder once. Outside any stop, the hand-back is published;
+// on a reconnecting link between attempts it is refused at once, and while an
+// attempt holds nats.go's lock it waits until the attempt ends (intakeDelivery.handBackOwn).
 //
 // It is handed back a bounded number of times and then acknowledged, with an Error naming the
 // envelope and the deliveries it spent (headWriteMaxDeliveries): a message handed back with a
@@ -349,17 +409,12 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			return
 		}
 		if headNotStored {
-			if !d.mayAnswer() {
-				slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
-					"subject", msg.Subject)
-				return
-			}
-			redeliverAfter(msg, headWriteRedeliverAfter)
+			d.handBackOwn(msg, headWriteRedeliverAfter)
 			return
 		}
-		acknowledge(msg)
+		d.acknowledge(msg)
 	}()
-	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
+	ctx, cancel := context.WithTimeout(handling, in.tuning.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope
@@ -381,14 +436,14 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
 		return
 	case errors.Is(err, ErrHeadNotStored):
-		delivered, spent := headWriteDeliveriesSpent(msg)
+		delivered, spent := headWriteDeliveriesSpent(msg, in.tuning.headWriteMaxDeliveries)
 		if spent {
 			slog.Error("dispatch delivery: a pull request's head row could not be stored in the deliveries allowed; acknowledging the envelope, whose pull request now has no head row until a later `pull_request` event for it, or the read-through a recorded result makes, writes one",
 				"subject", msg.Subject, "deliveries", delivered, "error", err)
 			return
 		}
 		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
-			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", headWriteMaxDeliveries,
+			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", in.tuning.headWriteMaxDeliveries,
 			"redeliver_after", headWriteRedeliverAfter, "error", err)
 		headNotStored = true
 		return
@@ -452,50 +507,28 @@ const headWriteRedeliverAfter = 10 * time.Second
 // deliveries again after each take-over — at a take-over per rolling release, beside a cap
 // whose whole run is five minutes, that is a cost no reader of this slice can measure.
 //
-// A var so a test can shrink it, as intakeMessageTimeout and intakeMaxAckPending are vars for
-// the same reason: thirty deliveries of one envelope is minutes of wall clock no test should
-// spend.
-var headWriteMaxDeliveries uint64 = 30
+// It is the default of the intake's own headWriteMaxDeliveries (intakeTuning), which a test
+// lowers on the intakes it builds: thirty deliveries of one envelope is minutes of wall clock no
+// test should spend.
+const headWriteMaxDeliveries uint64 = 30
 
 // headWriteDeliveriesSpent reports how many times the server has delivered msg and whether
-// that is every delivery headWriteMaxDeliveries allows a head write to fail in.
+// that is every delivery the intake allows a head write to fail in (allowed, its
+// headWriteMaxDeliveries).
 //
 // A message whose metadata cannot be read is not a JetStream message at all (Msg.Metadata
 // answers an error for one with no JetStream reply subject). No count can be read from it and
 // so no cap can be applied, and the answer is "not spent": the caller hands it back, which is
 // the answer that keeps the head row's one chance of being written, and the ack wait bounds a
 // hand-back the server never takes.
-func headWriteDeliveriesSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
+func headWriteDeliveriesSpent(msg *natsgo.Msg, allowed uint64) (delivered uint64, spent bool) {
 	meta, err := msg.Metadata()
 	if err != nil {
 		slog.Error("dispatch delivery: read how often the envelope whose head row was not stored has been delivered",
 			"subject", msg.Subject, "error", err)
 		return 0, false
 	}
-	return meta.NumDelivered, meta.NumDelivered >= headWriteMaxDeliveries
-}
-
-// redeliverAfter hands msg back to the server for redelivery in after — at once where after is
-// zero, which is the same message to the server, since nats.go adds a delay to the negative
-// acknowledgement only for a delay above zero (Msg.NakWithDelay, js.go) — and logs a hand-back
-// the server refused: the ack wait (intakeAckWait) then redelivers it, later than asked but
-// not never.
-func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
-	if err := msg.NakWithDelay(after); err != nil {
-		slog.Error("dispatch delivery: hand a message back for redelivery",
-			"subject", msg.Subject, "delay", after, "error", err)
-	}
-}
-
-// acknowledge acks msg. An acknowledgement that does not reach the server is never discarded: it
-// leaves the message outstanding, and intakeMaxAckPending of those stop the consumer being given
-// anything until the ack wait expires. The Nak gives the slot back at once; when it fails too (the
-// connection is down, which is why the ack failed), the ack wait is the backstop.
-func acknowledge(msg *natsgo.Msg) {
-	if err := msg.Ack(); err != nil {
-		slog.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
-		redeliverAfter(msg, 0)
-	}
+	return meta.NumDelivered, meta.NumDelivered >= allowed
 }
 
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,
@@ -552,7 +585,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, nil
 	}
 
-	owner, repo, err := splitRepo(repoFull)
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return false, err
 	}
@@ -581,7 +614,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, DeletePullRequest(ctx, in.pool, repoFull, number)
 	}
 
-	if err := completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
+	if err := in.attributor.completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -603,7 +636,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 // head write does, for a pull request its title, body and branch left unattributed — and nil
 // when it has not, which is reconcile's case and intake's commoner one; a non-nil read spares
 // this the same paginated call a second time.
-func completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
+func (a *Attributor) completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
 	messages := read
 	if messages == nil {
 		paged, err := fetchCommitMessages(ctx, github, owner, repo, number)
@@ -615,11 +648,11 @@ func completePullRequest(ctx context.Context, pool *store.Pool, github *githubap
 		}
 		messages = paged
 	}
-	inputs := attributionInputsFrom(attributionFacts{
+	inputs := a.attributionInputsFrom(attributionFacts{
 		Repo: repoFull, URL: fetched.URL, Title: fetched.Title, Body: fetched.Body,
 		HeadRef: fetched.HeadRef, CommitMessages: messages,
 	})
-	issueKey, _, err := resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
+	issueKey, _, err := a.resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
 	if err != nil {
 		return err
 	}
@@ -655,7 +688,7 @@ func (in *Intake) handleWorkflowEnvelope(ctx context.Context, settings DeliveryS
 		return false, nil
 	}
 	repoFull := payload["repo"]
-	owner, repo, err := splitRepo(repoFull)
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return false, err
 	}
@@ -800,15 +833,6 @@ func mapJobConclusion(raw *string) *DeliveryJobConclusion {
 	default:
 		return nil
 	}
-}
-
-// splitRepo splits "owner/repo" into its two segments.
-func splitRepo(repoFull string) (owner, repo string, err error) {
-	parts := strings.SplitN(repoFull, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("malformed repository %q: want owner/repo", repoFull)
-	}
-	return parts[0], parts[1], nil
 }
 
 // containsString reports whether values contains s, exactly.

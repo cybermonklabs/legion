@@ -32,6 +32,7 @@ import (
 // of them would be lost at the cost fenceFilterWrite's doc states. The registration sets the
 // filter back to the row the bucket holds before it answers.
 func TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStoredRow(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_outrun_filter"
 	// Every pass's plan is outrun by a writer that stores a topic and sets no consumer filter,
@@ -67,6 +68,7 @@ func TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStor
 // to the row the bucket holds before it answers, as the confirm of an answered registration
 // does.
 func TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRow(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_entry_write_filter"
 	const followed = "notifications.dispatch.issue.ENTRYFAILKEPT.>"
@@ -117,6 +119,7 @@ func TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRo
 // filter of the row that writer replaced, and the session would be left answered for a topic its
 // consumer does not filter on until its next heartbeat.
 func TestARegistrationThisListenerDidNotAnswerSettlesOnTheRowStoredUnderItsWrite(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_entry_write_settle_fence"
 	const followed = "notifications.dispatch.issue.SETTLEFENCEKEPT.>"
@@ -167,6 +170,7 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheRowStoredUnderItsWrite
 // and the connection this listener's registry reads the bucket through is closed once the
 // settle has read it, so nothing of this listener corrects what the settle wrote.
 func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenceReadsNoFurther(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	other := newSessionConsumerRig(t)
 	const sessionID = "ses_entry_write_settle_read"
@@ -215,14 +219,21 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 }
 
 // refusingEntryKV is a session bucket whose writes all fail, after before has run: the write of
-// a registration's session entry, and the window before it where another writer's interest row
-// lands.
+// a registration's session entry, whichever call makes it (Put, or the Create and Update the
+// entry write sends conditionally, session.SessionRegistry.PutWithin), and the window before it
+// where another writer's interest row lands.
 type refusingEntryKV struct {
 	nats.KeyValue
 	before func()
 }
 
-func (kv refusingEntryKV) Put(string, []byte) (uint64, error) {
+func (kv refusingEntryKV) Put(string, []byte) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) Create(string, []byte) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) Update(string, []byte, uint64) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) refuse() (uint64, error) {
 	kv.before()
 	return 0, fmt.Errorf("injected session entry write failure")
 }

@@ -28,6 +28,7 @@ import {
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
@@ -39,9 +40,10 @@ import { Sidebar } from "../sidebar/Sidebar";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
-  SendExpiredError,
   SendStoppedError,
+  stoppedWriteNote,
 } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import {
   AgentConversationPage,
   LEFT_LIST_TEXT,
@@ -90,6 +92,7 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
     broadcast_id: null,
     created_at: "2026-09-27T21:16:15Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,
@@ -2336,9 +2339,15 @@ test("a refused switch shows the session's reason and the header keeps its value
   expect(picker("Thinking level").value).toBe("auto");
 });
 
-// A switch tried until Dispatch has forgotten its key is sent no more: the page says so in the
-// refusal's own words - a Retry of it is a new message, delivered a second time if the first one
-// was - and the pickers are the reader's again, to send a new switch with.
+/** What the header says of a switch the reader stopped or whose key ran out: it may have reached
+ *  the session, and picking again is a switch of its own, since the header offers no Retry. */
+const stoppedSwitch = stoppedWriteNote("the switch", "sent", {
+  anew: "Picking a model or thinking level again sends a new switch.",
+});
+
+// A switch tried until Dispatch has forgotten its key is sent no more: the page says it may have
+// been sent and that picking again sends a new switch, and the pickers are the reader's again, to
+// send that new switch with.
 test("a switch whose key has run out says so, and frees the pickers", async () => {
   const createAgentMessage = answerAgentMessages().mockRejectedValue(
     new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
@@ -2355,7 +2364,38 @@ test("a switch whose key has run out says so, and frees the pickers", async () =
     // One jump crosses the key's whole life in a single round, which the shared stepping `tick`
     // would walk 500 ms at a time.
     await jump(IDEMPOTENCY_KEY_TTL_MS);
-    expect(screen.getByTestId("agent-send-error").textContent).toBe(new SendExpiredError().message);
+    expect(screen.getByTestId("agent-send-error").textContent).toBe(stoppedSwitch);
+    expect(held(picker("Model"))).toBe(false);
+  });
+});
+
+// A switch the reader stopped may have reached the session, and the header offers no Retry of it:
+// picking again sends a switch of its own, under a new key. So the page says that, and not the
+// composer's words, which promise a Retry under the same key that nothing here makes.
+test("a switch the reader stopped says picking again sends a new switch", async () => {
+  const createAgentMessage = answerAgentMessages().mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  spies.push(createAgentMessage);
+  const view = renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    replay: [settingsFrame(1), commandsFrame(2, SWITCHES)],
+  });
+  await screen.findByRole("combobox", { name: "Model" });
+
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    await user.selectOptions(picker("Model"), "anthropic/model-b");
+    await jump(SEND_DEADLINE_MS);
+    const late = writesOf(view)
+      .rows()
+      .find((row) => row.label.startsWith("Switch "));
+    expect(late?.status).toBe("late");
+    act(() => writesOf(view).stop(late?.id ?? 0));
+    await jump(30 * 60_000);
+    expect(screen.getByTestId("agent-send-error").textContent).toBe(stoppedSwitch);
     expect(held(picker("Model"))).toBe(false);
   });
 });
@@ -2873,6 +2913,41 @@ for (const capabilities of [[], ["future-capability"]]) {
   });
 }
 
+// A corrected issue message reaches the session's own page too: its byline carries the edit,
+// and a deleted one reads as deleted where its text was.
+test("the live view marks an edited issue message and reads a deleted one as deleted", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [
+      {
+        message: message("m1", "Bob on the issue: ship it?", {
+          author: { id: "bob", kind: "user" },
+          edited_at: "2026-09-27T21:19:10Z",
+          issue_key: "CORE-1",
+        }),
+        replies: [],
+      },
+      {
+        message: message("m2", "", {
+          author: { id: "bob", kind: "user" },
+          created_at: "2026-09-27T21:20:00Z",
+          deleted_at: "2026-09-27T21:21:00Z",
+          deleted_by: { id: "bob", kind: "user" },
+          issue_key: "CORE-1",
+        }),
+        replies: [],
+      },
+    ],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  await within(thread).findByText("Bob on the issue: ship it?");
+  const others = within(thread).getAllByTestId("agent-message-other");
+  expect(others[0]?.textContent).toContain("edited");
+  await waitFor(() => expect(others[1]?.textContent).toContain("Deleted by bob"));
+});
+
 /** Dispatch's answer to a pin write: the session's whole state, with the time it took the pin
  *  and none once the viewer unpinned it. */
 function answerPinWrites(): Mock<typeof api.putAgentState> {
@@ -2979,7 +3054,7 @@ test("the live view's header holds the back link, the name, the live state and t
   expect(within(header).getByText("Live")).toBeTruthy();
   expect(within(header).getByRole("button", { name: "Pin Planner" })).toBeTruthy();
 
-  expect(within(header).queryAllByRole("combobox")).toEqual([]);
+  expect(within(header).queryAllByRole("combobox").length).toBe(0);
   expect(within(header).queryByText(agent.host)).toBeNull();
   expect(within(header).queryByText(agent.dir)).toBeNull();
   expect(screen.queryByText(/relayed while this page is open/)).toBeNull();

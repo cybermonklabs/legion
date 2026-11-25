@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
+import * as textReferences from "../refs/text-references";
 import {
   citedReferences,
   knownIssueKeys,
@@ -154,4 +155,145 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
   linkRowReferences(earlier, NAMES, new Set([AMBIGUOUS]));
   expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
   expect(earlier.textContent).toBe(drawn);
+});
+
+// R2 of dispatch://INFRA-1523: a row names a post its author edited by its words then
+// ` · edited`, as a link to it reads (`useReferenceLabel`). The page publishes the words alone and
+// the edited references beside them, and a row cuts the words to its 60 characters before it
+// marks what the cut left: a mark written at the end of the name was cut off a name longer than
+// that, and a long edited post read as one nobody edited.
+const EDITED = "dispatch://CORE-1/comment/comment-9";
+const LONG_WORDS = "Hold the deploy until the plan lands and the reviewer has signed off on it";
+const LONG_HEAD = "Hold the deploy until the plan lands and the reviewer has";
+
+test("an edited post whose words are longer than the cut keeps ` · edited` after the cut", () => {
+  expect(LONG_WORDS.length).toBeGreaterThan(60);
+  const [link] = rowReferences(`see ${EDITED}`, []);
+  if (link === undefined) throw new Error("the text holds one reference");
+  const names = new Map([[EDITED, LONG_WORDS]]);
+  expect(rowReferenceWords(link, names, new Set([EDITED]))).toEqual({
+    key: undefined,
+    words: `${LONG_HEAD} · edited`,
+  });
+  // A post nobody edited is cut the same way and takes no mark.
+  expect(rowReferenceWords(link, names)).toEqual({ key: undefined, words: LONG_HEAD });
+  // A target the read has not named reads as its short form, unmarked.
+  expect(rowReferenceWords(link, new Map(), new Set([EDITED]))).toEqual({
+    key: undefined,
+    words: "CORE-1 comment",
+  });
+  // The pass draws the same words.
+  const root = document.createElement("div");
+  root.innerHTML = `<p>See ${EDITED} today</p>`;
+  linkRowReferences(root, names, new Set(), new Set([EDITED]));
+  expect(root.textContent).toBe(`See ${LONG_HEAD} · edited today`);
+});
+
+// Each row's words were read again on every draw. A text is read once for each list
+// of issue keys it is read against, however often a row draws it; another text, or another list
+// of keys, is read anew. A new set of ambiguous references is applied to the kept reading, so the
+// row drops the link it names with no second reading and draws no stale one.
+test("a text is read once however often a row draws it, and again for another text or other keys", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Kept reading: see dispatch://CORE-206/spec#b-r1 and CORE-207.";
+    const issues = ["CORE-207"];
+    const first = rowReferences(text, issues);
+    expect(rowReferences(text, issues), "a second draw read other references").toEqual(first);
+    expect(
+      rowReferences(text, [...issues]),
+      "the same keys in another list read other references"
+    ).toEqual(first);
+    expect(reads, "the same text and keys were read more than once").toHaveBeenCalledTimes(1);
+    expect(first.map((one) => [one.reference, one.path])).toEqual([
+      ["dispatch://CORE-206/spec#b-r1", "/issues/CORE-206/spec#b-r1"],
+      ["dispatch://CORE-207", "/issues/CORE-207"],
+    ]);
+
+    const ambiguous = new Set(["dispatch://CORE-206/spec#b-r1"]);
+    expect(
+      rowReferences(text, issues, ambiguous).map((one) => one.reference),
+      "a reference read ambiguous since is still linked"
+    ).toEqual(["dispatch://CORE-207"]);
+    expect(reads, "a new ambiguous set read the text again").toHaveBeenCalledTimes(1);
+
+    expect(rowReferences(text, []).map((one) => one.reference)).toEqual([
+      "dispatch://CORE-206/spec#b-r1",
+    ]);
+    rowReferences(`${text} More.`, issues);
+    expect(reads, "other keys or another text were not read").toHaveBeenCalledTimes(3);
+  } finally {
+    reads.mockRestore();
+  }
+});
+
+// The page asks what each node's words cite each time it gathers the tree's references
+// (`treeReferences`, `useIssueTree.ts`), and a text's citations are read once. They are read
+// against no list of keys, the id `0`. Every other id names one set of keys and is never given
+// again: a set whose id was forgotten takes a new one, and finds no reading kept under the old. So
+// a reset that forgot the ids but kept the readings fails this row: on a rerun it found its text
+// read by the run before, and counted no read.
+test("a text's citations are read once however often they are asked", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Cited once: see dispatch://CORE-601/spec#b-r1 and CORE-602.";
+    const cited = citedReferences(text);
+    expect(citedReferences(text), "a second ask cited other references").toEqual(cited);
+    expect(reads, "the text cited twice was not read once").toHaveBeenCalledTimes(1);
+    expect(cited).toEqual(["dispatch://CORE-601/spec#b-r1", "dispatch://CORE-602"]);
+  } finally {
+    reads.mockRestore();
+  }
+});
+
+// A text keeps a reading for four lists of keys. A list it is asked again is its newest, so the
+// slot a fifth list evicts is the one asked longest ago, and not the one read first. Each list is
+// one array throughout, so its id is the same whatever other sets of keys are forgotten.
+test("a text's fifth list of keys evicts the slot asked longest ago, and keeps one just asked again", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Slots kept: see CORE-301, CORE-302, CORE-303, CORE-304 and CORE-305.";
+    const first = ["CORE-301"];
+    const second = ["CORE-302"];
+    for (const issues of [first, second, ["CORE-303"], ["CORE-304"]]) {
+      rowReferences(text, issues);
+    }
+    expect(reads, "four lists of keys were not each read once").toHaveBeenCalledTimes(4);
+    rowReferences(text, first);
+    expect(reads, "a kept list was read again").toHaveBeenCalledTimes(4);
+    rowReferences(text, ["CORE-305"]);
+    expect(reads, "the fifth list of keys was not read").toHaveBeenCalledTimes(5);
+    rowReferences(text, first);
+    expect(reads, "the list just asked again was evicted by the fifth").toHaveBeenCalledTimes(5);
+    rowReferences(text, second);
+    expect(reads, "the list asked longest ago was kept past the fifth").toHaveBeenCalledTimes(6);
+  } finally {
+    reads.mockRestore();
+  }
+});
+
+// The ids of the lists of keys are kept too: 64 sets of keys keep an id, and the 65th forgets them
+// all. The row makes that boundary itself. It gives 63 sets of its own an id, so list A takes the
+// 64th, list B the 65th, which forgets A's set, and a new array of A's keys a new id and a new
+// reading: 3 reads. That holds where the row starts with no set kept. A reset that forgot the
+// readings but kept the ids left the sets of the run before, which move the boundary: on a rerun
+// A's set outlived B, the new array found A's reading, and the row counted 2.
+test("the 65th set of keys forgets the first 64, counted from a table the row starts empty", () => {
+  for (let i = 1; i <= 63; i += 1) {
+    rowReferences("A filler text.", [`CORE-${500 + i}`]);
+  }
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Kept list: see CORE-401 and CORE-402.";
+    rowReferences(text, ["CORE-401"]);
+    rowReferences(text, ["CORE-402"]);
+    expect(reads, "the two lists of keys were not each read once").toHaveBeenCalledTimes(2);
+    rowReferences(text, ["CORE-401"]);
+    expect(
+      reads,
+      "the 65th set of keys did not forget the first list's set, so the table did not start empty"
+    ).toHaveBeenCalledTimes(3);
+  } finally {
+    reads.mockRestore();
+  }
 });

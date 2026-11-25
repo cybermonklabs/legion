@@ -156,8 +156,8 @@ func TestTheArchitectHandshakeTimesDowngradeBelowTheirContract(t *testing.T) {
 // A root's `architectStalls` arrived with the two times, at contract 146, and leaves with them: a
 // caller at that contract is served the arms the daemon names for the root, and one below it is
 // served none. The state here carries no time at all, so the arms alone are what the strip must
-// see as something of that contract to take away (carriesEntryTimes); a strip that looked for
-// the times alone would serve the key to the strict reader that refuses it.
+// see as something of that contract to take away (the bool withoutEntryTimes returns); a strip
+// that looked for the times alone would serve the key to the strict reader that refuses it.
 func TestTheArchitectStallArmsDowngradeWithTheEntryTimes(t *testing.T) {
 	state := State{Issues: map[string]Issue{
 		"LEGION-50": {Key: "LEGION-50", Phase: phase.Admitted, Status: "in_progress", Tree: "LEGION-50",

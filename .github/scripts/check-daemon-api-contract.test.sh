@@ -2,8 +2,9 @@
 # Tests for `check-daemon-api-contract.sh`: a change that touches the daemon API contract's
 # history or declaration declares a number above the one its base carries, the refusal names a
 # free number and every file that holds it, the files that hold the number agree on it, an
-# edit of the doc comment above the history touches no contract, and a base, a tree or a file the
-# check cannot read refuses the change.
+# edit of the doc comment above the history touches no contract, a declared number needs its own
+# `// <number>:` history entry, and a base, a tree or a file the check cannot read refuses the
+# change.
 #
 # Each case builds a miniature repository under a temporary directory, symlinks the real script
 # into it, and puts a stub `gh` first on PATH, so the script under test is the file CI runs and
@@ -27,6 +28,23 @@ trap 'rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+
+# The interpreter python3 names, asked once in this harness's own environment. Each fixture's bin
+# directory, first on the PATH a case runs the script under, holds a link to it as python3, so the
+# script's `python3` is this interpreter and the gh its Python runs is the stub beside that link.
+# The first python3 on the caller's PATH can be a version manager's shim that starts the
+# interpreter with a PATH of its own: mise 2026.10.11's python3 shim, in a mise-activated
+# environment, put that environment's PATH in front of the entries the caller had put first, so
+# the script's Python ran that environment's gh, against GitHub, and not the stub.
+# disk_watch.test.sh links its interpreter the same way.
+if ! python=$(python3 -I -c 'import sys; print(sys.executable)'); then
+  echo "could not resolve the python3 interpreter" >&2
+  exit 1
+fi
+if [[ "$python" != /* || ! -x "$python" ]]; then
+  echo "python3 did not report an absolute executable path: $python" >&2
+  exit 1
+fi
 
 # declaration <number> [<extra comment>]: the text of a version.go declaring <number>, laid out as
 # the real one is: a doc comment, then the history, here one entry at <number>, then the `const`
@@ -84,6 +102,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/packages/daemon/internal/api" "$root/stub/refs" "$root/bin"
   ln -s "$check_script" "$root/.github/scripts/check-daemon-api-contract.sh"
+  ln -s "$python" "$root/bin/python3"
   : > "$root/stub/pr-queries"
   cat > "$root/bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -566,5 +585,92 @@ check "names both numbers" \
 check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
 check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
+
+echo "case: a declaration bump with no history entry at its number"
+root=$(fixture const-without-history)
+built_on "$root" 7 > /dev/null
+declaration 7 > "$root/stub/refs/main"
+declaration 7 > "$root/packages/daemon/internal/api/version.go"
+sed -i 's/^const DaemonAPIVersion = 7$/const DaemonAPIVersion = 8/' \
+  "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "exits 1" "$(is "$status" 1)"
+# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
+check "names the missing history entry" \
+  "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
+check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
+check "reads the open pull requests once" "$(is "$queries" 1)"
+
+echo "case: a declaration bump whose only line at its number is an entry's wrapped prose"
+root=$(fixture const-with-prose-number)
+built_on "$root" 7 > /dev/null
+declaration 7 > "$root/stub/refs/main"
+declaration 7 "a reading taken between 07:58Z and" > "$root/packages/daemon/internal/api/version.go"
+sed -i -e 's/^const DaemonAPIVersion = 7$/const DaemonAPIVersion = 8/' \
+  -e 's|^// a reading taken between 07:58Z and$|// a reading taken between 07:58Z and\n// 8:04Z, which the bump cites|' \
+  "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "the miniature file has the wrapped line" \
+  "$(contains "$(cat "$root/packages/daemon/internal/api/version.go")" '^// 8:04Z')"
+check "exits 1" "$(is "$status" 1)"
+# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
+check "names the missing history entry" \
+  "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
+
+echo "case: a python3 after the stub that starts the interpreter with a PATH of its own"
+# A stricter form of what mise's shim did (the comment on $python above): this python3 starts the
+# interpreter with the PATH this harness had and leaves the fixture's bin directory out, where mise
+# put it behind its environment's own entries. So a script whose `python3` were this one would read
+# the base with this harness's own gh, or with none, and never through the stub, whether or not
+# this harness's PATH holds a gh. The fixture's link comes first, so the script never meets it. The
+# two checks before the case show the resetting python3 does what the row needs, so the row can
+# fail.
+# The case is "a tree above its base" above, in a merge group, whose one GitHub read is the base.
+resetting=$work/resetting-python
+mkdir -p "$resetting/probe"
+printf '%s' "$PATH" > "$resetting/path"
+# sh_word <text>: <text> as one word that any POSIX sh reads back whole, for every byte but NUL:
+# in single quotes, each ' in it written '\''. Each path goes into the stand-in so, as TMPDIR may
+# hold a space, a quote or a newline. Not bash's printf %q: for a word holding a newline it writes
+# $'…\n…', which the stand-in's /bin/sh (dash 0.5.12) reads as a $ and a backslash-n, so its cat
+# reads no file.
+sh_word() {
+  local escaped="'\\''"
+  printf "'%s'" "${1//\'/"$escaped"}"
+}
+quoted_path=$(sh_word "$resetting/path")
+quoted_python=$(sh_word "$python")
+cat > "$resetting/python3" <<EOF
+#!/bin/sh
+PATH=\$(cat $quoted_path) exec $quoted_python "\$@"
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$resetting/probe/gh"
+chmod +x "$resetting/python3" "$resetting/probe/gh"
+check "without a link of its own, a PATH's python3 is the resetting one" \
+  "$(is "$(PATH="$resetting/probe:$resetting:$PATH" command -v python3)" "$resetting/python3")"
+check "  and the interpreter it starts does not find the gh before it" \
+  "$(is "$(PATH="$resetting/probe:$resetting:$PATH" python3 -c 'import shutil; print(shutil.which("gh"))')" \
+    "$(command -v gh || echo None)")"
+root=$(fixture after-a-resetting-python3)
+base_sha=cccccccccccccccccccccccccccccccccccccccc
+declaration 7 > "$root/stub/refs/$base_sha"
+declaration 8 > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+merge_group_event "$root" "$base_sha"
+set +e
+out=$(PATH="$root/bin:$resetting:$PATH" STUB_DIR="$root/stub" GITHUB_EVENT_NAME=merge_group \
+  GITHUB_EVENT_PATH="$root/event.json" GITHUB_REPOSITORY="example-owner/example-repo" \
+  "$root/.github/scripts/check-daemon-api-contract.sh" 2>&1)
+status=$?
+set -e
+check "exits 0" "$(is "$status" 0)"
+check "reads the base through the stub" \
+  "$(contains "$out" "daemon API contract 8 is above the 7 the base carries (the commit the queue built this group on ($base_sha))")"
 
 summary "check-daemon-api-contract.sh"

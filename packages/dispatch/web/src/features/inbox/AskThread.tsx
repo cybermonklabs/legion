@@ -24,7 +24,8 @@ import {
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
 import { AgentName } from "../refs/AgentName";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
@@ -32,8 +33,10 @@ import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import type { AskPress } from "./outstanding-answers";
+import { askArtifactId } from "./owner-reads";
+import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
 import { UnsentText } from "./UnsentText";
 
 export type CreateReply = (
@@ -62,7 +65,8 @@ function AskReply({
       ref={markRef}
     >
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody
+        <PostBody
+          deleted={postDeletion(comment)}
           markdown={comment.body}
           source={textSourceOf("comment", comment.id)}
           tree={comment.body_tree}
@@ -71,9 +75,15 @@ function AskReply({
       <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
       <p className={`mt-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+        <EditedMark at={comment.edited_at} deleted={postDeletion(comment)} />
       </p>
     </li>
   );
+}
+
+/** One press of a reply: the ask it is of (`AskPress`) and the text it posts. */
+interface ReplyPress extends AskPress {
+  readonly text: string;
 }
 
 /** AskCard owns the `["ask-thread", ask.id]` query, initializing it from an Inbox row when
@@ -192,25 +202,34 @@ export function AskReplyComposer({
   // ask sees it in flight.
   const mutationKey = ["ask-reply", ask.id];
   const { sending } = useSending(mutationKey);
-  const upload = useDraftUpload((text) => setBody((current) => appendToDraft(current, text)));
+  // A file's text joins the draft of the ask it was pasted or dropped under, which its press
+  // carries (`useDraftUpload`): a host may draw this composer for another ask before it lands.
+  const upload = useDraftUpload((text: string, askId: string) =>
+    setReplyDraft(askId, (current) => appendToDraft(current, text))
+  );
   const uploading = upload.pending > 0;
-  // The form shows a refused reply itself, with Retry, under the draft it kept.
+  // The form shows a refused reply itself, with Retry, under the draft it kept. Each press
+  // carries the ask it replies to, as an answer's does (`useAskAnswerForm`): where it posts, and
+  // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
+  // host draws this composer for by then.
   const submit = useKeyedWrite({
-    write: (text: string, bounds) => {
-      if (ask.issue_key === null) {
-        if (ask.artifact_id === null || ask.artifact_id === undefined) {
-          throw new Error("document ask is missing its artifact id");
-        }
-        return api.createArtifactComment(ask.artifact_id, { ask_id: ask.id, body: text }, bounds);
+    method: "POST",
+    write: (press: ReplyPress, bounds) => {
+      if (press.ask.issue_key === null) {
+        return api.createArtifactComment(
+          askArtifactId(press.ask),
+          { ask_id: press.ask.id, body: press.text },
+          bounds
+        );
       }
-      return reply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
+      return reply(press.ask.issue_key, { ask_id: press.ask.id, body: press.text }, bounds);
     },
     inline: true,
-    label: () => `Reply on “${ask.question}”`,
+    label: (press: ReplyPress) => `Reply on “${press.ask.question}”`,
     mutationKey,
-    onSuccess: (_comment, text) => {
-      clearReplyDraft(ask.id, text);
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+    onSuccess: (_comment, press) => {
+      clearReplyDraft(press.ask.id, press.text);
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
     },
   });
 
@@ -221,7 +240,7 @@ export function AskReplyComposer({
     if (text === "" || sending || uploading) {
       return;
     }
-    submit.mutate(text);
+    submit.mutate({ ask, text });
   };
 
   return (
@@ -234,11 +253,15 @@ export function AskReplyComposer({
           id={fieldId}
           onChange={(event) => setBody(event.target.value)}
           onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
+            uploadOwner === undefined
+              ? undefined
+              : (event) => upload.drop(event, uploadOwner, ask.id)
           }
           onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
           onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
+            uploadOwner === undefined
+              ? undefined
+              : (event) => upload.paste(event, uploadOwner, ask.id)
           }
           value={body}
         />
@@ -253,12 +276,8 @@ export function AskReplyComposer({
       </button>
       {submit.isError ? (
         <QueryError
-          message="Could not post your reply."
-          onRetry={() => {
-            if (submit.variables !== undefined) {
-              submit.mutate(submit.variables);
-            }
-          }}
+          message={stoppedNote(submit, "your reply", "posted") ?? "Could not post your reply."}
+          onRetry={submit.retry}
           retrying={submit.isPending}
         />
       ) : null}

@@ -22,15 +22,15 @@ import (
 // a re-entered child resumes its session. A tree's root architect is launched with the task its
 // record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
 // nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
-// none, and a re-admitted tree resumes its session. A claim the provider refused out of its launch
-// budget has failed, and the start that retries it starts a new session (supervise's
-// freshSession), as does any launch whose session no store holds any more (startFresh). So at each
-// launch's ready the daemon sends it a catch-up notice of the issues it owns (QueueCatchUp) — a
-// root architect its whole tree, a child's architect the child and every issue under it — and so
-// does a start that finds the claim still running (the outbox's start), as the TypeScript daemon
-// sends the overseer catch-up at every ready of an active root (onTreeReady). A relaunch in the
-// same generation is told again: it may be an architect that died during the turn a catch-up
-// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either.
+// none, and a re-admitted tree resumes its session. A retry that asks for a new session starts
+// one (supervise's freshSession), as does any launch whose session no store holds any more
+// (startFresh). So at each launch's ready the daemon sends it a catch-up notice of the issues it
+// owns (QueueCatchUp) — a root architect its whole tree, a child's architect the child and every
+// issue under it — and so does a start that finds the claim still running (the outbox's start), as
+// the TypeScript daemon sends the overseer catch-up at every ready of an active root
+// (onTreeReady). A relaunch in the same generation is told again: it may be an architect that died
+// during the turn a catch-up started, resumed idle, or a fresh agent whose workspace was lost, and
+// nothing else wakes either.
 // The ready is one fact per launch (workflowRuntime.applyTerminal keys it by the claim's launch
 // generation), so the boot's replay of a ready already applied tells nothing more, and one never
 // applied tells it once. The catch-up a root architect's ready writes names every decision nobody
@@ -38,9 +38,12 @@ import (
 // claimed by a queued start or catch-up is that row's to settle. A child's names none: what a
 // person decided while nobody could hear it is kept for the tree, and stays its root architect's.
 // A tree that lingers or has left the workflow is told nothing, and so is the architect of an
-// issue the daemon has not recorded, or of a child that has left the workflow or is done. A phase
-// worker's ready is answered differently: it is given its phase's task again when it holds that
-// phase with nothing pending (readyWorkerTask).
+// issue the daemon has not recorded — an operator's spawn of an issue no record of the project
+// holds, the project's own or another project's, whose record the daemon's records do not read
+// (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
+// issue — or of a child that has left the workflow or is done. A phase worker's ready is answered
+// differently: it is given its phase's task again when it holds that phase with nothing pending
+// (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -167,7 +170,9 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // start of the phase that will still act, which carries the phase's task itself, or a stop that
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
 // about queued rows (actingStop, queuedStartActs), read without its question about the claim's own
-// liveness: this claim is live, which is precisely why it is being given its task.
+// liveness: this claim is live, which is precisely why it is being given its task. A start queued
+// for news alone carries no task of the phase (startsWork), so it covers nothing, and the worker is
+// given its task beside it.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
 	stop := actingStop(run, root)
 	return stop != 0 || queuedStartActs(run, stop, current)
@@ -182,19 +187,26 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // (dispatch://INFRA-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
-// one claim: the issue is this project's and in the workflow, its phase's role (RoleFor) is this
-// claim's, its tree does not linger, and its phase's own terminating fact has not arrived
-// (PhaseFinished) — a merged root stands in merging for as long as the rest of its tree runs, and
-// its merger must not be handed merging again at every launch. A claim that holds a task is left
-// alone: it has work, and a second task would be a second prompt for work under way. So is a role
-// a queued row already covers (queuedRowCovers).
+// one claim: the issue is recorded and in the workflow, its phase's role (RoleFor) is this claim's,
+// its tree does not linger, and its phase's own terminating fact has not arrived (PhaseFinished) —
+// a merged root stands in merging for as long as the rest of its tree runs, and its merger must
+// not be handed merging again at every launch. A claim of another project's issue finds no record
+// here, as a claim of an issue nobody records finds none: the daemon's store reads no record of
+// another project (internal/daemon's projectRecords). A claim that holds a task is left alone: it
+// has work, and a second task would be a second prompt for work under way. So is a role a queued
+// row already covers (queuedRowCovers).
 //
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
 // that holds that alone is read as holding nothing. The phase's task that this queues takes that
 // delivery's place while no prompt of it waits on a result, or waits for its turn to end
 // (supervise's queue), and carries the sentence in front of itself while the record is untold.
 // A worker that came back holding only that delivery — its ready found it holding one from an
-// earlier launch its agent never read — would otherwise be given no phase task at all.
+// earlier launch its agent never read — would otherwise be given no phase task at all. A task of
+// news of the approved design alone is no work of the phase either (supervise.HoldsWork): it tells
+// the worker what changed and nothing of what to do, so a claim that holds only that is given its
+// phase's task too. An owed entry's task takes the news task's place while no turn has taken it,
+// and carries that news itself (supervise's Machine.supersedes); the phase's resume task carries
+// no entry, so it waits behind the news task until a turn has taken it.
 //
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
@@ -214,7 +226,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // reads no slot and carries no entry, the claim being on the entry its row names already; the
 // owed entry's start takes the slot mark the slot rule gives its phase, as every start
 // Engine.started builds does (StartOrOwe), so it waits for the issue's admission slot in a phase
-// up to the review and for none past it (record.KeepsSlot). Most often an issue up to its review
+// that keeps a slot and for none in accepting, retro or merging (record.KeepsSlot). Most often such an issue
 // holds that slot already: a claim whose agent has just said it is ready is running, and
 // admission has long since given its tree a slot. The one such issue at work that holds none is
 // one that gave its row back to wait on another issue (admit's releaseSlotsForWaits,
@@ -225,7 +237,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // label" in docs/site/src/content/docs/legion/concepts.md.
 func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Project != e.cfg.Project || record.OutOfWorkflow(issue.Status) {
+	if err != nil || issue == nil || record.OutOfWorkflow(issue.Status) {
 		return err
 	}
 	role := RoleFor(issue.Phase)
@@ -252,8 +264,9 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	// A claim holding only the daemon's own delivery of a relaunch's record holds no task (above).
-	if held := run.Claim; held == nil || supervise.HoldsTask(held.Pending) {
+	// A claim holding only the daemon's own delivery of a relaunch's record, or only a task of news
+	// alone, holds no work (above).
+	if held := run.Claim; held == nil || supervise.HoldsWork(held.Pending) {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
@@ -271,8 +284,12 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
+	resume, err := e.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), ResumeTask: true}); err != nil {
+		Generation: issue.Generation, Phase: issue.Phase, Task: resume, ResumeTask: true}); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",
@@ -283,10 +300,12 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // treeCatchUp is what issue's architect owns as the record holds it. A tree root's architect owns
 // its whole tree: the catch-up says whether a hand-over created the root at this generation, and
 // whether its old root's gate came with it, each design-gate step the root must hold open and how
-// it stands, and every issue of the tree in key order. A child's architect owns the child and
-// every issue whose recorded parent chain reaches it (record.Beneath), listed in key order at the
-// child's own generation: a child registers no gate and no hand-over creates one, so its catch-up
-// states no step and is neither handed over nor carried.
+// it stands, and every issue of the tree in key order. The steps are the ones the tree is gated on
+// (classify.TreeSteps), so a criteria row the architect registered beside a deployment that gates
+// spec and not criteria is listed after the spec, gated as the spec is. A child's architect owns
+// the child and every issue whose recorded parent chain reaches it (record.Beneath), listed in key
+// order at the child's own generation: a child registers no gate and no hand-over creates one, so
+// its catch-up states no step and is neither handed over nor carried.
 //
 // With it come the keys, in key order, of the listed issues waiting for this architect's
 // acceptance (awaitingAcceptance). No worker runs in accepting, and the one phase-finished notice
@@ -310,10 +329,11 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		if err != nil {
 			return record.CatchUp{}, nil, err
 		}
-		required := classify.RequiredSteps(steps)
+		gated := classify.TreeSteps(steps, gates)
+		required := classify.RequiredSteps(gated)
 		catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
 		for _, step := range required {
-			stated := record.CatchUpGate{Step: step, Gated: slices.Contains(steps, step)}
+			stated := record.CatchUpGate{Step: step, Gated: slices.Contains(gated, step)}
 			if recorded, ok := gates[step]; ok {
 				stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
 				if recorded.ApprovedVersion != nil {

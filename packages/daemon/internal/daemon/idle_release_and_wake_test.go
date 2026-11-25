@@ -63,6 +63,7 @@ const idleRigSender = "idle-rig-sender"
 // releases them all: each live claim suspended with the source `released`, and the pod, its disk
 // and its Sandbox deleted. Each subtest then drives its own pods' wakes.
 func TestIdleReleaseAndWake(t *testing.T) {
+	t.Parallel()
 	// The rig is given every plan that sets a field a role process reads as it starts (idleRigPlan):
 	// the topic the subscribed pod's session takes, as `envoy_subscribe` does, and how each
 	// just-released pod's process ends. The stuck pod's plan is left alone until its own subtest,
@@ -285,9 +286,10 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		idleRigEventually(t, idleRigRecordWait, "the resume of "+issue.key+" recorded", func() bool {
 			return len(rig.resumesOf(issue)) == 1
 		})
-		// The clock the stuck pass reads is the wake's own recorded moment against the daemon's
-		// now (warnStuckResumes), so the test moves the wake ten minutes into the past. The role
-		// process acknowledged its task and started no turn, so no first turn was ever stamped.
+		// The clock the stuck pass reads is the resume's stuck clock against the daemon's now
+		// (warnStuckResumes), so the test moves the wake and its clock ten minutes into the past.
+		// The role process acknowledged its task and started no turn, so no first turn was ever
+		// stamped.
 		rig.ageResume(issue, 11*time.Minute)
 		idleRigEventually(t, idleRigWarningWait, "the warning about the resume with no first turn", func() bool {
 			return rig.logged("wake: a released pod's resume has had no first turn since its wake",
@@ -382,7 +384,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 }
 
 // idleRigWakePreamble is the sentence every wake's task opens with (workflow.WakeTask).
-var idleRigWakePreamble = workflow.WakeTask("", "")[:len("Your issue's pod had been released while it was idle, and this wake brought it back.")]
+var idleRigWakePreamble = workflow.WakeTask("", "", workflow.StoppedByRelease)[:len("Your issue's pod had been released while it was idle, and this wake brought it back.")]
 
 // idleRigDeliveredTask is the task the daemon has for the role of the delivery pod, which is R3
 // item 1's wake: the delivery is its own account of why the pod came back.
@@ -814,13 +816,15 @@ func (r *idleWakeRig) dueBackstop(issue idleRigIssue) {
 	}
 }
 
-// ageResume moves the issue's recorded wakes into the past. The stuck pass reads the wake's own
-// recorded moment against the daemon's clock and nothing else (warnStuckResumes), so this row is
-// the clock the ten minutes of R5 is measured on.
+// ageResume moves the issue's recorded wakes, and the stuck clock each starts, into the past. The
+// stuck pass reads the resume's stuck clock against the daemon's clock and nothing else
+// (warnStuckResumes, store's clock_at), so this row is the clock the ten minutes of R5 is measured
+// on.
 func (r *idleWakeRig) ageResume(issue idleRigIssue, by time.Duration) {
 	r.t.Helper()
 	if _, err := r.pool.Exec(context.Background(),
-		fmt.Sprintf(`update pod_resumes set at = at - interval '%d seconds' where project = $1 and issue = $2`, int(by.Seconds())),
+		fmt.Sprintf(`update pod_resumes set at = at - interval '%[1]d seconds', clock_at = clock_at - interval '%[1]d seconds'
+			where project = $1 and issue = $2`, int(by.Seconds())),
 		r.project, issue.key); err != nil {
 		r.t.Fatalf("age the resumes of %s: %v", issue.key, err)
 	}

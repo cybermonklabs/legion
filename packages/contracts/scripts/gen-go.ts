@@ -4,7 +4,10 @@ import { dirname, relative, resolve } from "node:path";
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
+  DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_AS_OF_TOKEN_NOT_SERVED,
+  DISPATCH_EVENT_TYPES,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
   DISPATCH_READ_ONLY_TOKEN,
@@ -28,6 +31,7 @@ import {
   IDEMPOTENCY_LEASE_MS,
   IDEMPOTENCY_REPLAYED_HEADER,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
@@ -36,7 +40,10 @@ import {
   MAX_BROADCAST_RECIPIENTS,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_COMPONENTS,
+  MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
+  POST_HISTORY_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   REFERENCE_TARGETS_MAX,
@@ -44,6 +51,7 @@ import {
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
+  STORE_UNCONFIRMED_CAUSE,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -80,6 +88,7 @@ import {
   GOING_ANSWER_WORD_MAX,
   GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
   GOING_ERROR_ANSWER_FAILED,
+  GOING_ERROR_ANSWER_WITHDRAWN,
   GOING_ERROR_NO_MODEL_CONFIGURED,
   GOING_EVENT_CHANGED,
   GOING_EVENT_CUT,
@@ -356,6 +365,17 @@ const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 
+// DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
+// Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
+// and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
+const DeletedPostDeliveryError = ${JSON.stringify(DELETED_POST_DELIVERY_ERROR)}
+
+// StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
+// 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated
+// from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
+// the dashboard keys its retry wording on cannot drift apart.
+const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
+
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
@@ -430,13 +450,15 @@ const GoingEventEnd = ${JSON.stringify(GOING_EVENT_END)}
 const GoingEventError = ${JSON.stringify(GOING_EVENT_ERROR)}
 
 // The codes an error frame carries: the run reached its window without an answer, the deployment
-// has no text model configured, and the model service refused or failed. Generated from
-// GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED and
-// GOING_ERROR_ANSWER_FAILED in packages/contracts so the code the server writes and the wording
-// the page keys on it cannot drift apart.
+// has no text model configured, the model service refused or failed, and a post the run was
+// given was deleted after it. Generated from GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+// GOING_ERROR_NO_MODEL_CONFIGURED, GOING_ERROR_ANSWER_FAILED and GOING_ERROR_ANSWER_WITHDRAWN in
+// packages/contracts so the code the server writes and the wording the page keys on it cannot
+// drift apart.
 const GoingErrorAnswerDidNotArrive = ${JSON.stringify(GOING_ERROR_ANSWER_DID_NOT_ARRIVE)}
 const GoingErrorNoModelConfigured = ${JSON.stringify(GOING_ERROR_NO_MODEL_CONFIGURED)}
 const GoingErrorAnswerFailed = ${JSON.stringify(GOING_ERROR_ANSWER_FAILED)}
+const GoingErrorAnswerWithdrawn = ${JSON.stringify(GOING_ERROR_ANSWER_WITHDRAWN)}
 
 // GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
 // Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the
@@ -486,12 +508,30 @@ const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
 // one number.
 const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
 
+// MaxIssueLabels is the most labels one issue holds, and the most one labels or labels_add input
+// names before deduplication, and IssueLabelMax the longest label, in UTF-16 units. Generated from
+// MAX_ISSUE_LABELS and ISSUE_LABEL_MAX in packages/contracts so the server's refusals and the
+// issue tools' bounds are one number each.
+const MaxIssueLabels = ${MAX_ISSUE_LABELS}
+const IssueLabelMax = ${ISSUE_LABEL_MAX}
+
+// MaxIssueComponents bounds the ids of a components input of mode explicit before deduplication.
+// Generated from MAX_ISSUE_COMPONENTS in packages/contracts so the server's refusal and the issue
+// tools' bound are one number.
+const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
 // and the \`dispatch issues\` command's cannot drift apart.
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
+
+// PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
+// GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
+// in packages/contracts so the page the server reads and the full page on which the
+// \`dispatch read --history\` command names the read of older rows cannot drift apart.
+const PostHistoryPageLimit = ${POST_HISTORY_PAGE_LIMIT}
 
 // IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
@@ -513,6 +553,14 @@ const DispatchItemBlocks = ${DISPATCH_ITEM_BLOCKS}
 // packages/contracts; the server enforces it, names it in its refusal, and publishes it through
 // GET /api/v1/limits.
 const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
+
+// DispatchEventTypes is every event type Dispatch writes to its log, sorted: the members of the
+// DispatchEvent union. Generated from DISPATCH_EVENT_TYPES in packages/contracts, which the
+// TypeScript compiler holds to that union, so a Go reader that sorts every type, as the keyword
+// fill's inventory test (internal/dispatch/textversions) does, learns of a new type from it.
+var DispatchEventTypes = []string{
+${DISPATCH_EVENT_TYPES.map((type) => `\t${JSON.stringify(type)},`).join("\n")}
+}
 
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
@@ -636,8 +684,8 @@ const IdempotencyKeyPattern = ${JSON.stringify(IDEMPOTENCY_KEY_PATTERN.source)}
 
 // The codes of a keyed write's refusals and of a replay whose first answer was not kept: a key
 // used for another request (422), a key whose first request still runs (409), a key whose write
-// landed and whose answer was lost (409), a header that is not a key (400), and a first answer too
-// large to keep. Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
+// landed and whose answer was lost (409), a header that is not a key (400), and a first answer
+// Dispatch gives no copy of (IDEMPOTENCY_ANSWER_NOT_KEPT names when). Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
 // IDEMPOTENCY_KEY_COMMITTED, IDEMPOTENCY_KEY_INVALID and IDEMPOTENCY_ANSWER_NOT_KEPT in
 // packages/contracts so the server's codes and the clients' reading of them cannot drift apart.
 const IdempotencyKeyReused = ${JSON.stringify(IDEMPOTENCY_KEY_REUSED)}
@@ -693,17 +741,25 @@ const DispatchLoginChanged = ${JSON.stringify(DISPATCH_LOGIN_CHANGED)}
 const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
-// names a session and a service but no person: the machine holding it has signed nobody in.
+// names a session and a service but no person under the project scope person: the machine
+// holding it has signed nobody in.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 
-// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
-// that holds only the scope read, to a route the read list does not name: the route ran nothing,
-// and the request wrote only the row of its spent DPoP proof. Generated from
+// DispatchReadOnlyToken is the code of the 403 for a request by a read-only token (any token that
+// holds read, a broker's or a personal one) to a route outside the read class: the route ran
+// nothing, and the request wrote only the record of the token's use. Generated from
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
+// DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
+// carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
+// a past time yet, so the route ran nothing rather than answer with the present. Generated from
+// DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's refusal and every
+// client's reading of it cannot drift apart.
+const DispatchAsOfTokenNotServed = ${JSON.stringify(DISPATCH_AS_OF_TOKEN_NOT_SERVED)}
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()

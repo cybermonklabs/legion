@@ -9,7 +9,7 @@ tags:
   - release-bump
   - version-seed
 date: 2026-10-07
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: .github/workflows/release.yaml
 applies_when:
   - A package is renamed or split and the release workflow gains a job with a new tag prefix

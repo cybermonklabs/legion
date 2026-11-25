@@ -13,10 +13,12 @@ import (
 
 	"github.com/pulumi/pulumi-go-provider/infer"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+	"golang.org/x/net/idna"
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
@@ -105,7 +107,7 @@ const (
 // counted pools and its permanent listeners. The listener's and the front door's pods open none.
 // TestDispatchConnectionsPerPodIsTheServers fails when a counted pool's size changes and this
 // does not.
-const dispatchConnectionsPerPod = 113
+const dispatchConnectionsPerPod = 117
 
 // Autopilot's bounds for the app pod's total request, the general-purpose compute class's for a pod
 // with pod anti-affinity, which every Dispatch pod carries, or with the safe-to-evict annotation,
@@ -128,9 +130,7 @@ var (
 
 var (
 	tailnetDNSNameRule = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net$`)
-	signInDomainRule   = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
 	namespaceRule      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	secretKeyRule      = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
 	// quantityRule is a Kubernetes resource quantity (k8s.io/apimachinery's resource.Quantity):
 	// a signed decimal, then a binary suffix, a decimal suffix or a decimal exponent.
 	quantityRule = regexp.MustCompile(`^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(Ki|Mi|Gi|Ti|Pi|Ei|n|u|m|k|M|G|T|P|E|[eE][+-]?[0-9]+)?$`)
@@ -145,6 +145,21 @@ var (
 	// 97 lowercase letters, digits or hyphens, ending in a letter or digit).
 	connectionNameRule = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+:)?[a-z][-a-z0-9]{4,28}[a-z0-9]:[a-z]+-[a-z]+[0-9]+:[a-z](?:[-a-z0-9]{0,96}[a-z0-9])?$`)
 )
+
+// secretKeyChars are the characters of a key of a Secret's data.
+var secretKeyChars = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
+
+// secretKeyRule says what a key of a Secret's data may be, as Kubernetes holds it
+// (k8s.io/apimachinery's validation.IsConfigMapKey, which validates a Secret's keys too).
+const secretKeyRule = `a Secret's key: letters, digits, "-", "_" and ".", at most 253 characters, and neither "." nor ".." nor ` +
+	`one that begins with ".."`
+
+// isSecretKey reports whether key can be a key of a Secret's data (secretKeyRule). The API server
+// refuses a Secret with any other key, so a secretKeyRef to one names a key no Secret holds, and
+// the pod that reads it never starts.
+func isSecretKey(key string) bool {
+	return len(key) <= 253 && secretKeyChars.MatchString(key) && key != "." && key != ".." && !strings.HasPrefix(key, "..")
+}
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
 // value the consumer's program knows when it runs; the pulumi.*Input fields may come from another
@@ -187,6 +202,14 @@ type DispatchArgs struct {
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
 	SignInDomain       string             `pulumi:"signInDomain,optional"`
+	// SignInWorkspaceDomains are the other domains the Google Workspace owns beside signInDomain,
+	// rendered comma-joined, in the order given, as DISPATCH_SIGNIN_WORKSPACE_DOMAINS, which Dispatch
+	// reads to tell a Workspace address from an outside one: it treats an address on any of them, or
+	// on a subdomain of one, as the Workspace's, which no invitation or outside sign-in may use.
+	// Dispatch reads it only with Google sign-in, so it needs the sign-in inputs and is no member of
+	// their group; it is refused in the sandbox and beside iapAudience. Each entry is held to
+	// Dispatch's own rule for the setting (workspaceDomainRule). Unset renders nothing.
+	SignInWorkspaceDomains []string `pulumi:"signInWorkspaceDomains,optional"`
 	// OutsideOrigin is a second origin Dispatch is reached at, by people from outside the
 	// company: an https origin weborigin.Parse takes, whose host is not that of Dispatch's own
 	// origin, the front door's or publicOrigin. It renders DISPATCH_OUTSIDE_ORIGIN and nothing
@@ -194,14 +217,44 @@ type DispatchArgs struct {
 	// app's NetworkPolicy admits an in-cluster one only through allowedNamespaces. It needs the
 	// tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own
 	// origin is an in-cluster http:// address where browser sign-in is refused. With the sign-in
-	// inputs set its host must also be one weborigin.GoogleRedirectHost takes, since the Google
-	// client then lists its callback. Unset renders nothing.
+	// inputs set its host must also be one weborigin.GoogleRedirectHost takes: the Google client
+	// then lists its callback, or, with signInPasskey, the host is the passkey's relying party ID,
+	// a domain name. Unset renders nothing.
 	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
 	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
 	// signInDomain sign in as a restricted member while some project's owner or access list names
 	// its email directly. It needs the sign-in inputs and is no member of their group, so a
 	// deployment that sets them leaves it unset and renders what it always rendered.
 	SignInOutside bool `pulumi:"signInOutside,optional"`
+	// SignInPasskey renders DISPATCH_SIGNIN_PASSKEY=1, which turns on Dispatch's passkey sign-in at
+	// outsideOrigin for people from outside the company: the passkey's relying party is that origin
+	// and its relying party ID that origin's host, so it needs outsideOrigin and renders right after
+	// DISPATCH_OUTSIDE_ORIGIN. It needs the sign-in inputs too, though it is no member of their
+	// group: a person from outside enrolls a passkey with an invitation a project owner makes while
+	// signed in through Google, so without them nobody could invite anyone. It replaces the Google
+	// sign-in of people from outside that signInOutside turns on, so it is refused beside
+	// signInOutside. It is refused beside iapAudience, since IAP signs a person in, and in the
+	// sandbox, which serves no https origin. With it the Google client lists no
+	// <outsideOrigin>/auth/callback, which Dispatch then answers 404; outsideOrigin's host is still
+	// held to weborigin.GoogleRedirectHost, which keeps it a domain name, never an IP address, as a
+	// relying party ID must be. A deployment that sets it lists every other domain its Workspace
+	// owns in signInWorkspaceDomains: Dispatch takes an address on a domain left out for an outside
+	// person's, so a Workspace account there could hold a passkey, which Workspace offboarding does
+	// not end. Unset renders nothing.
+	SignInPasskey bool `pulumi:"signInPasskey,optional"`
+	// ParentStatusRule renders DISPATCH_PARENT_STATUS_RULE=on, which turns on Dispatch's
+	// parent-status rule: Dispatch refuses a write that leaves a parent's status out of line with
+	// its children's, and at boot it runs the one-time fix of the pairs that break the rule. Set it
+	// only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs
+	// the releases with the daemon's side of the rule, which send the parent-status options.
+	// Second, each project's instructions retry a failed root architect with a status write of
+	// todo alone, not backlog and then todo, and that project's daemon and controller have read
+	// them. The rule refuses that backlog while an issue under the root is in work. No process of
+	// the earlier setting may serve beside one with the new setting: at one replica the app's
+	// Recreate strategy stops the old pod before the new one starts, and at more replicas the app
+	// is scaled to zero first. Unset renders nothing, so a deployment that leaves it unset renders
+	// what it always rendered.
+	ParentStatusRule bool `pulumi:"parentStatusRule,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
 	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
@@ -212,10 +265,11 @@ type DispatchArgs struct {
 	// weborigin.GoogleRedirectHost takes, since the Google client then lists
 	// <publicOrigin>/auth/callback. It is refused beside the tailnet inputs, whose front door's
 	// name is the origin of a Dispatch on the tailnet; a second origin beside that one is
-	// outsideOrigin. With it the sign-in inputs, signInOutside and outsideOrigin are taken
-	// without the tailnet inputs, natsInCluster is required, as it is in the sandbox, and
-	// allowedNamespaces is not, since the entrance admits its own traffic. Unset, Dispatch is
-	// reached as it always was: at the front door's name or, in the sandbox, inside its cluster.
+	// outsideOrigin. With it the sign-in inputs, signInWorkspaceDomains, signInOutside,
+	// outsideOrigin and signInPasskey are taken without the tailnet inputs, natsInCluster is
+	// required, as it is in the sandbox, and allowedNamespaces is not, since the entrance admits its
+	// own traffic. Unset, Dispatch is reached as it always was: at the front door's name or, in the
+	// sandbox, inside its cluster.
 	PublicOrigin string `pulumi:"publicOrigin,optional"`
 	// IapAudience turns on the IAP door: a browser reaches Dispatch through Identity-Aware Proxy
 	// on the deployment's load balancer, and Dispatch names its person from the signed header IAP
@@ -227,9 +281,10 @@ type DispatchArgs struct {
 	// output, such as one built from the backend service's own id. It needs publicOrigin, the
 	// origin that load balancer serves, and signInDomain, the Workspace domain whose accounts may
 	// use Dispatch, rendered as DISPATCH_SIGNIN_DOMAIN, which Dispatch holds the signed header's hd
-	// claim to; it is refused beside signInClientId, signInClientSecret, signInOutside and
-	// outsideOrigin: IAP signs a person in, and a browser reaches Dispatch through it alone.
-	// Unset renders none of the three variables, and Dispatch keeps its default identity.
+	// claim to; it is refused beside signInClientId, signInClientSecret, signInWorkspaceDomains,
+	// signInOutside, signInPasskey and outsideOrigin: IAP signs a person in, and a browser reaches
+	// Dispatch through it alone. Unset renders none of the three variables, and Dispatch keeps its
+	// default identity.
 	IapAudience pulumi.StringInput `pulumi:"iapAudience,optional"`
 	// LoadBalancerSourceRanges are the CIDRs the deployment's load balancer reaches the app's pods
 	// from, such as Google's health-check and proxy ranges, which the component renders as ipBlock
@@ -289,6 +344,13 @@ type DispatchArgs struct {
 	AppId                   string `pulumi:"appId,optional"`
 	AppPrivateKeySecretName string `pulumi:"appPrivateKeySecretName,optional"`
 	AppPrivateKeySecretKey  string `pulumi:"appPrivateKeySecretKey,optional"`
+	// VerdictAppId is the id of the GitHub App that writes `legion-verdict`, which Dispatch reads
+	// as DISPATCH_VERDICT_APP_ID: its CI reconcile pass leaves that App's check suites out of the
+	// CI record, as the listener does under ENVOY_VERDICT_APP_ID (aws:WebhookListener's
+	// verdictAppId), so give both the same id. It is optional, rendered only when given, and only
+	// with the App above, whose key alone runs that pass; refused blank, and refused when it is
+	// not a GitHub App id (contracts.IsGithubAppID).
+	VerdictAppId *string `pulumi:"verdictAppId,optional"`
 
 	DatabaseVersion    *string `pulumi:"databaseVersion,optional"`
 	DatabaseTier       *string `pulumi:"databaseTier,optional"`
@@ -391,6 +453,18 @@ type DispatchArgs struct {
 	// Unset renders nothing: no limit, and a rate with no burst takes the rate as its burst.
 	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
 	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
+	// ConsumerNames is how both consumer creators, the app and the listener, name the JetStream
+	// consumers they create: ENVOY_CONSUMER_NAMES on the app's and the listener's containers,
+	// "fixed" or "fresh". Unset renders nothing, and both run fixed; any other value is refused
+	// (core.CheckConsumerNames). Each reads it only at its start, so a change rolls both pods.
+	ConsumerNames string `pulumi:"consumerNames,optional"`
+	// ReplaceUnderHold is the writer hold's update rule (heldReplacement) for the same two
+	// Deployments: true recreates each, whatever its replica count, so its old pods stop before the
+	// new ones start, and lets the apply finish without waiting for the new pods, whose readiness
+	// the hold's refusal of their NATS connections can hold back. The front door, which creates no
+	// consumer, is unchanged. Unset or false, each Deployment updates and is waited for as it always
+	// has.
+	ReplaceUnderHold bool `pulumi:"replaceUnderHold,optional"`
 
 	// SigningKeyGenerations is the ordered key set the server holds, the shape
 	// auth.ParseSigningKeys reads DISPATCH_SIGNING_KEY into: the first entry signs every new
@@ -553,6 +627,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey},
+		{"consumerNames", args.ConsumerNames},
 	} {
 		if bus.HoldsSeed(value.value) {
 			return value.input, true
@@ -562,6 +637,14 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		if bus.HoldsSeed(tag) {
 			return fmt.Sprintf("tags[%d]", i), true
 		}
+	}
+	for i, domain := range args.SignInWorkspaceDomains {
+		if bus.HoldsSeed(domain) {
+			return fmt.Sprintf("signInWorkspaceDomains[%d]", i), true
+		}
+	}
+	if args.VerdictAppId != nil && bus.HoldsSeed(*args.VerdictAppId) {
+		return "verdictAppId", true
 	}
 	if args.DatabaseVersion != nil && bus.HoldsSeed(*args.DatabaseVersion) {
 		return "databaseVersion", true
@@ -641,10 +724,11 @@ type Dispatch struct {
 	Kubeconfig       pulumi.StringOutput `pulumi:"kubeconfig"`
 	Principal        pulumi.StringOutput `pulumi:"principal"`
 	AgentToken       pulumi.StringOutput `pulumi:"agentToken" provider:"secret"`
-	// ServiceAccountIssuer and ServiceAccountSubject are the issuer and subject of the app's and
-	// the listener's service-account tokens: the cluster's OIDC issuer, and those pods' Kubernetes
-	// service account. A federated credential trusting the pair (an Azure identity's, for the
-	// keyless form) admits exactly those pods; the front door's pods run as an account of their own.
+	// ServiceAccountIssuer and ServiceAccountSubject are the issuer and subject of the app's
+	// service-account tokens: the cluster's OIDC issuer, and those pods' Kubernetes service
+	// account. A federated credential trusting the pair (an Azure identity's, for the keyless form)
+	// admits exactly those pods; the listener's and the front door's pods run as accounts of their
+	// own.
 	ServiceAccountIssuer  pulumi.StringOutput `pulumi:"serviceAccountIssuer"`
 	ServiceAccountSubject pulumi.StringOutput `pulumi:"serviceAccountSubject"`
 }
@@ -655,9 +739,11 @@ type Dispatch struct {
 // network half both modes build: no other field is read by the cluster and the network the mode
 // builds.
 // natsReplicas, streamMaxBytes, senderMessagesPerMinute and senderMessageBurst are 0 when their
-// inputs are unset, where the component renders none of those settings, and signingKeyGenerations
-// is the generations the component registers a signing key for, in the order the server holds
-// them, [0] when its input is unset. frontDoor and signInOn are the two groups of inputs a
+// inputs are unset, where the component renders none of those settings, consumerNames is "" when
+// its input is unset, where it renders no ENVOY_CONSUMER_NAMES, and signingKeyGenerations is the
+// generations the component registers a signing key for, in the order the server holds them, [0]
+// when its input is unset. replaceUnderHold is the writer hold's update rule for the app's and the
+// listener's Deployments (heldReplacement). frontDoor and signInOn are the two groups of inputs a
 // consumer sets together or not at all: frontDoor is set when any tailnet input is, where the
 // component builds the front door and Dispatch is reached at its tailnet name, and signInOn when
 // any sign-in input is, where the app runs browser sign-in. publicOrigin is the origin Dispatch
@@ -666,9 +752,10 @@ type Dispatch struct {
 // from args, since it may be another resource's output.
 // With neither group and no publicOrigin the component is the sandbox: Dispatch is reached in the
 // cluster alone, by readers the app's NetworkPolicy admits, and tailnetDNSName, tags, the
-// tailscale and tools images, outsideOrigin, signIn and signInOutside are empty, since nothing
-// reads them. signInOutside is set only with signInOn, and outsideOrigin is "" when its input is
-// unset, where the component renders no second origin.
+// tailscale and tools images, outsideOrigin, signIn, signInWorkspaceDomains, signInOutside and
+// signInPasskey are empty, since nothing reads them. signInWorkspaceDomains and signInOutside are
+// set only with signInOn, outsideOrigin is "" when its input is unset, where the component renders
+// no second origin, and signInPasskey is set only with outsideOrigin and signInOn.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here. existingCluster is the input of that name, its name and location checked
@@ -688,12 +775,14 @@ type dispatchSettings struct {
 	tags                                        []string
 	images                                      struct{ envoy, tailscale, proxy, tools string }
 	signIn                                      struct{ clientID, domain string }
-	signInOutside                               bool
+	signInOutside, signInPasskey                bool
+	signInWorkspaceDomains                      []string
+	parentStatusRule                            bool
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
-	appClientID, appID                          string
+	appClientID, appID, verdictAppID            string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
 	replicas                                    int
@@ -701,6 +790,8 @@ type dispatchSettings struct {
 	natsInCluster                               bool
 	natsReplicas, streamMaxBytes                int
 	senderMessagesPerMinute, senderMessageBurst int
+	consumerNames                               string
+	replaceUnderHold                            bool
 	signingKeyGenerations                       []int
 	appResources                                dispatchAppResources
 	pprofPort                                   int
@@ -779,19 +870,19 @@ func newDispatchAzure(args *DispatchArgs) (dispatchAzure, error) {
 		}
 	}
 	if args.AzureTenantId != nil && args.AzureClientId == nil {
-		return dispatchAzure{}, errors.New("azureClientId is required when azureTenantId is set: the keyless form takes both")
+		return dispatchAzure{}, core.InputErrorf("azureClientId", "azureClientId is required when azureTenantId is set: the keyless form takes both")
 	}
 	if args.AzureClientId != nil && args.AzureTenantId == nil {
-		return dispatchAzure{}, errors.New("azureTenantId is required when azureClientId is set: the keyless form takes both")
+		return dispatchAzure{}, core.InputErrorf("azureTenantId", "azureTenantId is required when azureClientId is set: the keyless form takes both")
 	}
 	if args.AzureFederationAudience != nil && !keyless {
-		return dispatchAzure{}, errors.New("azureFederationAudience is set without azureTenantId and azureClientId: it is the keyless form's token audience")
+		return dispatchAzure{}, core.InputErrorf("azureFederationAudience", "azureFederationAudience is set without azureTenantId and azureClientId: it is the keyless form's token audience")
 	}
 	if keyless {
 		azure.audience = defaultAzureFederationAudience
 		if args.AzureFederationAudience != nil {
 			if *args.AzureFederationAudience == "" {
-				return dispatchAzure{}, errors.New("azureFederationAudience is empty; leave it unset for " + defaultAzureFederationAudience)
+				return dispatchAzure{}, core.InputErrorf("azureFederationAudience", "azureFederationAudience is empty; leave it unset for %s", defaultAzureFederationAudience)
 			}
 			azure.audience = *args.AzureFederationAudience
 		}
@@ -807,16 +898,16 @@ func newDispatchAzure(args *DispatchArgs) (dispatchAzure, error) {
 		return azure, nil
 	}
 	if args.AzureEmbedTokensPerMinute == nil {
-		return dispatchAzure{}, errors.New("azureEmbedTokensPerMinute is required when azureEmbedEndpoint is set: the deployment's tokens-per-minute quota, which Dispatch paces its embedding by")
+		return dispatchAzure{}, core.InputErrorf("azureEmbedTokensPerMinute", "azureEmbedTokensPerMinute is required when azureEmbedEndpoint is set: the deployment's tokens-per-minute quota, which Dispatch paces its embedding by")
 	}
 	if *args.AzureEmbedTokensPerMinute <= 0 {
-		return dispatchAzure{}, fmt.Errorf("azureEmbedTokensPerMinute %d must be a positive integer", *args.AzureEmbedTokensPerMinute)
+		return dispatchAzure{}, core.InputErrorf("azureEmbedTokensPerMinute", "azureEmbedTokensPerMinute %d must be a positive integer", *args.AzureEmbedTokensPerMinute)
 	}
 	if args.AzureEmbedKeySecret != nil && keyless {
-		return dispatchAzure{}, errors.New("azureEmbedKeySecret is set with azureTenantId or azureClientId: the key and keyless credential forms are exclusive, so set exactly one")
+		return dispatchAzure{}, core.InputErrorf("azureEmbedKeySecret", "azureEmbedKeySecret is set with azureTenantId or azureClientId: the key and keyless credential forms are exclusive, so set exactly one")
 	}
 	if args.AzureEmbedKeySecret == nil && !keyless {
-		return dispatchAzure{}, errors.New("azureEmbedEndpoint needs one credential: azureEmbedKeySecret, or azureTenantId with azureClientId")
+		return dispatchAzure{}, core.InputErrorf("azureEmbedEndpoint", "azureEmbedEndpoint needs one credential: azureEmbedKeySecret, or azureTenantId with azureClientId")
 	}
 	azure.key = !keyless
 	azure.tokensPerMinute = *args.AzureEmbedTokensPerMinute
@@ -863,7 +954,7 @@ func newDispatchAnswerer(args *DispatchArgs, keyless bool) (dispatchAnswerer, er
 		}
 	}
 	if args.AzureChatEndpoint != nil && args.ChatEndpoint != nil {
-		return dispatchAnswerer{}, errors.New("chatEndpoint is set with azureChatEndpoint: one deployment names one answerer, so set exactly one")
+		return dispatchAnswerer{}, core.InputErrorf("chatEndpoint", "chatEndpoint is set with azureChatEndpoint: one deployment names one answerer, so set exactly one")
 	}
 	switch {
 	case args.AzureChatEndpoint != nil:
@@ -880,27 +971,27 @@ func newDispatchAnswerer(args *DispatchArgs, keyless bool) (dispatchAnswerer, er
 func newDispatchAzureAnswerer(args *DispatchArgs, keyless bool) (dispatchAnswerer, error) {
 	answerer := dispatchAnswerer{place: dispatchAnswererAzure}
 	if args.AzureChatTokensPerMinute == nil {
-		return dispatchAnswerer{}, errors.New("azureChatTokensPerMinute is required when azureChatEndpoint is set: the deployment's tokens-per-minute quota, which Dispatch paces its answers by")
+		return dispatchAnswerer{}, core.InputErrorf("azureChatTokensPerMinute", "azureChatTokensPerMinute is required when azureChatEndpoint is set: the deployment's tokens-per-minute quota, which Dispatch paces its answers by")
 	}
 	if *args.AzureChatTokensPerMinute <= 0 {
-		return dispatchAnswerer{}, fmt.Errorf("azureChatTokensPerMinute %d must be a positive integer", *args.AzureChatTokensPerMinute)
+		return dispatchAnswerer{}, core.InputErrorf("azureChatTokensPerMinute", "azureChatTokensPerMinute %d must be a positive integer", *args.AzureChatTokensPerMinute)
 	}
 	answerer.tokensPerMinute = *args.AzureChatTokensPerMinute
 	if args.AzureChatDeployment == nil {
-		return dispatchAnswerer{}, errors.New("azureChatDeployment is required when azureChatEndpoint is set: the chat deployment's name, which each request sends as its model")
+		return dispatchAnswerer{}, core.InputErrorf("azureChatDeployment", "azureChatDeployment is required when azureChatEndpoint is set: the chat deployment's name, which each request sends as its model")
 	}
 	if !keyless {
-		return dispatchAnswerer{}, errors.New("azureChatEndpoint needs the keyless Azure sign-in: azureTenantId with azureClientId, since the Azure chat form takes no API key")
+		return dispatchAnswerer{}, core.InputErrorf("azureChatEndpoint", "azureChatEndpoint needs the keyless Azure sign-in: azureTenantId with azureClientId, since the Azure chat form takes no API key")
 	}
 	if args.AzureChatApiVersion != nil {
 		if *args.AzureChatApiVersion == "" {
-			return dispatchAnswerer{}, errors.New("azureChatApiVersion is empty; leave it unset for a request that sends no api-version")
+			return dispatchAnswerer{}, core.InputErrorf("azureChatApiVersion", "azureChatApiVersion is empty; leave it unset for a request that sends no api-version")
 		}
 		answerer.apiVersion = *args.AzureChatApiVersion
 	}
 	if args.AzureChatScope != nil {
 		if *args.AzureChatScope == "" {
-			return dispatchAnswerer{}, errors.New("azureChatScope is empty; leave it unset for the scope Dispatch asks for by default")
+			return dispatchAnswerer{}, core.InputErrorf("azureChatScope", "azureChatScope is empty; leave it unset for the scope Dispatch asks for by default")
 		}
 		answerer.scope = *args.AzureChatScope
 	}
@@ -913,13 +1004,13 @@ func newDispatchAzureAnswerer(args *DispatchArgs, keyless bool) (dispatchAnswere
 func newDispatchEndpointAnswerer(args *DispatchArgs) (dispatchAnswerer, error) {
 	answerer := dispatchAnswerer{place: dispatchAnswererEndpoint}
 	if args.ChatTokenSecret == nil {
-		return dispatchAnswerer{}, errors.New("chatTokenSecret is required when chatEndpoint is set: the Secret Manager secret whose value is the bearer token every call presents")
+		return dispatchAnswerer{}, core.InputErrorf("chatTokenSecret", "chatTokenSecret is required when chatEndpoint is set: the Secret Manager secret whose value is the bearer token every call presents")
 	}
 	if args.ChatModel == nil {
-		return dispatchAnswerer{}, errors.New("chatModel is required when chatEndpoint is set: the model each request names")
+		return dispatchAnswerer{}, core.InputErrorf("chatModel", "chatModel is required when chatEndpoint is set: the model each request names")
 	}
 	if *args.ChatModel == "" {
-		return dispatchAnswerer{}, errors.New("chatModel is empty; it is the model each request names")
+		return dispatchAnswerer{}, core.InputErrorf("chatModel", "chatModel is empty; it is the model each request names")
 	}
 	answerer.model = *args.ChatModel
 	return answerer, nil
@@ -1024,6 +1115,9 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
 		{"signInOutside", args.SignInOutside},
+		{"signInPasskey", args.SignInPasskey},
+		{"signInWorkspaceDomains", len(args.SignInWorkspaceDomains) > 0},
+		{"parentStatusRule", args.ParentStatusRule},
 		{"publicOrigin", args.PublicOrigin != ""},
 		{"iapAudience", args.IapAudience != nil},
 		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
@@ -1040,6 +1134,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey != ""},
+		{"verdictAppId", args.VerdictAppId != nil},
 	}, dispatchDatabaseInputs(args), []dispatchInput{
 		{"namespace", args.Namespace != nil},
 		{"existingNamespace", args.ExistingNamespace != nil},
@@ -1081,6 +1176,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"chatEndpoint", args.ChatEndpoint != nil},
 		{"chatModel", args.ChatModel != nil},
 		{"chatTokenSecret", args.ChatTokenSecret != nil},
+		{"consumerNames", args.ConsumerNames != ""},
+		{"replaceUnderHold", args.ReplaceUnderHold},
 	})
 }
 
@@ -1119,7 +1216,7 @@ func dispatchGroupClause(feature string, group []dispatchInput) string {
 func refuseDispatchInputsWithout(endpoint, reason string, inputs []dispatchInput) error {
 	for _, in := range inputs {
 		if in.set {
-			return fmt.Errorf("%s is required when %s is set: %s", endpoint, in.input, reason)
+			return core.InputErrorf(in.input, "%s is required when %s is set: %s", endpoint, in.input, reason)
 		}
 	}
 	return nil
@@ -1134,14 +1231,14 @@ func refuseDispatchInputsWithout(endpoint, reason string, inputs []dispatchInput
 // told the whole shortfall at once.
 func refuseDispatchTailnetGroup(args *DispatchArgs, clause string) error {
 	if !tailnetDNSNameRule.MatchString(args.TailnetDnsName) {
-		return fmt.Errorf("tailnetDnsName %q must match %s%s", args.TailnetDnsName, tailnetDNSNameRule, clause)
+		return core.InputErrorf("tailnetDnsName", "tailnetDnsName %q must match %s%s", args.TailnetDnsName, tailnetDNSNameRule, clause)
 	}
 	if len(args.Tags) == 0 {
-		return fmt.Errorf("tags: at least one tag is required%s", clause)
+		return core.InputErrorf("tags", "tags: at least one tag is required%s", clause)
 	}
 	for i, tag := range args.Tags {
 		if !tagRule.MatchString(tag) {
-			return fmt.Errorf("tags[%d] %q must match %s%s", i, tag, tagRule, clause)
+			return core.InputErrorf("tags", "tags[%d] %q must match %s%s", i, tag, tagRule, clause)
 		}
 	}
 	for _, image := range []struct{ field, ref string }{
@@ -1149,11 +1246,11 @@ func refuseDispatchTailnetGroup(args *DispatchArgs, clause string) error {
 		{"frontDoorToolsImage", args.FrontDoorToolsImage},
 	} {
 		if !imageRule.MatchString(image.ref) {
-			return fmt.Errorf("%s %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>%s", image.field, image.ref, clause)
+			return core.InputErrorf(image.field, "%s %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>%s", image.field, image.ref, clause)
 		}
 	}
 	if args.TailnetAuthKey == nil {
-		return fmt.Errorf("tailnetAuthKey is required%s", clause)
+		return core.InputErrorf("tailnetAuthKey", "tailnetAuthKey is required%s", clause)
 	}
 	return nil
 }
@@ -1163,30 +1260,37 @@ const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs
 // refuseDispatchSandbox judges what the sandbox cannot make good, and requires the two inputs the
 // mode needs. It runs only while the tailnet group is wholly unset and publicOrigin is unset,
 // which is what asks for the mode: no front door is built and no origin is served, so a sign-in
-// input, signInOutside among them, would ask an OAuth provider to redirect to an in-cluster
-// http:// address, outsideOrigin would add an origin for outside sign-in to a Dispatch where
-// browser sign-in is refused, and the app's own policy is its only ingress; what any Dispatch
-// without a front door cannot make good is refuseDispatchWithoutFrontDoor's. Each is refused by
-// its own name rather than accepted and quietly dropped. The sign-in inputs are refused here,
-// before the sign-in group's own checks, so one sent to a sandbox is refused for being sent at
-// all and not for the rest of its group being missing.
+// input, signInWorkspaceDomains and signInOutside among them, would ask an OAuth provider to
+// redirect to an in-cluster http:// address, signInPasskey would sign people in at a second origin
+// the sandbox cannot have, outsideOrigin would add an origin for outside sign-in to a Dispatch
+// where browser sign-in is refused, and the app's own policy is its only ingress; what any
+// Dispatch without a front door cannot make good is refuseDispatchWithoutFrontDoor's. Each is
+// refused by its own name rather than accepted and quietly dropped. The sign-in inputs are refused
+// here, before the sign-in group's own checks, so one sent to a sandbox is refused for being sent
+// at all and not for the rest of its group being missing.
 func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) error {
 	for _, in := range signInGroup {
 		if in.set {
-			return fmt.Errorf(dispatchSandboxSignInRefusal, in.input, "the sign-in inputs")
+			return core.InputErrorf(in.input, dispatchSandboxSignInRefusal, in.input, "the sign-in inputs")
 		}
 	}
 	if args.SignInOutside {
-		return fmt.Errorf(dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
+		return core.InputErrorf("signInOutside", dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
+	}
+	if len(args.SignInWorkspaceDomains) > 0 {
+		return core.InputErrorf("signInWorkspaceDomains", dispatchSandboxSignInRefusal, "signInWorkspaceDomains", "signInWorkspaceDomains")
+	}
+	if args.SignInPasskey {
+		return core.InputErrorf("signInPasskey", "signInPasskey needs outsideOrigin, which needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused; unset signInPasskey, or set the tailnet inputs or publicOrigin")
 	}
 	if args.OutsideOrigin != "" {
-		return errors.New("outsideOrigin needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs or publicOrigin")
+		return core.InputErrorf("outsideOrigin", "outsideOrigin needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs or publicOrigin")
 	}
 	if err := refuseDispatchWithoutFrontDoor(args); err != nil {
 		return err
 	}
 	if len(args.AllowedNamespaces) == 0 {
-		return errors.New("allowedNamespaces must name at least one namespace without the tailnet inputs or publicOrigin: with no entrance its rules are the app's only ingress, and a NetworkPolicy with no rule admits nobody, so nothing could reach Dispatch at all")
+		return core.InputErrorf("allowedNamespaces", "allowedNamespaces must name at least one namespace without the tailnet inputs or publicOrigin: with no entrance its rules are the app's only ingress, and a NetworkPolicy with no rule admits nobody, so nothing could reach Dispatch at all")
 	}
 	return nil
 }
@@ -1195,16 +1299,17 @@ func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) erro
 // good, in the sandbox and at publicOrigin alike: the pods reach a NATS hub only inside their own
 // cluster, since no front door runs the SOCKS5 proxy a tailnet hub is reached through, and
 // frontDoorReplicas and frontDoorPdbMinAvailable size and protect a Deployment that does not
-// exist. Each is refused by its own name rather than accepted and quietly dropped.
+// exist. Each is refused by its own name rather than accepted and quietly dropped, as a
+// core.InputError naming it.
 func refuseDispatchWithoutFrontDoor(args *DispatchArgs) error {
 	if args.NatsInCluster == nil || !*args.NatsInCluster {
-		return errors.New("natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster")
+		return core.InputErrorf("natsInCluster", "natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster")
 	}
 	if args.FrontDoorReplicas != nil {
-		return errors.New("frontDoorReplicas sizes a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
+		return core.InputErrorf("frontDoorReplicas", "frontDoorReplicas sizes a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
 	}
 	if args.FrontDoorPdbMinAvailable != nil {
-		return errors.New("frontDoorPdbMinAvailable covers a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
+		return core.InputErrorf("frontDoorPdbMinAvailable", "frontDoorPdbMinAvailable covers a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
 	}
 	return nil
 }
@@ -1220,14 +1325,14 @@ func refuseDispatchWithoutFrontDoor(args *DispatchArgs) error {
 func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, error) {
 	origin, err := weborigin.Parse(args.PublicOrigin)
 	if err != nil {
-		return nil, fmt.Errorf("publicOrigin: %w", err)
+		return nil, core.InputErrorf("publicOrigin", "publicOrigin: %w", err)
 	}
 	if origin.Scheme != "https" {
-		return nil, errors.New("publicOrigin must be an https origin: Dispatch's session cookie, browser sign-in and IAP need TLS at it, as they do at the front door's name")
+		return nil, core.InputErrorf("publicOrigin", "publicOrigin must be an https origin: Dispatch's session cookie, browser sign-in and IAP need TLS at it, as they do at the front door's name")
 	}
 	if signInOn {
 		if err := weborigin.GoogleRedirectHost(origin.Hostname()); err != nil {
-			return nil, fmt.Errorf("publicOrigin's %w", err)
+			return nil, core.InputErrorf("publicOrigin", "publicOrigin's %w", err)
 		}
 	}
 	return origin, nil
@@ -1239,15 +1344,16 @@ func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, er
 // needs signInDomain, the Workspace domain whose accounts may use Dispatch, which Dispatch holds
 // the signed header's hd claim to by the membership rule its own sign-in uses, and which it
 // refuses to boot without under IAP. And it refuses the Google client (signInClientId,
-// signInClientSecret), signInOutside and outsideOrigin: IAP signs a person in and a browser
-// reaches Dispatch through it alone, so Dispatch runs no sign-in of its own and serves no second
-// origin for outside sign-in. Each is refused by its own name, before the sign-in group's own
-// checks, which the IAP door does not run, so a client input sent beside IAP is refused for being
-// sent at all. The audience's own value may be another resource's output, so it is judged once
-// it resolves (dispatchIAPAudience).
+// signInClientSecret), signInWorkspaceDomains, signInOutside, signInPasskey and outsideOrigin: IAP
+// signs a person in and a browser reaches Dispatch through it alone, so Dispatch runs no sign-in of
+// its own, by Google or by passkey, and serves no second origin for outside sign-in. Each is
+// refused by its own name, signInPasskey before outsideOrigin, which a consumer sets for it, and
+// all of them before the sign-in group's own checks, which the IAP door does not run, so a client
+// input sent beside IAP is refused for being sent at all. The audience's own value may be another
+// resource's output, so it is judged once it resolves (dispatchIAPAudience).
 func refuseDispatchIAP(args *DispatchArgs) error {
 	if args.PublicOrigin == "" {
-		return errors.New("iapAudience needs publicOrigin: IAP runs on the deployment's own load balancer, which serves Dispatch at that origin, and no request through the tailnet front door or into the sandbox carries IAP's signed header; set publicOrigin, or unset iapAudience")
+		return core.InputErrorf("iapAudience", "iapAudience needs publicOrigin: IAP runs on the deployment's own load balancer, which serves Dispatch at that origin, and no request through the tailnet front door or into the sandbox carries IAP's signed header; set publicOrigin, or unset iapAudience")
 	}
 	const signIn = "%s configures Google sign-in, which iapAudience replaces: IAP signs a person in and Dispatch names them from IAP's signed header, so it runs no sign-in of its own; unset %s, or unset iapAudience"
 	for _, in := range []dispatchInput{
@@ -1256,14 +1362,20 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 		{"signInOutside", args.SignInOutside},
 	} {
 		if in.set {
-			return fmt.Errorf(signIn, in.input, in.input)
+			return core.InputErrorf(in.input, signIn, in.input, in.input)
 		}
 	}
-	if args.OutsideOrigin != "" {
-		return errors.New("outsideOrigin is refused beside iapAudience: a browser reaches Dispatch through IAP alone, at publicOrigin, and a second origin is for outside sign-in, which the IAP door does not run; unset outsideOrigin, or unset iapAudience")
+	if len(args.SignInWorkspaceDomains) > 0 {
+		return core.InputErrorf("signInWorkspaceDomains", signIn, "signInWorkspaceDomains", "signInWorkspaceDomains")
 	}
-	if !signInDomainRule.MatchString(args.SignInDomain) {
-		return fmt.Errorf("signInDomain %q must be a lowercase DNS name with iapAudience: the Workspace domain whose accounts may use Dispatch, which Dispatch holds IAP's signed header's hd claim to and refuses to boot without", args.SignInDomain)
+	if args.SignInPasskey {
+		return core.InputErrorf("signInPasskey", "signInPasskey is refused beside iapAudience: IAP signs a person in and Dispatch names them from IAP's signed header, so it runs no passkey sign-in of its own; unset signInPasskey, or unset iapAudience")
+	}
+	if args.OutsideOrigin != "" {
+		return core.InputErrorf("outsideOrigin", "outsideOrigin is refused beside iapAudience: a browser reaches Dispatch through IAP alone, at publicOrigin, and a second origin is for outside sign-in, which the IAP door does not run; unset outsideOrigin, or unset iapAudience")
+	}
+	if !dispatchDomainName(args.SignInDomain) {
+		return core.InputErrorf("signInDomain", "signInDomain %q must be a lowercase DNS name with iapAudience: the Workspace domain whose accounts may use Dispatch, which Dispatch holds IAP's signed header's hd claim to and refuses to boot without", args.SignInDomain)
 	}
 	return nil
 }
@@ -1272,16 +1384,74 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 // browser to, the domain whose accounts it admits and that client's secret. It runs only while
 // that group is set, so a deployment that runs no browser sign-in reaches none of these checks,
 // and every refusal trails clause, which names every sign-in input still unset, as the tailnet
-// group's refusals do.
+// group's refusals do. Each is a core.InputError naming the input to correct. A client ID of
+// whitespace alone is no client: Dispatch trims DISPATCH_SIGNIN_CLIENT_ID and refuses to boot
+// without one. The domain is held to the rule Dispatch holds DISPATCH_SIGNIN_DOMAIN to
+// (dispatchDomainName).
 func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 	if args.SignInClientId == "" {
-		return fmt.Errorf("signInClientId is required%s", clause)
+		return core.InputErrorf("signInClientId", "signInClientId is required%s", clause)
 	}
-	if !signInDomainRule.MatchString(args.SignInDomain) {
-		return fmt.Errorf("signInDomain %q must be a lowercase DNS name%s", args.SignInDomain, clause)
+	if strings.TrimSpace(args.SignInClientId) == "" {
+		return core.InputErrorf("signInClientId", "signInClientId is blank, which no Google client ID is: Dispatch trims it and refuses to boot without one%s", clause)
+	}
+	if !dispatchDomainName(args.SignInDomain) {
+		return core.InputErrorf("signInDomain", "signInDomain %q must be a lowercase DNS name%s", args.SignInDomain, clause)
 	}
 	if args.SignInClientSecret == nil {
-		return fmt.Errorf("signInClientSecret is required%s", clause)
+		return core.InputErrorf("signInClientSecret", "signInClientSecret is required%s", clause)
+	}
+	return nil
+}
+
+// dispatchDomainShape is a DNS name of two labels or more, each a lowercase letter or digit, then
+// up to 61 letters, digits or hyphens, then a letter or digit (63 characters at most): the shape
+// Dispatch holds DISPATCH_SIGNIN_DOMAIN and each DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry's A-labels
+// to, with maxDispatchDomainLength, the longest DNS name in its dotted text form. The domains
+// Dispatch takes and refuses are packages/envoy/cmd/dispatch/testdata/signin-domain-vectors.json,
+// which this package's tests and Dispatch's read alike.
+var dispatchDomainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+const maxDispatchDomainLength = 253
+
+// dispatchDomainName reports whether domain is one Dispatch takes as DISPATCH_SIGNIN_DOMAIN, under
+// Google sign-in and under IAP alike: once trimmed of surrounding whitespace (strings.TrimSpace),
+// as Dispatch's boot trims the setting before it checks it, in ASCII, of dispatchDomainShape and
+// at most maxDispatchDomainLength characters. The component renders the trimmed value.
+func dispatchDomainName(domain string) bool {
+	domain = strings.TrimSpace(domain)
+	return len(domain) <= maxDispatchDomainLength && dispatchDomainShape.MatchString(domain)
+}
+
+// workspaceDomainRule reports whether entry is one Dispatch takes in DISPATCH_SIGNIN_WORKSPACE_DOMAINS:
+// once trimmed of surrounding whitespace, as Dispatch trims each entry of the list, lowercase,
+// taken by IDNA lookup (idna.Lookup.ToASCII), and then, as its A-labels, a dispatchDomainName. An
+// internationalized domain may be written in Unicode (bücher.example) or as its A-labels
+// (xn--bcher-kva.example); a label such as xn--a, which decodes to nothing, is refused.
+// dispatchDomainShape admits no comma, so no entry splits into two when the list is comma-joined.
+// The component renders each entry trimmed.
+func workspaceDomainRule(entry string) bool {
+	entry = strings.TrimSpace(entry)
+	ascii, err := idna.Lookup.ToASCII(entry)
+	return err == nil && entry == strings.ToLower(entry) && dispatchDomainName(ascii)
+}
+
+// refuseDispatchWorkspaceDomains judges signInWorkspaceDomains where the sign-in inputs are set,
+// the one place it may be, so a bad entry fails the resolver rather than the pod's boot: each entry
+// must be one workspaceDomainRule takes, and an empty one is refused on its own; one of whitespace
+// alone, which Dispatch trims to nothing, is refused by that rule. Each refusal is a
+// core.InputError naming signInWorkspaceDomains, as the schema names the input, whose message names
+// the entry by its index. dispatchSeededInput has refused a seed in any entry already, so a
+// refusal may quote it.
+func refuseDispatchWorkspaceDomains(domains []string) error {
+	for i, domain := range domains {
+		entry := fmt.Sprintf("signInWorkspaceDomains[%d]", i)
+		if domain == "" {
+			return core.InputErrorf("signInWorkspaceDomains", "%s is empty: each entry is a domain the Workspace owns", entry)
+		}
+		if !workspaceDomainRule(domain) {
+			return core.InputErrorf("signInWorkspaceDomains", "%s %q must be a lowercase domain name that IDNA lookup takes, such as example.net or bücher.example, of two labels or more, each of at most 63 characters, and at most 253 characters in all, as Dispatch requires of each DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry", entry, domain)
+		}
 	}
 	return nil
 }
@@ -1293,28 +1463,30 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 // weborigin.Parse takes, whose refusals it prefixes with the input's name; the component adds that
 // the origin is https, as Dispatch's own is, that its host is not ownHost, whose origin Dispatch
 // already is, and, with the sign-in inputs set, that its host is one weborigin.GoogleRedirectHost
-// takes, since the Google client must then list <outsideOrigin>/auth/callback; that function's
-// refusals it prefixes with "outsideOrigin's ".
+// takes: without signInPasskey the Google client must then list <outsideOrigin>/auth/callback,
+// and with it, where Dispatch answers that path 404 and the client lists no callback there, the
+// host is the passkey's relying party ID, which must be a domain name, never an IP address. That
+// function's refusals it prefixes with "outsideOrigin's ".
 func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, signInOn bool) (string, error) {
 	if args.OutsideOrigin == "" {
 		return "", nil
 	}
 	origin, err := weborigin.Parse(args.OutsideOrigin)
 	if err != nil {
-		return "", fmt.Errorf("outsideOrigin: %w", err)
+		return "", core.InputErrorf("outsideOrigin", "outsideOrigin: %w", err)
 	}
 	if origin.Scheme != "https" {
-		return "", fmt.Errorf("outsideOrigin must be an https origin: browser sign-in at it needs TLS, as %s does", owner)
+		return "", core.InputErrorf("outsideOrigin", "outsideOrigin must be an https origin: browser sign-in at it needs TLS, as %s does", owner)
 	}
 	host := origin.Hostname()
 	if host == ownHost {
-		return "", fmt.Errorf("outsideOrigin's host %s is %s: a second origin needs a host of its own", host, owner)
+		return "", core.InputErrorf("outsideOrigin", "outsideOrigin's host %s is %s: a second origin needs a host of its own", host, owner)
 	}
 	if !signInOn {
 		return origin.String(), nil
 	}
 	if err := weborigin.GoogleRedirectHost(host); err != nil {
-		return "", fmt.Errorf("outsideOrigin's %w", err)
+		return "", core.InputErrorf("outsideOrigin", "outsideOrigin's %w", err)
 	}
 	return origin.String(), nil
 }
@@ -1339,23 +1511,23 @@ func refuseDispatchEntrance(args *DispatchArgs) error {
 		{"networkEndpointGroupName", args.NetworkEndpointGroupName != ""},
 	} {
 		if in.set && args.PublicOrigin == "" {
-			return fmt.Errorf("%s needs publicOrigin: it describes the deployment's own load balancer, which serves Dispatch at that origin, and a Dispatch reached through the tailnet front door or inside its cluster has none; set publicOrigin, or unset %s", in.input, in.input)
+			return core.InputErrorf(in.input, "%s needs publicOrigin: it describes the deployment's own load balancer, which serves Dispatch at that origin, and a Dispatch reached through the tailnet front door or inside its cluster has none; set publicOrigin, or unset %s", in.input, in.input)
 		}
 	}
 	for i, cidr := range args.LoadBalancerSourceRanges {
 		_, network, err := net.ParseCIDR(cidr)
 		if err != nil {
-			return fmt.Errorf("loadBalancerSourceRanges[%d] %q must be a CIDR, such as 130.211.0.0/22", i, cidr)
+			return core.InputErrorf("loadBalancerSourceRanges", "loadBalancerSourceRanges[%d] %q must be a CIDR, such as 130.211.0.0/22", i, cidr)
 		}
 		if network.String() != cidr {
-			return fmt.Errorf("loadBalancerSourceRanges[%d] %q must be written as the network it names, %s", i, cidr, network)
+			return core.InputErrorf("loadBalancerSourceRanges", "loadBalancerSourceRanges[%d] %q must be written as the network it names, %s", i, cidr, network)
 		}
 		if ones, _ := network.Mask.Size(); ones == 0 {
-			return fmt.Errorf("loadBalancerSourceRanges[%d] %q admits every address to 8766, past the load balancer and IAP alike: name the load balancer's own ranges, such as 130.211.0.0/22", i, cidr)
+			return core.InputErrorf("loadBalancerSourceRanges", "loadBalancerSourceRanges[%d] %q admits every address to 8766, past the load balancer and IAP alike: name the load balancer's own ranges, such as 130.211.0.0/22", i, cidr)
 		}
 	}
 	if name := args.NetworkEndpointGroupName; name != "" && !negNameRule.MatchString(name) {
-		return fmt.Errorf("networkEndpointGroupName %q must match %s, a Compute Engine resource name", name, negNameRule)
+		return core.InputErrorf("networkEndpointGroupName", "networkEndpointGroupName %q must match %s, a Compute Engine resource name", name, negNameRule)
 	}
 	return nil
 }
@@ -1368,10 +1540,10 @@ func refuseDispatchEntrance(args *DispatchArgs) error {
 // rule the full resolver holds it to, with the same refusals.
 func refuseDispatchHostname(hostname string) error {
 	if !hostnameRule.MatchString(hostname) {
-		return fmt.Errorf("hostname %q must match %s", hostname, hostnameRule)
+		return core.InputErrorf("hostname", "hostname %q must match %s", hostname, hostnameRule)
 	}
 	if err := weborigin.ReservedLabel(hostname); err != nil {
-		return fmt.Errorf("hostname: %w", err)
+		return core.InputErrorf("hostname", "hostname: %w", err)
 	}
 	return nil
 }
@@ -1380,7 +1552,7 @@ func refuseDispatchHostname(hostname string) error {
 // cluster and of every resource around it.
 func refuseDispatchRegion(region string) error {
 	if region == "" {
-		return errors.New("region is required")
+		return core.InputErrorf("region", "region is required")
 	}
 	return nil
 }
@@ -1472,17 +1644,20 @@ func newDispatchClusterOnlySettings(args *DispatchArgs) (dispatchSettings, error
 	}
 	for _, in := range dispatchClusterOnlyRefusals(args) {
 		if in.set {
-			return dispatchSettings{}, fmt.Errorf("%s configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly", in.input)
+			return dispatchSettings{}, core.InputErrorf(in.input, "%s configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly", in.input)
 		}
 	}
 	return s, nil
 }
 
 // newDispatchSettings validates the component's plain inputs and renders the values known before
-// any cloud resource is registered. Every refusal names the input that needs correction.
+// any cloud resource is registered. Every refusal is a core.InputError naming the input that needs
+// correction, as the schema names it.
 func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if input, ok := dispatchSeededInput(args); ok {
-		return dispatchSettings{}, core.SeedRefusal(input)
+		// The refusal names the input as the schema does, a list without the entry's index.
+		name, _, _ := strings.Cut(input, "[")
+		return dispatchSettings{}, core.InputErrorf(name, "%w", core.SeedRefusal(input))
 	}
 	if args.ClusterOnly != nil && *args.ClusterOnly {
 		return newDispatchClusterOnlySettings(args)
@@ -1514,7 +1689,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, err
 		}
 		if args.PublicOrigin != "" {
-			return dispatchSettings{}, errors.New("publicOrigin is refused beside the tailnet inputs: the front door serves Dispatch at <hostname>.<tailnetDnsName>, which is then its origin, and a second origin beside that one is outsideOrigin; unset publicOrigin, or unset the tailnet inputs")
+			return dispatchSettings{}, core.InputErrorf("publicOrigin", "publicOrigin is refused beside the tailnet inputs: the front door serves Dispatch at <hostname>.<tailnetDnsName>, which is then its origin, and a second origin beside that one is outsideOrigin; unset publicOrigin, or unset the tailnet inputs")
 		}
 		var err error
 		if outsideOrigin, err = refuseDispatchOutsideOrigin(args, core.TailnetHostName(args.Hostname, args.TailnetDnsName), "the front door's", signInOn); err != nil {
@@ -1541,9 +1716,33 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if err := refuseDispatchSignInGroup(args, dispatchGroupClause("sign-in", signInGroup)); err != nil {
 			return dispatchSettings{}, err
 		}
+		if err := refuseDispatchWorkspaceDomains(args.SignInWorkspaceDomains); err != nil {
+			return dispatchSettings{}, err
+		}
 	} else if args.SignInOutside {
-		return dispatchSettings{}, fmt.Errorf("signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
+		return dispatchSettings{}, core.InputErrorf("signInOutside", "signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
 			dispatchGroupClause("sign-in", signInGroup))
+	} else if len(args.SignInWorkspaceDomains) > 0 {
+		return dispatchSettings{}, core.InputErrorf("signInWorkspaceDomains", "signInWorkspaceDomains needs browser sign-in: it names the other domains of the Google Workspace that signInDomain names, which Dispatch reads only with Google sign-in; set the sign-in inputs, or unset signInWorkspaceDomains%s",
+			dispatchGroupClause("sign-in", signInGroup))
+	}
+	// Passkey sign-in is served at the second origin alone, whose host the passkey is made for, and
+	// a person from outside enrolls a passkey with an invitation a project owner makes while signed
+	// in through Google, so it needs the sign-in inputs too; their clause names each one still unset.
+	// It replaces the Google sign-in of people from outside that signInOutside turns on, so the two
+	// are refused together. The sandbox and the IAP door have refused it above, each by a rule of
+	// its own.
+	if args.SignInPasskey {
+		if outsideOrigin == "" {
+			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs outsideOrigin: Dispatch serves passkey sign-in at that origin alone, and a passkey is made for its host; set outsideOrigin, or unset signInPasskey")
+		}
+		if !signInOn {
+			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs browser sign-in: a project owner, signed in through Google, makes the invitation a person from outside enrolls a passkey with, so without it nobody could invite anyone; set the sign-in inputs, or unset signInPasskey%s",
+				dispatchGroupClause("sign-in", signInGroup))
+		}
+		if args.SignInOutside {
+			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey is refused beside signInOutside: passkey sign-in replaces the Google sign-in of people from outside the company that signInOutside turns on; unset signInOutside, or unset signInPasskey")
+		}
 	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so
 	// every consumer sets both and neither refusal trails a clause. The front door's two are the
@@ -1553,7 +1752,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		{"cloudSqlProxyImage", args.CloudSqlProxyImage},
 	} {
 		if !imageRule.MatchString(image.ref) {
-			return dispatchSettings{}, fmt.Errorf("%s %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>", image.field, image.ref)
+			return dispatchSettings{}, core.InputErrorf(image.field, "%s %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>", image.field, image.ref)
 		}
 	}
 	if err := refuseDispatchRegion(args.Region); err != nil {
@@ -1576,18 +1775,18 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		return dispatchSettings{}, err
 	}
 	if args.NatsUrl == nil {
-		return dispatchSettings{}, errors.New("natsUrl is required")
+		return dispatchSettings{}, core.InputErrorf("natsUrl", "natsUrl is required")
 	}
 	if args.NatsSeedSecret == nil {
-		return dispatchSettings{}, errors.New("natsSeedSecret is required")
+		return dispatchSettings{}, core.InputErrorf("natsSeedSecret", "natsSeedSecret is required")
 	}
 	if args.AgentSecretsAudience != "" && args.AgentSecretsUrl == "" {
-		return dispatchSettings{}, errors.New("agentSecretsUrl is required when agentSecretsAudience is set")
+		return dispatchSettings{}, core.InputErrorf("agentSecretsUrl", "agentSecretsUrl is required when agentSecretsAudience is set")
 	}
 	agentSecretsURL := strings.TrimSuffix(args.AgentSecretsUrl, "/")
 	if args.AgentSecretsUrl != "" {
 		if args.AgentSecretsAudience == "" {
-			return dispatchSettings{}, errors.New("agentSecretsAudience is required when agentSecretsUrl is set")
+			return dispatchSettings{}, core.InputErrorf("agentSecretsAudience", "agentSecretsAudience is required when agentSecretsUrl is set")
 		}
 		// The shape Dispatch itself requires of DISPATCH_AGENT_SECRETS_URL, checked here so a bad
 		// URL fails the resolver rather than the pod's boot. It is rendered as a plain environment
@@ -1595,10 +1794,10 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		// credential, is refused too, and no refusal quotes it.
 		parsed, err := url.Parse(agentSecretsURL)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
-			return dispatchSettings{}, errors.New("agentSecretsUrl must be an absolute http(s) URL with no path, as Dispatch requires of DISPATCH_AGENT_SECRETS_URL (not echoed)")
+			return dispatchSettings{}, core.InputErrorf("agentSecretsUrl", "agentSecretsUrl must be an absolute http(s) URL with no path, as Dispatch requires of DISPATCH_AGENT_SECRETS_URL (not echoed)")
 		}
 		if urlCarriesExtras(agentSecretsURL, parsed) {
-			return dispatchSettings{}, errors.New("agentSecretsUrl must carry no user, password, query or fragment: it is rendered as a plain environment variable (not echoed)")
+			return dispatchSettings{}, core.InputErrorf("agentSecretsUrl", "agentSecretsUrl must carry no user, password, query or fragment: it is rendered as a plain environment variable (not echoed)")
 		}
 	}
 	// The service-account verifier is one required input and one override, not a group: the
@@ -1607,13 +1806,13 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// itself refuses half the pair (oidc.ConfigFromEnv), which is why the component renders
 	// DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
 	if args.OidcIssuer != "" && args.OidcAudience == "" {
-		return dispatchSettings{}, errors.New("oidcAudience is required when oidcIssuer is set")
+		return dispatchSettings{}, core.InputErrorf("oidcAudience", "oidcAudience is required when oidcIssuer is set")
 	}
 	// The issuer is the URL Dispatch discovers keys from and compares every token's iss to, so it is
 	// held to the shape the hub listener's is: an empty query or fragment, which url.Parse reads as
 	// none, is not the issuer a token names.
 	if args.OidcIssuer != "" && !issuerURL(args.OidcIssuer) {
-		return dispatchSettings{}, fmt.Errorf("oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", args.OidcIssuer)
+		return dispatchSettings{}, core.InputErrorf("oidcIssuer", "oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", args.OidcIssuer)
 	}
 	var appSet, appMissing []string
 	for _, in := range []struct{ input, value string }{
@@ -1629,18 +1828,31 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 	}
 	if len(appSet) > 0 && len(appMissing) > 0 {
-		return dispatchSettings{}, fmt.Errorf("%s required when %s is set: appClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey are set together or not at all",
+		return dispatchSettings{}, core.InputErrorf(appMissing[0], "%s required when %s is set: appClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey are set together or not at all",
 			strings.Join(appMissing, ", "), appSet[0])
 	}
 	if len(appSet) > 0 {
 		if id, err := strconv.ParseUint(args.AppId, 10, 64); err != nil || id == 0 {
-			return dispatchSettings{}, errors.New("appId must be the GitHub App's numeric ID: digits only, not 0 (not echoed)")
+			return dispatchSettings{}, core.InputErrorf("appId", "appId must be the GitHub App's numeric ID: digits only, not 0 (not echoed)")
 		}
 		if !dnsSubdomain(args.AppPrivateKeySecretName) {
-			return dispatchSettings{}, fmt.Errorf("appPrivateKeySecretName %q must be a DNS subdomain", args.AppPrivateKeySecretName)
+			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretName", "appPrivateKeySecretName %q must be a DNS subdomain", args.AppPrivateKeySecretName)
 		}
-		if !secretKeyRule.MatchString(args.AppPrivateKeySecretKey) {
-			return dispatchSettings{}, fmt.Errorf("appPrivateKeySecretKey %q must match %s", args.AppPrivateKeySecretKey, secretKeyRule)
+		if !isSecretKey(args.AppPrivateKeySecretKey) {
+			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretKey", "appPrivateKeySecretKey %q must match %s", args.AppPrivateKeySecretKey, secretKeyRule)
+		}
+	}
+	// The verdict App's id is read by Dispatch's CI reconcile pass alone, which the App's key
+	// runs, so without the App it would do nothing and is refused rather than dropped; given, it
+	// is held to the rule the listener holds ENVOY_VERDICT_APP_ID to, so the two can match.
+	if args.VerdictAppId != nil {
+		switch {
+		case len(appSet) == 0:
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId is given without the GitHub App (appClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey), whose key alone runs the CI reconcile pass that reads it: set the App, or leave verdictAppId out")
+		case strings.TrimSpace(*args.VerdictAppId) == "":
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId is blank: give the verdict App's id, or leave it out")
+		case !contracts.IsGithubAppID(*args.VerdictAppId):
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId %q is not a GitHub App id: a whole number above 0, with no leading zero", *args.VerdictAppId)
 		}
 	}
 	azure, err := newDispatchAzure(args)
@@ -1673,9 +1885,19 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.images.proxy = args.CloudSqlProxyImage
 	s.images.tools = args.FrontDoorToolsImage
 	s.signIn.clientID = args.SignInClientId
-	s.signIn.domain = args.SignInDomain
+	// The domain and each Workspace domain render trimmed, which is what Dispatch reads of them
+	// (dispatchDomainName, workspaceDomainRule).
+	s.signIn.domain = strings.TrimSpace(args.SignInDomain)
 	s.signInOutside = args.SignInOutside
+	s.parentStatusRule = args.ParentStatusRule
 	s.outsideOrigin = outsideOrigin
+	s.signInPasskey = args.SignInPasskey
+	if len(args.SignInWorkspaceDomains) > 0 {
+		s.signInWorkspaceDomains = make([]string, len(args.SignInWorkspaceDomains))
+		for i, domain := range args.SignInWorkspaceDomains {
+			s.signInWorkspaceDomains[i] = strings.TrimSpace(domain)
+		}
+	}
 	s.publicOrigin = publicOrigin
 	s.iap = args.IapAudience != nil
 	s.agentSecretsURL = agentSecretsURL
@@ -1686,17 +1908,20 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
 	s.appKeySecretKey = args.AppPrivateKeySecretKey
+	if args.VerdictAppId != nil {
+		s.verdictAppID = *args.VerdictAppId
+	}
 	s.azure = azure
 	s.answerer = answerer
 	if args.DatabaseVersion != nil {
 		if *args.DatabaseVersion == "" {
-			return dispatchSettings{}, errors.New("databaseVersion is empty; leave it unset for " + defaultDispatchDatabaseVersion)
+			return dispatchSettings{}, core.InputErrorf("databaseVersion", "databaseVersion is empty; leave it unset for %s", defaultDispatchDatabaseVersion)
 		}
 		s.databaseVersion = *args.DatabaseVersion
 	}
 	if args.DatabaseTier != nil {
 		if *args.DatabaseTier == "" {
-			return dispatchSettings{}, errors.New("databaseTier is empty; leave it unset for " + defaultDispatchDatabaseTier)
+			return dispatchSettings{}, core.InputErrorf("databaseTier", "databaseTier is empty; leave it unset for %s", defaultDispatchDatabaseTier)
 		}
 		s.databaseTier = *args.DatabaseTier
 	}
@@ -1706,7 +1931,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		case dispatchAvailabilityZonal, dispatchAvailabilityRegional:
 			s.databaseAvailabilityType = availability
 		default:
-			return dispatchSettings{}, fmt.Errorf("databaseAvailabilityType %q must be %s or %s; leave it unset for %s",
+			return dispatchSettings{}, core.InputErrorf("databaseAvailabilityType", "databaseAvailabilityType %q must be %s or %s; leave it unset for %s",
 				availability, dispatchAvailabilityZonal, dispatchAvailabilityRegional, dispatchAvailabilityZonal)
 		}
 	}
@@ -1746,6 +1971,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if s.senderMessagesPerMinute, s.senderMessageBurst, err = core.CheckSenderLimit("", args.SenderMessagesPerMinute, args.SenderMessageBurst); err != nil {
 		return dispatchSettings{}, err
 	}
+	// The consumer-name setting both creators read, checked here for the sender limit's reason.
+	if err := core.CheckConsumerNames("consumerNames", args.ConsumerNames); err != nil {
+		return dispatchSettings{}, err
+	}
+	s.consumerNames, s.replaceUnderHold = args.ConsumerNames, args.ReplaceUnderHold
 	if s.signingKeyGenerations, err = newDispatchSigningKeyGenerations(args); err != nil {
 		return dispatchSettings{}, err
 	}
@@ -1761,13 +1991,13 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.existingNamespace = args.ExistingNamespace != nil && *args.ExistingNamespace
 	if args.Namespace != nil {
 		if !dnsLabel(*args.Namespace) {
-			return dispatchSettings{}, fmt.Errorf("namespace %q must be a DNS label", *args.Namespace)
+			return dispatchSettings{}, core.InputErrorf("namespace", "namespace %q must be a DNS label", *args.Namespace)
 		}
 		s.namespace = *args.Namespace
 	}
 	for i, namespace := range args.AllowedNamespaces {
 		if !dnsLabel(namespace) {
-			return dispatchSettings{}, fmt.Errorf("allowedNamespaces[%d] %q must be a DNS label", i, namespace)
+			return dispatchSettings{}, core.InputErrorf("allowedNamespaces", "allowedNamespaces[%d] %q must be a DNS label", i, namespace)
 		}
 	}
 	return s, nil
@@ -1825,11 +2055,11 @@ func newDispatchPprofPort(args *DispatchArgs) (int, error) {
 	port := *args.PprofPort
 	switch {
 	case port < 1 || port > 65535:
-		return 0, fmt.Errorf("pprofPort %d must be a port number 1-65535; leave it unset for no profiler", port)
+		return 0, core.InputErrorf("pprofPort", "pprofPort %d must be a port number 1-65535; leave it unset for no profiler", port)
 	case port == 8766:
-		return 0, fmt.Errorf("pprofPort %d is envoy-dispatch's own port; choose another, such as 6060", port)
+		return 0, core.InputErrorf("pprofPort", "pprofPort %d is envoy-dispatch's own port; choose another, such as 6060", port)
 	case port == 5432:
-		return 0, fmt.Errorf("pprofPort %d is the cloud-sql-proxy sidecar's port in the same pod; choose another, such as 6060", port)
+		return 0, core.InputErrorf("pprofPort", "pprofPort %d is the cloud-sql-proxy sidecar's port in the same pod; choose another, such as 6060", port)
 	}
 	return port, nil
 }
@@ -1880,7 +2110,7 @@ func dispatchReplicas(input string, value *int, fallback int) (int, error) {
 		return fallback, nil
 	}
 	if *value < minDispatchReplicas {
-		return 0, fmt.Errorf("%s %d must be at least %d", input, *value, minDispatchReplicas)
+		return 0, core.InputErrorf(input, "%s %d must be at least %d", input, *value, minDispatchReplicas)
 	}
 	return *value, nil
 }
@@ -1918,7 +2148,7 @@ func newDispatchDisruption(args *DispatchArgs, replicas, frontDoorReplicas, list
 			continue
 		}
 		if *budget.value < 1 || *budget.value > budget.replicas {
-			return dispatchDisruption{}, fmt.Errorf("%s %d must be from 1 to %s (%d); leave it unset for no PodDisruptionBudget",
+			return dispatchDisruption{}, core.InputErrorf(budget.input, "%s %d must be from 1 to %s (%d); leave it unset for no PodDisruptionBudget",
 				budget.input, *budget.value, budget.replicasInput, budget.replicas)
 		}
 		*budget.into = *budget.value
@@ -1939,7 +2169,8 @@ type dispatchAppResources struct {
 // which Autopilot would not run the app pod as rendered: the two containers' total below
 // autopilotPodMinCPU or autopilotPodMinMemory or outside the memory-per-CPU ratio (Autopilot
 // raises it), or above autopilotPodMaxCPU or autopilotPodMaxMemory (Autopilot rejects it). Each
-// refusal names the inputs whose sum it judges.
+// refusal's message names the inputs whose sum it judges, and its core.InputError the one to
+// correct (podSizeInput).
 func newDispatchAppResources(args *DispatchArgs) (dispatchAppResources, error) {
 	cpu, appCPU, err := appQuantity("appCpu", args.AppCpu, defaultDispatchAppCPU, "1, 1500m or 2")
 	if err != nil {
@@ -1959,26 +2190,34 @@ func newDispatchAppResources(args *DispatchArgs) (dispatchAppResources, error) {
 	}
 	podCPU := new(big.Rat).Add(appCPU, proxyCPUValue)
 	podMemory := new(big.Rat).Add(appMemory, proxyMemoryValue)
+	cpuInput := podSizeInput("appCpu", "proxyCpu", args.AppCpu != nil, args.ProxyCpu != nil)
+	memoryInput := podSizeInput("appMemory", "proxyMemory", args.AppMemory != nil, args.ProxyMemory != nil)
 	if podCPU.Cmp(autopilotPodMinCPU) < 0 {
-		return dispatchAppResources{}, fmt.Errorf("appCpu %q and proxyCpu %q must make at least %s together: below it Autopilot raises the app pod's request, since the pod carries pod anti-affinity (and safe-to-evict when no budget covers it)",
+		return dispatchAppResources{}, core.InputErrorf(cpuInput, "appCpu %q and proxyCpu %q must make at least %s together: below it Autopilot raises the app pod's request, since the pod carries pod anti-affinity (and safe-to-evict when no budget covers it)",
 			cpu, proxyCPU, milliCPU(autopilotPodMinCPU))
 	}
 	if podCPU.Cmp(autopilotPodMaxCPU) > 0 {
-		return dispatchAppResources{}, fmt.Errorf("appCpu %q and proxyCpu %q must make at most %s CPU together: Autopilot rejects an app pod that requests more",
+		return dispatchAppResources{}, core.InputErrorf(cpuInput, "appCpu %q and proxyCpu %q must make at most %s CPU together: Autopilot rejects an app pod that requests more",
 			cpu, proxyCPU, autopilotPodMaxCPU.RatString())
 	}
 	if podMemory.Cmp(autopilotPodMinMemory) < 0 {
-		return dispatchAppResources{}, fmt.Errorf("appMemory %q and proxyMemory %q must make at least %s together: below it Autopilot raises the app pod's request, since the pod carries pod anti-affinity (and safe-to-evict when no budget covers it)",
+		return dispatchAppResources{}, core.InputErrorf(memoryInput, "appMemory %q and proxyMemory %q must make at least %s together: below it Autopilot raises the app pod's request, since the pod carries pod anti-affinity (and safe-to-evict when no budget covers it)",
 			memory, proxyMemory, mebibytes(autopilotPodMinMemory))
 	}
 	if podMemory.Cmp(autopilotPodMaxMemory) > 0 {
-		return dispatchAppResources{}, fmt.Errorf("appMemory %q and proxyMemory %q must make at most 110Gi together: Autopilot rejects an app pod that requests more",
+		return dispatchAppResources{}, core.InputErrorf(memoryInput, "appMemory %q and proxyMemory %q must make at most 110Gi together: Autopilot rejects an app pod that requests more",
 			memory, proxyMemory)
 	}
 	gibPerCPU := new(big.Rat).Quo(podMemory, podCPU)
 	gibPerCPU.Quo(gibPerCPU, new(big.Rat).SetInt64(1<<30))
 	if gibPerCPU.Cmp(autopilotMinGiBPerCPU) < 0 || gibPerCPU.Cmp(autopilotMaxGiBPerCPU) > 0 {
-		return dispatchAppResources{}, fmt.Errorf("appCpu %q, appMemory %q, proxyCpu %q and proxyMemory %q: the app pod must hold between 1 and 6.5 GiB of memory per CPU, or Autopilot raises the smaller of the two",
+		// Autopilot raises the smaller of the two, so the refusal names an input of that one, as
+		// autopilotPodSize's does: too little memory per CPU raises the memory.
+		smaller := cpuInput
+		if gibPerCPU.Cmp(autopilotMinGiBPerCPU) < 0 {
+			smaller = memoryInput
+		}
+		return dispatchAppResources{}, core.InputErrorf(smaller, "appCpu %q, appMemory %q, proxyCpu %q and proxyMemory %q: the app pod must hold between 1 and 6.5 GiB of memory per CPU, or Autopilot raises the smaller of the two",
 			cpu, memory, proxyCPU, proxyMemory)
 	}
 	appEphemeral, proxyEphemeral, err := newDispatchEphemeralStorage(args)
@@ -1989,11 +2228,22 @@ func newDispatchAppResources(args *DispatchArgs) (dispatchAppResources, error) {
 		appEphemeralStorage: appEphemeral, proxyEphemeralStorage: proxyEphemeral}, nil
 }
 
+// podSizeInput is the input a refusal of the app pod's summed size names as the one to correct:
+// app, the envoy-dispatch container's, unless the consumer set only proxy, the cloud-sql-proxy
+// sidecar's, which is then the value that took the sum out of Autopilot's bounds.
+func podSizeInput(app, proxy string, appSet, proxySet bool) string {
+	if proxySet && !appSet {
+		return proxy
+	}
+	return app
+}
+
 // newDispatchEphemeralStorage resolves appEphemeralStorage and proxyEphemeralStorage, each "" when
 // unset, and refuses a pair at which Autopilot would not run the app pod as rendered: their sum,
 // an unset container counted at the autopilotDefaultEphemeralStorage Autopilot gives it, below
 // autopilotPodMinEphemeralStorage (Autopilot raises it) or above autopilotPodMaxEphemeralStorage
-// (Autopilot rejects it). The refusal names both inputs, an unset one as Autopilot's default.
+// (Autopilot rejects it). The refusal's message names both inputs, an unset one as Autopilot's
+// default, and its core.InputError the one to correct (podSizeInput).
 func newDispatchEphemeralStorage(args *DispatchArgs) (app, proxy string, err error) {
 	resolve := func(input string, value *string) (rendered, named string, quantity *big.Rat, err error) {
 		if value == nil {
@@ -2012,37 +2262,38 @@ func newDispatchEphemeralStorage(args *DispatchArgs) (app, proxy string, err err
 		return "", "", err
 	}
 	pod := new(big.Rat).Add(appValue, proxyValue)
+	input := podSizeInput("appEphemeralStorage", "proxyEphemeralStorage", args.AppEphemeralStorage != nil, args.ProxyEphemeralStorage != nil)
 	if pod.Cmp(autopilotPodMinEphemeralStorage) < 0 {
-		return "", "", fmt.Errorf("%s and %s must make at least %s together: below it Autopilot raises the app pod's ephemeral storage, and each container's logs count against its own",
+		return "", "", core.InputErrorf(input, "%s and %s must make at least %s together: below it Autopilot raises the app pod's ephemeral storage, and each container's logs count against its own",
 			appNamed, proxyNamed, mebibytes(autopilotPodMinEphemeralStorage))
 	}
 	if pod.Cmp(autopilotPodMaxEphemeralStorage) > 0 {
-		return "", "", fmt.Errorf("%s and %s must make at most 10Gi together: Autopilot rejects an app pod with more ephemeral storage; a larger working set belongs in a generic ephemeral volume",
+		return "", "", core.InputErrorf(input, "%s and %s must make at most 10Gi together: Autopilot rejects an app pod with more ephemeral storage; a larger working set belongs in a generic ephemeral volume",
 			appNamed, proxyNamed)
 	}
 	return app, proxy, nil
 }
 
 // appQuantity resolves one container size input of the app pod: fallback when it is unset, and
-// its exact value, or a refusal naming input. It refuses an empty value, which is no quantity,
-// and one of 0 or less, which sizes no container: the pod's floor is judged on the two
-// containers' sum, so a negative size beside a large one would otherwise pass it.
+// its exact value, or a refusal, a core.InputError naming input. It refuses an empty value, which
+// is no quantity, and one of 0 or less, which sizes no container: the pod's floor is judged on the
+// two containers' sum, so a negative size beside a large one would otherwise pass it.
 func appQuantity(input string, value *string, fallback, examples string) (string, *big.Rat, error) {
 	resolved := fallback
 	if value != nil {
 		if *value == "" {
-			return "", nil, errors.New(input + " is empty; leave it unset for " + fallback)
+			return "", nil, core.InputErrorf(input, "%s is empty; leave it unset for %s", input, fallback)
 		}
 		resolved = *value
 	}
 	quantity, err := quantityValue(resolved)
 	switch {
 	case errors.Is(err, errQuantityExponent):
-		return "", nil, fmt.Errorf("%s %q has a decimal exponent outside e%d to e%d, the range of the suffixes n to E; write it with a suffix, such as %s", input, resolved, minQuantityExponent, maxQuantityExponent, examples)
+		return "", nil, core.InputErrorf(input, "%s %q has a decimal exponent outside e%d to e%d, the range of the suffixes n to E; write it with a suffix, such as %s", input, resolved, minQuantityExponent, maxQuantityExponent, examples)
 	case err != nil:
-		return "", nil, fmt.Errorf("%s %q is not a Kubernetes quantity, such as %s", input, resolved, examples)
+		return "", nil, core.InputErrorf(input, "%s %q is not a Kubernetes quantity, such as %s", input, resolved, examples)
 	case quantity.Sign() <= 0:
-		return "", nil, fmt.Errorf("%s %q must be more than 0, such as %s", input, resolved, examples)
+		return "", nil, core.InputErrorf(input, "%s %q must be more than 0, such as %s", input, resolved, examples)
 	}
 	return resolved, quantity, nil
 }
@@ -2208,9 +2459,10 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	comp.Principal = database.principal
 	comp.AgentToken = database.agentToken.Result
 	comp.Url = pulumi.String(s.serverURL()).ToStringOutput()
-	// The app's and the listener's pods run as ServiceAccount <hostname> in the component's
-	// namespace, the account newDispatchKubernetes registers, and Kubernetes names a token's subject
-	// after it. The front door's pods run as <hostname>-tailnet, which this subject never names.
-	comp.ServiceAccountSubject = pulumi.String("system:serviceaccount:" + s.namespace + ":" + s.hostname).ToStringOutput()
+	// The app's pods run as ServiceAccount <hostname> in the component's namespace, the account
+	// newDispatchKubernetes registers, and Kubernetes names a token's subject after it. The
+	// listener's pods run as <hostname>-listener and the front door's as <hostname>-tailnet, which
+	// this subject never names.
+	comp.ServiceAccountSubject = pulumi.String(dispatchServiceAccountSubject(s)).ToStringOutput()
 	return comp, nil
 }

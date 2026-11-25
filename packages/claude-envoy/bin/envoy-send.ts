@@ -1,8 +1,9 @@
-import { isFinalRefusal } from "@legion/broker-client/token-errors"
+import { isFinalRefusal } from "@legion/cipher-client/token-errors"
 import { holdUrlUserinfo, scrub, scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text"
 import { messageFor } from "@legion/envoy-client/errors"
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings"
+import { keyTakenText } from "@legion/envoy-client/tool-contract"
 import { EnvoySendUnconfirmedError } from "@legion/envoy-client/transport"
 import { configuredSessionId } from "../src/claude-session"
 import { sendEnvoyMessage } from "../src/envoy-client"
@@ -84,7 +85,7 @@ try {
     CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"],
   })
   const file = sessionConfigFile("command", process.env)
-  const envoy = sessionEnvoySettings(file, process.env, {
+  const envoy = await sessionEnvoySettings(file, process.env, {
     cwd: process.cwd(),
     nats: false,
     ...(session === undefined ? {} : { session }),
@@ -116,10 +117,18 @@ try {
     ...(send.idempotencyKey === undefined ? {} : { idempotencyKey: send.idempotencyKey }),
     sourceSession: session ?? "",
   })
-  process.stdout.write(`Sent Envoy message to ${send.targetSession}.\n`)
-  // Stored, so it exits 0; but a send that went without its credential says why, once.
-  if (sent.withoutCredential !== undefined)
-    process.stderr.write(wentWithout(sent.withoutCredential))
+  if (sent.keyTaken !== undefined) {
+    // Another sender's message holds the key, so the listener stored nothing for this send: it
+    // was not delivered, and it is no send that may have arrived. A run without the key mints a
+    // new one, which delivers it.
+    process.stderr.write(`Claude Envoy send ${keyTakenText(sent, "envoy_send")}\n`)
+    process.exitCode = 1
+  } else {
+    process.stdout.write(`Sent Envoy message to ${send.targetSession}.\n`)
+    // Stored, so it exits 0; but a send that went without its credential says why, once.
+    if (sent.withoutCredential !== undefined)
+      process.stderr.write(wentWithout(sent.withoutCredential))
+  }
 } catch (error) {
   // A send that may have arrived is not a failure, and nor is any failure of a resend that names
   // a key: the send under that key before it may have arrived, so a refusal now says nothing of

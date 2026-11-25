@@ -28,10 +28,28 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
-// isolatedGitConfig is the configuration Fetch's git reads besides its own: none. Not the system's,
-// not the image user's; and git's `-c`, GIT_CONFIG_PARAMETERS, no process provisioning starts
-// inherits (config.go).
+// isolatedGitConfig is the configuration Fetch's git reads besides its own and its command line's
+// (feedGit): none. Not the system's, not the image user's; and git's `-c`, GIT_CONFIG_PARAMETERS,
+// no process provisioning starts inherits (config.go).
 var isolatedGitConfig = []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}
+
+// feedGit is how every git command of Fetch's, FeedGit's and FeedGitWithin's begins: git, then
+// packWindowConfig as `-c` pairs. That git reads no system file (isolatedGitConfig), so the worker
+// image's /etc/gitconfig does not reach it, its runner removes the role environment's pairs
+// (execRunner.Run), and the feed's own configuration may hold none of the four (feedConfigKeys).
+// The runner's own pins (pinnedGitConfig) reach it too, but they reach every command any NewRunner
+// starts, the daemon's host runners among them, so the four go on this command line instead. git
+// exports the pairs to every git it starts in turn, the index-pack of a clone or a fetch among
+// them. They come before everything a caller adds, and git takes the last value of a key, so a
+// caller's own `-c` of one of them wins: the repository cache's repack keeps repackMemory's. Its
+// capacity is its length, so an append to it copies rather than writing past the shared prefix.
+var feedGit = func() []string {
+	argv := []string{"git"}
+	for _, pair := range packWindowConfig {
+		argv = append(argv, "-c", pair[0]+"="+pair[1])
+	}
+	return slices.Clip(argv)
+}()
 
 // FetchRequest is a pod's first init container's: the repository, how to read the provisioning
 // token (Token), the directory its one-shot credential goes under, the feed directory, the log each
@@ -84,6 +102,38 @@ const CacheFetchTimeout = 2 * time.Hour
 // authorizes, the repository it caches (owner/name), which Fetch checks is its own before it takes
 // anything the answer carries.
 const CacheRepositoryHeader = "Legion-Repository"
+
+// InitExitUsage is the exit status of `legion workspace-init fetch` and `provision` for a usage
+// error, a flag or an argument they do not know. It is the usage exit of every legion command.
+const InitExitUsage = 2
+
+// InitExitOutsideVolume is the exit status of `legion workspace-init fetch` and `provision` for a
+// failure whose cause is outside the issue's volume (ErrOutsideVolume). A new volume does not cure
+// such a failure, so the runtime keeps a kept volume for it. Every other failure exits 1.
+const InitExitOutsideVolume = 3
+
+// ErrOutsideVolume is the cause of a failure outside the issue's volume. These failures wrap it
+// (OutsideVolume):
+//   - a refusal of `fetch` or `provision` before it touches the volume,
+//   - a failed read of the provisioning token,
+//   - the wait for the repository cache, and a request that the cache refuses or does not answer,
+//   - a transfer or a ref listing from GitHub that failed as outsideVolumeFailure reads it.
+var ErrOutsideVolume = errors.New("the cause is outside the issue's volume")
+
+// OutsideVolume is err with ErrOutsideVolume as a cause too. Its text is err's own text, so a log
+// or a test that reads the text reads no change. OutsideVolume(nil) is nil.
+func OutsideVolume(err error) error {
+	if err == nil {
+		return nil
+	}
+	return outsideVolume{err}
+}
+
+// outsideVolume is an error that OutsideVolume returned.
+type outsideVolume struct{ err error }
+
+func (e outsideVolume) Error() string   { return e.err.Error() }
+func (e outsideVolume) Unwrap() []error { return []error{e.err, ErrOutsideVolume} }
 
 // FetchReport is where Fetch filled the feed from and what each source brought: the feed
 // repository; whether it was cloned whole from GitHub; the repository cache's tar, its length, how
@@ -146,6 +196,14 @@ type FetchReport struct {
 // every other failure, is the answer at once. Each attempt's stderr has every token the fetch has
 // read replaced by *** as soon as the attempt returns, so nothing Fetch logs or returns carries
 // one, wherever git echoed it.
+//
+// A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text:
+// a read of the provisioning token that failed, a cache named without its token, the wait for the
+// cache, a request the cache refuses or does not answer, and a transfer or a ref listing from
+// GitHub that outsideVolumeFailure reads so, retried or not. The failures of what the cache
+// streamed do not: unpackEntry gives one error for a write to the volume that failed and for a
+// stream that broke, and a write that failed is the volume's, whatever the stream did. Nor does
+// verifyCache's failure, or any other failure.
 func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, error) {
 	feed, err := FeedRepository(request.Feed, request.Repo)
 	if err != nil {
@@ -156,7 +214,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	}
 	token, err := request.Token()
 	if err != nil {
-		return FetchReport{}, err
+		return FetchReport{}, OutsideVolume(err)
 	}
 	github := gitHubSource{token: func() (string, error) { return token, nil }, credentialDir: request.CredentialDir}
 	if err := github.check(request.Repo); err != nil {
@@ -169,7 +227,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		return FetchReport{}, errors.New("workspace fetch clock is required")
 	}
 	if request.CacheURL != "" && request.CacheToken == "" {
-		return FetchReport{}, errors.New("workspace fetch: a repository cache needs its token")
+		return FetchReport{}, OutsideVolume(errors.New("workspace fetch: a repository cache needs its token"))
 	}
 	credential, err := github.open(request.Repo, "", "")
 	if err != nil {
@@ -210,7 +268,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		_ = rolefile.RemoveTree(staging)
 	}()
 	if request.CacheURL == "" {
-		clone := feedTransfer{verb: "clone", argv: []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", GitHubURL(request.Repo), staging}, destination: staging, dir: filepath.Dir(staging)}
+		clone := feedTransfer{verb: "clone", argv: slices.Concat(feedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", GitHubURL(request.Repo), staging}), destination: staging, dir: filepath.Dir(staging)}
 		report.Cloned = true
 		deadline := request.Clock.Now().Add(request.bound())
 		if err := report.fromGitHub(ctx, run, request, clone, staging, held, deadline); err != nil {
@@ -223,7 +281,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	}
 
 	if err := waitForCache(ctx, request); err != nil {
-		return FetchReport{}, err
+		return FetchReport{}, OutsideVolume(err)
 	}
 	started := request.Clock.Now()
 	streamed, err := unpackCache(ctx, run, request, staging)
@@ -398,7 +456,7 @@ func remoteHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 // fetch's credential, retries and deadline; "" when GitHub names no HEAD. A HEAD that names
 // anything but a branch is the fetch's failure.
 func remoteRefs(ctx context.Context, run Runner, request FetchRequest, gitDir string, held *fetchCredential, deadline time.Time, patterns ...string) (string, map[string]string, error) {
-	argv := append([]string{"git", "--git-dir=" + gitDir, "ls-remote", "--symref", GitHubURL(request.Repo), "HEAD"}, patterns...)
+	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir, "ls-remote", "--symref", GitHubURL(request.Repo), "HEAD"}, patterns)
 	result, err := transferWithRetries(ctx, run, request, feedTransfer{verb: "ls-remote", argv: argv, dir: gitDir}, held, deadline)
 	if err != nil {
 		return "", nil, fmt.Errorf("read GitHub's default branch of %s: %w", request.Repo, err)
@@ -439,7 +497,7 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 	if target == "" {
 		return nil
 	}
-	symbolicRef := []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"}
+	symbolicRef := slices.Concat(feedGit, []string{"--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"})
 	current, err := runCommandTimeout(ctx, run, symbolicRef, isolatedGitConfig, gitDir, run.Timeout())
 	if err := answered(symbolicRef, current, err); err != nil {
 		return err
@@ -649,7 +707,7 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging string) (int64, error) {
 	// The init runs beside the repository it makes rather than in it: staging is the repository,
 	// and what a command creates is no working directory of its own.
-	if _, err := RunChecked(ctx, run, []string{"git", "init", "--bare", "--quiet", staging}, isolatedGitConfig, filepath.Dir(staging)); err != nil {
+	if _, err := RunChecked(ctx, run, slices.Concat(feedGit, []string{"init", "--bare", "--quiet", staging}), isolatedGitConfig, filepath.Dir(staging)); err != nil {
 		return 0, err
 	}
 	bounded, cancel := context.WithCancel(ctx)
@@ -660,11 +718,13 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if response != nil {
 		defer response.Body.Close()
 	}
+	// A request the cache refuses or does not answer fails outside the issue's volume. What the
+	// answer streams is written to the volume, so a failure from there on is not.
 	if err != nil {
-		return 0, stream.stalledBy(err)
+		return 0, OutsideVolume(stream.stalledBy(err))
 	}
 	if response.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("GET %s answered %s", response.Request.URL, response.Status)
+		return 0, OutsideVolume(fmt.Errorf("GET %s answered %s", response.Request.URL, response.Status))
 	}
 	stream.reader = response.Body
 	archive := tar.NewReader(stream)
@@ -720,12 +780,6 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return err
 	}
-	verify := func(argv []string, left time.Duration) error {
-		// Every check runs in staging, which the stream filled before verifyCache was called.
-		result, err := runCommandTimeout(ctx, run, argv, isolatedGitConfig, staging, left)
-		_, err = checkedResult(argv, result, err)
-		return err
-	}
 	hash, err := objectHash(ctx, run, staging)
 	if err != nil {
 		return err
@@ -746,7 +800,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 		if err != nil {
 			return err
 		}
-		if err := verify([]string{"git", "--git-dir=" + staging, "index-pack", pack}, left); err != nil {
+		if _, err := FeedGitWithin(ctx, run, staging, left, "index-pack", pack); err != nil {
 			return fmt.Errorf("the repository cache's pack %s, which does not verify: %w", filepath.Base(pack), err)
 		}
 	}
@@ -754,7 +808,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return err
 	}
-	if err := verify([]string{"git", "--git-dir=" + staging, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"}, left); err != nil {
+	if _, err := FeedGitWithin(ctx, run, staging, left, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"); err != nil {
 		return fmt.Errorf("the repository cache's history is not whole: %w", err)
 	}
 	return nil
@@ -1000,7 +1054,7 @@ type feedTransfer struct {
 // The repository cache's own process (exact empty) takes every branch instead, pruned of those
 // GitHub deleted: what it holds is what every issue pod of its repository starts from.
 func fetchInto(feed string, repo ghrepo.Repository, exact []string) feedTransfer {
-	argv := []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "--git-dir=" + feed, "fetch", "--prune", "--quiet", GitHubURL(repo)}
+	argv := slices.Concat(feedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "--git-dir=" + feed, "fetch", "--prune", "--quiet", GitHubURL(repo)})
 	if len(exact) == 0 {
 		return feedTransfer{verb: "fetch", argv: append(argv, "+refs/heads/*:refs/heads/*"), dir: feed}
 	}
@@ -1055,18 +1109,19 @@ func feedConfiguration(ctx context.Context, run Runner, gitDir string) error {
 
 // FeedGit runs git on the bare repository gitDir — a feed's, or the repository cache's — under
 // the runner's slow-command budget, holding no credential and reading no configuration but that
-// repository's own: what reads or tends such a repository outside Fetch's transfer. It runs in
-// gitDir itself, which is there whenever something reads or tends it, so no caller has to name a
-// directory and no child of this package's takes the one the process happens to run in.
+// repository's own and the pack settings feedGit names: what reads or tends such a repository
+// outside Fetch's transfer. It runs in gitDir itself, which is there whenever something reads or
+// tends it, so no caller has to name a directory and no child of this package's takes the one the
+// process happens to run in.
 func FeedGit(ctx context.Context, run Runner, gitDir string, args ...string) (Result, error) {
-	return RunChecked(ctx, run, append([]string{"git", "--git-dir=" + gitDir}, args...), isolatedGitConfig, gitDir)
+	return RunChecked(ctx, run, slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args), isolatedGitConfig, gitDir)
 }
 
 // FeedGitWithin is FeedGit bounded by timeout instead of the runner's slow-command budget: for a
 // command on such a repository whose duration follows the repository's size, as the cache's repack
-// does.
+// does. A `-c` among args comes after feedGit's, so it wins over them for its key.
 func FeedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.Duration, args ...string) (Result, error) {
-	argv := append([]string{"git", "--git-dir=" + gitDir}, args...)
+	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args)
 	result, err := runCommandTimeout(ctx, run, argv, isolatedGitConfig, gitDir, timeout)
 	return checkedResult(argv, result, err)
 }
@@ -1089,6 +1144,9 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 		_, failed := checkedResult(transfer.argv, result, runErr)
 		if failed == nil {
 			return result, nil
+		}
+		if runErr == nil && outsideVolumeFailure(result) {
+			failed = OutsideVolume(failed)
 		}
 		if runErr != nil || !transientCloneFailure(result) {
 			return Result{}, failed
@@ -1134,7 +1192,7 @@ type fetchCredential struct {
 func (c *fetchCredential) renew() error {
 	token, err := c.read()
 	if err != nil {
-		return fmt.Errorf("read the provisioning token: %w", err)
+		return OutsideVolume(fmt.Errorf("read the provisioning token: %w", err))
 	}
 	if err := c.remote.setToken(token); err != nil {
 		return err
@@ -1153,27 +1211,13 @@ func (c *fetchCredential) scrub(text string) string {
 	return text
 }
 
-// Clock is the time Fetch's retries read and wait on: WallClock, or a test's own.
+// Clock is the time Fetch's retries read and wait on: clock.Real(), or a test's own. It is a
+// narrowing of the module's clock.Clock to the two calls Fetch makes, so a test's fake needs only
+// those.
 type Clock interface {
 	Now() time.Time
 	// Sleep waits d, or returns ctx's error once ctx ends first.
 	Sleep(ctx context.Context, d time.Duration) error
-}
-
-// WallClock is the real time.
-type WallClock struct{}
-
-func (WallClock) Now() time.Time { return time.Now() }
-
-func (WallClock) Sleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 // fetchBackoff is the wait before each retry of the fetch's clone, one retry per entry: a first
@@ -1255,6 +1299,41 @@ func transientCloneFailure(result Result) bool {
 func transientStatus(status string) bool {
 	code, err := strconv.Atoi(status)
 	return err == nil && (code == 408 || code == 429 || code >= 500 && code <= 599)
+}
+
+// gitHubRefusals are GitHub's own words, in git's output, for a credential it refused and for a
+// repository it did not find or did not grant.
+var gitHubRefusals = []string{"Authentication failed", "Repository not found"}
+
+// outsideVolumeFailure is whether a transfer or a ref listing from GitHub failed for a cause
+// outside the issue's volume (ErrOutsideVolume). A new volume does not cure such a cause, because
+// the new volume needs GitHub too. The causes are an attempt that ran out of its time, and git's
+// fatal exit with one of these in its output:
+//   - a cause line (causeLine) that names an HTTP status (statusFailure), any status,
+//   - a cause line that names a connection that failed or broke (curlNetworkFailures),
+//   - a pack stream that ended early (streamCuts), with no cause line,
+//   - GitHub's refusal of the credential or of the repository (gitHubRefusals).
+//
+// Every other cause line is not outside the volume: curl 23 is a write to the volume that failed,
+// and curl 60 is a certificate that does not verify. Nor is a credential git could not read
+// (`could not read Username`), an object the feed lacks (`fatal: bad object`), or any other
+// failure. transientCloneFailure keeps its own rule, which tells which failures the fetch runs
+// again.
+func outsideVolumeFailure(result Result) bool {
+	if result.TimedOut {
+		return true
+	}
+	if result.ExitCode != gitFatalExit {
+		return false
+	}
+	if containsAny(result.Stderr, gitHubRefusals) {
+		return true
+	}
+	cause := causeLine.FindStringSubmatch(result.Stderr)
+	if cause == nil {
+		return containsAny(result.Stderr, streamCuts)
+	}
+	return statusFailure.MatchString(cause[1]) || containsAny(cause[1], curlNetworkFailures)
 }
 
 // containsAny is whether text holds any of needles.

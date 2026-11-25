@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -123,6 +124,7 @@ type hookCall struct {
 // hook that returns the cancel, which ends the run there, and for one that swallows it and returns
 // nil, after which the hooks behind it run on the ended context; the run is superseded either way.
 func TestASupersededRunLeavesEveryHookDue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		swallow bool
@@ -204,7 +206,7 @@ type proxiedConn struct {
 
 func newHalfOpenProxy(t *testing.T, upstream string) *halfOpenProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}

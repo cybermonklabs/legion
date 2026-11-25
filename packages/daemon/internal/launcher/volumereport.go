@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -14,10 +15,9 @@ import (
 // it. The trimmer that makes them is volumetrim.go's.
 
 // flush tries the report the last attempt could not send. A report the daemon never got is a
-// volume nobody was told about, so the trimmer keeps it rather than dropping it, as
-// bundleRestore keeps its own confirmation across every connection of the pod (restore.go). A
-// held report that fails again stays held for the next attempt, unless the report deliver tries
-// next fails too and replaces it, carrying what only the held one carries (carryHeld).
+// volume nobody was told about, so the trimmer keeps it rather than dropping it. A held report
+// that fails again stays held for the next attempt, unless the report deliver tries next fails too
+// and replaces it, carrying what only the held one carries (carryHeld).
 //
 // The resend is a sweep's work wherever it is tried, before an interval's reading (tick), in the
 // wait for settings (awaitSettings) or before a new report's send (deliver): a held report is a
@@ -380,8 +380,8 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 	if len(sizes) > 0 {
 		report.Sizes = make([]shimwire.LauncherVolumeSize, len(sizes))
 		for at, size := range sizes {
-			size.Path = cutRunes(size.Path, volumeReportPathRunes)
-			size.Refused = cutRunes(size.Refused, volumeReportPathRunes)
+			size.Path = redact.Runes(size.Path, volumeReportPathRunes)
+			size.Refused = redact.Runes(size.Refused, volumeReportPathRunes)
 			report.Sizes[at] = size
 		}
 	}
@@ -395,8 +395,8 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 		report.SizesMissing = make([]shimwire.LauncherVolumeMissing, len(missing))
 		for at, one := range missing {
 			report.SizesMissing[at] = shimwire.LauncherVolumeMissing{
-				Path:   cutRunes(one.Path, volumeReportPathRunes),
-				Reason: cutRunes(one.Reason, volumeReportPathRunes),
+				Path:   redact.Runes(one.Path, volumeReportPathRunes),
+				Reason: redact.Runes(one.Reason, volumeReportPathRunes),
 			}
 		}
 	}
@@ -407,9 +407,9 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 	}
 	report.RefusedReads = cutEach(refused, volumeReportPathRunes)
 
-	report.StopReason = cutRunes(report.StopReason, volumeReportStopReasonRunes)
-	report.Trimmer = cutRunes(report.Trimmer, volumeReportTrimmerRunes)
-	report.RaisedBy = cutRunes(report.RaisedBy, volumeReportTrimmerRunes)
+	report.StopReason = redact.Runes(report.StopReason, volumeReportStopReasonRunes)
+	report.Trimmer = redact.Runes(report.Trimmer, volumeReportTrimmerRunes)
+	report.RaisedBy = redact.Runes(report.RaisedBy, volumeReportTrimmerRunes)
 
 	faults := report.Faults
 	if over := len(faults) - shimwire.VolumeReportFaults; over > 0 {

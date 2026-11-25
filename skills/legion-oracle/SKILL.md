@@ -31,8 +31,7 @@ exist. Each `task` runs as a job of its own: `wait` for each result and answer f
 
 Before you rely on a step 1 hit, `grep` `docs/solutions/` for its path. If another file lists that
 path under its front-matter `supersedes:` key, use that file instead; if one has a line
-`Extends docs/solutions/<hit path>`, read both. For a hit on a page the "Documentation" section of
-the repository's `AGENTS.md` names as replaced, follow the rule that section names.
+`Extends docs/solutions/<hit path>`, read both.
 
 ## Output
 

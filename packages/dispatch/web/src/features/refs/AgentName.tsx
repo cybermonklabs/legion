@@ -37,8 +37,7 @@ import { relativeTimeLabel, Timestamp } from "./Timestamp";
  * is the one other reader, and it does not show an agent. The root `biome.json` bans importing
  * them anywhere else in `web/src` (and `AGENT_LIVE_PATH` outside `app.tsx`, which mounts the
  * route), but not through a namespace import (`import * as contracts from "@legion/contracts"`):
- * a review catches that member use, as `packages/dispatch/AGENTS.md` ("How an agent is shown")
- * asks.
+ * lint misses that member use, so a review looks for it.
  */
 
 type SessionActor = Actor & { kind: "session" };
@@ -66,16 +65,19 @@ interface ResolvedAgent {
   readonly attribution: string;
 }
 
+/** What `resolveAgent` reads of the registry: its titles alone. */
+type RegistryTitles = Pick<AgentRegistry, "title" | "titles">;
+
 /** The name and attribution `main` gives an agent: every name this module spells as text
  *  (`AgentText`'s `label`, `part`, `sessionText` and `initials`, on every surface) and every name
  *  it draws outside `NoTooltips` comes from here. Inside `NoTooltips` a drawn session name follows
  *  `drawnSessionName`, and `AgentText.author` names an author, instead. */
 function resolveAgent(
   ref: SessionRef,
-  registry: AgentRegistry
+  registry: RegistryTitles
 ): ResolvedAgent & { readonly sessionId: string };
-function resolveAgent(ref: AgentRef, registry: AgentRegistry): ResolvedAgent;
-function resolveAgent(ref: AgentRef, registry: AgentRegistry): ResolvedAgent {
+function resolveAgent(ref: AgentRef, registry: RegistryTitles): ResolvedAgent;
+function resolveAgent(ref: AgentRef, registry: RegistryTitles): ResolvedAgent {
   if ("actor" in ref) {
     const { actor } = ref;
     return {
@@ -89,6 +91,21 @@ function resolveAgent(ref: AgentRef, registry: AgentRegistry): ResolvedAgent {
     name: sessionLabel(ref.sessionId, registry.title(ref.sessionId) ?? ref.storedTitle),
     sessionId: ref.sessionId,
   };
+}
+
+/** No registry title at all: what an agent is named by before the registry answers, or where
+ *  no registry is read (`actorLabelText`). */
+const NO_TITLES: RegistryTitles = { title: () => undefined, titles: new Map() };
+
+/** `AgentText.label`'s words for an agent, by the titles `registry` holds: its name, with the
+ *  agent a person's act was made through, then its attribution. */
+function labelText(ref: AgentRef, registry: RegistryTitles): string {
+  const { attribution, name } = resolveAgent(ref, registry);
+  // The same name `AgentName` draws, the agent an act was made through included, so a title
+  // or an aria-label never says a person wrote what their agent wrote for them.
+  const acted =
+    "actor" in ref && ref.actor.kind === "user" ? actorActText(name, ref.actor.act) : name;
+  return `${acted}${attribution}`;
 }
 
 type AgentSubject =
@@ -413,6 +430,17 @@ export interface AgentText {
   initials(actor: Actor): string;
 }
 
+/**
+ * `AgentText.label` for a caller that reads no agent registry, such as a pure model: the label
+ * `useAgentText` spells before the registry has answered, or with no registry. A person by login,
+ * with the agent an act was made through; a session by the title stamped on its write, else its
+ * short id (`session:<8>…`); and the attribution after either. Where the registry lists a session
+ * under a title, `label` names it by that title and this does not.
+ */
+export function actorLabelText(actor: Actor): string {
+  return labelText({ actor }, NO_TITLES);
+}
+
 /** A session's name as every form of `AgentName` draws it on the surface it is on, the one rule
  *  for a drawn session name. Everywhere but inside `NoTooltips` (`words` null) it is
  *  `resolveAgent`'s name. Inside, it is the name the new issue page gives an author: the
@@ -503,14 +531,7 @@ export function useAgentText(): AgentText {
   const registry = useAgentRegistry(false);
   const page = usePageWords();
   return useMemo(() => {
-    const label = (ref: AgentRef) => {
-      const { attribution, name } = resolveAgent(ref, registry);
-      // The same name `AgentName` draws, the agent an act was made through included, so a title
-      // or an aria-label never says a person wrote what their agent wrote for them.
-      const acted =
-        "actor" in ref && ref.actor.kind === "user" ? actorActText(name, ref.actor.act) : name;
-      return `${acted}${attribution}`;
-    };
+    const label = (ref: AgentRef) => labelText(ref, registry);
     return {
       author: (actor: Actor | undefined) =>
         page !== null

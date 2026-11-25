@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // newLauncherCommand is PID 1 of an issue pod's one container, which serves every resident role,
@@ -25,7 +26,7 @@ import (
 // (wordFirst).
 func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--microvm [--metadata-workload-pool <project>.svc.id.goog --metadata-identity-provider <url>]] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)",
+		Use:    "launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--microvm [--metadata-workload-pool <project>.svc.id.goog --metadata-identity-provider <url>]] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email> [--session-writer-audience <audience>]]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)",
 		Short:  "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command",
 		Hidden: true,
 	}
@@ -44,21 +45,25 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	sessionInstance := flags.String("session-instance", "", "the Cloud SQL instance holding the session database: project:region:instance")
 	sessionDatabase := flags.String("session-database", "", "the session database in that instance")
 	sessionUser := flags.String("session-user", "", "the IAM login this pod signs in to the session database as")
-	sessionAccount := flags.String("session-impersonate-service-account", "", "the Google service account the session proxy impersonates with this pod's own credentials and signs in as; optional, and given only with the three other session flags")
+	sessionAccount := flags.String("session-impersonate-service-account", "", "the Google service account the session proxy impersonates and signs in as, with this pod's own credentials or, with --session-writer-audience, with the launcher's writer token; optional, and given only with the three other session flags")
+	sessionWriterAudience := flags.String("session-writer-audience", "", "the audience of the session writer token that only this launcher reads, a workload identity provider's full resource name: the session proxy exchanges that token to impersonate the service account, in place of this pod's own credentials, and admits only this launcher and the generation's agent; optional, and given only with the four other session flags and --roles-dir")
 	testPostgres := flags.Bool("test-postgres", false, "serve the pod's own PostgreSQL for tests from the worker image's legion-testpg, before any role starts and again whenever its postmaster exits (an issue pod's container, with --roles-dir)")
 	microVM := flags.Bool("microvm", false, "the pod runs in a GKE Sandbox microVM rather than under gVisor")
-	metadataPool := flags.String("metadata-workload-pool", "", "serve the pod-local metadata endpoint for this Workload Identity pool, <project>.svc.id.goog, given with --metadata-identity-provider (a microVM issue pod's container: with --microvm and --roles-dir)")
+	metadataPool := flags.String("metadata-workload-pool", "", "serve the pod-local metadata endpoint of a microVM pod's container, with --microvm, for this Workload Identity pool, <project>.svc.id.goog, given with --metadata-identity-provider")
 	metadataProvider := flags.String("metadata-identity-provider", "", "the cluster's identity provider the metadata endpoint exchanges the pod's ServiceAccount token with: https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		defer podLogs(stderr)()
 		cfg := launcher.Config{
 			Connect: *connect, Sandbox: *sandbox, PodUID: *podUID, StopGrace: *stopGrace,
 			Stdout: stdout, Stderr: stderr, MicroVM: *microVM,
 			SessionDatabase: ompsessions.Database{
 				Instance: *sessionInstance, Name: *sessionDatabase, User: *sessionUser, ImpersonateServiceAccount: *sessionAccount,
+				WriterAudience: *sessionWriterAudience,
 			},
 		}
 		// Either metadata flag names the endpoint, so one given without the other is refused as
-		// named in part (launcher.Config's validate), as are both outside a microVM issue pod.
+		// named in part (launcher.Config's validate), as are both outside a microVM pod, in
+		// either form.
 		if *metadataPool != "" || *metadataProvider != "" {
 			cfg.Metadata = &launcher.MetadataConfig{WorkloadPool: *metadataPool, IdentityProvider: *metadataProvider}
 		}
@@ -82,13 +87,15 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			token, err := os.ReadFile(*tokenFile)
 			if err != nil {
-				fmt.Fprintf(stderr, "launcher: token file %s: %v\n", *tokenFile, err)
+				printRefusal(stderr, "launcher", fmt.Errorf("token file %s: %w", *tokenFile, err))
 				return 1
 			}
 			cfg.Token, cfg.PrivateDir = strings.TrimSpace(string(token)), *privateDir
 		}
 		if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
-			fmt.Fprintln(stderr, err)
+			// Run's error names itself (`launcher: …`), so it is written as it is, through the
+			// URL rule.
+			fmt.Fprintln(stderr, redact.URLCredentials(err.Error()))
 			return 1
 		}
 		return 0
@@ -105,8 +112,11 @@ const roleInitUsage = "usage: legion launcher role-init --roles-dir <dir> --role
 // --help` does not offer it: run outside those namespaces it refuses, since it would otherwise
 // mount a role's private view over the container's own. ctx ends at the launcher's stop (main's
 // SIGTERM), which it forwards to the role. A failure before the shim started exits
-// launcher.RoleInitSetupFailedExit, the one status the launcher reports as a setup failure.
+// launcher.RoleInitSetupFailedExit, the one status the launcher reports as a setup failure. Its
+// own lines pass the URL rule (redact.Writer); stderr itself goes to the role's shim as that
+// child's own stream (launcher.RoleInitConfig.Stderr).
 func newRoleInitCommand(stdout, stderr io.Writer) *cobra.Command {
+	own := redact.Writer(stderr)
 	cmd := &cobra.Command{
 		Use:    strings.TrimPrefix(roleInitUsage, "usage: legion launcher "),
 		Short:  "the init of one role generation's namespaces (the launcher runs it, never a person)",
@@ -123,23 +133,23 @@ func newRoleInitCommand(stdout, stderr io.Writer) *cobra.Command {
 	// A role-init the launcher started with flags it cannot read failed before its shim as much as
 	// one whose mounts failed, so it exits the same status; only --help, which nothing runs, exits 0.
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
-		fmt.Fprintf(stderr, "legion launcher role-init: %v\n%s\n", err, roleInitUsage)
+		fmt.Fprintf(own, "legion launcher role-init: %v\n%s\n", err, roleInitUsage)
 		return exitCode(launcher.RoleInitSetupFailedExit)
 	})
 	cmd.RunE = runs(func(ctx context.Context, args []string) int {
 		argv, err := afterDash(cmd, args)
 		if err != nil || len(argv) == 0 {
 			if err != nil {
-				fmt.Fprintf(stderr, "legion launcher role-init: %v\n", err)
+				fmt.Fprintf(own, "legion launcher role-init: %v\n", err)
 			}
-			fmt.Fprintln(stderr, roleInitUsage)
+			fmt.Fprintln(own, roleInitUsage)
 			return launcher.RoleInitSetupFailedExit
 		}
 		if err := launcher.RoleInit(ctx, launcher.RoleInitConfig{
 			RoleCover: cover(), Role: *role, Generation: *generation, StatusFD: *statusFD,
 			Argv: argv, Stdout: stdout, Stderr: stderr,
 		}); err != nil {
-			fmt.Fprintln(stderr, err)
+			fmt.Fprintln(own, err)
 			return launcher.RoleInitSetupFailedExit
 		}
 		return 0
@@ -167,7 +177,9 @@ const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles
 // it, and its namespaces give it no privilege outside them, so what it can remove is what the
 // uid that started it could remove anyway. It reads no context: the sweep ends it by closing the
 // requests, and kills it if it outlives the grace. It takes no word, so a word is a usage error.
+// Its own lines pass the URL rule; stdout carries its answers to the sweep as written.
 func newVolumeTrimDeleteCommand(stdout, stderr io.Writer) *cobra.Command {
+	stderr = redact.Writer(stderr)
 	cmd := &cobra.Command{
 		Use:    strings.TrimPrefix(volumeTrimDeleteUsage, "usage: legion launcher "),
 		Short:  "the cache trimmer's deleter, which one sweep makes its removals through (the launcher runs it, never a person)",
