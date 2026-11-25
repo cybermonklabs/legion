@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -83,4 +83,62 @@ test("world refuses a binary that ran no test, naming the missing PASS line", ()
   expect(world.stderr).toContain("testing: warning: no tests to run");
   expect(world.stderr).toContain("--- PASS: TestRigWorld");
   expect(world.status).toBe(1);
+});
+
+// A go that answers the entry's one compile, `go test -c -o <dir>/ <packages>`, with a stand-in
+// binary for each package, named as go names them, that prints its test's PASS line.
+const GO = `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then out=$2; fi
+  shift
+done
+for pair in workflow:TestRigWorld daemon:TestRigLaunch api:TestRigPlanCheck; do
+  printf '#!/bin/sh\\necho "--- PASS: %s (0.00s)"\\n' "\${pair#*:}" >"\${out}\${pair%%:*}.test"
+  chmod +x "\${out}\${pair%%:*}.test"
+done
+`;
+
+// Catches: a build that writes its binaries into the label's checkout, where git status lists them
+// and jj snapshots them into the developer's working-copy commit, and one that takes a directory
+// inside the checkout or none at all.
+test("build compiles into RIG_TEXTS_BIN and leaves the label's checkout as it was, and refuses a RIG_TEXTS_BIN inside it or unset", () => {
+  requireHostTools("bash", "git");
+  const { label, script, env } = bareLabel();
+  for (const [pkg, file] of tests) {
+    const dir = path.join(label, "packages", "daemon", "internal", pkg);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, file), `package ${pkg}\n`);
+  }
+  const identity = ["-c", "user.name=Label Test", "-c", "user.email=label@example.invalid"];
+  const git = (...args: string[]) => {
+    const ran = run(label, env, "git", ...identity, ...args);
+    if (ran.status !== 0) throw new Error(`git ${args.join(" ")}: ${ran.status} ${ran.stderr}`);
+    return ran.stdout.trim();
+  };
+  git("-c", "init.defaultBranch=main", "init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "label");
+  const tools = directory("go");
+  writeFileSync(path.join(tools, "go"), GO, { mode: 0o755 });
+  const withGo = { ...env, PATH: `${tools}:${env.PATH ?? ""}` };
+  const out = directory("texts");
+
+  const built = run(label, { ...withGo, RIG_TEXTS_BIN: out }, "bash", script, "build");
+
+  expect({ status: built.status, stderr: built.status === 0 ? "" : built.stderr }).toEqual({
+    status: 0,
+    stderr: "",
+  });
+  for (const [, , name] of tests) expect(built.stdout).toContain(`--- PASS: ${name} (`);
+  expect(git("status", "--porcelain", "--untracked-files=all", "--ignored")).toBe("");
+  expect(existsSync(path.join(out, git("rev-parse", "HEAD"), "built"))).toBe(true);
+
+  const insideDir = path.join(label, "texts");
+  const inside = run(label, { ...withGo, RIG_TEXTS_BIN: insideDir }, "bash", script, "build");
+  expect(inside.status).toBe(2);
+  expect(inside.stderr).toContain(`RIG_TEXTS_BIN ${insideDir} is inside the label's checkout`);
+  const unset = run(label, withGo, "bash", script, "build");
+  expect(unset.status).toBe(2);
+  expect(unset.stderr).toContain("RIG_TEXTS_BIN is unset");
+  expect(existsSync(insideDir)).toBe(false);
 });

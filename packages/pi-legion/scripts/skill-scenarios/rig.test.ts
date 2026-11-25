@@ -19,6 +19,7 @@ import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptAssignments, scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { OWNER_WALK_STAGES } from "./owner-walk";
 import { modelProblem, transcriptModels } from "./scored-runs";
 import { RunRow } from "./scored-runs-contracts";
 
@@ -1928,6 +1929,23 @@ describe("label_tree", () => {
     }
   });
 
+  // Catches: a failed worktree add that names no reason, its log removed with the tree, and a
+  // hint that misses the prune a tree deleted by hand needs before git adds it again.
+  test("a label tree whose worktree add fails names git's reason and the prune a tree deleted by hand needs", () => {
+    const { repo, second, files } = labelRepo();
+    const work = freshDir("label-tree-gone");
+    const manifest = path.join(files, "every-verb.txt");
+    expect(labelTree(repo, files, work, "gone", second, manifest).code).toBe(0);
+    // The tree deleted by hand: git still holds it registered.
+    rmSync(path.join(work, "label-trees/gone"), { recursive: true, force: true });
+    const again = labelTree(repo, files, work, "gone", second, manifest);
+    expect(again.code).toBe(1);
+    expect(again.stderr).toContain(`git worktree add of ${second} failed for the label tree gone: `);
+    expect(again.stderr).toContain("label-trees/gone/tree");
+    expect(again.stderr).toContain(`git -C ${repo} worktree prune`);
+    expect(existsSync(path.join(work, "label-trees/gone"))).toBe(false);
+  });
+
   /** #4902's head, fetched by its pull request's ref, once, at depth 1, into a repository of its
    * own, so no ref of this checkout moves. It borrows no object of this checkout: CI's checkout is
    * shallow, and a fetch that offered its commits as haves asked for parents no repository held.
@@ -2383,6 +2401,83 @@ describe("rig_omp", () => {
     expect(elsewhere.code).toBe(1);
     expect(elsewhere.stderr).toContain("is not <dir>/bin/omp");
   });
+
+  // Catches: a launch or a superpowers probe that asks mise for the pin's Oh My Pi where
+  // SKILL_SCENARIOS_OMP names the one to run, as a build pod with no mise does.
+  test("launch and install_superpowers run the Oh My Pi SKILL_SCENARIOS_OMP names, and call no mise", () => {
+    const install = freshDir("omp-direct");
+    mkdirSync(path.join(install, "bin"));
+    const omp = path.join(install, "bin/omp");
+    // The pod's Oh My Pi: it prints the pin's release for --version; any other call is recorded,
+    // and leaves the probe's transcript in the session directory it is given.
+    writeFileSync(
+      omp,
+      `#!/usr/bin/env bash
+if [ "\${1:-}" = --version ]; then echo omp/1.2.3; exit 0; fi
+printf '%s\\n' "$*" >>${JSON.stringify(path.join(install, "calls.txt"))}
+while [ $# -gt 0 ] && [ "$1" != --session-dir ]; do shift; done
+if [ $# -ge 2 ]; then mkdir -p "$2" && cp ${JSON.stringify(path.join(install, "probe.jsonl"))} "$2/probe.jsonl"; fi
+echo "the pod's omp ran"
+`,
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      path.join(install, "probe.jsonl"),
+      `${JSON.stringify({ message: { role: "toolResult", content: [{ type: "text", text: "# Skill writing-plans" }] } })}\n`
+    );
+    // A mise that records each call and fails, as no mise answers in a pod.
+    const tools = freshDir("omp-direct-tools");
+    const miseCalls = path.join(install, "mise-calls.txt");
+    writeFileSync(
+      path.join(tools, "mise"),
+      `#!/bin/sh\necho "mise $*" >>${JSON.stringify(miseCalls)}\nexit 1\n`,
+      { mode: 0o755 }
+    );
+    const env = {
+      PATH: `${tools}:${childEnv.PATH}`,
+      SKILL_SCENARIOS_OMP: omp,
+    };
+    const pin = "github:example/oh-my-pi@1.2.3-4";
+
+    const run = freshDir("omp-direct-run");
+    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
+    writeFileSync(path.join(run, "prompt.txt"), "Plan the issue.\n");
+    writeFileSync(path.join(run, "pane.env"), `PATH=${tools}:${childEnv.PATH}\n`);
+    const standIns = `
+tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
+sleep() { command sleep 0.05; }`;
+    const launched = bash(
+      `${defs("fail", "pinned_omp", "rig_omp", "launch")}\n${standIns}\nR=$1 tag=t pin=$2\nlaunch owner-walk-s1-1`,
+      [run, pin],
+      env
+    );
+    expect({ code: launched.code, stderr: launched.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(run, "out.txt"), "utf8")).toBe("the pod's omp ran\nexit=0\n");
+
+    const label = freshDir("omp-direct-label");
+    const src = freshDir("omp-direct-superpowers");
+    for (const skill of ["writing-plans", "brainstorming"]) {
+      mkdirSync(path.join(src, "skills", skill), { recursive: true });
+      writeFileSync(
+        path.join(src, "skills", skill, "SKILL.md"),
+        `---\nname: ${skill}\n---\n\n# Skill ${skill}\n`
+      );
+    }
+    writeFileSync(path.join(label, "built-from"), "checkout /x\n");
+    const probed = bash(
+      `${defs("fail", "pinned_omp", "rig_omp", "install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 "$2"`,
+      [label, pin],
+      { ...env, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
+    );
+    expect({ code: probed.code, stderr: probed.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(path.join(label, "superpowers"))).toBe(true);
+
+    const calls = readFileSync(path.join(install, "calls.txt"), "utf8").trimEnd().split("\n");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toStartWith("-p Plan the issue.");
+    expect(calls[1]).toStartWith("-p Call the read tool once on the path skill://writing-plans");
+    expect(existsSync(miseCalls)).toBe(false);
+  });
 });
 
 describe("owner_walk_case", () => {
@@ -2448,6 +2543,142 @@ describe("batch_scored", () => {
     const second = freshDir("cell-second");
     expect(cell(second, 1, 2)).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(readFileSync(path.join(second, "launches"), "utf8")).toBe("1\n2\n");
+  });
+});
+
+describe("rig.sh cell", () => {
+  /** The sentence of a clause of the guidance stage, by its id. */
+  const sentence = (id: string): string => {
+    const found = OWNER_WALK_STAGES.guidance?.clauses.find((each) => each.id === id);
+    if (found === undefined) throw new Error(`the guidance stage has no clause ${id}`);
+    return found.sentence;
+  };
+  /** One run of a case under a label, as a scored batch leaves it: its world.json, and its scored
+   * row.json whose clauses pass as `passes` says. */
+  function plantScored(
+    work: string,
+    label: string,
+    owner: { kind: "root" | "child"; form: "B" | "D"; family: "claude" | "gpt" },
+    n: number,
+    passes: Record<string, boolean>
+  ): void {
+    const kase = `${owner.kind}-${owner.form}-${owner.family}`;
+    const name = `owner-walk-${kase}-${label}-${n}`;
+    const dir = path.join(work, "runs", name);
+    mkdirSync(dir, { recursive: true });
+    const world = {
+      scenario: "owner-walk",
+      stage: "guidance",
+      ...owner,
+      issue: "issue.md",
+      plansProject: "LWEVAL",
+      plansKeys: ["LWEVAL-1"],
+      guidance:
+        owner.form === "D"
+          ? {
+              file: "guidance-first.md",
+              implementerFamily: "claude",
+              reviewerFamily: "gpt",
+              implementerModel: "claude-model",
+              reviewerModel: "gpt-model",
+            }
+          : null,
+      questions: ["Would another family review the change?"],
+    };
+    writeFileSync(path.join(dir, "world.json"), `${JSON.stringify(world)}\n`);
+    const clauses = Object.entries(passes).map(([id, pass]) => ({
+      clause: sentence(id),
+      pass,
+      evidence: `${id}: planted`,
+      counts: {},
+    }));
+    const row = RunRow.parse({
+      outcome: "scored",
+      run: name,
+      scenario: "owner-walk",
+      label,
+      case: kase,
+      pass: clauses.every((clause) => clause.pass),
+      clauses,
+      reach: [],
+    });
+    writeFileSync(path.join(dir, "row.json"), `${JSON.stringify(row)}\n`);
+  }
+  /** The twelve owners of form D under a label, three runs of each kind and family, in that order;
+   * owner `i` passes read when `passes(i)`. */
+  function plantControl(work: string, label: string, passes: (owner: number) => boolean): void {
+    let owner = 0;
+    for (const kind of ["root", "child"] as const)
+      for (const family of ["claude", "gpt"] as const)
+        for (let n = 1; n <= 3; n += 1) {
+          plantScored(work, label, { kind, form: "D", family }, n, { read: passes(owner) });
+          owner += 1;
+        }
+  }
+  /** `rig.sh cell owner-walk LABEL CASE COUNT`'s one line. */
+  function line(work: string, label: string, kase: string, count: number): string {
+    const cell = Bun.spawnSync(
+      ["bash", path.join(scenarios, "rig.sh"), "cell", "owner-walk", label, kase, String(count)],
+      { env: { ...childEnv, SKILL_SCENARIOS_WORK: work } }
+    );
+    expect({ code: cell.exitCode, stderr: cell.stderr.toString() }).toEqual({ code: 0, stderr: "" });
+    return cell.stdout.toString().trimEnd();
+  }
+
+  // Catches: a cell line that gives a control form's case the rule of a case's cell, pass when
+  // every run passes, where the control counts its twelve owners and passes when fewer than six
+  // of them pass its clause: the last line of a controls Job would read the opposite verdict.
+  test("rig.sh cell gives a control form's case the control's verdict over its twelve owners, and a case form its own", () => {
+    const work = freshDir("cell-lines");
+    // Five of twelve pass read, and none of root-claude's three: the control passes.
+    plantControl(work, "ctl-d", (owner) => [3, 6, 9, 10, 11].includes(owner));
+    // Six of twelve, root-claude's three among them: the control fails.
+    plantControl(work, "ctl-d-strict", (owner) => [0, 1, 2, 3, 6, 9].includes(owner));
+    const five = line(work, "ctl-d", "root-D-claude", 3);
+    const six = line(work, "ctl-d-strict", "root-D-claude", 3);
+    expect([five, six].map((text) => text.slice(text.lastIndexOf(" verdict ") + 9))).toEqual([
+      "pass",
+      "fail",
+    ]);
+    expect(five).toBe(
+      "cell owner-walk ctl-d root-D-claude: the control guidance/D over every owner: 12 runs, 12 scored, 0 rig errors, count 12; read 5 of 12; it passes when fewer than 6 pass read; verdict pass"
+    );
+    expect(six).toBe(
+      "cell owner-walk ctl-d-strict root-D-claude: the control guidance/D over every owner: 12 runs, 12 scored, 0 rig errors, count 12; read 6 of 12; it passes when fewer than 6 pass read; verdict fail"
+    );
+
+    // A case form's cell is its case's runs at the count given, and passes when each passes.
+    const b = { kind: "root", form: "B", family: "claude" } as const;
+    const all = { read: true, choices: true, "earlier-and-fresh": true };
+    for (let n = 1; n <= 3; n += 1) plantScored(work, "head", b, n, all);
+    for (let n = 1; n <= 3; n += 1) plantScored(work, "head-two", b, n, { ...all, read: n !== 2 });
+    expect(line(work, "head", "root-B-claude", 3)).toBe(
+      "cell owner-walk head root-B-claude: 3 runs, 3 scored, 0 rig errors, count 3; each clause: read 3 of 3, choices 3 of 3, earlier-and-fresh 3 of 3; runs passed 3 of 3; verdict pass"
+    );
+    expect(line(work, "head-two", "root-B-claude", 3)).toBe(
+      "cell owner-walk head-two root-B-claude: 3 runs, 3 scored, 0 rig errors, count 3; each clause: read 2 of 3, choices 3 of 3, earlier-and-fresh 3 of 3; runs passed 2 of 3; verdict fail"
+    );
+  });
+});
+
+describe("rig.sh batch", () => {
+  // Catches: a general batch that runs owner-walk beside batch-scored, with its own copies of
+  // batch-scored's owner-walk steps.
+  test("rig.sh batch refuses owner-walk, naming batch-scored, before it starts anything", () => {
+    const work = freshDir("batch-owner-walk");
+    const batch = Bun.spawnSync(
+      ["bash", path.join(scenarios, "rig.sh"), "batch", "owner-walk", "1", "head"],
+      {
+        env: {
+          ...childEnv,
+          SKILL_SCENARIOS_WORK: work,
+          SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude",
+        },
+      }
+    );
+    expect(batch.exitCode).toBe(1);
+    expect(batch.stderr.toString()).toContain("rig.sh batch-scored owner-walk");
+    expect(existsSync(path.join(work, "services"))).toBe(false);
   });
 });
 

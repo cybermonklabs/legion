@@ -78,6 +78,8 @@ interface Planted {
   judgment?: { item: string; verdict: "pass" | "fail"; why: string }[];
   /** The run's own files for score.ts runs: dispatch.json, built-from. */
   forScore?: { database: string; model: string };
+  /** The recorded plans answer, in place of `recorded`. */
+  recorded?: typeof recorded;
 }
 
 const readCall: [string, object] = ["bash", { command: "dispatch plans --project LWEVAL" }];
@@ -121,7 +123,7 @@ function plant(runs: string, planted: Planted): { dir: string; name: string } {
     );
   const world = worldOf(planted);
   write("world.json", world);
-  const answerText = `${JSON.stringify(recorded)}\n`;
+  const answerText = `${JSON.stringify(planted.recorded ?? recorded)}\n`;
   write("plans-answer.json", answerText);
   write("plans-answer.source", {
     commit: "a".repeat(40),
@@ -435,6 +437,34 @@ describe("ownerWalk's program clauses", () => {
     expect(ownerWalk(e.dir, e.name, "ctl-E").clauses.map((clause) => clause.clause)).toEqual([
       sentence("choices"),
     ]);
+  });
+});
+
+describe("what is reported beside the clauses", () => {
+  // Catches: a scorer that maps a recorded reason's keys by another rule than the proxy's, so the
+  // reason it holds the plan to is not the text the agent read: a key followed by `-` or `_`,
+  // which the proxy serves as it was recorded.
+  test("a plan that quotes a recorded reason as the proxy served it cites it, a key followed by - or _ included", () => {
+    const reason = "Fix SRX1-1_b and SRX1-2-x first, then stop.";
+    const answer = {
+      ...recorded,
+      issues: recorded.issues.map((issue) =>
+        issue.issue === "SRX1-1" ? { ...issue, ratings: [{ rating: 2, reason }] } : issue
+      ),
+    };
+    const run = plant(fresh(), {
+      recorded: answer,
+      proxy: readFirst,
+      plan: planOf("implementer reviewer", `The last retro said: ${reason}`),
+    });
+    expect(
+      ownerWalk(run.dir, run.name, "head").reported.find((each) => each.name === "cites-key")
+    ).toEqual({
+      name: "cites-key",
+      value: true,
+      evidence:
+        'the plan holds "fix srx1 1 b and srx1 2 x", eight words in a row of a recorded reason',
+    });
   });
 });
 

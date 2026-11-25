@@ -519,6 +519,75 @@ test("register_plan answers 502 when the run's Dispatch fails its read, and runs
   );
 });
 
+// Catches: a register_plan that takes another issue's document, or a plan for an issue outside the
+// claim's tree, both of which the label's route refuses before it reads a block (api/plan.go
+// planOwner and planAt): the agent would read a 200 where the daemon answers it a refusal.
+test("register_plan refuses another issue's document 404 ARTIFACT_NOT_ON_ISSUE, and an issue outside the claim's tree 403 ISSUE_OUTSIDE_TREE, and runs no entry for either", async () => {
+  const dir = freshDir();
+  const { label, entryDir } = plantLabel(dir, pkg.legion.daemonApiVersion);
+  writeFileSync(path.join(entryDir, "planted-answer.json"), RAN_ANYWAY);
+  const artifactId = randomUUID();
+  const markdown = ":::plan_task{#a}\nThe task.\n:::\n";
+  const dispatch = stubDispatch({
+    artifactId,
+    issue: "LWEVAL-9",
+    latest: 1,
+    version: 1,
+    markdown,
+    blocks: [{ id: "a", type: "plan_task", from: 0, to: markdown.length - 1, attributes: [] }],
+  });
+  const tokenFile = path.join(dir, "dispatch-token");
+  writeFileSync(tokenFile, `${fixtureSecret("dsp")}\n`, { mode: 0o600 });
+  const issuesFile = path.join(dir, "issues.json");
+  writeFileSync(
+    issuesFile,
+    JSON.stringify([
+      { key: "LWEVAL-8", tree: "LWEVAL-7", phase: null, status: "backlog" },
+      { key: "LWEVAL-9", tree: "LWEVAL-7", phase: null, status: "backlog" },
+      { key: "LWEVAL-30", tree: "LWEVAL-29", phase: null, status: "backlog" },
+    ])
+  );
+  const flags = ["--issues", issuesFile, "--label", label, "--dispatch", dispatch.url, tokenFile];
+  try {
+    await withStandin(
+      dir,
+      [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted", ...flags],
+      async (standin) => {
+        const claim = await register(standin);
+        const registerPlan = async (issue: string): Promise<Response> =>
+          post(standin, "/legion/v1/plans/register", {
+            grantId: await grant(standin, claim),
+            issue,
+            artifactId,
+            version: 1,
+          });
+        const foreign = await registerPlan("LWEVAL-8");
+        expect(foreign.status).toBe(404);
+        expect(LegionErrorResponse.parse(await foreign.json())).toMatchObject({
+          code: "ARTIFACT_NOT_ON_ISSUE",
+          error: `${artifactId} is not a document of LWEVAL-8`,
+        });
+        // An issue of another tree, and one the world does not hold.
+        for (const issue of ["LWEVAL-30", "LWEVAL-40"]) {
+          const outside = await registerPlan(issue);
+          expect(outside.status).toBe(403);
+          expect(LegionErrorResponse.parse(await outside.json())).toMatchObject({
+            code: "ISSUE_OUTSIDE_TREE",
+            error: `${issue} is outside the architect tree LWEVAL-7`,
+          });
+        }
+        expect(existsSync(path.join(entryDir, "request-seen.json"))).toBe(false);
+        // The document's own issue, in the claim's tree, reaches the label's check.
+        expect((await registerPlan("LWEVAL-9")).status).toBe(200);
+        expect(existsSync(path.join(entryDir, "request-seen.json"))).toBe(true);
+        expect(planStatuses(standin)).toEqual([404, 403, 403, 200]);
+      }
+    );
+  } finally {
+    dispatch.server.stop(true);
+  }
+});
+
 // Catches: a stand-in that cuts blocks out of a version it cannot read (no blocks, another
 // version than the one asked for, a range past the markdown, a range that holds no fenced block),
 // or runs the label's check on what it cut.
