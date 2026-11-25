@@ -192,6 +192,17 @@ fixture_of() {
   sed -E "s|.*/contract_([0-9]{14})_(.*)\\.go\$|$fixtures/contracts/\\1_\\2.json|" <<<"$1"
 }
 
+# tree_with REV ARG... prints the tree of REV with `git update-index ARG...` applied to it, in an
+# index of its own, so the worktree and its index stay as they were.
+tree_with() {
+  local rev=$1
+  shift
+  GIT_INDEX_FILE=$scratch/index git read-tree "$rev"
+  GIT_INDEX_FILE=$scratch/index git update-index "$@"
+  GIT_INDEX_FILE=$scratch/index git write-tree
+  rm -f "$scratch/index"
+}
+
 # refused WHAT TEXT... -- OPTION... runs the script with OPTION... on the branch of the current
 # directory, and fails unless it exits non-zero, leaves the branch as it was, and prints each TEXT.
 refused() {
@@ -344,10 +355,7 @@ refused "the conversion against main at ${base:0:10}, which declares const Daemo
 step "a ref whose version.go git cannot read is refused"
 # This change with no version.go: the script cannot tell whether it holds the cutover, so it
 # refuses it, where it would otherwise read it as after the cutover.
-GIT_INDEX_FILE=$scratch/index git read-tree "$this"
-GIT_INDEX_FILE=$scratch/index git update-index --force-remove "$api/version.go"
-no_version=$(git commit-tree "$(GIT_INDEX_FILE=$scratch/index git write-tree)" -p "$this" -m "convert-test: this change with no version.go")
-rm -f "$scratch/index"
+no_version=$(git commit-tree "$(tree_with "$this" --force-remove "$api/version.go")" -p "$this" -m "convert-test: this change with no version.go")
 refused "the conversion against this change with no version.go" \
   "$no_version (${no_version:0:10}) holds no $api/version.go that git can read" -- --base "$no_version"
 
@@ -485,16 +493,10 @@ step "a branch with two merge bases with its base branch is refused"
 # branch are then that commit and the first branch's commit of entry $k, and the one git prints
 # would decide which entries the stacked branch reads as its own.
 side_blob=$(printf 'convert-test: a commit both branches merge\n' | git hash-object -w --stdin)
-# with_side REV prints the tree of REV with the file convert-side.txt added.
-with_side() {
-  GIT_INDEX_FILE=$scratch/index git read-tree "$1"
-  GIT_INDEX_FILE=$scratch/index git update-index --add --cacheinfo "100644,$side_blob,convert-side.txt"
-  GIT_INDEX_FILE=$scratch/index git write-tree
-}
-side=$(git commit-tree "$(with_side "$base")" -p "$base" -m "convert-test: a commit before the cutover")
-crossed=$(git commit-tree "$(with_side "$stacked_commit")" -p "$stacked_commit" -p "$side" -m "convert-test: the stacked branch merges it")
-base_crossed=$(git commit-tree "$(with_side "$branch")" -p "$branch" -p "$side" -m "convert-test: the first branch merges it")
-rm -f "$scratch/index"
+side_file=(--add --cacheinfo "100644,$side_blob,convert-side.txt")
+side=$(git commit-tree "$(tree_with "$base" "${side_file[@]}")" -p "$base" -m "convert-test: a commit before the cutover")
+crossed=$(git commit-tree "$(tree_with "$stacked_commit" "${side_file[@]}")" -p "$stacked_commit" -p "$side" -m "convert-test: the stacked branch merges it")
+base_crossed=$(git commit-tree "$(tree_with "$branch" "${side_file[@]}")" -p "$branch" -p "$side" -m "convert-test: the first branch merges it")
 git checkout -q -b "$branch_crossed" "$crossed"
 refused "the conversion of the stacked branch with two merge bases with its base branch" \
   "2 merge bases" "${entry_commit:0:10}" "${side:0:10}" -- --base "$base_crossed"
