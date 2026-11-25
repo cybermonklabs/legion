@@ -223,6 +223,7 @@ var readsWithoutAViewer = map[string]string{
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
+	"ListOwedAfter":    serverWork + " - the forms drain walks its queue by a keyset cursor, a batch a pass",
 	"NamedBlock": "it answers a node id and nothing of any node: the pinned read of a block names the node an address " +
 		"names, which it then reads through Node and holds to the block's predicate at that node, so a block who may not " +
 		"see answers what an address nobody holds answers",
@@ -257,6 +258,7 @@ var readsWithoutAViewer = map[string]string{
 	"SourceText":   serverWork,
 	"StaleLensesOn": serverWork + " - a document's removal reads the stale lenses on the removed document to take each " +
 		"gone with all that stands beneath it, those its caller may not see included",
+	"StillOwed":    serverWork + " - a drain's read phase checks the queue row it listed is still owed under the source's owner lock",
 	"TreeChildren": treeWalk + " - the children of each node the walk reaches",
 	"TreeFactsOf":  treeWalk + " - what each node the walk reaches states at its cut",
 	"TreeMovedTo":  treeWalk + " - the nodes the address a comment's anchor names resolves to at the walk's cut",
@@ -387,7 +389,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	}
 	for _, kind := range nodeKinds {
 		record("TargetNames", "TargetNames of kind "+kind, func() error {
-			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}})
+			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}}, "")
 			return err
 		})
 		record("Node", "Node of kind "+kind, func() error {
@@ -427,7 +429,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
-		_, err := ExcerptedNodes(ctx, recorder, who, everyKind)
+		_, err := ExcerptedNodes(ctx, recorder, who, everyKind, "")
 		return err
 	})
 	record("BlockNodesAndRows", "BlockNodesAndRows of a block", func() error {
@@ -443,7 +445,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("TargetNames", "TargetNames of every kind at once", func() error {
-		_, err := TargetNames(ctx, recorder, who, everyKind)
+		_, err := TargetNames(ctx, recorder, who, everyKind, "")
 		return err
 	})
 	record("BlockTexts", "BlockTexts of every kind at once", func() error {
@@ -451,7 +453,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
-		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
+		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec", "")
 		return err
 	})
 	// A message's blocks record no revisions, so no block of one is ever removed and
@@ -475,7 +477,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, err := Closure(ctx, recorder, who, "CORE-1")
+		_, err := Closure(ctx, recorder, who, "CORE-1", "")
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {
@@ -509,7 +511,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
 	} {
 		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
-			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked})
+			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked}, "")
 			return err
 		})
 	}
@@ -522,11 +524,11 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			{Kind: "message", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"}, {Kind: "artifact", Prefix: "00000000"},
 			{Kind: "block", Scope: Scope{Document: "CORE-1/spec"}, Prefix: "00000000"},
 			{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
-		})
+		}, "")
 		return err
 	})
 	record("TargetNames", "TargetNames of an issue and a document", func() error {
-		_, err := TargetNames(ctx, recorder, who, []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "artifact", ID: "CORE-1/spec"}})
+		_, err := TargetNames(ctx, recorder, who, []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "artifact", ID: "CORE-1/spec"}}, "")
 		return err
 	})
 	// The index-time resolver resolves the short ids a text writes for that text's writer
@@ -577,7 +579,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	})
 	conversed := seedConversation(t, ctx, database)
 	record("ConversationNodes", "ConversationNodes of "+conversed, func() error {
-		nodes, err := ConversationNodes(ctx, recorder, who, conversed, time.Now())
+		nodes, err := ConversationNodes(ctx, recorder, who, conversed, time.Now(), "")
 		if err == nil && len(nodes) == 0 {
 			err = fmt.Errorf("the conversation of %s lists no node: with no item that passes R2's test the read never reaches the loaders that bind their predicates", conversed)
 		}
@@ -590,7 +592,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		if err != nil {
 			return err
 		}
-		nodes, err := ConversationPageNodes(ctx, recorder, who, conversed, time.Now(), page)
+		nodes, err := ConversationPageNodes(ctx, recorder, who, conversed, time.Now(), page, "")
 		if err == nil && len(nodes) == 0 {
 			err = fmt.Errorf("the conversation page of %s lists no node: with no item that passes R2's test the read never reaches the loaders that bind their predicates", conversed)
 		}
@@ -604,7 +606,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		if err != nil {
 			return err
 		}
-		nodes, held, err := ConversationPageNodesOfHeads(ctx, recorder, who, conversed, time.Now(), page, newHeadTree(map[Target]*HeadRow{}, nil))
+		nodes, held, err := ConversationPageNodesOfHeads(ctx, recorder, who, conversed, time.Now(), page, newHeadTree(map[Target]*HeadRow{}, nil), "")
 		switch {
 		case err != nil:
 		case !held:
@@ -654,7 +656,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
 	located := text.ExtractAt(markdown, "https://dispatch.example")
-	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, time.Now()), markdown, blocks, located, nil, TypedFacts{})
+	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, time.Now()), markdown, blocks, located, nil, "", TypedFacts{})
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}
@@ -716,7 +718,7 @@ func seedPlanOrder(t *testing.T, ctx context.Context, database *store.Store) str
 	at := writeAuthoredVersion(t, tx, artifact, 1, markdown, privateAuthor)
 	pointers := []Pointer{{Block: "t1", BlockType: planTaskType, Kind: "needs",
 		Target: text.Ref{Kind: graphstore.KindIssue, IssueKey: "PLAN-2", ID: "PLAN-2"}, Targets: []string{planTaskType}}}
-	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, at), markdown, blocks, nil, pointers, TypedFacts{})
+	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, at), markdown, blocks, nil, pointers, "", TypedFacts{})
 	if err != nil {
 		t.Fatalf("index the plan of %s: %v", root, err)
 	}

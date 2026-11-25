@@ -43,12 +43,12 @@ func TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk(t *testing.T) {
 	}
 
 	for _, state := range []string{graphstore.StateProposed, graphstore.StateOvertaken, graphstore.StateLive} {
-		requireRefused(t, state+" on the ask block by its dispatch address", writeStateAs(t, handler, issue.Key, block, state, "alice"),
+		requireRefusedNaming(t, state+" on the ask block by its dispatch address", writeStateAs(t, handler, issue.Key, block, state, "alice"),
 			http.StatusConflict, codeAskHoldsState, block, ask)
 	}
-	requireRefused(t, "proposed on the ask block by its store address", writeStateAs(t, handler, issue.Key, blockNode, graphstore.StateProposed, "alice"),
+	requireRefusedNaming(t, "proposed on the ask block by its store address", writeStateAs(t, handler, issue.Key, blockNode, graphstore.StateProposed, "alice"),
 		http.StatusConflict, codeAskHoldsState, ask)
-	requireRefused(t, "the settle of the ask block",
+	requireRefusedNaming(t, "the settle of the ask block",
 		dispatchRequest(t, handler, http.MethodPost, statePath(issue.Key, block, "settle"), nil, "alice"),
 		http.StatusConflict, codeAskHoldsState, block, ask)
 	if after := storedStateOf(t, database, blockNode); after != blockBefore {
@@ -172,7 +172,7 @@ func uploadAskBlockCopy(t *testing.T, title string) askBlockCopy {
 
 // requireProposedRefused writes proposed on the copy's block q1, by the block's dispatch address
 // and as alice's cookie, and requires the write's 409 ASK_HOLDS_STATE naming the block and the
-// spec's ask (requireRefused, logged under name), and that the refusal left both nodes' states and
+// spec's ask (requireRefusedNaming, logged under name), and that the refusal left both nodes' states and
 // state tuple counts as they were.
 func (c askBlockCopy) requireProposedRefused(t *testing.T, name string) {
 	t.Helper()
@@ -180,7 +180,7 @@ func (c askBlockCopy) requireProposedRefused(t *testing.T, name string) {
 	blockBefore := storedStateOf(t, c.database, block)
 	askBefore := storedStateOf(t, c.database, c.ask)
 
-	requireRefused(t, name, writeStateAs(t, c.handler, c.issue, block, graphstore.StateProposed, "alice"),
+	requireRefusedNaming(t, name, writeStateAs(t, c.handler, c.issue, block, graphstore.StateProposed, "alice"),
 		http.StatusConflict, codeAskHoldsState, block, c.ask)
 	if after := storedStateOf(t, c.database, block); after != blockBefore {
 		t.Fatalf("the refused write moved the copied block %s from %+v to %+v", block, blockBefore, after)

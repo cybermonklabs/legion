@@ -86,7 +86,9 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
     So it offers no Comment, Suggest or Ask on a selection and writes no mark from one, records no authorship on what a person types, and its `commentOnSelection` answers false; `CreateProofEditorOptions` and `commentOnSelection`'s comment say so.
     Dispatch sets it for a priority's description, which it saves as markdown; `tests/proof-marks.test.ts` holds both settings.
 
-29. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
+29. `src/lib-headless.ts`'s parse processor installs `remarkKeepAddressesWhole` from `./whole-addresses` right after `remarkGfm`, and `src/lib.ts` installs that module's `libraryRemarkKeepAddressesWholePlugin` right after `gfm`, each with a comment saying why, so a bare `dispatch://` address is read whole by the headless engine and by the live editor's paste and `setMarkdown`.
+
+30. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
 
 29. The `minutes` attribute kind, a duration a plan task's `size` is written in (`45m`, `2h`, `1h30m`).
     In `src/block-schema.ts`: `minutesValueProblem`, the twin of pmdoc's `Minutes`, with its pattern and its bound, and `parseAttribute`'s `minutes` case calling it.

@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { act, cleanup, waitFor, within } from "@testing-library/react";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -21,7 +21,14 @@ import type {
 } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import type { DecisionsRead } from "../issue/decision-entries";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { STALE_BLOCK_TITLE } from "./spec-marks";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 

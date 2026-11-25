@@ -211,7 +211,7 @@ func (f *orderFixture) plan(key string, blocks ...orderBlock) {
 			written[index].Document = document.fragment
 		}
 	}
-	_, won, write, _, err := IndexBlocks(ctx, f.tx, document.artifact, versions, markdown, written, nil, pointers, TypedFacts{})
+	_, won, write, _, err := IndexBlocks(ctx, f.tx, document.artifact, versions, markdown, written, nil, pointers, "", TypedFacts{})
 	if err != nil || !won {
 		f.t.Fatalf("index version %d of the plan of %s: won %t, %v", document.versions, key, won, err)
 	}

@@ -1593,7 +1593,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 		write: func(ctx context.Context, tx pgx.Tx) error {
 			markdown := "# Watched\n\nA watched passage.\n"
 			blocks := []model.ArtifactBlock{{ID: "watched", Type: "paragraph", From: 11, To: len(markdown) - 1}}
-			_, won, written, _, err := refs.IndexBlocks(ctx, tx, run.specID, refs.OneVersion(run.specID, blockVersion, time.Now().UTC()), markdown, blocks, nil, nil, refs.TypedFacts{})
+			_, won, written, _, err := refs.IndexBlocks(ctx, tx, run.specID, refs.OneVersion(run.specID, blockVersion, time.Now().UTC()), markdown, blocks, nil, nil, "", refs.TypedFacts{})
 			if err != nil {
 				return err
 			}

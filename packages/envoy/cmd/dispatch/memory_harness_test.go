@@ -147,7 +147,7 @@ type memoryServer struct {
 	exited <-chan struct{}
 	idle   int64
 	// database is the harness's own handle on the database this server serves, which a measured
-	// window takes the block-index lease on (holdBlockIndexLease).
+	// window takes the block-index lease and the reference forms drain's on (holdBlockIndexLease).
 	database *store.Store
 }
 
@@ -577,9 +577,9 @@ func (p *memoryServer) resident(t *testing.T, field string) int64 {
 // held idle, freshly started, while it ran.
 func (p *memoryServer) peakAboveIdle(t *testing.T, during func()) int64 {
 	t.Helper()
-	// Every measured window goes through here, so the lease is taken here: from before the window
+	// Every measured window goes through here, so the leases are taken here: from before the window
 	// begins to after the peak has been read, which is the whole of what the guard below watches.
-	// The release is deferred, so a window whose own failure ends the test gives the lease back on
+	// The release is deferred, so a window whose own failure ends the test gives the leases back on
 	// the way out and the rows after it measure their windows too.
 	release := p.holdBlockIndexLease(t)
 	defer release()
@@ -589,45 +589,53 @@ func (p *memoryServer) peakAboveIdle(t *testing.T, during func()) int64 {
 	}
 	written := p.output.Len()
 	during()
-	requireNoBlockIndexPass(t, p.outputFrom(written))
+	requireNoIndexPass(t, p.outputFrom(written))
 	return p.resident(t, "VmHWM") - p.idle
 }
 
-// requireNoBlockIndexPass fails the test where window, what the server logged during a measured
-// window, holds a block-index pass. A block-index pass reads whole documents of its own, so one
-// inside the window would make what the window measured that pass's memory rather than the
-// request's. start leaves nothing owed, and a pass that finds nothing owed logs nothing, so a
-// clean window holds no such line. What a drain taken before the server started cannot cover is a
+// requireNoIndexPass fails the test where window, what the server logged during a measured window,
+// holds a pass of the block index or of the reference forms drain, which indexes a document through
+// the block index's own index. Either pass reads whole documents of its own, so one inside the
+// window would make what the window measured that pass's memory rather than the request's. start
+// leaves nothing owed, and a pass of either that finds nothing to do logs nothing, so a clean
+// window holds no such line. What a drain taken before the server started cannot cover is a
 // window that fills an owed queue itself - any window that stores a document - since that row is
-// owed while the measurement runs and the server's next tick would index it there; the pass is
-// held off for the window's length by its own lease (holdBlockIndexLease) instead, and this guard
-// stays as the proof that it was. The handler is the slog.NewTextHandler main installs with
-// slog.SetDefault in cmd/dispatch/main.go, which writes the message mid-line as
-// msg="dispatch: block index", so the substring is the match and not a line's prefix.
-func requireNoBlockIndexPass(t *testing.T, window string) {
+// owed while the measurement runs and the server's next pass would index it there; both passes
+// are held off for the window's length by their own leases (holdBlockIndexLease) instead, and
+// this guard stays as the proof that they were. The handler is the slog.NewTextHandler main
+// installs with slog.SetDefault in cmd/dispatch/main.go, which writes the message mid-line, as
+// msg="dispatch: block index" for the block index's pass (docs' RunBlockIndexReconciliation) and
+// msg="dispatch: refs forms index" for the drain's (docs' refsFormsTick), each loop's other lines
+// starting with the same words, so a substring is the match and not a line's prefix.
+func requireNoIndexPass(t *testing.T, window string) {
 	t.Helper()
 	for _, line := range strings.Split(window, "\n") {
-		if strings.Contains(line, "dispatch: block index") {
+		switch {
+		case strings.Contains(line, "dispatch: block index"):
 			t.Fatalf("the server indexed blocks inside the measured window, so what it measured is that pass's memory: %s", line)
+		case strings.Contains(line, "dispatch: refs forms"):
+			t.Fatalf("the server's reference forms drain indexed text inside the measured window, so what it measured is that pass's memory: %s", line)
 		}
 	}
 }
 
-// blockIndexLeaseWait bounds the wait for the lease. A pass reads one batch of each queue it
-// serves and gives the lease back, seconds at most, so this is a hang guard on a wait nothing
-// healthy reaches and not a time the wait is meant to spend: a wait that reaches it means the
-// pass never gave its lease back, and the window cannot be measured with the pass held off.
+// blockIndexLeaseWait bounds the wait for the leases. A pass reads one batch of each queue it
+// serves and gives its lease back, seconds at most, so this is a hang guard on a wait nothing
+// healthy reaches and not a time the wait is meant to spend: a wait that reaches it means a pass
+// never gave its lease back, and the window cannot be measured with the passes held off.
 const blockIndexLeaseWait = 2 * time.Minute
 
-// holdBlockIndexLease takes the block-index pass's own lease over the harness's pool, through the
-// helper of block_index_lease_test.go every test that holds the pass off takes, and answers the
-// call that gives it back, so no block-index pass runs while this test holds it: a window that
-// owes the index of what it just wrote leaves that work to a tick after the lease is given back.
-// It does not replace drainBeforeStart, which clears what was owed before the server started,
-// work the lease only postpones; the two together leave the window clean.
+// holdBlockIndexLease takes the block-index pass's own lease and the reference forms drain's over
+// the harness's pool, through the helper of block_index_lease_test.go every test that holds the
+// pass off takes, and answers the call that gives them back, so neither a block-index pass nor a
+// drain pass, which indexes a document through the block index's own index, runs while this test
+// holds them: a window that owes the index of what it just wrote leaves that work to a pass after
+// the leases are given back. It does not replace drainBeforeStart, which clears what was owed
+// before the server started, work the leases only postpone; the two together leave the window
+// clean.
 func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 	t.Helper()
-	return holdBlockIndexLease(t, p.database.Pool, "this window's measurement", blockIndexLeaseWait, p.outputTail)
+	return holdBlockIndexLease(t, p.database.Pool, "this window's measurement", blockIndexLeaseWait, p.outputTail).giveBack
 }
 
 type response struct {

@@ -123,17 +123,18 @@ func IsConversationNode(ctx context.Context, q Queryer, kind, id string, at time
 // in the order they were written (created_at, then kind and id), each followed by its current
 // blocks in their order, every node loaded as nodeRegistry's loaders load it (loadAskNodes,
 // loadCommentNodes, loadMessageNodes and the item block loaders), with the parent its loader
-// names and the excerpt an edge at it shows, as ExcerptedNodes answers each. A node who may not
-// see is left out, as every loader leaves it out, and so are the blocks of an item left out.
-func ConversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time) ([]ExcerptedNode, error) {
-	return conversationNodes(ctx, q, who, issueKey, at, nil)
+// names and the excerpt an edge at it shows, as ExcerptedNodes answers each, cut around the
+// dashboard URLs of the deployment at serverURL (excerptOf). A node who may not see is left out,
+// as every loader leaves it out, and so are the blocks of an item left out.
+func ConversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, serverURL string) ([]ExcerptedNode, error) {
+	return conversationNodes(ctx, q, who, issueKey, at, nil, serverURL)
 }
 
 // ConversationPageNodes is ConversationNodes with the comments of page alone, which R2's test
 // passed as page was read (ReadCommentPage): the asks and the messages of the issue, and those
 // comments.
-func ConversationPageNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page CommentPage) ([]ExcerptedNode, error) {
-	return conversationNodes(ctx, q, who, issueKey, at, &page)
+func ConversationPageNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page CommentPage, serverURL string) ([]ExcerptedNode, error) {
+	return conversationNodes(ctx, q, who, issueKey, at, &page, serverURL)
 }
 
 // conversationItemsStatement lists an issue's items, its comments those comments selects, as c.
@@ -163,7 +164,7 @@ var (
 )
 
 // conversationNodes is ConversationNodes, its comments those of page where it is set.
-func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page *CommentPage) ([]ExcerptedNode, error) {
+func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page *CommentPage, serverURL string) ([]ExcerptedNode, error) {
 	statement, args := conversationItems, []any{issueKey, at}
 	if page != nil {
 		statement, args = conversationPageItems, append(args, page.IDs)
@@ -223,10 +224,10 @@ func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey
 		if !found {
 			continue
 		}
-		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
+		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)})
 		for _, block := range blocks[[2]string{item.otherKind, item.otherID}] {
 			if node, found := resolved[[2]string{block.otherKind, block.otherID}]; found {
-				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
+				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)})
 			}
 		}
 	}

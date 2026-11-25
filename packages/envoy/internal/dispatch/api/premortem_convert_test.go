@@ -454,7 +454,7 @@ func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 		t.Errorf("the issue's document list is %v, which holds the converted document %s", ids, report.Document.ID)
 	}
 	ops := map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "More."}}, "summary": "edit"}
-	requireRefused(t, "an edit of the converted document", dispatchRequest(t, rig.handler, http.MethodPost,
+	requireRefusedNaming(t, "an edit of the converted document", dispatchRequest(t, rig.handler, http.MethodPost,
 		"/api/v1/issues/"+rig.issue+"/artifacts/"+rig.slug+"/edits", ops, "alice"), http.StatusConflict, "DOCUMENT_RETIRED", rig.slug, report.Document.ID)
 	if retirements, want := rig.retirements(report.Document.ID), "converted into the pre-mortem lens "+*report.Lens.Address; len(retirements) != 1 || retirements[0] != want {
 		t.Errorf("the converted document holds the document.retired events %q, want one whose reason is %q", retirements, want)
@@ -504,14 +504,14 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 	before := rig.storeCounts()
 
 	withRisk11 := append(rig.premortemMap(), PremortemEntry{Risk: 11, Checks: []string{}, Reason: "A risk the document lacks."})
-	requireRefused(t, "an entry for risk 11", dispatchRequest(t, rig.handler, http.MethodPost, path,
+	requireRefusedNaming(t, "an entry for risk 11", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": withRisk11}, "alice"),
 		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "12", "11")
 	// Every refusal of an entry's shape holds the shape (premortemEntryShape), which names every
 	// member, so each test below reads the member the refusal names outside the shape: a mistyped
 	// member after it, a member left out before it.
 	mistyped := []any{map[string]any{"risk": 0, "checks": []string{}, "reason": "None."}, map[string]any{"risk": "x", "checks": []string{}, "reason": "None."}}
-	wrongType := requireRefused(t, "an entry whose risk is no number", dispatchRequest(t, rig.handler, http.MethodPost, path,
+	wrongType := requireRefusedNaming(t, "an entry whose risk is no number", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": mistyped}, "alice"),
 		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "2", "risk")
 	if named, cause, found := strings.Cut(wrongType.Error, premortemEntryShape); !found ||
@@ -520,7 +520,7 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 	}
 	// An entry without its checks is refused naming the entry by its position and its risk, and the
 	// member it leaves out.
-	missing := requireRefused(t, "an entry without its checks", dispatchRequest(t, rig.handler, http.MethodPost, path,
+	missing := requireRefusedNaming(t, "an entry without its checks", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": []any{map[string]any{"risk": 3, "reason": "None."}}}, "alice"),
 		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "1", "3", "checks")
 	if named, _, found := strings.Cut(missing.Error, premortemEntryShape); !found || !graphstoretest.NamesAsAWord(named, "1", "3", "checks") {
@@ -531,7 +531,7 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 	notJSON.Header.Set("X-Dispatch-User", "alice")
 	answered := httptest.NewRecorder()
 	rig.handler.ServeHTTP(answered, notJSON)
-	requireRefused(t, "a body that is not JSON", answered, http.StatusBadRequest, "INVALID_JSON")
+	requireRefusedNaming(t, "a body that is not JSON", answered, http.StatusBadRequest, "INVALID_JSON")
 	if after := rig.storeCounts(); after != before {
 		t.Errorf("the refused calls left %v nodes and tuples, want the %v they found", after, before)
 	}
@@ -592,7 +592,7 @@ func TestAConversionMapNamingACheckOfAnotherProjectWritesNothing(t *testing.T) {
 		unchanged(name)
 
 		name = fmt.Sprintf("the route with dry_run %t", dryRun)
-		requireRefused(t, name, dispatchRequest(t, rig.handler, http.MethodPost, path,
+		requireRefusedNaming(t, name, dispatchRequest(t, rig.handler, http.MethodPost, path,
 			map[string]any{"prevented_by": entries, "dry_run": dryRun}, "alice"), http.StatusBadRequest, "INVALID_POINTER",
 			append([]string{"6", "5"}, names...)...)
 		unchanged(name)

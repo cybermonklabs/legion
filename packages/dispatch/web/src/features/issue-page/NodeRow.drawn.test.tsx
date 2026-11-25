@@ -1,32 +1,65 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, render, waitFor } from "@testing-library/react";
+import {
+  act,
+  type RenderResult,
+  render,
+  renderHook,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
-import type { Actor, Agent, Decision, DisplayTree, IssueChild } from "../../api/types";
+import type {
+  Actor,
+  Agent,
+  Decision,
+  DisplayTree,
+  IssueChild,
+  ReferenceTarget,
+} from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
 import { actorLabelText, useAgentText } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import type { PostDeletion } from "../refs/post-marks";
+import { MarkdownBody } from "../refs/MarkdownBody";
+import * as markdownEngine from "../refs/markdown-engine";
+import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
+import {
+  NOTHING_PUBLISHED,
+  PublishedReferenceNames,
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../refs/reference-names";
 import { measureNearWords } from "./clamp-fixtures";
 import {
   AGENT,
+  artifact,
   decision,
   decisionsRead,
   issueDetails,
   KEY,
   SPEC_SLUG,
+  shaped,
 } from "./decisions-filter/decisions-fixtures";
-import { buildIssueTree, type NodeChip, type ParentLine, type TreeNode } from "./issue-tree";
+import {
+  buildIssueTree,
+  FIRST_LINE_LIMIT,
+  type IssueTreeReads,
+  type NodeChip,
+  type ParentLine,
+  type TreeNode,
+  targetNaming,
+} from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
@@ -45,12 +78,15 @@ import {
   isReader,
   NODE_TYPE_NAMES,
   type NodeType,
+  PRESET_NAMES,
   wordsIn,
 } from "./page-words";
+import { publishedChips, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
-import { addressesAsShortForms, blockNodeId } from "./tree-drafts";
+import { blockNodeId, treeContext } from "./tree-drafts";
+import { nodesInOrder } from "./tree-keys";
+import { treeDocumentIds, useIssueTree } from "./useIssueTree";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
@@ -91,12 +127,52 @@ const NOBODY_RECORDED: Author = {
   reader: false,
 };
 
+/** The parties Dispatch knows, as a party's own read finds them (`useReferenceTarget`): a
+ *  session the registry lists, a role a listed session holds, and a person's login. */
+interface Parties {
+  readonly login?: string;
+  readonly role?: string;
+  readonly session?: Agent;
+}
+
+/** Answers the registry's and the people's reads with `parties`, as the shell has read them. */
+function knowParties(queryClient: QueryClient, { login, role, session }: Parties): void {
+  const agents = [
+    ...(session === undefined ? [] : [session]),
+    ...(role === undefined
+      ? []
+      : [{ roles: [role], session_id: "role-holder", title: "Holder" } as unknown as Agent]),
+  ];
+  queryClient.setQueryData(["agents"], agents);
+  if (login !== undefined) queryClient.setQueryData(["users"], [{ login }]);
+}
+
+/** Publishes `published` to the names store while it is drawn, and hands it to what it draws in
+ *  the render that draws it, as the page publishes its one batched read and hands it its rows
+ *  (`useIssueTree.ts`, `IssueTree.tsx`); nothing where it is undefined. */
+function Named({
+  children,
+  published,
+}: {
+  children: ReactNode;
+  published: PublishedReferences | undefined;
+}): ReactNode {
+  usePublishReferenceNames(published);
+  return (
+    <PublishedReferenceNames published={published ?? NOTHING_PUBLISHED}>
+      {children}
+    </PublishedReferenceNames>
+  );
+}
+
 /** One row, drawn with its body open, as the focused row draws it, unless `body` is false;
  *  `author` is who made it, as the tree names them (`AgentText.author`); `answerer` the person
  *  whose answer an ask carries; `expanded` and `folded` its fold, for a node that holds any;
  *  `focused` whether it holds the tree's focus. It is drawn inside `NoTooltips`, as the page's
- *  slots draw every row, so an author is named as the page names one. `redraw` draws the same
- *  row of another node, as a later read of the tree does. */
+ *  slots draw every row, so an author is named as the page names one, and under the names
+ *  store, with `published` published to it where it is given, as the page publishes its batched
+ *  read. `redraw` draws the same row of another node, as a later read of the tree does;
+ *  `publish` publishes another value, as a later answer of the batched read does. */
 function renderRow(
   drawn: TreeNode,
   {
@@ -107,6 +183,8 @@ function renderRow(
     expanded,
     focused = false,
     folded,
+    parties,
+    published,
   }: {
     answerer?: string;
     author?: Author;
@@ -115,39 +193,58 @@ function renderRow(
     expanded?: boolean;
     focused?: boolean;
     folded?: number;
+    parties?: Parties;
+    published?: PublishedReferences;
   } = {}
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const row = (shown: TreeNode) => (
+  if (parties !== undefined) knowParties(queryClient, parties);
+  const row = (node: TreeNode, names: PublishedReferences | undefined) => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <NoTooltips>
-          <NodeRow
-            {...(answerer === undefined ? {} : { answerer })}
-            author={author}
-            body={body}
-            context={false}
-            {...(editable === undefined ? {} : { editable })}
-            {...(expanded === undefined ? {} : { expanded })}
-            {...(folded === undefined ? {} : { folded })}
-            focused={focused}
-            isClosed={false}
-            level={1}
-            node={shown}
-            onFocus={() => {}}
-            onPin={() => {}}
-            onToggle={() => {}}
-            ownAnswer={false}
-            pinned={false}
-            rowKey="row"
-            tabStop={false}
-          />
-        </NoTooltips>
+        <ReferenceNamesProvider>
+          <Named published={names}>
+            <NoTooltips>
+              <NodeRow
+                {...(answerer === undefined ? {} : { answerer })}
+                author={author}
+                body={body}
+                context={false}
+                {...(editable === undefined ? {} : { editable })}
+                {...(expanded === undefined ? {} : { expanded })}
+                {...(folded === undefined ? {} : { folded })}
+                focused={focused}
+                isClosed={false}
+                level={1}
+                node={node}
+                onFocus={() => {}}
+                onPin={() => {}}
+                onToggle={() => {}}
+                ownAnswer={false}
+                pinned={false}
+                rowKey="row"
+                tabStop={false}
+              />
+            </NoTooltips>
+          </Named>
+        </ReferenceNamesProvider>
       </MemoryRouter>
     </QueryClientProvider>
   );
-  const view = render(row(drawn));
-  return Object.assign(view, { redraw: (next: TreeNode) => view.rerender(row(next)) });
+  let shown = drawn;
+  let publishedNow = published;
+  const view = render(row(drawn, published));
+  return Object.assign(view, {
+    publish: (next: PublishedReferences) => {
+      publishedNow = next;
+      view.rerender(row(shown, publishedNow));
+    },
+    queryClient,
+    redraw: (next: TreeNode) => {
+      shown = next;
+      view.rerender(row(shown, publishedNow));
+    },
+  });
 }
 
 beforeAll(async () => {
@@ -490,8 +587,8 @@ test("a parent line draws a deleted parent as its deleted line, and an edited on
     deletedAt: DELETED_AT,
     deletedBy: UNTITLED,
     id: "comment-1",
-    line: `Deleted by ${actorLabelText(UNTITLED)} · ${DELETED_AT}`,
     reference: "dispatch://CORE-1/comment/comment-1",
+    text: `Deleted by ${actorLabelText(UNTITLED)} · ${DELETED_AT}`,
     type: "comment",
   });
   try {
@@ -507,8 +604,8 @@ test("a parent line draws a deleted parent as its deleted line, and an edited on
   const edited = under({
     editedAt: "2026-11-05T13:00:00Z",
     id: "message-1",
-    line: "Ship it.",
     reference: "dispatch://CORE-1/message/message-1",
+    text: "Ship it.",
     type: "message",
   });
   try {
@@ -603,8 +700,8 @@ test("a row's deleted line and edited mark are the page's own words, and the act
     deletedAt: DELETED_AT,
     deletedBy: alice,
     id: "comment-1",
-    line: `Deleted by alice · ${DELETED_AT}`,
     reference: "dispatch://CORE-1/comment/comment-1",
+    text: `Deleted by alice · ${DELETED_AT}`,
     type: "comment",
   });
   try {
@@ -617,8 +714,8 @@ test("a row's deleted line and edited mark are the page's own words, and the act
   const editedParent = under({
     editedAt: "2026-11-05T13:00:00Z",
     id: "message-1",
-    line: "Ship it.",
     reference: "dispatch://CORE-1/message/message-1",
+    text: "Ship it.",
     type: "message",
   });
   try {
@@ -626,30 +723,26 @@ test("a row's deleted line and edited mark are the page's own words, and the act
   } finally {
     editedParent.unmount();
   }
+  const markedChips: NodeChip[] = [
+    {
+      answered: true,
+      deletedAt: DELETED_AT,
+      deletedBy: UNTITLED,
+      gone: false,
+      reading: { words: `Deleted by ${actorLabelText(UNTITLED)}` },
+      ref: "dispatch://CORE-1/comment/c-deleted",
+    },
+    {
+      answered: true,
+      editedAt: "2026-11-05T13:00:00Z",
+      gone: false,
+      reading: { words: "Ship it." },
+      ref: "dispatch://CORE-1/message/m-edited",
+    },
+  ];
   const chips = renderRow(
-    node({
-      chips: [
-        {
-          answered: true,
-          deletedAt: DELETED_AT,
-          deletedBy: UNTITLED,
-          gone: false,
-          name: `Deleted by ${actorLabelText(UNTITLED)}`,
-          ref: "dispatch://CORE-1/comment/c-deleted",
-        },
-        {
-          answered: true,
-          editedAt: "2026-11-05T13:00:00Z",
-          gone: false,
-          name: "Ship it.",
-          ref: "dispatch://CORE-1/message/m-edited",
-        },
-      ],
-      id: "comment-9",
-      text: "Read these.",
-      type: "comment",
-    }),
-    { body: false }
+    node({ chips: markedChips, id: "comment-9", text: "Read these.", type: "comment" }),
+    { body: false, published: publishedChips(markedChips) }
   );
   try {
     const [deletedChip, editedChip] = [...chips.container.querySelectorAll("[data-chip-name]")];
@@ -860,28 +953,575 @@ test("a folded branch draws its first line and its count, and its focus its word
   }
 });
 
-// Decision 95: a folded branch's one line writes a bare address in its words as its target's
-// short form, as every one line of a node does (`lineWords`); its body keeps the address as its
-// author wrote it.
-test("a folded branch's line writes a bare address as its short form", () => {
+/** The reading of `markdown` the server would send (`displayTree`), which the engine always
+ *  gives for the plain words these rows write. */
+function readingOf(markdown: string): DisplayTree {
+  const tree = displayTree(markdown);
+  if (tree === undefined) throw new Error(`the engine read no tree of "${markdown}"`);
+  return tree;
+}
+
+/** The reads `view`'s query client holds that name `reference`: what a line that read its own
+ *  target for it would have made. */
+function readsOf(view: { queryClient: QueryClient }, reference: string): unknown[] {
+  const id = reference.replace("dispatch://", "");
+  return view.queryClient
+    .getQueryCache()
+    .getAll()
+    .map((query) => query.queryKey)
+    .filter((key) => JSON.stringify(key).includes(id.split("/")[0] ?? id));
+}
+
+// issue page decision 350, which replaces decision 95's short form: a folded branch's one line
+// reads a reference in its words as the shared projection reads one (`usePlainHeadline`), the
+// way the row's own words read it (`RowText.tsx`): as the words its author wrote while the
+// page's batched read has not named it - with no read of its own made for a reference the page
+// is reading - and as its target's name once the page publishes one. The line still ends where
+// the node's first sentence does (R1).
+test("a folded branch's line reads a reference as its target's name, and as its author's words until it resolves", async () => {
   const address = "dispatch://CORE-1/spec#b-r1";
-  const text = `Read ${address} before the rows.`;
-  const folded = node({ held: 1, id: "comment-1", text, tree: displayTree(text), type: "comment" });
-  const shut = renderRow(folded, { body: false, expanded: false, folded: 1 });
+  const text = `Read ${address} before the rows. Then the rest.`;
+  const folded = node({ held: 1, id: "comment-1", text, tree: readingOf(text), type: "comment" });
+  const shut = renderRow(folded, {
+    body: false,
+    expanded: false,
+    folded: 1,
+    published: publishedNames(new Map(), { asked: [address] }),
+  });
   try {
-    const line = shut.container.querySelector("[data-node-first-line]")?.textContent ?? "";
-    expect(line, "the folded line draws the address as written").not.toContain("dispatch://");
-    expect(line).toBe(`Read ${addressesAsShortForms(address)} before the rows.`);
+    const line = () => shut.container.querySelector("[data-node-first-line]")?.textContent;
+    await waitFor(() => expect(line()).toBe(`Read ${address} before the rows.`));
+    expect(readsOf(shut, address), "the line read a target the page is reading").toEqual([]);
+    act(() => shut.publish(publishedNames(new Map([[address, "Draw the rows"]]))));
+    await waitFor(() => expect(line()).toBe("Read Draw the rows before the rows."));
+    expect(readsOf(shut, address)).toEqual([]);
   } finally {
     shut.unmount();
   }
 });
 
+// R1 over issue page decision 350: a folded branch's one line is cut by R1's first-line rule
+// over the words the projection draws, so a name that lands after the line was first drawn cuts
+// it again. A first sentence that fits the line with its address as written runs past R1's limit
+// with its target's name in its place - a name the page cuts to a chip's 32 characters - and is
+// then cut at a word, with the ellipsis, never through a word or past the line's room.
+test("a folded branch's line is cut again over a name that lands after it is drawn", async () => {
+  const address = "dispatch://CORE-1/spec#b-r1";
+  const name = "Stand the harness up before rows";
+  const sentence = (reference: string) =>
+    `Read ${reference} and then keep every one of the rows on the page as it draws them.`;
+  const text = `${sentence(address)} Then the rest.`;
+  expect(sentence(address).length).toBeLessThanOrEqual(FIRST_LINE_LIMIT);
+  expect(sentence(name).length).toBeGreaterThan(FIRST_LINE_LIMIT);
+  const folded = node({ held: 1, id: "comment-1", text, tree: readingOf(text), type: "comment" });
+  const shut = renderRow(folded, {
+    body: false,
+    expanded: false,
+    folded: 1,
+    published: publishedNames(new Map(), { asked: [address] }),
+  });
+  try {
+    const line = () => shut.container.querySelector("[data-node-first-line]")?.textContent ?? "";
+    await waitFor(() => expect(line()).toBe(sentence(address)));
+    act(() => shut.publish(publishedNames(new Map([[address, name]]))));
+    await waitFor(() => expect(line().endsWith("…")).toBe(true));
+    const kept = line().slice(0, -1);
+    expect(kept.startsWith(`Read ${name} `)).toBe(true);
+    expect(kept.length).toBeLessThanOrEqual(FIRST_LINE_LIMIT);
+    expect(sentence(name).startsWith(kept), "the line was not cut from the named words").toBe(true);
+    expect(sentence(name).charAt(kept.length), "the line was cut through a word").toBe(" ");
+  } finally {
+    shut.unmount();
+  }
+});
+
+// Decisions 66 and 88: a chip's name and a node's one line are plain words, read with no list
+// or block reading but for an ordered list's number, which the shared projection writes as a
+// rendered body draws it. A step stored as `1. Stand the harness up.` is a list of one item: a
+// chip named from the reading the page publishes for it, and the folded line of a node whose
+// words open with it, each keep its number.
+test("a numbered step keeps its number in a chip and in a folded line", async () => {
+  const chips: NodeChip[] = [
+    {
+      answered: true,
+      gone: false,
+      label: "Needs",
+      reading: { tree: readingOf("1. Stand the harness up.") },
+      ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
+    },
+    {
+      answered: true,
+      gone: false,
+      reading: { tree: readingOf("2. Stand the harness up and read the rows") },
+      ref: "dispatch://CORE-1/artifact/plan-md#b-t3",
+    },
+  ];
+  const view = renderRow(
+    node({ chips, id: "plan-md#b-t2", text: "Draw the rows.", type: "plan_task" }),
+    { body: false, published: publishedChips(chips) }
+  );
+  try {
+    await waitFor(() =>
+      expect(
+        [...view.container.querySelectorAll("[data-node-chip]")].map((chip) => chip.textContent)
+      ).toEqual(["Needs 1. Stand the harness up.", "2. Stand the harness up and…"])
+    );
+  } finally {
+    view.unmount();
+  }
+  const text = "1. Stand the harness up. Run it.";
+  const shut = renderRow(
+    node({ held: 1, id: "plan-md#b-t1", text, tree: readingOf(text), type: "plan_task" }),
+    { body: false, expanded: false, folded: 1 }
+  );
+  try {
+    await waitFor(() =>
+      expect(shut.container.querySelector("[data-node-first-line]")?.textContent).toBe(
+        "1. Stand the harness up."
+      )
+    );
+  } finally {
+    shut.unmount();
+  }
+});
+
+// R8 over ruling 5: the page publishes a target's name as a link to the target reads it - a
+// comment's words within a link's 60 characters - as every surface reads the target by it, and
+// a chip cuts it to a chip's room where it draws it. So the plain line a row draws beside the
+// chip - here its parent's line - reads the target by that name, and only the chip by the cut.
+test("a plain line beside a chip reads the chip's target by the name a link reads, not the chip's cut", async () => {
+  const target = "dispatch://CORE-1/comment/c9";
+  const whole = "Hold the deploy until the plan lands and the gate is green";
+  const chip: NodeChip = {
+    answered: true,
+    gone: false,
+    reading: { tree: readingOf(whole) },
+    ref: target,
+  };
+  const words = `Wait on ${target} first.`;
+  const view = renderRow(
+    node({
+      chips: [chip],
+      id: "plan-md#b-t1",
+      parentLine: {
+        id: "spec#b-r2",
+        reference: "dispatch://CORE-1/spec#b-r2",
+        text: words,
+        tree: readingOf(words),
+        type: "requirement",
+      },
+      text: "Draw the rows.",
+      type: "plan_task",
+    }),
+    { body: false, published: publishedChips([chip]) }
+  );
+  try {
+    await waitFor(() => {
+      expect(view.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
+        `Wait on ${whole} first.`
+      );
+      expect(view.container.querySelector("[data-chip-name]")?.textContent).toBe(
+        "Hold the deploy until the plan…"
+      );
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// The architect's ruling on block names, by R8: a block reads in a plain line as a link to it
+// reads it - the headline of its whole text, cut to a link's 60 characters - so the page
+// publishes the block's whole reading (`tree-drafts.ts`'s `treeContext`). A chip of the block
+// keeps G's own rule (decisions 66 and 88): it is named by the first block of its words that
+// holds any, here the decision's heading, from the reading it carries. Both are read from the
+// one batched read's answer for the block, through the page's own code.
+test("a two-paragraph block reads alike in a plain line and a link, and its chip reads its heading", async () => {
+  const block = "dispatch://CORE-2/spec#b-r1";
+  const text = "## Keep it\n\nKeep the model pure, and draw every row from the one tree it builds.";
+  const title = "Keep it Keep the model pure, and draw every row from the one…";
+  const reads = {
+    issue: issueDetails(),
+    targets: [{ gone: false, kind: "block", name: text, ref: block, text_tree: readingOf(text) }],
+  } satisfies IssueTreeReads;
+  const chip = treeContext(reads).chipOf(block);
+  const words = `Serve ${block} first.`;
+  const view = renderRow(
+    node({
+      chips: [chip],
+      id: "plan-md#b-t1",
+      parentLine: {
+        id: "spec#b-r2",
+        reference: "dispatch://CORE-1/spec#b-r2",
+        text: words,
+        tree: readingOf(words),
+        type: "requirement",
+      },
+      text: "Draw the rows.",
+      type: "plan_task",
+    }),
+    { body: false, published: { ...targetNaming(reads), asked: new Set([block]) } }
+  );
+  // The link to the block, which reads the block itself, as every rendered body's does.
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: {
+      ...graphNodeFields(),
+      block_id: "r1",
+      document: "dispatch://CORE-2/spec",
+      id: "CORE-2/spec#r1",
+      issue_key: "CORE-2",
+      kind: "block",
+      project: "CORE",
+      ref: block,
+      text,
+      text_tree: readingOf(text),
+    },
+  });
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "Drain the queue",
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const body = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <MarkdownBody markdown={words} />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await within(body.container).findByRole("link", { name: title });
+    await waitFor(() => {
+      expect(view.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
+        `Serve ${title} first.`
+      );
+      expect(view.container.querySelector("[data-chip-name]")?.textContent).toBe("Keep it");
+    });
+  } finally {
+    getReferences.mockRestore();
+    getIssueSummary.mockRestore();
+    body.unmount();
+    view.unmount();
+  }
+});
+
+// R8: the page publishes a whole document's name as a link to it reads it - the issue's spec by
+// the issue's title, and any other document by its own name, its file name - so a plain line
+// reads the document as a link to it does, whatever word the batched read or the page has for
+// it. Every chip keeps the page's word for the document, the word for the part it plays, since a
+// chip never draws a document's file name (decision 39): a tie's, and one in place in a node's
+// words, which the names store feeds. All of it is read from the one batched read's answer,
+// through the page's own code.
+test("a whole document reads alike in a plain line and a link, and by the page's word in every chip", async () => {
+  const spec = `dispatch://${KEY}/spec`;
+  const notes = `dispatch://${KEY}/artifact/notes-md`;
+  const decisions = `dispatch://${KEY}/artifact/decisions-md`;
+  const title = "Draw one ordered body";
+  const notesFile = { ...artifact("artifact-notes", "notes-md"), name: "notes.md" };
+  // A decisions document an earlier release stored plays no part of the issue: it is another
+  // document, named by the page's word for one.
+  const decisionsFile = { ...artifact("artifact-decisions", "decisions-md"), name: "decisions.md" };
+  const issue = issueDetails();
+  const held = (issue.artifacts ?? []).filter((one) => one.id !== decisionsFile.id);
+  const reads = {
+    issue: { ...issue, artifacts: [...held, notesFile, decisionsFile], title },
+    // The batched read names a document by its file name, the spec's included.
+    targets: [
+      { gone: false, kind: "artifact", name: "spec.md", ref: spec },
+      { gone: false, kind: "artifact", name: notesFile.name, ref: notes },
+      { gone: false, kind: "artifact", name: decisionsFile.name, ref: decisions },
+    ],
+  } satisfies IssueTreeReads;
+  const context = treeContext(reads);
+  const words = `Read ${spec}, ${notes} and ${decisions} first.`;
+  const view = renderRow(
+    node({
+      chips: [context.chipOf(spec), context.chipOf(notes), context.chipOf(decisions)],
+      id: "plan-md#b-t1",
+      parentLine: {
+        id: "spec#b-r2",
+        reference: `dispatch://${KEY}/spec#b-r2`,
+        text: words,
+        tree: readingOf(words),
+        type: "requirement",
+      },
+      text: words,
+      tree: readingOf(words),
+      type: "plan_task",
+    }),
+    {
+      body: false,
+      published: { ...targetNaming(reads), asked: new Set([spec, notes, decisions]) },
+    }
+  );
+  // The links, which read the issue's summary, as every rendered body's do.
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [notesFile, decisionsFile].map((file) => ({
+      id: file.id,
+      kind: "doc",
+      latest_version: 1,
+      name: file.name,
+      primary: false,
+      slug: file.slug,
+    })),
+    key: KEY,
+    project: "CORE",
+    status: "todo",
+    title,
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const body = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <MarkdownBody markdown={words} />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  const pageWords = [PRESET_NAMES.spec, NODE_TYPE_NAMES.document, NODE_TYPE_NAMES.document];
+  const inWords = (reference: string) =>
+    view.container.querySelector(`[data-node-words] a[data-row-reference="${reference}"]`)
+      ?.textContent;
+  try {
+    for (const name of [title, notesFile.name, decisionsFile.name]) {
+      await within(body.container).findByRole("link", { name });
+    }
+    await waitFor(() => {
+      expect(view.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
+        `Read ${title}, ${notesFile.name} and ${decisionsFile.name} first.`
+      );
+      expect([inWords(spec), inWords(notes), inWords(decisions)]).toEqual(pageWords);
+      expect(
+        [...view.container.querySelectorAll("[data-chip-name]")].map((chip) => chip.textContent)
+      ).toEqual(pageWords);
+    });
+  } finally {
+    getIssueSummary.mockRestore();
+    body.unmount();
+    view.unmount();
+  }
+});
+
+// R8 over the row above, for another issue's spec cited alone: a link titles it by that issue's
+// title, which the batched read answers only under the issue's own address, so the page asks its
+// read for the issue beside the spec (`useIssueTree.ts`'s `treeReferences`). A plain line the
+// page's read feeds then reads the spec as a line's own read and a link do, and every chip still
+// draws the page's word for another issue's document. The names come from the page's own reads,
+// whose names read answers each address it is asked for, as the server does, and no other.
+test("another issue's spec reads alike in a line the page feeds, a line's own read and a link, and by the page's word in every chip", async () => {
+  const other = "dispatch://CORE-9";
+  const spec = `${other}/spec`;
+  const title = "Other issue title";
+  const words = `Wait for ${spec} to be approved.`;
+  const issue = issueDetails();
+  // Every read of the page but the names', answered: a decision of the issue ties to the spec,
+  // and its words cite it.
+  const reads = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tie = shaped(spec);
+  const made = decision("d1", {
+    links: [{ ...tie, to: { ...tie.to, kind: "artifact" } }],
+    text: words,
+  });
+  reads.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  reads.setQueryData(["issue", KEY, "coverage"], {
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: [],
+    spec_artifact_id: "",
+  });
+  reads.setQueryData(["issue", KEY, "results"], {
+    checks: [],
+    issue: KEY,
+    verification_artifact_id: "",
+  });
+  reads.setQueryData(["decisions", KEY], decisionsRead([made]));
+  for (const queryKey of [
+    ["asks", KEY],
+    ["comments", KEY],
+    ["issue-messages", KEY],
+  ]) {
+    reads.setQueryData(queryKey, []);
+  }
+  for (const id of treeDocumentIds(issue)) reads.setQueryData(["artifact", id, "blocks"], []);
+  // The names read names the spec by its file name and the issue by its title.
+  const getReferenceTargets = spyOn(api, "getReferenceTargets").mockImplementation(
+    async (refs) => ({
+      targets: refs.flatMap((ref): ReferenceTarget[] => {
+        if (ref === spec) return [{ gone: false, kind: "artifact", name: "spec.md", ref }];
+        return ref === other ? [{ gone: false, kind: "issue", name: title, ref }] : [];
+      }),
+    })
+  );
+  // The link and a line's own read, which read the other issue's summary.
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-9",
+    project: "CORE",
+    status: "todo",
+    title,
+  });
+  const page = renderHook(() => useIssueTree(issue), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={reads}>{children}</QueryClientProvider>
+    ),
+  });
+  const drawn: RenderResult[] = [];
+  try {
+    await waitFor(() => expect(page.result.current.namesHeld).toBe(true));
+    const { published, root } = page.result.current;
+    const row = node({
+      chips: nodesInOrder(root).find((one) => one.type === "decision")?.chips ?? [],
+      id: "plan-md#b-t1",
+      parentLine: {
+        id: "spec#b-r2",
+        reference: `dispatch://${KEY}/spec#b-r2`,
+        text: words,
+        tree: readingOf(words),
+        type: "requirement",
+      },
+      text: words,
+      tree: readingOf(words),
+      type: "plan_task",
+    });
+    // The row under the page's names, and the same row under none, whose line reads its own.
+    const fed = renderRow(row, { body: false, published });
+    const own = renderRow(row, { body: false });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const body = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <MarkdownBody markdown={words} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    drawn.push(fed, own, body);
+    await within(body.container).findByRole("link", { name: title });
+    await waitFor(() => {
+      expect(
+        [fed, own].map(
+          (view) => view.container.querySelector("[data-node-parent-line] a")?.textContent
+        ),
+        "the line the page's read feeds, then a line's own read"
+      ).toEqual([`Wait for ${title} to be approved.`, `Wait for ${title} to be approved.`]);
+      expect(
+        fed.container.querySelector(`[data-node-words] a[data-row-reference="${spec}"]`)
+          ?.textContent
+      ).toBe(NODE_TYPE_NAMES.document);
+      expect(
+        [...fed.container.querySelectorAll("[data-chip-name]")].map((chip) => chip.textContent)
+      ).toEqual([NODE_TYPE_NAMES.document]);
+    });
+  } finally {
+    getReferenceTargets.mockRestore();
+    getIssueSummary.mockRestore();
+    for (const view of drawn) view.unmount();
+    page.unmount();
+  }
+});
+
+// R8 over the row above, before the page's read answers: a chip the page has given no word yet
+// for a whole document - one in place in a node's words, and a tie's whose reading carries none
+// - names it by the store's rule as far as the address and the row's issue say it
+// (`node-row-chip.ts`'s `documentWord`): the row's own issue's spec as the Spec, and another
+// issue's as a document, the words the store gives both once it answers.
+test("before the page's read answers, a chip names another issue's spec as a document and its own issue's as the Spec", async () => {
+  const other = "dispatch://CORE-9/spec";
+  const own = `dispatch://${KEY}/spec`;
+  const words = `Wait for ${other} and ${own}.`;
+  const view = renderRow(
+    node({
+      chips: [other, own].map((ref): NodeChip => ({ answered: false, gone: false, ref })),
+      id: "plan-md#b-t1",
+      source: { id: "artifact-plan", issue: KEY, kind: "artifact" },
+      text: words,
+      tree: readingOf(words),
+      type: "plan_task",
+    }),
+    // The page has asked for both, and its read has not answered.
+    { body: false, published: publishedNames(new Map(), { asked: [other, own] }) }
+  );
+  try {
+    await waitFor(() => {
+      expect(
+        [other, own].map(
+          (ref) =>
+            view.container.querySelector(`[data-node-words] a[data-row-reference="${ref}"]`)
+              ?.textContent
+        ),
+        "a chip in place"
+      ).toEqual([NODE_TYPE_NAMES.document, PRESET_NAMES.spec]);
+      expect(
+        [...view.container.querySelectorAll("[data-chip-name]")].map((chip) => chip.textContent),
+        "a tie's chip"
+      ).toEqual([NODE_TYPE_NAMES.document, PRESET_NAMES.spec]);
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2 and issue page decision 350: a filter's row names a parent it draws no row for by the
+// parent's own first line, projected from its words as every one line of a node is: a
+// reference in it reads as its target's name once the page names it. A parent whose words hold
+// none is named by the page's word for its kind (R22).
+test("a parent line is its parent's projected first line, a reference in it read by its target's name", async () => {
+  const address = "dispatch://CORE-1/spec#b-r1";
+  const words = `Serve ${address} first. Then the rest.`;
+  const view = renderRow(
+    node({
+      id: "plan-md#b-t1",
+      parentLine: {
+        id: "spec#b-r2",
+        reference: "dispatch://CORE-1/spec#b-r2",
+        text: words,
+        tree: readingOf(words),
+        type: "requirement",
+      },
+      text: "Draw the rows.",
+      type: "plan_task",
+    }),
+    { body: false, published: publishedNames(new Map([[address, "The rows hold"]])) }
+  );
+  try {
+    await waitFor(() =>
+      expect(view.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
+        "Serve The rows hold first."
+      )
+    );
+  } finally {
+    view.unmount();
+  }
+  const empty = renderRow(
+    node({
+      id: "comment-2",
+      parentLine: { id: "ask-1", text: "", type: "ask" },
+      text: "Keep one reading.",
+      type: "comment",
+    }),
+    { body: false }
+  );
+  try {
+    expect(
+      empty.container.querySelector("[data-node-parent-line]")?.lastElementChild?.textContent
+    ).toBe(NODE_TYPE_NAMES.ask);
+  } finally {
+    empty.unmount();
+  }
+});
+
 // R1, R9, ruling 1: an answered ask carries the person's answer in its own row,
 // and no row of its own: who answered by a name and a shape, what they chose among the ask's own
-// options, and what they wrote as the store holds it, character for character and whole.
+// options, and what they wrote, word for word and whole. Here the read sent no reading of what
+// they wrote, so the page parses it, and each paragraph drawn is the paragraph the store holds.
 test("an answered ask draws the answer in its own row, word for word", () => {
-  const text = "The preset row keeps its labels above that width.\n\nBelow it, one control.";
+  const paragraphs = [
+    "The preset row keeps its labels above that width.",
+    "Below it, one control.",
+  ];
+  const text = paragraphs.join("\n\n");
   const asked = node({
     answer: {
       at: "2026-11-06T00:00:00Z",
@@ -906,7 +1546,11 @@ test("an answered ask draws the answer in its own row, word for word", () => {
     expect(line?.querySelector("[data-answer-author] svg")?.getAttribute("data-glyph")).toBe(
       "author-person"
     );
-    expect(line?.querySelector("[data-answer-text]")?.textContent).toBe(text);
+    const words = line?.querySelector("[data-answer-text]");
+    expect([...(words?.querySelectorAll("p") ?? [])].map((one) => one.textContent)).toEqual(
+      paragraphs
+    );
+    expect(words?.textContent).toBe(paragraphs.join(""));
     // The option the person chose is marked in the ask's own list, and the body adds what an
     // option says beside its name.
     expect(
@@ -920,6 +1564,58 @@ test("an answered ask draws the answer in its own row, word for word", () => {
     ]);
     // The row's own author is still the asker's, and the answerer's name is no row author.
     expect(view.container.querySelector("[data-node-author]")?.textContent).toBe("Planner");
+  } finally {
+    view.unmount();
+  }
+});
+
+// R6 over the row above: an answer the read sent with its reading is drawn by the one renderer
+// from that reading, and what the person wrote and chose still reads word for word: each
+// paragraph of the answer's text is the paragraph the store holds, and each chosen option is
+// the option's name as the answer took it, where the ask offers no list to mark it in.
+test("an answer drawn through the renderer reads word for word, its text and its choices", async () => {
+  const paragraphs = [
+    "The preset row keeps its labels above that width.",
+    "Below it, one control, and the rail folds.",
+  ];
+  const text = paragraphs.join("\n\n");
+  const selected = ["1280 px, the rail fits", "Keep the labels"];
+  const asked = node({
+    answer: {
+      at: "2026-11-06T00:00:00Z",
+      by: { id: "alice", kind: "user" },
+      selected,
+      selectedTrees: selected.map((one) => {
+        const tree = displayTree(one);
+        if (tree === undefined) throw new Error("the warmed engine reads every option");
+        return tree;
+      }),
+      text,
+      textTree: displayTree(text),
+    },
+    id: "ask-1",
+    state: "answered",
+    text: "At which width does the identity block condense?",
+    type: "ask",
+  });
+  const view = renderRow(asked, { answerer: "alice" });
+  try {
+    const answer = view.container.querySelector("[data-node-answer]");
+    await waitFor(() => {
+      const drawn = [...(answer?.querySelectorAll("[data-answer-text] p") ?? [])];
+      expect(
+        drawn.map((one) => one.textContent),
+        "each paragraph of the answer is the paragraph stored"
+      ).toEqual(paragraphs);
+    });
+    expect(
+      [...(answer?.querySelectorAll("[data-answer-choice]") ?? [])].map((one) => one.textContent),
+      "each chosen option is the name the answer took"
+    ).toEqual(selected);
+    expect(
+      answer?.querySelector("[data-answer-choice] .dispatch-markdown"),
+      "a choice is drawn by the renderer"
+    ).not.toBeNull();
   } finally {
     view.unmount();
   }
@@ -1093,7 +1789,7 @@ const MARKED_DRAWN = {
 // server's reading of it (`Decision.text_tree`). The row draws that reading, so the reader sees
 // a heading, bold words and a list, never the `##`, `**` and `-` the author typed, and the
 // browser parses nothing to get there. Folded, its one line holds none of those symbols either,
-// and is cut from its first block's words alone (`lineWords`): the heading never runs into the
+// and is projected from its first block alone (`lineReading`): the heading never runs into the
 // paragraph after it.
 test("a decision whose text holds bold draws no literal asterisks", () => {
   const decision = node({
@@ -1135,17 +1831,67 @@ test("an ask, a comment and a message draw the server's reading of their text", 
   }
 });
 
-// R20: a node whose read sends no reading of its text - a requirement, a check, a result, and a
-// block of a document named by the batched reference read - draws the text as stored. The page
-// parses no stored markdown of its own to draw it otherwise.
-test("a node whose read sends no reading of its text draws the text as stored", () => {
-  const view = renderRow(node({ id: "spec#b-r1", text: MARKED, type: "requirement" }));
+// A node whose read sends no reading of its text - a server of the build before, during a
+// rolling deploy - is parsed on the page by the shared engine and drawn through the renderer from
+// that parse, as a reading is: the reader sees bold words, never the asterisks the author typed.
+test("a node whose read sends no reading of its text draws its bold words in a strong, with no asterisks", () => {
+  const view = renderRow(
+    node({ id: "spec#b-r1", text: "Ship the **bold** words.", type: "requirement" })
+  );
   try {
     const words = view.container.querySelector("[data-node-words]");
-    expect(words?.textContent).toContain("A **decided** thing.");
-    expect(words?.querySelector("strong")).toBeNull();
+    expect(words?.querySelector("strong")?.textContent).toBe("bold");
+    expect(words?.textContent).toBe("Ship the bold words.");
   } finally {
     view.unmount();
+  }
+});
+
+// The same for a worded link to a role in such a text: it is drawn as a link in the words its
+// author gave it, never as its markdown with the role's name written where its address stood.
+test("a node whose read sends no reading of its text draws a worded link as its words, with none of its markdown", async () => {
+  const view = renderRow(
+    node({ id: "comment-1", text: "[my words](dispatch://role/reviewer)", type: "comment" }),
+    { parties: { role: "reviewer" } }
+  );
+  try {
+    const words = view.container.querySelector("[data-node-words]");
+    const link = await waitFor(() => {
+      const found = words?.querySelector("a");
+      expect(found?.textContent).toBe("my words");
+      return found;
+    });
+    expect(link?.getAttribute("href")).toBe("/agents?role=reviewer");
+    expect(words?.textContent).toBe("my words");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Where the engine's load fails, such a text is never parsed, and the row draws its words as the
+// characters they are, as a row with a reading draws its words with no engine, never nothing for
+// good; while the load is pending it draws nothing, so no mark shows raw meanwhile. This file
+// loads the engine, so the row stands a load that is pending, and then fails, in its place.
+test("a node whose read sends no reading of its text draws nothing while the engine loads, and its characters once the load fails", async () => {
+  const load = Promise.withResolvers<void>();
+  const loaded = spyOn(markdownEngine, "loadedEngine").mockReturnValue(undefined);
+  const warm = spyOn(markdownEngine, "warmMarkdownRenderer").mockReturnValue(load.promise);
+  try {
+    const text = "Ship the **bold** words.";
+    const view = renderRow(node({ id: "spec#b-r1", text, type: "requirement" }));
+    try {
+      const words = () => view.container.querySelector("[data-node-words]")?.textContent;
+      expect(words(), "the row drew its words while the engine was loading").toBe("");
+      await act(async () => {
+        load.reject(new Error("the engine's chunk did not load"));
+      });
+      await waitFor(() => expect(words()).toBe(text));
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    loaded.mockRestore();
+    warm.mockRestore();
   }
 });
 
@@ -1223,7 +1969,7 @@ test("out of the tab order, a focused row's code block and table keep their tab 
 
 // Part G's R4, the tester's F20: a decision's text holds the source of a typed block inside its
 // own block, and the row draws the block's words but none of its source lines, whether it draws
-// the text as stored or from its reading.
+// the text from the page's parse or from its reading.
 test("a decision whose text quotes a typed block draws none of its source lines", async () => {
   const text = "It names the statement.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::";
   for (const tree of [undefined, displayTree(text)]) {
@@ -1265,43 +2011,41 @@ test("the links a row's words draw are out of the tab order", async () => {
   }
 });
 
-// Ruling 5: a tie is a chip at the end of the node's words, named by its target's first words
-// cut at a word within 32 characters, and never by an address, a slug or a document's name
-// (R22). A target the reference read has not named yet draws nothing.
-test("a chip names its target by its first words and never by an address", () => {
+// Ruling 5: a tie is a chip at the end of the node's words, named by its target's name cut at a
+// word within 32 characters, and never by an address, a slug or a document's name (R22). A
+// target the reference read has not named yet draws nothing.
+test("a chip names its target by its first words and never by an address", async () => {
+  const chips: NodeChip[] = [
+    {
+      answered: true,
+      gone: false,
+      reading: { words: "The page draws the whole issue in one reading and nothing is lost." },
+      ref: "dispatch://CORE-1/spec#b-r2",
+    },
+    { answered: false, gone: false, ref: "dispatch://CORE-1/artifact/plan-md#b-t4" },
+    { answered: true, gone: true, ref: "dispatch://CORE-1/spec#b-r9" },
+    {
+      answered: true,
+      gone: false,
+      label: "Needs",
+      reading: { words: "Add the routes." },
+      ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
+    },
+  ];
   const view = renderRow(
-    node({
-      chips: [
-        {
-          answered: true,
-          gone: false,
-          name: "The page draws the whole issue in one reading and nothing is lost.",
-          ref: "dispatch://CORE-1/spec#b-r2",
-        },
-        { answered: false, gone: false, name: "", ref: "dispatch://CORE-1/artifact/plan-md#b-t4" },
-        { answered: true, gone: true, name: "", ref: "dispatch://CORE-1/spec#b-r9" },
-        {
-          answered: true,
-          gone: false,
-          label: "Needs",
-          name: "Add the routes.",
-          ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
-        },
-      ],
-      id: "spec#b-d1",
-      text: "Keep one reading.",
-      type: "decision",
-    }),
-    { body: false }
+    node({ chips, id: "spec#b-d1", text: "Keep one reading.", type: "decision" }),
+    { body: false, published: publishedChips(chips) }
   );
   try {
-    const chips = [...view.container.querySelectorAll("[data-node-chip]")];
-    expect(chips.map((chip) => chip.textContent)).toEqual([
-      "The page draws the whole issue…",
-      CONTROL_LABELS.target_gone,
-      "Needs Add the routes.",
-    ]);
-    for (const chip of chips) {
+    const drawn = () => [...view.container.querySelectorAll("[data-node-chip]")];
+    await waitFor(() =>
+      expect(drawn().map((chip) => chip.textContent)).toEqual([
+        "The page draws the whole issue…",
+        CONTROL_LABELS.target_gone,
+        "Needs Add the routes.",
+      ])
+    );
+    for (const chip of drawn()) {
       const name = chip.querySelector("[data-chip-name]")?.textContent ?? "";
       expect(name.length, `"${name}" is longer than a chip's 32 characters`).toBeLessThanOrEqual(
         32
@@ -1315,45 +2059,7 @@ test("a chip names its target by its first words and never by an address", () =>
     expect(trail?.parentElement?.hasAttribute("data-node-words")).toBe(true);
     expect(trail?.previousElementSibling?.textContent).toBe("Keep one reading.");
     // The named chip is the link a reader follows to its target.
-    expect(chips[0]?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-1/spec#b-r2");
-  } finally {
-    view.unmount();
-  }
-});
-
-// Decision 66: a target's name is plain words already (`tree-drafts.ts`'s `treeContext` names a
-// block by the words of the server's reading of it), so a chip draws it as it stands, with no
-// markdown pass, which would read a numbered step as a list and drop its number.
-test("a chip named as a numbered step draws its number", () => {
-  const view = renderRow(
-    node({
-      chips: [
-        {
-          answered: true,
-          gone: false,
-          label: "Needs",
-          name: "1. Stand the harness up.",
-          ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
-        },
-        {
-          answered: true,
-          gone: false,
-          name: "2. Stand the harness up and read the rows",
-          ref: "dispatch://CORE-1/artifact/plan-md#b-t3",
-        },
-      ],
-      id: "plan-md#b-t2",
-      text: "Draw the rows.",
-      type: "plan_task",
-    }),
-    { body: false }
-  );
-  try {
-    const chips = [...view.container.querySelectorAll("[data-node-chip]")];
-    expect(chips.map((chip) => chip.textContent)).toEqual([
-      "Needs 1. Stand the harness up.",
-      "2. Stand the harness up and…",
-    ]);
+    expect(drawn()[0]?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-1/spec#b-r2");
   } finally {
     view.unmount();
   }
@@ -1367,7 +2073,6 @@ test("a chip of an ambiguous short reference draws the reference as written, not
     ambiguous: true,
     answered: true,
     gone: true,
-    name: "",
     ref: "dispatch://CORE-1/comment/c1",
   };
   const view = renderRow(
@@ -1377,7 +2082,7 @@ test("a chip of an ambiguous short reference draws the reference as written, not
       text: "Keep one reading.",
       type: "decision",
     }),
-    { body: false }
+    { body: false, published: publishedChips([ambiguous]) }
   );
   try {
     const chip = view.container.querySelector("[data-node-chip]");
@@ -1390,44 +2095,45 @@ test("a chip of an ambiguous short reference draws the reference as written, not
 
 // R2 and R3 of dispatch://INFRA-1523 on a tie's chip, and INFRA-1196's decision 342: a chip
 // naming a comment its author deleted names it by the deleted line without its time, in the
-// deleted line's italic, its actor named as the page names an author and not as the model's name
-// holds it; a chip naming a message its author edited names it by its words cut to the chip's 32
-// characters, then ` · edited`, so no cut takes the mark.
-test("a chip names a deleted post by its deleted line, and an edited one by its cut words then edited", () => {
+// deleted line's italic, its actor named as the page names an author and not as the published
+// name holds it; a chip naming a message its author edited names it by its words cut to the
+// chip's 32 characters, then ` · edited`, so no cut takes the mark.
+test("a chip names a deleted post by its deleted line, and an edited one by its cut words then edited", async () => {
+  await warmMarkdownRenderer();
   const words = "Hold the deploy until the plan lands and the reviewer signs off";
-  const view = renderRow(
-    node({
-      chips: [
-        {
-          answered: true,
-          deletedAt: DELETED_AT,
-          deletedBy: UNTITLED,
-          gone: false,
-          name: `Deleted by ${actorLabelText(UNTITLED)}`,
-          ref: "dispatch://CORE-1/comment/c-deleted",
-        },
-        {
-          answered: true,
-          editedAt: "2026-11-05T13:00:00Z",
-          gone: false,
-          name: words,
-          ref: "dispatch://CORE-1/message/m-edited",
-        },
-      ],
-      id: "comment-9",
-      text: "Read these.",
-      type: "comment",
-    }),
-    { body: false }
-  );
+  const chips: NodeChip[] = [
+    {
+      answered: true,
+      deletedAt: DELETED_AT,
+      deletedBy: UNTITLED,
+      gone: false,
+      reading: { words: `Deleted by ${actorLabelText(UNTITLED)}` },
+      ref: "dispatch://CORE-1/comment/c-deleted",
+    },
+    {
+      answered: true,
+      editedAt: "2026-11-05T13:00:00Z",
+      gone: false,
+      reading: { words },
+      ref: "dispatch://CORE-1/message/m-edited",
+    },
+  ];
+  const view = renderRow(node({ chips, id: "comment-9", text: "Read these.", type: "comment" }), {
+    body: false,
+    published: publishedChips(chips),
+  });
   try {
-    const chips = [...view.container.querySelectorAll("[data-node-chip]")];
-    expect(chips.map((chip) => chip.textContent)).toEqual([
-      `Deleted by ${CONTROL_LABELS.unnamed_author}`,
-      `${nodeRowChip.chipWords(words)} · edited`,
-    ]);
-    expect(chips[0]?.querySelector("a [data-post-deleted]")?.className).toContain("italic");
-    expect(chips[1]?.querySelector("[data-post-deleted]")).toBeNull();
+    const drawn = () =>
+      [...view.container.querySelectorAll("[data-node-chip]")].map((chip) => chip.textContent);
+    await waitFor(() =>
+      expect(drawn()).toEqual([
+        `Deleted by ${CONTROL_LABELS.unnamed_author}`,
+        `${nodeRowChip.chipWords(words)} · edited`,
+      ])
+    );
+    const drawnChips = [...view.container.querySelectorAll("[data-node-chip]")];
+    expect(drawnChips[0]?.querySelector("a [data-post-deleted]")?.className).toContain("italic");
+    expect(drawnChips[1]?.querySelector("[data-post-deleted]")).toBeNull();
   } finally {
     view.unmount();
   }
@@ -1437,7 +2143,8 @@ test("a chip names a deleted post by its deleted line, and an edited one by its 
 // short: a deleted post's chip whose actor is named by one long word is cut right after "Deleted
 // by" (`chipWords`), and that cut still draws the deleted line, in its italic, its opening marked
 // as the page's own words and none of it as the author's.
-test("a deleted post's chip cut right after Deleted by keeps the deleted line's italic and its page-chrome mark", () => {
+test("a deleted post's chip cut right after Deleted by keeps the deleted line's italic and its page-chrome mark", async () => {
+  await warmMarkdownRenderer();
   const title = "legion-infra-1523-implementer";
   const by: Actor = {
     id: "2b3c4d5e-1111-4222-8333-444455556666",
@@ -1446,25 +2153,24 @@ test("a deleted post's chip cut right after Deleted by keeps the deleted line's 
   };
   // The title's one word runs past the chip's room, so the cut ends at the space before it.
   expect(nodeRowChip.chipWords(`Deleted by ${title}`)).toBe("Deleted by…");
-  const view = renderRow(
-    node({
-      chips: [
-        {
-          answered: true,
-          deletedAt: DELETED_AT,
-          deletedBy: by,
-          gone: false,
-          name: `Deleted by ${actorLabelText(by)}`,
-          ref: "dispatch://CORE-1/comment/c-deleted",
-        },
-      ],
-      id: "comment-9",
-      text: "Read these.",
-      type: "comment",
-    }),
-    { body: false }
-  );
+  const chips: NodeChip[] = [
+    {
+      answered: true,
+      deletedAt: DELETED_AT,
+      deletedBy: by,
+      gone: false,
+      reading: { words: `Deleted by ${actorLabelText(by)}` },
+      ref: "dispatch://CORE-1/comment/c-deleted",
+    },
+  ];
+  const view = renderRow(node({ chips, id: "comment-9", text: "Read these.", type: "comment" }), {
+    body: false,
+    published: publishedChips(chips),
+  });
   try {
+    await waitFor(() =>
+      expect(view.container.querySelector("[data-chip-name] [data-post-deleted]")).not.toBeNull()
+    );
     const name = view.container.querySelector("[data-chip-name]");
     const line = name?.querySelector("[data-post-deleted]");
     expect({
@@ -1481,34 +2187,99 @@ test("a deleted post's chip cut right after Deleted by keeps the deleted line's 
   }
 });
 
-/** The names the page's one batched read brought, and the references it read as ambiguous, as
- *  edited and as deleted, published as the page publishes them. */
-function Named({
-  ambiguous,
-  children,
-  deleted,
-  edited,
-  names,
-}: {
-  ambiguous?: ReadonlySet<string>;
-  children: ReactNode;
-  deleted?: ReadonlyMap<string, PostDeletion>;
-  edited?: ReadonlySet<string>;
-  names: ReadonlyMap<string, string>;
-}): ReactNode {
-  usePublishReferenceNames(names, ambiguous, edited, deleted);
-  return children;
-}
+/** A live session a chip names, and the path of its live view. */
+const AGENT_SESSION = "7c0f3a52-5d0e-4b8e-9a51-2f4d6c8e1b90";
+const AGENT_CHIP: NodeChip = {
+  answered: true,
+  gone: false,
+  ref: `dispatch://agent/${AGENT_SESSION}`,
+};
 
-// F18 and decision 66 in a node's words: a chip in place is named from the batched read, which
-// the page publishes as plain words (`useIssueTree.ts`), so it draws them with no markdown pass,
-// as the chip at the end of the words does, a numbered step's number kept. The words are drawn
-// under the page's own providers (`ProvidersSlot`), as the page draws them, so a second reading
-// of the names mounted there would fail on the number.
+/** The live session `AGENT_CHIP` names, as the registry lists it. */
+const PLANNER = { roles: [], session_id: AGENT_SESSION, title: "Planner" } as unknown as Agent;
+
+/** The address a reference to a person is written as: no page shows one (R5). */
+const PERSON_REFERENCE = "dispatch://person/alice@example.com";
+
+// R5: no page shows a person, so a chip that names one draws its login as text with no link, as
+// a chip whose target nothing answers to does; an agent's chip beside it is the link to that
+// agent's live view, named by its session's title. A party is never asked of the page's batched
+// read, so each is named by its own read.
+test("a chip naming a person draws its words with no link, beside an agent's chip that links", async () => {
+  const view = renderRow(
+    node({
+      chips: [{ answered: true, gone: false, ref: PERSON_REFERENCE }, AGENT_CHIP],
+      id: "decisions-md#b-d1",
+      text: "Keep one reading.",
+      type: "decision",
+    }),
+    { body: false, parties: { login: "alice@example.com", session: PLANNER } }
+  );
+  try {
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-node-chip]")).toHaveLength(2)
+    );
+    const [person, agent] = view.container.querySelectorAll("[data-node-chip]");
+    expect(person?.textContent).toBe("alice@example.com");
+    expect(person?.querySelector("a"), "a person's chip links to a page no one shows").toBeNull();
+    expect(agent?.textContent).toBe("Planner");
+    expect(agent?.querySelector("a")?.getAttribute("href")).toBe(`/agents/${AGENT_SESSION}/live`);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2 and R5: a filter's row names its parent on one line, as the link to it; a parent that is a
+// person, whom no page shows, is named by its words with no link, while an agent's chip on the
+// same row is the link to that agent's live view.
+test("a parent line naming a person draws its words with no link, beside an agent's chip that links", async () => {
+  const view = renderRow(
+    node({
+      chips: [AGENT_CHIP],
+      id: "comment-1",
+      parentLine: {
+        id: "person-alice",
+        reference: PERSON_REFERENCE,
+        text: "alice@example.com",
+        type: "comment",
+      },
+      text: "Keep one reading.",
+      type: "comment",
+    }),
+    { body: false, parties: { session: PLANNER } }
+  );
+  try {
+    const parent = view.container.querySelector("[data-node-parent-line]");
+    await waitFor(() => expect(parent?.textContent).toContain("alice@example.com"));
+    expect(parent?.querySelector("a"), "a person's parent line is a link").toBeNull();
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-node-chip] a")?.getAttribute("href"),
+        "the agent's chip on the same row is no link to its live view"
+      ).toBe(`/agents/${AGENT_SESSION}/live`)
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// F18 and decisions 66 and 88 in a node's words: a chip in place is named from the batched
+// read, whose reading of a target's name the page publishes whole and the store projects in
+// plain words, with no list or block reading but for an ordered list's number, and the row cuts
+// it as a tie's chip is cut (`chipName`), so a numbered step keeps its number. The words are
+// drawn under the page's own providers (`ProvidersSlot`), as the page draws them.
 test("a chip in a node's words draws its target's plain words, a numbered step's number kept", async () => {
   const target = "dispatch://CORE-1/artifact/plan-md#b-t1";
   const text = `It follows ${target}.`;
-  const names = new Map([[target, "1. Stand the harness up and read the rows"]]);
+  const published: PublishedReferences = {
+    ambiguous: new Set(),
+    asked: new Set([target]),
+    deleted: new Map(),
+    edited: new Set(),
+    gone: new Set(),
+    readings: new Map([[target, { tree: readingOf("1. Stand the harness up and read the rows") }]]),
+    unnamed: new Set(),
+  };
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1524,9 +2295,9 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <ReferenceNamesProvider>
-          <Named names={names}>
+          <Named published={published}>
             <ProvidersSlot issue={issueDetails()} route={{ key: KEY, kind: "issue" }}>
-              <RowText markdown={text} tree={displayTree(text)} />
+              <RowText markdown={text} tree={readingOf(text)} />
             </ProvidersSlot>
           </Named>
         </ReferenceNamesProvider>
@@ -1543,28 +2314,45 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
   }
 });
 
-// Decision 102: the batched read's names are named as chips once for each answer of the read,
-// not once for each row. A block's name is its whole reading, so naming every name again for
-// every row cost the page seconds on an issue of 650 rows.
+// Decision 102: the batched read's names are projected once for each answer of the read, not
+// once for each row. A block's name is its whole reading, so naming every name again for every
+// row cost the page seconds on an issue of 650 rows. The store projects each reading once
+// (`refs/reference-names.tsx`), and every row draws from its one map, cutting its own chips'.
 test("the read's names are named as chips once per answer, not once per row", async () => {
-  const names = new Map(
+  const readings = new Map(
     Array.from({ length: 30 }, (_unused, at) => [
       `dispatch://CORE-1/spec#b-r${at}`,
-      `The words of statement ${at}, which run on well past the room a chip has.`,
+      {
+        tree: readingOf(
+          `The words of statement ${at}, which run on well past the room a chip has.`
+        ),
+      },
     ])
   );
+  const names = new Set<unknown>([...readings.values()].map((reading) => reading.tree));
+  const engine = loadedEngine();
+  if (engine === undefined) throw new Error("the markdown engine has not loaded");
+  const draw = spyOn(engine, "draw");
+  const published: PublishedReferences = {
+    ambiguous: new Set(),
+    asked: new Set(readings.keys()),
+    deleted: new Map(),
+    edited: new Set(),
+    gone: new Set(),
+    readings,
+    unnamed: new Set(),
+  };
   const target = "dispatch://CORE-1/spec#b-r0";
   const text = `It follows ${target}.`;
-  const named = spyOn(nodeRowChip, "chipWords");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <ReferenceNamesProvider>
-          <Named names={names}>
+          <Named published={published}>
             {Array.from({ length: 20 }, (_unused, at) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: twenty rows of one text.
-              <RowText key={at} markdown={text} tree={displayTree(text)} />
+              <RowText key={at} markdown={text} tree={readingOf(text)} />
             ))}
           </Named>
         </ReferenceNamesProvider>
@@ -1577,37 +2365,38 @@ test("the read's names are named as chips once per answer, not once per row", as
       expect(chips).toHaveLength(20);
       expect(chips[19]?.textContent).toBe("The words of statement 0, which…");
     });
-    // A row names a reference the read has not answered by its address alone (`""`), which
-    // costs nothing; each of the read's names is named once.
-    const ofNames = named.mock.calls.filter(([name]) => name !== "");
-    expect(ofNames.length, "every row named the read's names again").toBeLessThanOrEqual(
-      names.size
+    const projections = draw.mock.calls.filter(([tree]) => names.has(tree)).length;
+    expect(projections, "every row named the read's names again").toBeLessThanOrEqual(
+      readings.size
     );
   } finally {
+    draw.mockRestore();
     view.unmount();
-    named.mockRestore();
   }
 });
 
 // Decisions 62 and 89: a short reference two or more targets answer to names none of them, so
 // the page publishes it as ambiguous, apart from its names, and a node's words draw it as its
-// author wrote it, with no link, never as a target that is gone. A reference the read named
-// nothing for and did not read as ambiguous keeps its fallback: a link, by its short form. Both
-// the words drawn from their reading and the words drawn as stored are read.
+// author wrote it, with no link, never as a target that is gone. A reference the read answered
+// gone keeps its link, and reads as the words its author wrote rather than as its short form
+// (issue page decision 350, which replaces decision 95). Both the words drawn from their reading
+// and the words drawn from the page's parse are read.
 test("an ambiguous short reference in a node's words is drawn as written with no link, and a gone one keeps its link", async () => {
   const written = "dispatch://CORE-1/spec#b-1a2b3c4d";
   const gone = "dispatch://CORE-1/spec#b-9f8e7d6c";
   const text = `It follows ${written} and ${gone}.`;
-  const ambiguous: ReadonlySet<string> = new Set([written]);
-  const names: ReadonlyMap<string, string> = new Map();
-  for (const tree of [displayTree(text), undefined]) {
-    const drawn = tree === undefined ? "as stored" : "from their reading";
+  const published = publishedNames(new Map(), {
+    ambiguous: new Set([written]),
+    gone: new Set([gone]),
+  });
+  for (const tree of [readingOf(text), undefined]) {
+    const drawn = tree === undefined ? "from the page's parse" : "from their reading";
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const view = render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
           <ReferenceNamesProvider>
-            <Named ambiguous={ambiguous} names={names}>
+            <Named published={published}>
               <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
             </Named>
           </ReferenceNamesProvider>
@@ -1617,15 +2406,15 @@ test("an ambiguous short reference in a node's words is drawn as written with no
     try {
       await waitFor(() =>
         expect(
-          view.container.querySelector(`a[data-row-reference="${gone}"]`),
-          `the gone reference drawn ${drawn} lost its link`
-        ).not.toBeNull()
+          view.container.querySelector(`a[data-row-reference="${gone}"]`)?.textContent,
+          `the gone reference drawn ${drawn} lost its link or its author's words`
+        ).toBe(gone)
       );
       expect(
         view.container.querySelector(`a[data-row-reference="${written}"]`),
         `the ambiguous reference drawn ${drawn} is a link`
       ).toBeNull();
-      expect(view.container.textContent).toContain(`It follows ${written} and `);
+      expect(view.container.textContent).toContain(`It follows ${written} and ${gone}.`);
     } finally {
       view.unmount();
     }
@@ -1656,7 +2445,7 @@ test("a node's words name an edited post with its mark, and a deleted one by its
         <MemoryRouter>
           <NoTooltips>
             <ReferenceNamesProvider>
-              <Named deleted={deletions} edited={marked} names={names}>
+              <Named published={publishedNames(names, { deleted: deletions, edited: marked })}>
                 <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
               </Named>
             </ReferenceNamesProvider>
@@ -1694,20 +2483,24 @@ function Where(): ReactNode {
 }
 
 /** A node's words drawn at the address `at` under the read's `names`, with the router's place
- *  beside them. `click` dispatches a click on `link` and answers whether the browser was left to
- *  follow it, and then stops the browser: the unit suite's document loads no page. */
+ *  beside them, and with the parties Dispatch knows (`parties`) read. `click` dispatches a click
+ *  on `link` and answers whether the browser was left to follow it, and then stops the browser:
+ *  the unit suite's document loads no page. */
 function drawWordsAt(
   at: string,
   text: string,
   tree: DisplayTree | undefined,
-  names: ReadonlyMap<string, string>
+  names: ReadonlyMap<string, string>,
+  parties: Parties = {}
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  knowParties(queryClient, parties);
+  const published = publishedNames(names);
   const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[at]}>
         <ReferenceNamesProvider>
-          <Named names={names}>
+          <Named published={published}>
             <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
             <Where />
           </Named>
@@ -1743,8 +2536,8 @@ function drawWordsAt(
 
 // A reference in a row's words is a link of this application: a plain click follows it in place,
 // as a link the router draws does, and never loads the whole page again. A click with a key
-// held is the browser's, which opens it elsewhere. Both the words drawn as stored and the words
-// drawn from their reading, whose links the row's own pass makes, are read.
+// held is the browser's, which opens it elsewhere. Both the words drawn from the page's parse and
+// the words drawn from their reading, whose links the row's own pass makes, are read.
 test("a reference in a row's words is followed in place on a plain click", async () => {
   const target = "dispatch://CORE-1/spec#b-r1";
   const text = `It follows ${target}.`;
@@ -1808,6 +2601,29 @@ test("a link in a row's words to the address the reader is at replaces it", asyn
     expect(drawn.click(link)).toBe(false);
     expect(drawn.where()).toBe("/issues/CORE-1/spec#b-r1");
     expect(drawn.how(), "a link to the reader's own place pushed a second entry").toBe("REPLACE");
+  } finally {
+    drawn.view.unmount();
+  }
+});
+
+// R5, R8 and issue page decision 350: a party - here a role - is never asked of the batched
+// read, so a row names it by its own read, as every surface of Dispatch does: a role by its
+// token, once a session the registry lists holds it, never as its address. Words whose read sent
+// no reading of them, which the page parses, draw it the same way, and link it to the agents list
+// that role filters (`referenceHref`).
+test("a role in words whose read sent no reading reads as its token and links to its agents", async () => {
+  const role = "dispatch://role/reviewer";
+  const drawn = drawWordsAt("/issues/CORE-1", `Ask ${role} to look.`, undefined, new Map(), {
+    role: "reviewer",
+  });
+  try {
+    const link = await waitFor(() => {
+      const found = drawn.view.container.querySelector(`a[data-row-reference="${role}"]`);
+      expect(found?.textContent, "the role is not drawn by its token").toBe("reviewer");
+      return found;
+    });
+    expect(link?.getAttribute("href")).toBe("/agents?role=reviewer");
+    expect(drawn.view.container.textContent).not.toContain("dispatch://");
   } finally {
     drawn.view.unmount();
   }
@@ -2013,6 +2829,65 @@ test("a row held whole in view stays whole when a later read draws the same word
   expect(drawn.maxHeight).toBe("");
 });
 
+// issue page decision 350 and G's clamp: a reference in a row's words takes its name after the
+// row was first drawn and measured - the page's batched read answers last - and its name can run
+// the words longer or shorter than the words its author wrote. The row measures its cut again,
+// as it does for words of another value (`useClamp`), in the commit the name lands in, before the
+// page is painted: a row measured whole in view whose words the name runs past six lines is drawn
+// cut with "more" under it, rather than run past its room under the length measured for the
+// words written. With no animation frame run, only that commit's own measure can cut it.
+test("a row whose reference takes its name after it is measured is measured again", async () => {
+  const address = "dispatch://CORE-1/spec#b-r1";
+  const text = `${LONG_WORDS} Read ${address} first.`;
+  const said = node({ id: "message-1", text, tree: readingOf(text), type: "message" });
+  const planner: Author = { kind: "agent", name: "Planner", reader: false };
+  // The words with the address as written lay out five lines of 24 px, which six lines hold
+  // whole; with its name in its place they lay out 400.
+  const restore = layOut(9600, (element) =>
+    (element.textContent ?? "").includes("Draw the rows") ? 9600 : 120
+  );
+  const near = installIntersectionObserver();
+  try {
+    const row = renderRow(said, {
+      author: planner,
+      body: false,
+      published: publishedNames(new Map(), { asked: [address] }),
+    });
+    try {
+      await measureNearWords(near);
+      const words = () => row.container.querySelector<HTMLElement>("[data-node-words]");
+      expect(words()?.textContent, "the address was not drawn as written").toContain(address);
+      expect(
+        row.container.querySelector("[data-node-more]"),
+        "the words written were cut"
+      ).toBeNull();
+      const frames: FrameRequestCallback[] = [];
+      const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+      try {
+        await act(async () => {
+          row.publish(publishedNames(new Map([[address, "Draw the rows"]])));
+        });
+        expect(words()?.textContent).toContain("Read Draw the rows first.");
+        expect(
+          row.container.querySelector("[data-node-more]")?.textContent,
+          "the row was not measured again when the name ran its words past six lines"
+        ).toContain(CONTROL_LABELS.read_more);
+        expect(words()?.style.maxHeight).toBe("144px");
+      } finally {
+        frame.mockRestore();
+      }
+    } finally {
+      row.unmount();
+    }
+  } finally {
+    near.restore();
+    restore();
+  }
+});
+
 // R16: an open question's options are the choices of its answer. A press on one leaves the
 // focus where it is - a row that took the focus on mousedown would open its body, whose
 // options' own words push every option below one that has them down, and the press would end on
@@ -2035,7 +2910,16 @@ test("an option's press keeps the focus, and only a waiting question's are in th
       type: "ask",
       waiting,
     });
-  const view = render(<NodeOptions body={false} node={asked(true)} writer={writer} />);
+  // Each option's words are drawn by the renderer, which reads what they cite through the query
+  // client, so the options are drawn under one, as the page draws them.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const drawOptions = (waiting: boolean) =>
+    render(
+      <QueryClientProvider client={queryClient}>
+        <NodeOptions body={false} node={asked(waiting)} writer={writer} />
+      </QueryClientProvider>
+    );
+  const view = drawOptions(true);
   try {
     const option = view.container.querySelector<HTMLElement>('[data-pick-option="1024 px"]');
     expect(option).not.toBeNull();
@@ -2053,13 +2937,78 @@ test("an option's press keeps the focus, and only a waiting question's are in th
   } finally {
     view.unmount();
   }
-  const other = render(<NodeOptions body={false} node={asked(false)} writer={writer} />);
+  const other = drawOptions(false);
   try {
     const option = other.container.querySelector<HTMLElement>('[data-pick-option="1024 px"]');
     expect(option?.className).toContain("text-page-quiet");
     expect(option?.className).not.toContain("text-page-waiting-text");
   } finally {
     other.unmount();
+  }
+});
+
+// R9, and a reference's host: an option's words are the ask's stored text, drawn by the renderer,
+// so a reference in them reads as its target. In an option the reader presses the press is the
+// option's, so the reference sits in a `control` host and draws no link inside the button. In
+// an option nobody presses it is a link, out of the tab order as every control inside a row is,
+// and in it at the default order in a view whose rows take tab stops (`tabStops`).
+test("a reference in an option draws no link inside its press, and elsewhere a link in the tab order only with tabStops", async () => {
+  const label = "Follow dispatch://CORE-7";
+  const asked = node({
+    id: "ask-1",
+    options: [{ label, labelTree: displayTree(label) }],
+    reference: "dispatch://CORE-1/ask/ask-1",
+    state: "open",
+    text: "Which way does the header go?",
+    type: "ask",
+    waiting: true,
+  });
+  const writer = { answer: undefined, pick: () => {} } as unknown as OutlineWriter;
+  const drawOptions = (answering: OutlineWriter | undefined, tabStops: boolean) => {
+    // The reference names CORE-7, whose summary the cache holds, so it resolves at once.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["issue-summary", "CORE-7"], {
+      documents: [],
+      key: "CORE-7",
+      project: "CORE",
+      status: "in_progress",
+      title: "Draw the header",
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <NodeOptions body={false} node={asked} tabStops={tabStops} writer={answering} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+  };
+  const pressable = drawOptions(writer, false);
+  try {
+    const option = pressable.container.querySelector(`[data-pick-option="${label}"]`);
+    if (option === null) throw new Error("the open question draws no option to press");
+    await waitFor(() => expect(option.textContent).toContain("CORE-7 Draw the header"));
+    expect(option.querySelector("a"), "a reference inside the option's press is a link").toBeNull();
+    expect(option.querySelector('[data-dispatch-ref="dispatch://CORE-7"]')).not.toBeNull();
+  } finally {
+    pressable.unmount();
+  }
+  for (const tabStops of [false, true]) {
+    const view = drawOptions(undefined, tabStops);
+    try {
+      const link = await waitFor(() => {
+        const found = view.container.querySelector('[data-node-option] a[href="/issues/CORE-7"]');
+        expect(found?.textContent).toBe("CORE-7 Draw the header");
+        return found;
+      });
+      await waitFor(() =>
+        expect(
+          link?.getAttribute("tabindex"),
+          tabStops ? "the link left the tab order" : "the link kept its tab stop"
+        ).toBe(tabStops ? null : "-1")
+      );
+    } finally {
+      view.unmount();
+    }
   }
 });
 
@@ -2339,7 +3288,7 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
   const request: SentRequest = {
     anchor: undefined,
     ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: "A reply on its way", mentions: [], replacement: "" },
+    draft: { body: "A reply on its way", replacement: "" },
     edit: undefined,
     kind: "comment",
     owner: { issueKey: "CORE-1", kind: "issue" },

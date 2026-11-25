@@ -420,9 +420,11 @@ type IndexedVersion struct {
 // (ArtifactID), what the newest version's own row says of its index (Record), the version of each
 // document the pass covers (Versions: the one version of a pass over a document, OneVersion, or
 // the version of each document whose fragment of an issue room holds its blocks), its markdown,
-// its rendered blocks (Blocks), the Mentions of its text (Located) and its `block[]` values
-// (Pointers); what the typed-node pass read of the version (Typed, DecisionFacts), and what the
-// caller states beside the pass under the same event (Beside).
+// its rendered blocks (Blocks), the Mentions of its text (Located), its `block[]` values
+// (Pointers), and the deployment its text was read against (ServerURL), whose dashboard URLs are
+// references and which each block's excerpt is cut around (BlockExcerpt); what the typed-node pass
+// read of the version (Typed, DecisionFacts), and what the caller states beside the pass under the
+// same event (Beside).
 type VersionBlocks struct {
 	ArtifactID string
 	Record     IndexedVersion
@@ -431,6 +433,7 @@ type VersionBlocks struct {
 	Blocks     []model.ArtifactBlock
 	Located    []text.Located
 	Pointers   []Pointer
+	ServerURL  string
 	Typed      TypedFacts
 	Beside     graphstore.Uncaused
 }
@@ -565,19 +568,20 @@ func (b BlockIndexing) retains(blockID string) bool {
 // a new, changed or restored block takes the version its text stands since (textSince) - this
 // version, or where the pass covers versions no pass indexed, the earliest of them from which its
 // text stood - dated that version's time, and its text is recorded in document_block_texts at that
-// version; its excerpt is its text cut to BlockExcerptRunes, the excerpt a document's mention has
-// shown since migration 0092. A block of an issue room cut from one fragment and pasted with the
-// same text into another moved into another document, whose version it records from here on: its
-// row and its text are written again, as a changed block's are. A block the version no longer
-// holds is deleted, recorded there with no text, its node's state stated gone, and the edges at it
-// stop resolving until a version holds its id again. Such a block also takes its pointer tuples
-// with it: each prevented_by of a risk it covered as a check, and each constrained_by it held as a
-// requirement, is retracted beside the facts the pass states (retractGonePointers), and a version
-// that restores the block restores none of them. A block the version holds keeps the state and the
-// visibility its node has, unless it was gone, when it comes back live (blockNode restates every
-// node it writes). The windows the version's blocks are embedded in are not planned here and not
-// written by this index: the row it records marks the document owed them, and the block-index
-// tick's window arm writes them (Queue, DocumentsOwedWindows).
+// version; its excerpt is its text as BlockExcerpt cuts it, the excerpt a document's mention has
+// shown since migration 0092, around the dashboard URLs of version.ServerURL. A block of an issue
+// room cut from one fragment and pasted with the same text into another moved into another
+// document, whose version it records from here on: its row and its text are written again, as a
+// changed block's are. A block the version no longer holds is deleted, recorded there with no
+// text, its node's state stated gone, and the edges at it stop resolving until a version holds its
+// id again. Such a block also takes its pointer tuples with it: each prevented_by of a risk it
+// covered as a check, and each constrained_by it held as a requirement, is retracted beside the
+// facts the pass states (retractGonePointers), and a version that restores the block restores none
+// of them. A block the version holds keeps the state and the visibility its node has, unless it
+// was gone, when it comes back live (blockNode restates every node it writes). The windows the
+// version's blocks are embedded in are not planned here and not written by this index: the row it
+// records marks the document owed them, and the block-index tick's window arm writes them (Queue,
+// DocumentsOwedWindows).
 //
 // A block whose row the pass writes first is made by the first author of the version that first
 // holds it, its text's since (textSince), at that version's time. Every block of the version whose
@@ -885,7 +889,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 		held[block.ID] = storedBlock{sum: hexSum, joined: joined, node: namedNode(refKey, block.ID, fits[position]), supertag: supertag, document: document}
 		indexing.ids, indexing.types, indexing.sums = append(indexing.ids, block.ID), append(indexing.types, block.Type), append(indexing.sums, hexSum)
 		first = append(first, !kept)
-		indexing.excerpts = append(indexing.excerpts, text.HeadRunes(body, BlockExcerptRunes))
+		indexing.excerpts = append(indexing.excerpts, BlockExcerpt(body, version.ServerURL))
 		indexing.textIDs, indexing.texts = append(indexing.textIDs, block.ID), append(indexing.texts, &body)
 	}
 	// A block of a retired document of an issue room that no fragment of the room holds now is no
@@ -1405,8 +1409,9 @@ func UnstatedBlockIndexSQL(rule string) string {
 // document an issue room's pass covers (Versions). It answers the targets the indexing moves, the
 // cited blocks among them, whether it won the revision fence, what it states in the node and tuple
 // store, for the caller to append under its cause (graphstore.Caused), and whether it drained this
-// build's mark (Marked). typed is what the typed-node pass read of the version (DecisionFacts), as
-// PlanBlocks takes it.
+// build's mark (Marked). serverURL is the deployment whose dashboard URLs each block's excerpt is
+// cut around (BlockExcerpt); typed is what the typed-node pass read of the version
+// (DecisionFacts), as PlanBlocks takes it.
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1416,6 +1421,7 @@ func IndexBlocks(
 	blocks []model.ArtifactBlock,
 	located []text.Located,
 	pointers []Pointer,
+	serverURL string,
 	typed TypedFacts,
 ) ([]Target, bool, graphstore.Uncaused, bool, error) {
 	index, err := ReadBlockIndex(ctx, tx, artifactID)
@@ -1433,7 +1439,7 @@ func IndexBlocks(
 	}
 	indexing, err := PlanBlocks(ctx, tx, index, BlockIndexMarkingRule, now, VersionBlocks{
 		ArtifactID: artifactID, Record: record, Versions: versions,
-		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers, Typed: typed,
+		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers, ServerURL: serverURL, Typed: typed,
 	})
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, false, err

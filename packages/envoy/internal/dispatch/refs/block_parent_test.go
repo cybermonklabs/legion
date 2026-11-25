@@ -154,7 +154,7 @@ func (d parentDocument) indexVersionAt(t *testing.T, number int, doc blockDoc, r
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&at); err != nil {
 		t.Fatalf("read the time of the index of version %d: %v", number, err)
 	}
-	_, won, write, _, err := IndexBlocks(ctx, tx, d.artifact, OneVersion(d.artifact, number, record.at), doc.markdown, doc.blocks, nil, nil, TypedFacts{})
+	_, won, write, _, err := IndexBlocks(ctx, tx, d.artifact, OneVersion(d.artifact, number, record.at), doc.markdown, doc.blocks, nil, nil, "", TypedFacts{})
 	if err != nil {
 		t.Fatalf("index version %d: %v", number, err)
 	}
@@ -519,7 +519,7 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 			t.Fatalf("begin the pass that rolls back: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		_, stood, write, _, err := IndexBlocks(ctx, tx, nested.artifact, OneVersion(nested.artifact, 2, rolledBack.at), added.markdown, added.blocks, nil, nil, TypedFacts{})
+		_, stood, write, _, err := IndexBlocks(ctx, tx, nested.artifact, OneVersion(nested.artifact, 2, rolledBack.at), added.markdown, added.blocks, nil, nil, "", TypedFacts{})
 		if err != nil {
 			t.Fatalf("index the version that rolls back: %v", err)
 		}

@@ -225,7 +225,7 @@ func (write specWrite) documentName() string {
 // the issue of each architect row of issue_role_holders on the chain, nearest first.
 func specWriterReadSQL(start string) string {
 	return `
-	with recursive ` + issueChainSQL(start, "key") + `,
+	with recursive ` + issueChainSQL(start) + `,
 	subject as (
 		select c.key from chain c where c.key is not null order by c.depth limit 1
 	),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // movedLens is the lens writeLensNode writes.
@@ -100,7 +102,7 @@ func TestTheClosureAnswersTheLensACitedDocumentMovedTo(t *testing.T) {
 
 	referencesOf := func(key string) References {
 		t.Helper()
-		references, err := Closure(ctx, database.Pool, model.Actor{}, key)
+		references, err := Closure(ctx, database.Pool, model.Actor{}, key, "")
 		if err != nil {
 			t.Fatalf("read the references of %s: %v", key, err)
 		}
@@ -134,5 +136,91 @@ func TestTheClosureAnswersTheLensACitedDocumentMovedTo(t *testing.T) {
 	writeLensNode(t, database, graphstore.StateGone)
 	if got := referencesOf("CORE-1").Members; !reflect.DeepEqual(got, []Member{movedDocument}) {
 		t.Errorf("once the lens is gone the members of CORE-1 are %#v; want the document alone, %#v", got, []Member{movedDocument})
+	}
+}
+
+// A finding of a lens is a block the store holds no excerpt of: its loader reads its whole text
+// (loadReasoningNodes), and every read that names it cuts that text where it names it, as a
+// document block's stored excerpt is cut (resolvedNode.name, BlockExcerpt). The finding here,
+// written under writeLensNode's lens through the store's writer as the census writes one, holds a
+// text past BlockExcerptRunes with the key CORE-1234 across rune 480. TargetNames, ExcerptedNodes
+// and the excerpt of the finding's part_of edge on the lens's in read (Edges) each answer exactly
+// BlockExcerpt of that text: neither the whole text, which a name that took the finding's text as
+// an already cut block excerpt would answer, nor the plain cut at 480, which leaves half the key,
+// `CO`, at the end of the words.
+func TestAFindingIsNamedByItsTextCutAsABlockExcerpt(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the fixture: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "OPS")
+	createReferenceIssue(t, tx, "OPS-1", "OPS")
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the fixture: %v", err)
+	}
+	writeLensNode(t, database, graphstore.StateLive)
+
+	// 476 runes and a space, so the key runs from rune 477 to 486, across the bound.
+	body := strings.Repeat("x", 476) + " CORE-1234 decides it."
+	want := BlockExcerpt(body, "")
+	if plain := text.HeadRunes(body, BlockExcerptRunes); want == body || want == plain {
+		t.Fatalf("BlockExcerpt(%d runes) = %q, the whole text or the plain cut %q: the fixture no longer tells the three apart", len(body), want, plain)
+	}
+	alice, at := model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC()
+	finding := graphstore.KindLens + "/" + movedLens + "#f1"
+	findingTx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the finding's write: %v", err)
+	}
+	defer findingTx.Rollback(ctx)
+	tuple := func(kind, toKind, toID string) graphstore.Tuple {
+		return graphstore.Tuple{
+			FromKind: BlockNodeKind, FromID: finding, Kind: kind, ToKind: toKind, ToID: toID,
+			At: at, Who: alice, SourceEvent: graphstore.NoEvent, Asserted: true,
+		}
+	}
+	if err := graphstore.Write(ctx, findingTx, []graphstore.Node{{
+		Kind: BlockNodeKind, ID: finding, Supertag: BlockNodeKind, Visibility: graphstore.VisibilityProject,
+		State: graphstore.StateLive, Project: "OPS", MadeAt: at, MadeBy: alice, SourceEvent: graphstore.NoEvent,
+	}}, []graphstore.Tuple{
+		tuple(graphstore.TuplePartOf, graphstore.KindLens, movedLens),
+		tuple(graphstore.AttributeText, graphstore.KindValue, body),
+	}); err != nil {
+		t.Fatalf("write the finding %s through the store's writer: %v", finding, err)
+	}
+	if err := findingTx.Commit(ctx); err != nil {
+		t.Fatalf("commit the finding's write: %v", err)
+	}
+
+	target := Target{Kind: graphstore.KindLensBlock, ID: finding}
+	names, err := TargetNames(ctx, database.Pool, alice, []Target{target}, "")
+	if err != nil {
+		t.Fatalf("name the finding: %v", err)
+	}
+	if got := names[target].Name; got != want {
+		t.Errorf("TargetNames names the finding %q (%d runes); want its text cut as a block excerpt, %q", got, len([]rune(got)), want)
+	}
+	excerpted, err := ExcerptedNodes(ctx, database.Pool, alice, []Target{target}, "")
+	if err != nil {
+		t.Fatalf("read the finding with its excerpt: %v", err)
+	}
+	if got := excerpted[target].Excerpt; got == nil || *got != (model.GraphExcerpt{BlockID: "f1", Text: want}) {
+		t.Errorf("ExcerptedNodes answers the finding's excerpt %+v; want block f1 with %q", got, want)
+	}
+	edges, err := Edges(ctx, database.Pool, alice, Query{Direction: "in", Kind: graphstore.KindLens, ID: movedLens})
+	if err != nil {
+		t.Fatalf("read the edges into the lens: %v", err)
+	}
+	index := slices.IndexFunc(edges, func(edge model.GraphEdge) bool {
+		return edge.Kind == graphstore.TuplePartOf && edge.Node.Kind == graphstore.KindLensBlock && edge.Node.ID == finding
+	})
+	if index < 0 {
+		t.Fatalf("the lens's in read lists no part_of from the finding %s: %+v", finding, edges)
+	}
+	if got := edges[index].Excerpt; got == nil || *got != (model.GraphExcerpt{BlockID: "f1", Text: want}) {
+		t.Errorf("the finding's part_of edge shows the excerpt %+v; want block f1 with %q", got, want)
 	}
 }
