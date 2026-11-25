@@ -2422,7 +2422,7 @@ function listingWords(
   ).length;
   const answers = dispatchAnswers(results);
   const assumed = screened.filter((each) => answers.get(each.caseId) === "assumed").length;
-  // A case whose profile took names from its recorded listing (build.ts's POOL_AT_START_RULE):
+  // A case whose profile took names from its recorded listing (build.ts's POOL_LISTING_RULE):
   // its listing measure cannot see a miss of them.
   const taken = evidence.filter((each) => fromRecordedIn(each).length > 0).length;
   return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, ${taken} of the ${screened.length} installed names their recorded listing gave them (fromRecorded), and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;

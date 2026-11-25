@@ -425,7 +425,7 @@ const SESSIONS: Record<
   // pinned-units' reads in a subagent of the root PINNED_ROOT, which built its prompt last at
   // ROOT_BUILD before the subagent's start: acme/powers (a package) is read then, when it had
   // power-one alone (POWERS_OLD), and acme/dots and the pool it clones are read at the subagent's
-  // start.
+  // start. Its recorded listing names pack-one, which it reads, so its profile has the pool.
   "pinned-subagent": {
     store: "store_a",
     path: `${PINNED_ROOT}/pinned-subagent.jsonl`,
@@ -439,7 +439,13 @@ const SESSIONS: Record<
         resolvedModel: "anthropic/claude-sonnet-5-5",
         task: "Read the alpha steps.",
         tools: SUBAGENT_TOOLS,
-        systemPrompt: SUBAGENT_PROMPT,
+        systemPrompt: [
+          (SUBAGENT_PROMPT[0] ?? "").replace(
+            "</skills>",
+            "- pack-one: Use for the pack-one steps.\n</skills>"
+          ),
+          ...SUBAGENT_PROMPT.slice(1),
+        ],
       });
     },
   },
@@ -948,8 +954,9 @@ if (query.includes("omp_session_files_parts pt") && place) {
   rows.sort((a, b) => (a.hash < b.hash ? -1 : 1));
 } else if (query.includes("encode(sha256(convert_to(f.path")) {
   kind = "heads";
-  // Each file of a path hash the query names: its header's cwd and timestamp and its first user
-  // turn, from its whole text (a made-up file is shorter than the head session-head.sql reads).
+  // Each file of a path hash the query names: its header's cwd and timestamp, its first user turn
+  // and its first model_change line's runtime version, from its whole text (a made-up file is
+  // shorter than the head session-head.sql reads).
   const hashes = new Set(literals(query.slice(query.indexOf("ANY"))));
   rows = Object.entries(store.files)
     .map(([p, text]) => ({ text, hash: createHash("sha256").update(p).digest("hex") }))
@@ -974,6 +981,7 @@ if (query.includes("omp_session_files_parts pt") && place) {
           attribution: typeof user.message.attribution === "string" ? user.message.attribution : null,
         },
         reminders: [],
+        runtime: lines.find((line) => line.type === "model_change")?.runtime?.version ?? null,
         bytes: Buffer.byteLength(text, "utf8"),
         bad_lines: 0,
       };
@@ -1394,6 +1402,8 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
       },
     }),
     "skills-sources.json": JSON.stringify({ sources: [{ root: "vendor/acme-pack" }] }),
+    // The Oh My Pi build the dev box pins (the configuration's ompPin names this file and key).
+    "mise.toml": '[tools]\n"acme:omp" = "18.13.3-acme.1"  # the dev box\'s Oh My Pi\n',
     "omp/extensions/skill-pools.ts": [
       'import * as fs from "node:fs";',
       "export default function (pi) {",
@@ -5704,13 +5714,15 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     if (profiles.length > 0) digests[`${name} profiles`] = digest(profiles.join(""));
   }
   // Fixture path hashes changed when the transcripts moved under their real profile roots.
-  // The summary records their profiles. The profile files keep the same bytes.
+  // The summary records their profiles. The profile files keep the same bytes. The profiles
+  // summary counts a subagents.sql query for each of the two session tasks, read before its
+  // profile is built (sessionQueries 2); one query of their store after both was counted before.
   expect(digests).toEqual({
     "model tasks": "7065771b7768b39f531ae513e501837a0837349affe5672950558cdaf8230f9e",
     "model summary": "830ba5a3c2d161a489386c91ee25396de33d21df9deabfb10e8e915059c49c48",
     "model printed": "8d8a65fe70015b199ecc51a86a5803ef39c5cacbddbe124b22460e6d36a2971b",
     "profiles tasks": "c29cedaadf7a508a1449548b98da93ab14b079a002eb834365c81cc2f70e79f6",
-    "profiles summary": "b67f0730cfd20dcb7c07567fa1a38f26a1bf31d41f07ca270e97dc5557ed2377",
+    "profiles summary": "85dc0b754ac23142309d9268e69f3483ed1396ad30610b6a0ee508bbc5b4fd0a",
     "profiles printed": "9ceae9fd265f889f404904ada8fe26a18ca2cbde3e9141337bd67b87b1aa1b0b",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -6292,11 +6304,12 @@ test("a subagent whose dev box's skills-sources.json names a pool at its start a
       .sort();
   const names = `acme/dots:skills-sources.json names vendor/acme-pack at ${SHA} (the subagent's start ${F1_START}) and not at ${DOTS_OLD} (the root's last prompt build)`;
   // The recorded listing names pack-two, so the host had cloned the pool: it is installed, and
-  // each of its names is marked as taken from that listing.
+  // each of its names is marked as taken from that listing (POOL_LISTING_RULE, as for a pool of
+  // the root's build).
   expect(poolSkills("pool-listed")).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
   const listed = evidenceOf("pool-listed");
   expect(listed["unit pool:vendor/acme-pack (acme/dots:skills-sources.json)"]).toStartWith(
-    `pool at the subagent's start: ${names}; the subagent's recorded listing names pack-two of its skills, so its host had cloned it then (installed from the recorded listing): Oh My Pi 18.18.6 has a subagent emit resources_discover as it starts`
+    `pool at the subagent's start: ${names}; the session's recorded listing names 1 of the 2 skills it holds at the session's start (named: pack-two; unnamed: pack-one), so it is installed; ${POOL_INFERENCE}, and the listing measure counts its unnamed skills as added names: Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover`
   );
   const listedMeasure = ListingMeasure.parse(JSON.parse(listed[LISTING_MEASURE_ITEM] ?? "{}"));
   expect(listedMeasure.fromRecorded).toEqual(["pack-one", "pack-two"]);
@@ -6304,12 +6317,216 @@ test("a subagent whose dev box's skills-sources.json names a pool at its start a
   expect(poolSkills("pool-unlisted")).toEqual([]);
   const unlisted = evidenceOf("pool-unlisted");
   expect(unlisted["unit pool:vendor/acme-pack (acme/dots:skills-sources.json)"]).toBeUndefined();
-  expect(unlisted["left out: pool:vendor/acme-pack, a pool at the subagent's start"]).toStartWith(
-    `${names}, and the subagent's recorded listing names none of its skills (pack-one, pack-two), so its host had not cloned it then: Oh My Pi 18.18.6 has a subagent emit resources_discover`
+  expect(
+    unlisted["left out: the pool pool:vendor/acme-pack (acme/dots:skills-sources.json)"]
+  ).toStartWith(
+    `pool at the subagent's start: ${names}; the session's recorded listing names none of the 2 skills it holds at the session's start (pack-one, pack-two), so it is not installed; ${POOL_INFERENCE}: Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover`
   );
   const unlistedMeasure = ListingMeasure.parse(JSON.parse(unlisted[LISTING_MEASURE_ITEM] ?? "{}"));
   expect(unlistedMeasure.fromRecorded).toBeUndefined();
 }, 120_000);
+
+// The architect's ruling of 2026-11-25: dev-box sessions that ran one Oh My Pi build list the dev
+// box's resources_discover pools in some sessions and not in others, and no file records why. So
+// a session that records its listing (its own recorded prompt's, or the subagent's its listing
+// measure uses) gets each pool from that listing, a pool its root's build has too; one that
+// records none gets them by the Oh My Pi build its dev box pins at its start.
+
+/** The root of the listed-pool subagents, which the store does not hold: each repository of their
+ *  profiles is read at their start, when acme/dots's skills-sources.json names the pool
+ *  vendor/acme-pack (pack-one and pack-two at PACK_PIN), as at its root's build. */
+const UNHELD_ROOT = `${DEV_SESSIONS}/2026-11-19T00-00-00-000Z_0a1b2c3d-0000-4000-8000-0000000000b2`;
+/** Each listed-pool subagent, and the pool skills its recorded listing names. */
+const POOL_LISTINGS: Record<string, readonly string[]> = {
+  "pool-all": ["pack-one", "pack-two"],
+  "pool-some": ["pack-two"],
+  "pool-none": [],
+};
+/** The pool's unit, as the evidence names it. */
+const POOL_KEY = "pool:vendor/acme-pack (acme/dots:skills-sources.json)";
+/** The words of the pool's evidence that say the decision is an inference. */
+const POOL_INFERENCE =
+  "this is an inference from the listing, since no file records why some sessions of one Oh My Pi build list such a pool and others do not";
+
+/** The case of the listed-pool subagent `name` (POOL_LISTINGS), the three built once with acme/dots
+ *  as the dev box's repository: its pool skills (name and commit), its evidence by item and its
+ *  listing measure. */
+async function listedPool(name: string) {
+  const pathOf = (each: string) => `${UNHELD_ROOT}/${each}.jsonl`;
+  const out = path.join(scratch, "pool-listed", "cases.jsonl");
+  if (!existsSync(out)) {
+    const store = changedStore("pool-listed", (files) => {
+      for (const [each, names] of Object.entries(POOL_LISTINGS)) {
+        const lines = f1Lines();
+        setText(lines, 5, () => `Step 3 (case ${each}).`);
+        SESSIONS.subagent?.change?.(lines);
+        const init = lines.find((line) => line.type === "session_init");
+        if (init !== undefined) {
+          const listed = names.map((skill) => `- ${skill}: Use for the ${skill} steps.\n`).join("");
+          init.systemPrompt = [
+            (SUBAGENT_PROMPT[0] ?? "").replace("</skills>", `${listed}</skills>`),
+            ...SUBAGENT_PROMPT.slice(1),
+          ];
+        }
+        (files.store_a ?? {})[pathOf(each)] = lines
+          .map((line) => `${JSON.stringify(line)}\n`)
+          .join("");
+      }
+    });
+    const copies = copiesWith("copies-pool-listed", { "manifests.tsv": DOTS_MANIFESTS });
+    const file = sessionsFile(
+      "pool-listed.jsonl",
+      [],
+      [],
+      Object.keys(POOL_LISTINGS).map((each) => ({
+        store: "store_a",
+        hash: fileHash(pathOf(each)),
+        path: pathOf(each),
+      }))
+    );
+    const args = buildArgs(file, out, "1", "--copies", copies);
+    args[args.indexOf("--config") + 1] = store;
+    const lines: string[] = [];
+    const code = await main(args, io(lines));
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+  }
+  const c = loadCases(out, old).find((each) => each.source.pathHash === pathHash(pathOf(name)));
+  expect(c?.context).toBe("subagent:task");
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  return {
+    pool: (c?.profile.skills ?? [])
+      .filter((skill) => skill.repo === "acme/pack")
+      .map((skill) => `${skill.name} ${skill.commit}`)
+      .sort(),
+    evidence,
+    measure: ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE_ITEM] ?? "{}")),
+  };
+}
+
+// Catches: a pool the dev box's installers install at the root's build installed for a subagent
+// whatever its recorded listing names, with no mark that the listing decided its names.
+test("a dev-box subagent whose recorded listing names every skill of a pool its root's build has gets the pool, its names marked fromRecorded, and the evidence counts each named", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-all");
+  expect(pool).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
+  expect(evidence[`unit ${POOL_KEY}`]).toContain(
+    `the session's recorded listing names 2 of the 2 skills it holds at the session's start (named: pack-one, pack-two; unnamed: none), so it is installed; ${POOL_INFERENCE}: `
+  );
+  expect(measure.kind).toBe("session listing");
+  expect(measure.fromRecorded).toEqual(["pack-one", "pack-two"]);
+  expect(measure.added.filter((name) => name.startsWith("pack-"))).toEqual([]);
+}, 120_000);
+
+// Catches: a pool whose skills the recorded listing names in part installed with no record of how
+// many it names, or left out, or its unnamed skills kept out of the measure's added names.
+test("a dev-box subagent whose recorded listing names some skills of a pool gets the whole pool, the evidence counts its named and unnamed skills, and the unnamed are the measure's added names", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-some");
+  expect(pool).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
+  expect(evidence[`unit ${POOL_KEY}`]).toContain(
+    `the session's recorded listing names 1 of the 2 skills it holds at the session's start (named: pack-two; unnamed: pack-one), so it is installed; ${POOL_INFERENCE}, and the listing measure counts its unnamed skills as added names: `
+  );
+  expect(measure.added).toContain("pack-one");
+  expect(measure.added).not.toContain("pack-two");
+  expect(measure.fromRecorded).toEqual(["pack-one", "pack-two"]);
+}, 120_000);
+
+// Catches: a pool the dev box's installers install at the root's build installed for a subagent
+// whose recorded listing names none of its skills.
+test("a dev-box subagent whose recorded listing names no skill of a pool its root's build has gets none of it, and the evidence says why", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-none");
+  expect(pool).toEqual([]);
+  expect(evidence[`unit ${POOL_KEY}`]).toBeUndefined();
+  expect(evidence[`left out: the pool ${POOL_KEY}`]).toContain(
+    `the session's recorded listing names none of the 2 skills it holds at the session's start (pack-one, pack-two), so it is not installed; ${POOL_INFERENCE}: `
+  );
+  // The pool's names are not listed; pack-two still is, as acme/powers's copy, which the pool's
+  // copy outranks only where the pool is installed (rows above: listed as acme-powers/pack-two).
+  expect(measure.added).not.toContain("pack-one");
+  expect(measure.added).toContain("pack-two");
+  expect(measure.added).not.toContain("acme-powers/pack-two");
+  expect(measure.fromRecorded).toBeUndefined();
+}, 120_000);
+
+/** The case of the top-level dev-box session `name` (`pool-plain`, which reads alpha alone, or
+ *  `pool-read`, which reads skill://pack-one of the pool first), built under a configuration whose
+ *  ompPin names acme/dots's mise.toml, which pins 18.13.3-acme.1, and `first` as the first build
+ *  that loads the pools on a fresh start. Neither starts a subagent, so neither has a listing. */
+async function pinnedPool(name: "pool-plain" | "pool-read", first: string) {
+  const pathOf = (each: string) => `${DEV_SESSIONS}/${each}.jsonl`;
+  const out = path.join(scratch, `pool-pinned-${first}`, "cases.jsonl");
+  if (!existsSync(out)) {
+    const store = changedStore(`pool-pinned-${first}`, (files) => {
+      (files.store_a ?? {})[pathOf("pool-plain")] = sessionText("good");
+      (files.store_a ?? {})[pathOf("pool-read")] = sessionText("pinned-units");
+    });
+    writeFileSync(
+      store,
+      JSON.stringify({
+        ...JSON.parse(readFileSync(store, "utf8")),
+        ompPin: { file: "mise.toml", key: ["tools", "acme:omp"], firstPoolVersion: first },
+      })
+    );
+    const copies = copiesWith("copies-pool-pinned", { "manifests.tsv": DOTS_MANIFESTS });
+    const file = sessionsFile(
+      `pool-pinned-${first}.jsonl`,
+      [],
+      [],
+      ["pool-plain", "pool-read"].map((each) => ({
+        store: "store_a",
+        hash: fileHash(pathOf(each)),
+        path: pathOf(each),
+      }))
+    );
+    const args = buildArgs(file, out, "1", "--copies", copies);
+    args[args.indexOf("--config") + 1] = store;
+    const lines: string[] = [];
+    const code = await main(args, io(lines));
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+  }
+  const c = loadCases(out, old).find((each) => each.source.pathHash === pathHash(pathOf(name)));
+  expect(c?.context).toBe("devbox");
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  return {
+    pool: (c?.profile.skills ?? [])
+      .filter((skill) => skill.repo === "acme/pack")
+      .map((skill) => skill.name)
+      .sort(),
+    evidence,
+    measure: ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE_ITEM] ?? "{}")),
+  };
+}
+
+// Catches: the pools of a session that records no listing installed whatever Oh My Pi build its
+// dev box pinned, though a build before the first that loads them on a fresh start lists none.
+test("a top-level dev-box session with no listing gets the pools by its dev box's Oh My Pi pin at its start: none before the configuration's first pool-loading build but one a [Skill file] read shows loaded, each at or after it, and the evidence sets the session's runtime version beside the pin", async () => {
+  const before = await pinnedPool("pool-plain", "18.16.0");
+  expect(before.measure.kind).toBe("not measurable");
+  expect(before.pool).toEqual([]);
+  expect(before.evidence[`left out: the pool ${POOL_KEY}`]).toContain(
+    "; the pinned Oh My Pi 18.13.3-acme.1 is before 18.16.0, so the session listed none of its skills on a fresh start; an inference from the pinned build: "
+  );
+  expect(before.evidence["Oh My Pi pin of acme/dots"]).toStartWith(
+    `acme/dots:mise.toml at ${SHA} (the last commit of main at or before the session's start ${F1_START}) pins tools."acme:omp" at 18.13.3-acme.1, which is before 18.16.0, the first build the configuration's ompPin names as loading resources_discover pools on a fresh start; the session's file records Oh My Pi 18.18.6 (the runtime.version of its first model_change line), which differs from the pin's release 18.13.3: `
+  );
+  // A [Skill file: …] read of the pool's skill shows Oh My Pi loaded the pool.
+  const read = await pinnedPool("pool-read", "18.16.0");
+  expect(read.pool).toEqual(["pack-one", "pack-two"]);
+  expect(read.evidence[`unit ${POOL_KEY}`]).toMatch(
+    new RegExp(
+      `; the pinned Oh My Pi 18\\.13\\.3-acme\\.1 is before 18\\.16\\.0, but message \\d+ reads \\[Skill file: ${PACK_ONE.replaceAll(".", "\\.")}\\] of it, so Oh My Pi loaded it: `
+    )
+  );
+  const after = await pinnedPool("pool-plain", "18.13.3-acme.1");
+  expect(after.pool).toEqual(["pack-one", "pack-two"]);
+  expect(after.evidence[`unit ${POOL_KEY}`]).toContain(
+    "; the pinned Oh My Pi 18.13.3-acme.1 is at or after 18.13.3-acme.1, which loads it on a fresh start: "
+  );
+}, 180_000);
 
 // Catches: the skills of a Claude Code plugin that the session repository's own Claude Code
 // settings turn on left out of a dev-box profile, or installed for a project whose settings do
@@ -7145,14 +7362,22 @@ test("build-tasks --reprofile builds each task's profile again as --profiles-out
     store: "store_b",
     hash: fileHash(sessionPath("legion")),
   });
-  // The session tasks' paths by their path hashes, one query of their store; the context session
-  // the old summary names by its file hash; and one pull of each of the three sessions.
+  // The session tasks' paths by their path hashes, one query of their store; the subagents of
+  // each session task, one query a session, read as its profile is rebuilt, since their listing
+  // decides its pools; the context session the old summary names by its file hash, and its
+  // subagents; and one pull of each of the three sessions.
   expect(
     psqlLines(logged)
       .filter((line) => line.kind !== "pull")
       .map((line) => `${line.db} ${line.kind}`)
       .sort()
-  ).toEqual(["store_a paths", "store_a subagents", "store_b sessions", "store_b subagents"]);
+  ).toEqual([
+    "store_a paths",
+    "store_a subagents",
+    "store_a subagents",
+    "store_b sessions",
+    "store_b subagents",
+  ]);
   expect(transcriptPulls(logged)).toBe(3);
   expect(existsSync(`${dir}.spool`)).toBe(false);
 

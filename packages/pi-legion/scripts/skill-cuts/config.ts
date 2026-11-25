@@ -6,7 +6,7 @@
  * it leaves out and the repositories its copies map to) comes from this file at run time and never
  * from a committed file. The real file is kept outside the repository.
  *
- * Keys (only the last three are optional):
+ * Keys (only the last four are optional):
  *   owners          GitHub owners whose repositories the copy lister reads
  *   stores          the session stores the count reads: `{name, context}`, `name` the database
  *                   name, `context` `devbox` or `legion:<PROJECT>` (whose sessions the store holds)
@@ -40,6 +40,15 @@
  *                  repository, `pinFile` is its image pin file, `pinKey` is the key under
  *                  `config`, and `dockerfile` is the session image's Dockerfile. `workerRepository`
  *                  and `workerDockerfile` name the base worker's source and Dockerfile.
+ *   ompPin         (optional) where the dev box's own repository pins the Oh My Pi build it runs,
+ *                  and the first build that loads an extension's resources_discover skill pools on
+ *                  a fresh start: `file` a TOML file of that repository (a path in it, such as
+ *                  `mise.toml`), `key` the keys that lead to the pinned version in it (`["tools",
+ *                  "<tool>"]`), and `firstPoolVersion` that first build's version (semver, such as
+ *                  `18.16.0` or `18.16.0-fork.1`). build.ts decides the pools of a session that
+ *                  records no listing by the pin at the session's start against that version
+ *                  (POOL_VERSION_RULE); without this key such pools are installed as the dev box's
+ *                  installers install them.
  *
  * A file that is not JSON, or that misses a key, holds a key not above or holds a value of the
  * wrong shape, is refused with one line per fault, each naming the key.
@@ -64,6 +73,9 @@ const CheckoutDirectory = z
   );
 /** An instant in UTC, as the window's ends are written: `2026-10-23T00:00:00Z`. */
 const Instant = z.iso.datetime({ error: "an ISO instant ending in Z" });
+/** A version as a pin or a build names it, semver with an optional `v`: `18.16.0`,
+ *  `18.16.0-fork.20261104-021732`. build.ts reads a pinned Oh My Pi version by it. */
+export const OMP_VERSION = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 /** A session store: its database name, which a query names only as a value, so it is held to the
  *  letters a database identifier needs, and whose sessions it holds. */
@@ -119,6 +131,15 @@ export const SkillCutsConfig = z
         dockerfile: CheckoutDirectory,
         workerRepository: Repository,
         workerDockerfile: CheckoutDirectory,
+      })
+      .optional(),
+    ompPin: z
+      .strictObject({
+        file: CheckoutDirectory,
+        key: z.array(z.string().min(1)).min(1),
+        firstPoolVersion: z.string().regex(OMP_VERSION, {
+          error: "a version, such as 18.16.0 or 18.16.0-fork.1",
+        }),
       })
       .optional(),
   })

@@ -9,7 +9,7 @@ import { loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "./config";
 // configuration F7's capture used.
 
 /** A configuration with every required key, each a made-up value; it leaves out the optional
- *  keys, devboxClaudeConfigDir, clones and sessionPod. */
+ *  keys, devboxClaudeConfigDir, clones, sessionPod and ompPin. */
 function valid(): Record<string, unknown> {
   return {
     owners: ["acme", "acme-labs"],
@@ -46,7 +46,11 @@ test("a configuration with every required key loads", () => {
 
 test.each(
   Object.keys(SkillCutsConfig.shape).filter(
-    (key) => key !== "devboxClaudeConfigDir" && key !== "clones" && key !== "sessionPod"
+    (key) =>
+      key !== "devboxClaudeConfigDir" &&
+      key !== "clones" &&
+      key !== "sessionPod" &&
+      key !== "ompPin"
   )
 )("a configuration without %s is refused by name", (key) => {
   const value = valid();
@@ -68,6 +72,26 @@ test("sessionPod accepts a deployment pin and two repository-relative Dockerfile
   expect(
     refusal({ ...valid(), sessionPod: { ...sessionPod, dockerfile: "../Dockerfile" } })
   ).toContain("sessionPod.dockerfile:");
+});
+
+// Catches: a dev box's Oh My Pi pin the pool version rule cannot read (a file outside the
+// repository, no key, a first pool-loading build that is no version) loaded as if it could.
+test("ompPin is optional; a repository file, a key path and a first pool-loading version load, and any other is refused by name", () => {
+  const ompPin = { file: "mise.toml", key: ["tools", "acme:omp"], firstPoolVersion: "18.16.0" };
+  expect(parseConfig(valid()).ompPin).toBeUndefined();
+  expect(parseConfig({ ...valid(), ompPin }).ompPin).toEqual(ompPin);
+  const fork = { ...ompPin, firstPoolVersion: "18.16.0-fork.20261104-021732" };
+  expect(parseConfig({ ...valid(), ompPin: fork }).ompPin).toEqual(fork);
+  expect(refusal({ ...valid(), ompPin: { ...ompPin, file: "../mise.toml" } })).toContain(
+    "ompPin.file:"
+  );
+  expect(refusal({ ...valid(), ompPin: { ...ompPin, key: [] } })).toContain("ompPin.key:");
+  expect(refusal({ ...valid(), ompPin: { ...ompPin, firstPoolVersion: "18.16" } })).toContain(
+    "ompPin.firstPoolVersion: a version, such as 18.16.0 or 18.16.0-fork.1"
+  );
+  expect(refusal({ ...valid(), ompPin: { file: "mise.toml", key: ["tools"] } })).toContain(
+    "ompPin.firstPoolVersion:"
+  );
 });
 
 test("devboxClaudeConfigDir is optional, and an absolute path when given", () => {

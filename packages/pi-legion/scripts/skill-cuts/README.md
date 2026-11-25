@@ -1025,6 +1025,35 @@ prefix rows under `/opt/legion/`) and no other: a dev box's own plugin list is n
 evidence names each list left out. A daemon-launched controller installs the every-role plugins
 alone, which a profile does not tell apart.
 
+A pool that an extension gives through `resources_discover` (a pool of the dev box's
+`skills-sources.json`, its unit named `pool:<root>`) is decided per session, whether the session's
+read or the dev box's installers brought it in. Dev-box sessions that ran the same Oh My Pi build
+list these pools in some sessions and not in others, and no file records why. So where the session
+records a listing, that listing decides each pool: the session's own recorded prompt (a
+subagent's), or, for a session that records only its prompt's digest, the listing of the subagent
+its listing measure uses (below), which the build reads from the store before it builds the
+profile. The profile installs a pool where that listing names at least one of the skills the pool
+holds at the session's start, and leaves it out where the listing names none of them. A pool the
+listing names only in part is installed whole: the unit's evidence says how many of its skills the
+listing names and how many it does not (`named: …; unnamed: …`), and the listing measure counts the
+unnamed ones as added names, as it counts any other. The measure marks each name of a pool
+installed this way (`fromRecorded`, below). The evidence says this is an inference from the
+listing and that no file records why the sessions differ. A session that records no listing, and
+has no subagent the measure can use, has its pools decided by the Oh My Pi build its dev box
+pinned at its start. The configuration's optional `ompPin` names where the dev box's own repository
+pins that build: `file`, a TOML file of the repository (such as `mise.toml`); `key`, the keys that
+lead to the version in it (such as `["tools", "<tool>"]`); and `firstPoolVersion`, the first build
+that loads such pools on a fresh start. The file is read at the repository's last commit at or
+before the session's start. A pin before `firstPoolVersion` installs no pool, except one that a
+`[Skill file: …]` read of the session places, since that read shows Oh My Pi loaded it; a pin at or
+after it installs every pool. The evidence item `Oh My Pi pin of <repository>` names the pin, and
+sets beside it the Oh My Pi version the session's file records (`runtime.version` of its first
+`model_change` line; a fork's build gives only its release, such as `18.16.0`), as a cross-check
+that decides nothing. Without `ompPin`, or where the file holds no version at those keys, such
+pools are installed as the dev box's installers install them. `--reprofile` reads that version
+from the session's head (`session-head.sql`'s `runtime`); a head saved before it was read gives
+none.
+
 A Legion profile reads the worker image's packages (the units of the repository that the prefix
 rows under `/opt/legion/` come from) at the commit that image was built from, not at that
 repository's default branch at the session's start. The deployment, read at its commit of the
@@ -1256,13 +1285,10 @@ lists, installers and settings at the root's build, and its pool directories at 
 start; the `read times of <repository>` evidence item names both commits (`its pool directories
 at <sha>`, which context.ts reads). The dev box's own pool units come from its host's tree at the
 subagent's start too: Oh My Pi reads `skills-sources.json` again as a subagent starts (its
-extension's `resources_discover`) and merges what it gets into the parent's snapshot. A pool that
-list names at the subagent's start and not at the root's build is listed only where its clone was
-on the host then, which no repository records, so the profile installs it only where the
-subagent's recorded listing names one of its skills (the unit's evidence says `pool at the
-subagent's start`; one whose skills the listing does not name is left out, with why). This is an
-inference from the recorded listing, which is also what the listing measure compares against, so
-the measure marks each name installed that way (`fromRecorded`, below). The root is the file the topmost `<…>Z_<id>` directory of the
+extension's `resources_discover`) and merges what it gets into the parent's snapshot, so a pool
+that list names at the subagent's start and not at the root's build is a pool of the subagent too
+(the unit's evidence says `pool at the subagent's start`); like every pool, its recorded listing
+decides it (above). The root is the file the topmost `<…>Z_<id>` directory of the
 subagent's path stands for (a file below no such directory is its own root). `digest-times.sql`
 reads the time and digest of each of the root's digest lines, one query a store for
 `--reprofile` and one a session otherwise, and no other text of the file. With no build before
@@ -1315,14 +1341,17 @@ digest, and the build makes no prompt, so `rebuiltDigest` is always null; it is 
 the recorded listing of a subagent it started under the build its profile is read at (`subagent
 listing`: the earliest one-level child of its directory whose `session_init` holds a listing and
 whose header's time falls between that build's line and the next, or before the second line for
-the first build; read with `subagents.sql`, one query a session as `build-cases` pulls it and one
-a store for `--reprofile` and `build-tasks --profiles-out`, since Oh My Pi gives a subagent its
+the first build; read with `subagents.sql`, one query a session as `build-cases` and `build-tasks
+--profiles-out` and `build-tasks --reprofile` rebuild it, before its profile, and one a store for
+`build-cases --reprofile`, since Oh My Pi gives a subagent its
 parent's skills: task/structured-subagent.ts, lines 811-818 and 900; task/executor.ts, lines
 662-666 and 5256), else it is `not measurable`, with why: a subagent spawned under another build
 is never used. The measure says the store holds no such subagent only after `subagents.sql` was
 asked, and names the window it asked for; a session the store was not asked about (it recorded
-its own listing, no build of it is known, the store no longer holds it, or the query failed) is
-`not measurable` with that reason. A task the reader picked from a session is asked about by the
+its own listing, no build of it is known, or the store no longer holds it) is `not measurable`
+with that reason. A failed query fails that session's profile (`build-cases` drops it as
+`profile-failed`; `build-tasks` gives the task no profile), and fails a `--reprofile` run, since
+the listing decides the profile's pools. A task the reader picked from a session is asked about by the
 path hash its profile was rebuilt from, as every other session is. A context session
 (`--context-session`) has no step: its measured subagent is the earliest of all whose
 `session_init` holds a listing, found first, and its profile is read at the build that subagent
@@ -1335,9 +1364,9 @@ name a model's hint for the skill or a preview of its description (system-prompt
 summaries of `build-cases`, `build-cases --reprofile`, `build-tasks --profiles-out` and
 `build-tasks --reprofile` count the measures of each kind and sum the missing and added names
 (`listing`); a task that keeps its old profile is `not measurable`, with why. A measure whose
-profile installed names only because the recorded listing names one of their pool's skills (a pool
-new at a subagent's start, above) lists those names as `fromRecorded`: the measure cannot see a
-miss of them, since the same listing decided them. The summaries count such measures
+profile installed a pool because the recorded listing names one of its skills (above) lists that
+pool's names as `fromRecorded`: the measure cannot see a miss of them, since the same listing
+decided them. The summaries count such measures
 (`listing.fromRecorded`), and so do `behaviour report`'s verdict line and `load`'s summary and
 listing line. The measure drops nothing here: `behaviour` and `load` apply the listing rule to
 its `missing` names for every case and task, and to its `added` names only for a measure of kind
