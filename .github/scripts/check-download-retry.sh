@@ -57,20 +57,19 @@
 # builds (DOCKERFILES below; a missing one fails this check, so a rename is seen, and a step
 # building a Dockerfile it does not name is refused, so a fifth is seen too: rule 10). Every
 # other file under .github/scripts/, at any depth and whatever it holds, is refused by name, but
-# those harnesses and libraries, that directory's top-level `.py` and `.jq` files, the two
-# scanners ci_citations.py runs (its top-level `.go` and `.ts`, main's #5308) and the
-# bytecode Python writes for them: a file there this check would not read is refused where it
-# stands rather than passed with its fetches unread and a step running it charged nothing for
-# it. So is a top-level `.py` whose `#!` line names any program but `python3` or `python`, a
-# `.jq` whose `#!` line names any but `jq`, a `.go` or `.ts` whose `#!` line names any but `go`
-# or `bun`, and a `.pyc` that opens `#!`, each a program of
-# another interpreter this check does not read; and a directory there the walk below does not
-# enter, a symbolic link or one of the names it skips. A file there this check does not read as a
-# script, a direct `*.test.sh` harness excepted, named by its literal path, by its name or by a
-# name built from data that ends as its does (unread_named), appears in a step's, an action's or
-# a script's command only where this tree writes one: what `python3` or `python` runs, the filter
-# `jq -f` reads, a command word whose `#!` line names that interpreter, an argument of `echo`,
-# `printf`, `grep` or `gofmt`, and the pattern `pkill` matches; any other place, after any
+# those harnesses and libraries, a top-level file of a suffix SCRIPT_DATA below names, a program
+# of another language, and the bytecode Python writes for those: a file there this check would
+# not read is refused where it stands rather than passed with its fetches unread and a step
+# running it charged nothing for it. So is such a top-level file whose `#!` line names any
+# program but an interpreter OWN_INTERPRETERS gives its suffix, and a `.pyc` that opens `#!`,
+# each a program of another interpreter this check does not read; and a directory there the walk
+# below does not enter, a symbolic link or one of the names it skips. A file there this check
+# does not read as a script, a direct `*.test.sh` harness excepted, named by its literal path, by
+# its name or by a name built from data that ends as its does (unread_named), appears in a
+# step's, an action's or a script's command only where this tree writes one: what an interpreter
+# OWN_INTERPRETERS gives `.py` runs, the filter `jq -f` reads, a command word whose `#!` line
+# names an interpreter OWN_INTERPRETERS gives its suffix, and an argument of a program
+# UNREAD_ARGUMENTS names, none of which runs a file it names; any other place, after any
 # wrapper, as any program's argument, as a redirect's file or in the text of a shell's `-c`, is
 # refused by name
 # (the reading set and unread_uses below; dispatch://INFRA-1545, rounds 37 and 38). One named
@@ -116,7 +115,7 @@
 #          function's body;
 #        - a SOURCE, 128: `. <path>` or `source <path>` with nothing before it, at top level,
 #          outside a function's body and outside any loop that runs it more than once;
-#        - a NON-CALL, 16: an argument of `echo` or `grep` (NONCALL_COMMANDS) whose output no
+#        - a NON-CALL, 16: an argument of a program NONCALL_COMMANDS names, whose output no
 #          shell runs, and a comment, charged nothing and refused nothing. Until round 37 a path
 #          anywhere on a line that was not a comment line was a call, so two echo lines of
 #          `.github/workflows/ci.yaml#tool-fallback` step read as calls, 3843 s where its call is
@@ -139,12 +138,13 @@
 #      named as lowercase letters, digits and `-` before `.sh` (SCRIPT_CALL), and a script under
 #      .github/scripts/ named otherwise is refused by name where it fetches, since no call of it
 #      is found (dispatch://INFRA-1545, round 37). Every other file under that directory, a
-#      `.sh` in a subdirectory or a file with no `.sh` suffix but a top-level `.py` or `.jq` and
-#      the bytecode Python writes for them, is refused by name whatever it holds, as WHAT IT
-#      READS says, and so is a top-level `.py` or
-#      `.jq` whose `#!` line names another interpreter than its own, so no run of one stands to
-#      be charged. And a word naming any file there this check does not read as a script, a `.py`,
-#      a `.jq` or a `.pyc` among them, in a form unread_named reads, is refused by name at its
+#      `.sh` in a subdirectory or a file with no `.sh` suffix but a top-level file of a suffix
+#      SCRIPT_DATA names and the bytecode Python writes for those, is refused by name whatever it
+#      holds, as WHAT IT READS says, and so is such a top-level file whose `#!` line names
+#      another interpreter than its own (OWN_INTERPRETERS), so no run of one stands to be
+#      charged. And a word naming any file there this check does not read as a script, those
+#      top-level files and their bytecode among them, in a form unread_named reads, is refused
+#      by name at its
 #      command wherever it is written but in the places WHAT IT READS lists, which are every
 #      place this tree writes one, so every route from such a file to a shell through a word of
 #      that form, the ones round 38 found and the ones it did not, is refused by its place rather
@@ -525,10 +525,8 @@
 #   - a definition of a function named `retry_fetch` anywhere but in .github/scripts/ci-retry.sh,
 #     and a `retry_fetch` call outside its signature or behind a wrapper, wherever written, the
 #     one form `gh_wait_reset [--stderr <file>] retry_fetch …` aside (rule 6; odd_command);
-#   - an option of a wrapper this check drops (PASSTHROUGH) other than those it reads, `env -i`,
-#     `env -u <name>`, `env --default-signal=INT,QUIT`, `nice -n <n>`, `sudo -E`,
-#     `sudo -u <user>`, `setsid --wait` and `command -v` (WRAPPER_OPTIONS; the signals' and the
-#     wait's since round 65, the forms harness-pool.sh writes), `env -S` among them, and
+#   - an option of a wrapper this check drops (PASSTHROUGH) other than those WRAPPER_OPTIONS
+#     reads, `env -S` among them, and
 #     `busybox` as a command word with any program
 #     after it, wherever written
 #     (`busybox --help`, `--list` and `--list-full` run no program and pass),
@@ -628,8 +626,8 @@
 # dispatch://INFRA-2899's question. Moving one to .github/scripts/<name>.sh is what brings it
 # back under both rules, and a new `.sh` file there is read without anyone remembering to list
 # it, while a file put anywhere else under that directory, in a subdirectory or with no `.sh`
-# suffix, is refused by name rather than left unread, but a top-level `.py` or `.jq`
-# (dispatch://INFRA-1545, round 37).
+# suffix, is refused by name rather than left unread, but a top-level file of a suffix
+# SCRIPT_DATA names (dispatch://INFRA-1545, round 37).
 #
 # THE REACH OF THIS CHECK ENDS AT THE FORMS THE TREE WRITES, as
 # dispatch://INFRA-1310/artifact/decisions-md decides under "The download gate's reach ends at
@@ -722,11 +720,11 @@
 # dispatch-browser.yaml's visual (round 17). Each was caught by a person reading the job rather
 # than by any check, and the last two stood inside a hole this paragraph names.
 #
-# THE VERBS. A fetch is one of these commands, in command position, after the wrappers below are
-# stripped: curl, wget, apt-get/apt (update, install, download, upgrade, dist-upgrade, source,
-# build-dep), apk (update, add), pip install, uv (sync, add, pip, tool, python, lock, export),
-# bun install, bun add, npm/pnpm/yarn (install, ci, add), playwright install, go mod download,
-# go install, mise (install, use), crane (copy, digest, config, pull, export, manifest, blob),
+# THE VERBS. A fetch is a command verb_of names, in command position, after the wrappers below
+# are stripped: curl, wget, apt-get, apt or aptitude with a subcommand APT_SUBCOMMANDS names, apk
+# with one of APK_SUBCOMMANDS, pip or pip3 install, uv with one of UV_SUBCOMMANDS, bun with one
+# of BUN_SUBCOMMANDS, npm, pnpm or yarn with one of NPM_SUBCOMMANDS, playwright install, go mod
+# download, go install, mise with one of MISE_SUBCOMMANDS, crane with one of CRANE_SUBCOMMANDS,
 # docker pull, pulumi plugin install, and gh — every subcommand of it but the local ones named
 # next.
 #
@@ -736,29 +734,28 @@
 # here: every one of them is the same HTTPS call to the same host as a `gh api`, carrying the
 # same token, and the difference between the two sets was a subcommand name and nothing else. So
 # the set is gh's own command list minus what reaches no network, read off `gh --help` and off
-# each command's own help: GH_LOCAL below — `alias`, `completion`, `config`, `extension`, `help`
-# and `version`, which answer out of the local config, the local extension directory or the
-# binary — and the four local actions of `gh auth`, `git-credential`, `setup-git`, `switch` and
-# `token`, which read the stored token or write the local git config, where `gh auth login`,
-# `logout`, `refresh` and `status` talk to the host. Anything else gh runs is a fetch, so a
-# subcommand nobody has listed is held to the floor rather than passing unseen. A verb is named
-# `gh <subcommand> <action>` for the subcommands that take an action of their own (GH_GROUPS:
-# `gh run list`, `gh release view`), and `gh <subcommand>` for the three that take an argument
-# instead (`gh api repos/owner/name`, `gh browse`, `gh status`). A gh call that writes is a site
-# like a gh call that reads: `gh api --method POST` has always been one here, and the retry is
-# for the transport, which does not know the method.
+# each command's own help: the subcommands GH_LOCAL below names, which answer out of the local
+# config, the local extension directory or the binary, and the actions of `gh auth`
+# GH_AUTH_LOCAL names, which read the stored token or write the local git config, where
+# `gh auth login`, `logout`, `refresh` and `status` talk to the host. Anything else gh runs is a
+# fetch, so a subcommand nobody has listed is held to the floor rather than passing unseen. A
+# verb is named `gh <subcommand> <action>` for the subcommands that take an action of their own
+# (GH_GROUPS: `gh run list`, `gh release view`), and `gh <subcommand>` for those that take an
+# argument instead (`gh api repos/owner/name`, `gh browse`, `gh status`). A gh call that writes
+# is a site like a gh call that reads: `gh api --method POST` has always been one here, and the
+# retry is for the transport, which does not know the method.
 #
-# `mise x`, `mise exec`, `mise up` and
-# `mise upgrade` are deliberately not among the verbs; rule 7 below says why, and what it does
-# with one instead. `bunx`, `npx`, `pnpx`, `sh -c`, `bash -c` and `eval` are transparent: the
-# verb is what they run, so a `bunx playwright install` is the Playwright download and a `bunx
-# biome check` is not a fetch at all (the binary it runs came from the workspace install, which
-# is itself a site).
+# The mise subcommands MISE_SILENT names are deliberately not among the verbs; rule 7 below says
+# why, and what it does with one instead. A package runner RUNNERS names, `sh -c`, `bash -c` and
+# `eval` are transparent: the verb is what they run, so a `bunx playwright install` is the
+# Playwright download and a `bunx biome check` is not a fetch at all (the binary it runs came
+# from the workspace install, which is itself a site).
 #
-# The wrappers stripped before the command is read are an assignment, a shell keyword, `sudo`,
-# `env`, `exec`, `command`, `nice`, `nohup`, `time`, `timeout <seconds>`, `retry_fetch <what>
-# <bound> --` and a Dockerfile's inline `retry <bound> <what>`. The last three are also what says a
-# fetch is retried and bounded. A wrapper and a verb are read by their name whatever directory
+# The wrappers stripped before the command is read are an assignment, a shell keyword, a program
+# PASSTHROUGH names with the options WRAPPER_OPTIONS reads, `timeout <seconds>`,
+# `retry_fetch <what> <bound> --` and a Dockerfile's inline `retry <bound> <what>`. The last three
+# are also what says a fetch is retried and bounded. A wrapper and a verb are read by their name
+# whatever directory
 # names them, `/usr/bin/env` as `env` (program_name; dispatch://INFRA-1545, round 42). A command
 # that answers about itself (`--version`, `--help`, `--usage`) is read as no fetch, whatever its
 # verb. That reading is true of a binary installed whole, which answers out of itself and reads
@@ -834,11 +831,12 @@
 #      37). Another urllib call that reads the network, such as `urllib.request.urlretrieve`,
 #      and Python handed to `python3 -c` as text, are read by no rule, so a read written either
 #      way gets no floor: an accepted limit, named for the next round to close
-#      (dispatch://INFRA-1545, round 38). No rule reads a `.py` or `.jq` program's own downloads
-#      or its runs of other scripts, as PYTHON IS READ IN ONE PLACE ONLY says below.
-#   7. A `mise x`, `mise exec`, `mise up` or `mise upgrade` carries no retry, anywhere: not a
-#      `retry_fetch` call and not a `retry` call in a Dockerfile. None of the four fails when it
-#      cannot resolve the tool. `mise x` warns (`Failed to resolve tool version list for … HTTP
+#      (dispatch://INFRA-1545, round 38). No rule reads the downloads of a program of a suffix
+#      SCRIPT_DATA names, or its runs of other scripts, as PYTHON IS READ IN ONE PLACE ONLY says
+#      below.
+#   7. A mise subcommand MISE_SILENT names carries no retry, anywhere: not a `retry_fetch` call
+#      and not a `retry` call in a Dockerfile. None of them fails when it cannot resolve the
+#      tool. `mise x` warns (`Failed to resolve tool version list for … HTTP
 #      host https://api.github.com:443 is unavailable`) and then runs whatever binary of that
 #      name is already on PATH — a different build, at a version nobody asked for — and exits 0;
 #      `mise up` prints `All tools are up to date` having read nothing, and exits 0. Measured on
@@ -847,12 +845,12 @@
 #      and the cure is structural: retry `mise install <tool>`, which exits 1 on the failed fetch
 #      on that same build, and read the path afterwards from what that install put on disk.
 #
-#      That is also why the four are not fetch verbs above, and why a bare one is on no list. A
+#      That is also why they are not fetch verbs above, and why a bare one is on no list. A
 #      `mise x` that follows the install of the tool it names resolves off disk: with every host
 #      faulting and a decoy binary earlier on PATH it still printed the installed path, silently
 #      and exit 0. A `mise x` that follows no install fetches only as a side effect of the
 #      resolution that install should have done. Holding either to the floor would be demanding
-#      the one shape this rule refuses, so the check reads these four only to refuse a retry.
+#      the one shape this rule refuses, so the check reads them only to refuse a retry.
 #
 #   8. A step that holds a retried fetch carries its own `timeout-minutes`, and that budget
 #      gives strictly more time than the attempts the step allows: 60 x <minutes> is strictly
@@ -926,21 +924,21 @@
 #      `run:`, which the shell rules blank as data, or the text a `python3 -c` is handed — is
 #      read by no rule of this check at all: not rule 8, which puts a figure on none of it, and
 #      not rule 1, so a network read written there gets no floor rather than merely no price.
-#      And no rule reads the downloads of a `.py`, `.jq`, `.go` or `.ts` program under
-#      .github/scripts/, nor
-#      its runs of other scripts, by `subprocess`, `os.system` or a `.sh` path it holds, whether a
-#      step runs it with `python3` or as its own command word. A CI script it runs is still read,
-#      and each of its downloads is held to the floor at the line it is written on, but the time
-#      that script spends is charged to no step's or job's time limit. This check reads shell
-#      text, and those files are programs of other languages: a language boundary INFRA-1310's
-#      architect accepted (dispatch://INFRA-1545, round 39). The set is the twelve `.py` files
-#      and the one `.jq` this tree writes there, and main's two citation scanners,
-#      ci_citations_code.go (the Go standard library alone) and ci_citations_code.ts, which read
-#      the files ci_citations.py hands them and fetch nothing (round 66). Measured at e6de0788,
-#      the one of them that runs a CI shell script, go-test-step-expansion.py, runs
-#      go-tagged-tests.sh, which fetches nothing. A `.py` or `.jq` whose `#!` line names another
-#      interpreter is no such program, and is refused, as WHAT IT READS says. And in the
-#      heredocs rule 6 does read it reads a
+#      And no rule reads the downloads of a program under .github/scripts/ of a suffix
+#      SCRIPT_DATA names, nor its runs of other scripts, by `subprocess`, `os.system` or a `.sh`
+#      path it holds, whether a step runs it with its interpreter or as its own command word. A
+#      CI script it runs is still read, and each of its downloads is held to the floor at the
+#      line it is written on, but the time that script spends is charged to no step's or job's
+#      time limit. This check reads shell text, and those files are programs of other languages:
+#      a language boundary INFRA-1310's architect accepted (dispatch://INFRA-1545, round 39).
+#      Measured at e6de0788, the set was the twelve `.py` files and the one `.jq` the tree wrote
+#      there, and the one of them that runs a CI shell script, go-test-step-expansion.py, runs
+#      go-tagged-tests.sh, which fetches nothing. Main's two citation scanners joined the set in
+#      round 66, ci_citations_code.go (the Go standard library alone) and ci_citations_code.ts,
+#      which read the files ci_citations.py hands them and fetch nothing. A file of SCRIPT_DATA
+#      whose `#!` line names an interpreter OWN_INTERPRETERS does not give its suffix is no such
+#      program, and is refused, as WHAT IT READS says. And in the heredocs rule 6 does read it
+#      reads a
 #      `urlopen` alone, so another urllib call, such as `urllib.request.urlretrieve`, gets no
 #      floor either (dispatch://INFRA-1545, round 38). ci.yaml's ci-images job is this tree's
 #      instance, in its step `Check the package holds every row of .github/ci-images.yaml`: its
@@ -1509,22 +1507,27 @@ WORKFLOWS = Path(".github/workflows")
 ACTIONS = Path(".github/actions")
 SCRIPTS = Path(".github/scripts")
 # The files of .github/scripts/ that are no script, and that this check leaves unread where they
-# sit directly in that directory: its Python programs, its jq filter, and the Go and TypeScript
-# scanners ci_citations.py runs with `go run` and `bun` (main's #5308), but a `.py` or a `.jq`
-# whose `#!` line names another interpreter than its own (OWN_INTERPRETERS), which is refused as
-# the program of that interpreter it is. Every other file under that directory that it does not
-# read, but a top-level harness, a harness's library and Python's bytecode for those programs, is
-# refused where it stands, and a word naming any file there it does not read but a harness, in a
-# form unread_named reads, is refused in a command anywhere but where this tree writes one (the
-# reading set, unread_uses; dispatch://INFRA-1545, rounds 38 and 66).
-SCRIPT_DATA = (".py", ".jq", ".go", ".ts")
-# What a word naming such a file through a name built from data may end as: a top-level `.py`,
-# `.jq`, `.go` or `.ts`, or the bytecode Python writes for one under __pycache__, the unread files
-# the reading set does not refuse where they stand (unread_named; dispatch://INFRA-1545, round 38).
+# sit directly in that directory, by their suffix, each beside the files of the tree it covers:
+# but one whose `#!` line names an interpreter OWN_INTERPRETERS does not give its suffix, which is
+# refused as the program of that interpreter it is. Every other file under that directory that it
+# does not read, but a top-level harness, a harness's library and Python's bytecode for those
+# programs, is refused where it stands, and a word naming any file there it does not read but a
+# harness, in a form unread_named reads, is refused in a command anywhere but where this tree
+# writes one (the reading set, unread_uses; dispatch://INFRA-1545, rounds 38 and 66).
+SCRIPT_DATA = (
+    ".py",  # its Python programs
+    ".jq",  # its jq filters
+    ".go",  # the Go scanner ci_citations.py runs with `go run` (main's #5308)
+    ".ts",  # the TypeScript scanner ci_citations.py runs with `bun` (main's #5308)
+)
+# What a word naming such a file through a name built from data may end as: a suffix of
+# SCRIPT_DATA, a top-level file's, or `.pyc`, the bytecode Python writes for a `.py` under
+# __pycache__, the unread files the reading set does not refuse where they stand (unread_named;
+# dispatch://INFRA-1545, round 38).
 UNREAD_SUFFIXES = SCRIPT_DATA + (".pyc",)
-# What a `.py`, `.jq`, `.go` or `.ts` of .github/scripts/ runs under when it is run as a command
-# word: the interpreter its `#!` line must name (interpreter_of), or the shell runs it, or another
-# program does, with no rule reading what it holds (dispatch://INFRA-1545, rounds 38 and 66).
+# What a file of a suffix SCRIPT_DATA names runs under when it is run as a command word: the
+# interpreter its `#!` line must name (interpreter_of), or the shell runs it, or another program
+# does, with no rule reading what it holds (dispatch://INFRA-1545, rounds 38 and 66).
 OWN_INTERPRETERS = {".py": {"python3", "python"}, ".jq": {"jq"}, ".go": {"go"}, ".ts": {"bun"}}
 
 HELPER = ".github/scripts/ci-retry.sh"
@@ -1559,8 +1562,9 @@ HARNESS_LIBRARY = "-test-lib.sh"
 # `tag=$(.github/scripts/x.sh)`, `. .github/scripts/ci-retry.sh`. Only the name is read, and only
 # a name SCRIPTS holds is followed, SCRIPTS being the `.sh` names directly in .github/scripts/
 # alone, where every other file under that directory is refused by name but the harnesses, their
-# libraries, the `.py` and `.jq` files and Python's bytecode for them (the reading set below;
-# dispatch://INFRA-1545, round 37). The path a call writes in front of the name is one of half a
+# libraries, the top-level files of SCRIPT_DATA's suffixes and Python's bytecode for them (the
+# reading set below; dispatch://INFRA-1545, round 37). The path a call writes in front of the
+# name is one of half a
 # dozen ways of reaching the same file, so reading the name rather than the path is what makes
 # those spellings one script. It is read off the text as written, and off each run's target as
 # bash runs it, its quotes removed, so `.github/scripts/x."sh"` is x.sh too (run_names;
@@ -1716,43 +1720,45 @@ def ansi_c_escape(text: str, i: int) -> tuple[str, int]:
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
                "stdbuf", "setsid", "doas", "xvfb-run", "ci_log_guard", "ci_log_guard_stderr",
                "gh_wait_reset"}
-# The options of a PASSTHROUGH wrapper this check reads, each with the number of words after it
-# that it takes, or RUNS_NOTHING where the wrapper then runs no command: `command -v curl` prints
-# where curl is found. These are the forms the tree writes behind a wrapper, `command -v` in its
-# actions, scripts and Dockerfiles, `sudo -u <user>` where dispatch-unit-repeat.yaml runs psql as
-# the server's postgres account, `setsid --wait` and `env --default-signal=INT,QUIT` used by
-# harness-pool.sh's start and run, `env -u <name>` in the two `go env` reads of worker.Dockerfile,
-# and the three a wrapper is most often written with, `env -i`, `nice -n <n>` and `sudo -E`. Any
-# other option after a wrapper, `env -S`, which splits a string this check does not read, `nice
-# --adjustment=5` or `sudo --user=<user>`, a long form no entry reads, among them, is refused by
-# name wherever it is written (odd_command): until round 38 the word after a wrapper was read as
-# the command, so `nice -n 10 curl …` was a run of a program named `-n`, and its fetch, or the
-# script it ran, was read as nothing (dispatch://INFRA-1545, round 38).
-RUNS_NOTHING = -1
+# The options of a PASSTHROUGH wrapper this check reads, each with the words after it that it
+# takes, as WRAPPER_OPTION's refusal names them, or RUNS_NOTHING where the wrapper then runs no
+# command: `command -v curl` prints where curl is found. Each entry is a form the tree writes
+# behind a wrapper, and the comment above it says where. Any other option after a wrapper,
+# `env -S`, which splits a string this check does not read, `nice --adjustment=5` or
+# `sudo --user=<user>`, a long form no entry reads, among them, is refused by name wherever it is
+# written (odd_command): until round 38 the word after a wrapper was read as the command, so
+# `nice -n 10 curl …` was a run of a program named `-n`, and its fetch, or the script it ran, was
+# read as nothing (dispatch://INFRA-1545, round 38).
+RUNS_NOTHING = None
 WRAPPER_OPTIONS = {
+    # `command -v`, which the tree's actions, scripts and Dockerfiles write, and `command -V`,
+    # which runs no command either.
     "command": {"-v": RUNS_NOTHING, "-V": RUNS_NOTHING},
-    # `--default-signal=INT,QUIT` since this branch's merge of main's #5176: .github/scripts/
-    # harness-pool.sh's recorder runs each harness behind it, and the option sets SIGINT and
-    # SIGQUIT back to their defaults for the command after it and takes no word of its own, so
-    # that command is the one that runs. The word is read as written, its signals included, so
-    # `--default-signal` with any other list, or with none, is still refused by name
-    # (dispatch://INFRA-1545, round 65).
-    "env": {"-i": 0, "-u": 1, "--default-signal=INT,QUIT": 0},
-    "nice": {"-n": 1},
-    # `-u <user>` since this branch's merge of main's #4267. That merge added the step
+    # `env -i`, one of the three options a wrapper is most often written with; `env -u <name>`,
+    # in the two `go env` reads of worker.Dockerfile; and `--default-signal=INT,QUIT` since this
+    # branch's merge of main's #5176: .github/scripts/harness-pool.sh's recorder runs each
+    # harness behind it, and the option sets SIGINT and SIGQUIT back to their defaults for the
+    # command after it and takes no word of its own, so that command is the one that runs. The
+    # word is read as written, its signals included, so `--default-signal` with any other list,
+    # or with none, is still refused by name (dispatch://INFRA-1545, round 65).
+    "env": {"-i": (), "-u": ("<name>",), "--default-signal=INT,QUIT": ()},
+    # `nice -n <n>`, the second of those three.
+    "nice": {"-n": ("<n>",)},
+    # `sudo -E`, the third of those three; and `-u <user>` since this branch's merge of main's
+    # #4267. That merge added the step
     # `Start PostgreSQL for the harness rows that need a database` to
     # .github/workflows/dispatch-unit-repeat.yaml, and the step runs `sudo -u postgres psql …`,
     # which the gate refused by name.
-    "sudo": {"-E": 0, "-u": 1},
+    "sudo": {"-E": (), "-u": ("<user>",)},
     # `--stderr <file>`, where gh_wait_reset writes the stderr of the run it ended on: the form
     # release-push.sh's release view and check-daemon-api-contract.sh's reads write
     # (dispatch://INFRA-1545, round 55).
-    "gh_wait_reset": {"--stderr": 1},
+    "gh_wait_reset": {"--stderr": ("<file>",)},
     # `--wait` since this branch's merge of main's #5176: harness-pool.sh's start runs the
     # pool's recorder behind it, and the recorder runs each harness behind it. The option keeps
     # setsid's own process until the command after it ends and takes no word of its own, so that
     # command is the one that runs (dispatch://INFRA-1545, round 65).
-    "setsid": {"--wait": 0},
+    "setsid": {"--wait": ()},
 }
 # Transparent, but the command they run is inside the script string behind `-c`, which rule 8
 # reads in one form, `bash -c '<text>'` (sites_of_command). The one list of shells this check
@@ -1791,10 +1797,10 @@ APK_SUBCOMMANDS = {"update", "add"}
 # a stated limit (the worker image's `RUN` that runs `pnpm --version`, `yarn --version`,
 # `yarnpkg --version` and `pnpx --help` under `packages/daemon/docker/worker.Dockerfile#retry`).
 INFORMATIONAL = {"--version", "--help", "--usage"}
-# The mise subcommands that fetch and say so: both exit 1 when the fetch fails.
+# The mise subcommands that fetch and say so: each exits 1 when the fetch fails.
 MISE_SUBCOMMANDS = {"install", "use"}
-# Rule 7's four: each exits 0 when it cannot resolve the tool, so none of them is a fetch verb
-# and a retry around one protects nothing. The check reads them only to refuse that retry.
+# Rule 7's subcommands: each exits 0 when it cannot resolve the tool, so none of them is a fetch
+# verb, and a retry around one protects nothing. The check reads them only to refuse that retry.
 MISE_SILENT = {"x", "exec", "up", "upgrade"}
 CRANE_SUBCOMMANDS = {"copy", "cp", "digest", "config", "pull", "export", "manifest", "blob"}
 UV_SUBCOMMANDS = {"sync", "add", "pip", "tool", "python", "lock", "export"}
@@ -1802,11 +1808,10 @@ NPM_SUBCOMMANDS = {"install", "ci", "i", "install-test", "add"}
 BUN_SUBCOMMANDS = {"install", "add", "i"}
 # gh. Every subcommand of it but these reaches api.github.com over HTTPS, so the table is written
 # the other way round from the rest: what is named here is what fetches nothing, and anything
-# else gh runs is a fetch. GH_LOCAL answers out of the local config, the local extension
-# directory or the binary itself: `gh config get`, `gh alias list`, `gh completion`, `gh
-# extension list`, `gh help` and `gh version`. `gh auth` is half of each — `git-credential`,
-# `setup-git`, `switch` and `token` read the stored token or write the local git config, while
-# `login`, `logout`, `refresh` and `status` talk to the host — so its local actions are named
+# else gh runs is a fetch. GH_LOCAL's subcommands answer out of the local config, the local
+# extension directory or the binary itself, as `gh config get` and `gh version` do. `gh auth` is
+# half of each: GH_AUTH_LOCAL's actions read the stored token or write the local git config,
+# while `login`, `logout`, `refresh` and `status` talk to the host, so its local actions are named
 # apart. GH_GROUPS is the set of subcommands that take an action word of their own, which is
 # gh's own grouping (`gh run list`, `gh release view`, `gh cache delete`): a verb of one of them
 # is named with that action, and `gh api`, `gh browse` and `gh status`, which take an argument
@@ -1832,6 +1837,27 @@ problems: list[str] = []
 
 def problem(path: str, line: int, message: str) -> None:
     problems.append(f"::error file={path},line={line}::{message}")
+
+
+def series(items: list[str], joiner: str) -> str:
+    """The items as a sentence lists them, `a, b and c` where `joiner` is `and`. A refusal that
+    names the members of one of this file's lists builds them with this from the list itself, so
+    a member added to the list is named in the refusal too: until review round 39 of
+    dispatch://INFRA-1545 the refusal of a `.go` or a `.ts` whose first line names another
+    interpreter told it to keep a Python program or a jq filter under the first line of its own,
+    a sentence written when SCRIPT_DATA held those two suffixes alone."""
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + f" {joiner} " + items[-1]
+
+
+def ticked(words: list[str], joiner: str) -> str:
+    """The words, each in backticks, as series lists them."""
+    return series([f"`{word}`" for word in words], joiner)
+
+
+def interpreters_of(suffix: str) -> str:
+    """The interpreters OWN_INTERPRETERS gives a suffix of SCRIPT_DATA, as a refusal names them,
+    each in backticks and the last after `or`."""
+    return ticked(sorted(OWN_INTERPRETERS[suffix], reverse=True), "or")
 
 
 # ---------------------------------------------------------------- reading the shell
@@ -3415,13 +3441,13 @@ TIMEOUT_CLUSTER = (
 # charged to no budget. The tree writes neither.
 WRAPPER_OPTION = (
     "runs `{wrapper}` with `{option}`, an option of it this check does not read: it reads "
-    "`env -i`, `env -u <name>`, `env --default-signal=INT,QUIT`, `nice -n <n>`, `sudo -E`, "
-    "`sudo -u <user>`, `setsid --wait`, `command -v` and "
-    "`gh_wait_reset --stderr <file>` alone, and after any "
-    "other option reads no command, so a fetch or a script run there is held to no floor and "
-    "charged to no budget. Write the wrapper with none of its options but those, and set a "
-    "variable the command needs as an assignment before it, `NAME=value curl …`, rather than "
-    "through `env -S` or another option")
+    + ticked([" ".join([wrapper, option, *(taken or ())])
+              for wrapper, options in WRAPPER_OPTIONS.items()
+              for option, taken in options.items()], "and")
+    + " alone, and after any other option reads no command, so a fetch or a script run there is "
+    "held to no floor and charged to no budget. Write the wrapper with none of its options but "
+    "those, and set a variable the command needs as an assignment before it, "
+    "`NAME=value curl …`, rather than through `env -S` or another option")
 BUSYBOX_RUN = (
     "runs `{program}`, a program named by an argument of `busybox`, a form this check does "
     "not read: it reads no fetch and no run of a script there, so a `busybox wget` or a `busybox "
@@ -3705,12 +3731,12 @@ def wrapper_option(wrapper: str, rest: list[str]) -> str | None:
     runs none; an option this check does not read is refused by name (odd_command)."""
     read = WRAPPER_OPTIONS.get(wrapper, {})
     while rest and rest[0].startswith("-"):
-        taken = read.get(rest[0])
-        if taken is None:
+        if rest[0] not in read:
             return rest[0]
-        if taken == RUNS_NOTHING:
+        taken = read[rest[0]]
+        if taken is RUNS_NOTHING:
             return None
-        del rest[:1 + taken]
+        del rest[:1 + len(taken)]
     return None
 
 
@@ -3885,9 +3911,9 @@ def subcommand(words: list[str]) -> str | None:
 def gh_verb_of(rest: list[str]) -> str | None:
     """The verb a `gh` call runs, named `gh <subcommand>` or `gh <subcommand> <action>`, or None
     where that subcommand reads and writes nothing over the network. Every gh subcommand but
-    GH_LOCAL and the four local `gh auth` actions reaches api.github.com over HTTPS, which is the
-    read `gh api` already makes, so the default here is that a gh call is a fetch: a subcommand
-    nobody listed is held to the floor rather than passing unseen."""
+    GH_LOCAL's and the `gh auth` actions GH_AUTH_LOCAL names reaches api.github.com over HTTPS,
+    which is the read `gh api` already makes, so the default here is that a gh call is a fetch:
+    a subcommand nobody listed is held to the floor rather than passing unseen."""
     words = [word for word in rest if not word.startswith("-")]
     sub = words[0] if words else None
     if sub is None or sub in GH_LOCAL:
@@ -5845,20 +5871,20 @@ scripts = [
 # a shell program would be one more model to fall short, so every file under that directory, at
 # any depth, is refused by name at its line 1, whatever its name, its first line or its text, but
 # the files this check reads, a top-level harness, a harness's top-level `-test-lib.sh` library,
-# and a top-level `.py` or `.jq`, the
-# directory's Python programs and its jq filter. Python's bytecode for those, a `.pyc` in the
-# `__pycache__` directly under .github/scripts/, is left alone too: every gate, harness and step
-# importing them sets PYTHONDONTWRITEBYTECODE, but go-test-step-expansion.py, the by-hand tool
-# AGENTS.md lists, run as `python3 .github/scripts/go-test-step-expansion.py`, sets none, and
-# its import of ci_filter_coverage.py and workflow_paths.py leaves two such files there; a
+# and a top-level file of a suffix SCRIPT_DATA names. Python's bytecode for a `.py`, a `.pyc` in
+# the `__pycache__` directly under .github/scripts/, is left alone too: every gate, harness and
+# step importing a `.py` sets PYTHONDONTWRITEBYTECODE, but go-test-step-expansion.py, the by-hand
+# tool AGENTS.md lists, run as `python3 .github/scripts/go-test-step-expansion.py`, sets none,
+# and its import of ci_filter_coverage.py and workflow_paths.py leaves two such files there; a
 # documented run must not turn a dev box red. Any other file under a `__pycache__` is refused
-# like any file. A top-level `.py` whose `#!` line names any program but `python3` or `python`,
-# and a `.jq` whose `#!` line names any but `jq`, by any path or through `env` with or without
+# like any file. A top-level file of SCRIPT_DATA whose `#!` line names any program but an
+# interpreter OWN_INTERPRETERS gives its suffix, by any path or through `env` with or without
 # options (interpreter_of), is refused by name at its line 1 too, whatever runs it: run as a
 # command word, it runs as that program's text, which no rule reads. And so is a `.pyc` there
-# that opens `#!`, which no bytecode Python writes does. Until round 38 the first two were
-# refused only where the `#!` line named a shell this check listed, so `#!/bin/busybox sh` and
-# `#!/usr/bin/env mksh` passed, and the third was not refused (dispatch://INFRA-1545, round 38).
+# that opens `#!`, which no bytecode Python writes does. Until round 38 the first was refused
+# only where the `#!` line named a shell this check listed, so `#!/bin/busybox sh` and
+# `#!/usr/bin/env mksh` passed in a `.py`, and the second was not refused
+# (dispatch://INFRA-1545, round 38).
 # Where a file of that directory this check does not read as a script may be written in a
 # command is unread_uses's question. At 172e244f the tree holds no file this refuses: of its 101
 # files under .github/scripts/, 89 are top-level `.sh`, 11 are `.py`, four of them opening
@@ -5905,28 +5931,27 @@ for path in files:
         continue
     if path in script_data:
         first, program = interpreter_of(path)
-        own = OWN_INTERPRETERS[Path(path).suffix]
-        if program is not None and program not in own:
+        suffix = Path(path).suffix
+        if program is not None and program not in OWN_INTERPRETERS[suffix]:
             problem(path, 1,
-                    f"{path} is a `{Path(path).suffix}` directly in .github/scripts/ whose first "
-                    f"line, `{first}`, runs `{program}`, not "
-                    + " or ".join(f"`{name}`" for name in sorted(own, reverse=True)) + ": "
-                    "this check reads no such file as a program of another interpreter, whatever "
-                    "runs it, so none of its fetches is held to the floor and a step that runs it "
-                    "is charged nothing for it. Move a shell program to .github/scripts/<name>.sh, "
-                    "its name lowercase letters, digits and `-`, and keep a Python program or a jq "
-                    "filter under the first line of its own interpreter (dispatch://INFRA-1545, "
-                    "round 38).")
+                    f"{path} is a `{suffix}` directly in .github/scripts/ whose first line, "
+                    f"`{first}`, runs `{program}`, not {interpreters_of(suffix)}: this check "
+                    "reads no such file as a program of another interpreter, whatever runs it, so "
+                    "none of its fetches is held to the floor and a step that runs it is charged "
+                    "nothing for it. Move a shell program to .github/scripts/<name>.sh, its name "
+                    f"lowercase letters, digits and `-`, and keep a `{suffix}` program under the "
+                    f"first line of its own interpreter, {interpreters_of(suffix)} "
+                    "(dispatch://INFRA-1545, round 38).")
         continue
     problem(path, 1,
             f"{path} is a file under .github/scripts/ this check does not read, whatever it "
             "holds: it reads the `.sh` scripts directly in .github/scripts/ and leaves that "
-            "directory's `.py`, `.jq`, `.go`, `.ts` and `*.test.sh` files alone, so a file anywhere else "
-            "there is neither read for its fetches, which no floor then holds, nor charged where "
-            "a step runs or sources it. Move a shell script to .github/scripts/<name>.sh, its "
-            "name lowercase letters, digits and `-` (a `*.test.sh` harness directly into "
-            ".github/scripts/), and anything else out of .github/scripts/ "
-            "(dispatch://INFRA-1545, round 37).")
+            "directory's " + ticked([*SCRIPT_DATA, f"*{TEST_HARNESS}"], "and") + " files "
+            "alone, so a file anywhere else there is neither read for its fetches, which no "
+            "floor then holds, nor charged where a step runs or sources it. Move a shell script "
+            "to .github/scripts/<name>.sh, its name lowercase letters, digits and `-` (a "
+            "`*.test.sh` harness directly into .github/scripts/), and anything else out of "
+            ".github/scripts/ (dispatch://INFRA-1545, round 37).")
 # The files under .github/scripts/ a word in a command is refused for naming, by a literal path
 # or by a name a variable or a missing directory leaves, anywhere but where this tree writes one
 # (unread_uses): every file there that `scripts` does not hold, at any depth, but a `*.test.sh`
@@ -5958,8 +5983,8 @@ for path, why in hidden:
             f"tree does not enter, since {why}, so no file in it is read for its fetches, held "
             "to the floor or refused as a file this check does not read. Replace it with the "
             "files it holds, under that rule: a shell script as .github/scripts/<name>.sh, a "
-            "`.py` or a `.jq` directly in .github/scripts/, and anything else out of "
-            ".github/scripts/ (dispatch://INFRA-1545, round 37).")
+            + ticked(list(SCRIPT_DATA), "or") + " directly in .github/scripts/, and anything "
+            "else out of .github/scripts/ (dispatch://INFRA-1545, round 37).")
 for dockerfile in DOCKERFILES:
     if dockerfile not in files:
         problem(SELF, 1,
@@ -7176,9 +7201,9 @@ for path, line, who, occurrence in unread_calls:
             "sources a script that does. So whatever runs this line may wait for every attempt "
             "that script makes, and rule 8 can put no figure on that wait: it is not charged "
             f"to any budget, and this refusal stands in its place. {cure}. A path a step only "
-            "prints is a path in a comment or an argument of `echo` or `grep` whose output no "
-            "shell runs, which this check charges nothing and refuses nothing "
-            "(dispatch://INFRA-1545, round 37).")
+            "prints is a path in a comment or an argument of "
+            + ticked(sorted(NONCALL_COMMANDS), "or") + " whose output no shell runs, which "
+            "this check charges nothing and refuses nothing (dispatch://INFRA-1545, round 37).")
 
 
 # A script that reaches itself, running or sourcing a script that runs or sources it again, there
@@ -7367,6 +7392,17 @@ UNNAMED_CALL_CURE = ("Hand `{name}` the script or the command it runs by its lit
 # gets the rewrite that passes (dispatch://INFRA-1545, round 37).
 HANDED_ON_RUN = ("which runs words its callers hand it or that it sets itself, and this check "
                  "follows neither to the program they name")
+# The programs whose arguments may name a file under .github/scripts/ this check does not read as
+# a script, each of which runs no file it names: NONCALL_COMMANDS, which print or search text no
+# shell runs, and each below, beside what it does with the name (unread_place;
+# dispatch://INFRA-1545, rounds 38 and 66). It stands before UNREAD_USE, which names each of them.
+UNREAD_ARGUMENTS = NONCALL_COMMANDS | {
+    "printf",  # prints text no shell runs
+    "pkill",  # matches a pattern against running processes, which reads no file
+    # reads a Go file's text and runs none of it, as lint's formatting step reads main's Go
+    # scanner (round 66)
+    "gofmt",
+}
 # A word naming a file under .github/scripts/ this check does not read as a script, by its literal
 # path, by its name or by a name built from data that ends as its does (unread_named), written in
 # a command anywhere but where this tree writes one (unread_uses; dispatch://INFRA-1545, round 38).
@@ -7385,22 +7421,18 @@ HANDED_ON_RUN = ("which runs words its callers hand it or that it sets itself, a
 UNREAD_USE = (
     "writes `{word}` {where}, and it {names}, a file under .github/scripts/ this check does not "
     "read as a script. Such a file appears in a command only where this tree writes one: as what "
-    "`python3` or `python` runs (a `.py`), as the filter `jq -f` reads (a `.jq`), as a command "
-    "word whose `#!` line names that interpreter, as an argument of `echo`, `printf` or `grep`, "
-    "whose text no shell runs, or of `gofmt`, which reads a Go file's text and runs none of it, "
-    "or as the pattern `pkill` matches against running processes. "
-    "Anywhere else it may run as shell text, be read into a shell or be copied to a file that "
-    "runs, and no rule reads what it holds. {cure}")
+    + interpreters_of(".py") + " runs (a `.py`), as the filter `jq -f` reads (a `.jq`), as a "
+    "command word whose `#!` line names its own interpreter ("
+    + series([f"{interpreters_of(suffix)} for a `{suffix}`" for suffix in OWN_INTERPRETERS], "and")
+    + "), or as an argument of " + ticked(sorted(UNREAD_ARGUMENTS), "or")
+    + ", none of which runs a file it names. Anywhere else it may run as shell text, be read "
+    "into a shell or be copied to a file that runs, and no rule reads what it holds. {cure}")
 UNREAD_CURE = ("Run a Python program with `python3 .github/scripts/<name>.py …` and read a jq "
-               "filter with `jq -f .github/scripts/<name>.jq …`; a shell script goes in "
-               ".github/scripts/<name>.sh, its name lowercase letters, digits and `-`, and runs "
-               "by that path; a `-test-lib.sh` there is a harness's library, which only a "
+               "filter with `jq -f .github/scripts/<name>.jq …`, and run another program there "
+               "by its path, under a first line naming its own interpreter; a shell script goes "
+               "in .github/scripts/<name>.sh, its name lowercase letters, digits and `-`, and "
+               "runs by that path; a `-test-lib.sh` there is a harness's library, which only a "
                "`.test.sh` harness sources (HARNESS_LIBRARY)")
-# The programs whose arguments may name such a file: `echo`, `printf` and `grep` print or search
-# text no shell runs, `pkill` matches a pattern against running processes, which reads no file,
-# and `gofmt` reads a Go file's text and runs none of it, as lint's formatting step reads main's
-# Go scanner (unread_place; dispatch://INFRA-1545, rounds 38 and 66).
-UNREAD_ARGUMENTS = NONCALL_COMMANDS | {"printf", "pkill", "gofmt"}
 # unseen()'s three reasons, each written once, so that the reason a run is refused with and the
 # key its cure is found under cannot drift apart. A script named with no directory is found by
 # the shell that runs it: `sh x.sh` (dash) through the working directory alone, `bash x.sh`
@@ -7966,10 +7998,11 @@ def unread_place(words: list[str], at: int | None, start: int, files: list[str],
     """Where the word at `at` of a command's words, naming `files` or maybe one ending as
     `maybe` does, is written, where that is no place this tree writes such a file, or None
     (unread_uses; dispatch://INFRA-1545, round 38). `start` is where the command reduce_words
-    reads begins, and `at` None a file a redirect names. The places: an argument of `python3` or
-    `python`, a `.py` or a `.pyc`; the filter `jq -f` or `--from-file` reads, a `.jq`; a command
-    word, a `.py` or a `.jq` whose `#!` line names its own interpreter; and an argument of a
-    program of UNREAD_ARGUMENTS, which runs no file it names. Every other place is named."""
+    reads begins, and `at` None a file a redirect names. The places: an argument of an interpreter
+    OWN_INTERPRETERS gives `.py`, a `.py` or a `.pyc`; the filter `jq -f` or `--from-file` reads, a
+    `.jq`; a command word, a file whose `#!` line names an interpreter OWN_INTERPRETERS gives its
+    suffix; and an argument of a program of UNREAD_ARGUMENTS, which runs no file it names. Every
+    other place is named."""
     head = PROGRAM.sub("", words[start]).rsplit("/", 1)[-1] if start < len(words) else ""
     suffixes = {Path(file).suffix for file in files} or {Path(maybe or "").suffix}
     if at is None:

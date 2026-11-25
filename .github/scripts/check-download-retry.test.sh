@@ -14610,10 +14610,11 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # W10 and W11. W1, W2, W6 and W9 above share one cure: the gate reads the `.sh` scripts directly
 # in .github/scripts/ and no other file there, so every other file under that directory, at any
 # depth, is refused by name at its line 1, whatever its name, its first line or its text, but a
-# top-level harness, `.py` or `.jq`, and the bytecode Python writes for those `.py` files into
-# .github/scripts/__pycache__/ (dispatch://INFRA-1545, round 37). W10's refused files fetch
-# nothing and no step runs them, so the file is what is refused, and not a fetch or a run:
-# a `.zsh` script, a file with no suffix and no shebang, a `.txt` file, a `.sh` in a
+# top-level harness, a top-level file of a suffix
+# `.github/scripts/check-download-retry.sh#SCRIPT_DATA` names, and the bytecode Python writes for
+# a `.py` into .github/scripts/__pycache__/ (dispatch://INFRA-1545, round 37). W10's refused
+# files fetch nothing and no step runs them, so the file is what is refused, and not a fetch or a
+# run: a `.zsh` script, a file with no suffix and no shebang, a `.txt` file, a `.sh` in a
 # subdirectory and a `.txt` in the `__pycache__`, beside a top-level `.py` and `.jq` that pass.
 # W11 holds only what is left alone.
 echo "case: r37 W10 a shell program under .github/scripts that this check does not read is refused by name whatever it holds"
@@ -14654,12 +14655,17 @@ check "refuses nothing" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
 # names the Go one as an argument of `gofmt` (dispatch://INFRA-1545, round 66). A top-level `.go`
 # and `.ts` pass where they stand, and so does `gofmt -l` given the `.go`, since gofmt reads a
 # file's text and runs none of it. A shell given either file runs it as shell text and is refused
-# at the run, and a `.go` whose first line runs a shell is refused at its line 1.
+# at the run. A `.go` and a `.ts` whose first line runs a shell are each refused at its line 1 and
+# told its own interpreter, and the `.ts` is refused again where a step runs it as its command
+# word. Until review round 39 of dispatch://INFRA-1545 no case wrote a `.ts` with a `#!` line, so
+# the gate passed every case with its `.ts` entry of OWN_INTERPRETERS set to `sh`.
 echo "case: r66 W17 a top-level .go and .ts under .github/scripts pass, gofmt may name the .go, and a shell given either is refused"
 root=$(fixture r66-w17-scanners)
 printf '// a scanner\npackage main\n\nfunc main() {}\n' > "$root/.github/scripts/r66-scan.go"
 printf '// a scanner\nconsole.log("quiet");\n' > "$root/.github/scripts/r66-scan.ts"
 printf '#!/bin/sh\ncurl -fsSL -o b https://example.com/b\n' > "$root/.github/scripts/r66-shell.go"
+printf '#!/bin/sh\ncurl -fsSL -o b https://example.com/b\n' > "$root/.github/scripts/r66-shell.ts"
+chmod +x "$root/.github/scripts/r66-shell.ts"
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
 name: Case
 on: [push]
@@ -14675,6 +14681,8 @@ jobs:
         run: bash .github/scripts/r66-scan.go
       - name: Source the TypeScript scanner
         run: . .github/scripts/r66-scan.ts
+      - name: Run the TypeScript program whose first line runs a shell
+        run: .github/scripts/r66-shell.ts
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
@@ -14689,7 +14697,87 @@ check "refuses . given the .ts, at its run" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::step 'Source the TypeScript scanner' of job 'build' writes ..github/scripts/r66-scan.ts. as an argument of .\.., and it names .github/scripts/r66-scan.ts, a file under .github/scripts/ this check does not read as a script")"
 check "refuses the .go whose first line runs a shell, at its line 1" \
   "$(contains "$out" '::error file=.github/scripts/r66-shell.go,line=1::.github/scripts/r66-shell.go is a `.go` directly in .github/scripts/ whose first line, `#!/bin/sh`, runs `sh`, not `go`')"
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+check "refuses the .ts whose first line runs a shell, at its line 1" \
+  "$(contains "$out" '::error file=.github/scripts/r66-shell.ts,line=1::.github/scripts/r66-shell.ts is a `.ts` directly in .github/scripts/ whose first line, `#!/bin/sh`, runs `sh`, not `bun`')"
+for own in "go	go" "ts	bun"; do
+  IFS=$'\t' read -r suffix interpreter <<<"$own"
+  check "tells the .$suffix whose first line runs a shell to keep it under $interpreter's" \
+    "$(contains "$out" "::error file=.github/scripts/r66-shell.$suffix,line=1::.*keep a .\.$suffix. program under the first line of its own interpreter, .$interpreter.")"
+done
+check "refuses the .ts whose first line runs a shell where a step runs it as its command word" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Run the TypeScript program whose first line runs a shell' of job 'build' writes ..github/scripts/r66-shell.ts. as a command word that does not open with a .#!. line naming its own interpreter, and it names .github/scripts/r66-shell.ts, a file under .github/scripts/ this check does not read as a script")"
+check "tells that run the interpreter a .ts names, bun, and to run such a program under its own" \
+  "$(contains "$out" "line=16::.*as a command word whose .#!. line names its own interpreter (.*.bun. for a .\.ts.).*and run another program there by its path, under a first line naming its own interpreter")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+# Review round 39 of dispatch://INFRA-1545. Each refusal that names the members of one of the
+# gate's lists builds them from the list, so a member added to the list is named in the refusal
+# too. Until that round the refusal of a `.go` or a `.ts` whose first line runs another program
+# told it to keep a Python program or a jq filter under its own interpreter, a sentence written
+# while SCRIPT_DATA held `.py` and `.jq` alone. The fixture runs a copy of the gate with one
+# member added to each list: the suffix `.zz` to SCRIPT_DATA, with `zzrun` its interpreter in
+# OWN_INTERPRETERS, the option `zzwrap --zz <zzword>` to WRAPPER_OPTIONS, the program `zzprint`
+# to UNREAD_ARGUMENTS and the program `zzsay` to NONCALL_COMMANDS. Each refusal then names the
+# member added to its list: the refusal of a `.zz` whose first line runs a shell, of a file the
+# gate does not read, of a directory its walk skips, of a `.py` handed to bash, of an option of a
+# wrapper the gate does not read, and of a script that fetches named where the gate reads no call.
+echo "case: review r39 each refusal that names a list's members names a member added to that list"
+root=$(fixture r39-listed-members)
+copy="$root/.github/scripts/check-download-retry.sh"
+rm "$copy"
+sed -e 's/^SCRIPT_DATA = ($/&\n    ".zz",/' \
+  -e 's/^OWN_INTERPRETERS = {/&".zz": {"zzrun"}, /' \
+  -e 's/^WRAPPER_OPTIONS = {$/&\n    "zzwrap": {"--zz": ("<zzword>",)},/' \
+  -e 's/^UNREAD_ARGUMENTS = NONCALL_COMMANDS | {$/&\n    "zzprint",/' \
+  -e 's/^NONCALL_COMMANDS = {/&"zzsay", /' "$check_script" > "$copy"
+chmod +x "$copy"
+check "the copy of the gate carries the five added members" \
+  "$(is "$(grep -c '"\.zz"\|"zz[a-z]*"' "$copy")" 5)"
+printf '#!/bin/sh\necho quiet\n' > "$root/.github/scripts/r39-shell.zz"
+printf 'quiet\n' > "$root/.github/scripts/r39-notes.txt"
+mkdir -p "$root/.github/scripts/vendor"
+printf 'quiet\n' > "$root/.github/scripts/vendor/r39-notes.txt"
+printf '#!/usr/bin/env python3\nprint("quiet")\n' > "$root/.github/scripts/r39-tool.py"
+cat > "$root/.github/scripts/r39-fetch.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+chmod +x "$root/.github/scripts/r39-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the Python program with bash
+        run: bash .github/scripts/r39-tool.py
+      - name: Run curl through env -S
+        run: env -S 'curl -fsSL -o b https://example.com/releases/download/v1/b'
+      - name: Run the fetching script through eval
+        timeout-minutes: 1
+        run: eval .github/scripts/r39-fetch.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "names zzrun, the added interpreter, twice to the .zz whose first line runs a shell" \
+  "$(contains "$out" '::error file=.github/scripts/r39-shell.zz,line=1::.*whose first line, `#!/bin/sh`, runs `sh`, not `zzrun`: .*keep a `\.zz` program under the first line of its own interpreter, `zzrun`')"
+check "names .zz among the files the gate leaves alone, to a file it does not read" \
+  "$(contains "$out" "::error file=.github/scripts/r39-notes.txt,line=1::.*leaves that directory's .*\.zz.* and .\*\.test\.sh. files alone")"
+check "names .zz among the files a directory its walk skips may hold directly in .github/scripts/" \
+  "$(contains "$out" "::error file=.github/scripts/vendor,line=1::.*a shell script as .github/scripts/<name>.sh, a .*\.zz.* directly in .github/scripts/")"
+check "names zzrun for a .zz among the interpreters a command word's first line may name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::.*its own interpreter (.*.zzrun. for a .\.zz.*), or as an argument of ")"
+check "names zzprint among the programs whose arguments may name a file the gate does not read" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::.*), or as an argument of .*.zzprint.[^.]*, none of which runs a file it names")"
+check "names zzwrap --zz <zzword> among the wrapper options the gate reads" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::.*runs .env. with .-S., an option of it this check does not read: it reads .*.zzwrap --zz <zzword>..* alone")"
+check "names zzsay among the programs whose arguments only print a path" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=13::.*an argument of .*.zzsay. whose output no shell runs")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
 
 # W12. The two routes past that rule to shell text the gate does not read (dispatch://INFRA-1545,
 # round 37). A shell, `.` or `source` handed a top-level `.py` or `.jq` runs it as shell text,
@@ -14844,9 +14932,10 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 
 # W14 is the verb reader's wrappers (P11, P12): the words after a wrapper the gate drops were read
 # as the command, so `nice -n 10 curl` ran a command named `-n`, and `busybox wget` a command
-# named busybox, and neither fetch was read. The options the gate reads, `env -i`, `env -u
-# <name>`, `nice -n <n>`, `sudo -E` and `sudo -u <user>`, pass through to the command, so a bare
-# fetch behind one is refused at the floor, a `psql` behind `sudo -u postgres`, which
+# named busybox, and neither fetch was read. The options the gate reads, those
+# `.github/scripts/check-download-retry.sh#WRAPPER_OPTIONS` names, pass through to the command,
+# so a bare fetch behind `nice -n <n>`, `env -u <name>`, `sudo -E` or `sudo -u <user>` is refused
+# at the floor, a `psql` behind `sudo -u postgres`, which
 # dispatch-unit-repeat.yaml writes since this branch's merge of main's #4267, fetches nothing and
 # passes, a `retry_fetch` behind `env -i` is the helper behind a wrapper, which
 # fetches nothing, and `env -i` inside the helper is a retried fetch that passes. Any other option
@@ -15454,10 +15543,11 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # of shells missed, run as a command word (S8 `#!/bin/busybox sh`, S9 `#!/usr/bin/env mksh`); a
 # `.pyc` that opens `#!/usr/bin/env bash`, run as a command word (S10); the redirect that hands
 # bash its program (S12); and a copy that runs (S13). So a file under .github/scripts/ this check
-# does not read as a script may appear in a command only where the tree writes one, each of
-# which passes beside them: what `python3` runs, the filter `jq -f` or `--from-file` reads, a
-# command word whose `#!` line names its own interpreter, an argument of `echo`, `printf` or
-# `grep`, and the pattern `pkill -f` matches, the one form the tree writes beyond those.
+# does not read as a script may appear in a command only in the places
+# `.github/scripts/check-download-retry.sh#unread_place` allows, and this case writes these of
+# them beside the refusals, each of which passes: what `python3` runs, the filter `jq -f` or
+# `--from-file` reads, a command word whose `#!` line names its own interpreter, an argument of
+# `echo`, `printf` or `grep`, and the pattern `pkill -f` matches.
 echo "case: r37 W16 a file under .github/scripts that this check does not read appears in a command only where the tree writes it"
 root=$(fixture r37-w16-allow-list)
 mkdir -p "$root/.github/scripts/__pycache__"
