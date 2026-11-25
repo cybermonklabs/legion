@@ -7,9 +7,6 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     # packages/contracts/src is no read of this gate's: which of its modules this job compiles is
     # what its two tsc programs list, so the changes job lists them into the filter's listed block
     # and check-ts-filters.sh holds the block to them (ci_ts_programs.py, LISTED).
-    # The pages file one of those modules imports is no file of that tree, so it is a read of
-    # this gate's: reads adds it only beside a glob of the contracts' sources.
-    (CONTRACTS_PAGES_FILE, "`packages/contracts/src/dispatch-href.ts#dashboardPages` imports it, and both tsc programs of this job compile that module (the filter's listed block)"),
     (f"{FIX}/live/**", "`packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts#fixtures/live/` and `packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts#fixtures/live/` import the frames under it"),
     (f"{FIX}/decision-blocks/**", "`packages/dispatch/web/src/features/doc/decision-blocks.test.ts#fixture` and `packages/dispatch/web/src/features/inbox/AskCard.test.tsx#decisionBlockFixture` read the fixtures under it"),
     (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "`packages/dispatch/web/src/features/doc/schema.ts#manifest`, `packages/dispatch/web/src/features/refs/markdown-engine.test.ts#manifest` and `packages/dispatch/web/src/features/doc/ProofDocument.admission.test.tsx#manifest` import blocks.json, and `packages/proof-editor/tests/manifest-schema.test.ts#manifest`, `packages/proof-editor/tests/block-schema-fixture.ts#serverBlockSchema` and `packages/proof-editor/tests/nested-directive.test.ts#serverBlockSchema` read it; `packages/proof-editor/tests/ask-concurrent-edit.test.ts#serverBlockNodeTypes` reads block-node-types.json of the same directory"),

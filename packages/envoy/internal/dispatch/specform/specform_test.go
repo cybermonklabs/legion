@@ -242,6 +242,43 @@ func TestCheckFindsEachLinkToARecordOfDispatch(t *testing.T) {
 	}
 }
 
+// TestTheReferenceRulesCutAReferenceAsTextCutsIt holds the reference rules to the one reading of
+// where a reference ends, the text package's, which the reference graph reads by: it drops a `*`,
+// `_` or `~` after a reference, it reads on past a vertical tab and U+0085, and it keeps a
+// bracketed IPv6 host. A key inside a reference is part of that reference, so it names no record.
+func TestTheReferenceRulesCutAReferenceAsTextCutsIt(t *testing.T) {
+	type form struct {
+		rule  Rule
+		words string
+	}
+	link := func(words string) []form { return []form{{ruleDispatchLink, words}} }
+	for _, test := range []struct {
+		name, server, line string
+		want               []form
+	}{
+		{"a star after it", "", "Dispatch keeps *dispatch://ACME-1* here.", link("dispatch://ACME-1")},
+		{"an underscore after it", "", "Dispatch keeps _dispatch://ACME-1_ here.", link("dispatch://ACME-1")},
+		{"a tilde after it", "", "Dispatch keeps ~~dispatch://ACME-1~~ here.", link("dispatch://ACME-1")},
+		{"a vertical tab in it", "", "Dispatch opens https://example.org/a\vACME-3 here.", nil},
+		{"a next line in it", "", "Dispatch opens https://example.org/a\u0085ACME-3 here.", nil},
+		{"a bracketed IPv6 host", "http://[::1]:8766", "Dispatch opens http://[::1]:8766/issues/ACME-1 here.", link("http://[::1]:8766/issues/ACME-1")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := planted()
+			if test.server != "" {
+				c.ServerURL = test.server
+			}
+			var got []form
+			for _, each := range referenceForms(c, nil, test.line, false) {
+				got = append(got, form{each.rule, test.line[each.start:each.end]})
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Errorf("referenceForms(%q) = %q, want %q", test.line, got, test.want)
+			}
+		})
+	}
+}
+
 // TestCheckFindsAnAddressAndAHandle holds the person rule to an email address and an @handle.
 func TestCheckFindsAnAddressAndAHandle(t *testing.T) {
 	for _, test := range []struct{ body, name string }{

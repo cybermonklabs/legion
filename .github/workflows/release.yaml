@@ -65,9 +65,9 @@ env:
     --patch-path skills/outside-message/ --patch-path skills/plain-words/
     --patch-path skills/thermonuclear-code-quality/ --patch-path skills/thermonuclear-deep-review/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
-    --patch-path patches/ --patch-path packages/envoy/internal/dispatch/text/dashboard-pages.json
+    --patch-path patches/
     -- packages/pi-envoy/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
-    packages/cipher-client/ packages/envoy/internal/dispatch/text/dashboard-pages.json
+    packages/cipher-client/
     skills/agent-secrets/ skills/approval-review/ skills/asd-ste100/ skills/dispatch/
     skills/dispatch-first/ skills/dispatch-writing-specs/ skills/envoy/
     skills/outside-message/ skills/plain-words/
@@ -80,9 +80,9 @@ env:
     --patch-path skills/legion-oracle/ --patch-path skills/legion-retro/
     --patch-path skills/legion-worker/ --patch-path skills/simplify-settled-diff/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
-    --patch-path patches/ --patch-path packages/envoy/internal/dispatch/text/dashboard-pages.json
+    --patch-path patches/
     -- packages/pi-legion/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
-    packages/cipher-client/ packages/envoy/internal/dispatch/text/dashboard-pages.json
+    packages/cipher-client/
     skills/legion-architect/ skills/legion-controller/ skills/legion-oracle/ skills/legion-retro/
     skills/legion-worker/ skills/simplify-settled-diff/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
@@ -91,13 +91,11 @@ env:
     --first-npm @sjawhar/claude-envoy
     --patch-path packages/pi-shared/ --patch-path packages/envoy-client/
     --patch-path packages/contracts/ --patch-path packages/cipher-client/
-    --patch-path packages/envoy/internal/dispatch/text/dashboard-pages.json
     --patch-path packages/pi-legion/agents/ --patch-path skills/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
     --patch-path patches/
     -- packages/claude-envoy/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
-    packages/cipher-client/ packages/envoy/internal/dispatch/text/dashboard-pages.json
-    packages/pi-legion/agents/ skills/
+    packages/cipher-client/ packages/pi-legion/agents/ skills/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # why: .github/ci-notes/release.md#the-go-legions-version-arguments-and-the-command-that-prints-its-envoy-packages
   LEGION_VERSION_ARGS: >-

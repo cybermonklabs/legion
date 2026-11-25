@@ -211,6 +211,17 @@ func trimReference(raw string) string {
 	return ""
 }
 
+// ReferenceAt is the reference that starts at offset of body, cut as Extract cuts one: the span of
+// the reference grammar there (referencePattern), less what trails it in prose (trimReference).
+// offset is a Located.Offset of body. Where no reference starts at offset, it is empty.
+func ReferenceAt(body string, offset int) string {
+	span := referencePattern.FindStringIndex(body[offset:])
+	if span == nil || span[0] != 0 {
+		return ""
+	}
+	return trimReference(body[offset : offset+span[1]])
+}
+
 // parseDispatch reads a `dispatch://` reference, without its scheme, by the grammar the dashboard's
 // `parseDispatchReference` reads: a slug as written, an `@v` version, an agent's session id as
 // written, an item id decoded as `itemSegment` decodes it, and a `#b-` block of a document, an

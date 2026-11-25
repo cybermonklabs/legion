@@ -1,8 +1,10 @@
 /**
  * The dashboard's pages file: what the dashboard's route table (`routes.ts`) reads in the address
- * of a page, written as data for the readers that cannot import this file. The server's reader of
- * a dashboard address (`packages/envoy/internal/dispatch/text`, which embeds the file), the agent
- * client's (`@legion/envoy-client`'s `dispatchRefFromUrl`) and the shared table of hrefs
+ * of a page, written as data for the readers that cannot import this file. It is a file of
+ * `@legion/contracts` (`packages/contracts/src/dashboard-pages.json`), whose `scripts/gen-go.ts`
+ * copies it beside the server's reader of a dashboard address
+ * (`packages/envoy/internal/dispatch/text`, which embeds the copy). The server, the agent client
+ * (`@legion/envoy-client`'s `dispatchRefFromUrl`) and the shared table of hrefs
  * (`DISPATCH_HREF_REFERENCES` in `@legion/contracts`) read it, and the form of The Spec reads an
  * address of a document against each page the file names for it. It holds:
  *
@@ -15,9 +17,11 @@
  * - `references`: one href of each tab and each document segment, with the reference the
  *   dashboard reads it as, the rows every reader is held to.
  *
- * `bun web/src/features/refs/dashboard-pages-file.ts --write` (from `packages/dispatch`) writes it;
- * `dashboard-pages-file.test.ts` renders it again and fails when the committed file differs, so a
- * tab added to `ISSUE_TABS` fails that test until the file is written again.
+ * `bun web/src/features/refs/dashboard-pages-file.ts --write` (from `packages/dispatch`) writes it,
+ * and `bun run gen:go` (from `packages/contracts`) then writes the server's copy;
+ * `dashboard-pages-file.test.ts` renders the file again and fails when the committed file differs,
+ * so a tab added to `ISSUE_TABS` fails that test until the file is written again, and the
+ * contracts' `check:go` fails until the copy is.
  */
 import type { Artifact, DocumentRole, IssueDetails } from "../../api/types";
 import { issueDocuments } from "../issue/issue-documents";
@@ -34,9 +38,9 @@ import {
   referenceRouteFromHref,
 } from "./routes";
 
-/** Where the file is committed: beside the server's reader, which embeds it. */
+/** Where the file is committed: in `@legion/contracts`, which imports it. */
 export const DASHBOARD_PAGES_FILE = new URL(
-  "../../../../../envoy/internal/dispatch/text/dashboard-pages.json",
+  "../../../../../contracts/src/dashboard-pages.json",
   import.meta.url
 );
 

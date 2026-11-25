@@ -50,7 +50,8 @@ func withoutMark(marks []Mark, markType string) []Mark {
 	return out
 }
 
-func nodeHasMark(node *Node, markType string) bool {
+// HasMark reports whether node carries a mark of markType.
+func HasMark(node *Node, markType string) bool {
 	for _, mark := range node.Marks {
 		if mark.Type == markType {
 			return true

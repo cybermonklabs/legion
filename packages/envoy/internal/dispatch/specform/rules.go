@@ -632,7 +632,7 @@ func referenceForms(c Context, people [][]string, line string, address bool) []s
 	var links []span
 	references := newCovered(line)
 	for _, located := range text.ExtractAt(line, c.ServerURL) {
-		raw := referenceAt(line, located.Offset)
+		raw := text.ReferenceAt(line, located.Offset)
 		references.mark(span{start: located.Offset, end: located.Offset + len(raw)})
 		if located.Kind != "url" {
 			links = append(links, span{located.Offset, located.Offset + len(raw), recordBreak(byLink, raw, located.Ref)})
@@ -794,35 +794,6 @@ func personBreak(name string, given offer) broken {
 		ways = "For a remote path, " + strings.Join(options, ", or ")
 	}
 	return broken{rule: rulePerson, ways: given.ways, detail: detail, waysSaid: given.said(ways)}
-}
-
-// referenceAt is the reference that starts at offset of line, as the server's reference grammar
-// cuts one: up to a space, a bracket, a quote, a backtick or a pipe, without the punctuation that
-// ends a sentence or a closing parenthesis it did not open.
-func referenceAt(line string, offset int) string {
-	raw := line[offset:]
-	if end := strings.IndexFunc(raw, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.Is(unicode.Z, r) || strings.ContainsRune("<>\"'`[]|", r)
-	}); end >= 0 {
-		raw = raw[:end]
-	}
-	// The parentheses are counted once, and the walk goes back from the end, so a run of closing
-	// ones costs one pass.
-	opened, closed := strings.Count(raw, "("), strings.Count(raw, ")")
-	end := len(raw)
-	for ; end > 0; end-- {
-		switch raw[end-1] {
-		case '.', ',', ';', ':', '!', '?':
-		case ')':
-			if opened >= closed {
-				return raw[:end]
-			}
-			closed--
-		default:
-			return raw[:end]
-		}
-	}
-	return raw[:end]
 }
 
 // peopleNames is the name of each signed-in person: the parts of the local part of the person's

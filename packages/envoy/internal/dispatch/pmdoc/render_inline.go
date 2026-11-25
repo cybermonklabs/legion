@@ -568,7 +568,7 @@ func (r *renderer) closeInlineMark(mark Mark, escapePipes bool) {
 func inlineCodeFence(nodes []*Node, index int) (string, bool) {
 	var content strings.Builder
 	for _, node := range nodes[index:] {
-		if node.Type != "text" || !nodeHasMark(node, "inlineCode") {
+		if node.Type != "text" || !HasMark(node, "inlineCode") {
 			break
 		}
 		content.WriteString(node.Text)
@@ -646,7 +646,7 @@ func (r *renderer) writeText(value string) {
 }
 
 func (r *renderer) writeInlineText(node *Node, position *inlinePosition, prefix string, context escapeContext) {
-	if nodeHasMark(node, "inlineCode") {
+	if HasMark(node, "inlineCode") {
 		// A code span's text is written as it is; a line feed in it still ends a line. In a table
 		// cell each pipe is written `\|`, which both parsers read back as the code's pipe. Code
 		// holding an odd run of backslashes before a pipe has no spelling there, and tableRow takes

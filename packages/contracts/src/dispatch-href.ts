@@ -5,19 +5,18 @@
  * or ask on an issue document as well as on a project document.
  */
 
-import dashboardPages from "../../envoy/internal/dispatch/text/dashboard-pages.json" with {
-  type: "json",
-};
+import dashboardPages from "./dashboard-pages.json" with { type: "json" };
 
 /**
  * The dashboard's pages file: what the dashboard's route table reads in the address of a page,
- * generated from it (`packages/dispatch/web/src/features/refs/dashboard-pages-file.ts`) into the
- * folder of the server's reader, which embeds it. `tabs` is each tab of an issue whose page names
- * the issue, with the segment of its `dispatch://` reference; `document_segments` the segments
- * under an issue that open a document by slug; `document_pages` every page each kind of document
- * is drawn on; `references` one href of each tab and each segment with the reference it names,
- * rows of `DISPATCH_HREF_REFERENCES`. The agent client reads its tabs and segments too, so one
- * file holds what each reader of a dashboard address reads.
+ * generated from it (`packages/dispatch/web/src/features/refs/dashboard-pages-file.ts`) into this
+ * package, whose `scripts/gen-go.ts` copies it beside the server's reader, which embeds it. `tabs`
+ * is each tab of an issue whose page names the issue, with the segment of its `dispatch://`
+ * reference; `document_segments` the segments under an issue that open a document by slug;
+ * `document_pages` every page each kind of document is drawn on; `references` one href of each
+ * tab and each segment with the reference it names, rows of `DISPATCH_HREF_REFERENCES`. The agent
+ * client reads its tabs and segments too, so one file holds what each reader of a dashboard
+ * address reads.
  */
 export const DISPATCH_DASHBOARD_PAGES: {
   readonly tabs: readonly { readonly page: string; readonly reference: string }[];

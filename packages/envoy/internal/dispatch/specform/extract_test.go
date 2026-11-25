@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // everyForm holds each form of a text of The Spec that ExtractDocument reads, and a term-shaped
@@ -173,6 +175,26 @@ func TestExtractSkipsCodeFences(t *testing.T) {
 	}
 	if len(got.Texts) != 0 || len(got.Terms) != 0 {
 		t.Fatalf("ExtractDocument read %#v from code fences, want nothing", got)
+	}
+}
+
+// TestAHeadingClosesTermsByTheLevelPmdocReads holds the extractor to the level of a heading as
+// pmdoc reads it, whatever number type the tree holds it in: a heading of level 3 stays in a part
+// of Terms of level 2, and a heading of level 2 closes it.
+func TestAHeadingClosesTermsByTheLevelPmdocReads(t *testing.T) {
+	for _, test := range []struct {
+		level  any
+		closes bool
+	}{
+		{int(3), false}, {int64(3), false}, {float64(3), false}, {float32(3), false},
+		{int(2), true}, {float32(2), true},
+	} {
+		e := &extraction{termsLevel: 2}
+		heading := &pmdoc.Node{Type: "heading", Attrs: pmdoc.Attrs{"level": test.level}, Children: []*pmdoc.Node{{Type: "text", Text: "More"}}}
+		e.heading(heading, nil)
+		if closed := e.termsLevel == 0; closed != test.closes {
+			t.Errorf("a heading of level %v (%T) closed the part of Terms of level 2: %t, want %t", test.level, test.level, closed, test.closes)
+		}
 	}
 }
 

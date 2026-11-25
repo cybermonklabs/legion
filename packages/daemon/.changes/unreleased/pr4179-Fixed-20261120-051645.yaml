@@ -1,9 +1,0 @@
-kind: Fixed
-body: |-
-    The worker image's plugin stage copies the dashboard pages table that
-    contracts/src/dispatch-href.ts imports. Before this copy, the pi-envoy, pi-legion and Claude Code
-    plugin builds could not resolve ../../envoy/internal/dispatch/text/dashboard-pages.json and the
-    image did not build.
-time: 2026-11-20T05:16:45Z
-custom:
-    Issue: pr4179

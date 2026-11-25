@@ -83,6 +83,72 @@ func TestExtractAtReportsByteOffsets(t *testing.T) {
 	}
 }
 
+// ReferenceAt cuts the reference at a located offset as Extract cut it: without a `*`, `_` or `~`
+// after it, on past a vertical tab and U+0085, which end no reference, and with a bracketed IPv6
+// host. Where no reference starts, it is empty.
+func TestReferenceAtCutsAReferenceAsExtractCutsIt(t *testing.T) {
+	const server = "http://[::1]:8766"
+	for _, test := range []struct{ body, want string }{
+		{"See *dispatch://CORE-1*.", "dispatch://CORE-1"},
+		{"See _dispatch://CORE-1_.", "dispatch://CORE-1"},
+		{"See ~~dispatch://CORE-1~~.", "dispatch://CORE-1"},
+		{"See https://example.org/a\vb here.", "https://example.org/a\vb"},
+		{"See https://example.org/a\u0085b here.", "https://example.org/a\u0085b"},
+		{"See http://[::1]:8766/issues/CORE-1.", "http://[::1]:8766/issues/CORE-1"},
+	} {
+		located := ExtractAt(test.body, server)
+		if len(located) != 1 {
+			t.Fatalf("ExtractAt(%q) = %#v, want one reference", test.body, located)
+		}
+		if got := ReferenceAt(test.body, located[0].Offset); got != test.want {
+			t.Errorf("ReferenceAt(%q, %d) = %q, want %q", test.body, located[0].Offset, got, test.want)
+		}
+	}
+	if got := ReferenceAt("See CORE-1.", 0); got != "" {
+		t.Errorf("ReferenceAt where no reference starts = %q, want none", got)
+	}
+}
+
+// At each reference that ExtractAt finds in a body of the shared text table, ReferenceAt is the
+// reference Extract read: a URL's own words, and for any other a text that ExtractAt reads as that
+// one reference alone.
+func TestReferenceAtIsWhatExtractReadsInTheSharedTextTable(t *testing.T) {
+	raw, err := os.ReadFile("testdata/dispatch-text-references.json")
+	if err != nil {
+		t.Fatalf("read table: %v", err)
+	}
+	var rows []struct {
+		Body   string `json:"body"`
+		Origin string `json:"origin"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatalf("parse table: %v", err)
+	}
+	references := 0
+	for _, row := range rows {
+		server := row.Origin
+		if server == "" {
+			server = "https://dispatch.test"
+		}
+		for _, located := range ExtractAt(row.Body, server) {
+			references++
+			reference := ReferenceAt(row.Body, located.Offset)
+			if located.Kind == "url" {
+				if reference != located.ID {
+					t.Errorf("ReferenceAt(%q, %d) = %q, want the URL %q", row.Body, located.Offset, reference, located.ID)
+				}
+				continue
+			}
+			if again := ExtractAt(reference, server); len(again) != 1 || again[0] != (Located{Ref: located.Ref}) {
+				t.Errorf("ReferenceAt(%q, %d) = %q, which reads as %#v, want %#v", row.Body, located.Offset, reference, again, located.Ref)
+			}
+		}
+	}
+	if references == 0 {
+		t.Fatal("the shared text table holds no reference ExtractAt finds, so this read nothing")
+	}
+}
+
 func TestExtractTerminatesArtifactSlugsAtMarkdownPunctuation(t *testing.T) {
 	body := "`dispatch://CORE-2/artifact/diagram-png`` See dispatch://CORE-2/artifact/design-md. " +
 		`See dispatch://CORE-2/artifact/quoted-md".`
