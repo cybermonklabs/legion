@@ -29,8 +29,8 @@ export interface HostModel {
  * `session/turn-recovery.ts:2487-2496` at the pinned tag), and this registry does not expose that
  * closure: such an extension can pick a closed route. Before the next model call the host moves
  * the session off it to an open fallback where its chain has one, and holds the call otherwise
- * (`#leaveClosedRoute` and `installCyberPolicyGuard`, `session/agent-session.ts:3964-3970` and
- * `:4626-4629`).
+ * (`#leaveClosedRoute` and `installCyberPolicyGuard`, `session/agent-session.ts:3966-3972` and
+ * `:4628-4631`).
  * Each is a method of the live registry, which reads private state of its own, so a caller calls
  * it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
@@ -362,7 +362,7 @@ export interface AgentEndEvent {
    * does not set it, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
   /** Set with `willContinue` when the turn ends while a background job runs or its result waits to
-   * be delivered (`agent-session.ts:6452-6455` at the pinned tag), which OMP reaches only after
+   * be delivered (`agent-session.ts:6454-6457` at the pinned tag), which OMP reaches only after
    * each of its retries and continuations has declined the turn: the pane is idle until the job's
    * result starts the next run. */
   readonly awaitingAsyncWork?: boolean;
@@ -738,7 +738,7 @@ export interface PiApi {
       readonly deliverAs?: "aside" | "followUp";
       /** `"outside"` when the text is a person's own turn the extension relays: the host's
        *  `sendUserMessage` then ends the session's cyber-policy hold, as a prompt typed at its
-       *  terminal does (`session/agent-session.ts:12977`, the option at
+       *  terminal does (`session/agent-session.ts:12979`, the option at
        *  `session/agent-session-types.ts:693-694`, at v18.18.6-sami.20261125-164517). Unset, the
        *  text counts as made inside the session and the hold stays; a host without the option
        *  ignores it. */

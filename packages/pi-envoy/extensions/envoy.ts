@@ -112,10 +112,7 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
-import {
-  followNatsCredential,
-  keepNatsCredential,
-} from "@legion/envoy-client/nats-credential";
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential";
 import {
   NoRelaySubjectError,
   refusedTopicsNoticeText,

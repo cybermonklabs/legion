@@ -1094,12 +1094,12 @@ describe("a card sent while the host sets up a prompt", () => {
     expect(host.sent).toEqual([]);
   });
 
-  // A switch to a new or resumed session (`agent-session.ts` `newSession` 14296-14298,
-  // `switchSession` 16162-16163, at the pinned tag) and a manual or extension compaction
+  // A switch to a new or resumed session (`agent-session.ts` `newSession` 14298-14300,
+  // `switchSession` 16165-16166, at the pinned tag) and a manual or extension compaction
   // (`session-maintenance.ts` 2000-2001 at the pinned tag) disconnect the host from the agent
   // before they abort a running run, so that run's `agent_end` never reaches an extension, and
   // the abort leaves the host idle at the `session_switch` or `session_compact` after it
-  // (14208-14230 at the pinned tag). A run the host drops with
+  // (14210-14232 at the pinned tag). A run the host drops with
   // neither (a switch or a compaction that fails after its abort) is over by the next prompt sent
   // from idle, whose `input` event finds the host idle. The extension tells the wake of each such
   // event (`noteIfIdle`), and a host idle there has no run, whatever the switch's reason. Each row
@@ -1158,7 +1158,7 @@ describe("a card sent while the host sets up a prompt", () => {
   });
 
   // A fork neither disconnects the agent nor aborts the run (`agent-session.ts` `fork`,
-  // 14437-14538 at the pinned tag), an automatic compaction runs while the host is busy with
+  // 14439-14540 at the pinned tag), an automatic compaction runs while the host is busy with
   // the run (between its steps, or in its post-run maintenance), and a steer typed into a running
   // turn finds it busy too: the run goes on, and its cards keep their wake.
   // A compaction between a run's steps hands its

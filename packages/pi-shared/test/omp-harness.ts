@@ -779,7 +779,7 @@ export interface Refusal {
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3228-3236` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3240-3248` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It

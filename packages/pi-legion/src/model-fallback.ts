@@ -460,18 +460,18 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
     // The host is about to go on with this turn itself (`turnGoesOn`), so it has not settled;
-    // acting on it would step the session down twice (`session/agent-session.ts:6334-6342` at the
+    // acting on it would step the session down twice (`session/agent-session.ts:6336-6344` at the
     // pinned tag). An end that waits only on a background job's result has settled, and the job's
     // result starts the next turn on the model this end leaves the session on.
     //
     // One window stays open there. The host does not wait for this handler (it fires the
-    // extensions' `agent_end` without awaiting them, `session/agent-session.ts:7066` at the pinned
+    // extensions' `agent_end` without awaiting them, `session/agent-session.ts:7068` at the pinned
     // tag), and it picks each request's model before that request's `context` hook runs
     // (`agent/src/agent-loop.ts:2090-2093`). What a request does wait for is a switch already under
     // way: `pi.setModel` runs the switch inside `trackModelSwitch`
     // (`session/model-controls.ts:329-351`), and each main request waits for it before the host
     // reads its model (`settleModelSwitch`, `session/session-tools.ts:2406-2417`, a hook that
-    // `agent-session.ts:3913` registers and `agent-loop.ts:1469` runs before each model call). So a
+    // `agent-session.ts:3915` registers and `agent-loop.ts:1469` runs before each model call). So a
     // request of a run a job's result starts goes to the model that refused only when the host
     // selects it before the switch has started: while the walk below still awaits the chain's next
     // model, the model's key or its metadata (`refreshSelectedModelMetadata`,

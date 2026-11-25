@@ -1,22 +1,24 @@
 kind: Changed
 body: |-
-    The worker image carries Oh My Pi `18.18.6-sami.20261125-164517` of cybermonklabs/oh-my-pi, which
-    `.omp-pin` names. A session holds the large values of its older entries in a private temporary
-    file under `$TMPDIR/omp-cold-<uid>` instead of its heap (in memory, compressed, when that
-    directory is not its own with mode 0700; a pod's is), and its stored session files hold every
-    entry's full body as before. Fields set after an entry is written (a compaction's token count,
-    an elided tool result) are stored as later `custom` entries with `customType` `entry_patch`
-    until the session's next full rewrite, and a streamed full rewrite stages its parts under
-    `<path>#staging-<epoch ms>-<id>`, with no session row, before it swaps them in: a reader that
-    reads one session by its exact path gets the same bodies as before. After an OpenAI
-    `cyber_policy` refusal, Oh My Pi sends no request to an OpenAI route until input from outside
-    the session. A rate limit no longer moves a session whose context is larger than
+    The worker image carries Oh My Pi `18.18.6-sami.20261125-164517` of cybermonklabs/oh-my-pi,
+    which `.omp-pin` names, in place of `18.18.6-sami.20261125-001804`. A session holds the large
+    values of its older entries in a private temporary file under `$TMPDIR/omp-cold-<uid>` instead
+    of its heap (in memory, compressed, when that directory is not its own with mode 0700; a pod's
+    is), and its stored session files hold every entry's full body as before. Fields set after an
+    entry is written (a compaction's token count, an elided tool result) are stored as later
+    `custom` entries with `customType` `entry_patch` until the session's next full rewrite, and a
+    streamed full rewrite stages its parts under `<path>#staging-<epoch ms>-<id>`, with no session
+    row, before it swaps them in: a reader that reads one session by its exact path gets the same
+    bodies as before. A rate limit no longer moves a session whose context is larger than
     `retry.rateLimitFallbackMaxContextTokens` (100,000 tokens by default) down its fallback chain,
-    so such a turn ends with the 429, and the daemon sends its task again. Oh My Pi's release
-    archives carry an attestation from this pin on. Its SQL session store makes and checks the
-    same tables, indexes, declared columns and grants as `18.18.6-sami.20261123-024918`, and adds
-    one start-up read of the parts table's `path` collation from `pg_catalog`, which needs no
-    grant, so a deployment already on that pin needs no owner run before this one.
+    so such a turn ends with the 429, and the daemon sends its task again. From
+    `18.18.6-sami.20261124-152326` on, after an OpenAI `cyber_policy` refusal Oh My Pi sends no
+    request to an OpenAI route until input from outside the session, and its release archives
+    carry an attestation. Its SQL session store makes and checks the same tables, indexes,
+    declared columns and grants as `18.18.6-sami.20261125-001804` and
+    `18.18.6-sami.20261123-024918`, and adds one start-up read of the parts table's `path`
+    collation from `pg_catalog`, which needs no grant, so a deployment already on either pin needs
+    no owner run before this one.
 time: 2026-11-25T00:42:42Z
 custom:
     Issue: omp-pin-bounded-session-memory

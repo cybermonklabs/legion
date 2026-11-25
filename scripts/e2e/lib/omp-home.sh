@@ -12,7 +12,7 @@
 # exists, and neither PI_CONFIG_DIR nor OMP_CONFIG_ROOT reaches a pane (neither daemon's pane
 # allow-list carries them).
 #
-# DIR/.omp/natives links to the operator's native module cache (123 MiB per Oh My Pi version at the
+# DIR/.omp/natives links to the operator's native module cache (124 MiB per Oh My Pi version at the
 # pin, the one variant the CPU selects), which is $XDG_CACHE_HOME/omp/natives when XDG_CACHE_HOME is
 # set and $XDG_CACHE_HOME/omp exists, and $HOME/.omp/natives otherwise: the two places getNativesDir
 # in @oh-my-pi/pi-natives' native/natives-dir.js reads when none of PI_NATIVES_DIR,
