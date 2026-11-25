@@ -712,7 +712,8 @@ A window whose main branch misses one gives no comparison at all.
 
 Beside the tests, `validate` prints three diagnostics, which test nothing:
 
-- For each branch and seed, the number of issues that the replay gave a first slot in the window and the record did not, and the number that the record gave one and the replay did not.
+- For each branch and seed, the number of issues that the replay gave a first slot in the window and the record did not, the number that the record gave one and the replay did not, and the seed's own median error of the first slot, over the issues that the record or that seed gives one, a missing one standing at `--to`.
+  It stands beside the first-slot test's statistic, the mean over the seeds of each issue's error (assumption 44), in the table and in `--json` (`firstSlotMedianMinutes`).
 
 - For each branch, the trees whose design gate stood closed in the replay more than 30% longer or shorter than in the record (`gateClosedHours`).
 
@@ -1695,18 +1696,36 @@ Doubtful for conflicts.
 The first replay saw more conflicts after a longer wait for a slot.
 If a longer wait brings more conflicts than the fitted rate gives, the replay favours a rule under which branches wait longer.
 The tool draws conflicts from a rate that it fits on the stretches inside the window.
-The rate has a base, a term for each phase in which a stretch can end, and a merges term, all fitted together.
-The base stands for the stretches that end in merging, and each other phase's term moves the rate of the stretches that end in that phase.
-A phase takes a term only when its stretches in the window hold a conflict and a stretch without one, and the stretches that the base stands for hold both too.
-The stretches of every other phase draw at the base, as the stretches that end in merging do.
-A branch sets the merges term to zero and keeps the base and the phase terms.
-A rule moves conflicts only through the merges term, because each stretch ends in the phase that the record shows.
-A daemon's boot reads each pull request again, so a conflict that the boot's read sees comes soon after the boot.
-For each phase, the tool reads the share of the window's conflicts out of that phase that came within 15 minutes after a boot.
-At a boot, each stretch under way draws there in that share of the phase in which its issue stands, whatever work segment of the stretch runs, and every other stretch draws at its end.
-The stretch draws at the chance that it would draw at its end, in the phase in which the record ends it, so a boot moves the moment of a conflict and not its chance.
+The rate has a base, a term for each phase in which a stretch can end, a term for each release part of the stretches that end in merging, a term for each phase's stretches that span a boot, and a merges term, all fitted together.
+The base stands for the stretches that end in merging in the window's first release part, and each other phase's term moves the rate of the stretches that end in that phase.
+A phase or a part takes a term of its own only where both groups that the term sets apart hold a conflict and a stretch without one: the phase's stretches and the base's, a later part's stretches and the first part's, a phase's stretches that span a boot and those that span none.
+Every other group draws at the rate of the group that it would be set apart from.
+A branch sets the merges term to zero and keeps every other term.
+A rule moves conflicts only through the merges term, because each stretch ends in the phase that the record shows, at the record's release parts and boots.
+
+Merging's rate is each release part's own.
+A release that posts the merger's conflicts records each as a conflict, and a release that does not records it as another send-back, which the replay keeps as a recorded loop.
+In window one the merger sent work back on about 47% of its visits in both parts: 93 send-backs and 18 conflicts of 238 visits under `legion-v20.25.1`, and 8 and 66 of 158 under `legion-v20.42.5`.
+Only the split between send-backs and conflicts moved, so one rate over both parts would count the earlier part's conflicts twice.
+Under every rule, a stretch that ends in merging draws at the rate of the part in which its end falls.
+
+A daemon's boot reads each pull request again.
+So a stretch that a boot read the pull requests inside has a chance of its own in its phase, and the tool reads that phase's stretches that span a boot apart.
+At a boot, each stretch under way draws there, once, at its phase's chance for a stretch that spans a boot, whatever work segment of the stretch runs.
+A stretch that conflicts there ends at the boot, and the stretch after its loop takes a draw of its own.
+A stretch that draws none at a boot draws no more.
+A stretch that spans no boot draws at its end at its phase's other chance.
+A draw reads no boot after its own moment.
+
+A drawn conflict's work is a recorded loop that the tool draws among every loop of the record that ends before the end of the run-out, the loops of the reach before the window's start among them.
+A loop still open at the end of the run-out has no known length and is left out, so the longest loops are drawn a little less often than the record ran them.
+In window one that leaves out 6 loops from testing, 9 from reviewing, 8 from accepting, 17 from merging and 1 from retro.
+The tool draws no length that the record does not show.
+
 Each stretch draws apart from the record's outcome.
 So a stretch that the record ended in a conflict can draw none, and its issue then goes on past its recorded loop into its later recorded work.
+The acts of the loop that it passes over on other issues keep their recorded times: a child's filing, its release, a link, and an edit of another issue.
+Its issue does not close before a child that the record filed under it before its own close has entered, as the daemon holds a merged issue's close while an issue beneath it is in the workflow.
 A stretch that the record ended otherwise can draw a conflict, and its loop pushes the issue's later work later.
 A window's run-out holds the record's work after `--to`, so an issue that goes on past a loop runs into that work.
 Work recorded after the end of the run-out is not in the replay.
@@ -1716,18 +1735,18 @@ It keeps every other send-back loop at its recorded count and length.
 
 **Evidence in a recorded window.** _A conflict rate fitted on the window, and loops kept as recorded._
 The phase lines give each move back with its trigger, and the trace names its cause.
-`run` prints the conflict model: the window, and the stretches and conflicts, that it was fitted on, the base, the term of each phase with the stretches and conflicts of that phase, the merges term, each with its interval, and the odds ratio for each doubling of the merges.
-`compare` prints the same terms for each window that measures conflicts.
+`run` prints the conflict model: the window, and the stretches and conflicts, that it was fitted on, the base, the term of each phase with the stretches and conflicts of that phase, each phase's term for the stretches that span a boot with those stretches, the term of each release part for the stretches that end in merging with that part's stretches, conflicts and the chance at no merges, the merges term, each with its interval, and the odds ratio for each doubling of the merges.
+`compare` prints the same terms for each window that measures conflicts, each part's rate among them.
 In the prototype's record, that odds ratio was 1.21, with a 95% interval of 0.92 to 1.35, so the record does not show the merges term.
 In one deployment's window, a rate with no phase term gave the stretches that end in merging about twice the share of conflicts that the record shows for them, so the rate takes a term for each phase.
-`run` prints each phase whose conflicts came after a boot, with its conflicts within 15 minutes after a boot and the share of its time in those 15 minutes.
-In one deployment's window, 50 of the 72 conflicts past the review came within 15 minutes after a boot, where those 15 minutes held about 4% of the time past the review.
-There, the share was 34 of 42 in accepting, 14 of 28 in merging, 41 of 127 in testing and 19 of 161 in reviewing.
+In window one, merging's conflicts were 16 of 230 stretches under `legion-v20.25.1` and 51 of 145 under `legion-v20.42.5`.
+There, accepting's stretches conflicted in 30 of 52 that spanned a boot, against 7 of 175 that spanned none, and testing's in 29 of 136 against 95 of 680.
 `run` prints the number of recorded conflict loops that it passed over and the number of conflicts that it drew where the record shows none, and `run.json` counts them as `divergence.skippedLoops` and `divergence.addedLoops`.
 
 **If it is wrong.**
 If a longer wait brings more conflicts than the fitted rate gives, the replay moves the measures so for a rule under which branches wait longer.
-If conflicts come at boots more or less often than the window shows, the replay misstates how many returned issues wait for a slot at once.
+If a boot raises the chance of a conflict more or less than the window shows, the replay misstates how many returned issues wait for a slot at once.
+If the loops still open at the end of the run-out are the longest, the drawn loops are a little short.
 If the run-out is shorter than a loop that the replay passes over, the issue of that loop stands with no recorded work before the end of the run-out, and holds its slot with no work there.
 
 - Issues finished: Up, because the replay draws fewer conflicts for that rule than it would meet.
@@ -1747,7 +1766,8 @@ At the same phase and the same number of merges, a higher rate of conflict after
 For each phase, the share of the stretches that end there in a conflict in a window that the rate was not fitted on tests the phase terms.
 A window that records no conflict of its own, such as one of a release that records a conflict as red checks (assumption 22), tests neither the phase terms nor the merges term.
 `validate` and `compare` give the branch `main+merges=zero` beside `main`, which shows how far the merges term moves each measure.
-For each phase, the share of the conflicts that come within 15 minutes after a boot, in a window that the model was not fitted on, tests the boot timing.
+For each phase, the share of the stretches that span a boot and end in a conflict, against the share of those that span none, in a window that the model was not fitted on, tests the boot term.
+For each release part, the share of the merging stretches that end in a conflict, in a window of the same releases, tests the part terms.
 The number of recorded loops that a run passes over and the number that it adds, over the seeds, show how far the draws move the record's loops.
 
 ### Assumption 4: A link removal, a child moved out, a gate closing and an outside blocker's close happen at their recorded time, or at their recorded offset from the wait's start
@@ -2174,13 +2194,18 @@ The number of reopens for each issue finished, in two windows recorded under two
 Doubtful, because a planner files children after its parent starts.
 Children filed at their recorded times favour a rule that starts parents later.
 The tool moves the filing of a child with its parent's start.
+A filing that falls in the parent's work moves with that work.
+An architect's filing of a child under its own issue that falls in no work of the issue, made after the issue's first start in the record, enters at its recorded offset from the replay's first start of the issue, or at its recorded time where that is later, because the child's open status holds the issue's first start.
 It never loses a recorded child: where the replay passes over, drops or never opens the work that a child is filed in before the parent leaves the workflow, the filing enters at its recorded time, or then where that time has passed.
+An act of work that runs later in the replay than in the record can fall past the end of the run-out, and then it does not enter.
+In window one, an architect filed a child 53 hours into a piece of its work in accepting that the record shows still open at the end of the inputs, and a seed that brings that piece more than about 42 hours late files no such child.
 A worker's other events on another issue keep their recorded times: an edit of that issue, a link that the worker adds to it or takes off, and a child that the worker moves out.
 
 **Evidence in a recorded window.** _Children filed after their parent started._
 Dispatch's events give each child's filing, and the phase lines give its parent's start.
 The fixture window `child-filed-after-parent-start` replays one under `main` and `keep-past-review`.
-The tests of the built windows replay a filing in work that runs late, a filing in work that never opens before its issue leaves, and a link that an architect adds to another issue in work that the replay opens early.
+The tests of the built windows replay a filing in work that runs late, a filing in work that never opens before its issue leaves, an architect's filing under its own issue that its issue's late start moves, and a link that an architect adds to another issue in work that the replay opens early.
+In window one, 189 architect filings of a child under the architect's own issue fall in no work of the issue, and 252 fall in its work.
 
 **If it is wrong.**
 If an issue would have other links or children under another rule, or a child's filing does not follow its parent's start, the replay moves the measures so.
@@ -2416,6 +2441,7 @@ The daemon learns the status of a blocker in another project at each tick and ea
 A tick comes once each `--tick-interval`, the deployment's `controller_wake_interval_seconds`.
 Dispatch's events give the blocker's close.
 The replay gives each tick the status, at that moment, of each outside issue that a waiter waits on.
+A blocker of another project that runs a daemon of its own is written by that daemon, and the replay applies those writes as recorded, its close among them: only the writes of the window's own project's daemon are the ones that the replay makes again.
 
 **If it is wrong.**
 If the daemon saw such a close sooner than the next tick or boot, the replay moves the measures so.

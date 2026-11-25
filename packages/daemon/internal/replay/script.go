@@ -122,14 +122,11 @@ type piece struct {
 	leftUnrun bool
 	// stretchDrawn says the stretch the piece's move ends drew its conflict already: the piece
 	// goes on with a stretch past its recorded end (stretchEnds), which is not drawn a second
-	// time, or drew it at a boot inside it (bootConflicts). bootLeft says the first boot inside
-	// that stretch left its draw to its end, by the share of the conflicts after a boot of the
-	// phase its issue stood in there (driver.drawsAtBoot), so no later boot draws it. drew is, for
+	// time, or drew it at a boot inside it (bootConflicts). drew is, for
 	// a merge-forward piece, the piece whose stretch drew the conflict, and resumes says that piece
 	// stands paused by a conflict a boot's read found while it ran, which the merge forward's end
 	// resumes (mergedForward).
 	stretchDrawn bool
-	bootLeft     bool
 	drew         *piece
 	resumes      bool
 	// acts is every act of the piece, by its offset from the start.
@@ -217,9 +214,12 @@ type act struct {
 
 // script is a replay's reading of the record's work: each issue's pieces in order, every
 // recorded Dispatch event with the anchor that places it, and the record's issues in flight at any
-// moment.
+// moment. reach is each issue's pieces that ended before the window's start, in order, with their
+// turns: no replay runs them, and the conflict loops among them stand in the pool a drawn
+// conflict's work is drawn from (recordedLoops).
 type script struct {
 	pieces map[string][]*piece
+	reach  map[string][]*piece
 	events []scriptEvent
 	// flight is each issue's stretches in flight in the record (IssueTrace.inFlight), and inFlight
 	// the count of them at any moment, each issue's own joined first (joinedStretches), so an
@@ -244,10 +244,19 @@ const (
 	// anchorFollow places a write of the daemon's own session at its offset from the event before
 	// it on its issue (scriptEvent.prev) once that is applied, or at its recorded time where that
 	// comes later, where that event is the issue's filing as a child, an act of a piece of its
-	// parent's work that moves with that piece, or itself follows one: an architect's own write on a
-	// child and its API's write on the child that Dispatch records under the daemon's session, a
-	// release or a park, keep the order the record shows them in (driver.placeFollowers).
+	// parent's work that moves with that piece or a filing its parent's start places (anchorStart),
+	// or itself follows one: an architect's own write on a child and its API's write on the child
+	// that Dispatch records under the daemon's session, a release or a park, keep the order the
+	// record shows them in (driver.placeFollowers).
 	anchorFollow
+	// anchorStart places an architect's filing of a child under its own issue that no piece of the
+	// issue's work places (filesChildUnder), made after the issue's first start in its run in the
+	// record (runStartAt), at its offset from that start, from the replay's first start of the issue
+	// in its run, or at its recorded time where that is later (driver.placeStarted): the child's
+	// open status holds the issue's first start (record's children wait), so a filing placed before
+	// the replay starts the issue would hold a start the record made before it (spec R2: a fact that
+	// depends on a start moves with that start).
+	anchorStart
 )
 
 // scriptEvent is one recorded Dispatch event, read once (ParseDispatchEvent, and its envelope as
@@ -262,10 +271,12 @@ type scriptEvent struct {
 	piece  *piece
 	anchor anchorKind
 	// on is the event an anchorEvent or an anchorFollow is placed from, and offset the event's own
-	// distance from it; wait is the wait an anchorWait ended in the record.
-	on     int
-	offset time.Duration
-	wait   waitAnchor
+	// distance from it; wait is the wait an anchorWait ended in the record; startOf is the issue
+	// whose first start an anchorStart is placed from, offset its distance from that start.
+	on      int
+	offset  time.Duration
+	wait    waitAnchor
+	startOf string
 	// dependents is every person's answer placed from this one, and followers every write of the
 	// daemon's own session placed from it (anchorFollow).
 	dependents []int
@@ -327,11 +338,12 @@ func joinedStretches(stretches [][2]time.Time) [][2]time.Time {
 
 // buildScript reads t into the pieces of its issues' work and the placement of its events, the
 // window's Dispatch events in the order the trace read them (readTrace), from the window's start
-// on. A piece's acts run by offset, then by the record's moment, then by order (act.order): of one
+// on, and the pieces that ended in the reach before it, with their turns alone (script.reach). A
+// piece's acts run by offset, then by the record's moment, then by order (act.order): of one
 // instant, an act a line holds runs after a turn or an event, and acts of the same order keep the
 // order they were placed in.
 func buildScript(t Trace, events []readEvent, lines recordLines) (script, error) {
-	s := script{pieces: map[string][]*piece{}, flight: map[string][][2]time.Time{}}
+	s := script{pieces: map[string][]*piece{}, reach: map[string][]*piece{}, flight: map[string][][2]time.Time{}}
 	var flying [][2]time.Time
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
@@ -340,12 +352,14 @@ func buildScript(t Trace, events []readEvent, lines recordLines) (script, error)
 		if iss.Project != t.Project {
 			continue
 		}
-		s.pieces[key] = issuePieces(t, iss)
+		s.reach[key], s.pieces[key] = issuePieces(t, iss)
 	}
 	s.inFlight = countStretches(flying)
-	for _, pieces := range s.pieces {
-		for _, p := range pieces {
-			p.m = s.inFlightAt(p.start)
+	for _, all := range []map[string][]*piece{s.reach, s.pieces} {
+		for _, pieces := range all {
+			for _, p := range pieces {
+				p.m = s.inFlightAt(p.start)
+			}
 		}
 	}
 	s.placeTurns(t)
@@ -355,22 +369,25 @@ func buildScript(t Trace, events []readEvent, lines recordLines) (script, error)
 		return script{}, err
 	}
 	s.markHeldRootTodos(lines, issueEvents)
-	for _, pieces := range s.pieces {
-		for _, p := range pieces {
-			slices.SortStableFunc(p.acts, func(x, y act) int {
-				return cmp.Or(cmp.Compare(x.offset, y.offset), x.rec.Compare(y.rec), cmp.Compare(x.order, y.order))
-			})
+	for _, all := range []map[string][]*piece{s.reach, s.pieces} {
+		for _, pieces := range all {
+			for _, p := range pieces {
+				slices.SortStableFunc(p.acts, func(x, y act) int {
+					return cmp.Or(cmp.Compare(x.offset, y.offset), x.rec.Compare(y.rec), cmp.Compare(x.order, y.order))
+				})
+			}
 		}
 	}
 	return s, nil
 }
 
-// issuePieces is iss's pieces of work that end at or after the window's start, in order: each
-// visit's segment, cut at each hold of its role's claim inside it. The rest of a segment after a
-// hold the record shows released (Wait.released) is a piece of its own, opened by the retry that
-// releases it; a hold the record shows going on past the segment's end leaves that piece none of
-// the segment's length.
-func issuePieces(t Trace, iss *IssueTrace) []*piece {
+// issuePieces is iss's pieces of work in order, those that ended before the window's start (the
+// reach's) apart from those that end at or after it: each visit's segment, cut at each hold of its
+// role's claim inside it. The rest of a segment after a hold the record shows released
+// (Wait.released) is a piece of its own, opened by the retry that releases it; a hold the record
+// shows going on past the segment's end leaves that piece none of the segment's length. Each list
+// numbers its pieces from 0.
+func issuePieces(t Trace, iss *IssueTrace) (reach, kept []*piece) {
 	var pieces []*piece
 	for i := range iss.Visits {
 		visit := &iss.Visits[i]
@@ -429,9 +446,10 @@ func issuePieces(t Trace, iss *IssueTrace) []*piece {
 		}
 		pieces = append(pieces, last)
 	}
-	var kept []*piece
 	for _, p := range pieces {
 		if !p.end.IsZero() && p.end.Before(t.From) {
+			p.index = len(reach)
+			reach = append(reach, p)
 			continue
 		}
 		if p.start.Before(t.From) {
@@ -440,21 +458,26 @@ func issuePieces(t Trace, iss *IssueTrace) []*piece {
 		p.index = len(kept)
 		kept = append(kept, p)
 	}
-	return kept
+	return reach, kept
 }
 
 // pieceAt is the piece of key's work an act at at belongs to: the latest whose start is before
 // it, or, where none is, the first that starts at it; with starting set, the latest that starts
 // at or before it, as a turn that begins as a piece begins is that piece's. Nil for none.
 func (s *script) pieceAt(key string, at time.Time, starting bool) *piece {
+	return pieceIn(s.pieces[key], at, starting)
+}
+
+// pieceIn is the piece of pieces, one issue's work in order, an act at at belongs to (pieceAt).
+func pieceIn(pieces []*piece, at time.Time, starting bool) *piece {
 	var found *piece
-	for _, p := range s.pieces[key] {
+	for _, p := range pieces {
 		if p.start.Before(at) || starting && p.start.Equal(at) {
 			found = p
 		}
 	}
 	if found == nil {
-		for _, p := range s.pieces[key] {
+		for _, p := range pieces {
 			if p.start.Equal(at) {
 				return p
 			}
@@ -490,16 +513,18 @@ func (s *script) workPiece(ran SessionClaim, at time.Time) *piece {
 }
 
 // placeTurns puts each turn of each issue's workers into the piece it falls in, its start and its
-// end at their offsets from the piece's start.
+// end at their offsets from the piece's start: a turn that ended before the window's start into a
+// piece of the reach (script.reach), and every other into a piece of the window's work.
 func (s *script) placeTurns(t Trace) {
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		for i := range iss.Turns {
 			turn := &iss.Turns[i]
+			pieces := s.pieces[key]
 			if !turn.End.IsZero() && turn.End.Before(t.From) {
-				continue
+				pieces = s.reach[key]
 			}
-			p := s.pieceAt(key, turn.Start, true)
+			p := pieceIn(pieces, turn.Start, true)
 			if p == nil {
 				continue
 			}
@@ -617,12 +642,15 @@ func closedByArchitect(iss *IssueTrace, leave Leave) bool {
 // link it adds or takes off, a child it moves out, a filing into another tree — is no act of its
 // piece and keeps its recorded time, as a version of a root's design does where the replay opens
 // the root's work early (keepDesignTimes): the replay moves a piece of work, not the issues the
-// worker touched, whose own course the record's times hold. Every other event is placed by its
-// anchor, and so is a worker's event whose piece the replay does not run (placeUnrun, cancelWork):
-// a person's answer from its question (Branch.Answer); an event that ended a wait in the record
-// from the replay's start of that wait (Branch.Timing); a write of the daemon's own session that
-// follows the filing of its issue as a child, or follows such a write, from the event before it
-// (anchorFollow); every other at its recorded time.
+// worker touched, whose own course the record's times hold. An architect's filing of a child under
+// its own issue that no piece places, made after the issue's first start in the record, is placed
+// from the replay's start of the issue (anchorStart). Every other event is placed by its anchor,
+// and so is a worker's event whose piece the replay does not run (placeUnrun, cancelWork): a
+// person's answer from its question (Branch.Answer); an event that ended a wait in the record from
+// the replay's start of that wait (Branch.Timing); a write of the daemon's own session, the window's
+// project's, that follows the filing of its issue as a child, or follows such a write, from the
+// event before it (anchorFollow); every other at its recorded time. Another project's daemon is
+// another daemon, whose writes on its own issues are placed as any other event is.
 func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, error) {
 	s.events = make([]scriptEvent, 0, len(events))
 	for _, read := range events {
@@ -653,6 +681,10 @@ func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, err
 			if p := s.workPiece(ran, event.at); p != nil {
 				event.piece = p
 				p.acts = append(p.acts, act{kind: actEvent, offset: event.at.Sub(p.start), rec: event.at, event: i})
+			} else if start, started := runStartAt(t.Issues[ran.Issue], event.at); started && ran.Role == claim.RoleArchitect &&
+				filesChildUnder(event, ran.Issue) {
+				event.anchor, event.startOf, event.offset = anchorStart, ran.Issue, event.at.Sub(start)
+				continue
 			}
 		}
 		if question, ok := questions[i]; ok && event.piece == nil && !s.events[question].at.Before(t.From) {
@@ -666,10 +698,12 @@ func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, err
 	}
 	for i := range s.events {
 		event := &s.events[i]
-		if event.at.Before(t.From) || event.prev < 0 || event.anchor != anchorTime || !daemonWrote(event.env.actor, event.env.key) {
+		if event.at.Before(t.From) || event.prev < 0 || event.anchor != anchorTime || event.env.project != t.Project ||
+			!daemonWrote(event.env.actor, event.env.key) {
 			continue
 		}
-		if before := &s.events[event.prev]; before.piece != nil && before.piece.issue != event.env.key || before.anchor == anchorFollow {
+		if before := &s.events[event.prev]; before.piece != nil && before.piece.issue != event.env.key || before.anchor == anchorFollow ||
+			before.anchor == anchorStart {
 			event.anchor, event.on, event.offset = anchorFollow, event.prev, event.at.Sub(before.at)
 			before.followers = append(before.followers, i)
 		}
@@ -685,6 +719,37 @@ func movesWithWork(event *scriptEvent, ran SessionClaim) bool {
 		return true
 	}
 	return event.parsed.Type == "issue.created" && event.parsed.Issue != nil && event.parsed.Issue.Parent == ran.Issue
+}
+
+// filesChildUnder says whether event files a child under key: the child's issue.created naming key
+// its parent, or a child.added on key.
+func filesChildUnder(event *scriptEvent, key string) bool {
+	switch event.env.kind {
+	case "issue.created":
+		return event.parsed.Issue != nil && event.parsed.Issue.Parent == key
+	case "child.added":
+		return event.env.key == key
+	}
+	return false
+}
+
+// runStartAt is when iss took its first slot in the run it stands in at at, the run of its entry at
+// at, where the record shows that slot at or before at: the first slot that begins at or after that
+// entry or had not ended by it; false where iss is nil or the record shows no such slot.
+func runStartAt(iss *IssueTrace, at time.Time) (time.Time, bool) {
+	if iss == nil {
+		return time.Time{}, false
+	}
+	entry := iss.entryAt(at)
+	for _, span := range iss.Slots {
+		if span.Start.After(at) {
+			break
+		}
+		if entry == nil || !span.Start.Before(entry.At) || span.End.IsZero() || span.End.After(entry.At) {
+			return span.Start, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // markHeldRootTodos marks each event in which the daemon's own session set a held root todo

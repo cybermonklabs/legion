@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -285,5 +286,128 @@ func TestAnAnswerComesFromItsQuestionsNewPlace(t *testing.T) {
 			t.Errorf("the copy of Dispatch holds the %s of ACME-2 applied at %s, want once, at %s", want.kind, describeTimes(applied),
 				describeTimes(want.at))
 		}
+	}
+}
+
+// lateChildFilingWindow is a window from 09:00 to 14:00 recorded under main with a cap of 2, its
+// inputs reaching back to the daemon's boot at 06:00. ACME-1, a root promoted at 06:05, implements
+// from 07:00 to the window's end, holding a slot. ACME-2, a root promoted at 06:30, holds the other
+// slot to its review's approval at 10:00, and merges at 12:00. ACME-3, which a person files todo
+// under ACME-1 at 09:30, takes that slot at 10:00, its first start. At 10:20 ACME-3's architect,
+// whose session Dispatch names under the title `Legion architect · ACME-3`, files ACME-4 under it in
+// triage, while only ACME-3's planner has work: no work segment of ACME-3's places the filing. Under
+// keep-past-review ACME-2 keeps its slot past its review to its merge at noon, so ACME-3 can take
+// its first start only then, two hours late.
+func lateChildFilingWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(14, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(2)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a1", clock(6, 5), clock(6, 20), moveAt(7, 0, phase.Implementing, workflow.TriggerPlannerCompleted))
+	rootThrough(b, "ACME-2", "a2", clock(6, 30), clock(6, 45), moveAt(7, 15, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 45, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 15, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 0, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 20, phase.Retro, workflow.TriggerSignOff),
+		moveAt(10, 40, phase.Merging, workflow.TriggerRetroCompleted), moveAt(12, 0, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(12, 0), "ACME-2", record.DoneStatus)
+	b.file(clock(9, 30), "ACME-3", filing{Title: "Make the shelf map", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a3"})
+	b.childStarts(clock(10, 0), "ACME-3")
+	b.filedBy(clock(10, 20), "ACME-4", filing{Title: "Label the shelves", Parent: "ACME-3", Tree: "ACME-1", Status: "triage", Rank: "a4"},
+		recordedSession("ACME-3", claim.RoleArchitect, "00000000-0000-4000-8000-0000000000c3"))
+	return b.build()
+}
+
+// An architect's filing of a child under its own issue that no work segment of the issue places,
+// made after the issue's first start in the record, enters at its recorded offset from the replay's
+// first start of the issue, or at its recorded time where that is later (spec R2: a fact that
+// depends on a start moves with that start). The child's open status holds the issue's first start
+// (an issue waits for the Dispatch children under it), so a filing applied before the replay starts
+// the issue would hold a start the record made before the filing. The test replays
+// lateChildFilingWindow under keep-past-review: ACME-3 takes its first start at noon, and ACME-4 is
+// filed 20 minutes after it, at 12:20. It fails where the filing keeps its recorded time, for which
+// ACME-4 is filed at 10:20, while ACME-3 waits for its slot, and holds ACME-3's start to the window's
+// end.
+func TestAnArchitectsFilingUnderItsIssueMovesWithTheIssuesStart(t *testing.T) {
+	log, copied := replayCopied(t, lateChildFilingWindow(t), "keep-past-review")
+	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+		t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
+	}
+	if filed, want := eventsApplied(t, copied, "ACME-4", "issue.created"), []time.Time{clock(12, 20)}; !slices.EqualFunc(filed, want, time.Time.Equal) {
+		t.Errorf("ACME-4 was filed at %s, want at %s, 20 minutes after ACME-3's start", describeTimes(filed), describeTimes(want))
+	}
+}
+
+// skippedLoopChildWindow is a window from 09:00 to 14:00 recorded under legion-v20.42.5, its inputs
+// reaching back to the daemon's boot at 06:00. ACME-1, a root promoted at 06:05, moves into testing
+// at 08:00 and into accepting at 08:20, and a conflict moves it back to implementing at 09:10; it is
+// back in accepting at 10:20, and merges at 11:20. Inside that loop, at 10:15, its architect files
+// ACME-2 under it in triage, and at 10:16 the daemon's session writes ACME-2 todo (the architect's
+// release), and ACME-2 starts. A person closes ACME-2 at 10:35. ACME-1's stretch from 10:00 is the
+// window's one stretch in the fit, and it ends in no conflict, so the fitted chance is 0.
+func skippedLoopChildWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(14, 0))
+	b.reaches(3 * time.Hour)
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a1", clock(6, 5), clock(6, 20), moveAt(7, 0, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(8, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 10, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(8, 20, phase.Accepting, workflow.TriggerReviewApproved), moveAt(9, 10, phase.Implementing, workflow.TriggerConflict),
+		moveAt(10, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 10, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 20, phase.Accepting, workflow.TriggerReviewApproved), moveAt(11, 0, phase.Retro, workflow.TriggerSignOff),
+		moveAt(11, 10, phase.Merging, workflow.TriggerRetroCompleted), moveAt(11, 20, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(11, 20), "ACME-1", record.DoneStatus)
+	b.filedBy(clock(10, 15), "ACME-2", filing{Title: "Add shelf labels", Parent: "ACME-1", Tree: "ACME-1", Status: "triage", Rank: "b2"},
+		b.session("ACME-1", claim.RoleArchitect))
+	b.daemonWrites(clock(10, 16), "ACME-2", "todo")
+	b.childStarts(clock(10, 16), "ACME-2")
+	b.edit(clock(10, 35), "ACME-2", setStatus(record.DoneStatus))
+	b.leaves(clock(10, 35), "ACME-2", record.DoneStatus)
+	return b.build()
+}
+
+// A recorded conflict loop the replay passes over takes none of its issue's acts on other issues
+// with it (assumption 3): a filing of a child, its release, a link or an edit of another issue keeps
+// its recorded time, while the loop's own work drops out, and the issue does not leave the workflow
+// before the entry of a child that the record filed under it before its own leave, as the daemon
+// holds a merged issue's close while an issue beneath it is in the workflow. The test replays
+// skippedLoopChildWindow under legion-v20.42.5: ACME-1 draws no conflict at 09:10 and runs on past
+// its loop to merging by 10:10, but does not close there; ACME-2 is filed at 10:15, as recorded,
+// the replay's daemon records it at 10:16, at its release, and ACME-1 moves to done only after
+// that. ACME-2 then waits beneath its parent, which the daemon has accepted (its own hold of such a
+// child), until the person closes it. It fails where ACME-1 closes before the filing, for which
+// ACME-2 is filed under a tree no longer running and the replay never records it.
+func TestAChildFiledInASkippedLoopEntersAtItsRecordedTime(t *testing.T) {
+	var copied *shadow
+	var entered time.Time
+	out := t.TempDir()
+	cfg := RunConfig{Window: skippedLoopChildWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: out}
+	cfg.atStart = func(s *shadow) { copied = s }
+	cfg.atSettled = func(ctx context.Context, st *store.Store, at time.Time) error {
+		if !entered.IsZero() {
+			return nil
+		}
+		var recorded int
+		if err := st.Pool().QueryRow(ctx, `select count(*) from issues where key = $1`, "ACME-2").Scan(&recorded); err != nil {
+			return err
+		}
+		if recorded > 0 {
+			entered = at
+		}
+		return nil
+	}
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("replay skippedLoopChildWindow under legion-v20.42.5: %v", err)
+	}
+	if filed, want := eventsApplied(t, copied, "ACME-2", "issue.created"), []time.Time{clock(10, 15)}; !slices.EqualFunc(filed, want, time.Time.Equal) {
+		t.Errorf("ACME-2 was filed at %s, want at %s, its recorded time", describeTimes(filed), describeTimes(want))
+	}
+	if !entered.Equal(clock(10, 16)) {
+		t.Errorf("the replay's daemon first records ACME-2 at %s, want at 10:16, its release", stamp(entered))
+	}
+	done := linesAt(replayLog(t, out), func(line replayLine) bool {
+		return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.To == string(phase.Done)
+	})
+	if len(done) != 1 || done[0].Before(clock(10, 16)) {
+		t.Errorf("ACME-1 moved to done at %s, want once, no sooner than its child's entry at 10:16", describeTimes(done))
 	}
 }

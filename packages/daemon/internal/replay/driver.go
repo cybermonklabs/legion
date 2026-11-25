@@ -193,10 +193,12 @@ type driver struct {
 	started   map[string]time.Time
 	childWait map[string]time.Time
 	placed    map[int]time.Time
-	// anchored is the events whose place waits for the replay's start of the wait they ended, and
-	// reopens, by issue, each reopen of the daemon's own session that waits for the replay's issue
-	// to leave the workflow (defersReopen).
+	// anchored is the events whose place waits for the replay's start of the wait they ended,
+	// starting, by issue, the filings whose place waits for the replay's first start of that issue
+	// (anchorStart, placeStarted), and reopens, by issue, each reopen of the daemon's own session
+	// that waits for the replay's issue to leave the workflow (defersReopen).
 	anchored []int
+	starting map[string][]int
 	reopens  map[string][]int
 	// serving is when the daemon process that runs at the window's start begins to serve, its
 	// recorded reconcile where that comes after the start (servesFrom), zero where it serves from
@@ -307,7 +309,8 @@ type Divergence struct {
 	// already past the event's sequence.
 	Fenced int `json:"fenced"`
 	// Unanchored is how many recorded events never took a place, their anchor never reached in
-	// the replay before the window's end.
+	// the replay before the window's end: the start of the wait they ended, or the first start of
+	// the issue an architect's filing under it waits for (anchorStart).
 	Unanchored int `json:"unanchored"`
 	// Finished is how many outbox rows the stub finished without acting, by the assumption each
 	// rests on.
@@ -567,6 +570,7 @@ func (d *driver) observe() error {
 				for _, root := range d.firstStarts.take(key) {
 					d.rerank(root)
 				}
+				d.placeStarted(key)
 			}
 			if d.released {
 				d.used[11] = true
@@ -847,10 +851,16 @@ func (d *driver) run() error {
 		}
 		d.dirty = true
 	}
-	for _, i := range d.anchored {
-		if _, placed := d.placed[i]; !placed {
-			d.counters.Unanchored++
+	unplaced := func(events []int) {
+		for _, i := range events {
+			if _, placed := d.placed[i]; !placed {
+				d.counters.Unanchored++
+			}
 		}
+	}
+	unplaced(d.anchored)
+	for _, waiting := range d.starting {
+		unplaced(waiting)
 	}
 	return d.settle()
 }
@@ -1005,11 +1015,13 @@ func (d *driver) arrivalBefore(key string) time.Time {
 }
 
 // placeByAnchor places the recorded event events[i] by its anchor, as no piece of work places it:
-// at its recorded time, from its question (Branch.Answer) or from the replay's start of the wait it
-// ended (Branch.Timing), as the branch asks; and never before the clock's instant, which an event
-// whose piece the replay does not run can stand past by then (placeUnrun). A person's answer under
-// answer offset waits for its question to place it, and a write of the daemon's own session that
-// follows a child's filing waits for that filing (anchorFollow, placeFollowers).
+// at its recorded time, from its question (Branch.Answer), from the replay's start of the wait it
+// ended (Branch.Timing), as the branch asks, or from the replay's first start of the issue it files
+// a child under (anchorStart); and never before the clock's instant, which an event whose piece the
+// replay does not run can stand past by then (placeUnrun). A person's answer under answer offset
+// waits for its question to place it, a write of the daemon's own session that follows a child's
+// filing waits for that filing (anchorFollow, placeFollowers), and a filing whose issue the replay
+// has not started in its run waits for that start (placeStarted).
 func (d *driver) placeByAnchor(i int) {
 	event := &d.script.events[i]
 	at := maxTime(d.clock.Instant(), event.at)
@@ -1022,6 +1034,25 @@ func (d *driver) placeByAnchor(i int) {
 			d.placeUnbegun(i)
 			return nil
 		}})
+	case event.anchor == anchorStart:
+		if started, ok := d.started[event.startOf]; ok {
+			d.placeEvent(i, maxTime(at, started.Add(event.offset)))
+			return
+		}
+		d.starting[event.startOf] = append(d.starting[event.startOf], i)
+	}
+}
+
+// placeStarted places each filing that waited for key's first start in the replay (anchorStart),
+// key having just taken its first slot of its run: each at its recorded offset from the record's
+// first start of the issue, from this moment, or at its recorded time where that is later.
+func (d *driver) placeStarted(key string) {
+	waiting := d.starting[key]
+	delete(d.starting, key)
+	now := d.clock.Instant()
+	for _, i := range waiting {
+		event := &d.script.events[i]
+		d.placeEvent(i, maxTime(event.at, now.Add(event.offset)))
 	}
 }
 
@@ -1183,13 +1214,16 @@ func (d *driver) waitStart(wait waitAnchor) (time.Time, bool) {
 
 // dispatchEvent applies the recorded event events[i] to the shadow at the clock's instant, read
 // against its issue's event before it in the record's order (recordedBefore), and answers the event
-// as the replay applies it; nil for an event of the daemon's own, which the replay makes again from
-// its own outbox, and which the shadow does not apply. A reopen of the daemon's own session that
-// waits for the replay's issue to leave the workflow (defersReopen) is not applied: it answers
-// deferred, and waits to be queued again.
+// as the replay applies it; nil for an event of the daemon's own, the session of the window's
+// project's daemon on an issue of that project, which the replay makes again from its own outbox,
+// and which the shadow does not apply. Another project's daemon is another daemon the replay does
+// not run: its writes on its own issues, an outside blocker's close among them, are applied as
+// recorded, as a person's are. A reopen of the daemon's own session that waits for the replay's
+// issue to leave the workflow (defersReopen) is not applied: it answers deferred, and waits to be
+// queued again.
 func (d *driver) dispatchEvent(i int) (applied []byte, deferred bool, err error) {
 	event := &d.script.events[i]
-	if daemonWrote(event.env.actor, event.env.key) {
+	if event.env.project == d.window.Project && daemonWrote(event.env.actor, event.env.key) {
 		if !d.keepsDaemonEvent(event) {
 			return nil, false, nil
 		}
@@ -1428,7 +1462,8 @@ func (d *driver) boot(boot Boot) error {
 		}
 		return nil
 	}})
-	if read := maxTime(maxTime(bootRead(boot), last), d.clock.Instant()); read.Before(d.window.End()) && d.conflicts.drawsAtBoots() {
+	if read := maxTime(maxTime(bootRead(boot), last), d.clock.Instant()); read.Before(d.window.End()) &&
+		d.conflicts.Conflicts > 0 && !d.cfg.Branch.recordedConflicts() {
 		d.push(&item{at: read, class: classAct, rec: read, order: lineOrder + 1, run: d.bootConflicts})
 	}
 	return nil

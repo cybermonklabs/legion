@@ -251,7 +251,7 @@ func (b *windowBuilder) build() Window {
 			Notify     bool       `json:"notify"`
 			CreatedAt  time.Time  `json:"created_at"`
 			Payload    any        `json:"payload"`
-		}{ID: int64(100 + i + 1), IssueKey: event.key, Project: builtProject, Seq: event.seq, Type: event.kind,
+		}{ID: int64(100 + i + 1), IssueKey: event.key, Project: builtProjectOf(event.key), Seq: event.seq, Type: event.kind,
 			Actor: event.actor, Notify: true, CreatedAt: event.at, Payload: event.payload})
 		if err != nil {
 			b.t.Fatalf("write the event of %s at %s: %v", event.key, event.at.Format(time.RFC3339), err)
@@ -272,6 +272,14 @@ func (b *windowBuilder) build() Window {
 		b.t.Fatalf("read the built window back: %v", err)
 	}
 	return read
+}
+
+// builtProjectOf is the Dispatch project key names: the window's own (builtProject) for its issues,
+// and another project's for an issue of that project, which the window holds where an issue of its
+// own names it, as a blocker the daemon of that project works.
+func builtProjectOf(key string) string {
+	project, _, _ := strings.Cut(key, "-")
+	return project
 }
 
 // jsonLine is one line of a daemon's log at at, as the daemon's JSON handler writes it.
@@ -421,7 +429,7 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 		Priority:      issue.Priority,
 		Parent:        parent,
 		Primary:       b.artifact(key),
-		Project:       builtProject,
+		Project:       builtProjectOf(key),
 		Rank:          issue.Rank,
 		ResolvedRepo:  builtRepository,
 		Status:        issue.Status,
@@ -457,8 +465,8 @@ func (b *windowBuilder) filedBy(at time.Time, key string, f filing, actor eventA
 		b.t.Fatalf("%s is filed twice", key)
 	}
 	var number int
-	if _, err := fmt.Sscanf(key, builtProject+"-%d", &number); err != nil {
-		b.t.Fatalf("%s is no key of project %s: %v", key, builtProject, err)
+	if _, err := fmt.Sscanf(key, builtProjectOf(key)+"-%d", &number); err != nil {
+		b.t.Fatalf("%s is no issue key: %v", key, err)
 	}
 	tree, generation := f.Tree, 1
 	if tree == "" {
@@ -2088,8 +2096,7 @@ func TestAnOperatorsFreshSessionRunsTheWorkerOutsideTheFence(t *testing.T) {
 // merging at 10:25 and 10:30. A daemon process stops and the next starts at 10:45, and conflicts
 // move ACME-1 back at 10:50 and ACME-2 at 10:55; each loop is 15 minutes in each phase, back to
 // merging at 12:05 and 12:10, where each stands at the window's end. Both stretches inside the
-// window end in a conflict, so the fitted chance is 1, and both conflicts come within 15 minutes
-// after the boot, so merging's share of conflicts after a boot is 1.
+// window span the boot and end in a conflict, so the fitted chance is 1.
 func bootConflictsWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.window.Parts[0].Rule = "legion-v20.42.5"
@@ -2115,13 +2122,12 @@ func bootConflictsWindow(t *testing.T) Window {
 }
 
 // A drawn conflict of a stretch that spans a recorded boot enters at the first boot inside the
-// stretch, in the share of the window's conflicts after a boot of the phase the stretch stands in
-// there (assumption 3): the boot re-reads each pull request, so its read sees the conflict. The
-// chance of the stretch does not change, only its moment. The test replays bootConflictsWindow under
-// legion-v20.42.5 at the seeds 1 to 3: both merging stretches span the boot at 10:45, merging's
-// recorded conflicts all came after it, so both draw there at their fitted chance of 1, and both
-// issues move back to implementing at 10:45. It fails where a conflict enters at its stretch's end,
-// for which ACME-1 moves back at 10:50 and ACME-2 at 10:55.
+// stretch (assumption 3): the boot re-reads each pull request, so its read sees the conflict, at the
+// chance the model gives a stretch that spans a boot. The test replays bootConflictsWindow under
+// legion-v20.42.5 at the seeds 1 to 3: both merging stretches span the boot at 10:45, so both draw
+// there at their fitted chance of 1, and both issues move back to implementing at 10:45. It fails
+// where a conflict enters at its stretch's end, for which ACME-1 moves back at 10:50 and ACME-2 at
+// 10:55.
 func TestADrawnConflictEntersAtTheBootInsideItsStretch(t *testing.T) {
 	for seed := int64(1); seed <= 3; seed++ {
 		_, log, _ := replayLoopWindow(t, bootConflictsWindow(t), "legion-v20.42.5", seed)
@@ -2234,8 +2240,7 @@ func TestAnUnrunGenerationsWorkMovesAtTheReplaysGeneration(t *testing.T) {
 // and works 10 minutes in testing and in reviewing to accepting at 10:20. A daemon process stops and
 // the next starts at 10:45, and at 10:50 a conflict moves ACME-2 back from accepting to implementing,
 // where it implements to the window's end. ACME-2's is the window's one stretch that begins and ends
-// inside it, so the fitted chance is 1, and accepting's one recorded conflict comes within 15
-// minutes after the boot.
+// inside it, so the fitted chance is 1.
 func bootAcceptingWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.window.Parts[0].Rule = "legion-v20.42.5"
@@ -2258,12 +2263,12 @@ func bootAcceptingWindow(t *testing.T) Window {
 
 // A boot draws every stretch under way, whatever piece of its work runs (driver.bootConflicts): an
 // issue that stands in accepting at a boot, whose stretch the record ends in merging, draws there at
-// merging's chance, in accepting's share of conflicts after a boot (assumption 3). The test replays
+// merging's chance for a stretch that spans a boot (assumption 3). The test replays
 // bootAcceptingWindow under legion-v20.42.5 at the seeds 1 to 3: ACME-1's stretch, under way in its
 // architect's accepting at the boot at 10:45, draws its conflict there at the fitted chance of 1,
-// accepting's one recorded conflict having come after a boot, and ACME-1 moves back from accepting to
-// implementing at 10:45. It fails where a boot draws only a running piece whose own move ends its
-// stretch, for which ACME-1 is signed off at 11:30 and moves back from merging at 12:30.
+// and ACME-1 moves back from accepting to implementing at 10:45. It fails where a boot draws only a
+// running piece whose own move ends its stretch, for which ACME-1 is signed off at 11:30 and moves
+// back from merging at 12:30.
 func TestAStretchUnderWayDrawsAtABootWhateverPieceRuns(t *testing.T) {
 	for seed := int64(1); seed <= 3; seed++ {
 		_, log, _ := replayLoopWindow(t, bootAcceptingWindow(t), "legion-v20.42.5", seed)
@@ -2277,78 +2282,6 @@ func TestAStretchUnderWayDrawsAtABootWhateverPieceRuns(t *testing.T) {
 			t.Errorf("at seed %d ACME-1 moved back by conflict at %s, from accepting at %s; want once, from accepting at 10:45:00, the boot", seed,
 				describeTimes(back), describeTimes(from))
 		}
-	}
-}
-
-// bootShareStretches is how many stretches of bootShareWindow span its boot.
-const bootShareStretches = 40
-
-// bootShareWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5 with a cap of 50,
-// its inputs reaching back to the daemon's boot at 06:00, in which half the conflicts out of testing
-// come within 15 minutes after a boot. A daemon process stops and the next starts at 10:30. ACME-91
-// and ACME-92, roots promoted at 06:00, move into testing at 09:10 and 10:20, and conflicts move them
-// back to implementing at 09:40, with no boot near, and at 10:35, five minutes after the boot; each
-// implements to the window's end. Theirs are the window's only stretches that begin and end inside
-// it, so the fitted chance is 1. ACME-1 to ACME-40, roots promoted at 06:00, move into testing at
-// 08:50, and their testers fail them at 11:00: bootShareStretches stretches that span the boot.
-func bootShareWindow(t *testing.T) Window {
-	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
-	b.window.Parts[0].Rule = "legion-v20.42.5"
-	b.reaches(3 * time.Hour)
-	b.capped(50)
-	b.boot(clock(6, 0))
-	for i := 1; i <= bootShareStretches; i++ {
-		rootThrough(b, fmt.Sprintf("ACME-%d", i), fmt.Sprintf("a%02d", i), clock(6, 0), clock(6, 10),
-			moveAt(6, 20, phase.Implementing, workflow.TriggerPlannerCompleted), moveAt(8, 50, phase.Testing, workflow.TriggerImplementationReady),
-			moveAt(11, 0, phase.Implementing, workflow.TriggerTesterFailed))
-	}
-	for i, start := range []time.Time{clock(9, 10), clock(10, 20)} {
-		end := clock(9, 40)
-		if i == 1 {
-			end = clock(10, 35)
-		}
-		rootThrough(b, fmt.Sprintf("ACME-%d", 91+i), fmt.Sprintf("b%d", i), clock(6, 0), clock(6, 10),
-			moveAt(6, 20, phase.Implementing, workflow.TriggerPlannerCompleted), builtMove{start, phase.Testing, workflow.TriggerImplementationReady},
-			builtMove{end, phase.Implementing, workflow.TriggerConflict})
-	}
-	b.stopped(clock(10, 30))
-	b.boot(clock(10, 30))
-	return b.build()
-}
-
-// A boot draws a phase's stretches in the share of the window's conflicts out of that phase that
-// came within 15 minutes after a boot (assumption 3): the rest draw at their ends, at the same
-// chance, so the boot moves the moment of that share of the conflicts and not their number. The test
-// replays bootShareWindow under legion-v20.42.5 at the seeds 1 to 3: each of the forty stretches in
-// testing at the boot at 10:30 conflicts, at the fitted chance of 1, either at the boot or at its end
-// at 11:00, and over the 120 stretches those at the boot are about half, testing's share: between 42
-// and 78, more than three standard deviations of a draw at a half each side of 60. It fails where a
-// phase's conflicts all enter at the boot, as an all-or-nothing reading of clustering has them.
-func TestABootDrawsItsPhasesShareOfConflicts(t *testing.T) {
-	window := bootShareWindow(t)
-	atBoot := 0
-	for seed := int64(1); seed <= 3; seed++ {
-		_, log, _ := replayLoopWindow(t, window, "legion-v20.42.5", seed)
-		boot, end := 0, 0
-		for i := 1; i <= bootShareStretches; i++ {
-			key := fmt.Sprintf("ACME-%d", i)
-			back := linesAt(log, func(line replayLine) bool {
-				return line.Msg == phaseChangedLine && line.Issue == key && line.From == string(phase.Testing) && line.Trigger == workflow.TriggerConflict
-			})
-			switch {
-			case len(back) == 1 && back[0].Equal(clock(10, 30)):
-				boot++
-			case len(back) == 1 && back[0].Equal(clock(11, 0)):
-				end++
-			default:
-				t.Errorf("at seed %d %s moved back from testing by conflict at %s, want once, at the boot or at 11:00", seed, key, describeTimes(back))
-			}
-		}
-		t.Logf("at seed %d %d stretches conflicted at the boot and %d at their ends", seed, boot, end)
-		atBoot += boot
-	}
-	if atBoot < 42 || atBoot > 78 {
-		t.Errorf("%d of the 120 stretches conflicted at the boot, want between 42 and 78, about testing's share of a half", atBoot)
 	}
 }
 

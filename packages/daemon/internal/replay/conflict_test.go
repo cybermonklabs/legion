@@ -1335,3 +1335,262 @@ func TestTheRecordedConflictsBranchKeepsTheRecordsConflicts(t *testing.T) {
 		t.Errorf("the replay refused %+v", refused)
 	}
 }
+
+// drawRateAt is how often, over 4000 seeds, the stretch of a piece in ph that ends at end draws a
+// conflict in a run of in's window, and the chance the run's draw read: one draw a seed, through
+// the driver's own draw of a stretch at its end (drawStretch), every count of it started afresh. M
+// is 0, the window's merges holding no commit.
+func drawRateAt(t *testing.T, in *windowInputs, key string, ph phase.Phase, end time.Time) (rate, chance float64) {
+	t.Helper()
+	const samples = 4000
+	source := rand.NewPCG(0, 0)
+	d := driver{trace: in.trace, merges: in.merges, conflicts: in.conflicts, drawSource: source, draws: rand.New(source),
+		stretchDraws: map[stretchDraw]int{}, lastDraw: map[string]stretchDraw{}, cfg: RunConfig{onDraw: func(draw conflictDraw) { chance = draw.chance }}}
+	p := &piece{issue: key, phase: ph, start: end.Add(-time.Minute)}
+	conflicts := 0
+	for seed := range int64(samples) {
+		d.cfg.Seed = seed
+		clear(d.stretchDraws)
+		if d.drawStretch(p, p.start, end) {
+			conflicts++
+		}
+	}
+	return float64(conflicts) / samples, chance
+}
+
+// releasePartsWindow is a window from 09:00 to 15:00 recorded under legion-v20.42.5 in two release
+// parts, early-release to 12:00 and late-release from it, with a cap of 20, its inputs reaching
+// back to the daemon's boot at 06:00. In each part four roots are promoted on the hour, 09:00 and
+// 12:00, and work 5 minutes in each phase to merging, where their stretches end 5 minutes in, at
+// 09:40 and at 12:40. One stretch of the early part and three of the late part end in a conflict,
+// whose issue implements to the window's end; the others merge. The window's merges hold no commit
+// of the base branch, so M is 0 everywhere, and the fit gives each part the share of its merging
+// stretches that conflicted: 0.25 in the early part and 0.75 in the late part.
+func releasePartsWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(15, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(20)
+	b.boot(clock(6, 0))
+	early := &b.window.Parts[0]
+	early.Release, early.To, early.Rule = "early-release", clock(12, 0), "legion-v20.42.5"
+	late := *early
+	late.From, late.To, late.Release = clock(12, 0), clock(15, 0), "late-release"
+	b.window.Parts = append(b.window.Parts, late)
+	for part := range 2 {
+		for i := range 4 {
+			key := fmt.Sprintf("ACME-%d", 1+4*part+i)
+			at := func(minute int) time.Time { return clock(9+3*part, minute) }
+			to, trigger := phase.Done, workflow.TriggerPullRequestMerged
+			if i < 1+2*part {
+				to, trigger = phase.Implementing, workflow.TriggerConflict
+			}
+			rootThrough(b, key, fmt.Sprintf("a%d", 1+4*part+i), at(0), at(5), builtMove{at(10), phase.Implementing, workflow.TriggerPlannerCompleted},
+				builtMove{at(15), phase.Testing, workflow.TriggerImplementationReady}, builtMove{at(20), phase.Reviewing, workflow.TriggerTesterPassed},
+				builtMove{at(25), phase.Accepting, workflow.TriggerReviewApproved}, builtMove{at(30), phase.Retro, workflow.TriggerSignOff},
+				builtMove{at(35), phase.Merging, workflow.TriggerRetroCompleted}, builtMove{at(40), to, trigger})
+			if to == phase.Done {
+				b.leaves(at(40), key, record.DoneStatus)
+			}
+		}
+	}
+	return b.build()
+}
+
+// The conflict model fits merging's rate for each release part of the window (assumption 3): a
+// release that posts the merger's conflicts records them as conflicts, and one that does not
+// records them as send-backs, so one rate over both parts counts the earlier part's conflicts twice
+// and the later part's half. A stretch that ends in merging draws at the rate of the part its end
+// falls in, under every rule, and the run and the comparison print each part's rate. The test fits
+// releasePartsWindow: the fit names both releases, and a stretch ending in merging at 09:40 draws at
+// 0.25 and one ending at 12:40 at 0.75, by the chance the draw reads and by its count over 4000
+// seeds, within 0.04 (about six standard deviations of 4000 draws at 0.25). It then replays the
+// window under legion-v20.42.5 at the seeds 1 to 3: each draw of a stretch that ends at 09:40 reads
+// 0.25, and each draw of one that ends at 12:40 reads 0.75. It fails for one rate over both parts,
+// for which every draw reads 0.5.
+func TestTheMergingRateIsFittedForEachReleasePart(t *testing.T) {
+	window := releasePartsWindow(t)
+	in, err := newWindowInputs(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, release := range []string{"early-release", "late-release"} {
+		if !strings.Contains(in.conflicts.terms(), release) {
+			t.Errorf("the conflict model's terms name no %s: %s", release, in.conflicts.terms())
+		}
+	}
+	for _, c := range []struct {
+		key  string
+		end  time.Time
+		want float64
+	}{{"ACME-2", clock(9, 40), 0.25}, {"ACME-8", clock(12, 40), 0.75}} {
+		rate, chance := drawRateAt(t, in, c.key, phase.Merging, c.end)
+		if math.Abs(chance-c.want) > 1e-6 || math.Abs(rate-c.want) > 0.04 {
+			t.Errorf("a stretch ending in merging at %s draws at a chance of %.6f and conflicts in %.3f of 4000 seeds, want %.2f", stamp(c.end), chance,
+				rate, c.want)
+		}
+	}
+	for seed := int64(1); seed <= 3; seed++ {
+		var draws []conflictDraw
+		if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: seed,
+			Slowdown: 1, PGDSN: replayDSN(t), Out: t.TempDir(), onDraw: func(draw conflictDraw) { draws = append(draws, draw) }}); err != nil {
+			t.Fatal(err)
+		}
+		if len(draws) == 0 {
+			t.Errorf("at seed %d no stretch drew", seed)
+		}
+		for _, draw := range draws {
+			want := 0.25
+			if !draw.at.start.Before(clock(12, 0)) {
+				want = 0.75
+			}
+			if math.Abs(draw.chance-want) > 1e-6 {
+				t.Errorf("at seed %d the stretch of %s from %s draws at %.6f, want %.2f", seed, draw.at.issue, stamp(draw.at.start), draw.chance, want)
+			}
+		}
+	}
+}
+
+// bootSpanWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5 with a cap of 20,
+// its inputs reaching back to the daemon's boot at 06:00; a daemon process stops and the next
+// starts at 10:30. Sixteen roots work 5 minutes in planning and in implementing: ACME-1 to ACME-8,
+// promoted at 09:00, move into testing at 09:15 and end their stretch at 09:40, before the boot,
+// and ACME-9 to ACME-16, promoted at 10:00, move into testing at 10:15 and end it at 10:40, after
+// the boot. A conflict ends the stretches of two of the first eight and of six of the second, a
+// tester's failure the others, and each issue is back in testing 10 minutes later, to the window's
+// end. The window's merges hold no commit of the base branch, so M is 0, and the fit gives testing
+// a chance of 0.25 for a stretch that spans no boot and 0.75 for one that spans the boot.
+func bootSpanWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(20)
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.boot(clock(6, 0))
+	b.stopped(clock(10, 30))
+	b.boot(clock(10, 30))
+	for group := range 2 {
+		for i := range 8 {
+			key := fmt.Sprintf("ACME-%d", 1+8*group+i)
+			at := func(minute int) time.Time { return clock(9+group, minute) }
+			trigger := workflow.TriggerTesterFailed
+			if i < 2+4*group {
+				trigger = workflow.TriggerConflict
+			}
+			rootThrough(b, key, fmt.Sprintf("a%02d", 1+8*group+i), at(0), at(5), builtMove{at(10), phase.Implementing, workflow.TriggerPlannerCompleted},
+				builtMove{at(15), phase.Testing, workflow.TriggerImplementationReady}, builtMove{at(40), phase.Implementing, trigger},
+				builtMove{at(50), phase.Testing, workflow.TriggerImplementationReady})
+		}
+	}
+	return b.build()
+}
+
+// A boot re-reads each pull request (assumption 3), so the conflict model fits, for each phase, a
+// chance of its own for a stretch that spans a recorded boot: a stretch the replay has under way at a
+// boot draws there, once, at that chance, and conflicts at the boot; a stretch that spans no boot
+// draws at its end at the other chance. The test fits bootSpanWindow: a testing stretch that ends at
+// 09:40 with no boot draws at 0.25, by the chance its draw reads and by its count over 4000 seeds,
+// within 0.04. It then replays the window under legion-v20.42.5 at the seeds 1 to 10: each first
+// draw of a stretch of the first group reads 0.25, and one that conflicts moves its issue back at
+// 09:40, its end; each first draw of a stretch of the second group reads 0.75, and one that
+// conflicts moves its issue back at 10:30, the boot. Of the 80 draws of each group, those that
+// conflict number from 8 to 32 in the first group and from 48 to 72 in the second, each about three
+// standard deviations each side of 20 and of 60. It fails where a boot keeps the chance and moves
+// only the moment, for which every draw reads 0.5.
+func TestAStretchSpanningABootDrawsThereAtItsOwnChance(t *testing.T) {
+	window := bootSpanWindow(t)
+	in, err := newWindowInputs(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rate, chance := drawRateAt(t, in, "ACME-1", phase.Testing, clock(9, 40)); math.Abs(chance-0.25) > 1e-6 || math.Abs(rate-0.25) > 0.04 {
+		t.Errorf("a testing stretch that spans no boot draws at a chance of %.6f and conflicts in %.3f of 4000 seeds, want 0.25", chance, rate)
+	}
+	groups := []struct {
+		start, back time.Time
+		chance      float64
+		low, high   int
+	}{{clock(9, 15), clock(9, 40), 0.25, 8, 32}, {clock(10, 15), clock(10, 30), 0.75, 48, 72}}
+	conflicted := make([]int, len(groups))
+	drawn := make([]int, len(groups))
+	for seed := int64(1); seed <= 10; seed++ {
+		var draws []conflictDraw
+		out := t.TempDir()
+		if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: seed,
+			Slowdown: 1, PGDSN: replayDSN(t), Out: out, onDraw: func(draw conflictDraw) { draws = append(draws, draw) }}); err != nil {
+			t.Fatal(err)
+		}
+		log := replayLog(t, out)
+		for _, draw := range draws {
+			g := -1
+			for i, group := range groups {
+				if draw.at.start.Equal(group.start) && draw.at.n == 0 {
+					g = i
+				}
+			}
+			if g < 0 {
+				continue
+			}
+			drawn[g]++
+			if math.Abs(draw.chance-groups[g].chance) > 1e-6 {
+				t.Errorf("at seed %d the stretch of %s from %s draws at %.6f, want %.2f", seed, draw.at.issue, stamp(draw.at.start), draw.chance,
+					groups[g].chance)
+			}
+			if !draw.conflicted {
+				continue
+			}
+			conflicted[g]++
+			back := linesAt(log, func(line replayLine) bool {
+				return line.Msg == phaseChangedLine && line.Issue == draw.at.issue && line.Trigger == workflow.TriggerConflict
+			})
+			if len(back) == 0 || !back[0].Equal(groups[g].back) {
+				t.Errorf("at seed %d %s conflicted first at %s, want at %s", seed, draw.at.issue, describeTimes(back), stamp(groups[g].back))
+			}
+		}
+	}
+	for g, group := range groups {
+		if drawn[g] != 80 || conflicted[g] < group.low || conflicted[g] > group.high {
+			t.Errorf("the stretches from %s drew %d times and conflicted %d times, want 80 draws and from %d to %d conflicts", stamp(group.start),
+				drawn[g], conflicted[g], group.low, group.high)
+		}
+	}
+}
+
+// A conflict drawn in a phase is given the work of a loop drawn among every recorded loop that left
+// that phase and ends before the run-out's end, the record's reach before the window's start among
+// them (recordedLoops), with no length the record does not show. The test reads the loops of a
+// window from 09:00 to 13:00 with a run-out of two hours, its inputs reaching back to the daemon's
+// boot at 06:00: ACME-1, a root promoted at 06:05, moves into testing at 07:00, a conflict moves it
+// back at 07:10, and it is in testing again at 08:10, an hour later, all before the window's start;
+// ACME-2, a root promoted at 11:00, moves into testing at 12:00, a conflict moves it back at 12:30,
+// and it is in testing again at 14:00, in the run-out, an hour and a half later; a second conflict at
+// 14:30 leaves it implementing to the end. The loops that left testing and end are the hour and the
+// hour and a half. It fails where the pool leaves out the reach's loop.
+func TestTheLoopPoolHoldsEveryLoopThatEndsBeforeTheRunOutsEnd(t *testing.T) {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.reaches(3 * time.Hour)
+	b.window.After = Duration(2 * time.Hour)
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a1", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(7, 10, phase.Implementing, workflow.TriggerConflict),
+		moveAt(8, 10, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 20, phase.Implementing, workflow.TriggerTesterFailed))
+	rootThrough(b, "ACME-2", "a2", clock(11, 0), clock(11, 15), moveAt(11, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(12, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(12, 30, phase.Implementing, workflow.TriggerConflict),
+		moveAt(14, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(14, 30, phase.Implementing, workflow.TriggerConflict))
+	in, err := newWindowInputs(b.build())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := buildScript(in.trace, in.events, in.lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lengths []time.Duration
+	for _, loop := range recordedLoops(s) {
+		if loop.left == phase.Testing && loop.endsIn(phase.Testing) {
+			lengths = append(lengths, loop.round.recorded())
+		}
+	}
+	if want := []time.Duration{time.Hour, 90 * time.Minute}; !slices.Equal(lengths, want) {
+		t.Errorf("the loops that left testing and end give their issues work of %v, want %v", lengths, want)
+	}
+}

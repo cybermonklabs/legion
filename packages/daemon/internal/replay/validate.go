@@ -150,12 +150,16 @@ type BranchValidation struct {
 }
 
 // SeedStarts is one seed's first starts against the record's: how many issues the seed gave a
-// first slot in the window that the record gave none (ReplayOnly), and how many the record gave one
-// that the seed gave none (RecordOnly). A diagnostic, never a test of R5.
+// first slot in the window that the record gave none (ReplayOnly), how many the record gave one
+// that the seed gave none (RecordOnly), and the seed's own median absolute error of the first slot,
+// in minutes, over the issues the record or the seed gives one, a missing one standing at --to
+// (FirstSlotMedianMinutes), beside R5's statistic, the mean over the seeds of each issue's error
+// (assumption 44). A diagnostic, never a test of R5.
 type SeedStarts struct {
-	Seed       int64 `json:"seed"`
-	ReplayOnly int   `json:"replayOnly"`
-	RecordOnly int   `json:"recordOnly"`
+	Seed                   int64   `json:"seed"`
+	ReplayOnly             int     `json:"replayOnly"`
+	RecordOnly             int     `json:"recordOnly"`
+	FirstSlotMedianMinutes float64 `json:"firstSlotMedianMinutes"`
 }
 
 // TreeGate is one tree's hours of a closed design gate in a validation (Scorecard.GateClosedHours):
@@ -226,22 +230,29 @@ func ValidateBranch(recorded Scorecard, at BranchAt, replays []Scorecard) Branch
 }
 
 // startsOf is each of replays' first starts against recorded's (SeedStarts), in their order: the
-// issues each gives a first slot in the window that recorded gives none, and those recorded gives
-// one that it gives none.
+// issues each gives a first slot in the window that recorded gives none, those recorded gives one
+// that it gives none, and its median absolute error of the first slot over the issues either gives
+// one, a missing one standing at recorded's To, as R5's statistic counts it (issueErrors).
 func startsOf(recorded Scorecard, replays []Scorecard) []SeedStarts {
 	starts := make([]SeedStarts, 0, len(replays))
 	for _, card := range replays {
 		s := SeedStarts{Seed: card.Seed}
-		for key := range card.FirstSlot {
+		errors := make([]float64, 0, len(recorded.FirstSlot)+len(card.FirstSlot))
+		for key, replayed := range card.FirstSlot {
 			if _, both := recorded.FirstSlot[key]; !both {
 				s.ReplayOnly++
+				errors = append(errors, math.Abs(recorded.To.Sub(replayed).Minutes()))
 			}
 		}
-		for key := range recorded.FirstSlot {
-			if _, both := card.FirstSlot[key]; !both {
+		for key, from := range recorded.FirstSlot {
+			to, both := card.FirstSlot[key]
+			if !both {
 				s.RecordOnly++
+				to = recorded.To
 			}
+			errors = append(errors, math.Abs(to.Sub(from).Minutes()))
 		}
+		s.FirstSlotMedianMinutes = median(errors)
 		starts = append(starts, s)
 	}
 	return starts
@@ -507,15 +518,15 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 			formatNumber(b.FirstSlot.Median), formatNumber(b.FirstSlot.P90), formatNumber(b.Done.Median), formatNumber(b.Done.P90))
 	}
 	p.line("")
-	p.line("Beside the tests, and testing nothing: the first starts that only one side made, for each branch and seed.")
+	p.line("Beside the tests, and testing nothing: the first starts that only one side made and the median absolute first-slot error for each branch and seed.")
 	p.line("A first start is an issue's first slot in the window.")
 	p.line("")
-	p.line("| branch | seed | first starts the record did not make | first starts the replay did not make |")
-	p.line("| --- | --- | --- | --- |")
+	p.line("| branch | seed | first starts the record did not make | first starts the replay did not make | median first-slot error (minutes) |")
+	p.line("| --- | --- | --- | --- | --- |")
 	for _, branches := range [][]BranchValidation{v.Branches, v.Diagnostics} {
 		for _, b := range branches {
 			for _, s := range b.Starts {
-				p.line("| `%s` | %d | %d | %d |", b.Branch.Label(), s.Seed, s.ReplayOnly, s.RecordOnly)
+				p.line("| `%s` | %d | %d | %d | %s |", b.Branch.Label(), s.Seed, s.ReplayOnly, s.RecordOnly, formatNumber(s.FirstSlotMedianMinutes))
 			}
 		}
 	}

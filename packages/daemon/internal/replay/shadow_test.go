@@ -436,3 +436,43 @@ func TestTheControllersTodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		t.Errorf("the replay refused the recorded moves %+v, want none", result.Divergence.Refused)
 	}
 }
+
+// outsideDaemonWindow is a window from 09:00 to 13:00 recorded under main, its inputs reaching back
+// to the daemon's boot at 06:00, the controller ticking a minute after it and every hour. OTHER-7 is
+// an issue of another project, which runs a daemon of its own: a person files it at 06:30, and that
+// daemon's session writes it todo at 06:31, in_progress at 07:00 and done at 10:20. ACME-1, a root
+// promoted at 06:05, implements from 07:00 to the window's end. ACME-2, which a person files todo
+// under ACME-1 at 07:30, blocked by OTHER-7, starts at 11:01, at the first tick after its blocker's
+// close.
+func outsideDaemonWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.reaches(3 * time.Hour)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a1", clock(6, 5), clock(6, 20), moveAt(7, 0, phase.Implementing, workflow.TriggerPlannerCompleted))
+	b.file(clock(6, 30), "OTHER-7", filing{Title: "Publish the shelf images", Status: "triage", Rank: "x7"})
+	other := eventActor{Kind: "session", ID: dispatch.DaemonSession("OTHER-7")}
+	b.changed(clock(6, 31), "OTHER-7", other, setStatus("todo"))
+	b.changed(clock(7, 0), "OTHER-7", other, setStatus("in_progress"))
+	b.changed(clock(10, 20), "OTHER-7", other, setStatus(record.DoneStatus))
+	b.file(clock(7, 30), "ACME-2", filing{Title: "Label the shelves", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a2",
+		BlockedBy: []string{"OTHER-7"}})
+	b.childStarts(clock(11, 1), "ACME-2", "OTHER-7")
+	return b.build()
+}
+
+// Only the daemon of the window's own project writes what a replay makes again from its own outbox
+// (keepsDaemonEvent): another project's daemon is another daemon, and its writes of its own issues,
+// an outside blocker's close among them, are applied as recorded, as a person's are. The test
+// replays outsideDaemonWindow under main: OTHER-7's close by its own daemon at 10:20 reaches the
+// replay's copy of Dispatch, and ACME-2 starts at 11:01, the first tick after it. It fails where
+// that close is taken for a write of the window's own daemon and left out, for which OTHER-7 stays
+// todo and ACME-2 never starts.
+func TestAnotherProjectsDaemonWritesItsIssuesAsRecorded(t *testing.T) {
+	log, copied := replayCopied(t, outsideDaemonWindow(t), record.MainRule.Name)
+	if closed, want := eventsApplied(t, copied, "OTHER-7", "issue.closed"), []time.Time{clock(10, 20)}; !slices.EqualFunc(closed, want, time.Time.Equal) {
+		t.Errorf("OTHER-7's close was applied at %s, want at %s", describeTimes(closed), describeTimes(want))
+	}
+	if started, want := startedAt(log, "ACME-2"), []time.Time{clock(11, 1)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+		t.Errorf("ACME-2 started at %s, want at %s, the first tick after its blocker's close", describeTimes(started), describeTimes(want))
+	}
+}

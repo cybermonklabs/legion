@@ -11,14 +11,13 @@ import (
 
 // The streams of the run's seed: each draw of a replay reads a source of its own, seeded by the
 // run's seed on its own stream, so a draw of one kind never moves the draws of another: the
-// experiments' (newChain), the never-started scenario's, a stretch's conflict's, whether a boot
-// draws a stretch under way (drawsAtBoot) and the loop of a conflict it made. The last three are
-// seeded afresh at each stretch's draw, by the stretch's place as well (driver.seedDraw), so no draw
-// of a conflict reads the draws before it.
+// experiments' (newChain), the never-started scenario's, a stretch's conflict's, at its end or at a
+// boot inside it, and the loop of a conflict it made. The last two are seeded afresh at each
+// stretch's draw, by the stretch's place as well (driver.seedDraw), so no draw of a conflict reads
+// the draws before it.
 const (
 	experimentStream   = 0x7265706c6179     // "replay"
 	conflictStream     = 0x636f6e666c696374 // "conflict"
-	bootStream         = 0x626f6f74         // "boot"
 	loopStream         = 0x6c6f6f70         // "loop"
 	neverStartedStream = 0x6e65766572       // "never"
 )

@@ -3,6 +3,7 @@ package replay
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -1107,8 +1108,12 @@ func TestTheValidationCountsTheFirstStartsOnlyOneSideMade(t *testing.T) {
 		return card
 	}
 	branch := ValidateBranch(recorded, MainBranchAt, []Scorecard{seed(1, "ACME-1", "ACME-3", "ACME-4"), seed(2, "ACME-2")})
-	if want := []SeedStarts{{Seed: 1, ReplayOnly: 2, RecordOnly: 1}, {Seed: 2, RecordOnly: 1}}; !slices.Equal(branch.Starts, want) {
-		t.Errorf("the validation counts the starts %+v, want %+v", branch.Starts, want)
+	starts := make([]SeedStarts, 0, len(branch.Starts))
+	for _, s := range branch.Starts {
+		starts = append(starts, SeedStarts{Seed: s.Seed, ReplayOnly: s.ReplayOnly, RecordOnly: s.RecordOnly})
+	}
+	if want := []SeedStarts{{Seed: 1, ReplayOnly: 2, RecordOnly: 1}, {Seed: 2, RecordOnly: 1}}; !slices.Equal(starts, want) {
+		t.Errorf("the validation counts the starts %+v, want %+v", starts, want)
 	}
 	var out bytes.Buffer
 	v := Validation{Window: "acme-window", Rule: "main", Record: recorded, Branches: []BranchValidation{branch}}
@@ -1119,6 +1124,51 @@ func TestTheValidationCountsTheFirstStartsOnlyOneSideMade(t *testing.T) {
 		if !strings.Contains(out.String(), row) {
 			t.Errorf("the validation prints no %q:\n%s", row, out.String())
 		}
+	}
+}
+
+// Beside R5's first-slot test, whose statistic is, per issue, the mean over the seeds of the
+// absolute error of its first slot (assumption 44), a validation gives each seed's own median
+// absolute first-slot error, over the issues the record or that seed gives a first slot in the
+// window, a missing one standing at --to; it prints it in the table of first starts and gives it in
+// --json, and tests nothing by it. The record starts ACME-1 and ACME-2 at 10:00 in a window to
+// 13:00; seed 3 starts them at 10:10 and 10:30, errors of 10 and 30 minutes, median 20; seed 7
+// starts ACME-1 at 10:40 and not ACME-2, errors of 40 and 180, median 110. R5's statistic stays the
+// median of the issues' mean errors, 25 and 105, which is 65, and fails its bound of 60 minutes.
+func TestTheValidationGivesEachSeedsMedianFirstSlotError(t *testing.T) {
+	recorded := Scorecard{From: clock(9, 0), To: clock(13, 0), FirstSlot: map[string]time.Time{"ACME-1": clock(10, 0), "ACME-2": clock(10, 0)}}
+	cards := []Scorecard{
+		{Seed: 3, FirstSlot: map[string]time.Time{"ACME-1": clock(10, 10), "ACME-2": clock(10, 30)}},
+		{Seed: 7, FirstSlot: map[string]time.Time{"ACME-1": clock(10, 40)}},
+	}
+	branch := ValidateBranch(recorded, MainBranchAt, cards)
+	if branch.FirstSlot.Median != 65 || branch.FirstSlotPass {
+		t.Errorf("R5's first-slot test gives a median of %v and a pass of %t, want 65 and a fail", branch.FirstSlot.Median, branch.FirstSlotPass)
+	}
+	var out bytes.Buffer
+	if err := (Validation{Branches: []BranchValidation{branch}}).Write(&out, 2, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []string{"| `main@1` | 3 | 0 | 0 | 20 |", "| `main@1` | 7 | 0 | 1 | 110 |"} {
+		if !strings.Contains(out.String(), row) {
+			t.Errorf("the validation prints no %q:\n%s", row, out.String())
+		}
+	}
+	data, err := json.Marshal(branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read struct {
+		Starts []struct {
+			Seed   int64   `json:"seed"`
+			Median float64 `json:"firstSlotMedianMinutes"`
+		} `json:"starts"`
+	}
+	if err := json.Unmarshal(data, &read); err != nil {
+		t.Fatal(err)
+	}
+	if len(read.Starts) != 2 || read.Starts[0].Median != 20 || read.Starts[1].Median != 110 {
+		t.Errorf("the validation's JSON gives the seeds' medians %+v, want 20 for seed 3 and 110 for seed 7", read.Starts)
 	}
 }
 

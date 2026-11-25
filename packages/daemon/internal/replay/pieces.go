@@ -348,13 +348,24 @@ func (d *driver) nextGenerationAt(key string) (time.Time, error) {
 // nothing, where the pass made its move or nothing ended it. A merge forward retires no task: the
 // merger's merge forward of a conflict that waited for merging runs in the task the merger's start
 // gave it, whose work in merging comes after it (mergerMergesForward), and a merge forward asked at
-// once runs after the piece of its phase retired the task.
+// once runs after the piece of its phase retired the task. A recorded move to done waits for each
+// child the record brought in under the issue before that move and the replay has yet to bring in
+// (childrenToEnter): the daemon holds a merged issue's close while an issue beneath it is in the
+// workflow, and the record filed the child before the issue's done, so the replay keeps that
+// order rather than close the issue's tree under a child filed at its recorded time (assumption 3:
+// a passed-over loop's acts on other issues keep their recorded times).
 func (d *driver) endPiece(p *piece) error {
 	for _, role := range slices.Sorted(maps.Keys(p.turns)) {
 		if p.turns[role] {
 			if err := d.turnEnds(p, role); err != nil {
 				return err
 			}
+		}
+	}
+	if move := p.move(); p.ends == endMove && move != nil && cmp.Or(move.Source.To, move.To) == phase.Done {
+		if at := d.childrenToEnter(p.issue, move.At); !at.IsZero() {
+			d.push(&item{at: at, class: classAct, rec: p.end, order: lineOrder + 1, piece: p, run: func() error { return d.endPiece(p) }})
+			return nil
 		}
 	}
 	p.state, p.pending = pieceEnded, nil
@@ -374,6 +385,39 @@ func (d *driver) endPiece(p *piece) error {
 		return d.signOff(p.issue)
 	}
 	return nil
+}
+
+// childrenToEnter is the latest moment the replay placed, and has not yet applied, a recorded event
+// that brings a child under key into the workflow, made before by, key's recorded move to done:
+// the child's filing under key (filesChildUnder), or its own move to todo from a status out of the
+// workflow, as the architect's release writes it; zero for none. Such an event placed for a later
+// moment holds key's own move to done to it (endPiece), and an event the replay never placed holds
+// nothing.
+func (d *driver) childrenToEnter(key string, by time.Time) time.Time {
+	now := d.clock.Instant()
+	var latest time.Time
+	for i, at := range d.placed {
+		event := &d.script.events[i]
+		if event.dispatched || !at.After(now) || !event.at.Before(by) || !d.entersChildUnder(event, key) {
+			continue
+		}
+		latest = maxTime(latest, at)
+	}
+	return latest
+}
+
+// entersChildUnder says whether event brings a child under key into the workflow: its filing under
+// key, or a move of an issue whose parent is key to todo from a status out of the workflow.
+func (d *driver) entersChildUnder(event *scriptEvent, key string) bool {
+	if filesChildUnder(event, key) {
+		return true
+	}
+	shown := event.parsed.Issue
+	if shown == nil || shown.Parent != key || shown.Status != "todo" || event.prev < 0 {
+		return false
+	}
+	before := d.script.events[event.prev].parsed.Issue
+	return before != nil && record.OutOfWorkflow(before.Status)
 }
 
 // generationAt is the generation key's record stood at in the record at at.
