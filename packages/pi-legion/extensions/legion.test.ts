@@ -1545,7 +1545,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(calls).toEqual([]);
   });
 
-  // Contract 257: a registration that names the session this one replaces (the claim's session
+  // Contract 289: a registration that names the session this one replaces (the claim's session
   // the daemon forgot) has the role claim name it as `previous_session_id`, a hard claim as every
   // Legion claim is, so the listener hands that session's unread messages to this one.
   test("a claim whose registration replaces a session names it as the role claim's previous_session_id", async () => {
@@ -4532,7 +4532,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.exits).toEqual([]);
   });
 
-  // Contract 257: a controller registration that names the session this one replaces (the
+  // Contract 289: a controller registration that names the session this one replaces (the
   // controller session the daemon forgot) has the role claim name it as `previous_session_id`,
   // so the listener hands that session's unread messages to this one.
   test("/legion-controller-start whose registration replaces a session names it as the role claim's previous_session_id", async () => {
@@ -5722,7 +5722,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     const waits = warnings.filter((warning) => warning.message.includes("was answered 503"));
     expect(waits).toHaveLength(1);
     expect(waits[0]?.message).toContain(
-      `claim of Envoy role ${controller.token} was answered 503 at attempt 1, so nothing was claimed`
+      `claim of Envoy role ${controller.token} was answered 503 at attempt 1; claiming it again in`
     );
     expect(waits[0]?.message).toContain("the takeover record of the claim did not store");
     const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");

@@ -113,9 +113,9 @@ func TestAHandoverPassTellsAMessageToTheReplacedSessionByEitherFormOfItsTopic(t 
 		want        takenKind
 	}{
 		{"the old form of its agent subject", "notifications.agent.ses_gone", takenDirectCopy},
-		{"the new form under a project", "notifications.agent.INFRA.ses_gone", takenDirectCopy},
+		{"the new form under a project", "notifications.agent.ACME.ses_gone", takenDirectCopy},
 		{"another session's agent subject", "notifications.agent.ses_other", takenNone},
-		{"another session's agent subject in the new form", "notifications.agent.INFRA.ses_other", takenNone},
+		{"another session's agent subject in the new form", "notifications.agent.ACME.ses_other", takenNone},
 		{"a topic the session followed", "notifications.github.owner.repo.push", takenNone},
 	} {
 		t.Run(c.name, func(t *testing.T) {

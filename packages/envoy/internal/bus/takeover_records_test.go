@@ -124,3 +124,66 @@ func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 		t.Fatalf("after a write to the finished record's subject the read answered %+v with %d reads of it, want the write, read once", after[finished], reads[finished])
 	}
 }
+
+// A handover record names its role, its previous session and its successor in its subject alone:
+// its stored body holds neither the role nor the previous session, so a listener from before
+// handover records, which leaves out a body naming no role, never runs its passes as a takeover
+// record's, and this client reads both back from the subject. A role under a project, two tokens,
+// reads back whole; a second write of the handover record, a claim made again, lands nothing over
+// the first; a takeover record of a claim that named no session it replaces names no successor.
+func TestAHandoverRecordNamesItsRoleAndSessionsInItsSubjectAlone(t *testing.T) {
+	uri := testnats.URL(t)
+	client, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	const role, previous, successor = "ACME.reviewer", "ses_replaced", "ses_successor"
+	subject := HandoverSubject(role, previous, successor)
+	if err := client.WriteHandoverRecord(ctx, subject, TakeoverRecord{Role: role, Previous: previous, ClaimedAt: 1, Next: 4}); err != nil {
+		t.Fatalf("write the handover record: %v", err)
+	}
+	if err := client.WriteHandoverRecord(ctx, subject, TakeoverRecord{Role: role, Previous: previous, ClaimedAt: 2}); err != nil {
+		t.Fatalf("write the handover record again: %v", err)
+	}
+	plain := TakeoverSubject(role, previous, "attempt1")
+	if err := client.WriteTakeoverRecord(ctx, plain, TakeoverRecord{Role: role, Previous: previous, ClaimedAt: 1}); err != nil {
+		t.Fatalf("write the takeover record: %v", err)
+	}
+
+	stored, err := client.LastStoredMessage(ctx, subject)
+	if err != nil {
+		t.Fatalf("read the handover record's body: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(stored.Data, &body); err != nil {
+		t.Fatalf("decode the handover record's body %s: %v", stored.Data, err)
+	}
+	if body["role"] != "" || body["previous"] != "" {
+		t.Errorf("the handover record's body is %s; want its role and previous session empty", stored.Data)
+	}
+
+	records, err := client.TakeoverRecords(ctx, role)
+	if err != nil {
+		t.Fatalf("read role %s's takeover records: %v", role, err)
+	}
+	got := map[string]TakeoverRecord{}
+	for _, record := range records {
+		got[record.Subject] = record.Record
+	}
+	if record := got[subject]; record.Role != role || record.Previous != previous || record.Next != 4 || record.ClaimedAt != 1 {
+		t.Errorf("the handover record reads back as %+v; want role %s, previous %s, next 4, claimed at 1 (the first write's)", record, role, previous)
+	}
+	if named, ok := TakeoverSuccessor(subject); !ok || named != successor {
+		t.Errorf("TakeoverSuccessor(%s) = %q, %v; want %s", subject, named, ok, successor)
+	}
+	if record := got[plain]; record.Role != role || record.Previous != previous {
+		t.Errorf("the takeover record reads back as %+v; want role %s, previous %s", record, role, previous)
+	}
+	if named, ok := TakeoverSuccessor(plain); ok {
+		t.Errorf("TakeoverSuccessor(%s) = %q; want none", plain, named)
+	}
+}

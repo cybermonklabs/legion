@@ -1,7 +1,7 @@
 kind: Changed
 body: |-
   When the daemon's registration names the session a Legion pane replaces (`replaces`, daemon API
-  contract 257), the pane's role claim names that session as its predecessor
+  contract 289), the pane's role claim names that session as its predecessor
   (`previous_session_id`). The Envoy listener then hands the unread direct and role messages of
   the replaced session to the pane.
 time: 2026-11-25T02:45:35Z

@@ -220,9 +220,10 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
  *
  * A refusal is logged and stops the session, the one failure path every other failure after a
  * registration takes. A claim the listener answered 503 (`listenerAskedToClaimAgain`) is no
- * refusal: the listener wrote no claim and asks for the claim again (`Retry-After`) - every try
- * of its write met a conflict, or the takeover record a claim writes first, for the holder it
- * takes the role from, did not store - so the claim is made again after a wait that starts at
+ * refusal: the listener asks for the claim again (`Retry-After`) - it wrote no claim, because every
+ * try of its write met a conflict or the takeover record a claim writes first, for the holder it
+ * takes the role from, did not store; or the claim landed and the handover record of the session
+ * it replaces (`replaces`) did not store - so the claim is made again after a wait that starts at
  * `roleClaimRetryFirstDelayMs` and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one log
  * line per wait, until it lands or is refused. The session stays up meanwhile: the role's messages
  * wait for it, with the holder the claim would have replaced or on the role's kept lane. The
@@ -265,12 +266,14 @@ const ROLE_CLAIM_RETRY_MAX_DELAY_MS = 30_000;
 
 /**
  * Makes `claim`, a claim of Envoy role `role`, and makes it again while the listener answers it
- * 503 (`listenerAskedToClaimAgain`): the listener wrote no claim - every try of its write met a
- * conflict, or the takeover record a claim writes first did not store - and asks for the claim
- * again. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
- * to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the attempt the listener
- * answered and its answer; the timer is unref'd, so it holds no process open. Any other failure is
- * thrown at once, for the caller to stop on. An aborted `signal` - the host stopping - ends the
+ * 503 (`listenerAskedToClaimAgain`) and asks for the claim again: it wrote no claim - every try of
+ * its write met a conflict, or the takeover record a claim writes first did not store - or the
+ * claim landed and the handover record of the session it names as replaced did not store, which
+ * the listener's answer says. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS`
+ * unset) and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming
+ * the attempt the listener answered and its answer; the timer is unref'd, so it holds no process
+ * open. Any other failure is thrown at once, for the caller to stop on. An aborted `signal` - the
+ * host stopping - ends the
  * waiting with the last 503 thrown and claims no more, so no claim after a stop makes a session the
  * host ended live again. With `maxAttempts`, the 503 of the last attempt is thrown, for a claim a
  * person is waiting on to fail where they see it.
@@ -295,7 +298,7 @@ export async function claimRoleAgainOnBusy(
       if (!listenerAskedToClaimAgain(error) || options.signal?.aborted) throw error;
       if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) throw error;
       options.log(
-        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
+        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}; claiming it again in ${wait} ms: ${messageFor(error)}`
       );
       const waited = Promise.withResolvers<void>();
       const timer = setTimeout(waited.resolve, wait);

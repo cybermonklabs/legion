@@ -2611,6 +2611,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			if roleWarning != "" {
 				answer.Warnings = []string{roleWarning}
 			}
+			// An edge listener writes no handover record (publishHandover), so a claim through it
+			// that names the session it replaces is told that session's messages stay where they are.
+			if replaced != "" && d.delivery.edge != nil {
+				answer.Warnings = append(answer.Warnings, fmt.Sprintf(
+					"this edge listener hands over no messages: the unread messages of %s stay on its own subject, and a claim through a shared listener hands them to this session", replaced))
+			}
 			writeJSON(w, http.StatusOK, answer)
 			return
 		}

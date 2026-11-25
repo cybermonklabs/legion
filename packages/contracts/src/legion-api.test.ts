@@ -3743,7 +3743,7 @@ test("a claim's registration and the controller's are told apart by their schema
   expect(LegionControllerRegisterResponse.safeParse(claim).success).toBeFalse();
 });
 
-// Contract 257: a registration names the session it replaces, the claim's session the daemon
+// Contract 289: a registration names the session it replaces, the claim's session the daemon
 // forgot, which the session sends as `previous_session_id` in its Envoy role claim. The goldens
 // replace no session, so the key is absent there; an empty one is refused, since an empty id
 // names no session.

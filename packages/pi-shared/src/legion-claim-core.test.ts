@@ -238,9 +238,9 @@ test("a claim the listener answers 503 is claimed again after a growing wait, an
   expect(steps).not.toContain("stop");
   expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(4);
   expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
-    `claim of Envoy role ${claimToken} was answered 503 at attempt 1, so nothing was claimed; claiming it again in 1 ms`,
-    `claim of Envoy role ${claimToken} was answered 503 at attempt 2, so nothing was claimed; claiming it again in 2 ms`,
-    `claim of Envoy role ${claimToken} was answered 503 at attempt 3, so nothing was claimed; claiming it again in 4 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 1; claiming it again in 1 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 2; claiming it again in 2 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 3; claiming it again in 4 ms`,
   ]);
   for (const line of lines) {
     expect(line).toContain("the message bus refused the message because its stream is full");
@@ -482,7 +482,7 @@ test("two first-turn signals claim once", async () => {
   expect(steps.filter((step) => step.startsWith("claimRole"))).toEqual([`claimRole ${claimToken}`]);
 });
 
-// Contract 257: the registration names the session this one replaces, the claim's session the
+// Contract 289: the registration names the session this one replaces, the claim's session the
 // daemon forgot, and the role claim carries it, so the listener hands that session's unread
 // messages here. A claim the listener answered 503 is made again naming it again.
 test("the role claim names the session the registration says this one replaces, on every try", async () => {
