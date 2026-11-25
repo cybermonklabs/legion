@@ -53,7 +53,8 @@
 # a REST request together, and a paginated read sends one per page, so a log of theirs holds more
 # than one answer's body (a draft release's name and body, ahead of release-push.sh's leak guard,
 # or a raw page) and no one answer's headers that could be picked out of it; a redirect gh follows
-# puts the next request's log after the redirect's body, likewise. Those, gh's other commands, and
+# puts the next request's log after the redirect's body, likewise. Those, gh's other commands, a
+# gh api whose log holds no answer (a failed connection, or a stand-in gh that logs nothing), and
 # a command that runs gh by a path leave no answer to read: when such a command fails with 1, gh's
 # status for an answer it refuses, the helper asks GET /rate_limit, and a core or graphql budget
 # at 0 there is the hourly budget's refusal. Their secondary limit is the command's own failure.
@@ -321,12 +322,13 @@ _gh_read_gh() {
 # GraphQL (the path /graphql, or GitHub Enterprise Server's /api/graphql; a REST route such as
 # repos/o/graphql only ends in it), with a retry-after; `budget` for one with
 # x-ratelimit-remaining: 0; nothing for any other answer (a REST 200 that spent the last unit
-# before gh failed on its own, say), or for no answer at all. With no answer read (`unread`, or
-# empty: no gh run by name), GitHub's rate_limit route decides: `budget <reset>` when it shows
-# the core or the graphql budget at 0, nothing when it shows neither or does not answer. It is
-# asked only when the command exited 1, which is how gh exits on an answer it refuses: a command
-# its caller's timeout ended (124) or a signal killed was answered nothing, and the read would
-# add its 30 s bound to every such attempt of an outage that holds connections open.
+# before gh failed on its own, say). With no answer read (`unread`; `none`, a request gh logged no
+# answer for, as a failed connection or a stand-in gh leaves; or empty, no gh run by name),
+# GitHub's rate_limit route decides: `budget <reset>` when it shows the core or the graphql budget
+# at 0, nothing when it shows neither or does not answer. It is asked only when the command
+# exited 1, which is how gh exits on an answer it refuses: a command its caller's timeout ended
+# (124) or a signal killed was answered nothing, and the read would add its 30 s bound to every
+# such attempt of an outage that holds connections open.
 _gh_read_refusal() {
   local code url path retry reset
   [ "$1" -ne 0 ] || return 0
@@ -336,7 +338,7 @@ _gh_read_refusal() {
   path=/${path#*/}
   path=${path%%\?*}
   case $code in
-    '' | unread)
+    '' | unread | none)
       if [ "$1" -eq 1 ] && reset=$(_gh_read_reset 2> /dev/null) && [ "$reset" -gt 0 ]; then
         echo "budget $reset"
       fi

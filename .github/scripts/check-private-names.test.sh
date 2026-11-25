@@ -557,7 +557,9 @@ run_pr_text
 check "a comparison GitHub cannot make is refused" "$(is "$status" 1)"
 check "names the read and gh's message" \
   "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh: Could not resolve to a commit.)")"
-check "reads no compare route" "$(is "$(contains "$(< "$work/calls")" '^api ')" false)"
+# gh-read.sh reads the rate_limit route after a read that fails with no answer it can read, so the
+# row looks for the compare route itself.
+check "reads no compare route" "$(is "$(contains "$(< "$work/calls")" '^api repos/example/repo/compare/')" false)"
 # A total above 1000 goes to the compare route after the first page: the pages GraphQL would serve
 # after it cannot make the list whole.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"

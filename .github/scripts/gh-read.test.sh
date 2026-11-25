@@ -751,11 +751,11 @@ echo "case: a wrapped command's answer is read through the wrapper"
 wrap='wrap() { timeout 30 "$@"; };'
 github never
 secondary 403 3
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset bash -c "gh api repos/o/r/pulls/1"'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset bash -c "gh api repos/o/r/pulls/1"'
 check "a retry-after through bash -c is waited out, not a minute" \
   "$(is "$status|$out|$(gap_at_least /repos/o/r/pulls/1 3)|$(gap_at_least /repos/o/r/pulls/1 60)" '0|{"title":"t"}|true|false')"
 github 3
-drive JOB_TIMEOUT_MINUTES=5 -- "$wrap"' gh_wait_reset wrap gh api repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- "$wrap"' gh_wait_reset wrap gh api repos/o/r/pulls/1'
 check "a spent budget through a function that runs gh under timeout is waited for" \
   "$(is "$status|$out|$(at_least "$(nth_at /repos/o/r/pulls/1 2)" "$(spent_until)")" '0|{"title":"t"}|true')"
 github never
@@ -824,7 +824,7 @@ check "and naming no rate limit" "$(is "$(warnings)|$(errors)" '0|0')"
 echo "case: a 403 with x-ratelimit-remaining: 0 is waited for, whatever its message says"
 github 3
 echo "Forbidden" > "$work/state/spent-message"
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "exits 0 with the answer of the call after the wait" "$(is "$status|$out" '0|{"title":"t"}')"
 check "makes the second call no sooner than the reset" "$(at_least "$(nth_at /repos/o/r/pulls/1 2)" "$(spent_until)")"
 check "reads the reset from the rate_limit route once" "$(is "$(calls /rate_limit)" 1)"
@@ -833,7 +833,7 @@ echo "case: a 403 with a retry-after is waited out, whatever its message says"
 github never
 secondary 403 3
 echo "Forbidden" > "$work/state/secondary-message"
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "exits 0 with the answer of the call after the wait" "$(is "$status|$out" '0|{"title":"t"}')"
 check "the second call came the 3 s retry-after after the first" "$(gap_at_least /repos/o/r/pulls/1 3)"
 check "reads no rate limit" "$(is "$(calls /rate_limit)" 0)"
@@ -841,7 +841,7 @@ check "reads no rate limit" "$(is "$(calls /rate_limit)" 0)"
 echo "case: GraphQL's refusal for its budget, a 200 with x-ratelimit-remaining: 0, is waited for"
 github 3
 touch "$work/state/graphql-200"
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api graphql -f query="{viewer{login}}"'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api graphql -f query="{viewer{login}}"'
 check "exits 0 with the answer of the call after the wait" "$(is "$status|$out" '0|{"title":"t"}')"
 check "calls GraphQL twice, the second no sooner than the reset" \
   "$(is "$(calls /graphql)|$(at_least "$(nth_at /graphql 2)" "$(spent_until)")" '2|true')"
@@ -867,7 +867,7 @@ echo "case: a redirect gh follows leaves no answer read; the rate_limit route de
 # The next request's log comes after the redirect's body, so no line of it is surely gh's.
 github 3
 touch "$work/state/redirect"
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/moved'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/moved'
 check "exits 0 with the answer of the call after the wait" "$(is "$status|$out" '0|{"title":"t"}')"
 check "read the spent budget off the rate_limit route, once" "$(is "$(calls /rate_limit)" 1)"
 check "followed the redirect each time, and called again no sooner than the reset" \
@@ -894,7 +894,7 @@ check "after one rate_limit read, which found the budget whole" "$(is "$(calls /
 check "and the helper logs nothing of its own" "$(is "$(warnings)|$(errors)" '0|0')"
 github 3
 echo "Forbidden" > "$work/state/spent-message"
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api --paginate repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api --paginate repos/o/r/pulls/1'
 check "a spent budget whose refusal names no rate limit is waited for" \
   "$(is "$status|$out|$(at_least "$(nth_at /repos/o/r/pulls/1 2)" "$(spent_until)")" '0|{"title":"t"}|true')"
 github 3
@@ -931,30 +931,22 @@ check "an INT: exits 124, not the KILL's 137, and no process of the call is left
 
 echo "case: the real gh starts with INT and QUIT at their default, not ignored"
 # A background job starts with both ignored, and gh keeps an ignored INT until it installs a
-# handler of its own, so an INT that comes first would be lost. The case reads the real gh's
-# ignored-signal mask from /proc while the route holds its answer, then the timeout ends it.
+# handler of its own, so an INT that comes first would be lost. The gh first on PATH here records
+# the signals it was started with ignored, as a process's SigIgn mask, which an exec keeps, and
+# then runs the real gh; the helper takes it for the real gh.
+rm -rf "$work/maskbin"
+mkdir -p "$work/maskbin"
+printf '%s\n' '#!/usr/bin/env bash' "awk '/^SigIgn:/ { print \$2 }' /proc/self/status > \"$work/sigign\"" \
+  "exec $(command -v gh) \"\$@\"" > "$work/maskbin/gh"
+chmod +x "$work/maskbin/gh"
 github never
-echo 30 > "$work/state/route-delay"
-token="case-$(date +%s%N)"
-real_gh=$(command -v gh)
-cat > "$work/mask.sh" <<SH
-for _ in \$(seq 100); do
-  for proc in /proc/[0-9]*; do
-    cmdline=\$( { tr '\\0' ' ' < "\$proc/cmdline"; } 2> /dev/null) || continue
-    case \$cmdline in "$real_gh api "*"$token"*)
-      awk '/^SigIgn:/ { print \$2 }' "\$proc/status" > "$work/sigign"
-      exit 0 ;;
-    esac
-  done
-  sleep 0.1
-done
-SH
-drive JOB_TIMEOUT_MINUTES=5 -- "bash '$work/mask.sh' & gh_wait_reset timeout 5 gh api repos/o/r/pulls/1 -H 'X-Case: $token'; wait"
+drive JOB_TIMEOUT_MINUTES=5 PATH="$work/maskbin:$PATH" -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 sigign=$(cat "$work/sigign" 2> /dev/null)
-check "the mask was read" "$([[ $sigign =~ ^[0-9a-f]+$ ]] && echo true || echo false)"
+check "the call was answered through the recording gh" "$(is "$status|$out" '0|{"title":"t"}')"
+check "and its mask was read" "$([[ $sigign =~ ^[0-9a-f]+$ ]] && echo true || echo false)"
 check "with neither INT (bit 2) nor QUIT (bit 3) ignored" \
   "$([[ $sigign =~ ^[0-9a-f]+$ ]] && (( (16#$sigign & 0x6) == 0 )) && echo true || echo false)"
-rm -f "$work/mask.sh" "$work/sigign"
+rm -rf "$work/maskbin" "$work/sigign"
 
 echo "case: a KILL that ends the command leaves nothing of the helper's in TMPDIR"
 # The helper's work directory holds the request's log, and it removes that directory itself.
