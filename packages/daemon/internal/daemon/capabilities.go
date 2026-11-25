@@ -1,6 +1,6 @@
-// Package daemon: this file holds what a boot, a live session or a repository cache adds to the
-// deployment's capabilities as the configuration alone states them (config.Config.Deployment):
-// supervision.deploymentWith and supervision.caches; and the live sessions' capability reports:
+// Package daemon: this file holds the deployment's capabilities — what the configuration alone
+// states (Deployment) and what a boot, a live session or a repository cache adds to it
+// (supervision.deploymentWith, supervision.caches) — and the live sessions' capability reports:
 // how they are kept (capabilityReportStore), taken from a session's ready
 // (supervision.capabilityReported), copied for the state route (supervision.capabilityReports),
 // read from the store at boot (reportsOfClaims), and logged when the open set changes
@@ -16,9 +16,39 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
+
+// Deployment is the deployment's capabilities as the configuration alone states them
+// (capabilities.Deployment): the decisions, the runtime, whether a broker is configured, the pods
+// that reserve no CPU and memory (config.Reservation.Reserved) and the pods that request less cpu
+// or memory than their limit (config.Reservation.Burstable) — the issue pod, and the controller's
+// pod when the daemon launches it. What boot learns (the broker login, the probe, model fallback)
+// is the supervision's to add (supervision.deploymentWith); `legion config check` reports from
+// this alone.
+func Deployment(cfg config.Config) capabilities.Deployment {
+	d := capabilities.Deployment{Decided: cfg.Capabilities.Decided, Runtime: cfg.Runtime.Name}
+	k := cfg.Runtime.Kubernetes
+	if k == nil {
+		return d
+	}
+	d.AgentSecrets = k.AgentSecrets != nil
+	measure := func(pod capabilities.Pod, reservation config.Reservation) {
+		switch {
+		case !reservation.Reserved():
+			d.UnreservedPods = append(d.UnreservedPods, pod)
+		case reservation.Burstable():
+			d.BurstablePods = append(d.BurstablePods, pod)
+		}
+	}
+	measure(capabilities.PodIssue, k.Resources.Issue)
+	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
+		measure(capabilities.PodController, k.Resources.Controller)
+	}
+	return d
+}
 
 // deployment is deploymentWith the runtime's repository caches as cacheStatuses reads them now,
 // none when it is nil: how the tick's report (reportCapabilities) reads the deployment. The state
@@ -32,8 +62,7 @@ func (s *supervision) deployment() capabilities.Deployment {
 	return s.deploymentWith(statuses)
 }
 
-// deploymentWith is the deployment's capabilities as the configuration alone states them
-// (config.Config.Deployment) with what this boot learned: the broker login's state, whether the
+// deploymentWith is Deployment with what this boot learned: the broker login's state, whether the
 // image passed its probe, the model-fallback mark the probe or the gate read, how many of the
 // probe's attempts waited on the pool's capacity before one scheduled, with the scheduler's
 // reason, the repository caches statuses names as their last health reads found them (caches),
@@ -45,7 +74,7 @@ func (s *supervision) deployment() capabilities.Deployment {
 // the state route read the deployment while a relaunch waits on its pods; the sessions are in
 // claim token order. It reads memory alone: no store, no context.
 func (s *supervision) deploymentWith(statuses []sandbox.CacheStatus) capabilities.Deployment {
-	d := s.cfg.Deployment()
+	d := Deployment(s.cfg)
 	if s.plan.secretsLogin != nil {
 		d.SecretsLogin = s.plan.secretsLogin.LoginStatus().State
 	}

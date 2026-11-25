@@ -1,7 +1,6 @@
 // Package config: this file holds the `capabilities` block (Capabilities) and its reading from
 // the `legion.yaml` mapping (readCapabilities), with the prose helper a decision's error names the
-// open choices with (orList), and the deployment's capabilities as the configuration alone states
-// them (Config.Deployment).
+// open choices with (orList).
 package config
 
 import (
@@ -20,35 +19,6 @@ import (
 // capability out; it closes nothing.
 type Capabilities struct {
 	Decided map[capabilities.Name]string
-}
-
-// Deployment is the deployment's capabilities as the configuration alone states them
-// (capabilities.Deployment): the decisions, the runtime, whether a broker is configured, the pods
-// that reserve no CPU and memory (Reservation.Reserved) and the pods that request less cpu or
-// memory than their limit (Reservation.Burstable) — the issue pod, and the controller's pod when
-// the daemon launches it. What boot learns (the broker login, the probe, model fallback) is the
-// supervision's to add (internal/daemon's supervision.deploymentWith); `legion config check`
-// reports from this alone.
-func (c Config) Deployment() capabilities.Deployment {
-	d := capabilities.Deployment{Decided: c.Capabilities.Decided, Runtime: c.Runtime.Name}
-	k := c.Runtime.Kubernetes
-	if k == nil {
-		return d
-	}
-	d.AgentSecrets = k.AgentSecrets != nil
-	measure := func(pod capabilities.Pod, reservation Reservation) {
-		switch {
-		case !reservation.Reserved():
-			d.UnreservedPods = append(d.UnreservedPods, pod)
-		case reservation.Burstable():
-			d.BurstablePods = append(d.BurstablePods, pod)
-		}
-	}
-	measure(capabilities.PodIssue, k.Resources.Issue)
-	if c.ControllerLaunch == ControllerLaunchDaemon {
-		measure(capabilities.PodController, k.Resources.Controller)
-	}
-	return d
 }
 
 // readCapabilities reads `capabilities`: a mapping whose one member, `decided`, maps a deployment

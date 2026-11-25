@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +17,63 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
+
+// reserved is a pod's CPU and memory reservation, both set, each request equal to its limit.
+var reserved = config.Reservation{CPU: "500m", CPURequest: "500m", Memory: "1Gi", MemoryRequest: "1Gi"}
+
+// bursting requests less memory than its limit, and 1000m of cpu under a limit of 1: a quantity
+// compare, so only the memory makes it Burstable.
+var bursting = config.Reservation{CPU: "1", CPURequest: "1000m", Memory: "32Gi", MemoryRequest: "8Gi"}
+
+// spelledApart requests what it is limited to, each spelled two ways (1000m against 1, 1024Mi
+// against 1Gi): a string compare would read it Burstable, a quantity compare reads it Guaranteed.
+var spelledApart = config.Reservation{CPU: "1", CPURequest: "1000m", Memory: "1Gi", MemoryRequest: "1024Mi"}
+
+// Deployment reads the configuration alone: the decisions, the runtime, whether a broker is
+// configured, the pods that reserve no CPU and memory — a pod lacking either quantity counts, the
+// issue pod first, and the controller's pod only under controller: daemon (a Kubernetes block the
+// loader settled holds both, so only a value built by hand names one) — and the pods that request
+// less than their limit, the controller's pod among them only under controller: daemon. A tmux
+// configuration names no pod: the tmux runtime sets no limits at all, which the report says in its
+// own words.
+func TestDeploymentReadsTheConfigurationAlone(t *testing.T) {
+	t.Parallel()
+	decided := map[capabilities.Name]string{capabilities.Secrets: "dispatch://LEGION-205 enrolls pods later"}
+	kubernetes := func(resources config.PodResources, agentSecrets *config.AgentSecretsConfig, launch config.ControllerLaunch) config.Config {
+		return config.Config{
+			Runtime:          config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{Resources: resources, AgentSecrets: agentSecrets}},
+			ControllerLaunch: launch,
+			Capabilities:     config.Capabilities{Decided: decided},
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		cfg  config.Config
+		want capabilities.Deployment
+	}{
+		{"tmux", config.Config{Runtime: config.Runtime{Name: "tmux"}, Capabilities: config.Capabilities{Decided: decided}},
+			capabilities.Deployment{Runtime: "tmux", Decided: decided}},
+		{"nothing reserved, no broker", kubernetes(config.PodResources{}, nil, config.ControllerLaunchOperator),
+			capabilities.Deployment{Runtime: "kubernetes", Decided: decided, UnreservedPods: []capabilities.Pod{capabilities.PodIssue}}},
+		{"the issue pod reserved, a broker configured", kubernetes(config.PodResources{Issue: reserved},
+			&config.AgentSecretsConfig{URL: "https://secrets.internal.example"}, config.ControllerLaunchOperator),
+			capabilities.Deployment{Runtime: "kubernetes", Decided: decided, AgentSecrets: true}},
+		{"the issue pod missing one quantity, and the controller under controller: daemon", kubernetes(config.PodResources{Issue: config.Reservation{CPU: "2"}}, nil, config.ControllerLaunchDaemon),
+			capabilities.Deployment{Runtime: "kubernetes", Decided: decided, UnreservedPods: []capabilities.Pod{capabilities.PodIssue, capabilities.PodController}}},
+		{"both pods requesting less than their limits", kubernetes(config.PodResources{Issue: bursting, Controller: bursting}, nil, config.ControllerLaunchDaemon),
+			capabilities.Deployment{Runtime: "kubernetes", Decided: decided, BurstablePods: []capabilities.Pod{capabilities.PodIssue, capabilities.PodController}}},
+		{"a Burstable controller the daemon does not launch", kubernetes(config.PodResources{Issue: reserved, Controller: bursting}, nil, config.ControllerLaunchOperator),
+			capabilities.Deployment{Runtime: "kubernetes", Decided: decided}},
+		{"a request spelled apart from its equal limit", kubernetes(config.PodResources{Issue: spelledApart, Controller: spelledApart}, nil, config.ControllerLaunchDaemon),
+			capabilities.Deployment{Runtime: "kubernetes", Decided: decided}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Deployment(tc.cfg); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Deployment(cfg) = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
 
 // reportCapabilities logs the open rows once at boot and again only when the set changes, and
 // answers the names each time: the tick carries them while the log stays quiet. Under tmux every

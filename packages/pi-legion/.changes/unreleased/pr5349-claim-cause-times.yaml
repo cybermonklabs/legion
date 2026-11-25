@@ -1,5 +1,5 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 261, the number the daemon of the same release declares:
+  The plugin speaks daemon API contract 256, the number the daemon of the same release declares:
   the claim views `read_state` and `read_record` serve carry `lastDeathAt` and
   `lastStartFailureAt`, the time the daemon recorded each of the claim's two causes.

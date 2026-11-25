@@ -64,7 +64,7 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: load %s: %v", tc.name, path, err)
 		}
-		deployment := cfg.Deployment()
+		deployment := Deployment(cfg)
 		fmt.Printf("== %s: %s\n", tc.name, path)
 		fmt.Printf("   resource-limits row: %s\n", states(deployment.Report())["resource-limits"].Detail)
 		pod := launchBurstableLiveRoot(ctx, t, cfg, log)

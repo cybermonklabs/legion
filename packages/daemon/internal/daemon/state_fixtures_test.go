@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testgolden"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -64,9 +65,10 @@ var apiGoldenFile = filepath.Join("..", "api", "state_golden_test.go")
 // apiSettings is the legion.yaml text that apiGoldenFile declares as the constant name, read from
 // that file's source, so each state fixture is composed on the very file internal/api's settings
 // tests hold the state's settings to. The settings text stays at its public path because the leak
-// guard refuses a reviewed-lines row for a key format marker, and a copy would publish its
-// credential-shaped lines at a new path. A read that fails fails the test, naming the file and
-// the constant (stringConstant).
+// guard (leak-check/public_leak_check.py, method Reviewed.marker) honours no reviewed-lines row
+// for a line that holds a key format marker, and a copy would publish its credential-shaped lines
+// at a new path. A read that fails fails the test, naming the file and the constant
+// (stringConstant).
 func apiSettings(t testing.TB, name string) string {
 	t.Helper()
 	text, err := stringConstant(apiGoldenFile, name)
@@ -274,7 +276,38 @@ func (s *seeding) served(c composition) []byte {
 	if recorder.Code != http.StatusOK {
 		s.t.Fatalf("GET /legion/v1/state = %d %s, want 200", recorder.Code, recorder.Body)
 	}
-	return recorder.Body.Bytes()
+	return withNoSchemaVersion(s.t, recorder.Body.Bytes())
+}
+
+// withNoSchemaVersion is body, the state route's answer, with 0 written where it names the
+// store's schema version (api.DaemonInfo.SchemaVersion). The route serves the version the clone's
+// store reads (store.Store.SchemaVersionTx), which every migration added moves; a fixture that
+// held it would go stale at every migration and conflict as text between any two pull requests
+// that add one. So the served version is held here to the newest migration the store embeds
+// (migrations.All), and the fixture holds 0 in its place, as withoutMark leaves off the mark.
+func withNoSchemaVersion(t testing.TB, body []byte) []byte {
+	t.Helper()
+	var served struct {
+		Daemon struct {
+			SchemaVersion int64 `json:"schemaVersion"`
+		} `json:"daemon"`
+	}
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode the state body's schema version: %v", err)
+	}
+	all, err := migrations.All()
+	if err != nil || len(all) == 0 {
+		t.Fatalf("read the migrations the store embeds: %d of them, %v", len(all), err)
+	}
+	if newest := int64(all[len(all)-1].Version); served.Daemon.SchemaVersion != newest {
+		t.Fatalf("the state serves daemon.schemaVersion %d, want %d, the newest migration the store embeds",
+			served.Daemon.SchemaVersion, newest)
+	}
+	version := []byte(`"schemaVersion":` + strconv.FormatInt(served.Daemon.SchemaVersion, 10))
+	if n := bytes.Count(body, version); n != 1 {
+		t.Fatalf("the state body names %s %d times, want once", version, n)
+	}
+	return bytes.Replace(body, version, []byte(`"schemaVersion":0`), 1)
 }
 
 // withoutMark is body, the state route's answer to a caller at this daemon's own contract, without

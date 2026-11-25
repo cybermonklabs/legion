@@ -58,7 +58,7 @@ type Deployment struct {
 	// Caches is every repository cache the runtime keeps, in its order (by repository), each as the
 	// daemon's last health read of it found it, which the repository-cache-room row reads; none
 	// under tmux, which runs no cache, and none in what the configuration alone states
-	// (config.Config.Deployment). The daemon fills it from memory alone (supervision.caches).
+	// (daemon.Deployment). The daemon fills it from memory alone (supervision.caches).
 	Caches []Cache
 }
 

@@ -1402,14 +1402,14 @@ func kubernetesCheckConfig(t *testing.T, extra string) string {
 }
 
 // After Config OK, `legion config check` prints one line per deployment capability the file alone leaves
-// open (config.Config.Deployment: secrets with no broker configured), each in the words boot logs
-// it with and naming the legion.yaml line that records a decision — and exits 0, because a gap is
-// reported, never refused. A decision quiets its row, and a configured broker's secrets row is
-// boot's to measure, so the check says nothing of it. The resource-limits row is never open on a
-// Kubernetes file: the loader fills both pods' reservations from the daemon's defaults, with or
-// without a `resources` block and whatever fields it sets (config.Reservation.Reserved); the tmux
-// cases (tmuxCapabilityGaps) are where it is open. Model fallback is the probe's, and pool
-// capacity the probe's run's, and neither is printed here.
+// open (daemon.Deployment: secrets with no broker configured), each in the words boot logs it with
+// and naming the legion.yaml line that records a decision — and exits 0, because a gap is reported,
+// never refused. A decision quiets its row, and a configured broker's secrets row is boot's to
+// measure, so the check says nothing of it. The resource-limits row is never open on a Kubernetes
+// file: the loader fills both pods' reservations from the daemon's defaults, with or without a
+// `resources` block and whatever fields it sets (config.Reservation.Reserved); the tmux cases
+// (tmuxCapabilityGaps) are where it is open. Model fallback is the probe's, and pool capacity the
+// probe's run's, and neither is printed here.
 func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	legionState(t)
 	const issueSet = "    resources:\n      issue: {cpu: \"4\", memory: 24Gi}\n"
