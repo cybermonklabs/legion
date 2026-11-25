@@ -255,6 +255,35 @@ test("the proxy's own refusal, before anything left it, names the proxy and its 
   expect(refusal.message).not.toContain(PLACEHOLDER);
 });
 
+// The placeholder is noted where each attempt presents it (`#write`), as every presentation is, so
+// a proxy that echoes it back has it redacted from the refusal's text. The echo carries no scheme
+// before it, so only that note redacts it, not the excerpt's reading of an `Authorization` value.
+test("the proxy's refusal that echoes the placeholder is told without it", async () => {
+  const fetchImpl = scriptedFetch([
+    () =>
+      new Response(`airlock: grant not live for ${PLACEHOLDER}\n`, {
+        status: 407,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cipher-Proxy-Code": "GRANT_NOT_LIVE",
+          "Cipher-Proxy-Forwarded": "false",
+        },
+      }),
+  ]);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const refused = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(refused).toBeInstanceOf(DispatchServiceError);
+  const refusal = refused as DispatchServiceError;
+  expect(refusal.code).toBe("GRANT_NOT_LIVE");
+  expect(refusal.message).toContain("grant not live for [redacted]");
+  expect(refusal.message).not.toContain(PLACEHOLDER);
+});
+
 test("the proxy's own failure, before anything left it, is asked again under the write's key", async () => {
   const fetchImpl = scriptedFetch([
     () => proxyAnswer(502, "UPSTREAM_UNREACHABLE", "false"),

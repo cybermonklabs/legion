@@ -7,13 +7,6 @@
 
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import {
-  allowInsecureRequests,
-  Configuration,
-  customFetch,
-  genericGrantRequest,
-  None,
-} from "openid-client";
 import { newDpopKey } from "../dpop";
 import type { SubjectToken, TokenSource } from "../source";
 import { BrokerTokenClient } from "../token-client";
@@ -81,37 +74,9 @@ async function personClient(url: string, session = "ada-box-1"): Promise<BrokerT
   });
 }
 
-// What the trade's parse rests on: openid-client, which every trade of this client goes through,
-// takes a token endpoint answer whose token_type is N_A (RFC 8693 Section 2.2.1, the type of a
-// token that is no access token), and hands back the members the client reads.
-test("openid-client takes a token exchange answer whose token_type is N_A", async () => {
-  const broker = stubBroker(() => ({ body: placeholderAnswer() }));
-  try {
-    const config = new Configuration(
-      { issuer: broker.url, token_endpoint: `${broker.url}/v1/oauth/token` },
-      "dispatch-token-exchange",
-      {},
-      None()
-    );
-    allowInsecureRequests(config);
-    config[customFetch] = (url, options) =>
-      fetch(url, {
-        method: options.method,
-        headers: options.headers,
-        body: options.body as string,
-      });
-    const answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, {
-      subject_token: "subject",
-      subject_token_type: SUBJECT_TOKEN_TYPE_PERSON,
-    });
-    expect(answered.access_token).toBe(PLACEHOLDER);
-    expect(answered.issued_token_type).toBe(TOKEN_TYPE_PROXY_PLACEHOLDER);
-    expect(answered.expires_in).toBe(900);
-  } finally {
-    broker.stop();
-  }
-});
-
+// The trade goes through openid-client, as every trade of this client does, so this answer is also
+// the library's reading of a token endpoint answer whose token_type is N_A (RFC 8693 Section
+// 2.2.1, the type of a token that is no access token).
 test("a sign-in is traded for the proxy placeholder and how the session reaches the proxy", async () => {
   const broker = stubBroker(() => ({ body: placeholderAnswer() }));
   try {
@@ -121,7 +86,7 @@ test("a sign-in is traded for the proxy placeholder and how the session reaches 
       placeholder: PLACEHOLDER,
       proxyUrl: "http://proxy.example:3128",
       caCertificate: AUTHORITY,
-      names: { DISPATCH_APPROVE_TOKEN: { value: PLACEHOLDER, hosts: ["dispatch.example"] } },
+      names: { DISPATCH_APPROVE_TOKEN: { hosts: ["dispatch.example"] } },
     });
 
     expect(broker.trades).toHaveLength(1);
@@ -172,6 +137,11 @@ test("an answer that is not a proxy placeholder is refused and never handed out"
     "a name with no host": (answer) => {
       (answer["proxy"] as Record<string, unknown>)["names"] = {
         DISPATCH_APPROVE_TOKEN: { value: PLACEHOLDER, hosts: [] },
+      };
+    },
+    "a name whose value is not the placeholder": (answer) => {
+      (answer["proxy"] as Record<string, unknown>)["names"] = {
+        DISPATCH_APPROVE_TOKEN: { value: "another", hosts: ["dispatch.example"] },
       };
     },
   };

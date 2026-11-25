@@ -123,17 +123,15 @@ export interface BrokerToken {
  * string a request carries where a token would be, which the broker's proxy swaps a token of its
  * own in for on each request its rule allows, and how the session reaches the proxy - its URL, the
  * certificate its hosts' certificates are signed by, and each name behind it with the hosts it may
- * reach. The proxy's password is the placeholder itself. The answer's grant id and lifetime are
- * checked (`#readPlaceholder`) and not kept: a caller asks for a placeholder at the moment it sends
- * the one request it is for.
+ * reach. The proxy's password is the placeholder itself, and so is each name's value, so neither
+ * is kept beside it. The answer's grant id and lifetime are checked (`#readPlaceholder`) and not
+ * kept: a caller asks for a placeholder at the moment it sends the one request it is for.
  */
 export interface ProxyPlaceholder {
   readonly placeholder: string;
   readonly proxyUrl: string;
   readonly caCertificate: string;
-  readonly names: Readonly<
-    Record<string, { readonly value: string; readonly hosts: readonly string[] }>
-  >;
+  readonly names: Readonly<Record<string, { readonly hosts: readonly string[] }>>;
 }
 /** The first wait before trading again after a trade the broker did not answer, answered with a
  *  5xx, its 429 or a DPoP refusal, or that failed before it reached the broker, doubling to
@@ -938,9 +936,12 @@ export class BrokerTokenClient {
    * {@link TOKEN_TYPE_NOT_APPLICABLE} (read from the answer's own body, as `#read` reads it), no
    * usable expiry, a refresh token, a placeholder without {@link PLACEHOLDER_PREFIX}, no grant id,
    * or a proxy release that is not whole - a proxy URL that is no http URL, no authority, a
-   * password other than the placeholder, a name with no host. A string that does not open with
-   * the prefix could be a token, and a client that sent it through a proxy would hand it out. No
-   * value the broker wrote is quoted in these refusals, as in `#read`'s.
+   * password other than the placeholder, a name with no host or whose value is not the
+   * placeholder. A string that does not open with the prefix could be a token, and a client that
+   * sent it through a proxy would hand it out. A name's hosts are the hosts its airlock entry
+   * allows for that name's value (`oauthwire.AirlockName`), so they are this placeholder's hosts
+   * only where that value is the placeholder. No value the broker wrote is quoted in these
+   * refusals, as in `#read`'s.
    */
   #readPlaceholder(
     endpoint: string,
@@ -990,7 +991,7 @@ export class BrokerTokenClient {
     if (typeof names !== "object" || names === null || Object.keys(names).length === 0) {
       throw refused("no name behind the proxy");
     }
-    const read: Record<string, { readonly value: string; readonly hosts: readonly string[] }> = {};
+    const read: Record<string, { readonly hosts: readonly string[] }> = {};
     for (const [name, entry] of Object.entries(names as Record<string, unknown>)) {
       const { value, hosts } = (typeof entry === "object" && entry !== null ? entry : {}) as Record<
         string,
@@ -1004,7 +1005,7 @@ export class BrokerTokenClient {
       ) {
         throw refused("a name holding no host, or a value other than the placeholder");
       }
-      read[name] = { value: placeholder, hosts: hosts as string[] };
+      read[name] = { hosts: hosts as string[] };
     }
     return { placeholder, proxyUrl, caCertificate, names: read };
   }
