@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The end of a task that a CI job's check decides, on the whole daemon: the real Dispatch this
@@ -433,14 +434,26 @@ func (e *fixEnd) fixStarts(t *testing.T, run githubtest.CheckRun) (shimwire.Prom
 	return e.awaitFixTask()
 }
 
-// assertFixTask fails unless prompt is the fix's task, naming k-ci, X, the job unit and the run's
-// page, rather than held is the hold of it, naming the claim that held it.
+// fixDir is the directory of the fix's own working copy beside the issue's workspace
+// (workspace.FixDir), where the daemon's runtime places that workspace (engineWorkspaceDir).
+func (e *fixEnd) fixDir() string {
+	e.r.t.Helper()
+	dir := engineWorkspaceDir(e.r.cfg)(record.Issue{Key: e.key, Repo: liveRepo})
+	if dir == "" {
+		e.r.t.Fatalf("UNKNOWN: the daemon's runtime places no workspace for %s in %s, so no fix's directory can be read", e.key, liveRepo)
+	}
+	return workspace.FixDir(dir)
+}
+
+// assertFixTask fails unless prompt is the fix's task, naming k-ci, X, the job unit, the run's
+// page and the fix's own directory, rather than held is the hold of it, naming the claim that held
+// it.
 func (e *fixEnd) assertFixTask(t *testing.T, prompt shimwire.Prompt, held string, run githubtest.CheckRun) {
 	t.Helper()
 	if held != "" {
 		t.Fatalf("the daemon held %s's fix task for another claim's turn: %s", e.key, held)
 	}
-	for _, value := range []string{scratchCICheck, e.x, scratchCIJob, run.HTMLURL} {
+	for _, value := range []string{scratchCICheck, e.x, scratchCIJob, run.HTMLURL, "directory " + e.fixDir() + "."} {
 		if !strings.Contains(prompt.Message, value) {
 			t.Fatalf("the fix's task of %s does not name %q: %q", e.key, value, prompt.Message)
 		}
