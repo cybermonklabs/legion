@@ -103,11 +103,12 @@ func Derive(in Input) (State, error) {
 //     digest, so it is judged by what the judge reads of it, and no two results of one check at one
 //     At and one Seq (sameRecordFault);
 //   - History set, FixtureHistory{Commits: []FixtureCommit{}} for none: a run of a check of the
-//     code counts only at its own commit, history or not, and with no history no failing example
+//     code counts only at its own commit, and a failing example that missed its fault only at the
+//     commit that it counts from, history or not, and with no history no caught failing example
 //     counts at another commit, nor a run of a program check of production or of the graph whose
-//     test is of another commit (carries), so a failure or a failing example that missed its fault
-//     there counts nowhere, and a caller that gives none is not one that states that it has none;
-//     a FixtureHistory as ReadFixtureHistory refuses it (FixtureHistory.check), Commits set among
+//     test is of another commit (carries), so a failure of such a check there counts nowhere, and a
+//     caller that gives none is not one that states that it has none; a FixtureHistory as
+//     ReadFixtureHistory refuses it (FixtureHistory.check), Commits set among
 //     it, a GitHistory with no Dir, and a nil value of any type that implements History
 //     (historyFault): a commit with no files, or a tree with no path, would be an empty tree, and
 //     two of them one tree, a content label of no letter and no digit, such as "" or " ", would be

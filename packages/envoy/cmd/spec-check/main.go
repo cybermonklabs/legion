@@ -20,10 +20,12 @@
 //	  (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
 //	  a check of production or of the graph is judged only at a deploy, and one of the graph reads
 //	  unknown there when no result read the subject's graph_tx; a run of a check of the code counts
-//	  only at the commit that it read; <dir>/ties.json holds each check's tie by commit, and a failing
-//	  example, or a result of the test of a program check of production or of the graph, counts at
-//	  another commit only when the check's tie is known at both and no path that changed between them
-//	  is covered by the tie at either)
+//	  only at the commit that it read, and a failing example at the commit that it counts from, its
+//	  planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
+//	  and a failing example that the test caught, or a run of the test of a program check of
+//	  production or of the graph, counts at another commit only when the check's tie is known at both
+//	  and no path that changed between them is covered by the tie at either; one that the test missed
+//	  never counts at another commit)
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -160,12 +162,13 @@
 // names one subject, so the reader refuses graph_tx on a branch, a commit, branch, deploy or
 // graph_tx of no letter and no digit, and a result that names two of commit, deploy and graph_tx.
 // ties.json holds the tie of each check at each commit. A run of a check of the code counts only at
-// the commit that it read, and a failing example, or a result of the test of a program check of
-// production or of the graph, counts at another commit only when the check's tie is known at both
-// commits and no path that changed between them is covered by the tie at either commit; the reader
-// refuses a commit of ties.json of no letter and no digit, as it refuses such a commit of a
-// subject, and names the form that ties.json needs when a value in it is of another type, such as
-// ties by check alone.
+// the commit that it read, and a failing example at the commit that it counts from, its planted_on
+// for a program check of the code; a failing example that its test caught, or a run of the test of
+// a program check of production or of the graph, counts at another commit only when the check's tie
+// is known at both commits and no path that changed between them is covered by the tie at either
+// commit, and one that its test missed never counts at another commit; the reader refuses a commit
+// of ties.json of no letter and no digit, as it refuses such a commit of a subject, and names the
+// form that ties.json needs when a value in it is of another type, such as ties by check alone.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on
@@ -211,10 +214,12 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
          (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
          a check of production or of the graph is judged only at a deploy, and one of the graph reads
          unknown there when no result read the subject's graph_tx; a run of a check of the code counts
-         only at the commit that it read; <dir>/ties.json holds each check's tie by commit, and a failing
-         example, or a result of the test of a program check of production or of the graph, counts at
-         another commit only when the check's tie is known at both and no path that changed between them
-         is covered by the tie at either)`
+         only at the commit that it read, and a failing example at the commit that it counts from, its
+         planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
+         and a failing example that the test caught, or a run of the test of a program check of
+         production or of the graph, counts at another commit only when the check's tie is known at both
+         and no path that changed between them is covered by the tie at either; one that the test missed
+         never counts at another commit)`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
 // checks and of state, the blocks of print, and the statement, check and wait lines of state.

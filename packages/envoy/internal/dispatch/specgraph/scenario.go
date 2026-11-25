@@ -125,10 +125,11 @@ const (
 //   - ties.json, {"<commit>":{"<check id>":["<path or pattern>", …]}}, as ReadCommitTies reads it:
 //     a check that the object of a commit does not name has a tie that is not known at that commit,
 //     and so has each check at a commit that the file does not name. A run of a check of the code
-//     counts only at the commit that it read; a failing example, or a result of the test of a
-//     program check of production or of the graph, counts at another commit only when the check's
-//     tie is known at both commits and no path that changed between them is covered by the tie at
-//     either commit;
+//     counts only at the commit that it read, and a failing example at the commit that it counts
+//     from, its planted_on for a program check of the code; a failing example that its test caught,
+//     or a run of the test of a program check of production or of the graph, counts at another
+//     commit only when the check's tie is known at both commits and no path that changed between
+//     them is covered by the tie at either commit, and one that its test missed never does;
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit","planted_on",
 //     "fault_paths"}]: check_version names an approved version of the check, whose Digest the

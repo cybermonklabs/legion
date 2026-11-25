@@ -56,7 +56,7 @@ func subjectFault(p Point, now time.Time) string {
 // 2), so each can move a state away from what the evidence without it gives, and never toward
 // true, and the caller gives JobRuns and Uncited, empty for none, and Input.check refuses nil.
 // Where a result counts is deriveChecks' steps 4 and 7: only by the ties and the history does one
-// count at another commit, a failing example that its test caught, or a result of the test of a
+// count at another commit, a failing example that its test caught, or a run of the test of a
 // program check of production or of the graph. With no tie, or no history, none counts at another
 // commit, so a result at another commit then says nothing about this one. So a caller that gives
 // no Ties or no History is refused too, and one that states that it has none gives CommitTies{} or
@@ -578,9 +578,6 @@ func readOf(c Check, commit, deploy, graphTx string) string {
 // with each of a program check of the code that counts nowhere (unknownPlacement) beside them, so
 // that step 7 reads the check unknown when such a record is the newest.
 func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
-	if !countsAtACommit(c) {
-		return faults
-	}
 	return resultsWhere(faults, func(r Result) bool {
 		if countsFromPlantedOn(c) {
 			if reason, _ := j.unknownPlacement(r); reason != "" {
@@ -591,20 +588,24 @@ func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
 	})
 }
 
-// faultCountsAt is whether the failing example r of c, a check whose results count at a commit
-// (countsAtACommit), counts at the subject (step 7): at the commit that it counts from
-// (faultCommit), and at another commit by the ties (carries) only when its test caught its fault,
-// the one exception that the rule that replaces The Spec's R8 makes to "A result counts only at the
-// commit that it read" ("A failing example that a check's test caught"); for a program check of the
-// code, never at a subject at its Commit, which CI tested. countingFaults and withoutRefused read
-// it alike, so a refusal marks as counted only a failing example that would count.
+// faultCountsAt is whether the failing example r of c counts at the subject (step 7): wherever the
+// subject is, for a check whose results count at no commit (countsAtACommit); else at the commit
+// that it counts from (faultCommit), and at another commit by the ties (carries) only when its test
+// caught its fault, the one exception that the rule that replaces The Spec's R8 makes to "A result
+// counts only at the commit that it read" ("A failing example that a check's test caught"); for a
+// program check of the code, never at a subject at its Commit, which CI tested. countingFaults and
+// withoutRefused read it alike, so a refusal marks as counted only a failing example that would
+// count.
 func (j *checkJudge) faultCountsAt(c Check, r Result) bool {
+	if !countsAtACommit(c) {
+		return true
+	}
 	commit := j.faultCommit(c, r)
 	switch {
 	case countsFromPlantedOn(c) && r.Commit == j.in.Subject.Commit:
 		return false
 	case r.Outcome != OutcomeFail:
-		return commit != "" && commit == j.in.Subject.Commit
+		return commit == j.in.Subject.Commit
 	}
 	return j.carries(c.ID, commit)
 }
@@ -697,10 +698,10 @@ func isFaultPath(path string) bool {
 	return endsIn(".go", ".ts", ".tsx") && !endsIn("_test.go", ".test.ts", ".test.tsx", ".e2e.ts") && !slices.ContainsFunc(dirs, testDir)
 }
 
-// carries is whether a failing example of the check id at commit, or a result of the test of a
-// program check of production or of the graph at commit, counts at the subject's commit (steps 4
-// and 7; the rule that replaces The Spec's R8, which keeps a rule on files for a failing example
-// alone and never makes a pass of the code count at another commit): the
+// carries is whether a failing example of the check id at commit whose test caught its fault, or a
+// run of the test of a program check of production or of the graph at commit, counts at the
+// subject's commit (steps 4 and 7; the rule that replaces The Spec's R8, which keeps a rule on files
+// for a caught failing example alone and never makes a pass of the code count at another commit): the
 // two are one commit, or the check's tie is known at both commits and no path that differs between
 // their trees is covered by the tie at either commit, since a tie is a fact of a commit (R18: "At
 // each commit, Dispatch derives four ties"), and a file that the test read at one commit and that
