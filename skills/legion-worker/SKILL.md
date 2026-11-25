@@ -60,7 +60,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
 - A released pod is not a stop.
-  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives but a volume the deployment keeps.
+  Your session, phase and task are kept, the daemon releases no pod while it holds work you have not pushed, and nothing of the disk survives a release but a volume the deployment keeps.
 
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 

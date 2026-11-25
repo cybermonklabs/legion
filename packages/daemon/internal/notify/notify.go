@@ -132,9 +132,8 @@ func (e ErrPublishDenied) Error() string {
 // project's controller's (claim.ControllerToken), once the registered controller session holds
 // that role live (the daemon's outbox, controllerNotice, lists what it carries). The listener
 // resolves a role at the publish itself: a publish without keep is stored for the role's live
-// holder alone,
-// on that session's own agent subject, so a notice reaches whichever session holds the role and
-// never one that has stopped following a topic.
+// holder alone, on that session's own agent subject, so a notice reaches whichever session holds
+// the role and never one that has stopped following a topic.
 const RoleTopicPrefix = "notifications.role."
 
 // Publisher delivers a notice to one listener topic. Publish asks the listener to keep nothing

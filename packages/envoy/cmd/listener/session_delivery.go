@@ -1101,7 +1101,7 @@ func (l *sessionLocks) releaser(sessionID string, held *sessionLock) func() {
 // that project's controller role. A session whose role claim was freed while it was away
 // registers again without the lane, and gets the lane back only once it claims the role again,
 // at the consumer's position then, so a notice stored on the lane while it was away is not
-// delivered to it (dispatch://INFRA-1585, the loss of 2026-11-23). A current daemon publishes
+// delivered to it (the loss of 2026-11-23). A current daemon publishes
 // controller notices to the controller's role topic instead, which reaches the role's live
 // holder as a forward on its agent subject. A topic the stream does not store reaches the
 // session on no path of its own: a role lane reaches its holder as a forward on the holder's
