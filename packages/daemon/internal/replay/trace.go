@@ -1448,12 +1448,14 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 
 // ParseMerges reads pages of GitHub's commit listing of one base branch
 // (GET /repos/<owner>/<name>/commits?sha=<branch>&since=<t>, each page newest first, as GitHub
-// serves them) and returns the branch's first-parent commits among them, oldest first, each at its
-// committer's time, which is when a merge landed it on the branch, with branch as its Branch and,
-// where the first line of its message ends with GitHub's squash suffix ` (#<n>)`, the pull request
-// it merged as its PR: the walk from the first page's first commit, the branch's tip, along each
-// commit's first parent through every listed commit, whatever its time, since a first parent can
-// be committed after its child. The walk ends at a root commit or at the first commit whose first
+// serves them) and returns the branch's first-parent commits among them, oldest first, as the
+// listing alone gives them: each at its committer's time, with branch as its Branch and, where the
+// first line of its message ends with GitHub's squash suffix ` (#<n>)`, the pull request it names
+// as its PR, and no Event. That time is an estimate of when the commit landed, and that number a
+// hint, which CollectMerges holds to GitHub's record of the merge (githubReader.mergeEvent). The
+// commits are the walk from the first page's first commit, the branch's tip, along each commit's
+// first parent through every listed commit, whatever its time, since a first parent can be
+// committed after its child. The walk ends at a root commit or at the first commit whose first
 // parent no page holds, and ParseMerges also returns that parent, "" where the walk ended at a
 // root or walked nothing. No page, or an empty first page, is a branch with no commit listed. A
 // page that is not a list of commits, or a commit without its sha or committer's time, is refused.

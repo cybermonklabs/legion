@@ -178,18 +178,50 @@ func dispatchStub(t *testing.T, served dispatchServed) (*httptest.Server, *stubR
 }
 
 // githubStub serves GitHub's commit listing of acme/widgets's main from pages, each page after the
-// first reached through the Link header of the one before, as GitHub pages a listing. It refuses
-// a request for another listing or without the query collect-merges sends.
-func githubStub(t *testing.T, pages [][]byte) (*httptest.Server, *stubRequests) {
+// first reached through the Link header of the one before, as GitHub pages a listing, and GitHub's
+// record of the merge of each pull request of pulls: by its number (/repos/acme/widgets/pulls/<n>),
+// and among the pull requests of the commit it merged as (/repos/acme/widgets/commits/<sha>/pulls).
+// It refuses a request for another listing, another pull request, or without the query
+// collect-merges sends.
+func githubStub(t *testing.T, pages [][]byte, pulls []collectPull) (*httptest.Server, *stubRequests) {
 	t.Helper()
 	requests := &stubRequests{}
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.add(r)
 		query := r.URL.Query()
+		number, isPull := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/pulls/")
+		sha, inCommits := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/commits/")
+		sha, ofCommit := strings.CutSuffix(sha, "/pulls")
+		serve := func(answer any) {
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(answer); err != nil {
+				t.Errorf("serve %s: %v", r.URL.RequestURI(), err)
+			}
+		}
 		switch {
 		case r.Header.Get("Authorization") != "Bearer "+stubGitHubToken:
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+			return
+		case r.Method == http.MethodGet && isPull:
+			for _, pull := range pulls {
+				if strconv.Itoa(pull.number) == number {
+					answer := pull.record()
+					answer["merged"] = true
+					serve(answer)
+					return
+				}
+			}
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		case r.Method == http.MethodGet && inCommits && ofCommit:
+			page := []map[string]any{}
+			for _, pull := range pulls {
+				if pull.sha == sha {
+					page = append(page, pull.record())
+				}
+			}
+			serve(page)
 			return
 		case r.Method != http.MethodGet || r.URL.Path != "/repos/acme/widgets/commits", query.Get("sha") != capturedBranch,
 			query.Get("since") != "2026-11-19T04:56:30Z", query.Has("until"), query.Get("per_page") != "100":
@@ -419,6 +451,36 @@ const collectChildAdded = `{"id":900001,"issue_key":"ACME-32","artifact_id":null
 const collectBelowPage = `{"sha":"e4584fae753a80a71074cd7d33aaaacb4c8660bf","commit":{"message":"fix(dispatch): captured commit message (#4559)",` +
 	`"committer":{"date":"2026-11-20T04:56:10Z"}},"parents":[{"sha":"c980d91b540ece46364256983f24a3f5a63b3841"}]}`
 
+// collectPull is GitHub's record of the merge of a pull request a captured commit names: its
+// number, the commit it merged as into main, and its merged_at.
+type collectPull struct {
+	number   int
+	sha      string
+	mergedAt string
+}
+
+// record is p as GitHub serves it, cut to its merge: closed, and merged as p.sha into main at
+// p.mergedAt.
+func (p collectPull) record() map[string]any {
+	return map[string]any{"number": p.number, "state": "closed", "merged_at": p.mergedAt, "merge_commit_sha": p.sha,
+		"base": map[string]any{"ref": capturedBranch}}
+}
+
+// collectPulls is GitHub's record of the merge of each pull request that a commit of the captured
+// page, or the commit below it (collectBelowPage), names by its squash suffix, oldest first: each
+// merged into main as that commit, four or five minutes after the commit's committer's time, as a
+// merge queue lands a commit it built, but #4559, below the span, merged ten seconds after its
+// commit and before the span. The times are this test's own, not GitHub's, so that the merges
+// collect-merges writes are held to them, and not to the times ParseMerges reads from the commits.
+var collectPulls = []collectPull{
+	{4559, "e4584fae753a80a71074cd7d33aaaacb4c8660bf", "2026-11-20T04:56:20Z"},
+	{4577, "282a49f20ac5b24d9c30925646c9d0438905fd0e", "2026-11-20T05:01:30Z"},
+	{4541, "6d50ef31bf220fb231e46d9264eddd77ef921078", "2026-11-20T05:20:42Z"},
+	{4552, "0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a", "2026-11-20T05:33:02Z"},
+	{4551, "e967604ded2c6bcd03d676ad64e449f7275991c0", "2026-11-20T05:38:11Z"},
+	{4516, "651db8d54c55d5e78e092ece50a047c09108ebd7", "2026-11-20T05:41:33Z"},
+}
+
 // collectRun is one collect, collect-merges and collect-queue of the captured samples against the
 // stubs, and what each stub saw.
 type collectRun struct {
@@ -554,7 +616,7 @@ func collectCaptured(t *testing.T) collectRun {
 		}
 		pages = append(pages, data)
 	}
-	githubServer, githubSeen := githubStub(t, pages)
+	githubServer, githubSeen := githubStub(t, pages, collectPulls)
 	var queued []json.RawMessage
 	if err := json.Unmarshal(signalsFixture(t, "github/timeline-4910.json"), &queued); err != nil {
 		t.Fatal(err)
@@ -624,7 +686,9 @@ func collectCaptured(t *testing.T) collectRun {
 // three parents among them (ACME-24 of ACME-27, ACME-15 of ACME-58 and ACME-54 of ACME-55) as
 // missing ancestors too, which window.json names; and the merges are the captured page's five
 // first-parent commits, read over two pages with the commit below it, which the walk passes and
-// does not keep.
+// does not keep, each at the merge event GitHub records for the pull request it names
+// (collectPulls), with that pull request: collect-merges reads the listing's two pages first, and
+// pull requests alone after them.
 // The signals' records are each one's lines in the reach: the provider's minutes, the launcher's
 // lines of both its forms as the window's rows, each line once, in time order, the Cloud Logging
 // read named on its own though its name is no JSON file's, and the pods' memory as each pod's two
@@ -844,11 +908,24 @@ func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
 		t.Errorf("collect-queue read %d pages, want 3: %v", len(run.timelines), run.timelines)
 	}
 
-	if want := capturedMergeReadings(t)["commits.json"]; len(read.Merges) != 1 || !sameReading(read.Merges["acme/widgets"], want) || !sameReading(run.merges, want) {
-		t.Errorf("the window's merges are %+v (collect-merges answered %+v), want acme/widgets's %+v", read.Merges, run.merges, want)
+	var wantMerges []Merge
+	for _, pull := range collectPulls[1:] { // #4559, below the page, merged before the span
+		wantMerges = append(wantMerges, Merge{SHA: pull.sha, At: capturedTime(t, pull.mergedAt), Branch: capturedBranch, PR: pull.number, Event: true})
 	}
-	if len(run.github) != 2 {
-		t.Errorf("collect-merges read %d pages, want the listing's 2: %v", len(run.github), run.github)
+	if len(read.Merges) != 1 || !sameReading(read.Merges["acme/widgets"], wantMerges) || !sameReading(run.merges, wantMerges) {
+		t.Errorf("the window's merges are %+v (collect-merges answered %+v), want acme/widgets's %+v", read.Merges, run.merges, wantMerges)
+	}
+	listing := func(request stubRequest) bool {
+		path, _, _ := strings.Cut(request.Target, "?")
+		return path == "/repos/acme/widgets/commits"
+	}
+	pullRead := func(request stubRequest) bool {
+		path, _, _ := strings.Cut(request.Target, "?")
+		return strings.HasPrefix(path, "/repos/acme/widgets/pulls/") || strings.HasPrefix(path, "/repos/acme/widgets/commits/") && strings.HasSuffix(path, "/pulls")
+	}
+	if len(run.github) < 2 || !listing(run.github[0]) || !listing(run.github[1]) ||
+		slices.ContainsFunc(run.github[2:], func(request stubRequest) bool { return !pullRead(request) }) {
+		t.Errorf("collect-merges sent %v, want the listing's 2 pages first and reads of pull requests alone after them", run.github)
 	}
 
 	if len(run.dispatch) == 0 || len(run.github) == 0 || len(run.timelines) == 0 {

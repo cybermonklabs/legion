@@ -7,9 +7,11 @@ body: |-
     delays, and names each assumption that a result rests on. `collect` collects a window from the
     daemon's log lines and from Dispatch, and its `--after` adds a run-out past the window's end, so
     a replay runs the work recorded after the end while it measures the window alone.
-    `collect-merges` adds each base branch's first-parent history from GitHub. Both send GET
-    requests alone. `neutralize` renames the private names of a window for test data. `run`
-    replays a window, and `scorecard` reads the same measures from the record of a window.
+    `collect-merges` adds each base branch's first-parent history from GitHub. It uses the merge
+    event's time when GitHub names the exact commit and base branch. It marks committer-time
+    estimates separately. Both collectors send only GET requests. `neutralize` renames the
+    private names of a window for test data. `run` replays a window, and `scorecard` reads the
+    same measures from the record of a window.
     `run` writes a line of its own to the run's log for each conflict draw, `replay: a stretch's
     conflict drawn`, with the issue, its stretch, the running and the fitted phase, the chance, the
     number drawn and the outcome; no daemon writes that line, and no measure reads it.

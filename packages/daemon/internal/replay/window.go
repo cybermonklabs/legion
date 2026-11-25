@@ -63,7 +63,9 @@ var windowSignals = []string{SignalIdle, SignalQueue, SignalProvider, SignalKill
 //   - events/<KEY>.jsonl, each issue's Dispatch events, one raw event per line, oldest first,
 //     exactly as Dispatch's issue event log serves them (the shape intake.DecodeDispatchEvent
 //     reads);
-//   - merges/<owner>__<repo>.jsonl, the first-parent commits of a repository's base branches;
+//   - merges/<owner>__<repo>.jsonl, the first-parent commits of a repository's base branches,
+//     each at GitHub's merge event where its line says so ("event"), else at its committer's
+//     time (Merge);
 //
 // and the inputs of R11's signals, each optional:
 //
@@ -220,14 +222,23 @@ type Part struct {
 }
 
 // Merge is one first-parent commit of a repository's base branch: what the conflict draw reads
-// the rate of the base's movement from. PR is the pull request the commit merged, where the first
-// line of its message ends with GitHub's squash suffix ` (#<n>)`, and 0 for a commit with no such
-// suffix; the draw reads it to leave a stretch's own merge out of the stretch's count (Stretch).
+// the rate of the base's movement from, each commit at At, in the order of At and, at one At, in
+// the file's order, which collect-merges writes in first-parent order. Where Event is set, At is
+// GitHub's merge event, the merged_at of the pull request PR, which GitHub records as merged as
+// this commit (merge_commit_sha) into Branch (base.ref). Where it is not, At is the commit's
+// committer's time: an estimate of when the commit landed, and no merge event, which a reading
+// that needs the moment of a merge takes for unknown. That is so of every commit GitHub records no
+// such merge of, and of every commit of a window collected before collect-merges read merge
+// events, whose lines name no event. PR is then 0, but in such an older window, where it is the
+// pull request the first line of the commit's message names by GitHub's squash suffix ` (#<n>)`,
+// 0 for none. The draw reads PR to leave a stretch's own merge out of the stretch's count
+// (Stretch).
 type Merge struct {
 	SHA    string    `json:"sha"`
 	At     time.Time `json:"at"`
 	Branch string    `json:"branch"`
 	PR     int       `json:"pr,omitempty"`
+	Event  bool      `json:"event,omitempty"`
 }
 
 // Duration is a time.Duration written in a window as Go's duration text ("90m", "1h30m0s"), so a

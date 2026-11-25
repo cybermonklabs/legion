@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,14 +32,27 @@ var (
 )
 
 // stubCommit is one commit of acme/widgets's main that githubListing serves: its sha, its
-// committer's time, the pull request its subject's squash suffix names (none where 0), its
-// parents, the first parent first, and whether the listing lacks it whatever its time.
+// committer's time, the pull request it merged (none where 0), which its subject names by GitHub's
+// squash suffix or, for a merge commit (mergeCommit), only as GitHub's merge commit subject does,
+// with no suffix, its parents, the first parent first, and whether the listing lacks it whatever
+// its time. mergedAt, mergedAs and into are GitHub's record of that pull request's merge (pull):
+// its merged_at, its merge_commit_sha and its base.ref, where unset the committer's time, the
+// commit's own sha and main, so that the commit is the pull request's merge into main, merged as
+// it was committed. bare says GitHub's list of the pull requests of the commit leaves out
+// merge_commit_sha, as that list's schema allows, and broken that GitHub answers the read of the
+// pull request with no pull request.
 type stubCommit struct {
-	sha      string
-	at       time.Time
-	pr       int
-	parents  []string
-	unlisted bool
+	sha         string
+	at          time.Time
+	pr          int
+	mergeCommit bool
+	parents     []string
+	unlisted    bool
+	mergedAt    time.Time
+	mergedAs    string
+	into        string
+	bare        bool
+	broken      bool
 }
 
 // stubSHA is the sha of the stub commit numbered n: n in hex, 40 digits long.
@@ -56,8 +70,23 @@ func stubbed(t *testing.T, n int, at string, pr int, parents ...int) stubCommit 
 	return commit
 }
 
-// merge is c as collect-merges writes it: on main, at its committer's time, with its pull request.
+// merge is c as collect-merges writes it, on main: where GitHub records c's pull request merged as
+// c into main (pull), at that merge's time, with the pull request, as GitHub's merge event;
+// otherwise at its committer's time, with no pull request.
 func (c stubCommit) merge() Merge {
+	if c.pr != 0 && cmp.Or(c.mergedAs, c.sha) == c.sha && cmp.Or(c.into, "main") == "main" {
+		return Merge{SHA: c.sha, At: cmp.Or(c.mergedAt, c.at), Branch: "main", PR: c.pr, Event: true}
+	}
+	return Merge{SHA: c.sha, At: c.at, Branch: "main"}
+}
+
+// committed is c as a window collected before collect-merges read merge events holds it: on main,
+// at its committer's time, with the pull request its subject's squash suffix names, none for a
+// merge commit.
+func (c stubCommit) committed() Merge {
+	if c.mergeCommit {
+		return Merge{SHA: c.sha, At: c.at, Branch: "main"}
+	}
 	return Merge{SHA: c.sha, At: c.at, Branch: "main", PR: c.pr}
 }
 
@@ -65,7 +94,10 @@ func (c stubCommit) merge() Merge {
 // collect-merges reads.
 func (c stubCommit) listed() map[string]any {
 	message := "feat(widgets): a change\n\nThe change's body."
-	if c.pr != 0 {
+	switch {
+	case c.pr != 0 && c.mergeCommit:
+		message = fmt.Sprintf("Merge pull request #%d from acme/feature\n\nThe change's body.", c.pr)
+	case c.pr != 0:
 		message = fmt.Sprintf("feat(widgets): a change (#%d)\n\nThe change's body.", c.pr)
 	}
 	parents := []map[string]string{}
@@ -76,12 +108,24 @@ func (c stubCommit) listed() map[string]any {
 		"commit": map[string]any{"message": message, "committer": map[string]any{"date": c.at.Format(time.RFC3339)}}}
 }
 
+// pull is the pull request c merged as GitHub's listings of pull requests hold it, cut to
+// its merge: closed, and merged at mergedAt as the commit mergedAs into into (stubCommit). GET
+// /pulls/<n> adds merged, which the listings leave out (githubrest.PullRequest).
+func (c stubCommit) pull() map[string]any {
+	merged := cmp.Or(c.mergedAt, c.at).Format(time.RFC3339)
+	return map[string]any{"number": c.pr, "state": "closed", "merged_at": merged, "updated_at": merged,
+		"merge_commit_sha": cmp.Or(c.mergedAs, c.sha), "base": map[string]any{"ref": cmp.Or(c.into, "main")}}
+}
+
 // githubListing serves acme/widgets's main from history, the branch's commits newest first.
 // GitHub's commit listing of main is served as GitHub filters it: on one page, each commit whose
 // committer's time is at or after the request's since and, where the request has an until, at or
 // before it, but a commit marked unlisted. Each commit of history, unlisted or not, is served by
-// its sha (/repos/acme/widgets/commits/<sha>). A request for anything else, or without the token,
-// is refused.
+// its sha (/repos/acme/widgets/commits/<sha>). The pull request each commit merged is served as
+// GitHub records its merge (stubCommit.pull): by its number (/repos/acme/widgets/pulls/<n>), with
+// no pull request where the commit is broken, and among the pull requests of the commit it was
+// merged as (/repos/acme/widgets/commits/<sha>/pulls), with no merge_commit_sha where the commit
+// is bare. A request for anything else, or without the token, is refused.
 func githubListing(t *testing.T, history []stubCommit) (*httptest.Server, *stubRequests) {
 	t.Helper()
 	requests := &stubRequests{}
@@ -98,7 +142,37 @@ func githubListing(t *testing.T, history []stubCommit) (*httptest.Server, *stubR
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			return
 		}
+		if number, one := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/pulls/"); one {
+			for _, commit := range history {
+				if commit.pr != 0 && strconv.Itoa(commit.pr) == number {
+					if commit.broken {
+						serve("no pull request")
+						return
+					}
+					pull := commit.pull()
+					pull["merged"] = true
+					serve(pull)
+					return
+				}
+			}
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
 		if sha, one := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/commits/"); one {
+			if sha, pulls := strings.CutSuffix(sha, "/pulls"); pulls {
+				page := []map[string]any{}
+				for _, commit := range history {
+					if commit.pr != 0 && cmp.Or(commit.mergedAs, commit.sha) == sha {
+						pull := commit.pull()
+						if commit.bare {
+							delete(pull, "merge_commit_sha")
+						}
+						page = append(page, pull)
+					}
+				}
+				serve(page)
+				return
+			}
 			for _, commit := range history {
 				if commit.sha == sha {
 					serve(commit.listed())
@@ -269,9 +343,10 @@ func TestCollectMergesRefusesAWalkThatEndsInsideTheSpan(t *testing.T) {
 // A branch can be quiet for longer than the margin before the span: main's first commit in the
 // span, of 03:00, has a first parent committed on 2026-11-16, days before the listing's since. The
 // walk ends at that parent, which the listing lacks; collect-merges reads it, finds it committed
-// before since, and keeps the span's commits, since none of them is left out. Its requests are the
-// listing and that one read, each a GET. It fails where collect-merges refuses the walk or does not
-// read the parent.
+// before since, and keeps the span's commits, since none of them is left out. Its first requests
+// are the listing and that one read, and every request after them is a read of the merge of a
+// commit walked (eventRead), each a GET: none of the parent's. It fails where collect-merges
+// refuses the walk or does not read the parent, or reads it after the merges.
 func TestCollectMergesEndsAQuietBranchsWalkAtAParentBeforeTheListing(t *testing.T) {
 	t.Parallel()
 	quiet := stubbed(t, 0x500, "2026-11-16T12:00:00Z", 500, 0x499)
@@ -283,14 +358,35 @@ func TestCollectMergesEndsAQuietBranchsWalkAtAParentBeforeTheListing(t *testing.
 		{Method: http.MethodGet, Target: "/repos/acme/widgets/commits?per_page=100&sha=main&since=2026-11-19T00%3A00%3A00Z"},
 		{Method: http.MethodGet, Target: "/repos/acme/widgets/commits/" + quiet.sha},
 	}
-	if !slices.Equal(run.requests, want) {
-		t.Errorf("collect-merges sent %v, want the listing and a read of %s: %v", run.requests, quiet.sha, want)
+	if len(run.requests) < len(want) || !slices.Equal(run.requests[:len(want)], want) {
+		t.Fatalf("collect-merges sent %v, want the listing and a read of %s first: %v", run.requests, quiet.sha, want)
+	}
+	for _, request := range run.requests[len(want):] {
+		if !eventRead(request, tip, first) {
+			t.Errorf("collect-merges sent %s %s after the listing and the read of %s, want reads of the merges of %s and %s alone",
+				request.Method, request.Target, quiet.sha, first.sha, tip.sha)
+		}
 	}
 }
 
+// eventRead says whether request is a GET of how GitHub records the merge of one of commits: of
+// the pull request its subject names (/repos/acme/widgets/pulls/<n>), or of the pull requests
+// GitHub lists for it (/repos/acme/widgets/commits/<sha>/pulls).
+func eventRead(request stubRequest, commits ...stubCommit) bool {
+	target, err := url.Parse(request.Target)
+	if err != nil || request.Method != http.MethodGet {
+		return false
+	}
+	return slices.ContainsFunc(commits, func(c stubCommit) bool {
+		return target.Path == "/repos/acme/widgets/commits/"+c.sha+"/pulls" ||
+			c.pr != 0 && target.Path == "/repos/acme/widgets/pulls/"+strconv.Itoa(c.pr)
+	})
+}
+
 // collect-merges lists main from a day before the span's start, so the walk reaches below the
-// span, and with no until, so a first parent committed after its child is listed: its one request
-// is sha=main, since=2026-11-19T00:00:00Z and per_page=100, with no until.
+// span, and with no until, so a first parent committed after its child is listed: its first
+// request is sha=main, since=2026-11-19T00:00:00Z and per_page=100, with no until, and every
+// request after it reads the merge of a commit walked (eventRead), no other page of commits.
 func TestCollectMergesListsFromADayBeforeTheSpanWithNoUntil(t *testing.T) {
 	t.Parallel()
 	below := stubbed(t, 0x400, "2026-11-19T12:00:00Z", 400, 0x399)
@@ -299,8 +395,13 @@ func TestCollectMergesListsFromADayBeforeTheSpanWithNoUntil(t *testing.T) {
 	if run.err != nil {
 		t.Fatalf("CollectMerges: %v", run.err)
 	}
-	if len(run.requests) != 1 {
-		t.Fatalf("collect-merges sent %v, want one request", run.requests)
+	if len(run.requests) == 0 {
+		t.Fatal("collect-merges sent no request, want the listing first")
+	}
+	for _, request := range run.requests[1:] {
+		if !eventRead(request, tip, below) {
+			t.Errorf("collect-merges sent %s %s after the listing, want reads of the merges of the commits walked alone", request.Method, request.Target)
+		}
 	}
 	target, err := url.Parse(run.requests[0].Target)
 	if err != nil {
@@ -309,6 +410,117 @@ func TestCollectMergesListsFromADayBeforeTheSpanWithNoUntil(t *testing.T) {
 	if query := target.Query(); query.Get("sha") != "main" || query.Get("since") != "2026-11-19T00:00:00Z" ||
 		query.Get("per_page") != "100" || query.Has("until") {
 		t.Errorf("collect-merges listed %s, want sha=main, since=2026-11-19T00:00:00Z and per_page=100, with no until", run.requests[0].Target)
+	}
+}
+
+// A pull request's merge lands on main at GitHub's merge event, its merged_at, which can come well
+// after its commit's committer's time. collect-merges places each first-parent commit of main at
+// the merge event of the pull request GitHub records as merged as that commit (merge_commit_sha)
+// into main (base.ref), with that pull request, every other commit at its committer's time with
+// none, and keeps the commits so placed in [walkFrom, walkTo). Here #601, committed at 23:40 the
+// day before, merged at 00:00, the span's start, and is kept at 00:00; #602, committed at 01:00,
+// merged at 01:45 and is kept at 01:45; and #605, committed at 05:20, merged at 06:00, the span's
+// end, and is not kept. #607 and #608 merged at 02:50 and 03:20 as merge commits, whose subjects
+// name no squash suffix: each is found among the pull requests GitHub lists for its commit, #608
+// there without its merge_commit_sha, and kept at its merge with its pull request. #603's subject
+// names a pull request GitHub merged as another commit, and #604's one GitHub merged into
+// release-1, each after the span: neither merge event is the commit's own, so each is kept at its
+// committer's time, and with no pull request. A stretch's M counts the commits as the window holds
+// them: ACME-1's, from 23:50 to 01:50, whose own pull request is #602, holds #601 and leaves its
+// own merge out, M = 1; ACME-2's, from 04:30 to 06:00, whose own is #699, holds none, M = 0;
+// ACME-3's, from 02:30 to 02:55, whose own is #607, leaves its own merge out, M = 0; and
+// ACME-4's, from 01:50 to 02:30, whose own is #603, holds the commit whose subject names #603 and
+// does not take it for its own merge, M = 1, its own merge unknown. At the commits' committer's
+// times, with the pull requests their subjects' squash suffixes name, as a window collected before
+// merge events holds them, they would be 0, 1, 1 and 0. It fails where collect-merges keeps a
+// commit by its committer's time, takes a merge event from a pull request that did not merge that
+// commit into main, or keeps a pull request GitHub's record does not bear out.
+func TestCollectMergesKeepsEachMergeAtGitHubsMergeEvent(t *testing.T) {
+	t.Parallel()
+	root := stubbed(t, 0x600, "2026-11-19T12:00:00Z", 600, 0x5ff)
+	early := stubbed(t, 0x601, "2026-11-19T23:40:00Z", 601, 0x600)
+	early.mergedAt = capturedTime(t, "2026-11-20T00:00:00Z")
+	queued := stubbed(t, 0x602, "2026-11-20T01:00:00Z", 602, 0x601)
+	queued.mergedAt = capturedTime(t, "2026-11-20T01:45:00Z")
+	copied := stubbed(t, 0x603, "2026-11-20T02:00:00Z", 603, 0x602)
+	copied.mergedAt, copied.mergedAs = capturedTime(t, "2026-11-20T06:30:00Z"), stubSHA(0x6f3)
+	joined := stubbed(t, 0x607, "2026-11-20T02:40:00Z", 607, 0x603, 0x6e7)
+	joined.mergeCommit, joined.mergedAt = true, capturedTime(t, "2026-11-20T02:50:00Z")
+	joinedBare := stubbed(t, 0x608, "2026-11-20T03:00:00Z", 608, 0x607, 0x6e8)
+	joinedBare.mergeCommit, joinedBare.bare, joinedBare.mergedAt = true, true, capturedTime(t, "2026-11-20T03:20:00Z")
+	released := stubbed(t, 0x604, "2026-11-20T04:00:00Z", 604, 0x608)
+	released.mergedAt, released.into = capturedTime(t, "2026-11-20T06:15:00Z"), "release-1"
+	late := stubbed(t, 0x605, "2026-11-20T05:20:00Z", 605, 0x604)
+	late.mergedAt = capturedTime(t, "2026-11-20T06:00:00Z")
+	tip := stubbed(t, 0x606, "2026-11-20T07:00:00Z", 606, 0x605)
+	tip.mergedAt = capturedTime(t, "2026-11-20T07:20:00Z")
+	history := []stubCommit{tip, late, released, joinedBare, joined, copied, queued, early, root}
+	run := collectWalk(t, history...)
+	run.wantWritten(t, []Merge{
+		{SHA: early.sha, At: early.mergedAt, Branch: "main", PR: 601, Event: true},
+		{SHA: queued.sha, At: queued.mergedAt, Branch: "main", PR: 602, Event: true},
+		{SHA: copied.sha, At: copied.at, Branch: "main"},
+		{SHA: joined.sha, At: joined.mergedAt, Branch: "main", PR: 607, Event: true},
+		{SHA: joinedBare.sha, At: joinedBare.mergedAt, Branch: "main", PR: 608, Event: true},
+		{SHA: released.sha, At: released.at, Branch: "main"},
+	})
+	read, err := ReadWindow(run.window)
+	if err != nil {
+		t.Fatalf("ReadWindow of the window collect-merges wrote into: %v", err)
+	}
+	branches := Trace{Branches: map[string]string{"acme/widgets": "main"}}
+	placed := newBaseMerges(read, branches)
+	var byCommitter []Merge
+	for _, commit := range history {
+		byCommitter = append(byCommitter, commit.committed())
+	}
+	committed := newBaseMerges(Window{Merges: map[string][]Merge{"acme/widgets": byCommitter}}, branches)
+	for _, s := range []struct {
+		issue      string
+		own        int
+		start, end string
+		merges     int
+		unknown    bool
+	}{
+		{"ACME-1", 602, "2026-11-19T23:50:00Z", "2026-11-20T01:50:00Z", 1, false},
+		{"ACME-2", 699, "2026-11-20T04:30:00Z", "2026-11-20T06:00:00Z", 0, false},
+		{"ACME-3", 607, "2026-11-20T02:30:00Z", "2026-11-20T02:55:00Z", 0, false},
+		{"ACME-4", 603, "2026-11-20T01:50:00Z", "2026-11-20T02:30:00Z", 1, true},
+	} {
+		start, end := capturedTime(t, s.start), capturedTime(t, s.end)
+		if count, _ := committed.between("acme/widgets", s.own, start, end); count == s.merges {
+			t.Fatalf("%s's stretch from %s to %s counts M = %d at the commits' committer's times and their subjects' pull requests too, "+
+				"so it tells no merge event from a committer's time", s.issue, s.start, s.end, count)
+		}
+		if count, unknown := placed.between("acme/widgets", s.own, start, end); count != s.merges || unknown != s.unknown {
+			t.Errorf("%s's stretch from %s to %s counts M = %d over the window's merges (own merge unknown: %t), want %d (%t)",
+				s.issue, s.start, s.end, count, unknown, s.merges, s.unknown)
+		}
+	}
+}
+
+// An answer of GitHub's that is no pull request is refused, as one that is no commit is: GitHub
+// answers the read of #701, which main's commit of 03:00 names, with a string. collect-merges
+// refuses, naming the commit and the pull request, and writes nothing into the window. It fails
+// where the commit is kept at its committer's time as one GitHub records no merge of.
+func TestCollectMergesRefusesAnAnswerThatIsNoPullRequest(t *testing.T) {
+	t.Parallel()
+	below := stubbed(t, 0x700, "2026-11-19T12:00:00Z", 700, 0x6ff)
+	broken := stubbed(t, 0x701, "2026-11-20T03:00:00Z", 701, 0x700)
+	broken.broken = true
+	run := collectWalk(t, broken, below)
+	if run.err == nil {
+		t.Errorf("CollectMerges answered %s and no error, want a refusal", describeReading(run.merges))
+	} else {
+		for _, part := range []string{broken.sha, "#701", "no pull request"} {
+			if !strings.Contains(run.err.Error(), part) {
+				t.Errorf("CollectMerges refuses with %q, which does not name %s", run.err, part)
+			}
+		}
+	}
+	if after := windowFiles(t, run.window); !reflect.DeepEqual(after, run.before) {
+		t.Errorf("the window holds %v after the refusal, want its files as they were before it: %v",
+			slices.Sorted(maps.Keys(after)), slices.Sorted(maps.Keys(run.before)))
 	}
 }
 

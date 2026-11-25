@@ -62,7 +62,7 @@ A recorded window is a directory.
 | `window.json` | The project, the span (`from`, `to`), the reach (`before`), the run-out (`after`, only where the window has one), the cap from each change on, the release, commit and rule of each part of the span, the deployment's settings, the kinds of line that the log holds, the collector's commit, and the sha256 of each input file. |
 | `log.jsonl` | The daemon's lines in the reach, the span and the run-out, one JSON object each, as the daemon writes them on standard error: `time`, `level`, `msg` and the attributes. |
 | `events/<KEY>.jsonl` | Each issue's Dispatch events, oldest first, as Dispatch's issue event log serves them. |
-| `merges/<owner>__<name>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads. |
+| `merges/<owner>__<name>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads, each at GitHub's merge event or, where GitHub records none, at its committer date. |
 | `signals/provider.jsonl` | The deployment's record of the model provider, one line a minute. |
 | `launcher/log.jsonl` | The launcher's lines of the project's issue pods, whose memory guard lines are the record of its kills. |
 | `signals/memory.jsonl` | The memory of each of the project's issue pods, one line a minute for each pod. |
@@ -311,13 +311,28 @@ Every other file of the window stays as it was.
 It lists the branch's commits from a day before `--from` to the tip of the branch, with no end time.
 A commit's first parent can be committed after the commit, even after `--to`.
 So the walk starts at the tip and goes along first parents through every listed commit, whatever its time.
-It keeps the commits that were committed from `--from` to `--to`.
 The walk ends at the first commit of the branch, or at a first parent that the listing lacks.
-A walk that ends in the day before `--from` holds the whole history of the span.
+A walk that reaches the day before `--from` has gone beyond the span by committer date.
 Where a walk ends at a missing parent while its last commit is inside the span, `collect-merges` reads that parent with one more `GET`.
-A parent that was committed before the start of the listing shows a branch that was quiet before the span, and the walk ends there.
+If that parent's committer date precedes the start of the listing, the walk ends there.
 A parent that was committed later is a commit that the listing lacks, so the walk would lose the history before that parent.
 `collect-merges` refuses such a walk with an error that names the last commit walked and the parent, each with its time, and writes nothing.
+
+`collect-merges` keeps commits with a landing time at or after `--from` and before `--to`.
+A commit lands at GitHub's merge event: the `merged_at` of the pull request that GitHub records as merged as that commit (`merge_commit_sha`) into `--branch` (`base.ref`).
+A commit's committer date can come well before that, for example where a merge queue built the commit when the pull request entered the queue.
+To find the pull request, `collect-merges` first reads the one that the first line of the commit's message names with GitHub's squash suffix ` (#<n>)` (`GET /repos/<owner>/<name>/pulls/<n>`), and takes it where GitHub's record matches the commit.
+Where it does not match, or GitHub answers `404 Not Found`, or the message names none, it reads the pull requests that GitHub lists for the commit (`GET /repos/<owner>/<name>/commits/<sha>/pulls`), so that a merge commit, whose message has no suffix, finds its pull request too.
+Where that list leaves out a pull request's `merge_commit_sha`, it reads that pull request whole.
+It reads nothing of a commit that the walk does not reach.
+A commit whose merge GitHub records keeps that pull request as `pr`, and its line says `"event": true`.
+A commit whose merge GitHub does not record, or records for more than one pull request, keeps its committer date, which is an estimate and no merge event, and its line has no `event` and no `pr`, whatever its message names.
+Older windows contain committer dates alone and retain any pull request number from the commit subject.
+Commits that land at the same moment keep their first-parent order.
+
+The listing reaches only the commits that were committed from a day before `--from`.
+A commit that was committed before that and merged inside the span, such as one that a merge queue held for more than a day, is missing from the history that `collect-merges` writes.
+The checks of the walk's end read committer dates, as the listing does, so they do not find such a commit.
 
 A read that GitHub refuses for now, with a 5xx or no answer, is tried again with a growing wait of about a minute in all.
 A read that GitHub's rate limit refuses is tried again after the wait that GitHub names, as [GitHub's REST documentation](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit) asks.
@@ -348,8 +363,7 @@ legion replay collect-merges \
 Run it once for each base branch that the window's pull requests name.
 Give it at least the window's span.
 A span that starts at the start of the reach also covers each stretch that began before `--from`.
-Each commit keeps the pull request that it merged, where the first line of its message ends with GitHub's squash suffix ` (#<n>)`.
-The draw reads that number to leave a stretch's own merge out of its count.
+The draw reads each commit's `pr` to leave a stretch's own merge out of its count.
 
 | Flag | What it gives |
 | --- | --- |
