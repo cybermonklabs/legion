@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact/answertest"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -60,9 +61,17 @@ func runPoll(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if _, ok := listPaths[*list]; !ok {
+	path, ok := listPaths[*list]
+	if !ok {
 		return fmt.Errorf("list %q: want sessions, interests or metrics", *list)
 	}
+	// Each poll asks the list's route joined onto --url's path with its query kept; a --url that
+	// is no absolute URL with a host is refused in urljoin's words, which quote none of it.
+	joined, err := urljoin.Join(*url, path)
+	if err != nil {
+		return fmt.Errorf("--url: %w", err)
+	}
+	target := joined.String()
 	sets, err := parseSets(*spec)
 	if err != nil {
 		return err
@@ -78,7 +87,7 @@ func runPoll(args []string) error {
 	defer stop()
 	client := &http.Client{Timeout: *timeout}
 	for ctx.Err() == nil {
-		o := observe(ctx, client, *url, *list, sets)
+		o := observe(ctx, client, target, *list, sets)
 		if ctx.Err() != nil {
 			break
 		}
@@ -98,9 +107,10 @@ func runPoll(args []string) error {
 	return writer.Flush()
 }
 
-func observe(ctx context.Context, client *http.Client, url, list string, sets []recordSet) observation {
+// observe is one poll of list at target, the URL its route is asked at.
+func observe(ctx context.Context, client *http.Client, target, list string, sets []recordSet) observation {
 	o := observation{List: list, Start: time.Now().UnixNano()}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+listPaths[list], nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		o.Transport, o.End = err.Error(), time.Now().UnixNano()
 		return o
