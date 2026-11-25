@@ -16,6 +16,7 @@ import (
 // its first, so no record a pass needs ages out. (What the cache of finished records rests on is
 // stated once, on bus.Client.TakeoverRecords.) A change to one that leaves the others fails here.
 func TestTheTakeoverCopysBoundsHoldTogether(t *testing.T) {
+	t.Parallel()
 	if want := roleKeepWindow - roleWakeInterval; roles.ForwardFenceAge != want {
 		t.Errorf("roles.ForwardFenceAge = %s, want roleKeepWindow less roleWakeInterval, %s", roles.ForwardFenceAge, want)
 	}

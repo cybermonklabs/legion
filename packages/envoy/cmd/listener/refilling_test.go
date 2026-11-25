@@ -439,6 +439,7 @@ func newRelease(t *testing.T) (<-chan struct{}, func()) {
 // waits for the session copy's too; once both reads complete, both lists answer 200 with every
 // record and the gauges count them.
 func TestListsRefuseUntilTheirCopiesCompleteAFirstRead(t *testing.T) {
+	t.Parallel()
 	interestHeld, releaseInterest := newRelease(t)
 	sessionHeld, releaseSession := newRelease(t)
 	rig := newListRig(t, listRigOptions{release: map[string]<-chan struct{}{"interest": interestHeld, "session": sessionHeld}})
@@ -468,6 +469,7 @@ func TestListsRefuseUntilTheirCopiesCompleteAFirstRead(t *testing.T) {
 // list alone; a stale interest copy refuses both, since every session row joins it. A read that
 // completes serves both lists again.
 func TestListsRefuseAfterTheBoundWithAStaleCopy(t *testing.T) {
+	t.Parallel()
 	for _, stale := range []string{"session", "interest"} {
 		t.Run(stale+" copy", func(t *testing.T) {
 			rig := newListRig(t, listRigOptions{})
@@ -507,6 +509,7 @@ func TestListsRefuseAfterTheBoundWithAStaleCopy(t *testing.T) {
 // A complete read of an empty bucket is a complete empty list: 200 [] from both routes, and gauges
 // that read 0, the one case a 0 means no sessions.
 func TestACompleteEmptyCopyListsNothingAndCountsZero(t *testing.T) {
+	t.Parallel()
 	rig := newListRig(t, listRigOptions{})
 	rig.awaitServed(t, 5*time.Second, "both lists over empty buckets")
 	for _, path := range []string{"/v1/sessions", "/v1/interests/"} {
@@ -583,6 +586,7 @@ func (c unreadRewatch) Rewatch(context.Context, *natsgo.Conn) error {
 // every bucket again and the lists answer 200 with every session. A reconnect whose Rewatch failed
 // leaves the copies needing a read, which the self-health monitor's next connected tick makes.
 func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
+	t.Parallel()
 	ids := []string{"ses_down_a", "ses_down_b", "ses_down_c"}
 	refuseWhileDown := func(t *testing.T, rig *listRig) {
 		t.Helper()
