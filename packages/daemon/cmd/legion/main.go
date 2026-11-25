@@ -715,25 +715,26 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 // does not decode into api.State does not decode into this either
 // (TestServedStateIsTheStateButEachPayload).
 type servedState struct {
-	Daemon               api.DaemonInfo             `json:"daemon"`
-	Contract             *api.ContractView          `json:"contract,omitempty"`
-	Admission            api.Admission              `json:"admission"`
-	Issues               map[string]api.Issue       `json:"issues"`
-	PendingStatusWrites  []pendingStatusWrite       `json:"pendingStatusWrites"`
-	HeldOutboxRows       []api.HeldOutboxRow        `json:"heldOutboxRows"`
-	StrandedClaims       []api.StrandedClaim        `json:"strandedClaims"`
-	WakesWaiting         []api.WakeWaiting          `json:"wakesWaiting"`
-	ClaimsToRefresh      int                        `json:"claimsToRefresh"`
-	Paused               *api.PausedView            `json:"paused,omitempty"`
-	LastPause            *api.PauseView             `json:"lastPause,omitempty"`
-	ControllerLocator    *api.ControllerLocator     `json:"controllerLocator,omitempty"`
-	AgentSecretsLogin    *api.AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
-	Capabilities         []api.CapabilityState      `json:"capabilities"`
-	Repositories         api.RepositoriesView       `json:"repositories"`
-	Settings             api.Settings               `json:"settings"`
-	Consumers            []api.ConsumerLagView      `json:"consumers"`
-	LowestPluginContract *int                       `json:"lowestPluginContract,omitempty"`
-	IntakeGiveUps        api.IntakeGiveUpsView      `json:"intakeGiveUps"`
+	Daemon               api.DaemonInfo              `json:"daemon"`
+	Contract             *api.ContractView           `json:"contract,omitempty"`
+	Admission            api.Admission               `json:"admission"`
+	Issues               map[string]api.Issue        `json:"issues"`
+	PendingStatusWrites  []pendingStatusWrite        `json:"pendingStatusWrites"`
+	HeldOutboxRows       []api.HeldOutboxRow         `json:"heldOutboxRows"`
+	StrandedClaims       []api.StrandedClaim         `json:"strandedClaims"`
+	WakesWaiting         []api.WakeWaiting           `json:"wakesWaiting"`
+	ClaimsToRefresh      int                         `json:"claimsToRefresh"`
+	Paused               *api.PausedView             `json:"paused,omitempty"`
+	LastPause            *api.PauseView              `json:"lastPause,omitempty"`
+	ControllerLocator    *api.ControllerLocator      `json:"controllerLocator,omitempty"`
+	AgentSecretsLogin    *api.AgentSecretsLoginView  `json:"agentSecretsLogin,omitempty"`
+	DispatchCredential   *api.DispatchCredentialView `json:"dispatchCredential,omitempty"`
+	Capabilities         []api.CapabilityState       `json:"capabilities"`
+	Repositories         api.RepositoriesView        `json:"repositories"`
+	Settings             api.Settings                `json:"settings"`
+	Consumers            []api.ConsumerLagView       `json:"consumers"`
+	LowestPluginContract *int                        `json:"lowestPluginContract,omitempty"`
+	IntakeGiveUps        api.IntakeGiveUpsView       `json:"intakeGiveUps"`
 }
 
 // pendingStatusWrite is a pending Dispatch status write (api.PendingStatusWrite) as `legion state`
