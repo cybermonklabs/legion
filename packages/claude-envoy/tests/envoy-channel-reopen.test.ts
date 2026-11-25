@@ -289,10 +289,11 @@ test(
         `${gaveUp} (could not connect to NATS at the server ENVOY_NATS_URL names presenting an nkey seed: Authorization Violation); dialing again at the next heartbeat`,
       )
       // The refusal is not dialed again inside its dial: its line names Authorization Violation.
-      // A dial that a loaded host keeps past its own bound is dialed again at once
-      // (`NatsDialBoundError`), which a correct run on a slow host makes: at the 96 rung one run
-      // in 20 did (the Job infra-1580-r30ce3-hqq47 of the cluster's `builds` namespace, at
-      // b96dcc3e), so the row counts the refusal's own redials alone.
+      // A dial that fails for a cause a redial cures (`redialCures`: a dial past its own bound,
+      // a socket's failure) is dialed again at once, which a correct run on a slow host can make:
+      // at the 96 rung one run in 20 printed such a line (the Job infra-1580-r30ce3-hqq47 of the
+      // cluster's `builds` namespace, at b96dcc3e, whose log kept no stderr to name the cause), so
+      // the row counts the refusal's own redials alone.
       expect(
         stderr()
           .split("\n")
