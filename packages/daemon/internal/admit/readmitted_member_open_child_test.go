@@ -16,18 +16,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// rmOpenChild is a Dispatch child of the implementing member that Legion does not run: it stands
-// in backlog, so Dispatch shows it open under that member (dispatch://INFRA-3320 R9).
+// rmOpenChild is a Dispatch child of a mid-phase member that Legion does not run: it stands in
+// backlog, so Dispatch shows it open under that member (dispatch://INFRA-3320 R9).
 const rmOpenChild = "LEGION-310"
 
 // dispatch://INFRA-3320 R9 over dispatch://INFRA-5471's return: a re-admitted tree's first run
 // brings its mid-phase members back (admit's startMidPhaseMembers, workflow's StartPromotedWorker),
-// and a member with an open Dispatch child under it gets no worker back. It moves to
+// and a member with an open Dispatch child under it gets no role back. It moves to
 // awaiting_children holding the start of the phase it stands in, whichever run brings it back —
 // the pass that finds the tree running once its design gate opened first, or the root's promotion
-// — with no start of its phase worker and nothing that stops or wakes one. The control row is the
-// same tree with no open child, whose member gets its phase start back, waiting for a slot. The
-// other members come back as #5303 brings them back either way.
+// — with no start of any role of it, nothing that stops or wakes one, and no start of its step.
+// That holds for the implementing member, whose phase worker the return starts, and for the member
+// in accepting, whose role is an architect that no phase start brings back (workflow's
+// StopPromotedWorker). The control row is the same tree with no open child: its implementing
+// member gets its phase start back, waiting for a slot, and its member in accepting gets back each
+// role of it that ran, with no task, and the start of its step. The other members come back as
+// #5303 brings them back either way.
 func TestAReadmittedMemberWithAnOpenChildComesBackWaitingOnIt(t *testing.T) {
 	for _, run := range []struct {
 		name  string
@@ -39,44 +43,58 @@ func TestAReadmittedMemberWithAnOpenChildComesBackWaitingOnIt(t *testing.T) {
 		{name: "the promotion comes first", first: promoteRoot},
 	} {
 		for _, row := range []struct {
-			name  string
-			child bool
+			name string
+			// held is the member the open child is filed under, "" for the control, stands the
+			// phase it stands in and role that phase's role.
+			held   string
+			stands phase.Phase
+			role   claim.Role
 		}{
-			{name: "an open child holds the member", child: true},
-			{name: "the control: no open child", child: false},
+			{name: "an open child holds the implementing member", held: rmImplementing, stands: phase.Implementing, role: claim.RoleImplementer},
+			{name: "an open child holds the accepting member", held: rmAccepting, stands: phase.Accepting, role: claim.RoleArchitect},
+			{name: "the control: no open child"},
 		} {
 			t.Run(run.name+"/"+row.name, func(t *testing.T) {
 				pool := migratedPool(t)
 				admission, _ := readmittedAdmission(t, 1)
 				readmittedTree(t, pool, admission, false)
-				if row.child {
-					seedMirrorChild(t, pool, rmOpenChild, "backlog", rmImplementing)
+				if row.held != "" {
+					seedMirrorChild(t, pool, rmOpenChild, "backlog", row.held)
 				}
 
 				run.first(t, pool, admission)
 
-				member := issue(t, pool, rmImplementing)
 				if got, want := memberStarts(t, pool, rmMerging), []memberStart{{role: claim.RoleMerger, withTask: true}}; !reflect.DeepEqual(got, want) {
 					t.Fatalf("the starts of the merging %s = %+v, want %+v: the other members come back as before", rmMerging, got, want)
 				}
-				if !row.child {
+				if row.held == "" {
 					want := []memberStart{{role: claim.RoleImplementer, withTask: true, needsSlot: true}}
-					if got := memberStarts(t, pool, rmImplementing); member.Phase != phase.Implementing || !reflect.DeepEqual(got, want) {
+					if member, got := issue(t, pool, rmImplementing), memberStarts(t, pool, rmImplementing); member.Phase != phase.Implementing || !reflect.DeepEqual(got, want) {
 						t.Fatalf("the implementing %s = phase %s with starts %+v, want implementing with %+v: its phase start, waiting for a slot",
 							rmImplementing, member.Phase, got, want)
 					}
+					want = []memberStart{{role: claim.RoleArchitect}, {role: claim.RoleImplementer}}
+					if member, got, steps := issue(t, pool, rmAccepting), memberStarts(t, pool, rmAccepting), stepStarts(t, pool, rmAccepting); member.Phase != phase.Accepting ||
+						!reflect.DeepEqual(got, want) || len(steps) != 1 {
+						t.Fatalf("the accepting %s = phase %s with starts %+v and step starts %+v, want accepting with %+v and one step start: each role of it that ran, with no task",
+							rmAccepting, member.Phase, got, steps, want)
+					}
 					return
 				}
-				if member.Phase != phase.AwaitingChildren || member.ChildrenWait == nil || member.ChildrenWait.Start != phase.Implementing {
-					t.Fatalf("the member %s with an open child = phase %s, wait %+v; want awaiting_children holding the start of implementing",
-						rmImplementing, member.Phase, member.ChildrenWait)
+				member := issue(t, pool, row.held)
+				if member.Phase != phase.AwaitingChildren || member.ChildrenWait == nil || member.ChildrenWait.Start != row.stands {
+					t.Fatalf("the member %s with an open child = phase %s, wait %+v; want awaiting_children holding the start of %s",
+						row.held, member.Phase, member.ChildrenWait, row.stands)
 				}
 				if len(member.ChildrenWait.Children) != 1 || member.ChildrenWait.Children[0] != rmOpenChild {
-					t.Fatalf("the wait of %s names the children %v, want %s alone", rmImplementing, member.ChildrenWait.Children, rmOpenChild)
+					t.Fatalf("the wait of %s names the children %v, want %s alone", row.held, member.ChildrenWait.Children, rmOpenChild)
 				}
-				noWorkerLaunch(t, pool, rmImplementing, claim.RoleImplementer)
-				if got := memberStarts(t, pool, rmImplementing); len(got) != 0 {
-					t.Fatalf("the starts of the waiting %s = %+v, want none: no role of it comes back while its child is open", rmImplementing, got)
+				noWorkerLaunch(t, pool, row.held, row.role)
+				if got := memberStarts(t, pool, row.held); len(got) != 0 {
+					t.Fatalf("the starts of the waiting %s = %+v, want none: no role of it comes back while its child is open", row.held, got)
+				}
+				if steps := stepStarts(t, pool, row.held); len(steps) != 0 {
+					t.Fatalf("the step starts of the waiting %s = %+v, want none: its step starts again only with the return", row.held, steps)
 				}
 			})
 		}
@@ -172,6 +190,19 @@ func noWorkerLaunch(t *testing.T, pool *pgxpool.Pool, key string, role claim.Rol
 	if ended := pwPayloads[record.PhaseEnded](t, pool, key); len(ended) != 0 {
 		t.Fatalf("the waiting %s has phase-ended messages %+v, want none: no worker of this generation took the phase", key, ended)
 	}
+}
+
+// stepStarts is each step record row of key's outbox that starts a run (stepWrites), in the order
+// they were written.
+func stepStarts(t *testing.T, pool *pgxpool.Pool, key string) []record.StepRecord {
+	t.Helper()
+	var starts []record.StepRecord
+	for _, write := range stepWrites(t, pool, key) {
+		if write.EndedAt == nil {
+			starts = append(starts, write)
+		}
+	}
+	return starts
 }
 
 // dispatch://INFRA-3320 R9 at the promotion of a root handed over carrying its slot in

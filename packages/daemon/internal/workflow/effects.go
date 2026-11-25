@@ -746,9 +746,9 @@ func entryWork(issue record.Issue, row record.PhaseRow, at Standing) string {
 //
 // R9 holds this start as it holds other starts of planning through accepting. It returns held
 // when the issue moved to awaiting_children without launching a worker or raising an entry.
-// The carried-slot exemption is for a root handed over in implementing (holdPromotedStart).
-// carriedSlot is the fact of that root coming to the promotion with a slot and the hand-over
-// mark record.QueuedRoot reads, before the promotion cleared the mark.
+// carriedSlot is k12's exemption whole (holdPromotedStart): a root that came to the promotion in
+// implementing, holding a slot and the hand-over mark record.QueuedRoot reads, which admission
+// reads before the promotion clears the mark (admit's startMidPhaseMembers).
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, carriedSlot bool) (held bool, err error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {

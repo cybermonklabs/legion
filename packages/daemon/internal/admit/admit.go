@@ -2470,9 +2470,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				opened = opened || facts.Gates[issue.Tree].Open()
 			case record.LineQueuedRoot:
-				// LineQueuedRoot is the QueuedRoot judgement. Read the carried slot before
-				// clearing the hand-over mark: the worker's start still needs this fact.
-				carriedSlot := candidate.Holds && issue.HandedOverFrom != ""
+				// LineQueuedRoot is the QueuedRoot judgement. k12's exemption is read here whole,
+				// before the write below clears the hand-over mark it reads: a root handed over
+				// from another tree carrying its slot in implementing starts its carried phase
+				// whatever open children hold it (startMidPhaseMembers, workflow's
+				// StartPromotedWorker).
+				carriedSlot := candidate.Holds && issue.HandedOverFrom != "" && issue.Phase == phase.Implementing
 				issue.Status = "in_progress"
 				// A root whose tree is opened runs as a tree of its own, which no ancestry hold
 				// holds (workflow's Ancestry), so the chain it queued under goes now: a root
@@ -3230,12 +3233,16 @@ func promotedByEarlierRelease(root record.Issue, holds bool) bool {
 // everyClaim).
 //
 // A member at admitted is passed over: its first phase is the waiting line's to start. R9
-// (dispatch://INFRA-3320) holds a mid-phase worker's start at the root's promotion or at the
-// pass that finds the tree running first. If StartFor finds a queued start or live claim, the
-// return stops the member instead (workflow's StopPromotedWorker). A held member brings no
-// other roles back and starts no step. The promotion alone exempts k12's "a root handed over
-// from another tree carrying its slot in `implementing` (`record.QueuedRoot`)": the next pass
-// stops that root as any started parent with an open child (childrenWaits).
+// (dispatch://INFRA-3320) holds a mid-phase member's start at the root's promotion or at the pass
+// that finds the tree running first, and judges each member before any role of it comes back. The
+// return holds the phase worker's start where it makes that start (workflow's
+// StartPromotedWorker), and stops the member instead where StartFor finds a queued start or live
+// claim, and where the member stands in accepting, whose role is an architect that no phase start
+// brings back here (workflow's StopPromotedWorker). A member R9 holds moves to awaiting_children,
+// brings no other role back and starts no step. The promotion alone exempts k12's "a root handed
+// over from another tree carrying its slot in `implementing` (`record.QueuedRoot`)": carriedSlot is
+// that exemption whole, as the promotion read it of root, and false on every other return. The
+// next pass stops that root as any started parent with an open child (childrenWaits).
 //
 // root is the tree's root as returnOwedMembers has it, and issues the pass's own records, which
 // carry that root as the pass read it. The caller passes both and appends nothing: the root is
@@ -3262,6 +3269,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		// architect's (accepting).
 		owner claim.Role
 		roles []roleToken
+		// carriedSlot is k12's exemption of the member's carried start, which the root's walk
+		// alone carries.
+		carriedSlot bool
 	}
 	// The first pass reads each member where its record leaves it and names every role run the
 	// second pass judges; the one read of them stands between the two, so no row is written on a
@@ -3273,8 +3283,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	// passed over. The members are walked in the order of the records and the root after them, so
 	// the root's rows are the last this writes. Reading both copies would start one member twice:
 	// a phase worker handed the same task on two rows, which the start of accepting, retro or
-	// merging no longer coalesces into one (workflow.StartOrOwe).
-	walk := func(member record.Issue) error {
+	// merging no longer coalesces into one (workflow.StartOrOwe). carried is the exemption the
+	// walked member carries: carriedSlot for the root, false for every other member.
+	walk := func(member record.Issue, carried bool) error {
 		if member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
 			return nil
 		}
@@ -3318,7 +3329,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				owner = ""
 			}
 		}
-		standing := midPhaseMember{issue: member, owner: owner}
+		standing := midPhaseMember{issue: member, owner: owner, carriedSlot: carried}
 		for _, role := range claim.Roles {
 			// The tree's architect is promotion's own start, with the task that hands it its
 			// tree; a member's own architect, which the daemon started with that member's first
@@ -3348,11 +3359,11 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		if member.Key == root.Key {
 			continue
 		}
-		if err := walk(member); err != nil {
+		if err := walk(member, false); err != nil {
 			return err
 		}
 	}
-	if err := walk(root); err != nil {
+	if err := walk(root, carriedSlot); err != nil {
 		return err
 	}
 	// A member whose key yields no claim token names no role run, and its branch row is still
@@ -3366,7 +3377,6 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		runs = read
 	}
 	owed := owedStartsByIssue(owedRows)
-membersLoop:
 	for _, standing := range members {
 		member := standing.issue
 		if member.Key != root.Key {
@@ -3374,26 +3384,27 @@ membersLoop:
 				return err
 			}
 		}
-		// Judge the phase's own worker first. A member moved to awaiting_children brings back
-		// no other role and starts no step, whether its start was new or already written.
-		for _, owned := range standing.roles {
-			if owned.role != standing.owner {
-				continue
-			}
-			var held bool
-			var err error
-			if workflow.StartFor(runs[owned.token], root, member.Generation, member.Phase) {
-				held, err = a.engine.StartPromotedWorker(ctx, tx, member, owned.role, carriedSlot && member.Key == root.Key)
-			} else {
-				held, err = a.engine.StopPromotedWorker(ctx, tx, member, owed[member.Key])
-			}
-			if err != nil {
-				return err
-			}
-			if held {
-				continue membersLoop
-			}
-			break
+		// R9 judges the member before any role of it comes back. The phase's own worker, found
+		// once among the member's roles, has its start held where the return makes that start
+		// (StartPromotedWorker), and the member is stopped instead where StartFor finds that
+		// worker started or queued already; a member in accepting, whose role is an architect
+		// that no phase start brings back here, is stopped the same way (StopPromotedWorker). A
+		// member R9 holds has moved to awaiting_children: it brings back no other role and starts
+		// no step, whether its start was new or already written.
+		var held bool
+		var err error
+		owned := slices.IndexFunc(standing.roles, func(r roleToken) bool { return r.role == standing.owner })
+		switch {
+		case owned >= 0 && workflow.StartFor(runs[standing.roles[owned].token], root, member.Generation, member.Phase):
+			held, err = a.engine.StartPromotedWorker(ctx, tx, member, standing.owner, standing.carriedSlot)
+		case owned >= 0 || member.Phase == phase.Accepting:
+			held, err = a.engine.StopPromotedWorker(ctx, tx, member, owed[member.Key])
+		}
+		if err != nil {
+			return err
+		}
+		if held {
+			continue
 		}
 		for _, other := range standing.roles {
 			// No claim row, so the role has never run: there is no session to bring back and no
@@ -3410,12 +3421,13 @@ membersLoop:
 		// The member's step starts again with the tree, whatever the promotion starts of it: a
 		// phase worker's start above began its run already, and accepting's (whose role is the
 		// architect that owns the member, workflow's acceptingAgent: its own where a start of it
-		// queued above will run), a held member's (whose hold starts none) and a role
-		// workflow.StartFor finds already started begin it here. The store's run mark decides
-		// (workflow's StartStepRecord): a run still open goes on and gets no second start — the
-		// one a start above began, and the merge step of a member held from merging, which the
-		// linger left open and the hold's retry goes on with. A member its plan holds, a stopped
-		// task or a parent held for its children, starts no step there.
+		// queued above will run), held's (whose hold starts none) and a role workflow.StartFor
+		// finds already started begin it here. The store's run mark decides (workflow's
+		// StartStepRecord): a run still open goes on and gets no second start — the one a start
+		// above began, and the merge step of a member held from merging, which the linger left
+		// open and the hold's retry goes on with. No step starts for a member R9 moved to
+		// awaiting_children above, which never reaches here, nor there for a member its plan
+		// holds, a stopped task or a parent held for its children.
 		if err := a.engine.StartStepRecord(ctx, tx, member); err != nil {
 			return err
 		}

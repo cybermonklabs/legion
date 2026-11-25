@@ -222,6 +222,44 @@ func (e *Engine) childrenHoldingStart(ctx context.Context, tx pgx.Tx, issue reco
 	return e.childrenOpen(ctx, tx, issue, nil)
 }
 
+// childrenHoldingSamePhaseStart is R9's guard on a start of the phase issue stands in, which a
+// retry of a held phase (retryPhase) and the promotion of a re-admitted tree's mid-phase worker
+// (holdPromotedStart) each make: the open Dispatch children of issue that hold it
+// (childrenHoldingStart), none where R9 exempts that start for its pull request or for the entry
+// the phase's role stands on (samePhaseExempt). It answers the pull request it read too, which the
+// retry composes its task from and reads its review round on, whether or not children hold the
+// start.
+func (e *Engine) childrenHoldingSamePhaseStart(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.OpenChild, *record.PullRequest, error) {
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, nil, err
+	}
+	open, err := e.childrenHoldingStart(ctx, tx, issue, issue.Phase, pr)
+	if err != nil || len(open) == 0 {
+		return nil, pr, err
+	}
+	if _, exempt, err := e.samePhaseExempt(ctx, tx, issue, pr); err != nil || exempt {
+		return nil, pr, err
+	}
+	return open, pr, nil
+}
+
+// samePhaseExempt says whether R9 leaves alone a start of the phase issue stands in that open
+// children would hold: its pull request pr has merged, or the role of that phase stands on an
+// entry a move out of retro or merging raised (acceptedEntry). It answers that role's phases row,
+// which it reads only where pr has not merged. The admission pass's stop (StopForChildren) and the
+// guard on a start of the same phase (childrenHoldingSamePhaseStart) each read the exemption here.
+func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (record.PhaseRow, bool, error) {
+	if pr != nil && pr.State == record.PullRequestMerged {
+		return record.PhaseRow{}, true, nil
+	}
+	entry, err := e.phaseRow(ctx, tx, issue.Key, RoleFor(issue.Phase))
+	if err != nil {
+		return record.PhaseRow{}, false, err
+	}
+	return entry, acceptedEntry(entry), nil
+}
+
 // holdForChildren moves issue to awaiting_children in place of the start of to that trigger's row
 // of w, the walk of issue's run, chose for it (awaitChildren). The move first names the end of
 // the step the issue stood in as the move would have (nameMoveEnd): the parent's wait is what
@@ -379,14 +417,14 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		return false, nil
 	}
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
-	if err != nil || (pr != nil && pr.State == record.PullRequestMerged) {
+	if err != nil {
+		return false, err
+	}
+	entry, exempt, err := e.samePhaseExempt(ctx, tx, issue, pr)
+	if err != nil || exempt {
 		return false, err
 	}
 	role := RoleFor(issue.Phase)
-	entry, err := e.phaseRow(ctx, tx, issue.Key, role)
-	if err != nil || acceptedEntry(entry) {
-		return false, err
-	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return false, err
@@ -426,9 +464,13 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	return true, e.awaitChildren(ctx, tx, issue, w, hold)
 }
 
-// StopPromotedWorker applies the admission pass's stop when the return finds a mid-phase worker
-// already started or queued. There is no new start to hold, but the open children still hold
-// this phase. StopForChildren checks the pull request and entry and finishes the owed rows.
+// StopPromotedWorker is R9's judgment of a re-admitted tree's mid-phase member whose phase start
+// the return does not make (admit's startMidPhaseMembers): a member whose phase worker it finds
+// already started or queued, which has no new start to hold, and a member in accepting, whose role
+// is an architect that no phase start brings back. The open children that hold the phase the
+// member stands in move it to awaiting_children through the admission pass's stop
+// (StopForChildren), which reads R9's exemptions and finishes the owed rows. It answers whether it
+// moved the member.
 func (e *Engine) StopPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, owed []record.OwedStart) (bool, error) {
 	open, err := e.childrenHoldingStart(ctx, tx, issue, issue.Phase, nil)
 	if err != nil {
@@ -440,13 +482,15 @@ func (e *Engine) StopPromotedWorker(ctx context.Context, tx pgx.Tx, issue record
 // holdPromotedStart is R9's guard on a phase worker's start at promotion or the first pass that
 // finds its re-admitted tree running. It returns true when the issue moves to awaiting_children
 // holding the resume task, without a launch, a new entry or a phase-ended message. Besides the
-// merged pull request and accepted-entry exemptions, k12 exempts "a root handed over from
-// another tree carrying its slot in `implementing` (`record.QueuedRoot`)".
+// merged pull request and accepted-entry exemptions (childrenHoldingSamePhaseStart), carriedSlot
+// exempts the start: it is k12's exemption of "a root handed over from another tree carrying its
+// slot in `implementing` (`record.QueuedRoot`)", which admission reads whole at that root's
+// promotion (admit's startMidPhaseMembers).
 func (e *Engine) holdPromotedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, task string, carriedSlot bool) (bool, error) {
-	if carriedSlot && issue.Phase == phase.Implementing {
+	if carriedSlot {
 		return false, nil
 	}
-	open, _, err := e.childrenHoldingSamePhaseStart(ctx, tx, issue, role)
+	open, _, err := e.childrenHoldingSamePhaseStart(ctx, tx, issue)
 	if err != nil || len(open) == 0 {
 		return false, err
 	}
@@ -472,8 +516,8 @@ func undeliveredStart(issue record.Issue, owed []record.OwedStart) bool {
 
 // acceptedEntry says whether row's entry was raised by a move out of retro or merging, the phases
 // past the daemon's acceptance of the issue (record.PhaseRow.EntryFrom): a role's move back out of
-// one of them, whose start R9 does not hold. StopForChildren reads this exemption directly.
-// retryPhase and holdPromotedStart read it through childrenHoldingSamePhaseStart.
+// one of them, whose start R9 does not hold. samePhaseExempt reads it, for StopForChildren,
+// retryPhase and holdPromotedStart.
 func acceptedEntry(row record.PhaseRow) bool {
 	return record.AcceptedPhase(row.EntryFrom)
 }
