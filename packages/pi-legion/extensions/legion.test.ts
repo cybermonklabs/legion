@@ -1245,7 +1245,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       tree: "REPO-42",
       issue: "REPO-43",
     });
-    // A role of the deployment (contract 297), `checker`, works a step as a phase worker does.
+    // A role of the deployment (the deployment roles' contract entry), `checker`, works a step as a
+    // phase worker does.
     const checker = classifySession({
       LEGION_ROLE: "checker",
       LEGION_TREE: "REPO-42",
@@ -3698,8 +3699,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       }
     });
 
-    // A role of the deployment (contract 297) comes due after the six, at the twelfth tick, so a
-    // pod's roles still start their attempts on ticks of their own.
+    // A role of the deployment (the deployment roles' contract entry) comes due after the six, at
+    // the twelfth tick, so a pod's roles still start their attempts on ticks of their own.
     test("a role of the deployment comes due after the six, at the twelfth tick", async () => {
       const due = CAPABILITY_FIRST_DUE_TICK + LEGION_ROLES.length;
       expect(due).toBe(12);

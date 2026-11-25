@@ -1936,7 +1936,8 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
-  // A claim of a role of the deployment (contract 297) is recovered as Legion's own roles' are.
+  // A claim of a role of the deployment (the deployment roles' contract entry) is recovered as
+  // Legion's own roles' are.
   await run({ op: "fresh_session", issue: "LEGION-209", role: "checker" });
   expect(calls.at(-1)).toEqual([
     "freshSession",
@@ -1991,8 +1992,8 @@ test("the controller reads the state without a grant and sets an issue's status 
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
 });
 
-// Contract 297: the summary lists each worker of an issue's map, a role of the deployment's after
-// Legion's own in the order of the default steps, so the controller sees the claim that works a step.
+// The summary lists each worker of an issue's map, a role of the deployment's after Legion's own in
+// the order of the default steps, so the controller sees the claim that works a step.
 test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
   const state = stateOf92Issues(1);
   const running = state.issues["INFRA-100"];

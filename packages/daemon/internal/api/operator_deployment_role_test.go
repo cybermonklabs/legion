@@ -18,8 +18,9 @@ import (
 
 // failedChecker is the operator's server applying facts to handler, the root LEGION-208, and
 // LEGION-209 standing at step 2 of `implementer checker`, its checker's step, with the checker's
-// claim failed: the runtime refused every launch of it. The server is given no role of a phase:
-// it reads the role that works the issue's phase from the issue.
+// claim failed: the runtime refused every launch of it. The server's deployment defines the
+// checker (checkerDeployment), since the spawn route refuses a role no deployment defines, and it
+// is given no role of a phase: it reads the role that works the issue's phase from the issue.
 func failedChecker(t *testing.T, handler intake.Handler) (*harness, claim.Token) {
 	t.Helper()
 	h := newHarness(t)
@@ -27,6 +28,7 @@ func failedChecker(t *testing.T, handler intake.Handler) (*harness, claim.Token)
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler},
+		Deployment: checkerDeployment(),
 	}).Handler
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	refused := fake.SpawnResult{Err: errors.New("the runtime refused the launch")}

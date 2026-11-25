@@ -329,8 +329,8 @@ function stateSummary(state: LegionState): string {
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
-    // Each worker of the issue's map: Legion's six in the order of the default steps, then each role of the
-    // deployment (contract 297) in the map's order.
+    // Each worker of the issue's map: Legion's six in the order of the default steps, then each
+    // role of the deployment (the deployment roles' contract entry) in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
@@ -440,9 +440,9 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    // A claim's role, one of Legion's six or a role of the deployment (contract 297): the role
-    // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
-    // controller, whose claim holds no issue.
+    // A claim's role, one of Legion's six or a role of the deployment (the deployment roles'
+    // contract entry): the role grammar of Dispatch's step record. The operation's own check
+    // (`isStepRole`) also refuses the controller, whose claim holds no issue.
     role: z
       .string()
       .regex(/^[a-z][a-z0-9-]{0,31}$/)

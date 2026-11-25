@@ -305,9 +305,9 @@ test("a tester's fail sends return_to as returnTo", async () => {
   })
 })
 
-// A role of the deployment runs on Claude Code as on Oh My Pi (contract 297): its claim reaches
-// the same phase ops, and its completion of the step it works carries its verdict and the commit
-// its workspace stands on, with no handoff record.
+// A role of the deployment runs on Claude Code as on Oh My Pi (the deployment roles' contract
+// entry): its claim reaches the same phase ops, and its completion of the step it works carries its
+// verdict and the commit its workspace stands on, with no handoff record.
 test("a role of the deployment's handoff_complete sends its verdict and commit", async () => {
   const { client, requests } = await daemon({
     state: stateAtPhase("step", { stepRole: "checker" }),

@@ -571,15 +571,16 @@ test("a tester's fail sends return_to as returnTo", async () => {
   expect(posted.at(-1)).not.toHaveProperty("returnTo");
 });
 
-/** The claim of a role of the deployment, `checker`, on LEGION-208 (contract 297). */
+/** The claim of a role of the deployment, `checker`, on LEGION-208 (the deployment roles' contract
+ * entry). */
 const checker: ClaimCapability = {
   ...implementer,
   role: "checker",
   claimToken: "legion-legion-legion-208-checker",
 };
 
-// Contract 297: a role of the deployment ends its step with its verdict and the commit its
-// workspace stands on, `@-`; it writes no handoff record, so none is looked up in Dispatch.
+// A role of the deployment ends its step with its verdict and the commit its workspace stands on,
+// `@-`; it writes no handoff record, so none is looked up in Dispatch.
 test("a deployment role's completion sends its verdict and the commit it stands on, and no handoff record", async () => {
   const standing = "c".repeat(40);
   const looked: string[] = [];
