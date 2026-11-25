@@ -20,6 +20,20 @@ The `AGENTS.md` at the root and beside most packages holds the rules for working
 - Before you write that CI is green, in a pull request body or any other message, read the `not run at this head:` lines of the `ci-ok` job in the head's newest `pull_request` run of `ci.yaml`, after that run has concluded, and name each job they list: `ci-ok` passes over a job its paths selected and the pull request held back, so its pass says nothing of those jobs.
   `gh run list --workflow ci.yaml --commit <head> --event pull_request --limit 1 --json databaseId,status` names the run, `gh run view <run id> --json jobs --jq '.jobs[] | select(.name=="ci-ok") | .databaseId'` its `ci-ok` job, and `gh run view --job <job id> --log | grep 'not run at this head:'` prints the lines.
 
+- A Go package that only a held-back job tests has no CI result on a pull request whose run's event carried no label, so before the merge queue a run outside CI, such as a Kubernetes Job, is its only Go evidence.
+  Such a run takes its packages from the change's files when it starts, never from a list written earlier: a list goes stale as the branch grows, and one that names only the daemon's `internal/daemon` says nothing of the envoy packages a later push changes.
+  It prints that set beside its verdict, and a verdict with no set beside it, or with an empty set, is no Go evidence for the change.
+  From the repository's root, at the head the run tests and under `set -euo pipefail`, this prints the set, one directory a line, which `go test -race $set` takes:
+
+  ```sh
+  set=$(git diff --name-only --diff-filter=d "$(git merge-base origin/main HEAD)" HEAD -- 'packages/daemon/*.go' 'packages/envoy/*.go' |
+    awk '!/\/testdata\// && !/^packages\/envoy\/infra\// { sub("/[^/]*$", ""); print "./" $0 }' | sort -u)
+  echo "$set"
+  ```
+
+  `packages/envoy/infra` is a module outside `go.work`, so a change to it is tested from inside that directory and named the same way.
+  Give a long package, such as envoy's `internal/dispatch/api`, a Job of its own, so that its run cannot take one pod past its deadline before the other packages' verdict prints; each Job prints the part of the set it ran, and the parts together name the whole set.
+
 - A change worth a changelog line adds a changie fragment to each package it changes that `.github/changelog-packages` lists, and never edits a `CHANGELOG.md`:
   a release renders the fragments into its notes.
 

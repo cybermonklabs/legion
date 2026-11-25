@@ -55,6 +55,7 @@ The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true af
 At each round the reviewer writes `Look at first`, and a risk on the `Not proven / risk` line where one stands.
 With no reviewer step, the implementer writes both, including what its own evidence does not prove; where the body claims a check that has not concluded at the head, the implementer names that check under `Not proven / risk`.
 On cybermonklabs/legion `ci-ok` passes over each job the pull request held back: before the body says CI passed, its writer reads the `not run at this head:` lines of the `ci-ok` job's log in the head's newest `pull_request` run of `ci.yaml`, after that run has concluded, and names each job they list under `Not proven / risk` (the repository's `CONTRIBUTING.md` gives the commands).
+A Go run outside CI, such as a Kubernetes Job, is evidence for such a job's packages only when it derived them from the change's files at the head it ran and printed them beside its verdict: the body names that set with the verdict, and a verdict with no set is no evidence (`CONTRIBUTING.md` gives the command).
 With no reviewer step, at retro the implementer updates `Not proven / risk` after reading the tester's handoff where the task has a tester step.
 A stale `Outcome` is a finding against the implementer; the merger rewrites nothing.
 
