@@ -265,6 +265,12 @@ var statusLabelsOrParentWriters = []struct{ path, reason string }{
 	{judgedIssueWriter, "the PATCH's write core, whose every write R26 judges: it calls " + issueWritePlanCheck + ", which opens with " + legionStatusGuard + ", before its first write"},
 	{"internal/dispatch/api/issue_create.go", "the creation of an issue, which R26 never refuses: it writes the new issue's parent and labels, and no status"},
 	{"cmd/dispatch-seed/", "the seeding tool, which fills an empty database before a server runs on it, and which no request reaches"},
+	{"internal/dispatch/delivery/deliverytest/", "the delivery history fixture, which tests and the eval fixture loader (evals/evalfixture) write into a database for a check to count over, " +
+		"and which no request reaches: no package of the server imports it"},
+	{"internal/dispatch/evals/evalfixture/", "the eval checks' fixture loader, which tests, its command (cmd) and the bench loader (evals/evalbench) run against a database for a check to read, " +
+		"and which no request reaches: no package of the server imports it"},
+	{"internal/dispatch/legion/legiontest/", "the Legion history fixture, which tests and the two eval loaders (evals/evalfixture, evals/evalbench) write into a database for a check to count over, " +
+		"and which no request reaches: no package of the server imports it"},
 }
 
 // statusLabelsOrParentWriter answers the index in statusLabelsOrParentWriters of the writer that
