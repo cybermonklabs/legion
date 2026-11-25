@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+    A reviewer asks for changes only for a behavioural finding. When every finding that stands is
+    a text finding, it fixes each one it can push in one commit of its own and leaves each other
+    one as an inline thread. The implementer then reads that commit and those threads once, at its
+    last chance, in no phase: it accepts the commit, or it corrects the text in one commit that
+    changes only text. The reviewer resolves the threads it opened and approves the head that the
+    answer leaves, and the architect holds its sign-off until then. No role records a pass at a
+    commit it made. The pod-update message now tells the reviewer to push its commits, as it tells
+    every other role.
+time: 2026-11-25T04:16:13Z
+custom:
+    Issue: pr2827

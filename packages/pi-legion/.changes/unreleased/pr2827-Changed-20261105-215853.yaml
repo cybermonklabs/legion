@@ -1,5 +1,9 @@
 kind: Changed
-body: 'A reviewer submits `REQUEST_CHANGES` only for a behavioural finding, one whose closing changes code that runs. When every finding that stands is text, it fixes each one it can in one commit of its own, waits for CI at it, approves the head that carries it and tells the implementer; a text finding it cannot push, in a workflow file or on a base that wants the last push approved by someone else, stays an inline thread. The implementer reads that commit in the session it keeps, in no phase, as its last chance at the text: it accepts it in a pull-request comment and a message to the architect and pushes nothing, or pushes one commit that changes only text, which the reviewer reads and approves after resolving the threads it opened. Neither runs the tester or opens a review round: a passing result stays current across every push since the head it was recorded at while each changes no code that runs. The architect holds `sign_off` until the implementer has answered, the implementer resolves no thread, and a merge GitHub refuses for an unresolved conversation is the merger''s to report to the reviewer and the architect.'
+body: |-
+    The `legion` tool's description of `ready_for_update` no longer tells the reviewer that it
+    creates no commit and pushes nothing: a reviewer now pushes its own commit of text fixes, and
+    an update round must not lose it. The skill-scenario rig scores the reviewer's text commit and
+    the implementer's last chance against the new role prompts.
 time: 2026-11-05T21:58:53.604488772Z
 custom:
     Issue: pr2827

@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    The `legion` tool's description of `ready_for_update` no longer tells the reviewer that it
+    creates no commit and pushes nothing: a reviewer now pushes its own commit of text fixes, and
+    an update round must not lose it.
+time: 2026-11-25T04:16:14Z
+custom:
+    Issue: pr2827
