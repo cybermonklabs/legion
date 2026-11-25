@@ -2908,10 +2908,11 @@ export const dispatchToolSpecs = [
       "any credential that may write the project's issues may send. off sends DELETE on the same " +
       "path, which needs the person scope: a credential without it is refused with 403 " +
       "OAUTH_SCOPE_REQUIRED, and the shared token and a pod's token hold none. A token scoped to " +
-      "another project is refused with 403 PROJECT_SCOPE. Turn it on only when the project's " +
-      "daemon and pods write with their own tokens. Turned on before that, it stops every " +
-      "architect write and every role-holder publication on the shared token, until a person " +
-      "turns it off. The answer names the project and the setting as Dispatch stored it.",
+      "another project is refused with 403 PROJECT_SCOPE. Only the project's roll-out issue " +
+      "turns it on, once the project's daemon and pods write with their own tokens. Turned on " +
+      "before that, it stops every architect write and every role-holder publication on the " +
+      "shared token, until a person turns it off. The answer names the project and the setting " +
+      "as Dispatch stored it.",
     arguments: (z) => ({
       project: z.string().describe("Project key whose setting to change, such as CORE."),
       proven_sessions: z

@@ -93,11 +93,11 @@ func legionWalkSQL(start string) string {
 // issueChainSQL is the recursive common table expression chain that the legion-label walk
 // (legionWalkSQL) and the check of who writes a Legion-run issue's spec (spec_writer.go) both read,
 // so Dispatch keeps one walk for "Legion runs": the row start selects at depth 0, then each issue
-// above it by parent_key that belongs to the start row's project, one link a row, at most
-// parentDepthCap links up, so the walk ends at the first ancestor of another project as at a root
-// (legionManagedStatusSQL). carried names the columns of an issue row the walk carries up beside
-// parent_key, labels, project_key and depth (none for legionWalkSQL, key for the check); start
-// selects them first, in that order, then parent_key, labels, project_key and 0 as depth.
+// above it by parent_key, one link a row, at most parentDepthCap links up, and only a parent of the
+// start row's project, so the walk ends at the first ancestor of another project as at a root.
+// carried names the columns of an issue row the walk carries up beside parent_key, labels,
+// project_key and depth (none for legionWalkSQL, key for the check); start selects them first, in
+// that order, then parent_key, labels, project_key and 0 as depth.
 func issueChainSQL(start string, carried ...string) string {
 	var columns strings.Builder
 	for _, column := range carried {

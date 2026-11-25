@@ -1573,7 +1573,7 @@ The two-build test checks this rule (`cmd/dispatch/twobuild_*_test.go`, `go test
 ./cmd/dispatch`, CI job `dispatch-two-builds`).
 `packages/envoy/scripts/build-dispatch-build.sh` builds the previous release from its commit, and the test runs it beside this tree on one Postgres, cloned at this tree's schema, and one NATS.
 It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, passes messages both ways while it checks that the stream and consumer settings stay as they are, races a write of each build on one issue, the previous build's committing first, boots the previous build, with its web app, while a write of this tree is between its owner lock and its write, and boots it with no web app while a write of this tree holds the gate longer than the registration's bound, which refuses that registration and keeps every heartbeat of this tree inside the live window.
-On the previous build it makes a document again where this build removed one, and removes a document this build made, once it has read whether that build writes document nodes (`twobuild_nodes_test.go`): beside a build that writes none, it holds the census to naming the removed document's node `orphaned`, the backfill to leaving it, and this build's block-index tick to curing every row the previous build left once that build stops; beside one that writes them, as this tree built as the previous build does (CI job `dispatch-two-builds-same`), it holds each node to that build's own statement and the census to naming none.
+On the previous build it makes a document again where this build removed one, and removes a document this build made, once it has read whether that build writes document nodes (`twobuild_nodes_test.go`): beside a build that writes none, it holds the census to naming the removed document's node `orphaned`, the backfill to leaving it, and this build's own passes, the block-index tick's object pass and the decisions step's phase 1, to curing every row the previous build left once that build stops; beside one that writes them, as this tree built as the previous build does (CI job `dispatch-two-builds-same`), it holds each node to that build's own statement and the census to naming none.
 It also runs the page admission across the earlier build's departure.
 Beside the previous release, a page of this tree is admitted by that release's numbers, and it stays writable throughout when they are this tree's own.
 The first rollout of the fleet's numbers needs a release before the fleet columns, so `build-dispatch-build.sh` builds the first-rollout build as well, with `--commit edb69e0d7588ec037847182e74a04a343a0664c9` (the release tagged `legion-envoy-v30.20.2`), and the test runs it and holds a page of this tree read-only while that build's process is live and writable once that process has left.
@@ -1986,7 +1986,7 @@ In the same transaction, before it applies anything, the runner reads every row 
 The refusal names the version, what the database records and what the build's file is, and both ways out:
 
 ```text
-migrations refused, none applied: version 20261117022936 is recorded as 20261117022936_legion_current.up.sql sha256:<recorded>, and this build's file of version 20261117022936 is 20261117022936_legion_current.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 20261117022936_legion_current.up.sql, after the replaces lines it has (its first replaces line names the identity version 20261117022936 first shipped with): -- replaces: 20261117022936_legion_current.up.sql sha256:<recorded>
+migrations refused, none applied: version 20261117022936 is recorded as 20261117022936_legion_current.up.sql sha256:<recorded>, and this build's file of version 20261117022936 is 20261117022936_legion_current.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, or an edited schema migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended (a replaces line accepts this database as it is, so it is safe only when the edit changes no schema (a comment, say); a database that ran an edited schema migration is reset instead), add this line to 20261117022936_legion_current.up.sql, after the replaces lines it has (its first replaces line names the identity version 20261117022936 first shipped with): -- replaces: 20261117022936_legion_current.up.sql sha256:<recorded>
 ```
 
 A file whose replaces lines name other identities adds `, whose replaces lines name only <identity>` after its own.
@@ -2002,13 +2002,14 @@ What the operator does:
   A branch whose edited file already declares main's identity, as the pre-merge check requires, fills the row with main's identity, and main boots on it.
   A production database meets this refusal only on a rollback by hand to a release it never ran, one older than the release that first applied a migration it holds; roll back only to a release the database ran, as the auto-deployer does, which rolls back to the image that was running, and only when the deploy applied no version.
 
-- A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own and outside every literal; in a `-- pgmigrate:non-transactional` file it goes after the marker, which stays the first line, and the loader refuses a file whose marker stands on any other line, naming it, since such a file would run in a transaction.
+- A file renamed, or edited on purpose in a way that changes no schema (a comment, say), whose schema the database already holds, takes the line the refusal names, alone on a line of its own and outside every literal; in a `-- pgmigrate:non-transactional` file it goes after the marker, which stays the first line, and the loader refuses a file whose marker stands on any other line, naming it, since such a file would run in a transaction.
+  A replaces line accepts the database as it is, so an edit that changes the schema takes none: a database that ran the earlier text would lack the edit's tables or columns, and is reset as above.
   The first replaces line names the identity the version first shipped with, and a later line goes after the ones there, in their order; the next boot accepts the row as it is.
   The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
   A line ending in a carriage return, as a file with CRLF line endings has, is read without it.
   Before the merge, the `envoy-go-build` job compares every migration the base already holds with the head's file of the same version, building `./internal/pgmigrate/cmd/edited-migrations` and running it with `--base <commit>` (built and run, it exits 2 when the check could not be taken; `go run` reports every failure as exit 1).
   The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch on main that names none fails the check.
-  On a dispatch of another branch that names none, a full run started by hand, the base is the branch's merge base with main (`.github/scripts/edited-migrations-base.sh` picks the base for each run).
+  On a dispatch of another branch that names none, the base is the branch's merge base with main (`.github/scripts/edited-migrations-base.sh` picks the base for each run).
   It fails a head file whose first replaces line is not the base's first identity, a head file whose replaces lines do not begin with the base's, in the base's order, then one naming the base's file itself, name and checksum, since each of those is an identity or a text a database the base accepts may record, and a base file whose version the head no longer has a file of, each naming the lines to begin with, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
   A revert of an edit is refused there too, since a database the edited release created applied the edit's text: the revert keeps the replaces lines.
 
@@ -5119,7 +5120,7 @@ Each item below names a path with its method and identity, then its purpose.
   A write that finds the setting as it asks changes nothing and appends no event; a change appends `project.updated`, with the project row and its writer.
   The answer is the project as `GET /api/v1/projects` lists it.
   `dispatch project-update --project <KEY> --proven-sessions on|off` sends the `PUT` or the `DELETE`.
-  Turn it on only after the project's daemon and pods write with tokens of their own: turned on before that, it stops every architect write and every role-holder publication on the shared token until a person turns it off, which costs time and loses no data.
+  Only the project's roll-out issue turns it on, once the project's daemon and pods write with tokens of their own: turned on before that, it stops every architect write and every role-holder publication on the shared token until a person turns it off, which costs time and loses no data.
 
 - `/api/v1/settings/repo-projects` (GET; cookie, trusted header, or bearer)
 
@@ -5508,7 +5509,8 @@ Each item below names a path with its method and identity, then its purpose.
   A spec holding a check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   With `DISPATCH_PARENT_STATUS_RULE` on, a create under a `done` parent is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, with `issues` naming the parent (`POST /api/v1/issues/{key}/status-change`, below).
   A create under a parent and a close of that parent at the same moment never both go through: the one that reaches the parent's row second is refused.
-  When Legion runs the new issue, because it or an issue above it carries the label `legion`, a create under a parent from a writer that is no person and no architect of the parent or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
+  When Legion runs the new issue, because it or an issue of its own project above it carries the label `legion`, a create under a parent from a writer that is no person and no architect of the parent or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
+  A create under a parent of another project is judged as a root of the new issue's own project, which the check does not judge.
 
 - `/api/v1/issues/{key}` (PATCH; cookie, trusted header, or bearer)
 
@@ -5526,8 +5528,9 @@ Each item below names a path with its method and identity, then its purpose.
   - On an issue Legion runs, a close, a reopen and a `labels` or `parent` write that takes the issue out of Legion are each `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
 
   - A move under a parent, after which Legion runs the issue, is `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of the new parent or of an issue above it.
+    A move under a parent of another project is judged as a root of the issue's own project, which this check does not judge.
     Wherever the new parent is, when Legion runs the issue, or an issue under it, before the move, the move is also `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of each such issue or of an issue above it where it stands.
-    Such an issue is the issue itself when Legion runs it, and else each issue under it, at most 32 levels down, that carries the label `legion`.
+    Such an issue is the issue itself when Legion runs it, and else each issue under it, at most 32 levels down, that carries the label `legion` and that it reaches through parents of its own project.
     So another tree's architect cannot move an issue with no label under its own tree to get the right to write a labelled issue under it.
     An architect that took the label off its own tree, or moved its own issue out to the root, cannot then move another tree's issue under it either.
     The session of the project's Legion daemon passes neither check of a move.
@@ -5586,11 +5589,11 @@ Each item below names a path with its method and identity, then its purpose.
   A refused write stops the call, and no later write runs.
   Each refusal that the route answers carries `changed` beside its `code` and `error`: the entries of the writes that committed before it, `[]` when none did.
   Two refusals of the router come before the route and carry no `changed`: the `421 HOST_MISMATCH` of a server with the dev sign-in on, and the `403` of an unsafe request that carries a session cookie or an IAP assertion and no `Authorization`, from another origin (`enforceCookieOrigin`).
-  With the setting off, the options, `dry_run` and the two `403`s below work as they do with it on.
+  With the setting off, the options, `dry_run` and the `403`s below work as they do with it on.
   The refusals are these:
 
   - `409 ISSUE_CHANGED`: `expected_sequence` is not the issue's last event.
-    The route decides this before `ISSUE_CLOSED`, the two `403`s and `PARENT_STATUS_CONFLICT`, also for a dry run.
+    The route decides this before `ISSUE_CLOSED`, the `403`s and `PARENT_STATUS_CONFLICT`, also for a dry run.
     Each write checks it again, so an event on the issue that the call did not write stops the call.
 
   - `409 PARENT_STATUS_CONFLICT` `{code, error, issues, changed}`: the call breaks the rule.
@@ -5601,11 +5604,11 @@ Each item below names a path with its method and identity, then its purpose.
   - `403 BROWSER_SIGN_IN_REQUIRED`: `include_children` with `done` from a request that presents a token, whatever the setting.
     Only a person who is signed in at a browser closes the open issues under an issue together with it.
 
+  - `403 DOCUMENT_WRITER_NOT_ARCHITECT`: a write of the call closes, reopens or takes out of Legion an issue that Legion runs, from a writer that is no person, no architect of that issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
+
   - `403 PROJECT_SCOPE`: the request's credential may write one project, and a write of the call is of an issue of another project: an ancestor that `include_parent` moves, or an issue under the issue that `include_children` moves or `unlink_children` removes, since a parent may be an issue of another project.
     The route checks every write of the plan before the first one, so it refuses the whole call before any write, a dry run too; it decides this after `ISSUE_CLOSED` and before `BROWSER_SIGN_IN_REQUIRED` and `PARENT_STATUS_CONFLICT`.
     A credential that names no project is refused nothing here.
-
-  - `403 DOCUMENT_WRITER_NOT_ARCHITECT`: a write of the call closes, reopens or takes out of Legion an issue that Legion runs, from a writer that is no person, no architect of that issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
 
   - `400 STATUS_CHANGE_INPUT`: no status, or `include_children` with `unlink_children`.
 
@@ -6700,6 +6703,40 @@ Each item below names a status and code, then its meaning.
   A blank `ci_check` names no run.
   A browser's edit is never refused: settlement removes such a block's `ci_check` and posts one `block.invalid` naming the block, the rule as `reason` and `block_type: "check"`.
 
+- `403 DOCUMENT_WRITER_NOT_ARCHITECT`
+
+  On an issue Legion runs, a version of the issue's spec (its primary document) or of its Verification document is written only by a person, by an architect of the issue, or by an architect of an issue above it (`internal/dispatch/api/spec_writer.go`).
+  A person is a request whose credential holds the `person` scope, a person at a browser among them, or Dispatch's own system writer.
+  An architect is the session of an `architect` row of the role holders on the issue's parent chain (`PUT /api/v1/issues/{key}/role-holders`).
+  The chain climbs only to a parent of the issue's own project, so it ends at the first ancestor of another project, as at a root.
+  Legion runs an issue when it or an issue of its own project above it carries the label `legion`, in any case.
+  Each route that writes such a version refuses every other writer with this code, before it stores anything or appends an event, and the server logs one line for each refusal:
+  an upload, an edit or a named version of the document, a file uploaded to the issue under the name `verification.md` among them;
+  the reword, the retraction or the resolution of a block ask in it;
+  a create under a parent, which writes the new issue's spec;
+  and a close and a reopen, which write the asks in the spec, a move under a parent, which changes who can write it, and a `labels` or `parent` write that takes the issue out of Legion, after which any session can write it (`PATCH /api/v1/issues/{key}`, `POST /api/v1/issues/{key}/status-change`).
+  A create and a move are judged on the issue as the write leaves it, with the architects of the new parent's chain.
+  Under a parent of another project, the issue is judged as a root, which the check does not judge.
+  Every move under a parent is also judged, wherever the new parent is, as it stands, on the chain of each issue of the moved subtree that Legion runs before the move: the issue's own chain when Legion runs it, and else the chain of each issue under it that carries the label `legion` and that it reaches through parents of its own project.
+  So when the moved subtree holds such an issue, only a person, or an architect at or above each of those issues that is also at or above the new parent when the new parent's check judges the move, can make it, and the refusal names the first issue whose chain refuses the writer.
+  An architect that took the label off its own tree, or moved its own issue out to the root, cannot then move another tree's issue under it to get the right to write it.
+  The session of the project's Legion daemon, `legion-daemon:<project>`, passes a close, a reopen and a write that takes an issue out of Legion too, but it passes neither check of a move.
+  While the project's `proven_sessions` is on (`/api/v1/projects/{key}/proven-sessions`, Routes above), an architect's session and the daemon's pass only on a credential that proves that session, a broker token of it.
+  The message names the session, the write and the issue, who can make the write, the role the session holds on the issue and each architect session Dispatch records on the chain, and it ends:
+
+  - The refusal of a move under a parent, and of a write that takes the issue out of Legion (an unlink by `unlink_children` among them), ends ``A suggestion or a comment cannot carry this write: ask one of the writers this message names, a person by `dispatch ask`.``
+
+  - The refusal of a document write, a create, a close or a reopen ends `Propose the change with a suggestion or a comment.`
+
+  A refusal for proof names the project instead, says that the request's credential does not prove the session, and ends with neither sentence.
+  The check holds the issues of a project only once Dispatch has taken a role-holder publication for an issue of that project, which marks it (`project_role_holder_marks`), so nothing changes for a project until its daemon publishes its first role holders.
+  A create under no parent is not checked, nor is an anchored comment, ask or suggestion: such a write adds only its writer's mark around words others wrote, and a comment or a suggestion is how a worker proposes a change to the architect.
+
+  - The same check holds every write of a requirement, criterion or check node of such an issue, or of a value or a relation out of one (`refuseSpecWriterOfNode`): its state and its settle (`POST /api/v1/issues/{key}/nodes/{id}/state`, `.../settle`), a pointer out of it, a requirement's `constrained_by` (`.../pointers`), and an edit of the issue's tree artifact that creates, changes, removes or moves one (`refuseSpecWriterOfTreeEdit`).
+    Its message then names the node by its type and its `dispatch://` address, and its log line carries the node.
+    A plan node, a result, a lens, a finding, a risk and a constraint are no such nodes, and a relation out of one of them into such a node, a risk's `prevented_by` among them, is a relation out of it, so a worker still writes each.
+    The pre-mortem conversion's `moved_to` runs out of the document it retires, so the conversion is not checked.
+
 - `409 ANSWERED_ASK_KEPT`
 
   A document write that is not a person's own would take the block of an answered ask out of its document, or retype that block (`docs.ErrAnsweredAskKept`).
@@ -6708,33 +6745,6 @@ Each item below names a status and code, then its meaning.
   The message names each such ask's node (`dispatch://KEY/ask/<id>`), quotes its question, and names its block's address and, for a retype, the type the write gave it.
   An edit (`POST /edits` and its slug variants) is held to it for the blocks its batch drops or retypes itself, and an upload of a new version for every answered ask whose block the version leaves out or retypes.
   A write that also drops the block of an open ask is `400 INVALID_ASK_BLOCK` first.
-
-- `403 DOCUMENT_WRITER_NOT_ARCHITECT`
-
-  On an issue Legion runs, a version of the issue's spec (its primary document) or of its Verification document is written only by a person, by an architect of the issue, or by an architect of an issue above it (`internal/dispatch/api/spec_writer.go`).
-  A person is a request whose credential holds the `person` scope, a person at a browser among them, or Dispatch's own system writer.
-  An architect is the session of an `architect` row of the role holders on the issue's parent chain (`PUT /api/v1/issues/{key}/role-holders`).
-  Legion runs an issue when it or an issue above it carries the label `legion`, in any case.
-  Each route that writes such a version refuses every other writer with this code, before it stores anything or appends an event, and the server logs one line for each refusal:
-  an upload, an edit or a named version of the document, a file uploaded to the issue under the name `verification.md` among them;
-  the reword, the retraction or the resolution of a block ask in it;
-  a create under a parent, which writes the new issue's spec;
-  and a close and a reopen, which write the asks in the spec, a move under a parent, which changes who can write it, and a `labels` or `parent` write that takes the issue out of Legion, after which any session can write it (`PATCH /api/v1/issues/{key}`, `POST /api/v1/issues/{key}/status-change`).
-  A create and a move are judged on the issue as the write leaves it, with the architects of the new parent's chain.
-  Every move under a parent is also judged, wherever the new parent is, as it stands, on the chain of each issue of the moved subtree that Legion runs before the move: the issue's own chain when Legion runs it, and else the chain of each issue under it that carries the label `legion`.
-  So when the moved subtree holds such an issue, only a person, or an architect at or above each of those issues that is also at or above the new parent when Legion runs the issue after the move, can make it, and the refusal names the first issue whose chain refuses the writer.
-  An architect that took the label off its own tree, or moved its own issue out to the root, cannot then move another tree's issue under it to get the right to write it.
-  The session of the project's Legion daemon, `legion-daemon:<project>`, passes a close, a reopen and a write that takes an issue out of Legion too, but it passes neither check of a move.
-  While the project's `proven_sessions` is on (`/api/v1/projects/{key}/proven-sessions`, Routes above), an architect's session and the daemon's pass only on a credential that proves that session, a broker token of it.
-  The message names the session, the write and the issue, who can make the write, the role the session holds on the issue and each architect session Dispatch records on the chain, and it ends `Propose the change with a suggestion or a comment.`
-  A refusal for proof names the project instead, and says that the request's credential does not prove the session.
-  The check holds the issues of a project only once Dispatch has taken a role-holder publication for an issue of that project, which marks it (`project_role_holder_marks`), so nothing changes for a project until its daemon publishes its first role holders.
-  A create under no parent is not checked, nor is an anchored comment, ask or suggestion: such a write adds only its writer's mark around words others wrote, and a comment or a suggestion is how a worker proposes a change to the architect.
-
-  - The same check holds every write of a requirement, criterion or check node of such an issue, or of a value or a relation out of one (`refuseSpecWriterOfNode`): its state and its settle (`POST /api/v1/issues/{key}/nodes/{id}/state`, `.../settle`), a pointer out of it, a requirement's `constrained_by` (`.../pointers`), and an edit of the issue's tree artifact that creates, changes, removes or moves one (`refuseSpecWriterOfTreeEdit`).
-    Its message then names the node by its type and its `dispatch://` address, and its log line carries the node.
-    A plan node, a result, a lens, a finding, a risk and a constraint are no such nodes, and a relation out of one of them into such a node, a risk's `prevented_by` among them, is a relation out of it, so a worker still writes each.
-    The pre-mortem conversion's `moved_to` runs out of the document it retires, so the conversion is not checked.
 
 - `409 DOC_SCHEMA`
 

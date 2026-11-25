@@ -34,8 +34,9 @@ name: CI job test
 # harness instead of all of them. A step of a called workflow cannot read
 # `needs.changes.outputs.<name>` - inside a reusable workflow the only context carrying a caller's
 # value is `inputs` - so each calling job of ci.yaml hands this file one input,
-# `matched-filters`: the paths filter's own list of the filters that matched, or `all` on a
-# dispatched run and on one whose filters fell open. Each gated step reads its own filter out of it,
+# `matched-filters`: the paths filter's own list of the filters that matched, or `all` on a run
+# that selects every job (a dispatch of main, or one given every-job) and on one whose filters fell
+# open. Each gated step reads its own filter out of it,
 # `inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"<filter>"')`, the quotes
 # matching one whole name of the list, and `.github/scripts/check-ci-filters.sh` resolves that
 # through the caller's `with:` and holds the step to that shape (its rule 23). A gate added here
@@ -74,8 +75,8 @@ on:
       matched-filters:
         description: >-
           `.github/workflows/ci.yaml#needs.changes.outputs.matched_filters`: the paths filter's list of the filters
-          that matched, as JSON (`["test","release_push_test"]`), or `all` on a dispatched run and
-          on one whose filters fell open.
+          that matched, as JSON (`["test","release_push_test"]`), or `all` on a run that selects
+          every job (a dispatch of main, or one given every-job) and on one whose filters fell open.
           Each gated step below runs when its own filter is in it.
         type: string
         required: true
