@@ -533,10 +533,6 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 		if supervise.ClaimState(held.State) != supervise.StateFailed {
 			continue
 		}
-		// The token is the daemon's word, and the retry's path names it, which a retry that gets
-		// no answer, or an answer that does not read, prints (request, printAnswer, operator.do).
-		// So a claim is asked for only by a token in a shape the daemon makes one in
-		// (legionclaim.Token.Shaped), and any other is not retried and is named as claimWord names it.
 		if !held.Token.Shaped() || c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
 			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name(), claimWord(held.Token))
 			code = 1

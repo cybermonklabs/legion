@@ -587,9 +587,6 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	if !ok {
 		return 1
 	}
-	// The daemon's URL as the lines below name it, through the URL rule: the heading goes to
-	// stdout, which no writer passes through the rule (newRoot), and a daemon_url can carry user
-	// information.
 	address := redact.URLCredentials(op.base)
 	stateURL, err := op.urlOf("/legion/v1/state")
 	if err != nil {
@@ -610,9 +607,6 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		return 0
 	}
 
-	// The state decodes through the answer (Answer.Decode, into servedState), whose error names
-	// the member that did not decode and never its value, which encoding/json's errors and
-	// time.Time's quote.
 	var state servedState
 	if err := answer.Decode(&state); err != nil {
 		fmt.Fprintf(stderr, "legion state: read the state %s served: %v\n", address, err)
