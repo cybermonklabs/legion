@@ -21,6 +21,7 @@ import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
 import { ChangeDraftsProvider } from "./DecisionActions";
+import { standingParts } from "./decisions-filter/entry-standing";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
@@ -32,7 +33,7 @@ import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
+import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
@@ -1443,16 +1444,20 @@ function landingParent(
  *  item it is, its own address and its state, and its own first line as its title, cut from the
  *  words every one-line drawing of a node is cut from (`lineWords`). A node with no words is
  *  named by the page's word for its kind (`NODE_TYPE_NAMES`), never by its id, which is no name
- *  a reader reads. */
+ *  a reader reads. Its state is the standing word: a decision reads "Kept by", or "Changed by"
+ *  where the person whose Change it waits on is known, and `stateBy` is that person or its
+ *  keeper, whom the panel names after the word (`standingParts`, R2, R3). */
 export function focusedNodeOf(node: TreeNode): FocusedNode {
   const item = conversationItem(node);
   const line = firstLineOf(lineWords(node)).line;
+  const standing = node.state === undefined ? undefined : standingParts(node.state, node);
   return {
     ...(node.author === undefined ? {} : { author: node.author }),
     id: node.id,
     ...(item === undefined ? {} : { item }),
     ...(node.reference === undefined ? {} : { reference: node.reference }),
-    ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
+    ...(standing === undefined ? {} : { state: standing.word }),
+    ...(standing?.person === undefined ? {} : { stateBy: standing.person }),
     title: line === "" ? NODE_TYPE_NAMES[node.type] : line,
     type: node.type,
   };

@@ -857,6 +857,60 @@ test("an agent's decision draws its own words, how sure it was and how it stands
   }
 });
 
+// R2, R3 (decision 435): wherever a decision is drawn, the line beside a statement among them, one
+// a person kept reads "Kept by" with the keeper's name, and one a person asked to change reads
+// "Changed by" with that person's name, where it read "Change requested"; each name is drawn as
+// an author's text, and the state keeps its own token.
+test("a statement's decision line reads Kept by and Changed by with the person's name", () => {
+  const kept = decisionNode("d1", {
+    keptBy: { id: "alice", kind: "user" },
+    state: "kept",
+    text: "Keep the rail narrow.",
+  });
+  const changed = decisionNode("d2", {
+    changedBy: { id: "bob", kind: "user" },
+    state: "change_requested",
+    text: "Draw it once.",
+  });
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2"), kept, changed]), [
+    decision("d1", {
+      text: "Keep the rail narrow.",
+      decision: {
+        kept: {
+          artifact_id: "artifact-dec",
+          block_id: "d1",
+          changed_version: 1,
+          kept_at: "2026-11-15T09:00:00Z",
+          kept_by: "alice",
+        },
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+        waiting_review: false,
+      },
+    }),
+    decision("d2", {
+      text: "Draw it once.",
+      decision: { kind: "agent", links: [shaped(statementRef("r2"))], waiting_review: true },
+    }),
+  ]);
+  try {
+    const drawn = view.container.querySelectorAll("[data-spec-source] [data-node-state]");
+    expect([...drawn].map((state) => state.getAttribute("data-node-state"))).toEqual([
+      "kept",
+      "change_requested",
+    ]);
+    expect(textsOf(view, "[data-spec-source] [data-node-state]")).toEqual([
+      "Kept by alice",
+      "Changed by bob",
+    ]);
+    expect(textsOf(view, "[data-kept-by][data-author-text]")).toEqual(["alice"]);
+    expect(textsOf(view, "[data-changed-by][data-author-text]")).toEqual(["bob"]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // R5: the decisions read holds no author for a decision, so a cell, a group's heading and a
 // because line draw none - no name, no shape, and no dot where it would stand - and only the
 // focused cell says "Author unknown". An agent is named by its role's word, as a row names one.

@@ -6776,6 +6776,47 @@ test("a focused row whose node has no words names it by its kind, not its id", a
   expect(view.focusedNode()?.title).toBe("plan task");
 });
 
+// R2, R3 (decision 435): the panel's state fact of a focused decision reads the standing word,
+// and carries the person the panel names after it: one a person kept, "Kept by" and its keeper;
+// one a person asked to change, "Changed by" and that person, where it read "Change requested".
+test("a focused decision's state fact reads Kept by or Changed by and carries who kept or changed it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        id: "spec#b-d1",
+        keptBy: { id: "alice", kind: "user" },
+        state: "kept",
+        text: "Keep the rail narrow.",
+        type: "decision",
+      }),
+      node({
+        changedBy: { id: "bob", kind: "user" },
+        id: "spec#b-d2",
+        state: "change_requested",
+        text: "Draw it once.",
+        type: "decision",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-d1"));
+  expect(view.focusedNode()).toMatchObject({
+    state: "Kept by",
+    stateBy: { id: "alice", kind: "user" },
+  });
+
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-d2"));
+  expect(view.focusedNode()).toMatchObject({
+    state: "Changed by",
+    stateBy: { id: "bob", kind: "user" },
+  });
+});
+
 // The page opens with the focus on the first open question that waits on the reader, in the
 // outline's own order, its path unfolded.
 test("the page opens with the focus on the first open question that waits on the reader", async () => {
