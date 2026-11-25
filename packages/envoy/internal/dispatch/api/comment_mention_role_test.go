@@ -123,12 +123,13 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	}
 
 	enqueue("a-first", "A-1")
-	waitUntil(t, 5*time.Second, "A's first send held on its own lane", func() bool { return parks.Load() >= 1 })
+	waitUntil(t, "A's first send held on its own lane", func() bool { return parks.Load() >= 1 })
 	enqueue("b-only", "B-1")
 	enqueue("a-second", "A-1")
-	waitUntil(t, 5*time.Second, "B's mention of s1 sent while A's wait", func() bool {
+	waitUntil(t, "B's mention of s1 sent while A's wait", func() bool {
 		return slices.Contains(sentNow(), "b-only")
 	})
+
 	if got := sentNow(); !slices.Equal(got, []string{"b-only"}) {
 		t.Fatalf("sent %v while A's earlier event was owed, want B's alone", got)
 	}
@@ -136,9 +137,10 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	mu.Lock()
 	open = true
 	mu.Unlock()
-	waitUntil(t, 5*time.Second, "A's two sends once its earlier event was sent", func() bool {
+	waitUntil(t, "A's two sends once its earlier event was sent", func() bool {
 		return len(sentNow()) == 3
 	})
+
 	t.Logf("sent in the order %v", sentNow())
 	if got := sentNow(); !slices.Equal(got, []string{"b-only", "a-first", "a-second"}) {
 		t.Fatalf("sent %v, want B's, then A's first and A's second", got)
@@ -174,7 +176,7 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 	state.landed = view.mentionLanded
 	state.mu.Unlock()
 	runOutboxBeside(t, deps, view)
-	waitUntil(t, 10*time.Second, "the issue's first events published", func() bool {
+	waitUntil(t, "the issue's first events published", func() bool {
 		return unpublishedEvents(t, database, issue.Key) == 0
 	})
 
@@ -185,7 +187,7 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 		"body": "the earlier event, by a person",
 	}))
 	earlier := commentEventID(t, database, earlierComment.ID)
-	waitUntil(t, 10*time.Second, "the earlier event's route send backed off", func() bool {
+	waitUntil(t, "the earlier event's route send backed off", func() bool {
 		attempts, _ := eventAttempts(t, database, earlier)
 		return attempts > 0
 	})
@@ -196,13 +198,14 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 		"body": body, "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	comment := commentEventID(t, database, mention.ID)
-	waitUntil(t, 60*time.Second, "every event of the issue published and the mention settled", func() bool {
+	waitUntil(t, "every event of the issue published and the mention settled", func() bool {
 		settled := true
 		for _, attempt := range waitForCommentDeliveries(t, database, mention.ID, "the mention's attempts", func([]model.CommentDelivery) bool { return true }) {
 			settled = settled && attempt.State != "pending"
 		}
 		return settled && unpublishedEvents(t, database, issue.Key) == 0
 	})
+
 	taken, own := view.order([]int64{earlier, comment}, map[string]int64{body: comment}, comment)
 	t.Logf("s1 takes %v (want %v), the comment's copies on s1's own channels: %v", taken, []int64{earlier, comment}, own)
 	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
@@ -270,7 +273,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	<-started
 	second := enqueue("second", "A-1")
 	close(release)
-	waitUntil(t, 5*time.Second, "the first send parked on A-1's held lane", func() bool { return parks.Load() == 1 })
+	waitUntil(t, "the first send parked on A-1's held lane", func() bool { return parks.Load() == 1 })
 	queued, inflight := queuedAndInFlight(sender)
 	mu.Lock()
 	defer mu.Unlock()
@@ -309,11 +312,12 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 		})
 	}
 	held := heldLane(laneKey{recipient: "session:s1"}, "A-1")
-	waitUntil(t, 5*time.Second, "the three sends on A's held lane, parked", func() bool {
+	waitUntil(t, "the three sends on A's held lane, parked", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return parks.Load() == 1 && len(sender.lanes[held]) == 3
 	})
+
 	count, _ := sender.heldSamples(time.Now())
 	t.Logf("the held gauge reads %d", count)
 	if count != 3 {

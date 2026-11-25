@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A file''s or an image''s version has a token, `sha256:` and the SHA-256 of its bytes, stated as `versions[].token` on every read of its versions and on an upload''s answer; a document''s version and a version stored with no hash carry none. An upload replacing a file or an image names it as its `precondition`, as a document''s upload does: the standing version''s token is taken, any other token is refused `409 PRECONDITION_FAILED` with the standing token and version number, and a token on a first upload under a name is refused `409`. Until now every token on a file''s upload was refused `400 INVALID_PRECONDITION`. A replacement naming no token is still taken unchecked, and is counted on `envoy_dispatch_file_replacements_unguarded_total` and logged, as a document''s is on its own counter.'
+time: 2026-11-22T15:06:54.47869243Z
+custom:
+    Issue: pr5013

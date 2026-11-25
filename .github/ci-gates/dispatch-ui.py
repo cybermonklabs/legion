@@ -17,6 +17,7 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     ("packages/contracts/schemas/dispatch-openapi.json",
      "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
      "document every committed recording's body is held to, which this job's test step runs"),
+    (f"{ENVOY}/internal/dispatch/api/testdata/status-change/*.json", "packages/dispatch/web/src/features/issue/parent-status/status-change-fixtures.ts:56 readFileSync (FIXTURES :19): the answers of POST /api/v1/issues/{key}/status-change that packages/envoy/internal/dispatch/api's TestStatusChangeAnswersMatchTheirFixtures writes, which the parent-status question's unit tests and the board's answer with"),
     (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
     ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ("scripts/e2e/lib/process-tree.sh", "packages/dispatch/e2e/acceptance/replace-blocks.sh:109 sources it, and "

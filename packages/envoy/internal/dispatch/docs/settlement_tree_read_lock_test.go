@@ -17,6 +17,7 @@ import (
 // drive: one goroutine commits to the room and drains the commits into the replica while another
 // reads the tree, so -race reports the walk the moment it leaves the lock.
 func TestTheSettlementTreeReadWalksTheReplicaUnderItsLock(t *testing.T) {
+	t.Parallel()
 	service := &Service{}
 	live := newDocumentCopy()
 	if err := crdt.ApplyUpdateV1(live, newProofHistory(t, 1).write("## Heading\n\nThe paragraph the room types into.\n"), nil); err != nil {

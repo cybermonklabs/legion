@@ -67,6 +67,7 @@ type blockState struct {
 //  5. and the pass moved no block's changed_version or changed_at: a block that only learned
 //     its parent is no block whose text changed.
 func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

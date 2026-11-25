@@ -333,6 +333,13 @@ export interface AgentEndMessage {
    * `packages/ai/src/types.ts:1492-1500` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
+  /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
+   * one (`AssistantMessage.errorStatus`, `packages/ai/src/types.ts:1517-1518` of
+   * cybermonklabs/oh-my-pi at the pinned tag `v18.18.6-sami.20261122-091943`). The host copies this
+   * field into its `prompt_result`'s `httpStatus`
+   * (`packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:230` at that tag), and the
+   * turn-outcome report carries it as its own `httpStatus` (`packages/pi-legion/src/turn-outcome.ts`). */
+  readonly errorStatus?: number;
 }
 
 /**

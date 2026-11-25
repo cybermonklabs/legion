@@ -16,6 +16,7 @@ import (
 // (refs.Pending). The same read under the context the route holds answers from the stored rows
 // alone, which is what a reader that trusted the context it was passed would see.
 func TestLedgerReadContextResolvesARowTheLedgerHasOnlyQueued(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	tx, ledger := joinProbe(t, service)
 	// The insert of the issues row is queued with the transaction's other writes, so no read of
