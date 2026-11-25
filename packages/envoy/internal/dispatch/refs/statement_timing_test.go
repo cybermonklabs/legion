@@ -455,7 +455,7 @@ func readClosure(t *testing.T, runner *benchtime.Runner, name, issue string) clo
 		t.Fatalf("%s: count the link rows into %s and its own content: %v", name, issue, err)
 	}
 	recorder := &statementRecorder{Queryer: runner.Conn()}
-	references, err := Closure(ctx, recorder, model.Actor{}, issue)
+	references, err := Closure(ctx, recorder, model.Actor{}, issue, "")
 	if err != nil {
 		t.Fatalf("%s: read %s's references: %v", name, issue, err)
 	}

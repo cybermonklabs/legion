@@ -1,14 +1,21 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { ApiError, api } from "../../api/client";
 import { pastDeadlineKey } from "../../hooks/useSending";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { ReplyTarget } from "./composer-model";
 import { heldSends } from "./held-sends";
 import type { SentRequest } from "./send-request";
 import { threadReplySendKey, usePhoneThread } from "./usePhoneThread";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const sendKey: MutationKey = ["conversation-composer", "CORE-1"];
 
@@ -45,7 +52,7 @@ async function refuseReply(queryClient: QueryClient, mutationKey: MutationKey): 
   const request: SentRequest = {
     anchor: undefined,
     ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: "Refused reply", mentions: [], replacement: "" },
+    draft: { body: "Refused reply", replacement: "" },
     edit: undefined,
     kind: "comment",
     owner: { issueKey: "CORE-1", kind: "issue" },
