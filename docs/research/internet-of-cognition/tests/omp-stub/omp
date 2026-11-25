@@ -139,6 +139,7 @@ if ARGS[:1] == ["--version"]:
 elif ARGS[:1] == ["--help"]:
     print("omp stub, a stand-in for omp that plays a session on canned replies\n\nFLAGS")
     for flag, text in (
+            ("-p, --print", "Non-interactive mode: process prompt and exit"),
             ("--model=<value>", "Model to use"),
             ("--thinking=<value>", "Thinking level"),
             ("--mode=<value>", "Output mode: text, json or rpc"),

@@ -2679,8 +2679,8 @@ run_recorded() {
     # in this shell's environment and reach the command through it. The command runs with
     # TMPDIR set to <output-file>.tmp, an empty directory of its own beside its output, so
     # it reads nothing an earlier run or an earlier row left under the caller's TMPDIR, and
-    # with /dev/null as its input, so it reads nothing its caller's input holds (a loop's rows
-    # among them) and a program that reads its input, as omp -p does, reads an empty one.
+    # with /dev/null as its input, so it reads nothing its caller's input holds and a program
+    # that reads its input, as omp -p does, reads an empty one.
     #
     # Every program the command runs records its own status when it fails, as one line of
     # <output-file>.failed with four fields, separated by tabs: the status, the status the
@@ -2759,7 +2759,7 @@ run_recorded() {
     rm -rf "$out.tmp" && mkdir -p "$out.tmp"
     (
         cd "$ROOT" || exit 1
-        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bounded_run "$BOUND_ROW" bash "$script" 9>"$out.pipe" </dev/null 3<&-
+        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bounded_run "$BOUND_ROW" bash "$script" 9>"$out.pipe" </dev/null
         status=$?
         printf '%s|%s\n' "$BOUND_TOOK" "$BOUND_ENDED" >"$out.ended"
         exit "$status"
@@ -5150,13 +5150,12 @@ mode_replay() {
     }
     # The loop reads the rows from a file, since a program that fed it through a pipe would
     # wait on the loop's reading as long as every row runs, past its own bound (the header's
-    # "Every child the gate waits on ends"), and on descriptor 3, so that nothing the loop runs
-    # can read the rows it has not reached yet from its input.
+    # "Every child the gate waits on ends"), and on descriptor 3, which each row's command
+    # runs with closed, so that nothing the loop runs can read the rows it has not reached yet
+    # from its input.
     claims >"$work/rows"
-    : >"$work/reached"
     while IFS= read -r -u 3 row; do
         id="$(printf '%s' "$row" | jq -r '.id')"
-        printf '%s\n' "$id" >>"$work/reached"
         kind="$(printf '%s' "$row" | jq -r '.kind // ""')"
         mark="$(printf '%s' "$row" | jq -r '.mark // ""')"
         case " $kinds " in *" $kind "*) ;; *)
@@ -5208,7 +5207,7 @@ mode_replay() {
         # The GitHub header files are written again when they are old, before the row and
         # never inside its command (the header's "The GitHub tokens stand on no command line").
         github_headers_fresh
-        run_recorded "$command" "$work/$id.out" "$id"
+        run_recorded "$command" "$work/$id.out" "$id" 3<&-
         changed="$({
             printf '%s\n' "$installs"
             diff <(printf '%s\n' "$stamps") <(environment_stamps) | awk '$1 == ">" { print $2 }'
@@ -5272,17 +5271,6 @@ mode_replay() {
         fi
     done 3<"$work/rows"
 
-    # Every row that carries a command is one the loop reached, so a row that ran no command
-    # because something took it from the loop fails replay-command by name, and the PASS line
-    # states how many rows carry a command beside how many ran.
-    local with_command unreached
-    with_command="$(jq -r 'select((.command // "") != "") | .id' "$work/rows")"
-    unreached="$(printf '%s\n' "$with_command" | grep -vxF -f "$work/reached" | grep -v '^$')"
-    if [ -n "$unreached" ]; then
-        command_failures="$command_failures unreached"
-        fail replay-command "$(printf '%s\n' "$unreached" | wc -l | tr -d ' ') of the $(printf '%s\n' "$with_command" | grep -c .) rows that carry a command were never reached by the loop, so none of them ran: the first is $(printf '%s\n' "$unreached" | head -1)"
-    fi
-
     # unpinned_installs runs the reader reader_load loaded above, so one that stops here
     # stopped on a row the one parse read, a failure of the gate and no mode that cannot run.
     local unpinned unpinned_id unpinned_what
@@ -5312,7 +5300,7 @@ mode_replay() {
     [ "$bad_mark" -eq 0 ] && pass claim-mark "every claim of $rows carries a mark its requirement fixes"
     [ "$bad_predicate" -eq 0 ] && pass predicate-form "every one of the $ran rows with a command carries exactly one predicate, and each is a bound, a set membership or an exit status"
     [ "$bad_quotation" -eq 0 ] && pass quotation-marked "every one of the $quotations quotations is marked a claim of the project and not of its code"
-    [ -z "$command_failures" ] && pass replay-command "$ran recorded commands ran again, of the $(printf '%s\n' "$with_command" | grep -c .) rows that carry a command, every one of which the loop reached; no read inside one failed, and each met the predicate its row carries"
+    [ -z "$command_failures" ] && pass replay-command "$ran recorded commands ran again, no read inside one failed, and each met the predicate its row carries"
     [ -z "$absence_failures" ] && pass absence-still-empty "every one of the $absences absence searches still finds nothing"
 
     # The id list is read by three of the assertions below and built once here.

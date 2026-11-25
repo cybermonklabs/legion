@@ -286,6 +286,16 @@ symbol_plant() {
     printf '%s' "$dir"
 }
 
+# envoy_plant <dir> <sentence>; appends <sentence>, after one space, to the first line of the
+# fixture <dir>'s judgement that starts with "The Envoy field", and returns non-zero when it
+# could not be planted there.
+envoy_plant() {
+    local line
+    line="$(grep -m1 '^The Envoy field' "$1/judgement.md")"
+    sed -i "s|^The Envoy field.*\$|& $2|" "$1/judgement.md"
+    [ -n "$line" ] && grep -qxF -- "$line $2" "$1/judgement.md"
+}
+
 # dir_copy <name> <check.test.sh>; a scratch copy of this directory that --self-test can
 # run, whose check.test.sh is the file <check.test.sh> names.
 dir_copy() {
@@ -3999,9 +4009,7 @@ case_result "a page with two Verdict lines naming two verdicts fails --shape, na
 # and --citations passes it.
 for figure in 12,618 12,617; do
     dir="$(fresh "figure-$figure")"
-    envoy_line="$(grep -m1 '^The Envoy field' "$dir/judgement.md")"
-    sed -i "s|^The Envoy field.*\$|& Its count reads $figure rows [f-behaviour-1, f-figure-1].|" "$dir/judgement.md"
-    [ -n "$envoy_line" ] && grep -qxF -- "$envoy_line Its count reads $figure rows [f-behaviour-1, f-figure-1]." "$dir/judgement.md" || {
+    envoy_plant "$dir" "Its count reads $figure rows [f-behaviour-1, f-figure-1]." || {
         printf 'FAIL the sentence stating %s could not be planted in the fixture judgement\n' "$figure"
         exit 1
     }
@@ -4034,9 +4042,7 @@ for form in marked aside unmarked beside; do
     beside) sentence='It costs about 9 engineer-days by our estimate, and its count reads 12,618 rows [f-figure-1].' ;;
     esac
     dir="$(fresh "estimate-$form")"
-    envoy_line="$(grep -m1 '^The Envoy field' "$dir/judgement.md")"
-    sed -i "s|^The Envoy field.*\$|& $sentence|" "$dir/judgement.md"
-    [ -n "$envoy_line" ] && grep -qxF -- "$envoy_line $sentence" "$dir/judgement.md" || {
+    envoy_plant "$dir" "$sentence" || {
         printf 'FAIL the %s sentence could not be planted in the fixture judgement\n' "$form"
         exit 1
     }
@@ -7356,23 +7362,32 @@ fi
 # flag omp --help prints, the script reads it from its arguments and hands it to omp, and a script
 # run with none ends cannot run, naming the flag, as does one whose omp prints no such flag, or
 # prints it and not another flag the session passes, so a renamed flag is never read as a model
-# that did not answer. The case reads the row's command, runs the script by hand on the stub with
-# --max-cost 7, which the stub writes into the arguments of its session, with no flag, over an
-# omp whose help prints no flag, and over one whose help prints --max-cost alone. It judges the
-# script and the row's command by hand and not the gate. The last form was added in round 52:
-# the script of e13cc01c read the help for --max-cost alone, so over that omp it ran a session
-# and ended 3, "result: model not reached (no answer)", a model gateway that did not answer.
-cap_case="the cost cap of the row i-skills-run is the --max-cost its command passes: the script hands it to omp, and ends cannot run with none, or with an omp that prints no such flag or no other flag the session passes"
+# that did not answer. A flag counts only where a line of the help starts with it, so a flag the
+# help names only in its prose is no flag. The case reads the row's command, runs the script by
+# hand on the stub with --max-cost 7, which the stub writes into the arguments of its session,
+# with no flag, over an omp whose help prints no flag, over one whose help prints --max-cost
+# alone, and over one whose help prints a line for each flag but -p, which it names only in an
+# example. It judges the script and the row's command by hand and not the gate. The last two
+# forms were added in round 52: the script of e13cc01c read the help for --max-cost alone, so
+# over the third omp it ran a session and ended 3, "result: model not reached (no answer)", a
+# model gateway that did not answer, and the script of cadd800e read no -p, so over the fourth it
+# ended 3 the same way.
+cap_case="the cost cap of the row i-skills-run is the --max-cost its command passes: the script hands it to omp, and ends cannot run with none, or with an omp whose help starts no line with that flag or with another flag the session passes"
 if ! accord_unrun "$cap_case"; then
     stub="$(accord_stub locked)"
-    mkdir -p "$ACCORD_CASE/old-omp"
-    printf '#!/bin/sh\necho "usage: omp"\n' >"$ACCORD_CASE/old-omp/omp"
-    cp "$HERE/tests/omp-stub/models.yml" "$ACCORD_CASE/old-omp/models.yml"
-    chmod +x "$ACCORD_CASE/old-omp/omp"
-    mkdir -p "$ACCORD_CASE/cap-only-omp"
-    printf '#!/bin/sh\necho "      --max-cost=<value>    Stop sending model requests once the spend reaches this many USD"\n' >"$ACCORD_CASE/cap-only-omp/omp"
-    cp "$HERE/tests/omp-stub/models.yml" "$ACCORD_CASE/cap-only-omp/models.yml"
-    chmod +x "$ACCORD_CASE/cap-only-omp/omp"
+    # help_omp <name> <help text>: an omp under $ACCORD_CASE/<name>, beside the stub's
+    # models.yml, that prints the help text whatever it is asked.
+    help_omp() {
+        mkdir -p "$ACCORD_CASE/$1" &&
+            printf '#!/bin/sh\ncat <<'"'"'HELP'"'"'\n%s\nHELP\n' "$2" >"$ACCORD_CASE/$1/omp" &&
+            cp "$HERE/tests/omp-stub/models.yml" "$ACCORD_CASE/$1/models.yml" &&
+            chmod +x "$ACCORD_CASE/$1/omp"
+    }
+    help_omp old-omp 'usage: omp'
+    help_omp cap-only-omp '      --max-cost=<value>    Stop sending model requests once the spend reaches this many USD'
+    help_omp no-print-omp "$(printf '      %s=<value>\n' --model --thinking --mode --approval-mode --max-time --max-cost
+        printf '      %s\n' --no-session --no-title --no-lsp --no-context-files
+        printf '%s\n' 'Examples:' '  omp -p "List all .ts files in src/"')"
     flag="$(jq -r 'select(.id == "i-skills-run") | .command' "$HERE/claims.jsonl" | grep -oE -- '--max-cost [0-9]+(\.[0-9]+)?')"
     without="$(accord_run "$stub" 2>&1)"
     without_status=$?
@@ -7380,16 +7395,19 @@ if ! accord_unrun "$cap_case"; then
     old_status=$?
     caponly="$(accord_run "$ACCORD_CASE/cap-only-omp" --max-cost 2 2>&1)"
     caponly_status=$?
+    noprint="$(accord_run "$ACCORD_CASE/no-print-omp" --max-cost 2 2>&1)"
+    noprint_status=$?
     with="$(accord_run "$stub" --max-cost 7 2>&1)"
     with_status=$?
     handed="$(awk '$0 == "--max-cost" { getline; print; exit }' "$stub/omp-stub-args" 2>/dev/null)"
     if [ -n "$flag" ] && [ "$without_status" = 2 ] && [ "$(printf '%s\n' "$without" | head -1)" = 'cannot run: --max-cost is not given; pass the flag omp --help prints, as --max-cost 2' ] &&
         [ "$old_status" = 2 ] && [ "$(printf '%s\n' "$old" | head -1)" = 'cannot run: omp --help prints no --max-cost flag' ] &&
         [ "$caponly_status" = 2 ] && [ "$(printf '%s\n' "$caponly" | head -1)" = 'cannot run: omp --help prints no --max-time flag' ] &&
+        [ "$noprint_status" = 2 ] && [ "$(printf '%s\n' "$noprint" | head -1)" = 'cannot run: omp --help prints no -p flag' ] &&
         [ "$with_status" = 0 ] && [ "$(printf '%s\n' "$with" | tail -1)" = 'result: locked' ] && [ "$handed" = 7 ]; then
         case_passed "$cap_case"
     else
-        case_failed "$cap_case" "the row's flag is '$flag'; with none the script exited $without_status, '$(printf '%s\n' "$without" | head -1 | cut -c1-120)'; over an omp with no flag, $old_status, '$(printf '%s\n' "$old" | head -1 | cut -c1-120)'; over an omp with --max-cost alone, $caponly_status, '$(printf '%s\n' "$caponly" | head -1 | cut -c1-120)'; with 7, $with_status and handed '$handed'"
+        case_failed "$cap_case" "the row's flag is '$flag'; with none the script exited $without_status, '$(printf '%s\n' "$without" | head -1 | cut -c1-120)'; over an omp with no flag, $old_status, '$(printf '%s\n' "$old" | head -1 | cut -c1-120)'; over an omp with --max-cost alone, $caponly_status, '$(printf '%s\n' "$caponly" | head -1 | cut -c1-120)'; over an omp with no -p line, $noprint_status, '$(printf '%s\n' "$noprint" | head -1 | cut -c1-120)'; with 7, $with_status and handed '$handed'"
     fi
 fi
 
@@ -7597,9 +7615,7 @@ one_failure_result "a landed step's file the default branch's commit lacks fails
 # what its row does not claim. --replay must fail replay-command naming f-stdin-2 alone, in
 # each form. At 8944c0af, in the counted form, f-stdin-1 read f-stdin-2's line and failed, and
 # f-stdin-2 never ran; in the swallowed form f-stdin-1 passed, f-stdin-2 never ran, and the run
-# ended all passed (the architect's condition (a) of 2026-11-25T05:29Z). The gate also counts
-# the rows the loop reached against the rows that carry a command, so a row taken from the loop
-# any other way fails replay-command naming it.
+# ended all passed (the architect's condition (a) of 2026-11-25T05:29Z).
 for form in counted swallowed; do
     case "$form" in
     counted) first='"command":"wc -c","expect":{"equals":"0"},"output":"0"' ;;
@@ -7625,7 +7641,7 @@ done
 # after it, and citation-dispatch passed.
 READING_DISPATCH="$WORK/reading-dispatch"
 mkdir -p "$READING_DISPATCH"
-printf '#!/bin/sh\ncat >/dev/null\nexec %s "$@"\n' "$(command -v dispatch)" >"$READING_DISPATCH/dispatch"
+printf '#!/bin/sh\ncat >/dev/null\nexec '"'"'%s'"'"' "$@"\n' "$(command -v dispatch)" >"$READING_DISPATCH/dispatch"
 chmod +x "$READING_DISPATCH/dispatch"
 dir="$(fresh dispatch-reads-input)"
 printf '\nSee dispatch://INFRA-3134/spec#b-61117349-45b4-496f-af67-24b0d4063953@v9999.\n' \

@@ -16,8 +16,8 @@
 # --max-cost is required and is omp's own flag of that name, the one `omp --help` prints:
 # omp stops sending model requests once the session's spend, its subagents' included,
 # reaches the value, and the script writes no cap of its own. The script ends cannot run
-# when the omp it finds prints no such flag, or none of any other flag the session passes, so
-# a renamed flag is never read as a model that did not answer.
+# when the help of the omp it finds starts no line with one of the flags the session passes,
+# --max-cost and -p among them, so a renamed flag is never read as a model that did not answer.
 #
 # omp runs under env -i, with PATH, the new HOME and a new TMPDIR, both under the run's
 # TMPDIR, the two ACCORD variables below and any proxy or CA variable the caller set, so
@@ -35,7 +35,8 @@
 #      the protocol did not complete as above; the state line names the phase it reached.
 #   2  result: cannot run. A required input is missing, and the first line, "cannot run:
 #      <name> ...", names it: --max-cost, TMPDIR, IOC_OMP_MODELS unset or unreadable, omp,
-#      python3, git, tar or timeout not on PATH, or no clone holding the commit.
+#      python3, git, tar or timeout not on PATH, an omp whose --help starts no line with
+#      one of the flags the session passes, or no clone holding the commit.
 #   3  result: model not reached (<cause>). The gateway gave no answer, HTTP 429, HTTP 5xx
 #      or a refusal of the credential, on the first request or on the last attempt of a
 #      turn or of a subagent. Run by check.sh's --replay, which sets __IOC_FAILED, the
@@ -142,9 +143,12 @@ done
 # hand that to the session (the fresh-clone --replay of 8944c0af, whose first prompt, of
 # 1551525 characters, held the 778 rows of claims.jsonl after the row's own).
 (cd "$WORK" && env -i "$@" omp --help </dev/null) >"$RUN/help.txt" 2>&1
+# A flag counts only where a line of the help starts with it, alone or after its one-letter
+# form, so a flag the help names only in its prose, as an example or another flag's text
+# does, is no flag.
 for flag in --max-cost --max-time --mode --no-session --no-title --no-lsp --no-context-files \
-    --approval-mode --thinking --model; do
-    grep -q -E -- "(^|[^a-z-])$flag([^a-z-]|\$)" "$RUN/help.txt" ||
+    --approval-mode --thinking --model -p; do
+    grep -q -E -- "^[[:space:]]*(-[a-zA-Z], )?$flag([=,[:space:]]|\$)" "$RUN/help.txt" ||
         cannot_run "omp --help prints no $flag flag"
 done
 
@@ -203,18 +207,27 @@ def load_json(path, default):
 TOKENS = {"cacheRead": 0, "cacheWrite": 0, "input": 0, "output": 0}
 
 
-# cost_of(usage): the cost omp billed for one model call, the figure --max-cost reads; it also
-# adds the call's tokens, by kind, into TOKENS, so that the report shows whether the gateway
-# read the session's cache: the session's prompts cost about four times as much unread.
+# cost_of(usage): the cost omp billed for one model call or one subagent run, the figure
+# --max-cost reads.
 def cost_of(usage):
+    if not isinstance(usage, dict):
+        return 0.0
+    cost = usage.get("cost")
+    if isinstance(cost, dict):
+        cost = cost.get("total")
+    return cost if isinstance(cost, (int, float)) else 0.0
+
+
+# tally(usage): adds the tokens of one model call or one subagent run, by kind, into TOKENS,
+# so that the report shows whether the gateway read the session's cache, and returns its
+# cost. Unread, as a call whose cache is not read is billed, the four newest sessions of the
+# row's note would have cost about five times as much (3.38 to 3.61 USD against 0.69 to 0.72).
+def tally(usage):
     if isinstance(usage, dict):
         for kind in TOKENS:
             n = usage.get(kind)
             TOKENS[kind] += n if isinstance(n, int) else 0
-    cost = (usage or {}).get("cost") if isinstance(usage, dict) else None
-    if isinstance(cost, dict):
-        cost = cost.get("total")
-    return cost if isinstance(cost, (int, float)) else 0.0
+    return cost_of(usage)
 
 
 # What omp discovered under the new HOME.
@@ -244,7 +257,7 @@ for ev in events:
             read_by_orchestrator.add(m.group(0))
     elif kind == "message_end" and (ev.get("message") or {}).get("role") == "assistant":
         msg = ev["message"]
-        parent_cost += cost_of(msg.get("usage"))
+        parent_cost += tally(msg.get("usage"))
         if msg.get("stopReason") == "error":
             last_parent_error = str(msg.get("errorMessage") or "")
         else:
@@ -260,7 +273,7 @@ for ev in events:
         if kind == "tool_execution_end":
             for r in details.get("results") or []:
                 subagents.add(r.get("id"))
-                sub_cost += cost_of(r.get("usage"))
+                sub_cost += tally(r.get("usage"))
                 if r.get("exitCode") not in (0, None):
                     rf = r.get("retryFailure") or {}
                     sub_failures.append(" ".join(str(x) for x in (r.get("error"), rf.get("errorMessage"), rf.get("kind")) if x))
