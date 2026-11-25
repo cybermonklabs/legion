@@ -2272,6 +2272,21 @@ type Store interface {
 	// UpdateFix writes f over the stored fix of the same issue, generation, task and number; a fix
 	// the store does not hold is refused.
 	UpdateFix(ctx context.Context, tx pgx.Tx, f TaskFix) error
+	// RecordBesidePush writes that a push showed head ("" for a deleted branch) at role's branch
+	// beside fix of task: it changes that role's key of TaskFix.Pushed alone, in one statement.
+	RecordBesidePush(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int, role, head string) error
+	// FixAt is fix number fix of task, in any state, nil for none.
+	FixAt(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int) (*TaskFix, error)
+	// MarkStepBesideFix writes the open fix a start of place named (StepStart.BesideFix), in the
+	// transaction that counted that start; ErrStepStartMismatch where that start is not open.
+	MarkStepBesideFix(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, fix int) error
+	// SetStepPushBranch binds a branch beside a fix to that exact open start of place, keeping a
+	// binding it holds; ErrStepStartMismatch where that start is not open.
+	SetStepPushBranch(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, branch string) error
+	// EnqueueReadPrompt queues a prompt to read Dispatch (CINewsState) in the fact's transaction,
+	// joining the issue's unleased pending prompt of the same complete work identity (true) or
+	// queuing a row of its own (false).
+	EnqueueReadPrompt(ctx context.Context, tx pgx.Tx, issue string, n CINews, now time.Time) (bool, error)
 	// PutCIFailure writes a failure of a check at a head of a task and answers true; false, and
 	// nothing written, where that check at that head has a row already.
 	PutCIFailure(ctx context.Context, tx pgx.Tx, f CIFailure) (bool, error)

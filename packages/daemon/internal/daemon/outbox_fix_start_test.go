@@ -22,14 +22,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The fix a start serves, and the heads its start names: the head the fix's working copy is made at
-// and the head the task's working copy moves to.
+// The fix a start serves, and what its start names: the head the fix's working copy is made at,
+// the fix's own branch and the head the task's working copy moves to.
 const (
-	fixStartIssue = "LEGION-208"
-	fixStartEntry = 2
-	fixStartHead  = "c0de000000000000000000000000000000000001"
-	fixStartMove  = "c0de000000000000000000000000000000000002"
-	fixStartTask  = "Fix the CI check k-ci, which failed at " + fixStartHead + "."
+	fixStartIssue  = "LEGION-208"
+	fixStartEntry  = 2
+	fixStartHead   = "c0de000000000000000000000000000000000001"
+	fixStartMove   = "c0de000000000000000000000000000000000002"
+	fixStartBranch = "legion-beside/LEGION-208/1/default/fix-1/implementer"
+	fixStartTask   = "Fix the CI check k-ci, which failed at " + fixStartHead + "."
 
 	// phaseLeftLine and fixEndedLine are the start fence's two lines: a start of no fix whose
 	// phase the issue has left, and a start of a fix that no longer runs.
@@ -108,7 +109,8 @@ func newFixStartRig(t *testing.T, stands func(*record.Issue)) *fixStartRig {
 // fixStartEntry, the fix's head and the move, as the workflow writes it (Store.EnqueueFixStart).
 func fixStartOf() record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "start", Tree: fixStartIssue, Role: claim.RoleImplementer, Generation: 1,
-		Phase: phase.Implementing, Entry: fixStartEntry, Task: fixStartTask, Fix: 1, FixFrom: fixStartHead, MoveTo: fixStartMove}
+		Phase: phase.Implementing, Entry: fixStartEntry, Task: fixStartTask, Fix: 1, FixFrom: fixStartHead, FixBranch: fixStartBranch,
+		MoveTo: fixStartMove}
 }
 
 // queue writes start as the issue's outbox row and answers the row with its id, as a lane reads it.
@@ -252,7 +254,7 @@ func TestAFixStartRunsWhileTheIssueIsInReviewing(t *testing.T) {
 		t.Parallel()
 		rig := newFixStartRig(t, func(*record.Issue) {})
 		start := fixStartOf()
-		start.Fix, start.FixFrom = 0, ""
+		start.Fix, start.FixFrom, start.FixBranch = 0, "", ""
 		rig.run(rig.queue(start))
 		rig.finishedByTheFence(phaseLeftLine, 0)
 	})
@@ -300,16 +302,17 @@ func TestAFixStartRunsAfterTheIssueIsHeldForTheFix(t *testing.T) {
 		t.Parallel()
 		rig := newFixStartRig(t, held)
 		start := fixStartOf()
-		start.Fix, start.FixFrom = 0, ""
+		start.Fix, start.FixFrom, start.FixBranch = 0, "", ""
 		rig.run(rig.queue(start))
 		rig.finishedByTheFence(phaseLeftLine, 0)
 	})
 }
 
 // The task a fix's start gives its claim (supervise.RequestDeliver, which the machine builds the
-// delivery from) carries the fix, the head the fix's working copy is made at and the head the
-// task's working copy moves to, as the row names them, beside the row's phase, run, entry and id.
-// The control is the same start of no fix and no move: its task carries none of the three.
+// delivery from) carries the fix, the head the fix's working copy is made at, the fix's own branch
+// and the head the task's working copy moves to, as the row names them, beside the row's phase,
+// run, entry and id. The control is the same start of no fix and no move: its task carries none
+// of the four.
 func TestAFixStartGivesItsTaskTheFixItsCopyAndItsMove(t *testing.T) {
 	t.Parallel()
 	token := claim.Token("legion-legion-legion-208-implementer")
@@ -319,15 +322,16 @@ func TestAFixStartGivesItsTaskTheFixItsCopyAndItsMove(t *testing.T) {
 		task.Entry != fixStartEntry || task.Row != row.ID || task.ID != fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID) {
 		t.Fatalf("the fix's task = %+v, want the row's task of phase %s, run 1, entry %d, row %d", task, phase.Implementing, fixStartEntry, row.ID)
 	}
-	if task.Fix != 1 || task.FixFrom != fixStartHead || task.MoveTo != fixStartMove {
-		t.Fatalf("the fix's task carries fix %d from %q moving to %q, want fix 1 from %s moving to %s",
-			task.Fix, task.FixFrom, task.MoveTo, fixStartHead, fixStartMove)
+	if task.Fix != 1 || task.FixFrom != fixStartHead || task.FixBranch != fixStartBranch || task.MoveTo != fixStartMove {
+		t.Fatalf("the fix's task carries fix %d from %q on branch %q moving to %q, want fix 1 from %s on %s moving to %s",
+			task.Fix, task.FixFrom, task.FixBranch, task.MoveTo, fixStartHead, fixStartBranch, fixStartMove)
 	}
 
 	plain := fixStartOf()
-	plain.Fix, plain.FixFrom, plain.MoveTo = 0, "", ""
-	if task := deliverRequestOf(token, row, plain, startNews{task: fixStartTask}, nil); task.Fix != 0 || task.FixFrom != "" || task.MoveTo != "" {
-		t.Fatalf("control: the task of a start of no fix carries fix %d from %q moving to %q, want none of them",
-			task.Fix, task.FixFrom, task.MoveTo)
+	plain.Fix, plain.FixFrom, plain.FixBranch, plain.MoveTo = 0, "", "", ""
+	if task := deliverRequestOf(token, row, plain, startNews{task: fixStartTask}, nil); task.Fix != 0 || task.FixFrom != "" ||
+		task.FixBranch != "" || task.MoveTo != "" {
+		t.Fatalf("control: the task of a start of no fix carries fix %d from %q on branch %q moving to %q, want none of them",
+			task.Fix, task.FixFrom, task.FixBranch, task.MoveTo)
 	}
 }
