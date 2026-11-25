@@ -81,8 +81,10 @@ const (
 	// reading more.
 	StdinUnknown StdinUse = iota
 	// StdinRequestBody is `gh api --input -`: the input is the request body, one JSON document
-	// GitHub parses. So is `gh workflow run --json`'s, the run's inputs as one JSON object, each
-	// of which GitHub keeps as a value of its own.
+	// GitHub's REST API parses. So is `gh workflow run --json`'s, the run's inputs as one JSON
+	// object, each of which GitHub keeps as a value of its own. A `gh api` call to a whole URL on
+	// another host than api.github.com, a release asset's upload among them, sends a body GitHub
+	// stores as sent, which GhCall reads as StdinText (ghArgv.storedAsSent).
 	StdinRequestBody
 	// StdinField is a `-F <name>=@-` or a `--field <name>=@-` of `gh api` or `gh workflow run`:
 	// the input is the value of the fields that name it, and is read by their names.
@@ -165,6 +167,11 @@ const whatGhCall = "the gh call"
 // cannot read it again; a nil Stdin means standard input was never read and the caller's own is
 // still whole. Where the check did not buffer the input, the guard reads it itself as
 // GhRequest.Sent says.
+//
+// A `gh api` call to a whole URL on another host than api.github.com, a release asset's upload to
+// uploads.github.com among them, sends a body GitHub stores as the bytes sent, which the guard
+// reads whole, as one record, and not one JSON string at a time (ghArgv.storedAsSent). Such a call
+// whose fields are its body is refused as a setup failure (ghArgv.fieldsAsBody).
 func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	var answer GhAnswer
 	check, err := g.sharedCheck(whatGhCall)
@@ -209,6 +216,14 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	// sends is the caller's parse where it handed one and the argv's tables where it did not
 	// (GhRequest.Sent).
 	call := readGhArgv(req.Args)
+	if call.storedAsSent != "" && call.fieldsAsBody {
+		// gh would send the fields as one JSON document, which GitHub stores as sent, two
+		// fields on one line, and which the guard reads one field at a time (readLeaf).
+		return answer, &SetupFailure{
+			What: whatGhCall,
+			Why:  "GitHub stores the body of a call to " + shownText(call.storedAsSent) + " as gh sends it, and gh sends this call's fields as that body, one JSON document, which this guard reads one field at a time; send the asset's bytes with --input <file> or --input -",
+		}
+	}
 	sent := req.Sent
 	if sent == nil {
 		if call.upload != "" {
@@ -229,7 +244,12 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	records := call.records
 	if len(answer.Stdin) > 0 {
 		stdin := Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}
-		records = append(records, stdinRecords(stdin, sent.stdinUse, sent.stdinFields, call.graphQL)...)
+		use := sent.stdinUse
+		if use == StdinRequestBody && call.storedAsSent != "" {
+			// A body GitHub stores as sent is text, read whole (ghArgv.storedAsSent).
+			use = StdinText
+		}
+		records = append(records, stdinRecords(stdin, use, sent.stdinFields, call.graphQL)...)
 	}
 	for _, named := range sent.Files {
 		text, err := readGhFile(named)
@@ -240,7 +260,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		switch {
 		case call.graphQL && named.Field == graphQLQuery:
 			records = append(records, queryRecords(record)...)
-		case named.Option == inputOption:
+		case named.Option == inputOption && call.storedAsSent == "":
 			records = append(records, jsonBody(record, call.graphQL)...)
 		default:
 			records = append(records, record)
@@ -274,6 +294,20 @@ type ghArgv struct {
 	// GitHub's GraphQL endpoint under any spelling (ghAPIGraphQLEndpoint). A call it is true of is
 	// what this package's comments call `gh api graphql`.
 	graphQL bool
+	// storedAsSent is the endpoint of a `gh api` call whose body GitHub stores as the bytes gh
+	// sends (ghAPIStoredAsSent), a whole URL on another host than api.github.com, such as a
+	// release asset's upload to uploads.github.com, and "" for every other call. GhCall reads such
+	// a body whole, as one record, where it reads a body GitHub's REST API parses one JSON string
+	// at a time (jsonBody), and refuses such a call whose fields are its body (fieldsAsBody),
+	// naming the endpoint.
+	storedAsSent string
+	// fieldsAsBody is whether gh sends the call's fields as its request body, one JSON document:
+	// the call names a field option (ghFieldOptions), its body option (ghLeaf.bodyOption) names
+	// no file and no standard input, and its method (ghLeaf.methodOption) is not GET. A `gh api`
+	// call whose --input names either, or whose method is GET in any case, puts its fields in the
+	// URL's query string instead (cmd/legion/testdata/gh-help/api.txt: "To send the parameters as
+	// a `GET` query string instead, use `--method GET`").
+	fieldsAsBody bool
 	// records are the records of the argv, in the order it writes them.
 	records []Record
 	// sent is what the argv's options name for gh to send, in the order the argv writes them
@@ -285,10 +319,11 @@ type ghArgv struct {
 }
 
 // readGhArgv reads args, a gh call's argv, once, for everything GhCall asks of it: whether the
-// call is GraphQL, the records the rules read, the files it sends, the use it makes of standard
-// input and the fields that read that input. One walk answers all of them, so that no two answers
-// read one argv two ways: a reader that takes an option's value for an option of its own reads a
-// field where another reads a title.
+// call is GraphQL, whether GitHub stores its body as sent and whether gh sends its fields as that
+// body, the records the rules read, the files it sends, the use it makes of standard input and the
+// fields that read that input. One walk answers all of them, so that no two answers read one argv
+// two ways: a reader that takes an option's value for an option of its own reads a field where
+// another reads a title.
 //
 // The command is read first (ghLeafOf). Two commands are read by the arity of each of their
 // options, `gh api` and `gh workflow run` (readLeaf), which are the two whose help gives them
@@ -327,7 +362,8 @@ type ghLeaf struct {
 	long  map[string]bool
 	short string
 	// endpoint is whether the command's first positional argument is an endpoint, which says
-	// whether the call is GraphQL (ghAPIGraphQLEndpoint): `gh api`'s.
+	// whether the call is GraphQL and whether GitHub stores its body as sent (readEndpoint):
+	// `gh api`'s.
 	endpoint bool
 	// bodyOption is the option whose value names the request body, a file or, as `-`, standard
 	// input: `gh api`'s --input (inputOption). "" is a command with none, and no option.
@@ -335,6 +371,11 @@ type ghLeaf struct {
 	// stdinBodyOption is the boolean option that, true, makes standard input the request body:
 	// `gh workflow run`'s --json (jsonInputsOption). "" is a command with none, and no option.
 	stdinBodyOption string
+	// methodOption and methodShort are the long and the short spelling of the option that names
+	// the request's HTTP method, whose last value pflag keeps: `gh api`'s --method and -X. A GET
+	// puts the call's fields in the URL's query string, and makes no body of them
+	// (ghArgv.fieldsAsBody). "" is a command with none, and no option.
+	methodOption, methodShort string
 }
 
 // ghLeaves are the commands of ghLeaf: `gh api` and `gh workflow run`, the two whose help gives
@@ -342,7 +383,7 @@ type ghLeaf struct {
 var (
 	ghAPILeaf = ghLeaf{
 		path: []string{"api"}, long: ghAPIValueOptions, short: ghAPIShortValueOptions,
-		endpoint: true, bodyOption: inputOption,
+		endpoint: true, bodyOption: inputOption, methodOption: "--method", methodShort: "-X",
 	}
 	ghWorkflowRunLeaf = ghLeaf{
 		path: []string{"workflow", "run"}, long: ghWorkflowRunValueOptions, short: ghWorkflowRunShortValueOptions,
@@ -458,9 +499,12 @@ func ghLeafOf(args []string) (*ghLeaf, int) {
 // written.
 //
 // `gh api`'s endpoint (ghLeaf.endpoint) is its first positional argument, the first past the bare
-// `--` where none comes before it; a `-` alone is a positional to pflag. Its `--input <path>`
-// (ghLeaf.bodyOption) names the request body's file, and its `--input -` standard input
-// (GhSent.Names).
+// `--` where none comes before it; a `-` alone is a positional to pflag. It is read once, for
+// whether the call is GraphQL and whether GitHub stores its body as sent (readEndpoint). Its
+// `--input <path>` (ghLeaf.bodyOption) names the request body's file, and its `--input -`
+// standard input (GhSent.Names). A field option named where the last --input names neither makes
+// the fields the body gh sends (ghArgv.fieldsAsBody), but where the last -X or --method
+// (ghLeaf.methodOption) is GET, in any case: a GET puts the fields in the URL's query string.
 //
 // `gh workflow run`'s `--json` (ghLeaf.stdinBodyOption) is a boolean, `--json` or
 // `--json=<bool>`, whose last value is the one pflag keeps; a value that is no boolean leaves it
@@ -470,10 +514,14 @@ func ghLeafOf(args []string) (*ghLeaf, int) {
 // read as any argument is.
 func (argv *ghArgv) readLeaf(args []string, leaf *ghLeaf, start int) {
 	// endpointNext is whether the next positional argument is the endpoint, which in a command
-	// that has one it is until the endpoint is read; queries are the indices in records of the
-	// query fields' values, read as GraphQL where the call is; and stdinBody is whether the
-	// leaf's stdinBodyOption is true.
-	endpointNext, queries, stdinBody := leaf.endpoint, []int(nil), false
+	// that has one it is until the endpoint is read; and queries are the indices in records of the
+	// query fields' values, read as GraphQL where the call is.
+	endpointNext, queries := leaf.endpoint, []int(nil)
+	// stdinBody is whether the leaf's stdinBodyOption is true; fields is whether a field option is
+	// named; body is whether the last value of the leaf's bodyOption names a file or standard
+	// input; and method is the last value of its methodOption, "" for none. pflag keeps the last.
+	var stdinBody, fields, body bool
+	var method string
 read:
 	for i := start; i < len(args); i++ {
 		arg := args[i]
@@ -482,7 +530,7 @@ read:
 		switch {
 		case arg == "--":
 			if endpointNext && i+1 < len(args) {
-				argv.graphQL = ghAPIGraphQLEndpoint(args[i+1])
+				argv.readEndpoint(args[i+1])
 			}
 			for ; i < len(args); i++ {
 				argv.argument(args, i)
@@ -507,7 +555,8 @@ read:
 		default:
 			argv.argument(args, i)
 			if endpointNext {
-				endpointNext, argv.graphQL = false, ghAPIGraphQLEndpoint(arg)
+				endpointNext = false
+				argv.readEndpoint(arg)
 			}
 			continue
 		}
@@ -522,6 +571,7 @@ read:
 			at, value = i, args[i]
 		}
 		if typed, field := ghFieldOptions[option]; field {
+			fields = true
 			if query := argv.field(args, at, option, value, typed); query >= 0 {
 				queries = append(queries, query)
 			}
@@ -532,18 +582,36 @@ read:
 		switch option {
 		case leaf.bodyOption:
 			argv.sent.Names(option, value, "", StdinRequestBody)
+			body = value != ""
 		case leaf.stdinBodyOption:
 			if on, err := strconv.ParseBool(value); err == nil {
 				stdinBody = on
 			}
+		case leaf.methodOption, leaf.methodShort:
+			method = value
 		}
 	}
 	if stdinBody {
 		argv.sent.UsesStdin(StdinRequestBody)
 	}
+	argv.fieldsAsBody = fields && !body && !strings.EqualFold(method, "GET")
 	if argv.graphQL {
 		argv.records = spliceQueries(argv.records, queries)
 	}
+}
+
+// readEndpoint reads endpoint, a `gh api` call's endpoint (readLeaf), for what the call's body is
+// read by. An endpoint whose body GitHub stores as sent (ghAPIStoredAsSent) is kept for a setup
+// failure to name (ghArgv.storedAsSent), and is never GraphQL: ghAPIGraphQLEndpoint is false for
+// every whole URL on another host than api.github.com and for one that does not parse, so such an
+// endpoint is parsed once. Every other endpoint is read for whether the call is GraphQL
+// (ghAPIGraphQLEndpoint).
+func (argv *ghArgv) readEndpoint(endpoint string) {
+	if ghAPIStoredAsSent(endpoint) {
+		argv.storedAsSent = endpoint
+		return
+	}
+	argv.graphQL = ghAPIGraphQLEndpoint(endpoint)
 }
 
 // spliceQueries is records with the record at each index of queries, ascending, replaced by the
@@ -736,9 +804,10 @@ func (argv *ghArgv) argument(args []string, i int) {
 
 // stdinRecords is the records of record, the call's buffered standard input, by the use the call
 // makes of it (GhSent.UsesStdin), and fields, the names of the fields whose value it is
-// (GhSent.stdinFields). As the request body it is read as JSON (jsonBody). As text it is one
-// record: a body option's input is the body. Of no known use it is read both ways, the raw record
-// and the strings of a JSON document beside it, which errs toward reading more.
+// (GhSent.stdinFields). As the request body it is read as JSON (jsonBody), where GitHub's REST API
+// parses it; GhCall hands a body GitHub stores as sent here as text (ghArgv.storedAsSent). As text
+// it is one record: a body option's input is the body. Of no known use it is read both ways, the
+// raw record and the strings of a JSON document beside it, which errs toward reading more.
 //
 // As fields' value it is text too, one record, since gh makes one JSON string of a field's bytes
 // itself; but for the query of a `gh api graphql` call (graphQL), whose bytes gh sends as the
@@ -777,13 +846,18 @@ func stdinRecords(record Record, use StdinUse, fields []string, graphQL bool) []
 
 // maxGhFile is the most this package reads from one file a gh call would send, and from the
 // standard input it buffers. GitHub itself refuses a pull request or issue body longer than
-// 65,536 characters, and a body is the largest thing these options carry: `gh api --input`
-// wraps one in a JSON request, which that escaping and the rest of the request leave well
-// inside a mebibyte. A mebibyte is sixteen times that body, so no call GitHub would take meets
-// the bound, and a file past it is one an argument names by mistake. Such a file is a setup
-// failure rather than a pass — the call is refused either way — and the rule pass never reads a
-// gigabyte into memory to run its regexes over.
+// 65,536 characters, and a body is the largest thing these options carry to its REST API:
+// `gh api --input` wraps one in a JSON request, which that escaping and the rest of the request
+// leave well inside a mebibyte. A mebibyte is sixteen times that body, so no call to the REST API
+// meets the bound. A release asset uploaded through `gh api --input` (ghArgv.storedAsSent) can be
+// larger, and GitHub takes one of up to 2 GiB; the guard refuses one past the bound, since it
+// has not read it. Such a file is a setup failure rather than a pass — the call is refused either
+// way — and the rule pass never reads a gigabyte into memory to run its regexes over.
 const maxGhFile = 1 << 20
+
+// maxGhFileSaid is what a setup failure says of a file or a standard input longer than maxGhFile,
+// after the length it names: readGhFile's and readStdin's.
+const maxGhFileSaid = ", the most this guard reads of what a call sends"
 
 // GhFile is one file a gh call would send as content: the option that named it, which a setup
 // failure names; the path the argv wrote, which is the record's label; and, for a file a field
@@ -795,7 +869,8 @@ type GhFile struct {
 }
 
 // inputOption is `gh api`'s request body, the one option whose file is itself a JSON document
-// (jsonBody), and one of the two whose standard input is (stdinRecords).
+// (jsonBody), and one of the two whose standard input is (stdinRecords), where the call's endpoint
+// is GitHub's REST API.
 const inputOption = "--input"
 
 // jsonInputsOption is the other: `gh workflow run --json`, a boolean that makes standard input
@@ -875,7 +950,7 @@ func readGhFile(named GhFile) (string, error) {
 	}
 	why := failed.phrase
 	if failed.longer {
-		why += ", which is more text than GitHub takes through it"
+		why += maxGhFileSaid
 	}
 	return "", &SetupFailure{
 		What: whatGhCall,
@@ -888,9 +963,10 @@ func readGhFile(named GhFile) (string, error) {
 // hands none.
 //
 // The read is bounded as a named file's is, by maxGhFile and for the same reasons: the bytes are
-// held in memory and scanned there, and no body GitHub would take comes near a mebibyte. Input
-// past the bound is a setup failure, which refuses the call — the guard has not read what it
-// would publish — and never a truncated buffer handed on as if it were the whole.
+// held in memory and scanned there, and no body GitHub's REST API would take comes near a
+// mebibyte, though a release asset can (maxGhFile). Input past the bound is a setup failure,
+// which refuses the call — the guard has not read what it would publish — and never a truncated
+// buffer handed on as if it were the whole.
 func readStdin(req GhRequest) ([]byte, error) {
 	if req.Stdin == nil {
 		return []byte{}, nil
@@ -904,7 +980,7 @@ func readStdin(req GhRequest) ([]byte, error) {
 	if len(read) > maxGhFile {
 		return nil, &SetupFailure{
 			What: whatGhCall,
-			Why:  fmt.Sprintf("the call's standard input is longer than %d bytes, which is more text than GitHub takes through it", maxGhFile),
+			Why:  fmt.Sprintf("the call's standard input is longer than %d bytes%s", maxGhFile, maxGhFileSaid),
 		}
 	}
 	return read, nil

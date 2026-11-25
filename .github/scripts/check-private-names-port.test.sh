@@ -188,10 +188,11 @@ frozen_status=0
 frozen_classes=""
 frozen_out=""
 
-# The engine's report is a line per finding, "  <record>: <class>: matched <what> …", where <what>
-# is the quoted match and the line it stands on, or "the path" for a path rule. door_classes is
-# the <class> of each line and nothing after it: a description holds no colon, so [^:]* stops at
-# the class's end, where a greedy group could reach a quoted match that itself holds ": matched ".
+# The engine's report is a line per distinct finding, "  <record>: <class>: matched <what> …",
+# where <what> is the quoted match and the line it stands on, or "the path" for a path rule.
+# door_classes is the <class> of each line and nothing after it: a description holds no colon, so
+# [^:]* stops at the class's end, where a greedy group could reach a quoted match that itself holds
+# ": matched ".
 
 # text_door <text>: the engine's text door over that text.
 text_door() {

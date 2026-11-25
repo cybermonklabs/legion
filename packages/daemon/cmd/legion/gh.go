@@ -304,7 +304,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// option's arity from the leaf's own help (ghSentFiles), as one answer
 	// (leakguard.GhRequest.Sent): the files, whose text the guard reads, so it needs no second
 	// reader of the argv for a call this command checked; the use the call makes of standard
-	// input, which says whether that input is a JSON request body (`gh api --input -`, `gh
+	// input, which says whether that input is a request body (`gh api --input -`, `gh
 	// workflow run --json`), the value of fields, or text GitHub stores as it stands, and where
 	// two options name it with different uses the parse hands none and the guard reads the input
 	// both ways; and whether the call sends its standard input as content at all, by which the
@@ -783,7 +783,7 @@ type ghTarget struct {
 
 // ghSentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
 // sends to GitHub as content, each with the use its value of `-` makes of standard input
-// (leakguard.StdinUse): a JSON request body for `gh api`'s --input, the value of a field for
+// (leakguard.StdinUse): the request body for `gh api`'s --input, the value of a field for
 // --field, whose file is the `@<path>` half of a `<name>=@<path>` value, and text GitHub stores as
 // it stands for the rest. They are the options leakguard's own tables read (its readGhArgv),
 // read here by their long names because the leaf's own help has already said which option each
@@ -816,7 +816,7 @@ var ghSentFileOptions = map[string]leakguard.StdinUse{
 // A value of `-`, and an `@-`, is standard input, which is no file to open, and which the guard
 // reads as leakguard.GhRequest.Sent says. What is answered for it instead is that it is sent and
 // the use the option that named it makes of it (ghSentFileOptions), since that says what the
-// input is: `gh api --input -` makes it a JSON request body, a `--field <name>=@-` the value of
+// input is: `gh api --input -` makes it the request body, a `--field <name>=@-` the value of
 // a field, and each other option text GitHub stores as it stands. `gh workflow run --json`, where
 // its last value is true (ghArgs.booleans), names it too (leakguard.GhSent.UsesStdin): gh reads
 // the run's inputs from it as one JSON object (testdata/gh-help/workflow_run.txt), and GitHub

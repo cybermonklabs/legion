@@ -5,6 +5,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -20,10 +21,10 @@ const graphQLQuery = "query"
 // argument, readLeaf), is GitHub's GraphQL endpoint, the path /graphql of api.github.com, under
 // whatever spelling the call gives it, read as a server reads a path. An endpoint holding `://` is
 // a whole URL to gh, which sends the request there, so it is parsed as one and its host, in any
-// case and on any port, must be api.github.com; any other endpoint is a path gh appends to the
-// API's. The path is read up to its query or fragment, its percent-escapes decoded and its `.` and
-// `..` segments resolved, and what is left, its slashes trimmed, is `graphql` in any case. A path
-// whose escapes do not decode is none.
+// ASCII case and on any port, must be api.github.com (ghAPIRESTHost); any other endpoint is a path
+// gh appends to the API's. The path is read up to its query or fragment, its percent-escapes
+// decoded and its `.` and `..` segments resolved, and what is left, its slashes trimmed, is
+// `graphql` in any case. A path whose escapes do not decode is none.
 //
 // The endpoint is read by the path it reaches, not by gh's own rule, the exact word `graphql`.
 // That rule is how gh groups the fields: for that word alone it puts `query` and `operationName`
@@ -45,7 +46,7 @@ func ghAPIGraphQLEndpoint(endpoint string) bool {
 	escaped := endpoint
 	if strings.Contains(endpoint, "://") {
 		whole, err := url.Parse(endpoint)
-		if err != nil || strings.ToLower(whole.Hostname()) != "api.github.com" {
+		if err != nil || !ghAPIRESTHost(whole.Hostname()) {
 			return false
 		}
 		escaped = whole.EscapedPath()
@@ -57,6 +58,33 @@ func ghAPIGraphQLEndpoint(endpoint string) bool {
 		return false
 	}
 	return strings.EqualFold(strings.Trim(path.Clean("/"+decoded), "/"), "graphql")
+}
+
+// ghAPIStoredAsSent is whether GitHub stores the body of a `gh api` call to endpoint, the call's
+// endpoint (readLeaf), as the bytes gh sends: an endpoint holding `://`, a whole URL gh sends the
+// request to, on any host but api.github.com (ghAPIRESTHost), such as a release asset's upload,
+// `https://uploads.github.com/repos/<owner>/<repo>/releases/<id>/assets?name=<file>`. GitHub's
+// REST API parses a JSON body and stores its strings apart (jsonFields), where the upload host
+// stores the asset whole, two fields on one line as that one line. A URL that does not parse is
+// such an endpoint too, the strict side, whose body is read whole. Any other endpoint is a path gh
+// appends to the REST API's.
+func ghAPIStoredAsSent(endpoint string) bool {
+	if !strings.Contains(endpoint, "://") {
+		return false
+	}
+	whole, err := url.Parse(endpoint)
+	return err != nil || !ghAPIRESTHost(whole.Hostname())
+}
+
+// ghAPIRESTHost is whether host, a whole URL's host with no port (url.URL.Hostname), is
+// api.github.com, GitHub's REST API, in any ASCII case. A host holding a rune above ASCII is not.
+// Outside ASCII, strings.EqualFold folds only `ſ` (U+017F) onto `s` and the Kelvin sign (U+212A)
+// onto `k`, neither of which api.github.com holds, so the ASCII test is what keeps the comparison
+// to ASCII case should the name it compares with change; and it keeps out the reading
+// strings.ToLower would give, `İ` (U+0130) lowered to `i`, as cmd/legion's isASCII does
+// (gh_selectors.go).
+func ghAPIRESTHost(host string) bool {
+	return !strings.ContainsFunc(host, func(r rune) bool { return r > unicode.MaxASCII }) && strings.EqualFold(host, "api.github.com")
 }
 
 // graphQLRecords is record read as a GraphQL query: one record for each string literal of its

@@ -4532,6 +4532,10 @@ A gh call has these records:
   A path of more than 8 steps is shown as its first 2 steps, `…` and its last 5, and a step longer than 64 bytes is cut there, with `…`, so a deep body's labels stay short.
   An empty string is no record, since no rule can match it.
   A body that is not exactly one JSON document is read as one record.
+  A body sent to a whole URL on another host than `api.github.com`, such as a release asset uploaded to `uploads.github.com`, is read as one record, because GitHub stores it as sent.
+  Such a call that gives fields, no `--input` and a method other than `GET` is refused, because gh would send its fields as one JSON document that GitHub stores as sent; send the asset's bytes with `--input <file>` or `--input -`.
+  With `--input`, or with the method `GET` (`-X GET` or `--method GET`, in any case), gh puts the fields in the URL's query string instead, and they are read as any field of the call is.
+  A file or standard input longer than 1 MiB (1,048,576 bytes) is refused, because the guard reads no more than that of what a call sends, so a release asset past that size is refused too.
 
 - Each string literal of a GraphQL query, labelled `<record>, GraphQL string <k>`, where `<record>` is the label of the record that holds the query.
   A `gh api` call's query is read so whatever spelling of GitHub's GraphQL endpoint the call names (`graphql`, `/graphql`, the API's full URL), and wherever the query comes from: a field, a file, a JSON body's `query`, or standard input named by `-F query=@-`.

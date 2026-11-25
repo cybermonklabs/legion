@@ -285,7 +285,7 @@ func (p *pass) end(what string) error {
 }
 
 // scan adds the report of one record to rep, which writes a line it already shows once and keeps
-// to its bound (shownReport): one line per finding,
+// to its bound (shownReport): one line per distinct finding,
 //
 //	<record>: <class>: matched "<match>" on line <n>: "<line>"
 //

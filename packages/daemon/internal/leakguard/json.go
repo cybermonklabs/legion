@@ -12,12 +12,15 @@ import (
 // A text that is not one document is no body GitHub parses, and is read as the one record it
 // was: a Markdown body named by `--input` by mistake is still read.
 //
-// Three of a gh call's records are such a body: `gh api --input <file>`, whose whole file is the
-// request body; standard input named by `gh api --input -`; and the standard input of `gh
-// workflow run --json`, the run's inputs as one JSON object. The shared check's exit-4 handshake
-// has buffered either standard input. A `-F <name>=@<path>` field's file is not such a body,
-// since gh makes one JSON string of its bytes, escaping them itself: the file holds the text
-// GitHub shows.
+// Three of a gh call's records are such a body where the call's endpoint is GitHub's REST API:
+// `gh api --input <file>`, whose whole file is the request body; standard input named by `gh api
+// --input -`; and the standard input of `gh workflow run --json`, the run's inputs as one JSON
+// object. The shared check's exit-4 handshake has buffered either standard input. A `gh api` body
+// sent to a whole URL on another host than api.github.com, a release asset uploaded to
+// uploads.github.com among them, is not such a body: GitHub stores it as the bytes sent, and
+// GhCall reads it as one record (ghArgv.storedAsSent). A `-F <name>=@<path>` field's file is not
+// one either, since gh makes one JSON string of its bytes, escaping them itself: the file holds the
+// text GitHub shows.
 func jsonBody(record Record, graphQL bool) []Record {
 	if fields, ok := jsonFields(record, graphQL); ok {
 		return fields
@@ -35,22 +38,22 @@ func jsonBody(record Record, graphQL bool) []Record {
 // within the bounds jsonLabel keeps. An empty string makes no record: it holds no text a rule can
 // match.
 //
-// A body is read one string at a time because GitHub stores it one string at a time: a review's
-// body and each of its comments' bodies are texts of their own, shown apart, and a rule that
-// needs two words on one line (`<name>[^\n]*<word>`) matches only where one stored text holds
-// both. A compact document puts every field on one line, so a raw read of it would join a name
-// in the review's body to an unrelated word in its fifth comment, and refuse a write that
-// publishes neither beside the other.
+// A body GitHub's REST API parses is read one string at a time because the API stores it one
+// string at a time: a review's body and each of its comments' bodies are texts of their own, shown
+// apart, and a rule that needs two words on one line (`<name>[^\n]*<word>`) matches only where one
+// stored text holds both. A compact document puts every field on one line, so a raw read of it
+// would join a name in the review's body to an unrelated word in its fifth comment, and refuse a
+// write that publishes neither beside the other.
 //
-// No raw read of one document is needed beside its strings. Every text GitHub stores from a JSON
-// body is a decoded string value, and the bytes between the strings — the punctuation, the
-// numbers, `true`, `false`, `null` and the whitespace — hold none: a number and the three
-// literals are values of the schema's, stored as no text of the caller's, and make no record. The
-// decoded string is also the one a rule must read: a string's escapes hide its text from the
-// rules, `\u0074` being a letter no pattern reads in the bytes, and an escape inside a name parts
-// the halves of a word. The document is read as tokens rather than as a value, so every value of
-// a duplicate key is read, though a parser keeps one of them: which one is GitHub's parser's to
-// say, and the guard does not guess.
+// No raw read of such a document is needed beside its strings. Every text the REST API stores
+// from a JSON body is a decoded string value, and the bytes between the strings — the
+// punctuation, the numbers, `true`, `false`, `null` and the whitespace — hold none: a number and
+// the three literals are values of the schema's, stored as no text of the caller's, and make no
+// record. The decoded string is also the one a rule must read: a string's escapes hide its text
+// from the rules, `\u0074` being a letter no pattern reads in the bytes, and an escape inside a
+// name parts the halves of a word. The document is read as tokens rather than as a value, so every
+// value of a duplicate key is read, though a parser keeps one of them: which one is GitHub's
+// parser's to say, and the guard does not guess.
 //
 // In a `gh api graphql` call (graphQL), the document's top-level `query` is a GraphQL query, and
 // is read one literal at a time (graphQLRecords), labelled "<record>, JSON .query, GraphQL string
