@@ -25,15 +25,15 @@
 #     test with its first and last reported lines from go test's events (a test's t.Log lines read
 #     as its t.Error lines do, and the last is the one nearest its failure), the compiler's errors
 #     of one that does not build, and the tail of the output of one that failed with no failing
-#     test. A package that ran past its timeout is UNKNOWN, not failed: it prints the timeout's
-#     panic line, the tests it was running and the goroutine running each. It runs `bun test` on
-#     each Bun file in its package with Bun's JUnit reporter, and fails on a non-zero status or on
-#     an inventory test the report holds no passing testcase for; it reads the report rather than
-#     Bun's console, which prints no line for a passing test where AGENT or CLAUDECODE is set, as
-#     it is in an agent's shell. It fails when no holder of the print test printed a REDACT-PRINT
-#     line. It prints one verdict line for each package, row, Bun file and the print test, and
-#     exits 0, 1 or 3; any other exit (a Go panic's 2 among them) judged no row, and the script
-#     refuses it;
+#     test. A package that ran past its timeout, and no test of which failed, is UNKNOWN, not
+#     failed: it prints the timeout's panic line, the tests it was running and the goroutine
+#     running each. It runs `bun test` on each Bun file in its package with Bun's JUnit reporter,
+#     and fails on a non-zero status or on an inventory test the report holds no passing testcase
+#     for; it reads the report rather than Bun's console, which prints no line for a passing test
+#     where AGENT or CLAUDECODE is set, as it is in an agent's shell. It fails when no holder of
+#     the print test printed a REDACT-PRINT line. It prints one verdict line for each package,
+#     row, Bun file and the print test, and exits 0, 1 or 3; any other exit (a Go panic's 2 among
+#     them) judged no row, and the script refuses it;
 #   - runs `bun run typecheck` in packages/contracts, packages/cipher-client and
 #     packages/envoy-client, and fails on a non-zero status.
 #
