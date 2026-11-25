@@ -118,7 +118,7 @@ type workflowRuntime struct {
 	totalsRead func(agents []claim.Token, reads workflow.FactReads)
 	// taskConfirmedApplied is plan.taskConfirmedApplied, a test's seam after each confirmation of
 	// a task has been applied (taskConfirmed). nil runs nothing.
-	taskConfirmedApplied func(claim.Token, error)
+	taskConfirmedApplied func(token claim.Token, delivery string, err error)
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
 	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
 	// steps the machines and the service call. run builds it once this runtime is open and before
@@ -2735,16 +2735,16 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		fact := intake.TaskConfirmed{Issue: c.Issue, Role: c.Role, Generation: c.Generation}
-		id := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
+		id, delivery := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation), ""
 		if p := c.Pending; p != nil {
-			id = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
+			id, delivery = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID), p.ID
 		}
 		_, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...)
 		if err != nil {
 			w.log.Warn("apply the confirmation of a task", "claim", c.Token, "error", err)
 		}
 		if w.taskConfirmedApplied != nil {
-			w.taskConfirmedApplied(c.Token, err)
+			w.taskConfirmedApplied(c.Token, delivery, err)
 		}
 	}()
 }

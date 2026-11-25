@@ -86,31 +86,39 @@ type stepRecordsRig struct {
 	confirmations taskConfirmations
 }
 
-// taskConfirmations counts, by claim, each fact that a role's agent took its work that the daemon
-// has applied, and keeps the error the last such fact of each claim met.
+// taskConfirmations counts, by claim and delivery, each fact that a role's agent took its work
+// that the daemon has applied, and keeps the error the last such fact of each met.
 type taskConfirmations struct {
 	mu      sync.Mutex
-	applied map[claim.Token]int
-	failed  map[claim.Token]error
+	applied map[confirmedDelivery]int
+	failed  map[confirmedDelivery]error
 }
 
-// add records one confirmation of token's task that the daemon applied, and the error it met.
-func (c *taskConfirmations) add(token claim.Token, err error) {
+// confirmedDelivery is one delivery of one claim, as the daemon's confirmation names it.
+type confirmedDelivery struct {
+	token    claim.Token
+	delivery string
+}
+
+// add records one confirmation of token's delivery that the daemon applied, and the error it met.
+func (c *taskConfirmations) add(token claim.Token, delivery string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.applied == nil {
-		c.applied, c.failed = map[claim.Token]int{}, map[claim.Token]error{}
+		c.applied, c.failed = map[confirmedDelivery]int{}, map[confirmedDelivery]error{}
 	}
-	c.applied[token]++
-	c.failed[token] = err
+	key := confirmedDelivery{token: token, delivery: delivery}
+	c.applied[key]++
+	c.failed[key] = err
 }
 
-// read is how many confirmations of token's tasks the daemon has applied, and the error the last
-// one met.
-func (c *taskConfirmations) read(token claim.Token) (int, error) {
+// read is how many confirmations of token's delivery the daemon has applied, and the error the
+// last one met.
+func (c *taskConfirmations) read(token claim.Token, delivery string) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.applied[token], c.failed[token]
+	key := confirmedDelivery{token: token, delivery: delivery}
+	return c.applied[key], c.failed[key]
 }
 
 // heldAnswer is the answer heldRequest holds: the feed of token's claim stops before its machine
@@ -1202,13 +1210,13 @@ func (c *stepClaimant) takeQuietly() shimwire.Prompt {
 // read of a later fact, never of this one.
 func (c *stepClaimant) startTurn(prompt shimwire.Prompt) {
 	c.r.t.Helper()
-	before, _ := c.r.confirmations.read(c.token)
+	before, _ := c.r.confirmations.read(c.token, prompt.DeliveryID)
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
 	var applied int
 	var err error
 	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
-		applied, err = c.r.confirmations.read(c.token)
+		applied, err = c.r.confirmations.read(c.token, prompt.DeliveryID)
 		return applied > before
 	}) {
 		c.r.t.Fatalf("the daemon applied no fact that %s took delivery %s within %s of the turn's start", c.token, prompt.DeliveryID, stepRecordsWait)

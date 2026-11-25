@@ -305,10 +305,11 @@ type overrides struct {
 	// gives it a clock of its own, whose bound it fires.
 	totalsClock supervise.Clock
 	// taskConfirmedApplied runs once the fact that a role's agent took its work has been applied, on
-	// that fact's own goroutine (workflowRuntime.taskConfirmed). It names the claim and the error
-	// the fact met, nil where it applied. nil, in production, is nothing. The fact reads its
-	// agents' totals first, so it is the seam a test waits on before it holds those reads.
-	taskConfirmedApplied func(claim.Token, error)
+	// that fact's own goroutine (workflowRuntime.taskConfirmed). It names the claim, the delivery
+	// the turn confirmed ("" for a claim that held none), and the error the fact met, nil where it
+	// applied. nil, in production, is nothing. The fact reads its agents' totals first, so it is the
+	// seam a test waits on before it holds those reads.
+	taskConfirmedApplied func(token claim.Token, delivery string, err error)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -1074,7 +1075,7 @@ type plan struct {
 	// an agent's totals (workflowRuntime.readTotals).
 	totalsClock supervise.Clock
 	// taskConfirmedApplied is overrides.taskConfirmedApplied, and nil runs nothing.
-	taskConfirmedApplied func(claim.Token, error)
+	taskConfirmedApplied func(token claim.Token, delivery string, err error)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
