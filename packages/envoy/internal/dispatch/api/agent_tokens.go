@@ -350,18 +350,18 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
-	var scopes []string
+	var scopes, projects []string
 	var revokedAt *time.Time
 	var readOnly bool
 	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select id::text, name, owner, scopes, revoked_at, false
+		select id::text, name, owner, scopes, projects, revoked_at, false
 		from agent_tokens
 		where token_hash = $1
 		union all
-		select id::text, name, owner, scopes, revoked_at, true
+		select id::text, name, owner, scopes, '{}'::text[], revoked_at, true
 		from agent_read_tokens
 		where token_hash = $1
-	`, hash[:]).Scan(&id, &name, &owner, &scopes, &revokedAt, &readOnly)
+	`, hash[:]).Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &readOnly)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
@@ -379,9 +379,10 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	if _, err := s.deps.Store.Pool.Exec(ctx, recordUse, hash[:]); err != nil {
 		return model.Actor{}, fmt.Errorf("record agent token use: %w", err)
 	}
-	// The token's own row says what it may do, and it names the credential that acted: the
-	// person's token, not the person at a browser.
-	credential := &model.Credential{Scopes: scopes, TokenID: id, TokenName: name}
+	// The token's own row says what it may do and which projects it may use, and it names the
+	// credential that acted: the person's token, not the person at a browser. A read-only token
+	// lists none: agent_read_tokens has no list.
+	credential := &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects}
 	if readOnly {
 		credential.Scopes = slices.DeleteFunc(scopes, func(scope string) bool { return scope == model.ScopeRead })
 		credential.ReadOnly = true

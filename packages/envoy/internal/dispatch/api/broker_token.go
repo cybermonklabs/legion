@@ -221,6 +221,11 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if caller.Service != "" {
 		actor.Service = &caller.Service
 	}
+	// A token's list is its credential's, which the one rule of what a caller sees reads
+	// (access.CredentialCovers): for a full member's token it decides only which private projects
+	// the token reaches, so while the deployment holds no private project it changes nothing the
+	// token did before projects could be private (R9); for a restricted member's token it narrows
+	// every project (R3).
 	// Only a token an operator's entry mapped to one project names that project as the one it
 	// may write, which is today's named-scope rule; a named token naming none (the shared
 	// public-session account's, and an account entry's naming no person) writes, as a token
@@ -232,8 +237,12 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// dev box session's person writes wherever they may, and the token of a machine naming a
 	// service and no person names no project at all. Nor does a token of the project scope none,
 	// the read entry's or one narrowed from it, which names no project and writes none.
-	if caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
+	switch {
+	case caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1:
+		actor.Credential.Projects = caller.Projects
 		actor.Credential.NamedProject = caller.Projects[0]
+	case caller.ProjectScope == ciphertoken.ProjectScopePerson && len(caller.Projects) > 0:
+		actor.Credential.Projects = caller.Projects
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a

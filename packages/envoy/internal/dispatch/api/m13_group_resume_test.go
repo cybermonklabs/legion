@@ -1,10 +1,10 @@
 package api
 
 import (
-	"net/http"
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -14,8 +14,8 @@ func m13Team(t *testing.T, seed privateSeed, dave string) privateCaller {
 	t.Helper()
 	const daveToken privateCaller = "dave's token that lists PRIV"
 	seedPeople(t, seed.database, dave)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/access-groups/team", map[string]any{"members": []string{dave}}, http.StatusOK)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/team", nil, http.StatusOK)
+	seed.putGroup(t, "team", dave)
+	seed.addPrincipal(t, seedPrivate, access.PrincipalGroup, "team")
 	mintListingToken(t, seed, daveToken, dave, []string{seedPrivate})
 	if reader, err := seed.server.readerFor(t.Context(), model.BrowserActor(dave)); err != nil || !slices.Contains(reader.Viewer.Sees, seedPrivate) {
 		t.Fatalf("dave, in team on PRIV's list, reads as %+v (%v), want a reader that sees PRIV", reader.Viewer, err)
@@ -38,7 +38,7 @@ func TestAResumeAcrossAGroupTakenOffAListOwesARefreshToItsMembers(t *testing.T) 
 	seed := seedPrivateProject(t)
 	daveToken := m13Team(t, seed, dave)
 	since := eventHead(t, seed.database)
-	seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/groups/team", nil, http.StatusOK)
+	seed.removePrincipal(t, seedPrivate, access.PrincipalGroup, "team")
 
 	url := liveURLOf(t, seed.handler)
 	client := seed.dialLive(t, url, asUser(dave))
@@ -64,15 +64,15 @@ func TestAResumeAcrossAGroupTakenOffAListOwesNothingToARestrictedMemberInIt(t *t
 	const dave, erin = "dave@example.com", "erin@outside.example"
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, dave)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/access-groups/team", map[string]any{"members": []string{dave, erin}}, http.StatusOK)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/team", nil, http.StatusOK)
+	seed.putGroup(t, "team", dave, erin)
+	seed.addPrincipal(t, seedPrivate, access.PrincipalGroup, "team")
 	seedPeople(t, seed.database, erin)
 	markRestricted(t, seed.database, erin)
 	if reader, err := seed.server.readerFor(t.Context(), model.BrowserActor(erin)); err != nil || slices.Contains(reader.Viewer.Sees, seedPrivate) {
 		t.Fatalf("erin, restricted and in team on PRIV's list, reads as %+v (%v), want a reader that does not see PRIV", reader.Viewer, err)
 	}
 	since := eventHead(t, seed.database)
-	seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/groups/team", nil, http.StatusOK)
+	seed.removePrincipal(t, seedPrivate, access.PrincipalGroup, "team")
 
 	url := liveURLOf(t, seed.handler)
 	for _, member := range []struct {
@@ -110,7 +110,7 @@ func TestAResumeAcrossItsPersonLeavingAGroupOwesARefreshToAListingToken(t *testi
 	seed := seedPrivateProject(t)
 	daveToken := m13Team(t, seed, dave)
 	since := eventHead(t, seed.database)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/access-groups/team", map[string]any{"members": []string{}}, http.StatusOK)
+	seed.putGroup(t, "team")
 
 	url := liveURLOf(t, seed.handler)
 	requireResumeComplete(t, seed, url, daveToken, since, false, "it read PRIV through dave's place in team, reads it no more, and its page holds PRIV's rows")

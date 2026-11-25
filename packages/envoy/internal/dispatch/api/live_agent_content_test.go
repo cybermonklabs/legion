@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -82,7 +83,7 @@ func newContentAgentRigWith(t *testing.T, options testServerOptions, wrap func(*
 	}
 	seed := seedPrivateProjectWith(t, options)
 	seedPeople(t, seed.database, contentDora)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/access/people/"+contentDora, nil, http.StatusOK)
+	seed.addPrincipal(t, seedPublic, access.PrincipalPerson, contentDora)
 	for _, acted := range []struct{ person, session, project string }{
 		{seedCarol, contentCarolPodSession, seedPrivate},
 		{seedBob, contentBobSession, seedPrivate},
@@ -323,7 +324,7 @@ func TestAnAccessChangeEndsAnAgentViewItsViewerNoLongerReads(t *testing.T) {
 	}
 	// The replay the view sends after the verdict.
 	_ = client.next(t, "bob's agent view's replay")
-	rig.seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/people/"+seedBob, nil, http.StatusOK)
+	rig.seed.removePrincipal(t, seedPrivate, access.PrincipalPerson, seedBob)
 	frame := client.next(t, "bob's agent view after he left PRIV's list")
 	if ended, ok := frame.(LiveEnded); !ok || ended.Reason != liveEndedDropped {
 		got, _ := json.Marshal(frame)

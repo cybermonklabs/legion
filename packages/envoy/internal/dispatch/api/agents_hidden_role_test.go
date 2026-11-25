@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -26,7 +27,7 @@ func TestTheAgentsListNamesNoRoleOfAPrivateProjectItsReaderDoesNotSee(t *testing
 	const rhea = "rhea@outside.example"
 	seedPeople(t, seed.database, rhea)
 	markRestricted(t, seed.database, rhea)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/access/people/"+rhea, nil, http.StatusOK)
+	seed.addPrincipal(t, seedPublic, access.PrincipalPerson, rhea)
 
 	rolesOf := func(who string, response []byte) map[string][]string {
 		t.Helper()
@@ -100,7 +101,7 @@ func TestARestrictedMemberReadsNoRoleOfAProjectItDoesNotSee(t *testing.T) {
 	const rhea = "rhea@outside.example"
 	seedPeople(t, seed.database, rhea)
 	markRestricted(t, seed.database, rhea)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/access/people/"+rhea, nil, http.StatusOK)
+	seed.addPrincipal(t, seedPublic, access.PrincipalPerson, rhea)
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Project CORE"}, http.StatusCreated)
 	seed.asSession(t, session, seedPublic, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
 		map[string]any{"body": "Done on PUB."}, http.StatusCreated)

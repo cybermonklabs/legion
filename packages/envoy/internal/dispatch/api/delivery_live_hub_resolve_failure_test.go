@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -40,7 +40,7 @@ func TestADeliveryViewWhoseReaderNoLongerResolvesEnds(t *testing.T) {
 	rig.settle(t)
 
 	failing.Store(true)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/access/people/"+contentDora, nil, http.StatusOK)
+	seed.addPrincipal(t, seedPublic, access.PrincipalPerson, contentDora)
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
