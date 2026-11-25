@@ -111,11 +111,11 @@ func (r *grantGuardRig) repair(t *testing.T) store.RoleClaimRepairReport {
 // settle moves the registry's clock to the moment the armed scheduled read comes due, fires it, and
 // returns once that read has completed, with its report. The copy then holds what the bucket holds,
 // and no record the bucket stored before the read can still reach it: the read's watcher delivered
-// every such record in its scan, and the watcher it replaced delivers nothing more (kvwatch's
-// watch). A route's write reaches the copy twice, through the registry's own write at once and
-// through the watcher's delivery of the record a moment later, so an edit a test makes to the copy
-// right after a route's write can be undone by that delivery. It is internal/store's settle
-// (role_renewal_record_test.go) over this rig.
+// each key's latest record in its scan, and the watcher it replaced applies nothing once the read
+// is installed (kvwatch's watch and applyCurrent). A route's write reaches the copy twice, through
+// the registry's own write at once and through the watcher's delivery of the record a moment
+// later, so an edit a test makes to the copy right after a route's write can be undone by that
+// delivery. It is internal/store's settle (role_renewal_record_test.go) over this rig.
 func (r *grantGuardRig) settle(t *testing.T) store.RoleClaimRepairReport {
 	t.Helper()
 	due := r.deps.registry.RoleClaimRepair().CompletedAt.Add(r.scheduled(t).Delay())
