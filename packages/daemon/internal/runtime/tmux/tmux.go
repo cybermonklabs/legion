@@ -174,9 +174,12 @@ type Options struct {
 	Executable func() (string, error)
 	// Now stamps observations and ages orphans; time.Now when nil.
 	Now func() time.Time
-	// Clock is what the sweep's period (ProbeInterval) and each tmux invocation's CommandTimeout
-	// are measured on; the wall clock (clock.Real) when nil. A test hands it a clocktest.Fake and
-	// moves it.
+	// Clock is what the runtime's own bounds are measured on: the sweep's period (ProbeInterval),
+	// each tmux invocation's CommandTimeout, a launch's wait for its pane to run the pane's
+	// command (CommandTimeout again) and a stop's grace (StopGrace). The pause between two reads of
+	// a pane in those waits, the adoption timeout (AdoptTimeout, which the agent's connection
+	// measures) and Now's stamps stay the machine's. clock.Real when nil; a test hands it a
+	// clocktest.Fake and moves it.
 	Clock clock.Clock
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.
 	Log *slog.Logger
@@ -217,7 +220,7 @@ type Runtime struct {
 	tmuxPath   string
 	legion     string
 	now        func() time.Time
-	// clock is Options.Clock; timers reads it, the wall clock when it is nil.
+	// clock is Options.Clock, clock.Real when that is nil (New).
 	clock           clock.Clock
 	log             *slog.Logger
 	providerEnvDir  string
@@ -395,6 +398,9 @@ func New(opts Options) (*Runtime, error) {
 	if r.now == nil {
 		r.now = time.Now
 	}
+	if r.clock == nil {
+		r.clock = clock.Real()
+	}
 	if r.log == nil {
 		r.log = slog.Default()
 	}
@@ -467,7 +473,7 @@ type result struct {
 // open past the timeout for a server still holding the client's pipes, and the client's exit is
 // then its answer.
 func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
-	bounded, cancel := r.timers().WithTimeout(ctx, r.commandTimeout)
+	bounded, cancel := r.clock.WithTimeout(ctx, r.commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(bounded, r.tmuxPath, argv[1:]...)
 	cmd.Env = r.environ
@@ -496,15 +502,6 @@ func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	}
 	res.exitCode = cmd.ProcessState.ExitCode()
 	return res, nil
-}
-
-// timers is the clock the sweep's period and the command timeout run on: Options.Clock, or the
-// wall clock where none was set (a Runtime a test builds by hand included).
-func (r *Runtime) timers() clock.Clock {
-	if r.clock == nil {
-		return clock.Real()
-	}
-	return r.clock
 }
 
 // verb is the tmux command an argv runs: the word after `-L <socket>`.
@@ -827,11 +824,9 @@ func (r *Runtime) settleUnverified(loc runtime.Locator, pane string, inc incarna
 // awaitNotRunning re-verifies the pane until the recorded process no longer verifies, or grace
 // is spent, and returns the last verdict. A verdict that cannot be reached — tmux not answering
 // — keeps the wait going; it proves nothing either way. The grace runs on the runtime's clock
-// (timers), as the command timeout and the sweep's period do, so a test drives the stop's own
-// span rather than waiting it out: the pace between verifications stays the machine's, since it
-// is how often the pane is asked, not what the stop promises.
+// (Options.Clock); the pace between verifications stays the machine's.
 func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnation, grace time.Duration) (verdict, error) {
-	deadline := r.timers().NewTimer(grace)
+	deadline := r.clock.NewTimer(grace)
 	defer deadline.Stop()
 	tick := time.NewTicker(pollInterval)
 	defer tick.Stop()

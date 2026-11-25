@@ -31,7 +31,7 @@ func (r *Runtime) Observe(ctx context.Context) (<-chan runtime.Observation, erro
 		defer close(out)
 		// The period's timer is armed again as it fires, before the sweep it starts, so a sweep
 		// that outlasts the period is followed by the next at once, as a ticker's would be.
-		period := r.timers().NewTimer(r.probeInterval)
+		period := r.clock.NewTimer(r.probeInterval)
 		defer period.Stop()
 		for r.sweep(ctx, out) {
 			select {

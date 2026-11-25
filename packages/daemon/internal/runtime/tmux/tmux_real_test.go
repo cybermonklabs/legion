@@ -649,9 +649,12 @@ func (r *rig) workspace(issue string) string {
 	return filepath.Join(r.stateDir, "workspaces", issue)
 }
 
+// probe is rt's Probe of loc, bounded by the test binary's deadline (testwait.Context): the rig's
+// command timeout runs on its fake clock, which a probe does not move, so a tmux client that never
+// answers would hold the probe to the binary's alarm, and the row fails by name instead.
 func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {
 	t.Helper()
-	obs, err := rt.Probe(context.Background(), loc)
+	obs, err := rt.Probe(testwait.Context(t), loc)
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -1088,18 +1091,7 @@ func TestRealTmuxLifecycle(t *testing.T) {
 	impatient := r.newRuntime(func(o *Options) { o.StopGrace = grace })
 	released := make(chan error, 1)
 	go func() { released <- impatient.Release(ctx, runtime.Known{Claim: loc2.Claim, Locator: &loc2}) }()
-	ends := r.clock.Now().Add(grace)
-	testwait.Until(t, fmt.Sprintf("the release's %s grace armed at %v on the rig's clock", grace, ends), func() ([]time.Time, bool) {
-		select {
-		case err := <-released:
-			t.Fatalf("Release returned %v before it armed its %s grace on the rig's clock", err, grace)
-		default:
-		}
-		armed := r.clock.Armed()
-		return armed, slices.Contains(armed, ends)
-	})
-	r.clock.Advance(grace)
-	if err := testwait.Receive(t, "the release once its grace passed", released); err != nil {
+	if err := passDeadline(t, r.clock, r.clock.Now().Add(grace), fmt.Sprintf("the release's %s grace", grace), released); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
 	if sent := conn2.shutdowns.Load(); sent != 1 {
@@ -1390,18 +1382,7 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 		_, err := impatient.Resume(ctx, &tester, resume)
 		resumed <- err
 	}()
-	ends := r.clock.Now().Add(grace)
-	testwait.Until(t, fmt.Sprintf("the resume's %s grace armed at %v on the rig's clock", grace, ends), func() ([]time.Time, bool) {
-		select {
-		case err := <-resumed:
-			t.Fatalf("the resume over a live incarnation returned %v before it armed its %s grace on the rig's clock", err, grace)
-		default:
-		}
-		armed := r.clock.Armed()
-		return armed, slices.Contains(armed, ends)
-	})
-	r.clock.Advance(grace)
-	if err := testwait.Receive(t, "the resume once its grace passed", resumed); err == nil ||
+	if err := passDeadline(t, r.clock, r.clock.Now().Add(grace), fmt.Sprintf("the resume's %s grace over a live incarnation", grace), resumed); err == nil ||
 		!strings.Contains(err.Error(), "previous incarnation "+tester.Incarnation+" is still running") {
 		t.Errorf("a resume over a live incarnation = %v", err)
 	}
@@ -1426,7 +1407,7 @@ func TestRealTmuxUncertainOnABrokenSocket(t *testing.T) {
 		Incarnation: strconv.Itoa(os.Getpid()) + ":1",
 		Tmux:        &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
 	}
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 
 	// Every client against the hung server runs to its command timeout, which runs on the rig's
 	// clock: each call below returns once the clock has been moved past the timeout of each client
@@ -1953,7 +1934,7 @@ func TestRealTmuxProviderKeysReachOMPAndNothingElse(t *testing.T) {
 // the operator's own Dispatch (a profile such as `legion` shared with the operator's sessions), and
 // a scratch proof writes to that deployment instead.
 func TestRealTmuxOMPGetsTheConfiguredDispatchURLAndTokenFile(t *testing.T) {
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	token := "dispatch-" + randomHex(t, 8)
 	r := newRig(t, func(o *Options) {
 		file, err := runtime.WriteDispatchTokenFile(o.StateDir, token)
@@ -2004,7 +1985,7 @@ func TestRealTmuxOMPGetsTheConfiguredDispatchURLAndTokenFile(t *testing.T) {
 // is told (LEGION_GH_PATH) with GH_CONFIG_DIR at the gh directory of the owner a command names:
 // sjawhar's for `gh api repos/sjawhar/…`, the issue owner's default for a command naming none.
 func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	realGH := filepath.Join(t.TempDir(), "gh")
 	// The stand-in answers `legion gh`'s reads of a command's help (`[<command>] --help`) with the
 	// real gh's help of that command, gh's own for none, saved beside the wrapper's own tests; the
@@ -2136,7 +2117,7 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 // wrapper still gets a git wrapper here. The rig's spec gives the pane no git identity, so the
 // shell adds one.
 func TestRealTmuxAPanesGitWrapperTrailsACommit(t *testing.T) {
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	r := newRig(t)
 	git := fixturegit.CompiledGit(t)
 	spec := r.spec("LEGION-11", "LEGION-11", claim.RoleArchitect)
