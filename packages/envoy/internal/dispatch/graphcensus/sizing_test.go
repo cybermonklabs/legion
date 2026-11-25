@@ -624,15 +624,16 @@ const sizedMessageMark = "<message>"
 
 // sizedTypedDocuments are the three typed documents of CORE-1, in the order the block index
 // indexes them (indexTheTypedDocuments), each with whether it is a document the issue's room holds
-// once the issue converts (roleDocument): a document of one requirement, which its parent
-// attribute places under the history's message; the issue's Verification document, whose check
-// serves that requirement; and the issue's plan, whose second task needs the first, serves the
-// requirement and is sized in minutes, as a plan_task's size is written (pmdoc.Minutes).
+// once the issue converts (roleDocument): a document of one criterion and one requirement, which
+// its parent attribute places under the history's message; the issue's Verification document, whose
+// check serves that requirement; and the issue's plan, whose second task needs the first, serves
+// the requirement and is sized in minutes, as a plan_task's size is written (pmdoc.Minutes).
 var sizedTypedDocuments = []struct {
 	slug, name, markdown string
 	role                 bool
 }{
-	{"requirements-md", "requirements.md", ":::requirement{#r-tuples parent=\"dispatch://CORE-1/message/" + sizedMessageMark + "\"}\n" +
+	{"requirements-md", "requirements.md", ":::criterion{#k-tuples}\nEvery tuple has a term that counts it.\n:::\n\n" +
+		":::requirement{#r-tuples parent=\"dispatch://CORE-1/message/" + sizedMessageMark + "\"}\n" +
 		"The store counts every tuple its writers append.\n:::\n", false},
 	{model.ArtifactSlugVerification, "verification.md", ":::check{#c-tuples serves=\"dispatch://CORE-1/artifact/requirements-md#b-r-tuples\" surface=\"cli\"}\n" +
 		"The sizing sums every term.\n:::\n", true},
@@ -935,16 +936,17 @@ func seededDrives(database *store.Store) []StoreDrive {
 	}, {
 		// The same index over the one version of each of the three typed documents of CORE-1
 		// (seedSizedTypedDocuments), each written inside the window by dana, whom no write before
-		// records: a requirement its parent attribute places under alice's message, the issue's
-		// Verification document, whose check serves that requirement, and the issue's plan, whose
-		// second task needs the first, serves the requirement and writes its size. Every block is
-		// new, so each states its node's base attributes, its in_document and its part_of, its rank,
-		// placement, text_parent and text_rank and its text; each authored block - the
-		// requirement, the check and the two tasks - states dana's authored_by, beside dana's node,
-		// which the first of them makes, and what an authored block writes beyond a block's facts,
-		// which authored_pointer counts: the requirement's parent, the check's and the second
-		// task's serves and that task's needs, each a block_refs row of its kind, and that task's
-		// size in whole minutes.
+		// records: a criterion and a requirement its parent attribute places under alice's message,
+		// the issue's Verification document, whose check serves that requirement, and the issue's
+		// plan, whose second task needs the first, serves the requirement and writes its size.
+		// Every block is new, so each states its node's base attributes, its in_document and its
+		// part_of, its rank, placement, text_parent and text_rank and its text; each authored
+		// block - the criterion, the requirement, the check and the two tasks - states dana's
+		// authored_by, counted by block_author in the role documents and by criterion outside them,
+		// beside dana's node, which the first of them makes, and what an authored block writes
+		// beyond a block's facts, which authored_pointer counts: the requirement's parent, the
+		// check's and the second task's serves and that task's needs, each a block_refs row of its
+		// kind, and that task's size in whole minutes.
 		Name: typedIndexDrive, Sites: []string{"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
 		Database: database, Drive: func(t *testing.T) { indexTheTypedDocuments(t, database) },
 		Counts: map[StoredKind][]string{
@@ -958,7 +960,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{refs.BlockNodeKind, refs.TupleTextParent}:              {"block_values"},
 			{refs.BlockNodeKind, refs.AttributeTextRank}:            {"block_values"},
 			{refs.BlockNodeKind, graphstore.AttributeText}:          {"block_text"},
-			{refs.BlockNodeKind, graphstore.TupleAuthoredBy}:        {"block_author"},
+			{refs.BlockNodeKind, graphstore.TupleAuthoredBy}:        {"block_author", "criterion"},
 			{refs.BlockNodeKind, pmdoc.ParentAttribute}:             {authoredPointers},
 			{refs.BlockNodeKind, "serves"}:                          {authoredPointers},
 			{refs.BlockNodeKind, graphstore.TupleNeeds}:             {authoredPointers},
@@ -1498,8 +1500,10 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"issue_origin": {tuples: 2, writes: 2}, "issue_room": {tuples: 21, writes: 2}, "query_node": {tuples: 4, writes: 3},
 		// The scratch document removed in the window.
 		"artifact_removed": {tuples: 1, writes: 1},
-		"criterion":        {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
-		"result":           {tuples: int64(len(resultKinds)), writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
+		// The criterion in requirements.md, outside the three role documents, whose version lists
+		// one author (dana).
+		"criterion": {tuples: 1, writes: 1},
+		"result":    {tuples: int64(len(resultKinds)), writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
 		// Each component's node is in its project. The leaf's part_of the root and its depends_on
 		// it, and CORE-1's affects of the root.
 		"component": {tuples: 3, writes: 2}, "component_relation": {tuples: 1, writes: 3},
@@ -1507,7 +1511,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"component_retired": {tuples: 3, writes: sizingWindowDays / 7, assumed: true},
 		// The ask's part_of the document holding its block beside its anchored_to, an answer's
 		// decided_by beside its answered_by, and a resolution's value and its retraction.
-		"ask": {tuples: 3, writes: 1}, "ask_opened": {tuples: 7, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 6, writes: 1},
+		"ask": {tuples: 3, writes: 1}, "ask_opened": {tuples: 8, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 6, writes: 1},
 		"ask_resolved": {tuples: 3, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
 		// The copy of the source document's ask block, the spec's block the settlement flagged, and
 		// the version that took out the answered ask's block; no table dates a moved_to.

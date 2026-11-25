@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"slices"
@@ -46,7 +47,29 @@ func readRenderRow(t *testing.T, database *store.Store, artifactID string, numbe
 	return row
 }
 
-// seedMismatchIssues writes the project MISS and its issues MISS-1 to MISS-3, none of which has
+// renderCensusLines is the lines `census --store` prints of census, a census of the rendered
+// versions, as the command prints a store report that holds it (graphcensus.StoreReport.Write).
+func renderCensusLines(census graphcensus.VersionRenderCensus) []string {
+	var printed bytes.Buffer
+	(&graphcensus.StoreReport{VersionRenders: &census}).Write(&printed)
+	return strings.Split(printed.String(), "\n")
+}
+
+// markLine is the line the census of the rendered versions prints of a version whose
+// tree_mismatch mark stands, at address, `version <ref_key>@v<n>`.
+func markLine(address string) string { return "census: versions tree_mismatch at " + address }
+
+// differenceAt is the cause of the difference census reads at address, "" for none.
+func differenceAt(census graphcensus.VersionRenderCensus, address string) string {
+	for _, difference := range census.Reported {
+		if difference.At == address {
+			return difference.Cause
+		}
+	}
+	return ""
+}
+
+// seedMismatchIssues writes the project MISS and its issues MISS-1 to MISS-6, none of which has
 // converted: no issue_trees row and no document_rooms row.
 func seedMismatchIssues(t *testing.T, database *store.Store) {
 	t.Helper()
@@ -54,7 +77,7 @@ func seedMismatchIssues(t *testing.T, database *store.Store) {
 		insert into projects (key, name, default_assignee) values ('MISS', 'Mismatches', 'alice') on conflict (key) do nothing;
 		insert into issues (key, project_key, number, title, created_by, rank)
 		select 'MISS-' || n, 'MISS', n, 'Mismatch ' || n, '{"kind":"user","id":"alice"}', 'U' || n
-		from generate_series(1, 3) n
+		from generate_series(1, 6) n
 		on conflict (key) do nothing`); err != nil {
 		t.Fatalf("seed project MISS: %v", err)
 	}
@@ -83,22 +106,15 @@ func mismatchedMarkdown(t *testing.T) string {
 	return markdown
 }
 
-// writeMismatchedSpec creates the spec of issue, with primary set as treeDocument creates one,
-// whose node is its query's, named on its row (writeQueryNode), so its version has a record of
-// R14 and the reconciliation's pass over the rows another build wrote with no node
-// (writeObjectNodesAnotherBuildWrote) leaves the node a query node, and writes its
-// version 1 as the upload route writes a version (api's storeArtifact), with the one input the
-// product never gives: in one transaction joined to the service it seeds the document's text
-// with mismatchSeed (SeedText) and queues version 1 with other (Ledger.QueueVersion), which
-// records the version's doc_update_version at the head the seed left and inserts the version's
-// version_renders row; it indexes the version (IndexDocumentReferences), which leaves the blocks
-// of a tree that does not render as the version's markdown to the reconciliation, writes the
-// version's node (WriteVersionNode) and commits. It answers the spec and its ref_key.
-func writeMismatchedSpec(t *testing.T, database *store.Store, service *Service, issue, other string) (string, string) {
+// createSpecOf creates the spec of issue, with primary set as treeDocument creates one, whose node
+// is its query's, named on its row (writeQueryNode), so its versions have a record of R14 and the
+// reconciliation's pass over the rows another build wrote with no node
+// (writeObjectNodesAnotherBuildWrote) leaves the node a query node. It answers the spec and its
+// ref_key.
+func createSpecOf(t *testing.T, database *store.Store, issue string) (string, string) {
 	t.Helper()
-	ctx := context.Background()
 	var id, refKey string
-	if err := database.Pool.QueryRow(ctx, `
+	if err := database.Pool.QueryRow(context.Background(), `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
 		values ($1, 'MISS', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
 		returning id::text, ref_key
@@ -106,6 +122,31 @@ func writeMismatchedSpec(t *testing.T, database *store.Store, service *Service, 
 		t.Fatalf("create the spec of %s: %v", issue, err)
 	}
 	writeQueryNode(t, database, "MISS", issue, "spec", graphstore.QuerySpec)
+	return id, refKey
+}
+
+// writeMismatchedSpec creates the spec of issue (createSpecOf) and writes its version 1 as the
+// upload route writes a version (writeFirstVersion), with the one input the product never gives:
+// markdown other than the text the seed left. It answers the spec and its ref_key.
+func writeMismatchedSpec(t *testing.T, database *store.Store, service *Service, issue, other string) (string, string) {
+	t.Helper()
+	id, refKey := createSpecOf(t, database, issue)
+	writeFirstVersion(t, database, service, id, refKey, mismatchSeed, func(string) string { return other })
+	return id, refKey
+}
+
+// writeFirstVersion writes version 1 of the document id, whose ref_key is refKey, as the upload
+// route and the issue create write a version (api's storeArtifact, createIssue): in one
+// transaction joined to the service it seeds the document's text with seed (SeedText) and queues
+// version 1 with markdown(the text the seed left) (Ledger.QueueVersion), which records the
+// version's doc_update_version at the head the seed left and inserts the version's
+// version_renders row; it indexes the version (IndexDocumentReferences), which leaves the blocks
+// of a version of more than deferBlockIndexBlocks blocks, or of a tree that does not render as the
+// version's markdown, to the reconciliation, writes the version's node (WriteVersionNode) and
+// commits.
+func writeFirstVersion(t *testing.T, database *store.Store, service *Service, id, refKey, seed string, markdown func(seeded string) string) {
+	t.Helper()
+	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -114,15 +155,17 @@ func writeMismatchedSpec(t *testing.T, database *store.Store, service *Service, 
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.SeedText(joined, id, mismatchSeed, alice); err != nil {
+	seeded, err := service.SeedText(joined, id, seed, alice)
+	if err != nil {
 		t.Fatalf("seed %s: %v", refKey, err)
 	}
-	version, err := ledger.QueueVersion(ctx, id, other, []model.Actor{alice}, nil)
+	stored := markdown(seeded)
+	version, err := ledger.QueueVersion(ctx, id, stored, []model.Actor{alice}, nil)
 	if err != nil {
 		t.Fatalf("queue version 1 of %s: %v", refKey, err)
 	}
-	ledger.WroteVersion(id, version, other)
-	_, stated, err := service.IndexDocumentReferences(joined, id, version.Number, other)
+	ledger.WroteVersion(id, version, stored)
+	_, stated, err := service.IndexDocumentReferences(joined, id, version.Number, stored)
 	if err != nil {
 		t.Fatalf("index version 1 of %s: %v", refKey, err)
 	}
@@ -140,7 +183,6 @@ func writeMismatchedSpec(t *testing.T, database *store.Store, service *Service, 
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the write of %s: %v", refKey, err)
 	}
-	return id, refKey
 }
 
 // renderStepTreeMismatch: a version whose tree does not render as its stored markdown keeps its
@@ -152,18 +194,21 @@ func writeMismatchedSpec(t *testing.T, database *store.Store, service *Service, 
 // pending row is settled as the product settles it (settleOwedNow): no content changed since
 // version 1, so no version is written and the row goes. One tick then states the document's tree
 // at version 1 and marks the row tree_mismatch: no time, no digest, no seq. The version answers
-// its stored bytes, the census counts the row tree_mismatch and never deferred, the census alone
+// its stored bytes, the census counts the row tree_mismatch, prints it on a mark line of its own,
+// and counts it neither deferred nor a difference, the census alone
 // refuses, and alice's approval stands with nothing carried. The next tick, with no update in
 // flight, no pending row, no pass owed and the blocks still at version 1, restates version 1 from
 // its stored bytes: its row holds its time, seq and record digest, its mark is cleared and
 // tree_mismatch_repaired_at set, the version renders from the tree as its stored bytes, the census
-// moves the row from tree_mismatch to tree_mismatch_repaired, and the pass carries alice's
+// moves the row from tree_mismatch to tree_mismatch_repaired, prints no mark line at it and reads
+// no difference at it, and the pass carries alice's
 // approval to version 1 with the restore's reason, pinning the record's digest.
 //
 // MISS-2's spec is marked the same way, then version 2 is written through the real version write,
 // which stands the blocks at version 2; the next tick closes version 1's mark: no time, no digest
 // and no seq, the mark cleared and repaired_at set, version 1 answering its stored bytes, and the
-// census reading tree_mismatch down by 1, tree_mismatch_repaired and deferred each up by 1.
+// census reading tree_mismatch down by 1, tree_mismatch_repaired and deferred each up by 1, with
+// no mark line at version 1.
 func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 	ctx := context.Background()
 	database := rig.database
@@ -172,10 +217,9 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 
 	spec, refKey := writeMismatchedSpec(t, database, service, "MISS-1", other)
 	address := "version " + refKey + "@v1"
-	approveStoredVersion(t, database, spec, 1, "alice")
-	approval, err := NewestReview(ctx, database.Pool, spec)
-	if err != nil || approval == nil || approval.ContentSHA256 == nil || *approval.ContentSHA256 != renderSum(other) {
-		t.Fatalf("alice's approval of %s@v1 = %+v, %v; want it pinning the stored markdown's %s", refKey, approval, err, renderSum(other))
+	approval := approveThroughTheRoute(t, service, spec, 1, "alice")
+	if approval.ContentSHA256 == nil || *approval.ContentSHA256 != renderSum(other) {
+		t.Fatalf("alice's approval of %s@v1 through the approval route = %+v; want it pinning the stored markdown's %s", refKey, approval, renderSum(other))
 	}
 	if err := service.settleOwedNow(ctx, spec, time.Now().Add(roomWait(t))); err != nil {
 		t.Fatalf("settle %s: %v", refKey, err)
@@ -192,10 +236,15 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 	if slices.Contains(marked.DeferredAt, address) {
 		t.Errorf("the census counts version 1 of %s as deferred, want tree_mismatch", refKey)
 	}
-	if marked.TreeMismatch < 1 || !slices.ContainsFunc(marked.Reported, func(difference graphcensus.Difference) bool {
-		return difference.At == address && strings.Contains(difference.Cause, "tree_mismatch")
-	}) {
-		t.Errorf("the census reads tree_mismatch=%d at %v, want 1 at version 1 of %s", marked.TreeMismatch, marked.Reported, refKey)
+	if marked.TreeMismatch < 1 || !slices.Contains(marked.TreeMismatchAt, address) {
+		t.Errorf("the census reads tree_mismatch=%d at %v, want 1 at version 1 of %s", marked.TreeMismatch, marked.TreeMismatchAt, refKey)
+	}
+	if !slices.Contains(renderCensusLines(marked), markLine(address)) {
+		t.Errorf("the census prints no line %q while version 1 of %s holds tree_mismatch:\n%s",
+			markLine(address), refKey, strings.Join(renderCensusLines(marked), "\n"))
+	}
+	if cause := differenceAt(marked, address); cause != "" {
+		t.Errorf("the census reads a difference at %s: %s, want tree_mismatch alone", address, cause)
 	}
 	if !(&graphcensus.StoreReport{VersionRenders: &marked}).Refused() {
 		t.Errorf("the census holds tree_mismatch=%d and is not refused", marked.TreeMismatch)
@@ -220,8 +269,11 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 		t.Errorf("the census reads tree_mismatch=%d tree_mismatch_repaired=%d after the repair, want %d and %d",
 			repaired.TreeMismatch, repaired.TreeMismatchRepaired, marked.TreeMismatch-1, marked.TreeMismatchRepaired+1)
 	}
-	if slices.ContainsFunc(repaired.Reported, func(difference graphcensus.Difference) bool { return difference.At == address }) {
-		t.Errorf("the census reads a difference at version %s@v1 after the repair: %v", refKey, repaired.Reported)
+	if cause := differenceAt(repaired, address); cause != "" {
+		t.Errorf("the census reads a difference at %s after the repair: %s", address, cause)
+	}
+	if slices.Contains(repaired.TreeMismatchAt, address) || slices.Contains(renderCensusLines(repaired), markLine(address)) {
+		t.Errorf("the census reads a tree_mismatch line at version 1 of %s after the repair restated it: %v", refKey, repaired.TreeMismatchAt)
 	}
 	carried, err := NewestReview(ctx, database.Pool, spec)
 	switch {
@@ -263,8 +315,8 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 		t.Errorf("the census reads tree_mismatch=%d tree_mismatch_repaired=%d deferred=%d after the repair, want %d %d %d",
 			after.TreeMismatch, after.TreeMismatchRepaired, after.Deferred, before.TreeMismatch-1, before.TreeMismatchRepaired+1, before.Deferred+1)
 	}
-	if slices.ContainsFunc(after.Reported, func(difference graphcensus.Difference) bool { return difference.At == "version "+closedRef+"@v1" }) {
-		t.Errorf("the census reads a tree_mismatch line at version 1 of %s after the repair closed it: %v", closedRef, after.Reported)
+	if closedAt := "version " + closedRef + "@v1"; slices.Contains(after.TreeMismatchAt, closedAt) || slices.Contains(renderCensusLines(after), markLine(closedAt)) {
+		t.Errorf("the census reads a tree_mismatch line at version 1 of %s after the repair closed it: %v", closedRef, after.TreeMismatchAt)
 	}
 }
 

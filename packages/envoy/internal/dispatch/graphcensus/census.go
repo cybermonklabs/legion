@@ -320,7 +320,7 @@ func (r *StoreReport) renderDifferences() int64 {
 	if r.VersionRenders == nil {
 		return 0
 	}
-	return r.VersionRenders.Differences
+	return r.VersionRenders.Differences + r.VersionRenders.TreeMismatch
 }
 
 // projections are the kinds the census holds the store to, in the order it reads and reports

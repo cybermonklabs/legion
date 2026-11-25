@@ -223,6 +223,15 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		slog.Warn("dispatch: API document holds an element this build cannot read", "elements", elements)
 		return
 	}
+	// A version that holds a block its reader may not see, which the read cannot leave out
+	// (docs.ErrHiddenNotPlaced), answers as a version the reader cannot read, the 404 a node the
+	// caller may not see answers: neither the block's bytes nor that it stands there is told. The
+	// operator's line says which read it was not, since the error's chain names the block.
+	if errors.Is(err, docs.ErrHiddenNotPlaced) {
+		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
+		slog.Warn("dispatch: a version read was refused because a block its reader may not see could not be left out")
+		return
+	}
 	// The edit route's own ambiguity error names the operation and the quote; the bare pmdoc one
 	// still serves every other caller of FindQuote.
 	var ambiguousQuote *docs.ErrAnchorAmbiguous
