@@ -30,8 +30,9 @@ import { type RefObject, useLayoutEffect } from "react";
  * its floor under every obstacle it clears, or 1rem above an obstacle. Where no band is free, the
  * property is the highest value at which the floats stay on the screen, or else 0. A property is
  * unset while it holds 0. No page element's band is capped: every page element is bounded - the
- * live view's message box at 40dvh, the Agents section at 50vh - so a band holds the floats
- * wherever the window is tall enough, and the fallback only keeps them on the screen.
+ * live view's message box at 40dvh, the Agents section at 50vh, a composer a host's frame fixes
+ * at the foot at the screen's height less 6rem (`FOOT_COMPOSER_FRAME_BOUND`) - so a band holds
+ * the floats wherever the window is tall enough, and the fallback only keeps them on the screen.
  *
  * - `page` (`--foot-page-inset`): the page's own foot controls. Each keeps its own place, and the
  *   page lays them out against each other.
@@ -338,6 +339,14 @@ export const CLEARANCE_PROPERTY = "--foot-clearance";
  *  frame's column, that the document scrolls that element's content (`FOOT_LAYERS` says why the
  *  hook cannot tell, and why the frame's room goes in its column). */
 export const DOCUMENT_SCROLL_ATTRIBUTE = "data-document-scroll";
+
+/** The bound of a frame that fixes a composer at the foot of the screen: a phone thread's and a
+ *  phone reply's in the Conversation, and a phone margin thread's. The frame leaves 6rem of the
+ *  screen above it, the shell's status corner and the 1rem it keeps clear, so the band above it
+ *  holds the floats; a composer taller than that scrolls inside its frame. Unbounded, the field's
+ *  hint line, a four-line draft and a refusal's row filled a 320x568 screen to its top, and the
+ *  connection pill fell back over the composer. */
+export const FOOT_COMPOSER_FRAME_BOUND = "max-h-[calc(100dvh-6rem)] overflow-y-auto";
 
 /** The kind of box each computed `display` makes, of those where a spacer can land below the
  *  content: a block container, or a flexbox, where it lands there only in a column. */
