@@ -21,6 +21,9 @@
  *    refused one.
  *  - `oneRequest`: erin, on OWN alone, with the listener's threshold of a minute set to 1: step 4
  *    must fail, naming the host.
+ *  - `signIn`: frank, on OWN alone, the sign-in steps alone (`OUTSIDE_EDGE_STEPS=sign-in`), with no
+ *    peer, broker or listener: sign-in and projects must pass, and step 4 judge the outside host's
+ *    rules alone, naming every other row not run.
  */
 
 import {
@@ -50,6 +53,7 @@ export const people = {
   secondProject: "bob@outside.example",
   silentPeer: "dave@outside.example",
   oneRequest: "erin@outside.example",
+  signIn: "frank@outside.example",
 } as const;
 export const peer = "ses-outside-peer";
 export const silentPeer = "ses-outside-silent";
@@ -92,6 +96,8 @@ export interface StackRuns {
   readonly secondProject: DriverRun;
   readonly silentPeer: DriverRun;
   readonly oneRequest: DriverRun;
+  /** The sign-in steps alone, given no peer, broker or listener. */
+  readonly signIn: DriverRun;
   /** The edge's two hosts of this stack, as the limits file names them. */
   readonly outsideHost: string;
   readonly edgeHost: string;
@@ -273,6 +279,7 @@ if (import.meta.main) {
           [people.secondProject]: ["OWN", "OTHER"],
           [people.silentPeer]: ["OWN"],
           [people.oneRequest]: ["OWN"],
+          [people.signIn]: ["OWN"],
         };
         for (const [email, keys] of Object.entries(lists)) {
           for (const key of keys) {
@@ -391,6 +398,14 @@ if (import.meta.main) {
           secondProject: await run("secondProject"),
           silentPeer: silentPeerRun,
           oneRequest: await run("oneRequest", { OUTSIDE_EDGE_LIMITS: oneRequestLimits }),
+          signIn: await drive([], {
+            OUTSIDE_EDGE_STEPS: "sign-in",
+            OUTSIDE_EDGE_ALLOW_HTTP: "1",
+            OUTSIDE_INVITE_URL: await invite(people.signIn),
+            OUTSIDE_PROJECT: "OWN",
+            OUTSIDE_EDGE_LIMITS: limitsFile,
+            OUTSIDE_EDGE_STATE: join(scratch, "signIn"),
+          }),
           outsideHost,
           edgeHost,
           registrationHosts: edge.hosts,

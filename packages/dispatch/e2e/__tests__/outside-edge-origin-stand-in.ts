@@ -36,6 +36,11 @@
  *    `POST /api/v1/machine-logins/{id}/revoke` answers 200 for a listed id, taking it off the list
  *    only where `revokeRemoves` holds; any other id is 404. With `silentAfterRevoke`, the list
  *    answers nothing once a revoke was answered.
+ *  - `GET /api/v1/credential-grants?approver=me` lists `grants`, each a grant on a pod whose
+ *    enrollment names its `operator`, with its `approver` (none where unset); with no `grants`, or
+ *    no `approver=me`, it answers as Dispatch does no such list (404, 400 APPROVER_ME_ONLY). `POST
+ *    /api/v1/credential-grants/{id}/revoke` answers `grantRevoke` (404 where unset), each id kept in
+ *    `grantsRevoked`.
  *  Every path asked is kept in `asked`, in order.
  */
 
@@ -106,6 +111,15 @@ export interface OriginBehaviour {
   readonly revokeRemoves?: boolean;
   /** Whether the list answers nothing at all once a revoke was answered. */
   readonly silentAfterRevoke?: boolean;
+  /** The person's credential-grants list: each grant's id, the operator its enrollment names and
+   *  its approver (none where unset). */
+  readonly grants?: readonly {
+    readonly id: string;
+    readonly operator: string;
+    readonly approver?: string;
+  }[];
+  /** What a revoke of a credential grant answers: its status and the code its body names. */
+  readonly grantRevoke?: { readonly status: number; readonly code?: string };
   /** The enrollment page; `refuses` where unset. */
   readonly enroll?: Enrollment;
   /** What `GET /auth/whoami` answers a cookie this stand-in set: its status, 200 with the person
@@ -138,6 +152,8 @@ export interface OriginStandIn {
   readonly elsewhere: string;
   /** Every id a revoke named, in order. */
   readonly revoked: readonly string[];
+  /** Every id a credential grant's revoke named, in order. */
+  readonly grantsRevoked: readonly string[];
   /** Every path this origin was asked, in order. */
   readonly asked: readonly string[];
   stop(): void;
@@ -314,6 +330,7 @@ document.getElementById("look-up").onclick = async () => {
 export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStandIn {
   let listed = [...(behaviour.listed ?? [])];
   const revoked: string[] = [];
+  const grantsRevoked: string[] = [];
   const asked: string[] = [];
   // The cookies this stand-in set at a sign-in, and whether its page approved the device code.
   const sessions = new Set<string>();
@@ -480,6 +497,31 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
         revokeAnswered = true;
         return Response.json({ state: "revoked" });
       }
+      if (request.method === "GET" && pathname === "/api/v1/credential-grants") {
+        if (url.searchParams.get("approver") !== "me") {
+          return Response.json({ code: "APPROVER_ME_ONLY" }, { status: 400 });
+        }
+        if (behaviour.grants === undefined) return new Response("not here", { status: 404 });
+        return Response.json({
+          grants: behaviour.grants.map(({ id, operator, approver }) => ({
+            grant_id: id,
+            granted: approver === undefined ? "automatic" : "approval",
+            record_id: null,
+            enrollment: { kind: "pod", runtime_id: `pod-${id}`, operator, slot: null },
+            names: ["STAND_IN_SECRET"],
+            approver: approver ?? null,
+            decided_by: null,
+          })),
+        });
+      }
+      const grantRevoke = /^\/api\/v1\/credential-grants\/([^/]+)\/revoke$/.exec(pathname);
+      if (request.method === "POST" && grantRevoke !== null) {
+        grantsRevoked.push(decodeURIComponent(grantRevoke[1] ?? ""));
+        const { status, code } = behaviour.grantRevoke ?? { status: 404, code: "NOT_FOUND" };
+        return status < 300
+          ? Response.json({ state: "revoked" }, { status })
+          : Response.json({ error: "the stand-in answers this revoke", code }, { status });
+      }
       return new Response("not here", { status: 404 });
     },
   });
@@ -489,6 +531,7 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
     page: pageOrigin,
     elsewhere,
     revoked,
+    grantsRevoked,
     asked,
     stop: () => {
       server.stop(true);

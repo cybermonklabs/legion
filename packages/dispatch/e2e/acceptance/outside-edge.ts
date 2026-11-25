@@ -2,7 +2,7 @@
  *  serves them, on the surface they use. It runs where they would, on a machine of the public
  *  internet, and drives the real pages in a real browser (Chromium, through Playwright), the real
  *  broker client and the real relay client. Run it from packages/dispatch with
- *  `bun e2e/acceptance/outside-edge.ts [run | approve <code> | revoke | t5 | hold | release]`.
+ *  `bun e2e/acceptance/outside-edge.ts [run | approve <code> | revoke | grants | t5 | hold | release]`.
  *
  *  `run`, the default, makes four steps, each a row of its own:
  *    1. sign-in   the owner's link enrolls a virtual passkey (Chromium's virtual authenticator,
@@ -64,7 +64,19 @@
  *  A page or a browser that closes while any step waits on it is UNKNOWN, the driver's own
  *  failure, never a page that showed nothing.
  *
- *  Inputs, each refused by name, UNKNOWN and exit 2, when missing or malformed:
+ *  With OUTSIDE_EDGE_STEPS=sign-in, `run` makes step 1 and step 4 alone, for an edge that serves
+ *  the outside origin and no broker or listener yet: it reads no OUTSIDE_PEER_SESSION,
+ *  OUTSIDE_BROKER_URL or OUTSIDE_LISTENER_URL, stops after the `projects` row, and judges only
+ *  the rules of OUTSIDE_EDGE_LIMITS whose host is the link's, the one host those steps ask. It
+ *  makes no `device-login` or `relay` row and no row of another host's rule: each is printed as
+ *  `outside-edge: not run: <row>: <why>`, a line of no row, so none reads PASS and none holds the
+ *  verdict back. A sign-in that did not pass makes `projects` UNKNOWN, not run. A limits file that
+ *  names no rule of the link's host is refused, since step 4 would then judge nothing, and so is
+ *  OUTSIDE_TAILNET_USER_CODE, an approval those steps do not make. Any other value of
+ *  OUTSIDE_EDGE_STEPS is refused; unset or empty, `run` makes every step.
+ *
+ *  Inputs, each refused by name, UNKNOWN and exit 2, when missing or malformed (the sign-in steps
+ *  read no OUTSIDE_PEER_SESSION, OUTSIDE_BROKER_URL or OUTSIDE_LISTENER_URL):
  *    OUTSIDE_INVITE_URL     the owner's enrollment link, https://<outside origin>/enroll#<token>.
  *                           It is single-use, so a run spends it; the run never prints it.
  *    OUTSIDE_PROJECT        the one project the person's list must name.
@@ -82,15 +94,17 @@
  *                           (`approved.tsv`), and the session step 3 registered at the listener
  *                           (`session`), kept once the listener accepted its registration,
  *                           which step 3 ends before the run goes on.
- *                           `approve`, `revoke` and `t5` read them, and so does a later step
- *                           that needs the person's cookie or a session of theirs.
- *  Optional: OUTSIDE_TAILNET_USER_CODE (above); OUTSIDE_EDGE_REPLY_SECONDS (30 when unset; 1 to
- *  600); OUTSIDE_EDGE_TSV, the file the rows are also written to (`<state>/outside-edge.tsv` when
- *  unset). OUTSIDE_EDGE_ALLOW_HTTP=1 lets each origin be http://127.0.0.1 or http://localhost,
- *  and nothing else, for this driver's own test, and only with it OUTSIDE_EDGE_LOGIN_SECONDS (1
- *  to 300) shortens the device login's 5-minute deadline, which that test waits out; without it
- *  that variable is refused. Chromium is started with none of the OUTSIDE_* variables, and every
- *  registration at the listener names the machine `outside-edge-e2e`.
+ *                           `approve`, `revoke`, `grants` and `t5` read them, and so does a
+ *                           later step that needs the person's cookie or a session of theirs.
+ *  Optional: OUTSIDE_EDGE_STEPS (above); OUTSIDE_TAILNET_USER_CODE (above);
+ *  OUTSIDE_EDGE_REPLY_SECONDS (30 when unset; 1 to 600); OUTSIDE_EDGE_TSV, the file the rows are
+ *  also written to (`<state>/outside-edge.tsv` when unset). OUTSIDE_EDGE_ALLOW_HTTP=1 lets each
+ *  origin be http://127.0.0.1 or http://localhost, and nothing else, for this driver's own test,
+ *  and only with it OUTSIDE_EDGE_LOGIN_SECONDS (1 to 300) shortens the device login's 5-minute
+ *  deadline, which that test waits out; without it that variable is refused. The sign-in steps
+ *  read neither OUTSIDE_EDGE_REPLY_SECONDS nor OUTSIDE_EDGE_LOGIN_SECONDS. Chromium is started
+ *  with none of the OUTSIDE_* variables, and every registration at the listener names the machine
+ *  `outside-edge-e2e`.
  *
  *  `approve <code>` approves one more device-login code on the outside origin's machine-login
  *  page, in the browser state `run` kept in OUTSIDE_EDGE_STATE, and records its credential, named
@@ -110,6 +124,21 @@
  *  login it leaves live, with no row, in either form the driver takes (`ABCD-EFGH`, `abcdefgh`):
  *  the login a delisting window measures ending, which the person's removal ends and not this
  *  revoke. An empty kept cookie is refused, UNKNOWN, as it is by `t5`.
+ *
+ *  `grants` reads, with the kept cookie, what the person reaches of the credential grants of
+ *  sessions that do not act for them: row `grants-list`, `GET
+ *  /api/v1/credential-grants?approver=me`, PASS on 200 holding only grants whose enrollment names
+ *  the person as its operator, FAIL on 200 holding any other (it names how many, and whether
+ *  OUTSIDE_GRANTS_PROBE_ID's grant is among them, and no grant's id or secret); and row
+ *  `grants-revoke`, `POST /api/v1/credential-grants/{OUTSIDE_GRANTS_PROBE_ID}/revoke`, PASS only on
+ *  Dispatch's own refusal, 403 RESTRICTED_MEMBER, FAIL on a 2xx or on the broker's 403
+ *  NOT_APPROVER, which shows Dispatch relayed the revoke. Any other answer, or none, is UNKNOWN;
+ *  so is the revoke row with no OUTSIDE_GRANTS_PROBE_ID, or one that is no UUID, which revokes
+ *  nothing. The probe is a grant its caller chose as one the broker lets no person end (no
+ *  approver, no operator), so a revoke let through ends nothing; where the list just read shows
+ *  that grant with `approver` or `enrollment.operator` set, it revokes nothing, UNKNOWN. The rows
+ *  go to stdout and to OUTSIDE_EDGE_GRANTS (`<state>/outside-edge-grants.tsv` when unset). An
+ *  empty kept cookie is refused, UNKNOWN.
  *
  *  `t5` is the browser's half of a delisting window: with OUTSIDE_T5_DEADLINE (Unix seconds) and
  *  OUTSIDE_T5_TSV, it asks `/auth/whoami` with the kept cookie at most every 5 s until it is
@@ -227,6 +256,7 @@ import {
   judgeLimits,
   type Limit,
   LimitsError,
+  limitRow,
   parseLimits,
   type Row,
   verdictOf,
@@ -410,42 +440,51 @@ function kept(state: string, name: string): string {
   return readFileSync(path, "utf8").trim();
 }
 
-/** What `run` reads. */
-interface RunInputs {
+/** What every `run` reads, and all the sign-in steps read. */
+interface SignInInputs {
   readonly invite: URL;
   readonly origin: string;
   readonly project: string;
+  /** The rules step 4 judges: in the sign-in steps, those of the link's host alone. */
+  readonly limits: readonly Limit[];
+  readonly state: string;
+  readonly tsv: string;
+}
+
+/** What `run` reads for every step. */
+interface RunInputs extends SignInInputs {
   readonly peer: string;
   readonly broker: string;
   readonly listener: string;
-  readonly limits: readonly Limit[];
-  readonly state: string;
   readonly tailnetCode: string | undefined;
   readonly replySeconds: number;
   /** How long the device login's poll waits for an approval (LOGIN_SECONDS, or the test's own). */
   readonly loginMs: number;
-  readonly tsv: string;
 }
+
+/** OUTSIDE_EDGE_STEPS's one value: the sign-in steps alone. */
+const SIGN_IN_STEPS = "sign-in";
+
+/** What `run` is asked: every step, or the sign-in steps alone, beside the rules of
+ *  OUTSIDE_EDGE_LIMITS they leave unjudged, each of another host than the link's. */
+type RunAsked =
+  | { readonly steps: "every"; readonly inputs: RunInputs }
+  | {
+      readonly steps: typeof SIGN_IN_STEPS;
+      readonly inputs: SignInInputs;
+      readonly unasked: readonly Limit[];
+    };
 
 const PROJECT_KEY = /^[A-Z][A-Z0-9]{0,31}$/;
 const USER_CODE = /^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/;
 
-function runInputs(env: NodeJS.ProcessEnv): RunInputs {
-  const allowHttp = env.OUTSIDE_EDGE_ALLOW_HTTP === "1";
-  const invite = originOf("OUTSIDE_INVITE_URL", required(env, "OUTSIDE_INVITE_URL"), allowHttp);
-  if (invite.pathname !== "/enroll" || invite.hash.length <= 1) {
-    throw new Refused("OUTSIDE_INVITE_URL is no enrollment link (<origin>/enroll#<token>)");
-  }
-  const project = required(env, "OUTSIDE_PROJECT");
-  if (!PROJECT_KEY.test(project)) throw new Refused("OUTSIDE_PROJECT is no project key");
-  const peer = required(env, "OUTSIDE_PEER_SESSION");
-  if (/\s/.test(peer)) throw new Refused("OUTSIDE_PEER_SESSION holds white space");
-  const broker = originOf("OUTSIDE_BROKER_URL", required(env, "OUTSIDE_BROKER_URL"), allowHttp);
-  const listener = originOf(
-    "OUTSIDE_LISTENER_URL",
-    required(env, "OUTSIDE_LISTENER_URL"),
-    allowHttp
-  );
+/** What every `run` reads last: the rules of OUTSIDE_EDGE_LIMITS, the state directory, made, and
+ *  the file the rows are also written to. */
+function limitsAndState(env: NodeJS.ProcessEnv): {
+  limits: Limit[];
+  state: string;
+  tsv: string;
+} {
   const limitsFile = required(env, "OUTSIDE_EDGE_LIMITS");
   let limits: Limit[];
   try {
@@ -455,6 +494,35 @@ function runInputs(env: NodeJS.ProcessEnv): RunInputs {
     throw new Refused(`OUTSIDE_EDGE_LIMITS could not be read: ${messageOf(error)}`);
   }
   const state = stateDirectory(required(env, "OUTSIDE_EDGE_STATE"));
+  return {
+    limits,
+    state,
+    tsv: (env.OUTSIDE_EDGE_TSV ?? "").trim() || join(state, "outside-edge.tsv"),
+  };
+}
+
+function runInputs(env: NodeJS.ProcessEnv): RunAsked {
+  const steps = (env.OUTSIDE_EDGE_STEPS ?? "").trim();
+  if (steps !== "" && steps !== SIGN_IN_STEPS) {
+    throw new Refused(`OUTSIDE_EDGE_STEPS must be ${SIGN_IN_STEPS}, or unset for every step`);
+  }
+  const allowHttp = env.OUTSIDE_EDGE_ALLOW_HTTP === "1";
+  const invite = originOf("OUTSIDE_INVITE_URL", required(env, "OUTSIDE_INVITE_URL"), allowHttp);
+  if (invite.pathname !== "/enroll" || invite.hash.length <= 1) {
+    throw new Refused("OUTSIDE_INVITE_URL is no enrollment link (<origin>/enroll#<token>)");
+  }
+  const project = required(env, "OUTSIDE_PROJECT");
+  if (!PROJECT_KEY.test(project)) throw new Refused("OUTSIDE_PROJECT is no project key");
+  if (steps === SIGN_IN_STEPS) return signInInputs(env, invite, project);
+  const peer = required(env, "OUTSIDE_PEER_SESSION");
+  if (/\s/.test(peer)) throw new Refused("OUTSIDE_PEER_SESSION holds white space");
+  const broker = originOf("OUTSIDE_BROKER_URL", required(env, "OUTSIDE_BROKER_URL"), allowHttp);
+  const listener = originOf(
+    "OUTSIDE_LISTENER_URL",
+    required(env, "OUTSIDE_LISTENER_URL"),
+    allowHttp
+  );
+  const { limits, state, tsv } = limitsAndState(env);
   const tailnetCode = (env.OUTSIDE_TAILNET_USER_CODE ?? "").trim() || undefined;
   if (tailnetCode !== undefined && !USER_CODE.test(tailnetCode)) {
     throw new Refused("OUTSIDE_TAILNET_USER_CODE is no device-login code (XXXX-XXXX)");
@@ -480,18 +548,47 @@ function runInputs(env: NodeJS.ProcessEnv): RunInputs {
     );
   }
   return {
-    invite,
-    origin: invite.origin,
-    project,
-    peer,
-    broker: broker.origin,
-    listener: listener.origin,
-    limits,
-    state,
-    tailnetCode,
-    replySeconds,
-    loginMs: loginSeconds * 1000,
-    tsv: (env.OUTSIDE_EDGE_TSV ?? "").trim() || join(state, "outside-edge.tsv"),
+    steps: "every",
+    inputs: {
+      invite,
+      origin: invite.origin,
+      project,
+      peer,
+      broker: broker.origin,
+      listener: listener.origin,
+      limits,
+      state,
+      tailnetCode,
+      replySeconds,
+      loginMs: loginSeconds * 1000,
+      tsv,
+    },
+  };
+}
+
+/** The sign-in steps' inputs past the link and the project: the rules of the link's host, the one
+ *  host those steps ask, the state and the TSV file; no peer, broker or listener, which they never
+ *  ask, and no tailnet code, an approval they do not make. A limits file that names no rule of the
+ *  link's host is refused: step 4 would judge nothing, and a run that judged nothing has not
+ *  passed. */
+function signInInputs(env: NodeJS.ProcessEnv, invite: URL, project: string): RunAsked {
+  const { limits, state, tsv } = limitsAndState(env);
+  const host = invite.hostname;
+  const asked = limits.filter((limit) => limit.host === host);
+  if (asked.length === 0) {
+    throw new Refused(
+      `OUTSIDE_EDGE_LIMITS names no rule of ${host}, the link's host, the one host the sign-in steps ask`
+    );
+  }
+  if ((env.OUTSIDE_TAILNET_USER_CODE ?? "").trim() !== "") {
+    throw new Refused(
+      "OUTSIDE_TAILNET_USER_CODE asks for an approval, and the sign-in steps make none"
+    );
+  }
+  return {
+    steps: SIGN_IN_STEPS,
+    inputs: { invite, origin: invite.origin, project, limits: asked, state, tsv },
+    unasked: limits.filter((limit) => limit.host !== host),
   };
 }
 
@@ -723,7 +820,7 @@ function recordApproval(state: string, code: string, credential: string): void {
 
 /** Step 1: the link enrolls a passkey, and the person's list is exactly the project. Answers the
  *  signed-in person, or undefined when the step did not pass. */
-async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, rows: Rows) {
+async function signIn(page: Page, context: BrowserContext, inputs: SignInInputs, rows: Rows) {
   const want = `the link enrolls a passkey and signs in at ${inputs.origin}`;
   const passkey = await addVirtualPasskey(page);
   try {
@@ -1460,9 +1557,9 @@ async function leave(
 }
 
 async function run(env: NodeJS.ProcessEnv): Promise<number> {
-  let inputs: RunInputs;
+  let asked: RunAsked;
   try {
-    inputs = runInputs(env);
+    asked = runInputs(env);
   } catch (error) {
     if (!(error instanceof Refused)) throw error;
     const rows = new Rows(undefined);
@@ -1474,6 +1571,7 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
     });
     return rows.finish();
   }
+  const { inputs } = asked;
   // The link's token, as the URL holds it and decoded, which no row carries: a page that did not
   // load fails with an error naming the URL it was loading.
   const token = inputs.invite.hash.slice(1);
@@ -1486,6 +1584,19 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
   const rows = new Rows(inputs.tsv, [token, decoded]);
   console.log(`outside-edge: origin ${inputs.origin}`);
   console.log(`outside-edge: time ${new Date().toISOString()}`);
+  // The rows the sign-in steps do not make, each a line that is no row, so none reads PASS and no
+  // verdict waits on it; printed first, so a run that stops names them too.
+  if (asked.steps === SIGN_IN_STEPS) {
+    const why = `OUTSIDE_EDGE_STEPS is ${SIGN_IN_STEPS}`;
+    for (const row of ["device-login", "relay"]) {
+      console.log(`outside-edge: not run: ${row}: ${why}`);
+    }
+    for (const limit of asked.unasked) {
+      console.log(
+        `outside-edge: not run: ${limitRow(limit)}: ${why}, which asks ${limit.host} nothing`
+      );
+    }
+  }
   // Why the run's requests are not a whole run's, once a step was not run: step 4 does not pass a
   // threshold on such a count.
   let cut: string | undefined;
@@ -1500,22 +1611,33 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
     countBrowser(context);
     const page = await context.newPage();
     const person = await signIn(page, context, inputs, rows);
-    if (person === undefined) {
-      notRun("device-login", "a device login approved on the page", "the sign-in did not pass");
-      if (inputs.tailnetCode !== undefined)
-        notRun("tailnet-code", `APPROVED ${inputs.tailnetCode}`, "the sign-in did not pass");
-      notRun("relay", "a reply from the peer on the relay socket", "the sign-in did not pass");
-    } else {
-      const login = await deviceLogin(page, person, inputs, rows);
-      if (inputs.tailnetCode !== undefined)
-        await tailnetCode(page, inputs.tailnetCode, inputs, rows);
-      if (login === undefined)
+    if (asked.steps === SIGN_IN_STEPS) {
+      if (person === undefined) {
         notRun(
-          "relay",
-          "a reply from the peer on the relay socket",
-          "the device login did not pass"
+          "projects",
+          `GET /api/v1/projects lists exactly [${inputs.project}]`,
+          "the sign-in did not pass"
         );
-      else await relay(inputs, rows);
+      }
+    } else {
+      const every = asked.inputs;
+      if (person === undefined) {
+        notRun("device-login", "a device login approved on the page", "the sign-in did not pass");
+        if (every.tailnetCode !== undefined)
+          notRun("tailnet-code", `APPROVED ${every.tailnetCode}`, "the sign-in did not pass");
+        notRun("relay", "a reply from the peer on the relay socket", "the sign-in did not pass");
+      } else {
+        const login = await deviceLogin(page, person, every, rows);
+        if (every.tailnetCode !== undefined)
+          await tailnetCode(page, every.tailnetCode, every, rows);
+        if (login === undefined)
+          notRun(
+            "relay",
+            "a reply from the peer on the relay socket",
+            "the device login did not pass"
+          );
+        else await relay(every, rows);
+      }
     }
   } catch (error) {
     // An error no step read, such as a page closed under a step, a browser that did not start, or
@@ -1722,6 +1844,179 @@ async function revoke(env: NodeJS.ProcessEnv): Promise<number> {
         verdict: "PASS",
       });
     }
+  }
+  return rows.finish();
+}
+
+/** `grants`' list row: Dispatch's answer to a restricted member's own list of credential grants,
+ *  200 holding only the grants of the sessions that act for them, each naming them as its
+ *  enrollment's operator; every other grant dropped, whatever its approver. */
+const GRANTS_LIST_STATUS = 200;
+/** `grants`' revoke row passes on this alone: Dispatch's own refusal of a restricted member's
+ *  revoke of a grant that is not of their own sessions, which relays nothing to the broker and
+ *  answers an id no grant has the same. */
+const GRANTS_REVOKE_REFUSAL = { status: 403, code: "RESTRICTED_MEMBER" } as const;
+/** `grants`' revoke row fails on this, as on any 2xx: the broker's refusal of a revoke by a person
+ *  the grant names nowhere, which reaches the person only where Dispatch relayed the revoke. */
+const GRANTS_REVOKE_RELAYED = { status: 403, code: "NOT_APPROVER" } as const;
+/** A credential grant's id, as the broker's revoke route takes it. */
+const GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** An answer's status and the `code` its JSON body names, as one phrase. */
+function statusWords(status: number, body: unknown): string {
+  const code = member(body, "code");
+  return typeof code === "string" && code !== "" ? `${status} ${code}` : `${status}`;
+}
+
+/** `grants`: what the person reaches, with the kept cookie, of the credential grants of sessions
+ *  that do not act for them: the list, and a revoke of the grant OUTSIDE_GRANTS_PROBE_ID names. */
+async function grants(env: NodeJS.ProcessEnv): Promise<number> {
+  const listRow = "grants-list";
+  const revokeRow = "grants-revoke";
+  const tsvSet = (env.OUTSIDE_EDGE_GRANTS ?? "").trim();
+  let state: string;
+  let origin: string;
+  let cookie: string;
+  let person: string;
+  try {
+    state = required(env, "OUTSIDE_EDGE_STATE");
+    origin = kept(state, "origin");
+    cookie = keptCookie(state);
+    person = kept(state, "person");
+  } catch (error) {
+    if (!(error instanceof Refused)) throw error;
+    const rows = new Rows(tsvSet === "" ? undefined : tsvSet);
+    for (const row of [listRow, revokeRow]) {
+      rows.add({ row, want: "the run's kept cookie", got: error.message, verdict: "UNKNOWN" });
+    }
+    return rows.finish();
+  }
+  const rows = new Rows(tsvSet || join(state, "outside-edge-grants.tsv"));
+  const probe = (env.OUTSIDE_GRANTS_PROBE_ID ?? "").trim();
+  const self = person.toLowerCase();
+  const headers = { Accept: "application/json", Cookie: cookie, Origin: origin };
+  // The probe grant as the list below shows it, where it does: read again just before the revoke.
+  let probeSeen: unknown;
+
+  // The list. Every row whose session does not act for the person is one Dispatch let through;
+  // the row names how many, and whether the probe grant is among them, and no grant's id or name.
+  const wantList = `GET /api/v1/credential-grants?approver=me answers ${GRANTS_LIST_STATUS} holding only grants of sessions that act for ${person}`;
+  try {
+    const answer = await fetch(`${origin}/api/v1/credential-grants?approver=me`, {
+      headers,
+      signal: AbortSignal.timeout(PAGE_MS),
+    });
+    const body = await answer.json().catch(() => undefined);
+    const listed = member(body, "grants");
+    if (Array.isArray(listed))
+      probeSeen = listed.find((grant) => member(grant, "grant_id") === probe);
+    if (answer.status !== GRANTS_LIST_STATUS || !Array.isArray(listed)) {
+      rows.add({
+        row: listRow,
+        want: wantList,
+        got: `answered ${statusWords(answer.status, body)}${Array.isArray(listed) ? "" : ", with no grants list"}`,
+        verdict: "UNKNOWN",
+      });
+    } else {
+      const foreign = listed.filter((grant) => {
+        const operator = member(member(grant, "enrollment"), "operator");
+        return typeof operator !== "string" || operator.toLowerCase() !== self;
+      });
+      const probeWords =
+        probe === ""
+          ? ""
+          : foreign.some((grant) => member(grant, "grant_id") === probe)
+            ? "; the probe grant among them"
+            : "; the probe grant not among them";
+      rows.add({
+        row: listRow,
+        want: wantList,
+        got: `listed ${listed.length} grants, ${foreign.length} of a session that does not act for ${person}${probeWords}`,
+        verdict: foreign.length === 0 ? "PASS" : "FAIL",
+      });
+    }
+  } catch (error) {
+    rows.add({
+      row: listRow,
+      want: wantList,
+      got: `GET /api/v1/credential-grants got no answer: ${messageOf(error)}`,
+      verdict: "UNKNOWN",
+    });
+  }
+
+  // The revoke of a grant the developer box chose as one no person may end, so a revoke Dispatch
+  // lets through ends nothing either: judged by who refused it.
+  const refusal = `${GRANTS_REVOKE_REFUSAL.status} ${GRANTS_REVOKE_REFUSAL.code}`;
+  const wantRevoke = `the revoke of a grant of a session that does not act for ${person} is refused by Dispatch itself, ${refusal}`;
+  if (probe === "" || !GRANT_ID.test(probe)) {
+    rows.add({
+      row: revokeRow,
+      want: wantRevoke,
+      got:
+        probe === ""
+          ? "OUTSIDE_GRANTS_PROBE_ID is not set, so no grant was named to revoke"
+          : "OUTSIDE_GRANTS_PROBE_ID is no grant id (a UUID), so nothing was revoked",
+      verdict: "UNKNOWN",
+    });
+    return rows.finish();
+  }
+  // The probe's precondition, read the moment before the revoke: where the list showed the probe
+  // grant (as a list Dispatch let through does), it must still name no approver and no operator,
+  // the grant no person may end at the broker. One that names either, the person among them, is
+  // left alone.
+  if (probeSeen !== undefined) {
+    const fields = [
+      member(probeSeen, "approver") === null ? "" : "approver",
+      member(member(probeSeen, "enrollment"), "operator") === "" ? "" : "enrollment.operator",
+    ].filter((field) => field !== "");
+    if (fields.length > 0) {
+      rows.add({
+        row: revokeRow,
+        want: wantRevoke,
+        got: `the list shows the probe grant with ${fields.join(" and ")} set, so a revoke let through could end it; nothing was revoked`,
+        verdict: "UNKNOWN",
+      });
+      return rows.finish();
+    }
+  }
+  try {
+    const answer = await fetch(
+      `${origin}/api/v1/credential-grants/${encodeURIComponent(probe)}/revoke`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(PAGE_MS),
+      }
+    );
+    const body = await answer.json().catch(() => undefined);
+    const said = statusWords(answer.status, body);
+    if (answer.ok) {
+      rows.add({
+        row: revokeRow,
+        want: wantRevoke,
+        got: `answered ${said}: Dispatch let the revoke through, and the broker took it`,
+        verdict: "FAIL",
+      });
+    } else if (said === refusal) {
+      rows.add({ row: revokeRow, want: wantRevoke, got: `refused ${said}`, verdict: "PASS" });
+    } else if (said === `${GRANTS_REVOKE_RELAYED.status} ${GRANTS_REVOKE_RELAYED.code}`) {
+      rows.add({
+        row: revokeRow,
+        want: wantRevoke,
+        got: `answered ${said}, the broker's refusal: Dispatch relayed the revoke to the broker`,
+        verdict: "FAIL",
+      });
+    } else {
+      rows.add({ row: revokeRow, want: wantRevoke, got: `answered ${said}`, verdict: "UNKNOWN" });
+    }
+  } catch (error) {
+    rows.add({
+      row: revokeRow,
+      want: wantRevoke,
+      got: `the revoke got no answer: ${messageOf(error)}`,
+      verdict: "UNKNOWN",
+    });
   }
   return rows.finish();
 }
@@ -2558,6 +2853,9 @@ if (import.meta.main) {
       case "revoke":
         code = await revoke(env);
         break;
+      case "grants":
+        code = await grants(env);
+        break;
       case "t5":
         code = await t5(env);
         break;
@@ -2569,7 +2867,7 @@ if (import.meta.main) {
         break;
       default:
         console.log(
-          `UNKNOWN: usage: bun outside-edge.ts [run | approve <code> | revoke | t5 | hold | release], not ${command}`
+          `UNKNOWN: usage: bun outside-edge.ts [run | approve <code> | revoke | grants | t5 | hold | release], not ${command}`
         );
         code = 2;
     }

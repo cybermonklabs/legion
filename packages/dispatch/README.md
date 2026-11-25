@@ -1019,6 +1019,18 @@ step before it failed is `UNKNOWN`, never run on nothing:
    count, naming the host. A threshold of a host the run asked nothing, or one a run that did
    not reach every step stayed under, is `UNKNOWN`.
 
+With `OUTSIDE_EDGE_STEPS=sign-in`, `run` makes step 1 and step 4 alone, for an edge that serves the
+outside origin and no broker or listener yet. It reads no `OUTSIDE_PEER_SESSION`,
+`OUTSIDE_BROKER_URL` or `OUTSIDE_LISTENER_URL`, nor `OUTSIDE_EDGE_REPLY_SECONDS` or
+`OUTSIDE_EDGE_LOGIN_SECONDS`; it stops after the `projects` row, and judges only the rules of
+`OUTSIDE_EDGE_LIMITS` whose host is the link's, the one host it asks. It makes no `device-login` or
+`relay` row and no row of another host's rule: each is printed as
+`outside-edge: not run: <row>: <why>`, a line that is no row, so none reads `PASS` and none holds
+the verdict back. A sign-in that did not pass makes `projects` `UNKNOWN`, not run. It refuses,
+`UNKNOWN` and exit 2, a limits file that names no rule of the link's host (step 4 would judge
+nothing), `OUTSIDE_TAILNET_USER_CODE` (an approval it does not make), and any other value of
+`OUTSIDE_EDGE_STEPS`. It keeps the signed-in state `t5` reads.
+
 `bun e2e/acceptance/outside-edge.ts approve <code>` approves one more code in the browser state
 the run kept in `OUTSIDE_EDGE_STATE` (another check that starts a device login of its own calls
 it), `UNKNOWN` where the page could not be driven, each answer on one line, and `revoke` ends each recorded device login on
@@ -1027,6 +1039,17 @@ variable names one device-login code, matched whatever its letter case and with 
 hyphen, so `ABCD-EFGH` and `abcdefgh` keep the same login; it is no list and no prefix. A row passes
 only when the list, read again after the revoke, no longer holds the login, and reads `UNKNOWN`
 when the list gave no answer, before the revoke or after it.
+`grants` reads, with the kept cookie, what the person reaches of other sessions' credential
+grants: row `grants-list`, `GET /api/v1/credential-grants?approver=me`, passes on 200 holding only
+grants whose enrollment names the person as its operator and fails on 200 holding any other,
+naming how many and no grant's id or secret; row `grants-revoke`, the revoke of the grant
+`OUTSIDE_GRANTS_PROBE_ID` names, passes only on Dispatch's own refusal, 403 `RESTRICTED_MEMBER`,
+and fails on a 2xx or on the broker's 403 `NOT_APPROVER`, which shows Dispatch relayed it. Any
+other answer, or none, is `UNKNOWN`, and so is the revoke with no probe id or one that is no
+UUID, which revokes nothing. Its caller names a grant the broker lets no person end (no approver,
+no operator), so a revoke let through ends nothing; where the list just read shows that grant with
+`approver` or `enrollment.operator` set, no revoke is sent and the row is `UNKNOWN`. The rows go
+to `OUTSIDE_EDGE_GRANTS` too (`<state>/outside-edge-grants.tsv` when unset).
 `t5` is the browser's half of a delisting window: until `OUTSIDE_T5_DEADLINE` it asks
 `/auth/whoami` with the kept cookie, and once that is answered 401 it tries the kept passkey in a
 fresh browser, writing the rows `T5-cookie` and `T5-passkey` to `OUTSIDE_T5_TSV`. `T5-passkey`
@@ -1082,13 +1105,19 @@ took by then unregistered.
 
 `bun run test:harness e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts
 e2e/__tests__/outside-edge-hold.test.ts` drives it. The input rows run anywhere, and so does the row
-that gives `run`, `revoke` and `release` a state they cannot use (`UNKNOWN`, exit 2), and the row
-that refuses `OUTSIDE_EDGE_LOGIN_SECONDS` outside the driver's own test. The control rows
+that gives `run`, `revoke` and `release` a state they cannot use (`UNKNOWN`, exit 2), the row
+that refuses `OUTSIDE_EDGE_LOGIN_SECONDS` outside the driver's own test, and the rows of the sign-in
+steps' inputs: no peer, broker or listener read, and a tailnet code, a limits file with no rule of
+the link's host and any other `OUTSIDE_EDGE_STEPS` refused. The control rows
 run the driver against an outside origin stand-in (`e2e/__tests__/outside-edge-origin-stand-in.ts`):
 `t5` against each answer of the passkey sign-in that is not its refusal (no answer, 404, 429,
 another code, a refusal whose body never comes) and a 2xx whose body never comes (`FAIL`),
 `revoke` against a revoke that ends nothing and a list that gives no answer before or after the
-revoke, the run against a link whose page does not load or names the link, step 1 against each
+revoke, `grants` against Dispatch's refusal, the broker's relayed refusal, a 2xx, a list of
+another session's grant, other answers, and no probe id, one that is no UUID or no cookie, the
+run against a link whose page does not load or names the link, the sign-in steps alone
+against a sign-in that passes, one refused and a project list that is no answer (`sign-in`,
+`projects` and the link host's rules, and each other row a line `not run`), step 1 against each
 way a sign-in falls short after its page loaded (no Create button, no sign-in, a refusal, no
 passkey, another origin, no cookie, no person, no answer, a read whose body never comes after its
 status), a browser that ends while it waits and a page that holds its main thread while the
@@ -1135,11 +1164,12 @@ names the machine `outside-edge-e2e` in each registration, and `hold` and `relea
 it, then `approve`, `revoke` and `t5` before and after the owner takes them off, and `t5` for a
 person still listed, whose restored passkey signs them in; a person on a second project fails
 step 1 naming it; a peer that never answers fails step 3 naming the peer; a threshold of 1 fails
-step 4 naming the host. They need `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, Chromium and
-the built dashboard (`bun run build:web`), and skip with the reason printed without a Postgres
-provider. CI runs them in `.github/workflows/dispatch-browser.yaml`'s two-process job, which only
-the full lane runs, and the rows of `outside-edge-hold.test.ts` in `ci.yaml`'s `dispatch-ui` job
-with the rest of `e2e/__tests__`.
+step 4 naming the host; and the sign-in steps alone pass with no peer, broker or listener, judging
+the outside host's rules alone. They need `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`,
+Chromium and the built dashboard (`bun run build:web`), and skip with the reason printed without a
+Postgres provider. CI runs them in `.github/workflows/dispatch-browser.yaml`'s two-process job,
+which only the full lane runs, and the rows of `outside-edge-hold.test.ts` in `ci.yaml`'s
+`dispatch-ui` job with the rest of `e2e/__tests__`.
 
 `e2e/acceptance/restricted-sweep.sh` is the driver of the check `c-restricted-sweep`: a read sweep
 of a deployment as a restricted member, for the objects of one project whose access list does not

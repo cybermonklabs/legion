@@ -167,6 +167,11 @@ function peak(times: readonly number[], windowMs: number): number {
   return most;
 }
 
+/** The name of `limit`'s row: `limit-<priority>-<seconds>s`. */
+export function limitRow(limit: Limit): string {
+  return `limit-${limit.priority}-${limit.seconds}s`;
+}
+
 /** What step 4 found: a row per threshold, and the peak per minute of each host the run asked. */
 export interface Judged {
   readonly rows: Row[];
@@ -208,7 +213,7 @@ export function judgeLimits(
   const rows = [...limits]
     .sort((a, b) => a.priority - b.priority || a.seconds - b.seconds)
     .map((limit): Row => {
-      const row = `limit-${limit.priority}-${limit.seconds}s`;
+      const row = limitRow(limit);
       const path = limit.match === "any" ? "" : ` ${limit.path}`;
       const want = `at most ${limit.count / 2} requests in ${limit.seconds} s to ${limit.host} ${limit.match}${path} (half of ${limit.count})`;
       if (!byHost.has(limit.host)) {
