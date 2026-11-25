@@ -74,4 +74,10 @@ const (
 	// PassedNotResumable is an answered root that may not resume in its own session
 	// (workflow.Unresumable).
 	PassedNotResumable SlotPassedReason = "not_resumable"
+	// PassedSignal is a candidate below P0 that a signal with a limit holds: admission by signals
+	// (SlotRule.SignalsLet) lets no start through while a signal binds (admit's capLets).
+	PassedSignal SlotPassedReason = "signal"
+	// PassedTick is a candidate below P0 that a tick's pass leaves for an event's or a signal's
+	// deadline: admission by signals starts nothing below P0 at the tick (SlotRule.SignalsLet).
+	PassedTick SlotPassedReason = "tick"
 )

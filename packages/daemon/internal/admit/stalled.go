@@ -141,14 +141,15 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //     pending notice again, and the mark is written only for a row that went into the outbox.
 //
 // The liveness clause reads the slots this pass already holds, what the caller handed over, the
-// P0 bound the pass admits under (p0Bound, nil for none) and the trees R6 counts at work
+// pass's gate (the P0 bound it admits under, nil for none, and the signals it admits below P0 by:
+// passGate) and the trees R6 counts at work
 // (lineCanMove). Those trees are the set step 2 built where step 2 needed it, and are built here
 // otherwise, so the pass builds the set at most once and makes its one read at most once, and the
 // clause is answered only once a root has come through the bound, the measure and the
 // registration above.
 func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	facts record.LineFacts, slots []record.Slot, line []record.LineEntry, dropped []record.HeldIssue,
-	rows map[string]blockers.Row, floor stallFloor, p0Bound *int,
+	rows map[string]blockers.Row, floor stallFloor, gate passGate,
 ) error {
 	if a.stalledTreeNotice <= 0 {
 		return nil
@@ -268,7 +269,9 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 			return err
 		}
 	}
-	canMove := a.lineCanMove(issues, facts, slots, holds, working, rows, p0Bound)
+	// The measure asks whether the line could move, as the pass of an event judges it: a tick's
+	// own bar on a start below P0 (passGate.asEvent) must not read as a line that is stuck.
+	canMove := a.lineCanMove(issues, facts, slots, holds, working, rows, gate.asEvent())
 	var stopped []record.Issue
 	named := 0
 	for _, root := range stalled {
@@ -753,7 +756,7 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 // It is answered once per pass, by the caller, and never per tree: the question is the
 // project's and its answer is the same for every tree of the pass.
 func (a *Admission) lineCanMove(issues []record.Issue, facts record.LineFacts, slots []record.Slot, holds lineHolds,
-	working map[string]struct{}, rows map[string]blockers.Row, p0Bound *int,
+	working map[string]struct{}, rows map[string]blockers.Row, gate passGate,
 ) bool {
 	if len(working) > 0 {
 		return true
@@ -780,7 +783,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, facts record.LineFacts, s
 		lending = coversOf(issues, ownSlots(issues, slots), rows, facts)
 	}
 	for _, entry := range holds.line {
-		if len(blockers.LineWaitsOn(rows, entry)) == 0 && a.capLets(entry, held, facts, lending, p0Bound) {
+		if len(blockers.LineWaitsOn(rows, entry)) == 0 && a.capLets(entry, held, facts, lending, gate) {
 			// An entry the promotion of this very pass starts: the line moves.
 			return true
 		}

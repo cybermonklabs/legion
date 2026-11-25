@@ -331,7 +331,7 @@ func slotRuleReaders() []slotRuleReader {
 				"with a grace keeps it while the wait is younger than the grace",
 		})
 	}
-	return append(rows,
+	rows = append(rows,
 		slotRuleReader{
 			reader:  "record.NeedsSlot in releaseSlots: the mark of a release for a wait",
 			changes: []string{"KeepsSlotIn"},
@@ -1199,6 +1199,7 @@ func slotRuleReaders() []slotRuleReader {
 				"back while it waited keeps the place of that release, ahead of every slot given back after it",
 		},
 	)
+	return append(rows, signalRuleReaders()...)
 }
 
 // conflictOutcome is the outcome of the two rows of the conflict path in testing: a root in testing

@@ -251,6 +251,9 @@ var FactSources = map[string]FactSource{
 		"(cybermonklabs/legion#4611), which arrived after every window this tool has recorded, so no record holds a line of it"},
 	"TaskStopped": {Way: FactUnrecorded, From: "the API act stop_task, an owner's stop of a task " +
 		"(cybermonklabs/legion#4611), which arrived after every window this tool has recorded, so no record holds a line of it"},
+	"SignalDeadline": {Way: FactUnrecorded, From: "the moment a signal that a rule admits by would cross its limit with no event " +
+		"(intake.SignalDeadline, admission's own timer fact): no daemon release emits it and no recorded window holds a line of it, " +
+		"so the replay injects none until it supplies the signals to the pass and emits the fact at each deadline of a signal rule"},
 
 	// The daemon's own producers, made by the replay as the daemon makes them.
 	"ControllerTick":           {Way: FactProduced, From: "the replay's ticks, a minute after each boot and every tick interval, observing from the shadow the keys blockers.WaitedOn selects"},

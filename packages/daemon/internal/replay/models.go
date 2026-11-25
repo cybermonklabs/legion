@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sort"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // The load models of R11 (spec R11, plan t31): a replay keeps each work segment's recorded length,
@@ -592,7 +594,7 @@ type queueExit struct {
 // flight giving none. A day's recorded median wait is that of the waits that left the queue in its
 // record, and its modelled median the median, over those waits and every draw, of the wait's issues
 // in flight times the draw.
-func (f modelFit) queue(waits []queueWait) LoadModel {
+func (f modelFit) queue(waits []signals.Wait) LoadModel {
 	m := newModel(ModelQueue, SignalQueue, queueForm)
 	record := f.recordOf(SignalQueue, &m, reasonNoQueue)
 	if len(record) == 0 {
@@ -601,10 +603,10 @@ func (f modelFit) queue(waits []queueWait) LoadModel {
 	var exits []queueExit
 	var draws []float64
 	for _, wait := range waits {
-		if wait.left.IsZero() || wait.left.Before(f.w.From) || !wait.left.Before(f.w.To) || !f.w.Recorded(SignalQueue, wait.left) {
+		if wait.Left.IsZero() || wait.Left.Before(f.w.From) || !wait.Left.Before(f.w.To) || !f.w.Recorded(SignalQueue, wait.Left) {
 			continue
 		}
-		exit := queueExit{left: wait.left, hours: wait.left.Sub(wait.added).Hours(), inFlight: float64(f.flight.at(wait.added))}
+		exit := queueExit{left: wait.Left, hours: wait.Left.Sub(wait.Added).Hours(), inFlight: float64(f.flight.at(wait.Added))}
 		exits = append(exits, exit)
 		if exit.inFlight > 0 {
 			draws = append(draws, exit.hours/exit.inFlight)

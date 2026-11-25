@@ -595,6 +595,22 @@ type ProjectResumed struct{}
 
 func (ProjectResumed) namedIssue() (string, bool) { return "", false }
 
+// SignalDeadline is the moment a signal that admission by signals reads would cross its limit with
+// no event, applied as a synthetic fact and never decoded from an event: the one admission pass
+// that a project's one timer asks for at the next such moment. At is that moment. Admission
+// promotes on it as on every fact that is not a Dispatch issue, as a pass of kind deadline
+// (signals.PassDeadline), which starts below P0 where a tick's pass does not; the workflow engine
+// and the blockers mirror do nothing for it. It carries nothing else, since the pass reads the
+// whole project and the signals as its caller supplies them (admit.Admission.UseSignals).
+//
+// No live code emits it: the daemon registers no timer in this version, and a replay of a recorded
+// window emits none until it supplies the signals to the pass.
+type SignalDeadline struct {
+	At time.Time
+}
+
+func (SignalDeadline) namedIssue() (string, bool) { return "", false }
+
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
 	Repo    string

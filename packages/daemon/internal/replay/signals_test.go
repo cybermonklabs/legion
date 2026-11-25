@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 func TestEverySignalOfR11HasOneDefinition(t *testing.T) {
@@ -125,19 +126,19 @@ func unrecordedAt(at time.Time, why string) reading {
 }
 
 // checkReadings fails for each reading signal, read by at from r, gives otherwise than worked out.
-func checkReadings(t *testing.T, signal string, r *SignalRecord, at func(*SignalRecord, time.Time) SignalValue, readings []reading) {
+func checkReadings(t *testing.T, signal string, r *SignalRecord, at func(*SignalRecord, time.Time) signals.Value, readings []reading) {
 	t.Helper()
 	for _, want := range readings {
 		got := at(r, want.at)
 		if got.Recorded != want.recorded || want.recorded && got.Value != want.value {
-			t.Errorf("%s at %s = %s, want %s: %s", signal, want.at.Format(time.RFC3339), describeValue(got), describeValue(SignalValue{Recorded: want.recorded,
+			t.Errorf("%s at %s = %s, want %s: %s", signal, want.at.Format(time.RFC3339), describeValue(got), describeValue(signals.Value{Recorded: want.recorded,
 				Value: want.value}), want.why)
 		}
 	}
 }
 
 // describeValue is v as a reader of a failure reads it.
-func describeValue(v SignalValue) string {
+func describeValue(v signals.Value) string {
 	if !v.Recorded {
 		return "unrecorded"
 	}
@@ -232,16 +233,16 @@ func TestQueueWaitsCountEachEventOnceAcrossARenamedRepository(t *testing.T) {
 	added2, merged2 := event(21, 2, queueAdded, clock(4, 0)), event(22, 2, queueMerged, clock(6, 0))
 	added3, removed3 := event(31, 3, queueAdded, clock(7, 0)), event(32, 3, queueRemoved, clock(8, 0))
 	added4, merged4 := event(41, 4, queueAdded, clock(9, 0)), event(42, 4, queueMerged, clock(10, 0))
-	want := []queueWait{{added: clock(2, 0), left: clock(3, 0)}, {added: clock(4, 0), left: clock(6, 0)},
-		{added: clock(7, 0), left: clock(8, 0)}, {added: clock(9, 0), left: clock(10, 0)}}
-	describe := func(waits []queueWait) string {
+	want := []signals.Wait{{Added: clock(2, 0), Left: clock(3, 0)}, {Added: clock(4, 0), Left: clock(6, 0)},
+		{Added: clock(7, 0), Left: clock(8, 0)}, {Added: clock(9, 0), Left: clock(10, 0)}}
+	describe := func(waits []signals.Wait) string {
 		var spans []string
 		for _, wait := range waits {
 			left := "no end"
-			if !wait.left.IsZero() {
-				left = stamp(wait.left)
+			if !wait.Left.IsZero() {
+				left = stamp(wait.Left)
 			}
-			spans = append(spans, stamp(wait.added)+" to "+left)
+			spans = append(spans, stamp(wait.Added)+" to "+left)
 		}
 		return "[" + strings.Join(spans, ", ") + "]"
 	}
@@ -260,7 +261,7 @@ func TestQueueWaitsCountEachEventOnceAcrossARenamedRepository(t *testing.T) {
 			if err != nil {
 				t.Fatalf("queueWaits: %v", err)
 			}
-			if !slices.EqualFunc(got, want, func(a, b queueWait) bool { return a.added.Equal(b.added) && a.left.Equal(b.left) }) {
+			if !slices.EqualFunc(got, want, func(a, b signals.Wait) bool { return a.Added.Equal(b.Added) && a.Left.Equal(b.Left) }) {
 				t.Errorf("the queue's waits are %s, want %s", describe(got), describe(want))
 			}
 		})
@@ -429,7 +430,7 @@ func TestEachSignalAtAMoment(t *testing.T) {
 		})
 	})
 	t.Run("queue", func(t *testing.T) {
-		checkReadings(t, SignalQueue, signalRecordOf(t, queueWindow(t), DefaultIdleAfter), queueAt, []reading{
+		checkReadings(t, SignalQueue, signalRecordOf(t, queueWindow(t), signals.DefaultIdleAfter), queueAt, []reading{
 			recordedAs(clock(1, 0), 0, "at the start of the record's span, no pull request has waited"),
 			recordedAs(clock(3, 0), 1, "#1 left after an hour, and #2 has waited 30 minutes"),
 			recordedAs(clock(5, 0), 1.5, "the median of #1's hour and #2's first two hours; #2 has waited nothing again"),
@@ -439,7 +440,7 @@ func TestEachSignalAtAMoment(t *testing.T) {
 		})
 	})
 	t.Run("provider", func(t *testing.T) {
-		r := signalRecordOf(t, providerWindow(t), DefaultIdleAfter)
+		r := signalRecordOf(t, providerWindow(t), signals.DefaultIdleAfter)
 		checkReadings(t, SignalProvider, r, providerAt, []reading{
 			unrecordedAt(clock(9, 30), "the minute before, 09:29, is before the limit's first observation"),
 			recordedAs(clock(9, 31), 0.5, "the first minute of the record's span, 09:30: 3,000 of 6,000"),
@@ -450,14 +451,14 @@ func TestEachSignalAtAMoment(t *testing.T) {
 		})
 		for _, want := range []struct {
 			at   time.Time
-			want Refusals
+			want signals.RefusalCount
 			why  string
 		}{
-			{clock(9, 0), Refusals{}, "the record holds no minute before 09:00"},
-			{clock(9, 11), Refusals{Recorded: true, Provider: 2}, "the provider's 2 of the minute 09:10, with no limit of the project's in force"},
-			{clock(10, 2), Refusals{Recorded: true, Own: 3, Provider: 3}, "09:10's and 10:01's"},
-			{clock(10, 11), Refusals{Recorded: true, Own: 3, Provider: 1}, "09:10's left the hour at 10:11"},
-			{clock(10, 31), Refusals{Recorded: true, Own: 4, Provider: 1}, "10:01's and 10:30's"},
+			{clock(9, 0), signals.RefusalCount{}, "the record holds no minute before 09:00"},
+			{clock(9, 11), signals.RefusalCount{Recorded: true, Provider: 2}, "the provider's 2 of the minute 09:10, with no limit of the project's in force"},
+			{clock(10, 2), signals.RefusalCount{Recorded: true, Own: 3, Provider: 3}, "09:10's and 10:01's"},
+			{clock(10, 11), signals.RefusalCount{Recorded: true, Own: 3, Provider: 1}, "09:10's left the hour at 10:11"},
+			{clock(10, 31), signals.RefusalCount{Recorded: true, Own: 4, Provider: 1}, "10:01's and 10:30's"},
 		} {
 			if got := r.Refusals(want.at); got != want.want {
 				t.Errorf("refusals at %s = %+v, want %+v: %s", want.at.Format(time.RFC3339), got, want.want, want.why)
@@ -465,7 +466,7 @@ func TestEachSignalAtAMoment(t *testing.T) {
 		}
 	})
 	t.Run("kills", func(t *testing.T) {
-		checkReadings(t, SignalKills, signalRecordOf(t, killsWindow(t), DefaultIdleAfter), killsAt, []reading{
+		checkReadings(t, SignalKills, signalRecordOf(t, killsWindow(t), signals.DefaultIdleAfter), killsAt, []reading{
 			recordedAs(clock(9, 39), 0, "no kill yet"),
 			recordedAs(clock(9, 40), 1, "a kill counts from its own moment"),
 			recordedAs(clock(10, 40), 2, "09:40's kill left the hour at 10:40, and 09:50's and 10:35's count"),
@@ -475,7 +476,7 @@ func TestEachSignalAtAMoment(t *testing.T) {
 	})
 	t.Run("approvals", func(t *testing.T) {
 		w := approvalsWindow(t)
-		r := signalRecordOf(t, w, DefaultIdleAfter)
+		r := signalRecordOf(t, w, signals.DefaultIdleAfter)
 		for _, want := range []struct {
 			at   time.Time
 			asks []string
@@ -544,7 +545,7 @@ func TestEachSignalsNextCrossing(t *testing.T) {
 		})
 	})
 	t.Run("queue", func(t *testing.T) {
-		checkCrossings(t, SignalQueue, signalRecordOf(t, queueWindow(t), DefaultIdleAfter), queueNext, []crossing{
+		checkCrossings(t, SignalQueue, signalRecordOf(t, queueWindow(t), signals.DefaultIdleAfter), queueNext, []crossing{
 			{at: clock(9, 0), limit: 4, next: clock(10, 0), why: "up: #3, waiting from 06:00, reaches 4 hours at 10:00"},
 			{at: clock(15, 0), limit: 3, next: clock(16, 0), why: "down: #3's exit at 10:00 leaves the 6 hours at 16:00, and the median of #4's 2 hours and #5's 3 is 2.5"},
 			{at: clock(15, 0), limit: 5, why: "none: no pull request waits, and an exit leaving the 6 hours lowers the median"},
@@ -552,7 +553,7 @@ func TestEachSignalsNextCrossing(t *testing.T) {
 		})
 	})
 	t.Run("provider", func(t *testing.T) {
-		r := signalRecordOf(t, providerWindow(t), DefaultIdleAfter)
+		r := signalRecordOf(t, providerWindow(t), signals.DefaultIdleAfter)
 		checkCrossings(t, SignalProvider, r, providerNext, []crossing{
 			{at: clock(9, 31), limit: 0.75, next: clock(10, 1), why: "up: the minute 10:00 uses 0.8 of the limit"},
 			{at: clock(10, 2), limit: 1, next: clock(10, 3), why: "down: the minute 10:02 uses 0.9"},
@@ -567,7 +568,7 @@ func TestEachSignalsNextCrossing(t *testing.T) {
 		})
 	})
 	t.Run("kills", func(t *testing.T) {
-		checkCrossings(t, SignalKills, signalRecordOf(t, killsWindow(t), DefaultIdleAfter), killsNext, []crossing{
+		checkCrossings(t, SignalKills, signalRecordOf(t, killsWindow(t), signals.DefaultIdleAfter), killsNext, []crossing{
 			{at: clock(9, 50), limit: 2, next: clock(10, 40), why: "down: 09:40's kill leaves the hour at 10:40, leaving 1"},
 			{at: clock(10, 35), limit: 2, next: clock(10, 50), why: "down: at 10:40 3 fall to 2, which still binds, and at 10:50 to 1"},
 			{at: clock(10, 50), limit: 1, next: clock(11, 35), why: "down: 10:35's kill leaves the hour at 11:35"},

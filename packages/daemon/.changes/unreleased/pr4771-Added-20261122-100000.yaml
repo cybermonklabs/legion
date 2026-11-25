@@ -18,9 +18,9 @@ body: |-
     `validate` checks a replay against the record (`--main-only` runs the main branch alone, with
     its seeds), `forecast` checks it against a recorded change of the rule, and `compare` compares
     the rules on two windows, gives the reason for each rule, and writes each issue's first slot
-    and done time under each rule beside the record. `rules` prints the seventeen rules that a
+    and done time under each rule beside the record. `rules` prints the twenty rules that a
     replay can run, each with its commit: the daemon's own, the rules of three recorded windows
-    (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and thirteen candidates. The
+    (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and sixteen candidates. The
     daemon's own rule and every candidate place the line by Dispatch priority first, as the daemon
     does, and the rules of the recorded windows, whose releases came before that order, do not; the
     replay gives each issue the priority its recorded Dispatch events show. Among the candidates,
@@ -29,7 +29,9 @@ body: |-
     `rework-first-keep` place returned work first, `arrival-order` places every issue by its
     arrival, `p0-at-once` starts a P0 issue above the cap, `idle-return-1h` gives back the slot of
     a holder that waits on its children or on a person once none of its roles has had a turn for an
-    hour, and `p0-idle` joins the last two. The daemon keeps no first slot or arrival after a slot
+    hour, and `p0-idle` joins the last two. `signals` and `signals-backoff` admit below P0 by
+    signals, the second with an allowance that falls at each refusal and kill; a replay of this
+    version supplies them no signals, so they admit as `p0-at-once`. The daemon keeps no first slot or arrival after a slot
     goes back, so a replay keeps them in tables of its own. For each rule with a grace, `compare`
     names how many of the waits that gave a slot back in each window's record the grace keeps the
     slot through, and the slot-hours that it keeps. The tool writes nothing to a running daemon, to
@@ -51,7 +53,8 @@ body: |-
     reason. It also writes one `admission: slots reading` line at each controller tick, with that
     tick's slots reading, and one `workflow: a phase is held` line at each move of a phase into held
     and at each escalation of a hold, with the issue, its tree, the phase, the role and the reason.
-    The daemon's slot rule does not change.
+    The daemon's slot rule does not change. Its admission pass can read signals from a snapshot that
+    its caller supplies, and the daemon supplies none, so it admits as before.
 
     The migration `20261121103000_slots_reading_times` adds the tables `issue_holds` and
     `slot_waits` and the column `claims.stopped_at`. Before a rollback below this release, stop

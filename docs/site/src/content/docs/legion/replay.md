@@ -1174,6 +1174,8 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `p0-at-once` | `main` with an issue whose own priority is P0 started outside the cap, under the P0 bound, for the reason that an owner asked why a P0 issue cannot start at once. | `0d3786da` |
 | `idle-return-1h` | `main` with the slot of a holder that waits on its children or on a person given back once none of its roles had a turn for an hour, the holder keeping its place in the line, for the same owner's question. | `0d3786da` |
 | `p0-idle` | `p0-at-once` and `idle-return-1h` together, so that the comparison reads whether the two answers add up or overlap. | `0d3786da` |
+| `signals` | `main` with R10's start of a P0 issue outside the cap and admission by signals below P0: the next issue in the line's priority order starts while each signal that has a limit is under it and the holders below P0 are fewer than the ceiling, which the cap becomes, at the pass of an event or of a signal's deadline and never at the tick. | `0d3786da` |
+| `signals-backoff` | `signals` with an allowance that falls to 90% at each project-limit refusal or kill (rounded down, minimum 1) and rises by 1 each quiet hour up to the ceiling. | `0d3786da` |
 
 The commit of `main` is the commit at which the rule was first written as a value.
 A rule built on `main` that changes one choice carries the same commit, the code that its other choices come from.
@@ -1431,6 +1433,36 @@ p0-idle (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   the slot goes back at the ready mark: false
   a P0 starts above the cap: true
   an idle wait on children or a person gives the slot back after: 1h0m0s
+
+signals (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  the line stands by priority first: true
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  a P0 starts above the cap: true
+  an idle wait on children or a person gives the slot back after: 0s
+  admits below P0 by signals: ceiling
+
+signals-backoff (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  the line stands by priority first: true
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  a P0 starts above the cap: true
+  an idle wait on children or a person gives the slot back after: 0s
+  admits below P0 by signals: backoff
 ```
 
 Each line of a rule gives one choice:
@@ -1472,6 +1504,9 @@ Each line of a rule gives one choice:
 
 - `an idle wait on children or a person gives the slot back after`: how long a holder that waits on its children or on a person goes with no turn of any of its roles before it gives its slot back.
   `0s` gives no slot back for that.
+
+- `admits below P0 by signals`: printed only for a rule that admits by signals, with its mode: `ceiling`, where the cap becomes a ceiling, or `backoff`, where an allowance replaces it.
+  `signals` and `signals-backoff` name one; the rules before them print no such line.
 
 ### `wait-grace` and its grace
 
@@ -1619,6 +1654,28 @@ The line timeline places such a holder in the returned part as it places an issu
 It does not read the children or the person that the holder waits on, so it counts the holder as waiting only for a slot.
 The snapshot timeline counts the same holder as passed over while its children work, and a root that waits on a person as in no line, and `compare` gives that difference as the gap between the two timelines.
 
+### `signals` and `signals-backoff`
+
+The tool's spec asks whether signals can regulate admission in place of the cap, so these two candidates are `main` with R10's start of a P0 issue outside the cap and a mode of admission by signals.
+Below P0, the next issue in the line's priority order starts only while each signal that has a limit reads under it and the holders below P0 are fewer than the ceiling, which the cap becomes.
+A signal that has no limit holds no start, and neither does a signal that has no record at the moment of the pass.
+No pass takes a slot from a holder because a signal is over its limit, and every other hold on a start and every release stand as under `main`.
+
+The rule decides from the signals of the pass, their limits, the cap and the kind of the fact whose pass it is (`record.SlotRule.SignalsLet` and `signals.Decide`).
+An admission pass reads the signals once, from a snapshot that its caller supplies (`admit.Admission.UseSignals`).
+Where the caller supplies none, or says that admission by signals is off, the pass admits under the cap, whatever rule it judges by.
+The daemon's own rule admits by signals in the same way once its caller supplies a snapshot that names a mode, and the daemon supplies none in this version.
+The kind of the pass is an event for every fact but two: the controller's tick, and the signal deadline, `intake.SignalDeadline`, which is the moment at which a signal would cross its limit with no event.
+At the pass of a tick, the rule gives back each slot that `main` gives back, applies the P0 bound and starts each P0 issue that R10 starts, and starts no issue below P0 and returns none to a slot.
+At the pass of an event or of a deadline, it starts the next issue below P0 as the paragraph above says.
+No daemon emits the deadline fact in this version, and a replay emits none until it supplies the signals to its passes: a replay of this version supplies none, so a run under either rule reads no signal and admits as `p0-at-once`.
+
+`signals-backoff` replaces the ceiling by an allowance.
+The allowance starts at the ceiling.
+At each refusal by the project's own limit and at each kill, it becomes 90% of itself in whole numbers, rounded down, and at least 1.
+For each whole hour after the last of them, it rises by 1, up to the ceiling.
+The pass folds the history of refusals and kills up to the pass (`signals.Allowance`), so the same history gives the same allowance, and the moment of the next rise is one that a deadline can name (`signals.NextRise`).
+
 ## The branches
 
 A branch is one value of each knob that the record does not give.
@@ -1686,7 +1743,11 @@ A replay measures from the same states, so a reading of production and a replay 
 ## The signals
 
 The tool's spec names, in its R11, five signals that a rule can admit by: the idle share, the merge queue's wait, the model provider's headroom with its refusals, the memory guard's kills, and the approvals that wait on the project's default assignee.
-Each has one definition in the tool's code (`internal/replay/signals.go`), which reads it at any moment of a collected window from the window's own record.
+Each has one definition in the tool's code (`internal/signals`), over plain values that its caller supplies at a moment: the replay reads them from a collected window's own record (`internal/replay/signals.go`), and the daemon's admission pass reads them from its own events.
+Package `signals` imports the standard library alone, so the daemon imports no replay code.
+It also holds the pairing of the merge queue's events into waits and the turn of each ask by its events (`signals.WaitsOf` and `signals.NextAsk`), for a caller that reads the events one at a time (`signals.MergeQueue` and `signals.ApprovalState`), and the legal limit of each signal (`signals.CheckLimit`).
+A limit is legal where it is above 0 and at most 1 for the idle share, at most 10 for the provider's headroom and at most 168 for the queue's hours, and where it is a whole number from 1 to 1,000,000 for the refusals, the kills and the approvals.
+`legion replay signals --limit` is not a setting: it reads any limit at or above zero, and prints where a signal would cross it.
 Lower is better for each.
 
 A signal binds where the window holds a record of it and its value is at or above its limit, since a rule admits while each signal is under its limit.

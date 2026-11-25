@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // SlotRule is one rule of which issues hold one of the cap's admission slots and how the waiting
@@ -99,6 +100,15 @@ type SlotRule struct {
 	// given back after it, while it waits (Waiting). Zero, the daemon's own and every rule's but
 	// idle-return-1h's and p0-idle's, gives no slot back for idleness.
 	IdleReturn time.Duration
+	// Signals is the mode in which a pass under the rule admits below P0 by signals, as the
+	// tool's spec R11 gives it (signals.Ceiling: the cap becomes a ceiling, and a start needs
+	// each signal that has a limit under it; signals.Backoff: an allowance replaces the
+	// ceiling), read through SignalsLet by admit's capLets. The pass reads the signals from the
+	// snapshot its caller supplied (admit's UseSignals); with none, or one that is off, the
+	// pass admits under the cap as the daemon's own rule does. signals.Off, the daemon's own and
+	// every rule's but signals' and signals-backoff's, names no mode, so the pass takes the
+	// snapshot's, which no caller supplies in the daemon until it is turned on.
+	Signals signals.Mode
 }
 
 // LineOrder is the order of the waiting line, a SlotRule's choice.
@@ -357,12 +367,13 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
 // the replay's comparison runs beside it: the rules three recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the fourteen candidates of the
+// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the sixteen candidates of the
 // comparison (keep-past-review, blockers-first, returned-by-rank, cover, wait-grace and
 // wait-grace-1h, one rule at two graces, returned-by-first-slot, rework-first and
 // rework-first-keep, one order with and without the slot kept past the review, arrival-order,
-// before-p0, the daemon's own with no P0 started outside the cap, measured for reference, and
-// p0-at-once, idle-return-1h and p0-idle, two answers apart and together). The daemon's own rule
+// before-p0, the daemon's own with no P0 started outside the cap, measured for reference,
+// p0-at-once, idle-return-1h and p0-idle, two answers apart and together, and signals and
+// signals-backoff, which admit below P0 by signals). The daemon's own rule
 // orders the line by priority first since cybermonklabs/legion#5365, which the comparison ran as
 // the candidate priority-first before that change merged; each candidate, built from the daemon's
 // own, keeps that band, and the recorded rules, whose releases came before it, do not. `legion
@@ -372,7 +383,8 @@ func SlotRules() []SlotRule {
 	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), windowThreeRule(),
 		keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
 		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule(),
-		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), beforeP0Rule(), p0AtOnceRule(), idleReturnRule(), p0IdleRule()}
+		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), beforeP0Rule(), p0AtOnceRule(), idleReturnRule(), p0IdleRule(),
+		signalsRule(), signalsBackoffRule()}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
@@ -632,6 +644,43 @@ func p0IdleRule() SlotRule {
 		rule.P0AboveCap = true
 		rule.IdleReturn = idleReturn
 	})
+}
+
+// signalsRule is the daemon's own rule with R10's start of a P0 issue outside the cap
+// (P0AboveCap) and admission by signals below P0 (Signals, signals.Ceiling), a candidate that only
+// a replay runs: the next issue in the line's priority order starts while each signal that has a
+// limit is under it and the holders below P0 are fewer than the ceiling, which the cap becomes. It
+// starts an issue below P0 only at an admission pass that an event or a signal's deadline starts,
+// never at the daemon's tick; the tick still gives back each slot the daemon's own rule gives
+// back, and starts each P0 issue that R10 starts. No pass takes a slot from a holder because a
+// signal is over its limit.
+func signalsRule() SlotRule {
+	return mainRuleWith("signals", func(rule *SlotRule) {
+		rule.P0AboveCap = true
+		rule.Signals = signals.Ceiling
+	})
+}
+
+// signalsBackoffRule is signals with an allowance in place of the ceiling (signals.Backoff,
+// signals.Allowance): the allowance starts at the ceiling, is multiplied by 90% in integers,
+// rounded down and at least 1, at each refusal by the project's own limit and at each kill, and
+// rises by 1 for each hour with neither, up to the ceiling.
+func signalsBackoffRule() SlotRule {
+	return mainRuleWith("signals-backoff", func(rule *SlotRule) {
+		rule.P0AboveCap = true
+		rule.Signals = signals.Backoff
+	})
+}
+
+// SignalsLet is what r decides for an entry below P0 that takes one of the cap's slots at a pass of
+// kind, from the snapshot s the pass's caller supplied, the holders below P0 that the cap counts
+// (capped) and the cap as a ceiling: signals.Decide in the rule's own mode, or in the snapshot's
+// where the rule names none (Signals), so the daemon's own rule admits by signals once its caller
+// supplies a snapshot that says so, and every other rule keeps the cap where its caller supplies
+// none. It is a pure function of its arguments and decides nothing for an entry that starts outside
+// the cap (StartsOutsideCap), which only the P0 bound decides.
+func (r SlotRule) SignalsLet(kind signals.PassKind, s signals.Snapshot, capped, ceiling int) signals.Verdict {
+	return signals.Decide(r.OrMain().Signals.Or(s.Mode), kind, s, capped, ceiling)
 }
 
 // SlotRuleNamed is the rule SlotRules keeps under name, and whether it keeps one.

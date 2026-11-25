@@ -1,12 +1,10 @@
 package replay
 
 import (
-	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -14,38 +12,24 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
-// The definitions of R11's signals (spec R11): each signal of a collected window at a moment t,
-// read from the window's own record (SignalRecord), lower being better for each, and, for each
-// signal that can cross a limit with no event, the next moment after t at which it would
-// (SignalDefinition.Next). The docs page gives each a section of its own (replay.md, "The
-// signals").
-
-// DefaultIdleAfter is d, how long a slot holder has been idle before the idle signal counts it:
-// an hour, as R11 gives it. The comparison also reads d at 10 minutes and at 4 hours.
-const DefaultIdleAfter = time.Hour
-
-// The spans a signal counts its events over: the merge queue's exits over the 6 hours before a
-// moment, and the memory guard's kills and the provider's refusals over the hour before it.
-const (
-	queueExitSpan = 6 * time.Hour
-	killSpan      = time.Hour
-	refusalSpan   = time.Hour
-)
+// The definitions of R11's signals (spec R11) are package signals': each signal at a moment, lower
+// being better for each, and, for each signal that can cross a limit with no event, the next moment
+// after it at which it would. This file is the replay's adapter: it reads a collected window's own
+// record (SignalRecord) into the plain values those definitions take — the holders and kills and
+// waits of the trace and the launcher's and the queue's lines, the provider's minutes, each ask with
+// the people it can wait on — and says where the window's record holds each signal and where it
+// begins or stops. The coverage of the record, the minutes of the future the record already holds
+// and the decoding of its files and events stay here; the daemon's own admission pass reads the
+// same definitions from its events. The docs page gives each signal a section of its own
+// (replay.md, "The signals").
 
 // projectLimitScope is the scope the provider's record names the project's own limit by: its
 // limit over all its models, as t25's provider-record script writes it (ProviderMinute.LimitScope).
 // A limit of another scope is one model's own, which is no limit on the project's tokens.
 const projectLimitScope = "Claude"
-
-// SignalValue is one signal at a moment: its value, lower being better for every signal, and
-// whether the window holds a record of it there. A signal with no record is unrecorded, never
-// zero, and binds no rule (assumption 47).
-type SignalValue struct {
-	Recorded bool
-	Value    float64
-}
 
 // SignalDefinition is one signal of R11 as the tool defines it: its name, a key of a window's
 // signals map; At, its value at a moment; Next, the next moment after a moment at which it would
@@ -57,7 +41,7 @@ type SignalValue struct {
 // binding: at an edge of its record's span too, since an unrecorded signal binds nothing.
 type SignalDefinition struct {
 	Name      string
-	At        func(r *SignalRecord, at time.Time) SignalValue
+	At        func(r *SignalRecord, at time.Time) signals.Value
 	Next      func(r *SignalRecord, at time.Time, limit float64) (time.Time, bool)
 	EventOnly bool
 	Inputs    []string
@@ -90,7 +74,7 @@ type SignalRecord struct {
 	// kills is the moment of each kill the launcher's lines record, in order.
 	kills []time.Time
 	// waits is each wait of a pull request in the merge queue, by the moment it began.
-	waits []queueWait
+	waits []signals.Wait
 	// minutes is each minute of the provider's record, by its Unix time, and lastMinute the
 	// latest; covered is each moment the record begins or stops holding the minute before.
 	minutes    map[int64]ProviderMinute
@@ -165,17 +149,17 @@ func (r *SignalRecord) spanEdges(signal string, at time.Time) []time.Time {
 	return edges
 }
 
-// firstChange is the first of moments after at at which binds answers otherwise than at at, and
-// whether one does.
-func firstChange(at time.Time, moments []time.Time, binds func(time.Time) bool) (time.Time, bool) {
-	slices.SortFunc(moments, time.Time.Compare)
-	now := binds(at)
-	for _, moment := range slices.CompactFunc(moments, time.Time.Equal) {
-		if moment.After(at) && binds(moment) != now {
-			return moment, true
-		}
-	}
-	return time.Time{}, false
+// held is where the window's record holds signal, as the definitions read it.
+func (r *SignalRecord) held(signal string) signals.Coverage {
+	return signals.Coverage{Held: func(at time.Time) bool { return r.window.Recorded(signal, at) }}
+}
+
+// coverage is held with each edge of the record of signal after at, for a definition of the next
+// crossing.
+func (r *SignalRecord) coverage(signal string, at time.Time) signals.Coverage {
+	c := r.held(signal)
+	c.Edges = r.spanEdges(signal, at)
+	return c
 }
 
 // idleAt is the idle signal at at: the share of the slot holders whose state (R6's, as the slots
@@ -183,12 +167,9 @@ func firstChange(at time.Time, moments []time.Time, binds func(time.Time) bool) 
 // daemon's slot lines and the `supervise:` lines of each turn's start and end, as the window's
 // trace reads them. A holder's idle time is the later of the newest end of a turn of its claims
 // and the moment it took the slot it holds. A moment with no holder has a share of 0.
-func idleAt(r *SignalRecord, at time.Time) SignalValue {
-	if !r.window.Recorded(SignalIdle, at) {
-		return SignalValue{}
-	}
+func idleAt(r *SignalRecord, at time.Time) signals.Value {
 	holders, idle := r.idleHolders(at)
-	return SignalValue{Recorded: true, Value: idleShare(holders, idle, at, r.idleAfter)}
+	return signals.IdleAt(r.held(SignalIdle), holders, idle, at, r.idleAfter)
 }
 
 // idleNext is the idle signal's next crossing of limit after at: the holders standing as they do
@@ -197,28 +178,7 @@ func idleAt(r *SignalRecord, at time.Time) SignalValue {
 // where the record ends.
 func idleNext(r *SignalRecord, at time.Time, limit float64) (time.Time, bool) {
 	holders, idle := r.idleHolders(at)
-	moments := r.spanEdges(SignalIdle, at)
-	for _, since := range idle {
-		moments = append(moments, since.Add(r.idleAfter))
-	}
-	return firstChange(at, moments, func(t time.Time) bool {
-		return r.window.Recorded(SignalIdle, t) && idleShare(holders, idle, t, r.idleAfter) >= limit
-	})
-}
-
-// idleShare is the share of holders holders of which idle are idle since a moment at least after
-// before at, 0 where there is no holder.
-func idleShare(holders int, idle []time.Time, at time.Time, after time.Duration) float64 {
-	if holders == 0 {
-		return 0
-	}
-	long := 0
-	for _, since := range idle {
-		if !since.Add(after).After(at) {
-			long++
-		}
-	}
-	return float64(long) / float64(holders)
+	return signals.IdleNext(r.coverage(SignalIdle, at), holders, idle, at, r.idleAfter, limit)
 }
 
 // idleHolders is how many of the project's issues hold a slot at at, and the idle time of each of
@@ -298,150 +258,73 @@ func IdleShareOfState(body []byte, at time.Time, after time.Duration) (float64, 
 	if holders != state.Admission.Slots.InUse {
 		return 0, fmt.Errorf("replay: the state gives %d holders a slot, and its slots reading %d slots in use", holders, state.Admission.Slots.InUse)
 	}
-	return idleShare(holders, idle, at, after), nil
-}
-
-// queueWait is one wait of a pull request in the merge queue: from its added_to_merge_queue to the
-// merged or removed_from_merge_queue that ends it, its left zero while it stands at the record's
-// end.
-type queueWait struct {
-	added, left time.Time
+	return signals.IdleShare(holders, idle, at, after), nil
 }
 
 // queueWaits is each wait the queue files' lines record, by the moment it began. It reads the
-// events of every file together, each by the repository its url names and its pull request, and
-// each event id once, at the first line that carries it, the files in the order of their names:
-// GitHub answers a renamed repository's former name with the repository's own events, so a window
-// collected under both names holds some events in two files, and a pull request's events can be
-// split between them. Of each pull request's events in time order, the record's own order among
-// those of one moment, it makes a wait from each added_to_merge_queue of a pull request standing
-// in no wait to its next merged or removed_from_merge_queue, so a drop and a re-add are two waits,
-// and the removal GitHub records beside a merge ends nothing. It refuses a line ParseQueueLine
-// refuses.
-func queueWaits(queue map[string][]json.RawMessage) ([]queueWait, error) {
-	type pullRequest struct {
-		repo   string
-		number int
-	}
-	byPull := make(map[pullRequest][]QueueEvent)
-	seen := make(map[int64]bool)
+// events of every file together, the files in the order of their names, each by the repository its
+// url names and its pull request: GitHub answers a renamed repository's former name with the
+// repository's own events, so a window collected under both names holds some events in two files,
+// and a pull request's events can be split between them. Package signals pairs them
+// (signals.WaitsOf): each event id once, at the first line that carries it, and of each pull
+// request's events in time order, the record's own order among those of one moment, a wait from
+// each added_to_merge_queue of a pull request standing in no wait to its next merged or
+// removed_from_merge_queue, so a drop and a re-add are two waits, and the removal GitHub records
+// beside a merge ends nothing. It refuses a line ParseQueueLine refuses.
+func queueWaits(queue map[string][]json.RawMessage) ([]signals.Wait, error) {
+	var events []signals.QueueEvent
 	for _, file := range slices.Sorted(maps.Keys(queue)) {
 		for i, line := range queue[file] {
 			event, err := ParseQueueLine(line)
 			if err != nil {
 				return nil, fmt.Errorf("replay: line %d of the merge queue of %s: %w", i+1, file, err)
 			}
-			if seen[event.ID] {
-				continue
-			}
-			seen[event.ID] = true
-			pull := pullRequest{repo: event.Repo, number: event.PullRequest}
-			byPull[pull] = append(byPull[pull], event)
+			events = append(events, signals.QueueEvent{ID: event.ID, Repo: event.Repo, PullRequest: event.PullRequest, At: event.At,
+				Enters: event.Event == queueAdded})
 		}
 	}
-	var waits []queueWait
-	for _, pull := range slices.SortedFunc(maps.Keys(byPull), func(a, b pullRequest) int {
-		return cmp.Or(strings.Compare(a.repo, b.repo), cmp.Compare(a.number, b.number))
-	}) {
-		events := byPull[pull]
-		slices.SortStableFunc(events, func(a, b QueueEvent) int { return a.At.Compare(b.At) })
-		open := -1
-		for _, event := range events {
-			switch {
-			case event.Event == queueAdded && open < 0:
-				waits = append(waits, queueWait{added: event.At})
-				open = len(waits) - 1
-			case event.Event != queueAdded && open >= 0:
-				waits[open].left = event.At
-				open = -1
-			}
-		}
-	}
-	slices.SortStableFunc(waits, func(a, b queueWait) int { return a.added.Compare(b.added) })
-	return waits, nil
+	return signals.WaitsOf(events), nil
 }
 
 // queueAt is the queue signal at at, in hours: the larger of the median wait of the project's pull
 // requests that left the merge queue in the 6 hours before at, (at − 6h, at], and the wait so far
 // of the one longest in the queue at at, 0 where none left and none waits.
-func queueAt(r *SignalRecord, at time.Time) SignalValue {
-	if !r.window.Recorded(SignalQueue, at) {
-		return SignalValue{}
-	}
-	return SignalValue{Recorded: true, Value: r.queueWait(at, at).Hours()}
+func queueAt(r *SignalRecord, at time.Time) signals.Value {
+	return signals.QueueAt(r.held(SignalQueue), r.waits, at)
 }
 
 // queueNext is the queue signal's next crossing of limit, in hours, after at: the waits standing as
 // they do at at, the moment the wait of the pull request longest in the queue reaches the limit,
 // the moment an exit leaves the 6 hours, or an edge of the record's span.
 func queueNext(r *SignalRecord, at time.Time, limit float64) (time.Time, bool) {
-	reach := time.Duration(math.Ceil(limit * float64(time.Hour)))
-	moments := r.spanEdges(SignalQueue, at)
-	for _, wait := range r.waits {
-		switch {
-		case wait.added.After(at):
-		case wait.left.IsZero() || wait.left.After(at):
-			moments = append(moments, wait.added.Add(reach))
-		case wait.left.After(at.Add(-queueExitSpan)):
-			moments = append(moments, wait.left.Add(queueExitSpan))
-		}
-	}
-	return firstChange(at, moments, func(t time.Time) bool {
-		return r.window.Recorded(SignalQueue, t) && r.queueWait(t, at) >= reach
-	})
+	return signals.QueueNext(r.coverage(SignalQueue, at), r.waits, at, limit)
 }
 
-// queueWait is the queue signal at at as the record stands at known, at or before at: the waits
-// begun and the exits made by known, read at at.
-func (r *SignalRecord) queueWait(at, known time.Time) time.Duration {
-	var exits []time.Duration
-	var longest time.Duration
-	for _, wait := range r.waits {
-		switch {
-		case wait.added.After(known):
-		case wait.left.IsZero() || wait.left.After(known):
-			longest = max(longest, at.Sub(wait.added))
-		case wait.left.After(at.Add(-queueExitSpan)):
-			exits = append(exits, wait.left.Sub(wait.added))
-		}
+// series is the provider's minutes as the definitions read them: the minute that starts at start,
+// whether the record holds it, and the limit of the project's own in force in it where the headroom
+// is recorded there and one binds. The limit holds from one observation to the next (assumption 48,
+// the architect's D13), as the record writes it, so a minute before the first observation, a minute
+// of no limit (none, or 0, the limit taken away) and a minute of a limit of one model's own (any
+// scope but the project's, projectLimitScope) hold no record of the headroom, as does a minute
+// outside the record's span: there the headroom binds nothing (assumption 47). The refusals of a
+// minute are held wherever the record holds the minute, whatever the limit.
+func (r *SignalRecord) series(start time.Time) (signals.Minute, bool) {
+	line, held := r.minutes[start.Unix()]
+	if !held {
+		return signals.Minute{}, false
 	}
-	return max(medianDuration(exits), longest)
-}
-
-// medianDuration is the median of waits, the mean of the middle two of an even number, 0 for none.
-func medianDuration(waits []time.Duration) time.Duration {
-	if len(waits) == 0 {
-		return 0
+	minute := signals.Minute{Uncached: line.Uncached, Own: line.Own, Provider: line.Provider}
+	if limit, limited := line.projectLimit(); limited && r.window.Recorded(SignalProvider, line.Minute) {
+		minute.Limit = limit
 	}
-	slices.Sort(waits)
-	middle := len(waits) / 2
-	if len(waits)%2 == 1 {
-		return waits[middle]
-	}
-	return (waits[middle-1] + waits[middle]) / 2
-}
-
-// minuteBefore is the line of the provider's record of the minute before at: the last whole
-// minute that ends at or before at, and whether the record holds it.
-func (r *SignalRecord) minuteBefore(at time.Time) (ProviderMinute, bool) {
-	minute, held := r.minutes[at.Truncate(time.Minute).Add(-time.Minute).Unix()]
-	return minute, held
+	return minute, true
 }
 
 // providerAt is the provider's headroom signal at at: the project's uncached input tokens in the
 // minute before at over the limit in force in that minute, as the record writes the tokens, below
-// zero too. The limit holds from one observation to the next (assumption 48, the architect's
-// D13), as the record writes it, so a minute before the first observation, a minute of no limit
-// (none, or 0, the limit taken away) and a minute of a limit of one model's own (any scope but
-// the project's, projectLimitScope) hold no record of the headroom, as does a minute outside the
-// record's span: there the headroom binds nothing (assumption 47).
-func providerAt(r *SignalRecord, at time.Time) SignalValue {
-	minute, held := r.minuteBefore(at)
-	limit, limited := minute.projectLimit()
-	if !held || !r.window.Recorded(SignalProvider, minute.Minute) || !limited {
-		return SignalValue{}
-	}
-	return SignalValue{Recorded: true, Value: float64(minute.Uncached) / float64(limit)}
+// zero too (series, signals.ProviderAt).
+func providerAt(r *SignalRecord, at time.Time) signals.Value {
+	return signals.ProviderAt(r.series, at)
 }
 
 // projectLimit is the limit of the project's own in force in m, and whether one is: a limit above
@@ -458,107 +341,45 @@ func (m ProviderMinute) projectLimit() (int64, bool) {
 // which the record's series, read as providerAt reads it, starts or stops binding, up to the
 // boundary after the record's last minute.
 func providerNext(r *SignalRecord, at time.Time, limit float64) (time.Time, bool) {
-	binds := func(t time.Time) bool {
-		value := providerAt(r, t)
-		return value.Recorded && value.Value >= limit
-	}
-	now := binds(at)
-	for boundary := at.Truncate(time.Minute).Add(time.Minute); !boundary.After(r.lastMinute.Add(2 * time.Minute)); boundary = boundary.Add(time.Minute) {
-		if binds(boundary) != now {
-			return boundary, true
-		}
-	}
-	return time.Time{}, false
+	return signals.ProviderNext(r.series, at, r.lastMinute.Add(2*time.Minute), limit)
 }
-
-// Refusals is the refusals part of the provider's signal at a moment (SignalRecord.Refusals): the
-// refusals of the hour before it, each by the limit that gave it, the project's own (Own) or the
-// provider's (Provider), as the record splits them (assumption 46), and whether the record holds
-// the minute before it.
-type Refusals struct {
-	Recorded      bool
-	Own, Provider int64
-}
-
-// Count is every refusal r counts, of either limit: the value a limit of the refusals reads.
-func (r Refusals) Count() int64 { return r.Own + r.Provider }
 
 // Refusals is the provider's refusals at at: those of each minute of the record that ended in the
 // hour before at, (at − 1h, at], since a minute's refusals are known at its end. The record holds
 // them where it holds the minute before at, whatever the limit.
-func (r *SignalRecord) Refusals(at time.Time) Refusals {
-	return r.refusals(at, at)
+func (r *SignalRecord) Refusals(at time.Time) signals.RefusalCount {
+	return signals.RefusalsAt(r.series, at)
 }
 
 // NextRefusals is the next crossing after at of limit by the count of refusals, the refusals
 // standing as they do at at: the moment an old refusal leaves the hour, or the record begins or
 // stops holding the minute before. Refusals come only at events, so the count rises at none.
 func (r *SignalRecord) NextRefusals(at time.Time, limit float64) (time.Time, bool) {
-	moments := slices.Clone(r.covered)
-	for minute := at.Truncate(time.Minute).Add(-refusalSpan); minute.Before(at.Truncate(time.Minute)); minute = minute.Add(time.Minute) {
-		if line, held := r.minutes[minute.Unix()]; held && line.Own+line.Provider > 0 {
-			moments = append(moments, minute.Add(time.Minute+refusalSpan))
-		}
-	}
-	return firstChange(at, moments, func(t time.Time) bool {
-		counted := r.refusals(t, at)
-		return counted.Recorded && float64(counted.Count()) >= limit
-	})
-}
-
-// refusals is the refusals at at as the record stands at known, at or before at: those of the
-// minutes that ended by known.
-func (r *SignalRecord) refusals(at, known time.Time) Refusals {
-	if _, held := r.minuteBefore(at); !held {
-		return Refusals{}
-	}
-	counted := Refusals{Recorded: true}
-	end := minTime(at, known).Truncate(time.Minute)
-	for minute := at.Truncate(time.Minute).Add(-refusalSpan); minute.Before(end); minute = minute.Add(time.Minute) {
-		if line, held := r.minutes[minute.Unix()]; held {
-			counted.Own += line.Own
-			counted.Provider += line.Provider
-		}
-	}
-	return counted
+	return signals.RefusalsNext(r.series, at, limit, r.covered)
 }
 
 // killsAt is the kills signal at at: the count of the memory guard's kills of the project's issue
 // pods in the hour before at, (at − 1h, at], one for each launcher line `launcher: memory guard:
 // ended`, so a kill counts from its own moment to an hour later.
-func killsAt(r *SignalRecord, at time.Time) SignalValue {
-	if !r.window.Recorded(SignalKills, at) {
-		return SignalValue{}
-	}
-	return SignalValue{Recorded: true, Value: float64(r.killCount(at, at))}
+func killsAt(r *SignalRecord, at time.Time) signals.Value {
+	return signals.KillsAt(r.held(SignalKills), r.kills, at)
 }
 
 // killsNext is the kills signal's next crossing of limit after at: the kills standing as they do
 // at at, the moment an old kill leaves the hour, or an edge of the record's span. Kills come only
 // at events, so the count rises at none.
 func killsNext(r *SignalRecord, at time.Time, limit float64) (time.Time, bool) {
-	moments := r.spanEdges(SignalKills, at)
-	for _, kill := range r.kills[upTo(r.kills, at.Add(-killSpan)):upTo(r.kills, at)] {
-		moments = append(moments, kill.Add(killSpan))
-	}
-	return firstChange(at, moments, func(t time.Time) bool {
-		return r.window.Recorded(SignalKills, t) && float64(r.killCount(t, at)) >= limit
-	})
-}
-
-// killCount is the kills of the hour before at that the record holds by known, at or before at.
-func (r *SignalRecord) killCount(at, known time.Time) int {
-	return max(upTo(r.kills, minTime(at, known))-upTo(r.kills, at.Add(-killSpan)), 0)
+	return signals.KillsNext(r.coverage(SignalKills, at), r.kills, at, limit)
 }
 
 // approvalsAt is the approvals signal at at: the count of the asks open at at, approval requests
 // among them, that wait on the project's default assignee then (waitingAsks). It changes only at
 // events, so it has no next crossing.
-func approvalsAt(r *SignalRecord, at time.Time) SignalValue {
+func approvalsAt(r *SignalRecord, at time.Time) signals.Value {
 	if !r.window.Recorded(SignalApprovals, at) {
-		return SignalValue{}
+		return signals.Value{}
 	}
-	return SignalValue{Recorded: true, Value: float64(len(r.waitingAsks(at)))}
+	return signals.Value{Recorded: true, Value: float64(len(r.waitingAsks(at)))}
 }
 
 // personAt is a person (a login, "" for nobody) from a moment on.
@@ -596,9 +417,9 @@ type askChange struct {
 func (c askChange) waits() bool { return c.open && c.human }
 
 // waitingAsks is the id of each ask at at that is open and waits on a person, the person being the
-// project's default assignee then: an ask waits on its asked_of person, else its issue's assignee,
-// else the project's default assignee at at, from the newest settings event before at that moves
-// it, else window.json's defaultAssignee.
+// project's default assignee then (signals.WaitsOnDefault): an ask waits on its asked_of person,
+// else its issue's assignee, else the project's default assignee at at, from the newest settings
+// event before at that moves it, else window.json's defaultAssignee.
 func (r *SignalRecord) waitingAsks(at time.Time) []string {
 	owner := personOn(r.defaults, at)
 	if owner == "" {
@@ -610,14 +431,7 @@ func (r *SignalRecord) waitingAsks(at time.Time) []string {
 		if i == 0 || !ask.changes[i-1].waits() {
 			continue
 		}
-		person := ask.changes[i-1].askedOf
-		if person == "" {
-			person = personOn(r.assignees[ask.issue], at)
-		}
-		if person == "" {
-			person = owner
-		}
-		if owner != "" && person == owner {
+		if signals.WaitsOnDefault(ask.changes[i-1].askedOf, personOn(r.assignees[ask.issue], at), owner) {
 			waiting = append(waiting, ask.id)
 		}
 	}
@@ -625,20 +439,14 @@ func (r *SignalRecord) waitingAsks(at time.Time) []string {
 }
 
 // readAsks reads every ask of the project's issues from their Dispatch events, the assignee of
-// each such issue, and each move of the project's default assignee. An ask's turn follows the
-// daemon's own reading of Dispatch's events (intake's decodeDispatchEvent) and Dispatch's
-// contract (packages/contracts/src/dispatch-api-events.ts and dispatch-api-asks.ts):
-//
-//   - ask.opened opens the ask waiting on a person, and any ask event whose payload's state is
-//     open reopens a closed one so (a re-ask, or a restored one); ask.answered and ask.resolved
-//     close it, a decline among them (resolution.kind declined);
-//   - an ask.edited that moves an approval request, its requested_version below its version,
-//     leaves it waiting on its agent, and any other edit leaves its turn as it was; its
-//     ask.handed_back, the agent handing it back to the person, leaves it waiting on the person;
-//   - a comment on an open ask (comment.created, comment.answered) leaves it waiting on whom its
-//     ask_waiting_on names: agent after a person's reply, human after an agent's;
-//   - asked_of, which every ask event's payload carries as the ask's row holds it (ask.opened,
-//     ask.asked_of, ask.edited among them), names the person it is asked of, null for none.
+// each such issue, and each move of the project's default assignee. An ask's turn is package
+// signals' (signals.NextAsk), which follows the daemon's own reading of Dispatch's events
+// (intake's decodeDispatchEvent) and Dispatch's contract
+// (packages/contracts/src/dispatch-api-events.ts and dispatch-api-asks.ts); this reads each event
+// of an ask (ask.opened, ask.asked_of, ask.edited, ask.handed_back, ask.answered, ask.resolved,
+// and a comment on an ask, comment.created and comment.answered, with its ask_waiting_on) into the
+// normalized event it turns the ask by. asked_of, which every ask event's payload carries as the
+// ask's row holds it, is named by the event or absent from it, and null names nobody.
 //
 // An issue's assignee is its issue events' assignee (issue.created, issue.updated, issue.closed).
 // It refuses an event that is not one JSON object of an event, and a settings event
@@ -671,7 +479,8 @@ func (r *SignalRecord) readAsks() error {
 }
 
 // readAskEvent reads one Dispatch event of key's issue into its ask's course or the issue's
-// assignee, as readAsks says.
+// assignee, as readAsks says: the event's payload decoded into the normalized event package signals
+// turns an ask by (signals.NextAsk), whose result is the ask's next change.
 func (r *SignalRecord) readAskEvent(key string, raw json.RawMessage, byID map[string]*askCourse) error {
 	var event struct {
 		Type      string          `json:"type"`
@@ -702,12 +511,14 @@ func (r *SignalRecord) readAskEvent(key string, raw json.RawMessage, byID map[st
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return err
 		}
-		ask, known := byID[payload.Ask]
-		if !known || payload.WaitingOn != "human" && payload.WaitingOn != "agent" {
+		course, known := byID[payload.Ask]
+		if !known {
 			return nil
 		}
-		last := ask.changes[len(ask.changes)-1]
-		ask.changes = append(ask.changes, askChange{at: event.CreatedAt, open: last.open, human: payload.WaitingOn == "human", askedOf: last.askedOf})
+		comment := signals.AskEvent{Kind: signals.AskCommented, Ask: payload.Ask, WaitingOn: signals.AskWaiting(payload.WaitingOn)}
+		if next, changed := signals.NextAsk(course.last(), true, comment); changed {
+			course.changes = append(course.changes, askChangeAt(event.CreatedAt, next))
+		}
 	case "ask.opened", "ask.asked_of", "ask.edited", "ask.handed_back", "ask.answered", "ask.resolved":
 		var payload struct {
 			ID       string          `json:"id"`
@@ -725,46 +536,46 @@ func (r *SignalRecord) readAskEvent(key string, raw json.RawMessage, byID map[st
 		if payload.ID == "" {
 			return fmt.Errorf("the %s event names no ask", event.Type)
 		}
-		ask, known := byID[payload.ID]
+		course, known := byID[payload.ID]
 		if !known {
-			ask = &askCourse{id: payload.ID, issue: key}
-			byID[payload.ID] = ask
+			course = &askCourse{id: payload.ID, issue: key}
+			byID[payload.ID] = course
 		}
-		var last askChange
-		if n := len(ask.changes); n > 0 {
-			last = ask.changes[n-1]
-		}
-		open, human := last.open, last.human
-		switch event.Type {
-		case "ask.opened":
-			open, human = true, true
-		case "ask.handed_back":
-			human = true
-		case "ask.edited":
-			if moved := payload.Approval; payload.Kind == record.AskApproval && moved != nil && moved.Version != nil &&
-				moved.RequestedVersion != nil && *moved.RequestedVersion < *moved.Version {
-				human = false
-			}
-		case "ask.answered", "ask.resolved":
-			open = false
-		}
+		turn := signals.AskEvent{Kind: signals.AskEventKind(strings.TrimPrefix(event.Type, "ask.")), Ask: payload.ID, Issue: key}
 		if payload.State != nil {
-			open = *payload.State == "open"
+			turn.State = signals.ReportsClosed
+			if *payload.State == "open" {
+				turn.State = signals.ReportsOpen
+			}
 		}
-		if open && !last.open {
-			human = true
+		if moved := payload.Approval; payload.Kind == record.AskApproval && moved != nil {
+			turn.Approval = &signals.AskApproval{Version: moved.Version, RequestedVersion: moved.RequestedVersion}
 		}
-		askedOf := last.askedOf
 		if payload.AskedOf != nil {
 			var person *string
 			if err := json.Unmarshal(payload.AskedOf, &person); err != nil {
 				return err
 			}
-			askedOf = personOf(person)
+			turn.AskedOfSet, turn.AskedOf = true, personOf(person)
 		}
-		ask.changes = append(ask.changes, askChange{at: event.CreatedAt, open: open, human: human, askedOf: askedOf})
+		next, _ := signals.NextAsk(course.last(), known, turn)
+		course.changes = append(course.changes, askChangeAt(event.CreatedAt, next))
 	}
 	return nil
+}
+
+// last is the ask as its newest change leaves it, the zero ask where it has none.
+func (c *askCourse) last() signals.Ask {
+	if len(c.changes) == 0 {
+		return signals.Ask{}
+	}
+	change := c.changes[len(c.changes)-1]
+	return signals.Ask{ID: c.id, Issue: c.issue, Open: change.open, Human: change.human, AskedOf: change.askedOf}
+}
+
+// askChangeAt is ask, as an event at at leaves it, a change of its course.
+func askChangeAt(at time.Time, ask signals.Ask) askChange {
+	return askChange{at: at, open: ask.Open, human: ask.Human, askedOf: ask.AskedOf}
 }
 
 // personOf is the login person names, "" for null.

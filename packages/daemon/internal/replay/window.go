@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // WindowFormat is the version of the recorded window's layout this package reads and writes,
@@ -41,13 +42,15 @@ const (
 	settingsFile = "settings/events.jsonl"
 )
 
-// The signals of R11, each by the name a window's signals map gives its record under.
+// The signals of R11 a window's signals map holds a record of, each by the name the map gives its
+// record under: the names package signals defines. The provider's refusals ride on the provider's
+// record, so the map names no record of them.
 const (
-	SignalIdle      = "idle"
-	SignalQueue     = "queue"
-	SignalProvider  = "provider"
-	SignalKills     = "kills"
-	SignalApprovals = "approvals"
+	SignalIdle      = signals.Idle
+	SignalQueue     = signals.Queue
+	SignalProvider  = signals.Provider
+	SignalKills     = signals.Kills
+	SignalApprovals = signals.Approvals
 )
 
 // windowSignals is every signal a window's signals map may name.

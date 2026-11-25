@@ -17,7 +17,7 @@ var fortyHex = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // candidates of the comparison.
 var keptRuleNames = []string{"main", "legion-v20.42.5", "legion-v19.57.3", "legion-v22.14.1", "keep-past-review", "blockers-first",
 	"returned-by-rank", "cover", "wait-grace", "wait-grace-1h", "returned-by-first-slot", "rework-first", "rework-first-keep", "arrival-order",
-	"before-p0", "p0-at-once", "idle-return-1h", "p0-idle"}
+	"before-p0", "p0-at-once", "idle-return-1h", "p0-idle", "signals", "signals-backoff"}
 
 // Every rule the repository keeps names the commit of cybermonklabs/legion its choices come from,
 // so a reader of a replay's result can read the code that made them (record.SlotRule.Commit): the
@@ -75,9 +75,9 @@ func TestEveryRuleNamesItsCommit(t *testing.T) {
 // The daemon admits as it did until R10 reaches it in cybermonklabs/legion#5488: the rule it is
 // built with (MainRule), the rules the recorded windows' daemons ran and before-p0 start no issue
 // outside the cap (P0AboveCap off), so a P0 issue below them waits for a slot of the cap as any
-// issue does, and the candidates that a replay runs R10 under, p0-at-once and p0-idle, start one
-// there. Every other rule the repository keeps is the daemon's own with another choice changed,
-// so it starts none either.
+// issue does, and the candidates that a replay runs R10 under, p0-at-once, p0-idle, signals and
+// signals-backoff, start one there. Every other rule the repository keeps is the daemon's own with
+// another choice changed, so it starts none either.
 func TestTheDaemonAndTheRecordedRulesStartNoP0OutsideTheCap(t *testing.T) {
 	urgent := Issue{Key: "ACME-1", Priority: P0}
 	if MainRule.P0AboveCap || MainRule.StartsOutsideCap(urgent) || (SlotRule{}).StartsOutsideCap(urgent) {
@@ -89,7 +89,7 @@ func TestTheDaemonAndTheRecordedRulesStartNoP0OutsideTheCap(t *testing.T) {
 			t.Errorf("the rule %q (kept: %t) starts a P0 issue outside the cap, and it must start none", name, kept)
 		}
 	}
-	on := map[string]bool{"p0-at-once": true, "p0-idle": true}
+	on := map[string]bool{"p0-at-once": true, "p0-idle": true, "signals": true, "signals-backoff": true}
 	for _, rule := range SlotRules() {
 		if got := rule.StartsOutsideCap(urgent); got != on[rule.Name] || rule.P0AboveCap != on[rule.Name] {
 			t.Errorf("the rule %q starts a P0 issue outside the cap: %t (P0AboveCap %t), want %t", rule.Name, got, rule.P0AboveCap, on[rule.Name])

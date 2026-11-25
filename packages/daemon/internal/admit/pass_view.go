@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -47,6 +48,11 @@ type PassView struct {
 	// them, as its record line names them (logPassMoves).
 	Given []record.SlotGiven
 	Taken []record.SlotTaken
+
+	// Kind is the kind of the fact whose pass this is: an event, a tick or a signal's deadline
+	// (signals.PassKind), which a replay records beside each slot the pass gave out. It is empty
+	// for the view of a moment no pass ran at (View).
+	Kind signals.PassKind
 }
 
 // UsePassObserver registers observe, which is handed the view of each admission pass once the
@@ -70,7 +76,7 @@ func (a *Admission) View(ctx context.Context, tx pgx.Tx) (PassView, error) {
 	if err != nil {
 		return PassView{}, fmt.Errorf("judge the line of %s: %w", a.project, err)
 	}
-	return a.passView(issues, slots, facts, rows, line, dropped, &passMoves{}, nil), nil
+	return a.passView(issues, slots, facts, rows, line, dropped, &passMoves{}, nil, ""), nil
 }
 
 // observePass hands the pass's view to the observer once the fact it ran in commits: the reads the
@@ -78,18 +84,19 @@ func (a *Admission) View(ctx context.Context, tx pgx.Tx) (PassView, error) {
 // moves. An admission with no observer gathers nothing.
 func (a *Admission) observePass(ctx context.Context, issues []record.Issue, slots []record.Slot, facts record.LineFacts,
 	rows map[string]blockers.Row, line []record.LineEntry, dropped []record.HeldIssue, moves *passMoves, promoted []string,
+	kind signals.PassKind,
 ) {
 	if a.observer == nil {
 		return
 	}
-	view, observe := a.passView(issues, slots, facts, rows, line, dropped, moves, promoted), a.observer
+	view, observe := a.passView(issues, slots, facts, rows, line, dropped, moves, promoted, kind), a.observer
 	store.OnCommit(ctx, func() { observe(view) })
 }
 
 // passView is the view of a pass over its reads and moves, its line less the members promoted
 // names.
 func (a *Admission) passView(issues []record.Issue, slots []record.Slot, facts record.LineFacts, rows map[string]blockers.Row,
-	line []record.LineEntry, dropped []record.HeldIssue, moves *passMoves, promoted []string,
+	line []record.LineEntry, dropped []record.HeldIssue, moves *passMoves, promoted []string, kind signals.PassKind,
 ) PassView {
 	gone := make(map[string]bool, len(promoted))
 	for _, key := range promoted {
@@ -102,5 +109,5 @@ func (a *Admission) passView(issues []record.Issue, slots []record.Slot, facts r
 		}
 	}
 	return PassView{Project: a.project, Cap: a.cap, Rule: a.engine.SlotRule(), At: a.now(), Issues: issues, Slots: slices.Clone(slots),
-		Facts: facts, Rows: rows, Line: waiting, Dropped: dropped, Given: slices.Clone(moves.given), Taken: slices.Clone(moves.taken)}
+		Facts: facts, Rows: rows, Line: waiting, Dropped: dropped, Given: slices.Clone(moves.given), Taken: slices.Clone(moves.taken), Kind: kind}
 }

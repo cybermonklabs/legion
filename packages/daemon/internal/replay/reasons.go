@@ -17,4 +17,6 @@ var candidateReasons = map[string]string{
 	"p0-at-once":             "The owner's direction: a P0 issue starts at once, outside the cap, and today's rule holds below P0. The replay reads what that costs the rest of the line.",
 	"idle-return-1h":         "An owner asked why urgent work cannot start at once: a slot that no role has used for an hour, while its issue waits on its children or on a person, goes to work that can start.",
 	"p0-idle":                "The two answers together, to read whether they add up or overlap.",
+	"signals":                "The owner's direction that admission by signals replace the cap: the cap becomes a ceiling only, and below P0 the next issue in the line starts only while each signal that has a limit is under it, at the pass of an event or of a signal's deadline and never at the tick. A P0 issue still starts at once, and no slot is taken back because a signal is over its limit.",
+	"signals-backoff":        "The same rule with an allowance in place of the ceiling: the allowance falls by a tenth, rounded down and never below 1, at each refusal by the project's own limit and at each kill, and rises by one for each hour with neither, up to the ceiling, so admission backs off when the project is refused and returns slowly.",
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/replay"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // newReplayCommand is `legion replay`, a developer's tool rather than an operator's: it replays a
@@ -560,9 +561,6 @@ Where the window holds the launcher's lines, it also prints the memory guard's k
 lines matched with the daemon's lines of the kills, kill by kill, and each kill one of the two
 lacks.`
 
-// replayLimitNames is every signal --limit can name: R11's five and the provider's refusals.
-var replayLimitNames = []string{replay.SignalIdle, replay.SignalQueue, replay.SignalProvider, "refusals", replay.SignalKills, replay.SignalApprovals}
-
 // newReplaySignalsCommand is `legion replay signals` (replay.SignalDefinitions, replay.MatchKills):
 // R11's signals of a recorded window at each moment named, read from its record with no replay.
 func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -575,8 +573,8 @@ func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
 	flags := cmd.Flags()
 	windowDir := flags.String("window", "", "the directory of the recorded window (required)")
 	atTexts := flags.StringArray("at", nil, "a moment to read the signals at, in RFC 3339, given once for each (required)")
-	limitTexts := flags.StringArray("limit", nil, "a limit as <signal>=<value>, the signal one of "+strings.Join(replayLimitNames, ", ")+", given once for each")
-	idleAfter := flags.Duration("idle-after", replay.DefaultIdleAfter, "d, how long a slot holder has been idle before the idle signal counts it")
+	limitTexts := flags.StringArray("limit", nil, "a limit as <signal>=<value>, the signal one of "+strings.Join(signals.Names(), ", ")+", given once for each")
+	idleAfter := flags.Duration("idle-after", signals.DefaultIdleAfter, "d, how long a slot holder has been idle before the idle signal counts it")
 	cmd.RunE = runs(func(context.Context, []string) int {
 		if missing := missingFlag(cmd, "window", "at"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
@@ -594,8 +592,8 @@ func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
 			name, value, named := strings.Cut(text, "=")
 			limit, err := strconv.ParseFloat(value, 64)
 			switch {
-			case !named || !slices.Contains(replayLimitNames, name):
-				return refuse(cmd, "--limit %q names no signal: give <signal>=<value>, the signal one of %s", text, strings.Join(replayLimitNames, ", "))
+			case !named || !slices.Contains(signals.Names(), name):
+				return refuse(cmd, "--limit %q names no signal: give <signal>=<value>, the signal one of %s", text, strings.Join(signals.Names(), ", "))
 			case err != nil || math.IsNaN(limit) || math.IsInf(limit, 0) || limit < 0:
 				return refuse(cmd, "--limit %q: the value is no number at or above zero", text)
 			}
@@ -609,7 +607,7 @@ func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
 			fmt.Fprintf(stderr, "legion replay signals: %v\n", err)
 			return 1
 		}
-		signals, err := replay.ReadSignalRecord(window, *idleAfter)
+		signalRecord, err := replay.ReadSignalRecord(window, *idleAfter)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay signals: %v\n", err)
 			return 1
@@ -620,17 +618,17 @@ func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
 			for _, def := range replay.SignalDefinitions() {
 				var next func(float64) (time.Time, bool)
 				if def.Next != nil {
-					next = func(limit float64) (time.Time, bool) { return def.Next(signals, at, limit) }
+					next = func(limit float64) (time.Time, bool) { return def.Next(signalRecord, at, limit) }
 				}
-				printReplaySignal(stdout, def.Name, replaySignalText(def.At(signals, at)), limits[def.Name], next)
+				printReplaySignal(stdout, def.Name, replaySignalText(def.At(signalRecord, at)), limits[def.Name], next)
 				if def.Name != replay.SignalProvider {
 					continue
 				}
-				refusals, text := signals.Refusals(at), "unrecorded"
+				refusals, text := signalRecord.Refusals(at), "unrecorded"
 				if refusals.Recorded {
 					text = fmt.Sprintf("%d (own %d, provider %d)", refusals.Count(), refusals.Own, refusals.Provider)
 				}
-				printReplaySignal(stdout, "refusals", text, limits["refusals"], func(limit float64) (time.Time, bool) { return signals.NextRefusals(at, limit) })
+				printReplaySignal(stdout, "refusals", text, limits["refusals"], func(limit float64) (time.Time, bool) { return signalRecord.NextRefusals(at, limit) })
 			}
 		}
 		if window.Launcher == nil {
@@ -657,7 +655,7 @@ func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
 
 // replaySignalText is a signal's value as `legion replay signals` prints it: the number, or
 // unrecorded.
-func replaySignalText(value replay.SignalValue) string {
+func replaySignalText(value signals.Value) string {
 	if !value.Recorded {
 		return "unrecorded"
 	}
@@ -1177,6 +1175,9 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 			fmt.Fprintf(stdout, "  the slot goes back at the ready mark: %t\n", rule.ReleaseAtReady)
 			fmt.Fprintf(stdout, "  a P0 starts above the cap: %t\n", rule.P0AboveCap)
 			fmt.Fprintf(stdout, "  an idle wait on children or a person gives the slot back after: %s\n", rule.IdleReturn)
+			if rule.Signals != signals.Off {
+				fmt.Fprintf(stdout, "  admits below P0 by signals: %s\n", rule.Signals)
+			}
 		}
 		return 0
 	})
@@ -1201,6 +1202,7 @@ type slotRuleView struct {
 	ReleaseAtReady        bool                `json:"releaseAtReady"`
 	P0AboveCap            bool                `json:"p0AboveCap"`
 	IdleReturn            string              `json:"idleReturn"`
+	Signals               signals.Mode        `json:"signals,omitempty"`
 }
 
 // slotRuleViewOf is rule as `legion replay rules --json` prints it (slotRuleView).
@@ -1208,7 +1210,7 @@ func slotRuleViewOf(rule record.SlotRule) slotRuleView {
 	return slotRuleView{Name: rule.Name, Commit: rule.Commit, KeepsSlotIn: rule.KeepsSlotIn, LinkWaitGivesBack: rule.LinkWaitGivesBack,
 		ChildrenWaitGivesBack: rule.ChildrenWaitGivesBack, WaitGrace: rule.WaitGrace.String(), WaitStopsPhase: rule.WaitStopsPhase,
 		Order: rule.Order, PriorityFirst: rule.PriorityFirst, Take: rule.Take, Conflict: rule.Conflict, ReleaseAtReady: rule.ReleaseAtReady,
-		P0AboveCap: rule.P0AboveCap,
+		P0AboveCap: rule.P0AboveCap, Signals: rule.Signals,
 		IdleReturn: rule.IdleReturn.String()}
 }
 

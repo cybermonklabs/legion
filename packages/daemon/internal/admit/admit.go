@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -135,6 +136,10 @@ type Admission struct {
 	// bound. nil, the daemon's own, reads no bound, as R10 has none unless one is configured; only a
 	// replay registers one, from its window's P0 bounds.
 	p0Bound func() *int
+
+	// signalRead is the signals a pass admits below P0 by (UseSignals, gateFor): nil in the
+	// daemon until a person turns admission by signals on, when every pass admits under the cap.
+	signalRead func(at time.Time) (signals.Snapshot, bool)
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -301,7 +306,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		return nil, nil, a.convergeEntries(ctx, tx)
 	}
 	if _, ok := fact.(intake.ControllerTick); ok {
-		_, returned, err := a.promote(ctx, tx)
+		_, returned, err := a.promoteHolds(ctx, tx, true, signals.PassTick)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -337,7 +342,11 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 
 	observation, ok := fact.(intake.DispatchIssue)
 	if !ok {
-		_, returned, err := a.promote(ctx, tx)
+		kind := signals.PassEvent
+		if _, deadline := fact.(intake.SignalDeadline); deadline {
+			kind = signals.PassDeadline
+		}
+		_, returned, err := a.promoteHolds(ctx, tx, true, kind)
 		return returned, nil, err
 	}
 	if err := a.applyReread(ctx, tx, observation.Reread); err != nil {
@@ -2094,7 +2103,9 @@ func (a *Admission) logOnCommit(ctx context.Context, msg string, args ...any) {
 // set at once, so this need only check membership. An admitted root's architect start is queued
 // behind a row creating its issue branch (record.IssueBranch), which the start waits for.
 func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, error) {
-	return a.promoteHolds(ctx, tx, true)
+	// The pass of an event: every fact but the controller's tick and a signal's deadline, which
+	// run their own (applyFact).
+	return a.promoteHolds(ctx, tx, true, signals.PassEvent)
 }
 
 // promoteHolds is promote; respectHolds false is release's own call, once every held key's own
@@ -2126,7 +2137,7 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // (logPassMoves), whichever return ends the pass. A pass that ends with no error hands what it
 // read, judged and moved to the admission's observer once its fact commits (observePass), which
 // only a replay registers.
-func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
+func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool, kind signals.PassKind) (int, []string, error) {
 	var moves passMoves
 	defer a.logPassMoves(ctx, &moves)
 	// A paused project promotes nothing (decision 11 of dispatch://INFRA-3759): no slot, no owed
@@ -2139,9 +2150,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err != nil || paused {
 		return 0, nil, err
 	}
-	// The P0 bound is read once for the pass, beside the pause, and the stall measure and the
-	// promotion below judge under it (capLets).
-	p0Bound := a.p0BoundNow()
+	// The P0 bound and the signals are read once for the pass, beside the pause (gateFor), and the
+	// stall measure and the promotion below judge under them (capHold).
+	gate := a.gateFor(kind)
+	p0Bound := gate.p0Bound
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
 	if err != nil {
 		return 0, nil, err
@@ -2291,11 +2303,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// holds now. It runs before the cap check below, because a deployment whose cap admits
 	// nothing still runs the trees it opened before and still owes its controller the news that
 	// one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor, p0Bound); err != nil {
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor, gate); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {
-		a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, nil)
+		a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, nil, kind)
 		return 0, released, nil
 	}
 	admitted := 0
@@ -2360,7 +2372,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// the wait. The phases are the pass's rule's (slotFor, over its facts), and so is
 			// what the cap lets through (capLets, with the slots its holders lend).
 			takes := slotFor(candidate, facts)
-			if !a.capLets(candidate, held, facts, lending, p0Bound) {
+			if reason := a.capHold(candidate, held, facts, lending, gate); reason != "" {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
 				// above and must not be read as one: a hold is an answer for every candidate
 				// behind it, because it says the pass does not yet know what this candidate is;
@@ -2388,7 +2400,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					a.logOnCommit(ctx, P0BoundRefusalLine, "issue", issue.Key, "p0_holders", held.P0, "p0_bound", boundWords(p0Bound),
 						"other_holders", held.Capped, "cap", a.cap)
 				}
-				moves.pass(candidate, place, record.PassedCap)
+				moves.pass(candidate, place, reason)
 				continue
 			}
 			if candidate.Kind == record.LineAnswered {
@@ -2654,7 +2666,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// every pass rather than waiting for a fact about it. The other half that once needed a pass
 	// of its own — a merger's READY the dropped step refused — went with READY: the merger merges
 	// the head it read and no gate refuses a completion (dispatch://INFRA-714 R2).
-	a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, promoted)
+	a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, promoted, kind)
 	return admitted, released, nil
 }
 
@@ -2730,8 +2742,9 @@ func slotFor(entry record.LineEntry, facts record.LineFacts) bool {
 
 // capLets says whether the cap and the P0 bound let the promotion start entry, given held, the
 // project's holders as the two count them under the pass's rule (record.SlotRule.HoldersOf),
-// facts, the pass's own, lending, the covers of the pass (covers), and p0Bound, the P0 bound the
-// pass admits under (nil for none). An entry that takes no slot (slotFor) starts whatever the cap
+// facts, the pass's own, lending, the covers of the pass (covers), and gate, what the pass read
+// once (passGate): the P0 bound it admits under (nil for none) and the signals it admits below P0
+// by, if any (capHold). An entry that takes no slot (slotFor) starts whatever the cap
 // says, and so does one that a counted waiter that waits on it offers its own slot to, under a rule
 // whose start may take a cover (record.TakeCover), which the waiter gives up for it (covers.take),
 // so the start leaves the count where it stood; a covered waiter holds no row, so held is the count
@@ -2750,17 +2763,49 @@ func slotFor(entry record.LineEntry, facts record.LineFacts) bool {
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
 // said the cap held a queued root in accepting, retro or merging that the promotion of the same pass started,
 // and told the controller of a stall that was not one.
-func (a *Admission) capLets(entry record.LineEntry, held record.SlotHolders, facts record.LineFacts, lending covers, p0Bound *int) bool {
+func (a *Admission) capLets(entry record.LineEntry, held record.SlotHolders, facts record.LineFacts, lending covers, gate passGate) bool {
+	return a.capHold(entry, held, facts, lending, gate) == ""
+}
+
+// capHold is why the cap's half holds entry, the word the pass's record gives for it, and "" where
+// the cap lets it through (capLets). A cap that admits nothing holds every entry. An entry that
+// takes no slot, or starts on a slot a waiter offers, is never held. An entry that starts outside
+// the cap is held by the P0 bound alone, at every kind of pass. Any other entry that takes a slot
+// is decided by the rule's own half of admission by signals (record.SlotRule.SignalsLet) where the
+// pass was given a snapshot (UseSignals), which holds it at a tick's pass (record.PassedTick), by a
+// signal over its limit (record.PassedSignal) or by the holders below P0 at the ceiling or the
+// allowance (record.PassedCap); without one it starts while the holders the cap counts leave a
+// row free, as before. It gives no slot back: a holder is never judged here.
+func (a *Admission) capHold(entry record.LineEntry, held record.SlotHolders, facts record.LineFacts, lending covers, gate passGate) record.SlotPassedReason {
 	if a.cap <= 0 {
-		return false
+		return record.PassedCap
 	}
 	if !slotFor(entry, facts) || lending.offers(entry.Issue.Key) {
-		return true
+		return ""
 	}
-	if facts.Rule.OrMain().StartsOutsideCap(entry.Issue) {
-		return p0Bound == nil || held.P0 < *p0Bound
+	rule := facts.Rule.OrMain()
+	if rule.StartsOutsideCap(entry.Issue) {
+		if gate.p0Bound == nil || held.P0 < *gate.p0Bound {
+			return ""
+		}
+		return record.PassedCap
 	}
-	return held.Capped < a.cap
+	if gate.bySignals {
+		switch rule.SignalsLet(gate.kind, gate.snapshot, held.Capped, a.cap) {
+		case signals.Starts:
+			return ""
+		case signals.HeldByTick:
+			return record.PassedTick
+		case signals.HeldBySignal:
+			return record.PassedSignal
+		default:
+			return record.PassedCap
+		}
+	}
+	if held.Capped < a.cap {
+		return ""
+	}
+	return record.PassedCap
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream
@@ -3117,7 +3162,7 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 				"count", len(releasing), "ack_floor", position.AckFloorStream, "idle", position.Idle, "admitted", admitted)
 		})
 	}
-	admitted, returned, err := a.promoteHolds(ctx, tx, !caughtUp)
+	admitted, returned, err := a.promoteHolds(ctx, tx, !caughtUp, signals.PassEvent)
 	if err != nil {
 		return nil, err
 	}
