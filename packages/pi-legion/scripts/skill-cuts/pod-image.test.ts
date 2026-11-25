@@ -5,6 +5,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { GhRetries } from "./common";
 import {
+  dockerfileStages,
   type ImageConfig,
   type RegistryFetch,
   registryImageConfig,
@@ -410,4 +411,43 @@ test("sessionPodImage of a pin file with no line that starts with its key says s
   expect(attested.why).toStartWith(
     `Inference: ${where} selects the image in force at prompt build ${POD_AT}. Build provenance names ${BUILD}.`
   );
+});
+
+// Catches: a deployment's Dockerfile whose final stage COPYs the worker's packages from a stage
+// read as if its final stage were built on the worker image: the stage a COPY names, the image
+// that stage is FROM (an ARG default resolved) and where the COPY writes must each be read.
+test("dockerfileStages reads each stage, its ARG default resolved, and the final stage's COPY lines with their flags, a continued line read whole", () => {
+  const worker = `ghcr.io/acme/worker@sha256:${"b".repeat(64)}`;
+  const toolchain = `registry.example.test/acme/toolchain@sha256:${"e".repeat(64)}`;
+  const read = dockerfileStages(
+    [
+      "# syntax=docker/dockerfile:1",
+      `ARG LEGION_WORKER=${worker}`,
+      `ARG TOOLCHAIN="${toolchain}" UNSET`,
+      `FROM \${LEGION_WORKER} AS legion`,
+      "COPY --from=elsewhere /x /opt/legion/pi-legion",
+      "FROM --platform=linux/amd64 $TOOLCHAIN AS tools",
+      `FROM \${UNSET}`,
+      "ARG LEGION_WORKER=ghcr.io/acme/other@sha256:0",
+      "COPY --from=legion --chown=0:0 \\",
+      "  /opt/legion/pi-legion /opt/legion/pi-legion",
+      "# COPY --from=tools /opt/legion/pi-envoy /opt/legion/pi-envoy",
+      'COPY ["start.sh", "/opt/legion/bin/"]',
+      "COPY --link --from=1 /opt/omp/ /opt/omp/",
+      "RUN echo done",
+      "",
+    ].join("\n")
+  );
+  expect(read).toEqual({
+    stages: [
+      { name: "legion", from: `\${LEGION_WORKER}`, base: worker, arg: "LEGION_WORKER" },
+      { name: "tools", from: "$TOOLCHAIN", base: toolchain, arg: "TOOLCHAIN" },
+      { name: undefined, from: `\${UNSET}`, base: undefined, arg: "UNSET" },
+    ],
+    copies: [
+      { from: "legion", dest: "/opt/legion/pi-legion" },
+      { from: undefined, dest: "/opt/legion/bin/" },
+      { from: "1", dest: "/opt/omp/" },
+    ],
+  });
 });

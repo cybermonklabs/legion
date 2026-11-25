@@ -914,7 +914,7 @@ A configured registry that answers 401 or 403 has refused its token: the read fa
 A 404 is no such image, and on GHCR's anonymous read a 401 or 403 is an image that is not public: either gives no OCI config.
 Set `deploymentImages` to name the images that the deployment repository builds on a worker image.
 Each entry is `{"repository": "registry.example.test/acme/deploy/worker", "dockerfile": "images/worker.Dockerfile"}`: the image's reference without tag or digest, and the path of its Dockerfile in the deployment repository.
-A Legion pod's image of such a repository takes the commit of the worker image it is built on (below).
+A Legion pod's image of such a repository takes the commit of the worker image it is built on, or of the stage its final stage copies the worker's packages from (below).
 
 `build-tasks --profiles-out` and `build-tasks --reprofile` use the same rule. A task whose pod
 image cannot be identified is not measurable. Case and task `context` labels keep their existing
@@ -1144,6 +1144,15 @@ The Dockerfile the entry names, read at that commit, must build its final stage 
 A Dockerfile's `ARG` default is no proof of the base, since a build can pass another, so the images confirm it: the base's `rootfs.diff_ids` must be the first entries of the image's.
 Diff ids are the digests of the layers uncompressed, and they stay the same in an image built on the base; the manifests' layer digests are of the compressed layers, and differ where the build compressed a base layer again, so they are not compared.
 The commit is then the base's: the one its digest's build provenance in the repository names, else the one its labels name.
+Where the final stage is not built so on the worker image (the base's diff ids are not the first of the image's, or the base names no commit of the repository, as a toolchain image does), the stage the final stage copies the worker's packages from decides.
+Each `/opt/legion/<package>` of the prefix rows under `/opt/legion/` must be copied in the final stage from that one stage alone: every `COPY --from=<stage> <src>... <dest>` line (`--chown` and other flags allowed) that writes into the package, or into a directory above it, must name that stage.
+A package copied from elsewhere, or not copied, leaves the image's commit not known, and the evidence names the package and where the final stage copies it from.
+That stage must be `FROM` a digest-pinned image (a literal reference, or the default of the `ARG` it names), and its commit is that image's: the one its digest's build provenance in the repository names, else the one its labels name.
+A build can pass the stage another image than its `ARG` default, so the image's own `org.opencontainers.image.version` label must name that commit: the COPY is confirmed by that label, not by layer content.
+The label names the commit as `<version>`, whose release tag is at that commit: `<name>-v<version>` of the repository's own name (`legion-v20.25.1` for the label `20.25.1` of a repository named `legion`), or a tag the labels step above reads the label as.
+It names it as `sha-<hex>` (7 to 40 hex digits) where the hex starts the commit.
+A label that is absent, names no commit or names another commit leaves the image's commit not known, and the evidence names the label and the stage's commit; neither is preferred.
+For example, a final stage `FROM ${TOOLCHAIN}` with `COPY --from=legion /opt/legion/pi-legion /opt/legion/pi-legion`, where `FROM ${LEGION_WORKER} AS legion` and `ARG LEGION_WORKER=ghcr.io/acme/worker@sha256:<digest>`, takes the commit of `ghcr.io/acme/worker` at that digest once the image's version label names it.
 Where a step fails, the image's commit is not known, and the evidence names the step and why.
 For any other image, failing the labels, the comment lines right above its `image:` line decide,
 by the first of their words, in their order, that names a commit:
