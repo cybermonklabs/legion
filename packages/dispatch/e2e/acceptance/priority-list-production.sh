@@ -71,7 +71,7 @@ readonly before_deploy
 readonly forms=(page open whole)
 declare -rA title=([page]='the page of 50' [open]='the open list' [whole]='the whole list')
 readonly reads_per_form=200 stop_after=21 slow_read_us=1000000 bound_ms=200
-readonly fleet_wait_s=10800 log_window_s=7200 log_pause_s=30 log_pauses=20
+readonly max_time_s=60 fleet_wait_s=10800 log_window_s=7200 log_pause_s=30 log_pauses=20
 readonly agent_prefix=priority-list-production
 readonly time_pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 
@@ -96,8 +96,8 @@ epoch() {
 fetch() {
   local out="$1" url="$2" total=''
   shift 2
-  curl --compressed --max-time 60 -sS -o "$out" -w '%{http_code} %{time_total}\n' "$@" "$url" \
-    >"$work/written" 2>"$work/curl" </dev/null || true
+  curl --compressed --max-time "$max_time_s" -sS -o "$out" -w '%{http_code} %{time_total}\n' \
+    "$@" "$url" >"$work/written" 2>"$work/curl" </dev/null || true
   read -r code total <"$work/written" || true
   [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
   if [[ "$total" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
@@ -106,7 +106,7 @@ fetch() {
   elif [[ "$total" =~ ^[0-9]+$ ]]; then
     elapsed_us=$((10#$total * 1000000))
   else
-    elapsed_us=60000000
+    elapsed_us=$((max_time_s * 1000000))
   fi
 }
 
@@ -197,17 +197,17 @@ else
     printf "production's fleet serves %s, which does not carry %s (GitHub's compare: %s): BEFORE_DEPLOY=1 measures it\n" \
       "$fleet" "$merge" "$compared"
   else
+    # The wait starts at FLEET_SINCE where FLEET_COMMIT is the fleet's commit, and now otherwise.
     now_s="$(now)"
-    if [[ -z "${FLEET_SINCE:-}" || "${FLEET_COMMIT:-}" != "$fleet" ]]; then
-      printf "production's fleet serves %s, which carries the merge: read again at or after %s with FLEET_SINCE=%s FLEET_COMMIT=%s\n" \
-        "$fleet" "$(stamp $((now_s + fleet_wait_s)))" "$(stamp "$now_s")" "$fleet"
-      exit 3
+    if [[ -n "${FLEET_SINCE:-}" && "${FLEET_COMMIT:-}" == "$fleet" ]]; then
+      epoch FLEET_SINCE
+      since_s="$epoch_s" since="$FLEET_SINCE"
+    else
+      since_s="$now_s" since="$(stamp "$now_s")"
     fi
-    epoch FLEET_SINCE
-    since_s="$epoch_s"
     if ((now_s < since_s + fleet_wait_s)); then
       printf "production's fleet serves %s, which carries the merge: read again at or after %s with FLEET_SINCE=%s FLEET_COMMIT=%s\n" \
-        "$fleet" "$(stamp $((since_s + fleet_wait_s)))" "$FLEET_SINCE" "$fleet"
+        "$fleet" "$(stamp $((since_s + fleet_wait_s)))" "$since" "$fleet"
       exit 3
     fi
   fi
@@ -305,13 +305,12 @@ readonly agent_field=" user_agent=$agent_prefix/$probe_id/(page|open|whole) "
 readonly status_field=' status=([0-9]+) ' elapsed_field=' elapsed_ms=([0-9]+) '
 
 # read_log: the probe's lines the log holds now. For each form it sets `held` (its lines), `over`
-# (those over 200 ms), `failed_status` (those whose status is not 200) and `statuses` (those
-# statuses), and writes each line's elapsed_ms to $work/elapsed-<form>.
-declare -A held=() over=() failed_status=() statuses=()
+# (those over 200 ms), `failed_status` (those whose status is not 200), `statuses` (those
+# statuses) and `values` (each line's elapsed_ms, one a line).
+declare -A held=() over=() failed_status=() statuses=() values=()
 read_log() {
   local line form status elapsed
   local -a lines
-  local -A values=()
   gcloud logging read "$filter" --project "$LOGGING_PROJECT" --format='value(textPayload)' \
     >"$work/log" 2>"$work/gcloud" </dev/null ||
     cannot_measure "gcloud logging read failed: $(head -c 600 "$work/gcloud" | tr '\n' ' ')"
@@ -336,9 +335,6 @@ read_log() {
       statuses[$form]="${statuses[$form]:+${statuses[$form]} }$status"
     fi
   done
-  for form in "${forms[@]}"; do
-    printf '%s' "${values[$form]}" >"$work/elapsed-$form"
-  done
 }
 
 # complete: whether the log holds as many lines of each form as the probe sent.
@@ -356,12 +352,21 @@ until complete || ((pauses >= log_pauses)); do
   pauses=$((pauses + 1))
   read_log
 done
+for form in "${forms[@]}"; do
+  printf '%s' "${values[$form]}" >"$work/elapsed-$form"
+done
 ((held[page] + held[open] + held[whole] > 0)) ||
   cannot_measure "no line of probe $probe_id reached the log in $((log_pause_s * log_pauses / 60)) minutes: its User-Agent header did not reach it"
 printf 'the log holds lines of probe %s: %d of the page of 50, %d of the open list, %d of the whole list\n' \
   "$probe_id" "${held[page]}" "${held[open]}" "${held[whole]}"
 
 # Fifth: each form's p90 by the server's clock.
+# form_over: the p90 of `form`, `value`, is over the bound, which fails the look.
+form_over() {
+  printf '%s: p90 %d ms over %d reads, over %d ms\n' \
+    "${title[$form]}" "$value" "${held[$form]}" "$bound_ms"
+  failed=1
+}
 failed=0 missing=0 restart=0
 for form in "${forms[@]}"; do
   name="${title[$form]}"
@@ -374,32 +379,32 @@ for form in "${forms[@]}"; do
     missing=1
     continue
   fi
-  value="$(p90 "$work/elapsed-$form")"
   if [[ "$form" == "$stopped_form" ]]; then
     # 21 lines over 200 ms put the p90 of any 200 reads over 200 ms; fewer say the network was
     # slow and the server was not, and a new probe is owed.
     if ((over[$form] >= stop_after)); then
-      printf '%s: p90 %d ms over %d reads, over 200 ms\n' "$name" "$value" "${held[$form]}"
-      failed=1
+      value="$(p90 "$work/elapsed-$form")"
+      form_over
     elif ((held[$form] < sent[$form])); then
       printf '%s: %d of the %d reads sent are in the log\n' "$name" "${held[$form]}" "${sent[$form]}"
       missing=1
     else
-      printf '%s: stopped after %d reads, %d of them over 200 ms on the server\n' \
-        "$name" "${sent[$form]}" "${over[$form]}"
+      printf '%s: stopped after %d reads, %d of them over %d ms on the server\n' \
+        "$name" "${sent[$form]}" "${over[$form]}" "$bound_ms"
       restart=1
     fi
   elif ((held[$form] >= sent[$form])); then
+    value="$(p90 "$work/elapsed-$form")"
     if ((value > bound_ms)); then
-      printf '%s: p90 %d ms over %d reads, over 200 ms\n' "$name" "$value" "${held[$form]}"
-      failed=1
+      form_over
     else
-      printf '%s: p90 %d ms over %d reads, at most 200 ms\n' "$name" "$value" "${held[$form]}"
+      printf '%s: p90 %d ms over %d reads, at most %d ms\n' \
+        "$name" "$value" "${held[$form]}" "$bound_ms"
     fi
   elif ((over[$form] >= stop_after)); then
     # The lines still missing cannot bring the p90 of 200 reads back to 200 ms.
-    printf '%s: p90 %d ms over %d reads, over 200 ms\n' "$name" "$value" "${held[$form]}"
-    failed=1
+    value="$(p90 "$work/elapsed-$form")"
+    form_over
   else
     printf '%s: %d of the %d reads sent are in the log\n' "$name" "${held[$form]}" "${sent[$form]}"
     missing=1

@@ -18,7 +18,7 @@
  */
 
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -35,10 +35,14 @@ const mergeSha = "4f1c2b9e8d7a6c5b4a39281706f5e4d3c2b1a090";
 const fleetSha = "9a8b7c6d5e4f30211203f4e5d6c7b8a9f0e1d2c3";
 /** The 16 hex digits of a probe id a replay row makes up. */
 const nonce = "0123456789abcdef";
+/** DISPATCH_URL in every row: a host no row reaches. */
+const dispatchUrl = "https://dispatch.internal.example";
+/** The arguments of `gh` for GitHub's compare of MERGE_SHA with `fleetSha`. */
+const fleetCompare = `api repos/cybermonklabs/legion/compare/${mergeSha}...${fleetSha} --jq .status`;
 
 /** The inputs every look requires. The bearer and the logging project are made up. */
 const required: Readonly<Record<string, string>> = {
-  DISPATCH_URL: "https://dispatch.internal.example",
+  DISPATCH_URL: dispatchUrl,
   DISPATCH_TOKEN: "not-a-real-bearer",
   MERGE_SHA: mergeSha,
   LOGGING_PROJECT: "example-logging-project",
@@ -129,8 +133,7 @@ function standIns(dir: string, production: Production): string {
     "#!/usr/bin/env bash",
     `dir='${dir}'`,
     `{ printf 'call\\0'; printf '%s\\0' "$@"; } >>"$dir/gcloud-calls"`,
-    "calls=0",
-    '[[ -f "$dir/gcloud-count" ]] && read -r calls <"$dir/gcloud-count"',
+    'read -r calls 2>/dev/null <"$dir/gcloud-count" || calls=0',
     "calls=$((calls + 1))",
     `printf '%s\\n' "$calls" >"$dir/gcloud-count"`,
     `((calls > ${production.lateReads ?? 0})) || exit 0`,
@@ -153,10 +156,20 @@ function standIns(dir: string, production: Production): string {
   return bin;
 }
 
+/** The text of a file of `dir`, empty where the file is missing. Any other failure to read it
+ *  throws. */
+function recordedText(dir: string, name: string): string {
+  try {
+    return readFileSync(join(dir, name), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  }
+}
+
 /** The lines a file of `dir` holds, none where the file is missing. */
 function recorded(dir: string, name: string): string[] {
-  const file = join(dir, name);
-  return existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(0, -1) : [];
+  return recordedText(dir, name).split("\n").slice(0, -1);
 }
 
 /** What one look did: its exit code and output, the lines of its stdout but the empty ones, and
@@ -200,7 +213,6 @@ async function look(
     env,
     from: import.meta.url,
   });
-  const gcloudFile = join(dir, "gcloud-calls");
   return {
     code: run.code,
     stdout: run.stdout,
@@ -211,12 +223,10 @@ async function look(
       return { agent: line.slice(0, space), url: line.slice(space + 1) };
     }),
     gh: recorded(dir, "gh-calls"),
-    gcloud: existsSync(gcloudFile)
-      ? readFileSync(gcloudFile, "utf8")
-          .split("call\0")
-          .slice(1)
-          .map((call) => call.split("\0").slice(0, -1))
-      : [],
+    gcloud: recordedText(dir, "gcloud-calls")
+      .split("call\0")
+      .slice(1)
+      .map((call) => call.split("\0").slice(0, -1)),
     sleeps: recorded(dir, "sleeps"),
   };
 }
@@ -257,8 +267,8 @@ function accessLine(
 }
 
 /** The lines of `form`, one for each time of `elapsed`. */
-function formLines(form: Form, elapsed: readonly number[], status = 200): string[] {
-  return elapsed.map((ms) => accessLine(form, ms, { status }));
+function formLines(form: Form, elapsed: readonly number[]): string[] {
+  return elapsed.map((ms) => accessLine(form, ms));
 }
 
 /** `count` of `value`. */
@@ -304,9 +314,9 @@ function verdict(run: Look): string[] {
 
 /** The URL of each form's read of `largest-priority`. */
 const urls: Readonly<Record<Form, string>> = {
-  page: "https://dispatch.internal.example/api/v1/issues?advances=largest-priority&limit=50",
-  open: "https://dispatch.internal.example/api/v1/issues?advances=largest-priority&open=true",
-  whole: "https://dispatch.internal.example/api/v1/issues?advances=largest-priority",
+  page: `${dispatchUrl}/api/v1/issues?advances=largest-priority&limit=50`,
+  open: `${dispatchUrl}/api/v1/issues?advances=largest-priority&open=true`,
+  whole: `${dispatchUrl}/api/v1/issues?advances=largest-priority`,
 };
 
 /** The reads of the issue list a look sent, by form, in order; a read of no form's URL by its URL. */
@@ -424,10 +434,7 @@ for (const [label, production, inputs, wanted] of [
         code: 3,
         said: true,
         reads: 0,
-        compares:
-          production.fleetCommit === null
-            ? []
-            : [`api repos/cybermonklabs/legion/compare/${mergeSha}...${fleetSha} --jq .status`],
+        compares: production.fleetCommit === null ? [] : [fleetCompare],
       });
     },
     rowLimit("short")
@@ -525,7 +532,6 @@ test(
     const to = time.to();
     const probe = probeOf(run);
     const at = secondsOf(probe.at);
-    const site = "https://dispatch.internal.example";
     expect(
       {
         code: run.code,
@@ -559,8 +565,8 @@ test(
       probe: { commit: fleetSha, stopped: "none" },
       probeAtIsAMinuteBefore: true,
       requests: [
-        { agent: "", url: `${site}/healthz` },
-        { agent: "", url: `${site}/api/v1/priorities` },
+        { agent: "", url: `${dispatchUrl}/healthz` },
+        { agent: "", url: `${dispatchUrl}/api/v1/priorities` },
         ...forms.flatMap((form) =>
           times(200, { agent: `priority-list-production/${probe.id}/${form}`, url: urls[form] })
         ),
@@ -603,7 +609,7 @@ test(
       code: 0,
       verdict: verdict(run),
       requests: run.requests.length,
-      compares: `api repos/cybermonklabs/legion/compare/${mergeSha}...${fleetSha} --jq .status`,
+      compares: fleetCompare,
     });
   },
   rowLimit("short", "short")
@@ -823,7 +829,7 @@ for (const [label, compare, inputs] of [
       ).toEqual({
         code: 2,
         reason: true,
-        compares: [`api repos/cybermonklabs/legion/compare/${mergeSha}...${fleetSha} --jq .status`],
+        compares: [fleetCompare],
         reads: 0,
       });
     },
