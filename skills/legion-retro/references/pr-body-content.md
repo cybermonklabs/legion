@@ -32,7 +32,8 @@ The merger reports a stale body rather than rewriting it.
    The parentheses keep `pipefail` to this line.
    In `$dir/body.md`, change only these lines:
    - the path-derived lines, adding a missing one where the sources place it;
-   - with no reviewer step, the `Not proven / risk` and `Threads` lines (step 4 of `skill://legion-retro`);
+   - with no reviewer step, the `Threads` lines: record the bot threads of step 1 of `skill://legion-retro` in `Threads` at the head you found;
+   - with no reviewer step, the `Not proven / risk` line: bring it up to date from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human");
    - a no-result line, which you replace as `skill://legion-worker/references/ci-checks.md` says.
 
    Leave every other line byte for byte, the `Checks` block included.

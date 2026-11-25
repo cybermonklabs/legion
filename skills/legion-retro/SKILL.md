@@ -61,9 +61,7 @@ Run every step, even on a mechanical change.
    - **Drop a point that cites no file, symbol, quoted text or commit of this pull request.**
 3. **Record the learnings** as one `dispatch comment` on the issue, per `skill://legion-retro/references/learnings.md`, which says what a point must carry for the skill librarian to use it.
    - **When no point qualifies, write no comment.** Say so in step 5's message.
-4. **Update the PR body** per `skill://legion-retro/references/pr-body-content.md`: the lines the repository derives from changed paths, where it derives any.
-   - **With no reviewer step, record step 1's bot threads in `Threads` at the head you found.**
-   - **With no reviewer step, bring `Not proven / risk` up to date** from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
+4. **Update the PR body** per `skill://legion-retro/references/pr-body-content.md`: the lines the repository derives from changed paths, where it derives any, and, with no reviewer step, the `Threads` and `Not proven / risk` lines.
 5. **Post one Dispatch message on the issue**, at most 32,000 characters:
 
    ```bash
