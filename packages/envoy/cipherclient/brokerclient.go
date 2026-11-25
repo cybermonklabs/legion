@@ -1,9 +1,10 @@
 // Package cipherclient is a public re-export of internal/cipherclient's token client, existing
 // solely so a module outside github.com/sjawhar/envoy — packages/daemon's `legion controller
-// start`, which mints its own Dispatch token — can use it: Go's internal-package rule refuses to
-// let any package whose own import path does not start with github.com/sjawhar/envoy import a
-// package under github.com/sjawhar/envoy/internal/..., however workspace-linked the two modules
-// are. packages/envoy/ciphertest is the same facade for the broker's test rig, and says the same.
+// start`, which mints its own Dispatch token, and its daemon's own Dispatch client — can use it:
+// Go's internal-package rule refuses to let any package whose own import path does not start with
+// github.com/sjawhar/envoy import a package under github.com/sjawhar/envoy/internal/..., however
+// workspace-linked the two modules are. packages/envoy/ciphertest is the same facade for the
+// broker's test rig, and says the same.
 //
 // This changes no behaviour — every type here is an alias for the internal package's own, and
 // every function forwards to it — so internal/cipherclient remains the one place the client's
@@ -37,6 +38,8 @@ const (
 	PoolAudienceVar     = internal.PoolAudienceVar
 	PoolAccountVar      = internal.PoolAccountVar
 	SessionVar          = internal.SessionVar
+	KeyDirVar           = internal.KeyDirVar
+	RoleKeyFile         = internal.RoleKeyFile
 	IdentityKubernetes  = internal.IdentityKubernetes
 	IdentityMetadata    = internal.IdentityMetadata
 	IdentityPool        = internal.IdentityPool
@@ -49,6 +52,13 @@ func New(cfg Config) (*Client, error) { return internal.New(cfg) }
 // names, or nil where this machine proves none.
 func MachineIdentity(getenv func(string) string) (Source, error) {
 	return internal.MachineIdentity(getenv)
+}
+
+// MachineKey forwards to internal/cipherclient.MachineKey: the key a machine trade proves, which
+// is a pod role's own agent-secrets key where IdentityVar is kubernetes and AGENT_SECRETS_KEY_DIR
+// names that role's directory, and a fresh key of this process's own everywhere else.
+func MachineKey(getenv func(string) string) (*ecdsa.PrivateKey, error) {
+	return internal.MachineKey(getenv)
 }
 
 // TradeSession forwards to internal/cipherclient.TradeSession: the session a trade writes
@@ -66,4 +76,13 @@ func HTTPClient() *http.Client { return internal.HTTPClient() }
 // listener.
 func NewDPoPTransport(key *ecdsa.PrivateKey, base http.RoundTripper) http.RoundTripper {
 	return internal.NewDPoPTransport(key, base)
+}
+
+// NewTokenTransport forwards to internal/cipherclient.NewTokenTransport: a RoundTripper that
+// presents client's token as `Authorization: DPoP <token>` beside a proof of its key on each
+// request it sends through base, sending nothing when the trade fails, and has client drop a
+// token the server answers 401 BROKER_TOKEN_NOT_ACTIVE for (Client.Drop), so the next request
+// trades again.
+func NewTokenTransport(client *Client, base http.RoundTripper) http.RoundTripper {
+	return internal.NewTokenTransport(client, base)
 }
