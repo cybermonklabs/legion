@@ -813,8 +813,20 @@ func (b *issueTreeBuilder) readPlanOrder() error {
 			cycles[node.OrderNode] = true
 		}
 	}
+	nonNil := func(items []string) []string {
+		if items == nil {
+			return []string{}
+		}
+		return items
+	}
 	place := func(node refs.OrderedNode, position *int) {
-		plan := &model.IssueTreePlan{Position: position, Needs: []model.IssueTreeHalfEnd{}, Cycle: cycles[node.OrderNode]}
+		plan := &model.IssueTreePlan{
+			Position: position,
+			Needs:    []model.IssueTreeHalfEnd{},
+			Skills:   nonNil(node.Skills),
+			Docs:     nonNil(node.Docs),
+			Cycle:    cycles[node.OrderNode],
+		}
 		for _, need := range node.Needs {
 			plan.Needs = append(plan.Needs, model.IssueTreeHalfEnd{Kind: need.Kind, ID: need.ID, Half: need.Half})
 		}
@@ -826,7 +838,11 @@ func (b *issueTreeBuilder) readPlanOrder() error {
 			target := refs.Target{Kind: graphstore.KindIssue, ID: node.ID}
 			halves := b.plans[target]
 			if halves == nil {
-				halves = &model.IssueTreePlan{Needs: []model.IssueTreeHalfEnd{}}
+				halves = &model.IssueTreePlan{
+					Needs:  []model.IssueTreeHalfEnd{},
+					Skills: []string{},
+					Docs:   []string{},
+				}
 				b.plans[target] = halves
 			}
 			if node.Half == refs.HalfDone {
@@ -840,7 +856,6 @@ func (b *issueTreeBuilder) readPlanOrder() error {
 			return
 		}
 		target := refs.Target{Kind: node.Kind, ID: node.ID}
-		plan.Skills, plan.Docs = node.Skills, node.Docs
 		b.plans[target] = plan
 		if node.Issue != b.key {
 			b.add(target, refs.Target{}, node.Issue, treeRoleTree)

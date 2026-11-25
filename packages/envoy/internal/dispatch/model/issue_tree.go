@@ -305,15 +305,15 @@ type IssueTreeCheck struct {
 // IssueTreePlan is what the plan view answers of a node from the ordered read: its position in the
 // one order of the whole tree, null for a node in a cycle or overtaken; the nodes it needs; its
 // size in whole minutes, null where its author gave none; the skills and the docs its task names,
-// each an empty list where it names none and left out of an issue and its halves; and whether it
-// stands in a cycle the read reports. An issue answers its two halves (Start, Done), each a node
-// of the order of its own.
+// each `[]` where it names none, never null and never left out, an issue and its halves included;
+// and whether it stands in a cycle the read reports. An issue answers its two halves (Start, Done),
+// each a node of the order of its own.
 type IssueTreePlan struct {
 	Position *int               `json:"position"`
 	Needs    []IssueTreeHalfEnd `json:"needs"`
 	Size     *string            `json:"size"`
-	Skills   []string           `json:"skills,omitzero"`
-	Docs     []string           `json:"docs,omitzero"`
+	Skills   []string           `json:"skills"`
+	Docs     []string           `json:"docs"`
 	Cycle    bool               `json:"cycle"`
 	Start    *IssueTreePlan     `json:"start,omitempty"`
 	Done     *IssueTreePlan     `json:"done,omitempty"`
