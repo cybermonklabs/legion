@@ -38,6 +38,7 @@ func settledRows(t *testing.T, pool *pgxpool.Pool, engine *Engine) map[string]st
 // record.Store.AddPlanGiver without its guard, under which the giver's give again rewrites the
 // version's givers and the time it was given, in place, which a count of rows does not see).
 func TestAGiveOfTheVersionInForceAppliesNothingWhateverItsID(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	recordedAt(t, pool, "LEGION-208", "LEGION-208")
@@ -74,6 +75,7 @@ func TestAGiveOfTheVersionInForceAppliesNothingWhateverItsID(t *testing.T) {
 // changes a row in place (its control: intake.ApplyFact writing the issue's record and its plan
 // rows again in place for every PlanGiven, which a count of rows does not see).
 func TestAGiveIsJudgedOnTheRecordItsSecondDeliveryReads(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		move func(t *testing.T, pool *pgxpool.Pool, engine *Engine, sub, target record.Issue)
@@ -137,6 +139,7 @@ func TestAGiveIsJudgedOnTheRecordItsSecondDeliveryReads(t *testing.T) {
 // without its guard, under which the taken give's later deliveries rewrite the version's givers and
 // the time it was given, which a count of rows does not see).
 func TestARedeliveredPlanGiveWritesNothingASecondTime(t *testing.T) {
+	t.Parallel()
 	widget := func(t *testing.T) plan.Task { return givenTask(t, "Build the widget.", "implementer", "reviewer") }
 	type delivery struct {
 		writes bool

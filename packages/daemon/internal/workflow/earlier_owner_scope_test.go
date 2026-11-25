@@ -69,6 +69,7 @@ func (s projectScope) QueuedRootsUnder(ctx context.Context, tx pgx.Tx, key strin
 // second and the third row), and the wait's (its control: waitsAtZero judging through
 // record.NewStore(), under which the plan of generation 0 is refused PLAN_STALE_GENERATION).
 func TestTheGiveAndTheFirstStepJudgeAnEarlierOwnerByOneRead(t *testing.T) {
+	t.Parallel()
 	root, other := architectOf(t), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
 	for _, tc := range []struct {
 		name string

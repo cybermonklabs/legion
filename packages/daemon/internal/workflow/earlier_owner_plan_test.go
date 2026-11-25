@@ -221,6 +221,7 @@ func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T)
 // last to give it first. The fault caught is a notice that tells the copies apart by their givers
 // and names the version once for each.
 func TestAVersionWhoseCopiesNameDifferentGiversIsNamedOnceWithEveryGiver(t *testing.T) {
+	t.Parallel()
 	sub, root := claim.Token(treeRoleToken(t, "LEGION-210", claim.RoleArchitect)), architectOf(t)
 	pool := migratedPool(t)
 	engine := returnEngine()
