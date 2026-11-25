@@ -111,6 +111,91 @@ func TestADefectRoundTrips(t *testing.T) {
 	}
 }
 
+// A person's done closes the issue whatever holds it (D16, door 6), and each defect still open
+// then is ended as closed by that person, with the moment of the done: a reported defect and a
+// check's reason alike. A defect a withdrawal already ended keeps its own reason and time, one a
+// merged change carried stays merged and not withdrawn, and another issue's defects stay open.
+// The answer counts the defects the done ended, so a second done ends none.
+func TestAPersonsDoneEndsEachOpenDefectAsClosedByThatPerson(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	issue := issueFixture("ACME-1")
+	other := issueFixture("ACME-2")
+	head := strings.Repeat("a", 40)
+	reported := Defect{Issue: issue.Key, Generation: 3, Kind: DefectKindDefect, Text: "the retry never stops", Role: claim.RoleMerger,
+		Head: head, ReportedAt: at}
+	failed := Defect{Issue: issue.Key, Generation: 3, Kind: DefectKindCheck, Text: "c-done failed at its merge", Check: "c-done",
+		Result: "result-7", ReportedAt: at}
+	withdrawn := Defect{Issue: issue.Key, Generation: 3, Kind: DefectKindDefect, Text: "same as the first", Role: claim.RoleTester,
+		Head: head, ReportedAt: at}
+	merged := Defect{Issue: issue.Key, Generation: 3, Kind: DefectKindProduction, Text: "the deploy failed", ReportedAt: at}
+	others := Defect{Issue: other.Key, Generation: 3, Kind: DefectKindDefect, Text: "another issue's", Role: claim.RoleImplementer,
+		Head: head, ReportedAt: at}
+	ids := map[string]int64{}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutIssue(ctx, tx, other))
+		for name, defect := range map[string]Defect{"reported": reported, "failed": failed, "withdrawn": withdrawn, "merged": merged, "others": others} {
+			id, err := records.PutDefect(ctx, tx, defect)
+			must(t, err)
+			ids[name] = id
+		}
+	})
+	withdrawnAt, mergedAt, doneAt := at.Add(time.Hour), at.Add(2*time.Hour), at.Add(3*time.Hour)
+	inTx(t, st, func(tx pgx.Tx) {
+		if ok, err := records.WithdrawDefect(ctx, tx, issue.Key, ids["withdrawn"], "same as 9", withdrawnAt); err != nil || !ok {
+			t.Fatalf("the owner's withdrawal = %t, %v, want it taken", ok, err)
+		}
+		must(t, records.CarryDefects(ctx, tx, issue.Key, 4, []int64{ids["merged"]}))
+		must(t, records.MergeDefects(ctx, tx, issue.Key, 4, mergedAt))
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		closed, err := records.CloseDefectsByPerson(ctx, tx, issue.Key, doneAt)
+		if err != nil || closed != 2 {
+			t.Fatalf("the person's done ended %d defects, %v, want the 2 still open: the reported defect and the check's reason", closed, err)
+		}
+		if again, err := records.CloseDefectsByPerson(ctx, tx, issue.Key, doneAt.Add(time.Minute)); err != nil || again != 0 {
+			t.Fatalf("a second done ended %d defects, %v, want none", again, err)
+		}
+	})
+
+	type ended struct {
+		withdrawnAt *time.Time
+		reason      string
+		mergedAt    *time.Time
+	}
+	read := func(id int64) ended {
+		t.Helper()
+		var row ended
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, tx.QueryRow(ctx, "select withdrawn_at, withdraw_reason, merged_at from defects where id = $1", id).Scan(
+				&row.withdrawnAt, &row.reason, &row.mergedAt))
+		})
+		return row
+	}
+	for _, name := range []string{"reported", "failed"} {
+		if row := read(ids[name]); row.withdrawnAt == nil || !row.withdrawnAt.Equal(doneAt) || row.reason != DefectClosedByPerson || row.mergedAt != nil {
+			t.Fatalf("the %s defect holds %+v, want it withdrawn at the done's moment %s as %s", name, row, doneAt, DefectClosedByPerson)
+		}
+	}
+	if row := read(ids["withdrawn"]); row.withdrawnAt == nil || !row.withdrawnAt.Equal(withdrawnAt) || row.reason != "same as 9" {
+		t.Fatalf("the defect the owner withdrew holds %+v, want its own withdrawal kept", row)
+	}
+	if row := read(ids["merged"]); row.withdrawnAt != nil || row.reason != "" || row.mergedAt == nil || !row.mergedAt.Equal(mergedAt) {
+		t.Fatalf("the defect a merged change carried holds %+v, want it merged and not withdrawn", row)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		open, err := records.OpenDefects(ctx, tx, other.Key)
+		must(t, err)
+		if len(open) != 1 || open[0].ID != ids["others"] {
+			t.Fatalf("the open defects of %s = %+v, want its one defect still open", other.Key, open)
+		}
+	})
+}
+
 // A read of the checks' states is the issue's newest read: a later read replaces it, and a read
 // that began before the stored one, which finished after it, does not. A read holds Dispatch's
 // answer or says why it failed.

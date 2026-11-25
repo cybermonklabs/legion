@@ -176,7 +176,7 @@ func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner suspende
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: cutoverMergerTold}); err != nil {
 		return err
 	}
-	run, err := e.store.RoleRun(ctx, tx, owner.token, issue.Key, claim.RoleMerger, issue.Generation)
+	run, err := e.store.RoleRun(ctx, tx, owner.token, issue, claim.RoleMerger)
 	if err != nil {
 		return err
 	}

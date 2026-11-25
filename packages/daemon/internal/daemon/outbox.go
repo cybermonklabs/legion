@@ -2448,11 +2448,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 	} else {
 		// A start of a tree root's architect runs on the tree's generation, which a next change of
-		// the root leaves (record.Issue.ArchitectGeneration); every other row serves the issue's own.
-		current := issue.Generation
-		if payload.Op == "start" && payload.Role == claim.RoleArchitect {
-			current = issue.ArchitectGeneration()
-		}
+		// the root leaves; every other row serves the issue's own (record.Issue.GenerationOf).
+		current := issue.GenerationOf(payload.Op, payload.Role)
 		if payload.Generation != current {
 			r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
 				"generation", payload.Generation, "current", current, "op", payload.Op, "role", payload.Role)
@@ -3945,14 +3942,16 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the
-// `start` row a wake writes (workflow's wakeRow), at the generation the cancel read of the
-// issue, naming no phase and carrying no task. It carries no task because nothing happened to
+// `start` row a wake writes (workflow's wakeRow), at the generation a start of the role serves on
+// the issue as the cancel read it (record.Issue.GenerationOf: the tree's run for a root's
+// architect), naming no phase and carrying no task. It carries no task because nothing happened to
 // the role: its process was stopped and is started again in the pod it was always in, where a
 // wake's task tells a role its pod went and came back.
 func (r *outbox) releaseResume(issue, tree string) store.ReleaseResumeRow {
-	return func(role claim.Role, generation uint64) (store.IdleReleaseRow, error) {
+	return func(role claim.Role, run store.IssueRun) (store.IdleReleaseRow, error) {
+		read := record.Issue{Key: issue, Tree: run.Tree, Generation: run.Generation, TreeGeneration: run.TreeGeneration}
 		row, err := record.NewOutboxRow(issue, record.SuperviseRequest{Op: "start", Tree: tree,
-			Role: role, Generation: generation}, r.now())
+			Role: role, Generation: read.GenerationOf("start", role)}, r.now())
 		if err != nil {
 			return store.IdleReleaseRow{}, fmt.Errorf("encode the resume of %s's %s: %w", issue, role, err)
 		}

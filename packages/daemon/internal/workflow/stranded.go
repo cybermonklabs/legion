@@ -231,7 +231,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		batch := candidates[start:end]
 		keys := make([]record.RoleRunKey, len(batch))
 		for i, candidate := range batch {
-			keys[i] = record.RoleRunKey{Token: candidate.claim.Token, Issue: candidate.issue.Key, Role: candidate.claim.Role, Generation: candidate.issue.Generation}
+			keys[i] = record.RunKey(candidate.claim.Token, candidate.issue, candidate.claim.Role)
 		}
 		runs, err := s.RoleRuns(ctx, tx, keys)
 		if err != nil {
@@ -239,7 +239,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		}
 		for _, candidate := range batch {
 			run := runs[candidate.claim.Token]
-			if candidate.claim.RuleHolds() || StartFor(run, candidate.root, candidate.issue.Generation, candidate.current) {
+			if candidate.claim.RuleHolds() || StartFor(run, candidate.root, candidate.issue.GenerationOf("start", candidate.claim.Role), candidate.current) {
 				stranded = append(stranded, candidate.claim)
 			}
 		}

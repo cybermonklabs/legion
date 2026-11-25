@@ -715,7 +715,7 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 			continue
 		}
 		workers = append(workers, worker)
-		keys = append(keys, record.RoleRunKey{Token: worker.token, Issue: issue.Key, Role: worker.role, Generation: issue.Generation})
+		keys = append(keys, record.RunKey(worker.token, issue, worker.role))
 	}
 	if len(keys) == 0 {
 		return nil, nil, nil
@@ -2992,7 +2992,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				return err
 			}
 			standing.roles = append(standing.roles, roleToken{role: role, token: token})
-			keys = append(keys, record.RoleRunKey{Token: token, Issue: member.Key, Role: role, Generation: member.Generation})
+			keys = append(keys, record.RunKey(token, member, role))
 		}
 		members = append(members, standing)
 		return nil
@@ -3035,12 +3035,12 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 					continue
 				}
 				if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: held.role,
-					Generation: member.Generation, Phase: member.Phase}, now); err != nil {
+					Generation: member.GenerationOf("start", held.role), Phase: member.Phase}, now); err != nil {
 					return err
 				}
 				continue
 			}
-			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
+			if !workflow.StartFor(run, root, member.GenerationOf("start", held.role), member.Phase) {
 				continue
 			}
 			if err := a.engine.StartPromotedWorker(ctx, tx, member, held.role); err != nil {
@@ -3313,7 +3313,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 	var keys []record.RoleRunKey
 	hold := func(held phaseWorker, admittedAt time.Time) {
 		read.holders = append(read.holders, slotHolder{phaseWorker: held, admittedAt: admittedAt})
-		keys = append(keys, record.RoleRunKey{Token: held.token, Issue: held.issue.Key, Role: held.role, Generation: held.issue.Generation})
+		keys = append(keys, record.RunKey(held.token, held.issue, held.role))
 	}
 	seen := make(map[string]struct{}, len(slots))
 	take := func(issue record.Issue, admittedAt time.Time) {
@@ -3401,7 +3401,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		if send != raiseArchitectEntry && !workflow.OwedEntry(run, held.root, entry.Entry) {
 			continue
 		}
-		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
+		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.GenerationOf("start", held.role), held.issue.Phase, c.State) {
 			continue
 		}
 		// A claim whose pod the idle rule released has no skip of its own, and the entry rule

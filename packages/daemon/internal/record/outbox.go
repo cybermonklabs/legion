@@ -1013,22 +1013,29 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // while no publish has taken it, and one that finds it leased or given back to retry opens the
 // next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
 // and the controller replays or discards it (dispatch://INFRA-1575).
+//
+// A closed-check-failed notice names an issue that this release closed by its checks
+// (issues.closed_on_checks_at), the check, and the result that recorded a fail after that close.
+// Legion opens and reopens nothing for the issue, and the controller routes the fail as it routes
+// any defect. No earlier release decodes the kind, so block A of the done-by-checks migration
+// deletes its unsent rows.
 const (
-	TriageNotice           NoticeKind = "triage"
-	SlotFreeNotice         NoticeKind = "slot-free"
-	TodoNotice             NoticeKind = "todo"
-	TickNotice             NoticeKind = "tick"
-	UnslottedNotice        NoticeKind = "unslotted"
-	AwaitingPersonNotice   NoticeKind = "awaiting-person"
-	ParkedDecisionNotice   NoticeKind = "parked-decision"
-	UpdateStalledNotice    NoticeKind = "update-stalled"
-	ProviderErrorsNotice   NoticeKind = "provider-errors"
-	TreeStalledNotice      NoticeKind = "tree-stalled"
-	ArchitectStalledNotice NoticeKind = "architect-stalled"
-	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
-	ProjectPausedNotice    NoticeKind = "project-paused"
-	ProjectResumedNotice   NoticeKind = "project-resumed"
-	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
+	TriageNotice            NoticeKind = "triage"
+	SlotFreeNotice          NoticeKind = "slot-free"
+	TodoNotice              NoticeKind = "todo"
+	TickNotice              NoticeKind = "tick"
+	UnslottedNotice         NoticeKind = "unslotted"
+	AwaitingPersonNotice    NoticeKind = "awaiting-person"
+	ParkedDecisionNotice    NoticeKind = "parked-decision"
+	UpdateStalledNotice     NoticeKind = "update-stalled"
+	ProviderErrorsNotice    NoticeKind = "provider-errors"
+	TreeStalledNotice       NoticeKind = "tree-stalled"
+	ArchitectStalledNotice  NoticeKind = "architect-stalled"
+	MemoryGuardKillNotice   NoticeKind = "memory-guard-kill"
+	ProjectPausedNotice     NoticeKind = "project-paused"
+	ProjectResumedNotice    NoticeKind = "project-resumed"
+	IntakeGaveUpNotice      NoticeKind = "intake-gave-up"
+	ClosedCheckFailedNotice NoticeKind = "closed-check-failed"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -1159,8 +1166,11 @@ type SuperviseRequest struct {
 	// (Store.ForgetKeptDecisions), and a start that reached no claim hands them over to a fresh
 	// catch-up (workflow.HandOverKept). Every other request carries none.
 	Kept *KeptDecisions `json:"kept,omitempty"`
-	// Generation is the issue generation the request serves. A request of an earlier generation
-	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
+	// Generation is the generation of the issue the request serves (Issue.GenerationOf): the
+	// architect's run for a start of the architect, which is the tree's run on a tree root, and the
+	// issue's own generation for every other request. A request of another generation than the
+	// record holds for it finishes without acting: it must never suspend, stop, or start the next
+	// generation's worker.
 	// Three requests are not held to it. A production check's look start (CheckLook) is fenced on
 	// its check instead (the daemon outbox's checkLookHolds). A tree close of the issue's own tree
 	// whose cleanup is reserved still retires its claim and drives that cleanup, however stale its
@@ -1681,14 +1691,16 @@ type IssueBranch struct {
 	// From is where a next change's branch starts: the base the issue's last pull request merged
 	// into and the head that was merged, from the issue's merge snapshot. It is nil for every
 	// generation that is no next change, whose branch is made at the default branch as before. A
-	// release before the field refuses a row that carries it (DisallowUnknownFields), so the way
+	// next change whose snapshot knows neither carries a From that names neither, which starts at
+	// the recorded default branch and moves no branch GitHub has (the daemon's startBranchAtBase).
+	// A release before the field refuses a row that carries it (DisallowUnknownFields), so the way
 	// back of the done-by-checks migration deletes such rows.
 	From *BranchFrom `json:"from,omitempty"`
 }
 
 // BranchFrom is where a next change's branch starts (IssueBranch.From): Base, the branch the issue's
 // last pull request merged into, and MergedHead, the final head that was merged. A field the merge
-// snapshot does not know is empty.
+// snapshot does not know is empty, and stays so: no reader invents it.
 type BranchFrom struct {
 	Base       string `json:"base,omitempty"`
 	MergedHead string `json:"mergedHead,omitempty"`
@@ -2458,11 +2470,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
 			}
 		}
-	case GateSeed, LingerClose, CheckBound, ClaimRelease, DesignNewsReconcile:
-	case IssueBranch:
-		if from := value.From; from != nil && from.Base == "" && from.MergedHead == "" {
-			return fmt.Errorf("a branch row's start names the base or the merged head, or the row names no start")
-		}
+	case GateSeed, LingerClose, CheckBound, ClaimRelease, DesignNewsReconcile, IssueBranch:
 	case CloseRead:
 		if value.Generation == 0 {
 			return fmt.Errorf("a read of the checks names the generation it was queued for")
@@ -2870,6 +2878,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `close-waits`, `check-failed`, `check-unknown`, `defect-reported`, `next-change`,
+// `close-wait-no-result`, `close-wait-standing`, `checks-unapproved` and `next-change-count` are
+// the owning architect's notices of an issue that waits for its checks after its merge, and of
+// the next changes that wait starts. `next-change-count` reaches the controller too, as a
+// controller notice of the same kind. No earlier release decodes any of them, so block A of the
+// done-by-checks migration deletes their unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2878,6 +2893,8 @@ var validNoticeKinds = []NoticeKind{
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
 	"next-change-workspace",
+	"close-waits", "check-failed", "check-unknown", "defect-reported", "next-change", "close-wait-no-result",
+	"close-wait-standing", "checks-unapproved", "next-change-count",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
@@ -2980,7 +2997,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
 		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice,
-		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
+		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice, ClosedCheckFailedNotice:
 		return true
 	default:
 		return false
