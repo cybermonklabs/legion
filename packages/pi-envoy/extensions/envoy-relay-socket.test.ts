@@ -59,10 +59,10 @@ test("a relay socket session takes its relay subject on the socket and no agent 
     expect(report.notices.join("\n")).toContain(
       "Envoy's inbound messages come through the listener's relay socket (ENVOY_INBOUND is listener), which carries no live view: the Agents page shows nothing of this session's turns"
     );
-    // The fixture's hook (`temporaryDirectories`' `afterEach`, whose limit is 60_000) removes HOME
-    // after the row. The session process must leave no transpiler cache there
-    // (`runReportingProcess`): that cache held about 360 files, which the hook would otherwise
-    // remove.
+    // The fixture's hook (`temporaryDirectories`' `afterEach`) removes HOME after the row, at the
+    // 250 s `bun run test` gives it (package.json). The session process must leave no transpiler
+    // cache there (`runReportingProcess`): that cache held about 360 files, which the hook would
+    // otherwise remove.
     const left = readdirSync(home, { recursive: true });
     expect(left.length).toBeLessThan(20);
   } finally {
