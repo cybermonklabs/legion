@@ -44,21 +44,24 @@ async function cli(argv: readonly string[]) {
       readText: () => {
         throw new Error("this call reads no file");
       },
-      fetchImpl: async (input, init) => {
-        const request = new Request(input, init);
-        const url = new URL(request.url);
-        requests.push({
-          method: request.method,
-          path: url.pathname,
-          query: url.search,
-          body: request.method === "POST" ? await request.json() : null,
-        });
-        if (url.pathname !== "/api/v1/deploys")
-          return Response.json({ error: "unexpected route" }, { status: 500 });
-        return request.method === "POST"
-          ? Response.json({ deploy }, { status: 201 })
-          : Response.json({ repo: deploy.repo, deploys: [deploy] });
-      },
+      fetchImpl: Object.assign(
+        async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          const request = new Request(input, init);
+          const url = new URL(request.url);
+          requests.push({
+            method: request.method,
+            path: url.pathname,
+            query: url.search,
+            body: request.method === "POST" ? await request.json() : null,
+          });
+          if (url.pathname !== "/api/v1/deploys")
+            return Response.json({ error: "unexpected route" }, { status: 500 });
+          return request.method === "POST"
+            ? Response.json({ deploy }, { status: 201 })
+            : Response.json({ repo: deploy.repo, deploys: [deploy] });
+        },
+        { preconnect: fetch.preconnect }
+      ),
     }
   );
   return { code, output, requests, ledger: join(root, "sessions", "deploy-cli", "results.jsonl") };

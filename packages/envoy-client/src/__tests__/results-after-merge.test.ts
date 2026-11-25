@@ -27,6 +27,8 @@ const pass: CheckResult = {
   run: "read",
   observed: "The program answers.",
   negative_control: "",
+  screenshots: [],
+  session: "",
   failed: 0,
   skipped: 0,
   excluded: 0,
@@ -44,6 +46,9 @@ const check: CheckBlock = {
   version: 1,
   when: "after_merge",
   text: "The program answers.",
+  negative_control: "",
+  run: "read",
+  surface: "the program",
   compared_with: [{ kind: "branch", branch: "main", repo, commit, merge_commit: merge }],
   pass_stands: { answer: "yes", roles: ["tester"], commit },
   results: [pass],
@@ -56,7 +61,7 @@ function render(changes: Partial<CheckBlock>, brief = false): string {
   };
   return formatCheckResults(wire, brief, { "DSP-1": repo });
 }
-const cases: readonly [string, CheckPassStands, readonly CheckResult[], string][] = [
+const cases: readonly [string, CheckPassStands, CheckResult[], string][] = [
   [
     "yes",
     { answer: "yes", roles: ["tester"], results: [pass.id], commit },

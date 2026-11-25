@@ -118,7 +118,7 @@ const heldCommits = {
   comparedNamed: "a8".repeat(20),
   /** The release branch's final head and its merge into main. */
   comparedLandingHead: "a9".repeat(20),
-  comparedLandingMerge: "aa".repeat(20),
+  comparedLandingMerge: "ab".repeat(20),
   /** The merge, later result and deployed build the real commands drive. */
   answerMerge: "b1".repeat(20),
   answerLater: "b2".repeat(20),
@@ -1213,6 +1213,7 @@ A default-branch result is compared with the default branch alone.
     merge_commit_sha: commits.comparedMergeCommit,
     merged_at: mergedAt,
     merged: "true",
+    state: "closed",
     number: "23",
     repo,
     title: `${basesIssue} merged pull request #23`,
@@ -1230,6 +1231,7 @@ A default-branch result is compared with the default branch alone.
     merge_commit_sha: commits.comparedLandingMerge,
     merged_at: mergedAt,
     merged: "true",
+    state: "closed",
     number: "24",
     repo,
     title: "Land the release branch",
@@ -1468,6 +1470,7 @@ await runCase("after-merge-answer", async () => {
     merge_commit_sha: commits.answerMerge,
     merged_at: mergedAt,
     merged: "true",
+    state: "closed",
     number: "31",
     repo,
     title: `${issue} merged work`,
