@@ -3643,14 +3643,14 @@ package api
 // that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
 // (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
 // changes, so this entry moved to 256, above every number an open pull request
-// declares or a change had been named for. From this entry the last number of answers.go's
-// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
+// declares or a change had been named for. At this entry the last number of answers.go's
+// SupportedContracts was `api.causeTimesContract`, after podHoldContract's 246. The forward merge
 // of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
-// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
-// base's own number and every open pull request again at the next merge rather than from this
-// line.)
+// 256, so this entry kept 256, and the list then ended priorityContract, causeTimesContract.
+// Read the base's own number and every open pull request again at the next merge rather than
+// from this line.)
 //
-// 259: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 269: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -3665,9 +3665,9 @@ package api
 // caller: by the contract its `Legion-Plugin-Contract` header states, else by its pod's claims,
 // which count no claim at 193 or above, so a plugin of 193 meets the band by its header alone.
 // `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional. A
-// caller at 259 is served what one at 256 is with the four keys beside it, so 259's records are
+// caller at 269 is served what one at 256 is with the four keys beside it, so 269's records are
 // 256's under its own number with the four key paths added to the state's and the record's,
-// and with a record of the owed answer below, which no contract before 259 has.
+// and with a record of the owed answer below, which no contract before 269 has.
 //
 // The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
 // claim token, session and secret `claims/activity` carries), which answers `{"owes": bool,
@@ -3680,13 +3680,13 @@ package api
 // whose issue the workflow records, owed or not, and absent for an architect, the controller, a
 // failed claim and an unrecorded issue. The end-of-turn reminder renders that answer in both
 // harnesses and keeps no model of the phase of its own (dispatch://INFRA-2746), and its architect
-// notice and the stall watch's notice go to the architect it names. A plugin below 259 calls no
+// notice and the stall watch's notice go to the architect it names. A plugin below 269 calls no
 // such route, and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts`
 // mirrors the two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden. The answer is the
-// row `AnswerOwed` of answers.go's Answers, which arrives with its route at 259 and is the
+// row `AnswerOwed` of answers.go's Answers, which arrives with its route at 269 and is the
 // identity at every contract that records it, and the request is a row of the request gate's
-// table (request_shapes_test.go's pluginRequests), so 259's request records hold its three
+// table (request_shapes_test.go's pluginRequests), so 269's request records hold its three
 // fields and a later type that stops reading one of them is red.
 //
 // The daemon ships four store migrations with it.
@@ -3795,9 +3795,12 @@ package api
 // that merge on this change's tree declaring 256, read every open pull request from
 // 2026-11-25T00:34:46Z to 00:38:05Z and said: "Take 259, the lowest number above the base's that
 // no open pull request declares (257 is declared by #4580; 258 is declared by #4432, #5164)", so
-// this entry moved to 259. The readings behind this change's earlier numbers are in its implement
-// handoffs on dispatch://INFRA-3136. The last number of answers.go's SupportedContracts was 256,
+// this entry moved to 259. At 2026-11-25T03:51Z INFRA-3118's architect, who allocates the
+// numbers on this repository until #5399 merges, found 259 allocated to #5156, whose head declares
+// it, and assigned 269, free in a census of 485 open heads with main at 256, so this entry moved
+// to 269. The readings behind this change's earlier numbers are in its implement handoffs on
+// dispatch://INFRA-3136. The last number of answers.go's SupportedContracts was 256,
 // version.go's entry for #5349, `api.causeTimesContract`, until this entry added
 // `api.repositoryCorrectionContract` after it. That was a reading and never the rule: read main's
 // own number and every open head again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 259
+const DaemonAPIVersion = 269

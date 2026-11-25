@@ -5,4 +5,4 @@ body: |-
   than keeping a phase of its own. The answer also names the architect that owns a phase worker's
   claim, the one the daemon's own notices of its issue go to, and the worker's notices of a stalled
   run or a stuck tool call go there. A record the daemon cannot read is answered with a failure, so
-  the worker still nudges. The daemon API contract is 259.
+  the worker still nudges. The daemon API contract is 269.
