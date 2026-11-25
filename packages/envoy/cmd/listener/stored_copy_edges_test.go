@@ -102,7 +102,13 @@ func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
 // the window cut to three seconds, standing in for the 72 hours of the deployed one, so the stream
 // forgets the id.
 func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
-	rig, _ := newSenderLimitRigOnServer(t)
+	// The window below is cut by hand, behind the back of the client that owns the stream, and
+	// that client's keeper puts every setting it owns back within one period: a pass landing
+	// between the cut and the forget restores the deployed 72 hours, and the repeat is then
+	// refused for as long as the row waits. A keep interval past any run of this row leaves the
+	// cut standing. CI read the other way once, "the stream now reports 72h0m0s" in this row's
+	// own failure, which is what sent me here.
+	rig, _ := newSenderLimitRigOnServer(t, bus.WithKeepInterval(time.Hour))
 	js := rig.harness.client.JS()
 	const sender = "ses_forgotten_id"
 	subject := "notifications.team.forgotten-" + id.New()
