@@ -831,10 +831,10 @@ host.describe("proc_start and the environment readers", () => {
     "proc_start gives a zombie no start and a live process its own",
     () => {
       // The zombie's parent is a perl that sets SIGCHLD to its default and never waits, so the
-      // child stays a zombie whenever it ends. A bash that forked it and then exec'd sleep reaped
-      // it whenever it ended before that exec, through bash's own SIGCHLD handler, and left no
-      // zombie to wait for: with four CPU-bound processes on the row's CPUs it timed out in 11 of
-      // 200 runs, each time with the child gone and its parent a live sleep that ignored no SIGCHLD.
+      // child stays a zombie while the perl lives. A bash that forked it and then exec'd sleep
+      // could reap it before that exec, through bash's own SIGCHLD handler, and leave no zombie to
+      // wait for: with four CPU-bound processes on the row's CPUs it timed out in 11 of 200 runs,
+      // each time with the child gone and its parent a live sleep that ignored no SIGCHLD.
       const r = run(`
 perl -e '$SIG{CHLD} = "DEFAULT"; defined(my $pid = fork) or die "fork: $!\\n"; if (!$pid) { exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\\n" } $| = 1; print "$pid\\n"; sleep 600' -- "$program" 0 </dev/null >"$scratch/zombie" 2>/dev/null &
 parent=$!
@@ -845,9 +845,9 @@ echo "zombie: [$(proc_start "$zombie")]"
 echo "live: [$(proc_start "$parent")] [$(start_of "$parent")]"
 `);
       expect(r.err).toBe("");
-      const live = /^live: \[(\d+)\] \[(\d+)\]$/m.exec(r.out);
-      expect(r.out).toStartWith("zombie: []\n");
-      expect(live?.[1]).toBe(live?.[2]);
+      // One match, so a proc_start that printed nothing for the live parent fails too: the zombie
+      // has no start, and the parent's start is a number equal to its stat field 22.
+      expect(r.out).toMatch(/^zombie: \[\]\nlive: \[(\d+)\] \[\1\]\n$/);
     },
     slow
   );
