@@ -30,7 +30,7 @@ Without `reason`, the architect that owns the issue decides: do nothing. With `r
 
 ## `worker-died` (architect)
 
-The root's architect ran out of launches or prompts. When the root's `phase` is `done`, the tree is parked: do nothing. Otherwise look for the cause: `issues.<KEY>.architect.failure`, an open `capabilities` row naming its session, its last message on the root. With none, or a cause that is gone, restart the tree: `set_status` the root to `backlog`, then `todo`, in the same turn. When the cause stays, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
+The root's architect ran out of launches or prompts. When the root's `phase` is `done`, the tree is parked: do nothing. Otherwise look for the cause: `issues.<KEY>.architect.failure`, an open `capabilities` row naming its session, its last message on the root. With none, or a cause that is gone, restart the tree: `set_status` the root to `backlog`, then `todo`, in the same turn. A `cyber_policy` cause (OpenAI refused the session's content) is the exception: no start of the daemon's own relaunches that claim, the restart's included, so `fresh_session` it (`issue` the root, `role` `architect`), which starts it in a new session. When the cause stays, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
 
 ## `worker-stalled` (architect)
 
