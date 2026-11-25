@@ -2,12 +2,17 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -509,4 +514,284 @@ func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 	if running != 0 {
 		t.Fatalf("%d ladders are still marked as running, want none once the climbs are over", running)
 	}
+}
+
+// climbFailed starts the line a climb logs for a read that failed (climbMergeState).
+const climbFailed = "read GitHub's merge state for an issue whose read was asked for"
+
+// limitedPull is GitHub's rate limit answering a read of pull request 86: a 429 with no
+// Retry-After, which asks the caller to wait a minute (githubrest.RetryAfter).
+var limitedPull = pullAnswer{status: http.StatusTooManyRequests, body: `{"message":"API rate limit exceeded"}`}
+
+// owesCapture says whether w's reader still holds a ladder for CAPTURE-1 (mergeStateRunning), read
+// under the lock the reader marks and unmarks it under.
+func owesCapture(w *workflowRuntime) bool {
+	w.mergeStateMu.Lock()
+	defer w.mergeStateMu.Unlock()
+	_, running := w.mergeStateRunning["CAPTURE-1"]
+	return running
+}
+
+// mergeForwardAsks is every ask of a merge forward the outbox holds for CAPTURE-1, oldest first:
+// each row of kind merge_forward whose step is an ask, decoded as its executor decodes it.
+func mergeForwardAsks(t *testing.T, pool *store.Pool) []record.MergeForwardMessage {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select id, payload from outbox where issue = 'CAPTURE-1' and kind = $1 order by id`,
+		string(record.OutboxKindMergeForward))
+	if err != nil {
+		t.Fatalf("read the merge-forward rows: %v", err)
+	}
+	defer rows.Close()
+	var asks []record.MergeForwardMessage
+	for rows.Next() {
+		var id int64
+		var payload []byte
+		if err := rows.Scan(&id, &payload); err != nil {
+			t.Fatalf("read a merge-forward row: %v", err)
+		}
+		decoded, err := record.DecodeOutboxPayload(record.OutboxRow{ID: id, Kind: record.OutboxKindMergeForward, Issue: "CAPTURE-1",
+			Payload: json.RawMessage(payload), NextAt: time.Now()})
+		if err != nil {
+			t.Fatalf("decode merge-forward row %d: %v", id, err)
+		}
+		if message, ok := decoded.(record.MergeForwardMessage); ok && message.Step == record.MergeForwardAsk {
+			asks = append(asks, message)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the merge-forward rows: %v", err)
+	}
+	return asks
+}
+
+// failingIssueRead is records whose next read of an issue fails while fail holds, once: the
+// database refusing the read of the record the merge-state reader makes before it reads GitHub
+// (readMergeState's issueRecord).
+type failingIssueRead struct {
+	record.Store
+	fail atomic.Bool
+}
+
+func (r *failingIssueRead) Issue(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, error) {
+	if r.fail.CompareAndSwap(true, false) {
+		return nil, errors.New("the database refused the read")
+	}
+	return r.Store.Issue(ctx, tx, key)
+}
+
+// keptAfterTheFailure holds that the climb logged its first read as failed, and that the reader
+// still holds the read CAPTURE-1 is owed once it reads GitHub again, its read numbered next, or
+// lets the issue go: the first wait after the failure is the ladder's, and the failure is the
+// climb's first read still.
+func (rig *readRig) keptAfterTheFailure(t *testing.T, next int32) {
+	t.Helper()
+	testwait.Eventually(t, "the failed read to be logged", func() bool { return len(rig.lines(t, climbFailed)) >= 1 })
+	testwait.Eventually(t, "the reader to read GitHub again or let CAPTURE-1 go", func() bool {
+		return rig.reads.Load() >= next || !owesCapture(rig.w)
+	})
+	if !owesCapture(rig.w) {
+		t.Fatalf("after the failed read no reader holds CAPTURE-1's read, and GitHub was read %d times; want the read kept and made again",
+			rig.reads.Load())
+	}
+	if failed := rig.lines(t, climbFailed)[0]; failed["read"] != float64(1) || failed["wait"] != float64(rig.w.mergeStateWait()) {
+		t.Fatalf("the climb logged %v, want its first read failed and read again after the ladder's wait, %s", failed, rig.w.mergeStateWait())
+	}
+}
+
+// confirmedAndAskedOnce holds that GitHub's CONFLICTING answer after the failure took the road of
+// every CONFLICTING answer: a first conflicting read of head code that asks nothing, with the
+// reader done; the second read a minute on, which confirms the conflict; and then the one ask of a
+// merge forward the confirmed conflict makes, to the implementer at code. GitHub was read reads
+// times in all.
+func (rig *readRig) confirmedAndAskedOnce(t *testing.T, reads int32) {
+	t.Helper()
+	testwait.Eventually(t, "GitHub's CONFLICTING to be recorded and the reader to end", func() bool {
+		_, pr := capturePhase(t, rig.pool)
+		running, waiting := ladders(rig.w)
+		return pr.ConflictRead != nil && running == 0 && waiting == 0
+	})
+	if asks := mergeForwardAsks(t, rig.pool); len(asks) != 0 {
+		t.Fatalf("the first CONFLICTING read left the merge-forward asks %+v, want none before a second read confirms it", asks)
+	}
+	_, pr := capturePhase(t, rig.pool)
+	if pr.ConflictRead.Head != "code" || pr.ConflictingHead != "" {
+		t.Fatalf("the record holds first read %+v and %q conflicting, want a first read of code and nothing confirmed", pr.ConflictRead, pr.ConflictingHead)
+	}
+	if ran := runSecondReads(t, rig.runner, pr.ConflictRead.At.Add(time.Minute)); ran != 1 {
+		t.Fatalf("%d second reads ran a minute after the first read, want one", ran)
+	}
+	if _, pr := capturePhase(t, rig.pool); pr.ConflictingHead != "code" || pr.ConflictRead != nil {
+		t.Fatalf("the record holds %q conflicting with first read %+v, want the conflict of code confirmed", pr.ConflictingHead, pr.ConflictRead)
+	}
+	if asks := mergeForwardAsks(t, rig.pool); len(asks) != 1 || asks[0].Role != claim.RoleImplementer || asks[0].Head != "code" {
+		t.Fatalf("the outbox holds the merge-forward asks %+v, want one, to the implementer at head code", asks)
+	}
+	if got := rig.reads.Load(); got != reads {
+		t.Fatalf("GitHub was read %d times, want %d", got, reads)
+	}
+}
+
+// endedWithNothingAsked holds that the reader let CAPTURE-1 go with nothing standing behind it,
+// that GitHub is read no more after that however long the longest wait is given, and that nothing
+// was read conflicting, queued for a second read or asked.
+func (rig *readRig) endedWithNothingAsked(t *testing.T) {
+	t.Helper()
+	testwait.Eventually(t, "the reader to let CAPTURE-1 go", func() bool {
+		running, waiting := ladders(rig.w)
+		return running == 0 && waiting == 0
+	})
+	mark := rig.reads.Load()
+	time.Sleep(2 * mergeStateFollowWaits * rig.w.mergeStateWait())
+	if got := rig.reads.Load(); got != mark {
+		t.Fatalf("GitHub was read %d times, want no read after the %d before the reader let CAPTURE-1 go", got, mark)
+	}
+	if running, waiting := ladders(rig.w); running != 0 || waiting != 0 {
+		t.Fatalf("%d issues are queued for a read and %d ladders are running, want none", waiting, running)
+	}
+	if asks := mergeForwardAsks(t, rig.pool); len(asks) != 0 {
+		t.Fatalf("the outbox holds the merge-forward asks %+v, want none", asks)
+	}
+	if _, _, found := secondReadRow(t, rig.pool); found {
+		t.Fatalf("a second read of CAPTURE-1 is queued, want none")
+	}
+	if _, pr := capturePhase(t, rig.pool); pr.ConflictRead != nil || pr.ConflictingHead != "" {
+		t.Fatalf("the record holds first read %+v and %q conflicting, want nothing read conflicting", pr.ConflictRead, pr.ConflictingHead)
+	}
+}
+
+// A read of the merge state that a fact asks for is owed until an answer applies (climbMergeState).
+// A read that fails - GitHub's read of the pull request, or the read of the record before it -
+// answers nothing about the head, so the reader keeps the read and makes it again after a wait,
+// with no other fact asking. Here the first read fails before GitHub has answered anything, with no
+// head to follow; GitHub then answers CONFLICTING, which takes the road of every CONFLICTING
+// answer: a first conflicting read, the second read a minute on that confirms it, and the one ask
+// of a merge forward the confirmed conflict makes. The waits after failed reads double from the
+// ladder's wait up to twenty of them, a rate limit's longer wait is waited out instead, and a
+// failed read counts as none of the climb's five reads. A request for a read ends the wait and
+// reads at once, and the pull request's close and the reader's end each end the reads with nothing
+// asked. The control, dropFirstReadFailure, ends the climb on the failure as a climb once ended:
+// no reader then holds the read, and nothing is ever asked.
+func TestTheAfterFixReadSurvivesItsFirstError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a failed read of GitHub is made again, and its CONFLICTING answer is confirmed and asked once", func(t *testing.T) {
+		// The read after the failure is held until the test has seen the reader keep the read.
+		held := make(chan struct{})
+		var once sync.Once
+		release := func() { once.Do(func() { close(held) }) }
+		rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
+			switch read {
+			case 1:
+				return unavailablePull
+			case 2:
+				<-held
+			}
+			return conflictingPull
+		})
+		t.Cleanup(release)
+		rig.start(t)
+		rig.keptAfterTheFailure(t, 2)
+		release()
+		rig.confirmedAndAskedOnce(t, 3)
+	})
+
+	t.Run("a failed read of the record is made again, and GitHub's CONFLICTING answer is confirmed and asked once", func(t *testing.T) {
+		held := make(chan struct{})
+		var once sync.Once
+		release := func() { once.Do(func() { close(held) }) }
+		rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
+			if read == 1 {
+				<-held
+			}
+			return conflictingPull
+		})
+		t.Cleanup(release)
+		records := &failingIssueRead{Store: rig.w.records}
+		records.fail.Store(true)
+		rig.w.records = records
+		rig.start(t)
+		rig.keptAfterTheFailure(t, 1)
+		if failed, _ := rig.lines(t, climbFailed)[0]["error"].(string); !strings.Contains(failed, "read the record of CAPTURE-1") {
+			t.Fatalf("the climb logged the error %q, want the failed read of CAPTURE-1's record", failed)
+		}
+		release()
+		rig.confirmedAndAskedOnce(t, 2)
+	})
+
+	t.Run("the waits after failed reads double up to twenty of the ladder's, and the close of the pull request ends the reads", func(t *testing.T) {
+		rig := newReadRig(t, approvedCapture, func(int32) pullAnswer { return unavailablePull })
+		rig.start(t)
+		rig.keptAfterTheFailure(t, 2)
+		unit := rig.w.mergeStateWait()
+		want := []time.Duration{unit, 2 * unit, 4 * unit, 8 * unit, 16 * unit, 20 * unit, 20 * unit}
+		testwait.Eventually(t, "seven failed reads", func() bool { return len(rig.lines(t, climbFailed)) >= len(want) })
+		for i, line := range rig.lines(t, climbFailed)[:len(want)] {
+			// Every failure is the climb's first read still: a failed read is none of its five.
+			if line["read"] != float64(1) || line["wait"] != float64(want[i]) {
+				t.Fatalf("failed read %d logged %v, want the climb's first read still, made again after %s", i+1, line, want[i])
+			}
+		}
+		// GitHub's close, as its webhook records it. A close asks for no read: the next read of
+		// the record finds no open pull request, which is an answer the climb ends on.
+		applyFact(t, rig.pool, "github", "closed-86", intake.PullRequestClosed{Repo: "acme/widgets", Number: 86, HeadSHA: "code",
+			UpdatedAt: time.Now().UTC()}, rig.w.handlers...)
+		rig.endedWithNothingAsked(t)
+	})
+
+	t.Run("a rate limit's longer wait is waited out, and the reader's end ends it", func(t *testing.T) {
+		rig := newReadRig(t, approvedCapture, func(int32) pullAnswer { return limitedPull })
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		go rig.w.readMergeStates(ctx)
+		applyFact(t, rig.pool, "github", "checks-on-code", settledChecksOnCode(), rig.w.handlers...)
+		testwait.Eventually(t, "the failed read to be logged", func() bool { return len(rig.lines(t, climbFailed)) >= 1 })
+		if testwait.Holds(2*mergeStateFollowWaits*rig.w.mergeStateWait(), testwait.Poll, func() bool {
+			return !owesCapture(rig.w) || rig.reads.Load() > 1
+		}) {
+			t.Fatalf("after the rate-limited read the reader holds CAPTURE-1's read %t, and GitHub was read %d times; want the read held through the minute the limit asks for, with no read before it",
+				owesCapture(rig.w), rig.reads.Load())
+		}
+		if failed := rig.lines(t, climbFailed); len(failed) != 1 || failed[0]["wait"] != float64(time.Minute) {
+			t.Fatalf("the climb logged %v, want one failed read, made again after the minute GitHub's limit asks for", failed)
+		}
+		cancel()
+		rig.endedWithNothingAsked(t)
+	})
+
+	t.Run("a request for a read ends the wait after a failed read and reads at once", func(t *testing.T) {
+		rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
+			if read == 1 {
+				return limitedPull
+			}
+			return conflictingPull
+		})
+		rig.start(t)
+		testwait.Eventually(t, "the failed read to be logged", func() bool { return len(rig.lines(t, climbFailed)) >= 1 })
+		asked := time.Now()
+		// The head's next CI settlement asks for a read of its own (workflow's askMergeState).
+		later := settledChecksOnCode()
+		later.Generation, later.Snapshot = 2, "settled-later"
+		later.CheckRuns = []record.AttemptRun{{Name: "pr-checks-result", ID: 4}}
+		applyFact(t, rig.pool, "github", "checks-on-code-again", later, rig.w.handlers...)
+		rig.confirmedAndAskedOnce(t, 3)
+		if waited := time.Since(asked); waited >= time.Minute/2 {
+			t.Fatalf("GitHub answered %s after the request, want the request to end the minute's wait", waited)
+		}
+	})
+
+	t.Run("with the failure dropped no reader holds the read, and nothing is ever asked", func(t *testing.T) {
+		rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
+			if read == 1 {
+				return unavailablePull
+			}
+			return conflictingPull
+		})
+		rig.w.dropFirstReadFailure = true
+		rig.start(t)
+		testwait.Eventually(t, "the failed read to be logged", func() bool { return len(rig.lines(t, climbFailed)) >= 1 })
+		rig.endedWithNothingAsked(t)
+		if got := rig.reads.Load(); got != 1 {
+			t.Fatalf("GitHub was read %d times, want the one read that failed", got)
+		}
+	})
 }
