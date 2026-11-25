@@ -24,16 +24,16 @@ import (
 )
 
 // readRepositoryJSON performs one GET of path (an API path with its own query, joined onto the
-// API origin) with an installation token, through Client.Read, and answers the body of a read of
-// repoFull whose answer is JSON, classified by CheckRepositoryResponse: a status the caller names
-// in handled comes back as its own status for the caller to read, any other failure as the error
-// that rule names, which names the URL the read asked (target).
+// API origin: target) with an installation token, as Client.Read does, and answers the body of a
+// read of repoFull whose answer is JSON, classified by CheckRepositoryResponse: a status the
+// caller names in handled comes back as its own status for the caller to read, any other failure
+// as the error that rule names, which names the URL the read asked.
 func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull string, handled ...int) (redact.Answer, int, error) {
 	target, err := c.target(path)
 	if err != nil {
 		return redact.Answer{}, 0, err
 	}
-	body, status, header, err := c.Read(ctx, token, path)
+	body, status, header, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeJSON, "", nil, responseLimit)
 	if err != nil {
 		return redact.Answer{}, status, err
 	}
@@ -68,7 +68,7 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 	if err != nil {
 		return redact.Answer{}, 0, "", err
 	}
-	body, status, header, err := c.ReadConditionalWithin(ctx, token, path, etag, pollResponseLimit)
+	body, status, header, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeJSON, etag, nil, pollResponseLimit)
 	if err != nil {
 		return redact.Answer{}, status, "", err
 	}
