@@ -1679,14 +1679,13 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 // its own. While the key carried the attempt number, that retry was a key no dedupe layer had
 // ever seen and the agent was handed the same instruction twice. The key is now stable across
 // the attempts of one message in one mode, so the stream recognises the repeat, answers
-// duplicate, and the retry's row says so instead of claiming a delivery that never happened. The
-// listener client's window and the take-over's tries run on the server's clock, a fake the test
-// moves through each held call's window (answerWhileCallsAreHeld), so the stand-in's lookups,
-// which it answers at once, are never cut by a window a loaded machine ran out. The first send's
-// window ends CallWindow past its start on that clock, past the test server's take-over window
-// (testTakeoverWindow), so the take-over makes no second try under the same key and the attempt
-// is recorded failed at once (TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce covers the
-// same-key tries).
+// duplicate, and the retry's row says so instead of claiming a delivery that never happened. A
+// missed receipt is tried again inside the listener take-over window (takeoverRetry) under the
+// same key, so the attempt is recorded failed only when every try of that window missed; this
+// listener misses every one until the message's own request has answered. The listener client's
+// window and the take-over's tries run on the server's clock, a fake the test moves through each
+// held call's window (answerWhileCallsAreHeld), so the stand-in's lookups, which it answers at
+// once, are never cut by a window a loaded machine ran out.
 func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
 	t.Parallel()
 	var calls listenerCalls
