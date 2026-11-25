@@ -427,7 +427,7 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 		answered <- time.Now()
 		done <- err
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, time.Minute); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1); waiting < 1 {
 		t.Fatal("the correction never waited for the change log's lock")
 	}
 	pending := r.count(t, `select count(*) from delivery_changes_pending`)

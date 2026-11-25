@@ -23,7 +23,7 @@ func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testin
 	frame := evalsLiveView("HUB", DeliveryLiveWindow{Preset: new(28)}, "")
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("e", frame))
-	conn.snapshot(t, 5*time.Second, "e")
+	conn.snapshot(t, "e")
 	rig.settle(t)
 
 	mark := rig.mark()
@@ -43,7 +43,7 @@ func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testin
 	if err != nil || moved != 1 {
 		t.Fatalf("the boot's drain moved %d, %v; want the one pending change", moved, err)
 	}
-	rig.waitFor(t, mark, 5*time.Second, "recompute of the evals view after the boot's drain", recomputeOfView(t, frame))
+	rig.waitFor(t, mark, "recompute of the evals view after the boot's drain", recomputeOfView(t, frame))
 	woke := time.Since(drained)
 	var left int
 	if err := rig.database.Pool.QueryRow(t.Context(), `select count(*) from delivery_changes_pending`).Scan(&left); err != nil {

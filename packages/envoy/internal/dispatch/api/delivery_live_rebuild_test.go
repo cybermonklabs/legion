@@ -61,7 +61,7 @@ func TestARestartThatMovesValuesSendsTheEvalsPageOneDeltaAtItsFlip(t *testing.T)
 		t.Fatalf("the release's passes: %v", err)
 	}
 	page.rig.hub.catchUpNow()
-	delta := page.conn.delta(t, 10*time.Second, "e")
+	delta := page.conn.delta(t, "e")
 	page.held = applyLiveDelta(t, evalsView, page.held, delta)
 	page.requireAtRoute(t, "the release's one delta")
 	if reflect.DeepEqual(liveComparable(t, mustEncodeLive(t, evalsView, before)), liveComparable(t, mustEncodeLive(t, evalsView, page.held))) {

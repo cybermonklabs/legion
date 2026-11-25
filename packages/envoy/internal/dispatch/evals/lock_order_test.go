@@ -76,7 +76,7 @@ func race(t *testing.T, holder pgx.Tx, first, second func(ctx context.Context) e
 	defer cancel()
 	firstDone, secondDone := make(chan error, 1), make(chan error, 1)
 	go func() { firstDone <- first(ctx) }()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, lockOrderBound); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 		t.Fatalf("the first writer never reached the pause")
 	}
 	go func() { secondDone <- second(ctx) }()
@@ -88,12 +88,17 @@ func race(t *testing.T, holder pgx.Tx, first, second func(ctx context.Context) e
 			secondAnswered = true
 		default:
 		}
-		if secondAnswered || storetest.WaitForLockWaiters(t, holder, 2, 10*time.Millisecond) >= 2 {
+		waiting, err := storetest.LockWaiters(t.Context(), holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if secondAnswered || waiting >= 2 {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the second writer neither waited, behind the pause or the first writer, nor answered")
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	for _, observe := range whileWaiting {
 		observe()
@@ -562,7 +567,7 @@ func (f firstRegistrations) run(t *testing.T, queuedSlugs ...string) {
 		for _, registration := range queued {
 			go func() { answers <- registration.write(ctx) }()
 		}
-		if waiting := storetest.WaitForLockWaiters(t, holder, 2+len(queued), lockOrderBound); waiting < 2+len(queued) {
+		if waiting := storetest.WaitForLockWaiters(t, holder, 2+len(queued)); waiting < 2+len(queued) {
 			t.Errorf("%d writers wait, want %d: the paused registration, the edit and the %d queued registrations", waiting, 2+len(queued), len(queued))
 		}
 		requireQueuedWithNoTransactionID(t, holder, documentID, len(queued))
@@ -708,11 +713,11 @@ func TestTwoWritersLockingEvalsWhoseKeysCollideNeverDeadlock(t *testing.T) {
 		return done
 	}
 	first := lock(a, b)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, lockOrderBound); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 		t.Fatalf("the writer of %s and %s never waited for the key the test holds", a, b)
 	}
 	second := lock(b, c)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2, lockOrderBound); waiting < 2 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 2); waiting < 2 {
 		t.Fatalf("the writer of %s and %s never waited, behind the test or the first writer", b, c)
 	}
 	if err := holder.Commit(ctx); err != nil {

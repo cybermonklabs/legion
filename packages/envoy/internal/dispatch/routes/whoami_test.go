@@ -45,8 +45,8 @@ func standInEventLog(ctx *AppContext, head int64) {
 // table, as main's are: a header names a person by recording them there, and a project create
 // names its default from that same table (allowedLogin), so an in-memory store here would leave
 // the person the header names unknown to the create. Its event horizon warns of a stall at
-// horizontest.StallWarning, as a cmd/dispatch test process's does, so a wait on the event feed
-// (waitEventsStart) hears that the horizon is held inside its own patience.
+// horizontest.StallWarning, as a cmd/dispatch test process's does, so a row's output names whoever
+// holds the horizon while it waits; the wait itself reads no warning (waitEventsStart).
 func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	broker := events.NewBroker()

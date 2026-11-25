@@ -187,7 +187,7 @@ func TestTheBoardPushedLiveIsTheBoardTheGETAnswers(t *testing.T) {
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
-	pushed := conn.snapshot(t, 5*time.Second, "b").Body
+	pushed := conn.snapshot(t, "b").Body
 	answered := getBody(t, rig.handler, windowTarget(t, legionBoardView, pushed, ""))
 
 	live, served := map[string]json.RawMessage{}, map[string]json.RawMessage{}

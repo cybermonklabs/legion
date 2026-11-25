@@ -501,7 +501,7 @@ func TestARunsJobsWriteTakesTheChangeLogLockLast(t *testing.T) {
 
 	gate := takeChangeLock(t, ctx, pool)
 	done := goTimed(func() error { return UpsertRunJobs(ctx, pool, "acme/widgets", 811, jobs, true) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1); waiting < 1 {
 		t.Fatal("the jobs write never waited for the change log's lock")
 	}
 	if !rowLockedByAnother(t, ctx, pool, `select 1 from delivery_runs where repo = 'acme/widgets' and run_id = 811`) {
@@ -553,14 +553,14 @@ func TestTheDeployedWriteTakesTheChangeLogLockLastAndNeverDeadlocksWithAPullRequ
 		wrote, err = recordDeployedEvent(ctx, pool, broker, shipped)
 		return err
 	})
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1); waiting < 1 {
 		t.Fatal("the deployed write never waited for the change log's lock")
 	}
 	if !rowLockedByAnother(t, ctx, pool, `select 1 from delivery_pull_requests where repo = 'acme/widgets' and number = 21`) {
 		t.Error("the deployed write waits for the change log's lock holding no lock of its pull request's row: it takes the change log's lock before its rows")
 	}
 	retitle := goTimed(func() error { return UpsertPullRequest(ctx, pool, retitled) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 2); waiting < 2 {
 		t.Fatal("the pull request's write never waited, behind the change log's lock or the deployed write")
 	}
 	released := time.Now()
@@ -641,7 +641,7 @@ func TestASessionGroupWriteReadsBeforeItTakesTheChangeLogLock(t *testing.T) {
 		_, err := CreateSessionGroup(ctx, tx, "Reading crew", []string{"reading-s1"}, actor)
 		return err
 	}))
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1); waiting < 1 {
 		t.Fatal("the group's create never read the pull requests' sessions")
 	}
 	probe, err := pool.Begin(ctx)
@@ -704,7 +704,7 @@ func TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows(t *testing.T) {
 		_, err := UpdateSessionGroup(ctx, tx, crew.ID, SessionGroupUpdate{Add: []string{"outbox-s2"}, Remove: []string{"outbox-s1"}}, actor)
 		return err
 	}))
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1); waiting < 1 {
 		t.Fatal("the group's update never waited for the change log's lock")
 	}
 	if rowLockedByAnother(t, ctx, pool, `select 1 from delivery_session_groups where id = $1::uuid`, crew.ID) {
@@ -719,7 +719,7 @@ func TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows(t *testing.T) {
 		_, err := CreateSessionGroup(ctx, tx, names[1], []string{"outbox-s3"}, actor)
 		return err
 	}))
-	if waiting := storetest.WaitForLockWaiters(t, gate, 3, 10*time.Second); waiting < 3 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 3); waiting < 3 {
 		t.Fatalf("the run write and the second create never both waited, behind the change log's lock or the update: %d waiting", waiting)
 	}
 	released := time.Now()

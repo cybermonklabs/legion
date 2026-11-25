@@ -272,7 +272,7 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("m", presetView(deliveryLiveMeasures, 7, "")))
 	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(&now)))
-	snapshots := conn.firstSnapshots(t, 5*time.Second, "m", "p")
+	snapshots := conn.firstSnapshots(t, "m", "p")
 	rig.settle(t)
 
 	registered := evalRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/HUB/evals", map[string]any{
@@ -288,7 +288,7 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	// pinned at.
 	queries := map[string]string{"p": "at=" + now.Format(time.RFC3339Nano)}
 	for len(kinds) > 0 {
-		frame := conn.next(t, 5*time.Second, "a delta of each view")
+		frame := conn.next(t, "a delta of each view")
 		delta, ok := frame.(DeliveryLiveDelta)
 		if !ok || kinds[delta.Sub] == "" {
 			raw, _ := json.Marshal(frame)

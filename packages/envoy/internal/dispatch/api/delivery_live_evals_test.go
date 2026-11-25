@@ -273,7 +273,7 @@ func TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs(t *testing.T) {
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(&now)))
 	pinned := "at=" + now.Format(time.RFC3339Nano)
-	body := conn.snapshot(t, 5*time.Second, "p").Body
+	body := conn.snapshot(t, "p").Body
 	if names, minN := pipelineSlowestJobs(t, body); len(names) != 0 || minN != measures.SlowestMinResults {
 		t.Fatalf("the snapshot ranks %v by %d, want no job by the seeded %d", names, minN, measures.SlowestMinResults)
 	}
@@ -288,7 +288,7 @@ func TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs(t *testing.T) {
 		if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
 			t.Fatalf("set HUB's pr-ci min_n to %d: status %d, body %s", step.minN, registered.Code, registered.Body.String())
 		}
-		body = requireLandsOnGET(t, rig.handler, deliveryLivePipeline, body, conn.delta(t, 5*time.Second, "p"), pinned)
+		body = requireLandsOnGET(t, rig.handler, deliveryLivePipeline, body, conn.delta(t, "p"), pinned)
 		if names, minN := pipelineSlowestJobs(t, body); !slices.Equal(names, step.want) || minN != step.minN {
 			t.Fatalf("with HUB's pr-ci min_n at %d the live Pipeline ranks %v by %d, want %v by %d", step.minN, names, minN, step.want, step.minN)
 		}
@@ -409,9 +409,9 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		subOf[spec.key] = sub
 		conns[sub] = newFakeLiveConn()
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
-		conns[sub].snapshot(t, 5*time.Second, sub)
+		conns[sub].snapshot(t, sub)
 		if sub != "t" {
-			conns[sub].freshness(t, 5*time.Second, "the verdict after the snapshot of "+sub)
+			conns[sub].freshness(t, "the verdict after the snapshot of "+sub)
 		}
 	}
 	rig.settle(t)
@@ -442,7 +442,7 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		}
 		rig.hub.catchUpNow()
 		for _, sub := range wantRecomputed {
-			rig.waitFor(t, mark, 5*time.Second, "the recompute of "+sub+" after "+what, recomputeOfView(t, frames[sub]))
+			rig.waitFor(t, mark, "the recompute of "+sub+" after "+what, recomputeOfView(t, frames[sub]))
 		}
 		rig.waitNoRecompute(t, viewMaxWait)
 		recomputed := []string{}
@@ -469,7 +469,7 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 				conns[sub].none(t, 100*time.Millisecond, what)
 				continue
 			}
-			delta := conns[sub].delta(t, 5*time.Second, sub)
+			delta := conns[sub].delta(t, sub)
 			list := "items"
 			if sub == "t" {
 				list = "prs"
@@ -524,7 +524,7 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 			t.Fatalf("open the P0 issue: status %d, body %s", response.Code, response.Body.String())
 		}
 	}, nil, []string{"t"})
-	conns["t"].delta(t, 5*time.Second, "t")
+	conns["t"].delta(t, "t")
 	sent("the P0 issue's event", nil)
 
 	step("the unowned-p0 row the refresher writes for the P0 issue", func() {
@@ -561,7 +561,7 @@ func TestAnEvalsViewsSnapshotIsTheListRead(t *testing.T) {
 	} {
 		conn := newFakeLiveConn()
 		rig.hub.Subscribe(conn, subscribeFrame(sub, view))
-		snapshot := conn.snapshot(t, 5*time.Second, sub)
+		snapshot := conn.snapshot(t, sub)
 		requireTheListRead(t, rig.handler, "INFRA", snapshot.Body, *view.Query)
 
 		var body evalListResponse
@@ -591,10 +591,10 @@ func TestAnEvalsViewsSnapshotIsTheListRead(t *testing.T) {
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("new", evalsLiveView("NEWP", DeliveryLiveWindow{Preset: new(7)}, "")))
-	conn.refusal(t, 5*time.Second, "new", errProjectNotFound.code)
+	conn.refusal(t, "new", errProjectNotFound.code)
 	conn.none(t, time.Second, "the refusal of a project no row holds")
 	createTestProject(t, rig.handler, "NEWP")
-	snapshot := conn.snapshot(t, 5*time.Second, "new")
+	snapshot := conn.snapshot(t, "new")
 	requireTheListRead(t, rig.handler, "NEWP", snapshot.Body, "")
 }
 
@@ -610,7 +610,7 @@ func TestAReadingReachesAnEvalsPageOverTheLiveSocket(t *testing.T) {
 
 	client := rig.dial(t, asUser("alice"))
 	client.send(t, deliverySubscribe("evals", evalsLiveView("INFRA", window, "")))
-	snapshot := client.snapshot(t, 10*time.Second, "evals")
+	snapshot := client.snapshot(t, "evals")
 	requireTheListRead(t, rig.handler, "INFRA", snapshot.Body, "")
 
 	// One reading of an eval no row holds: the write registers it, logs the reading and writes its
@@ -620,7 +620,7 @@ func TestAReadingReachesAnEvalsPageOverTheLiveSocket(t *testing.T) {
 	if written.Code != http.StatusCreated {
 		t.Fatalf("log the reading: status %d, body %s", written.Code, written.Body.String())
 	}
-	delta := client.delta(t, 10*time.Second, "evals")
+	delta := client.delta(t, "evals")
 	if got := liveUpsertIDs(t, delta, "items"); !slices.Equal(got, []string{"INFRA/pr-size"}) {
 		t.Errorf("the reading's delta upserts %v, want INFRA/pr-size", got)
 	}
@@ -888,7 +888,7 @@ func newSettingsRewritePage(t *testing.T, configure func(*deliveryHub)) *setting
 		frame: evalsLiveView("INFRA", evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1)), ""),
 	}
 	rig.hub.Subscribe(page.conn, subscribeFrame("e", page.frame))
-	page.held = page.conn.snapshot(t, 5*time.Second, "e").Body
+	page.held = page.conn.snapshot(t, "e").Body
 	rig.settle(t)
 	return page
 }
@@ -1021,7 +1021,7 @@ func (p *settingsRewritePage) apply(t *testing.T, delta DeliveryLiveDelta, route
 // (dayRowEvals) and nothing else; what names the write the delta answers.
 func (p *settingsRewritePage) dayRowsDelta(t *testing.T, what string) DeliveryLiveDelta {
 	t.Helper()
-	delta := p.conn.delta(t, 5*time.Second, "e")
+	delta := p.conn.delta(t, "e")
 	if moved := slices.Sorted(slices.Values(liveUpsertIDs(t, delta, "items"))); !slices.Equal(moved, dayRowEvals) {
 		t.Fatalf("%s's delta upserts %v, want every eval it wrote and nothing else, %v", what, moved, dayRowEvals)
 	}
@@ -1143,7 +1143,7 @@ func TestASettingsRewritesDeltaIsWholeWhenAChangeLandsDuringItsRecompute(t *test
 	}
 
 	page.rig.clock.Advance(viewQuiet)
-	second := page.conn.delta(t, 5*time.Second, "e")
+	second := page.conn.delta(t, "e")
 	if got := liveUpsertIDs(t, second, "items"); !slices.Equal(got, []string{"INFRA/review-time"}) {
 		t.Fatalf("the delta after the reading's quiet upserts %v, want INFRA/review-time", got)
 	}
@@ -1272,7 +1272,7 @@ func newRefreshedEvalsPage(t *testing.T, tracer pgx.QueryTracer, prepare func(da
 	today := measures.Midnight(page.now)
 	page.frame = evalsLiveView(fixture.Project, evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1)), "")
 	page.rig.hub.Subscribe(page.conn, subscribeFrame("e", page.frame))
-	page.held = page.conn.snapshot(t, 10*time.Second, "e").Body
+	page.held = page.conn.snapshot(t, "e").Body
 	page.rig.settle(t)
 	page.rig.quiesce(t, page.frame)
 	if sent := page.take(t, 200*time.Millisecond); sent > 0 {
@@ -1299,10 +1299,10 @@ func (p *refreshedEvalsPage) take(t *testing.T, within time.Duration) int {
 	t.Helper()
 	for taken := 0; ; taken++ {
 		select {
-		case frame := <-p.conn.frames:
-			delta, ok := frame.(DeliveryLiveDelta)
+		case sent := <-p.conn.frames:
+			delta, ok := sent.frame.(DeliveryLiveDelta)
 			if !ok || delta.Sub != "e" {
-				raw, _ := json.Marshal(frame)
+				raw, _ := json.Marshal(sent.frame)
 				t.Fatalf("frame = %s, want a delta of the page's sub", raw)
 			}
 			p.held = applyLiveDelta(t, evalsView, p.held, delta)
@@ -1376,7 +1376,7 @@ func TestAPutThatMovesTheDeployRepositoryAndAJudgedJobSendsTheEvalsPageOneDelta(
 	mark := page.rig.mark()
 	page.refresh(t)
 	page.rig.hub.catchUpNow()
-	delta := page.conn.delta(t, 10*time.Second, "e")
+	delta := page.conn.delta(t, "e")
 	page.held = applyLiveDelta(t, evalsView, page.held, delta)
 	page.requireAtRoute(t, "the one delta after the rewrite")
 	if reflect.DeepEqual(liveComparable(t, mustEncodeLive(t, evalsView, before)), liveComparable(t, mustEncodeLive(t, evalsView, page.held))) {
@@ -1488,7 +1488,7 @@ func TestAMarkBetweenASettingsSaveAndItsRewriteSendsTheOldStateWhole(t *testing.
 	}
 	page.rig.hub.catchUpNow()
 	page.rig.clock.Advance(viewMaxWait)
-	between := page.conn.delta(t, 10*time.Second, "e")
+	between := page.conn.delta(t, "e")
 	if got := liveUpsertIDs(t, between, "items"); !slices.Equal(got, []string{logged}) {
 		t.Errorf("the reading's delta, before the rewrite, upserts %v, want %s alone", got, logged)
 	}
@@ -1505,7 +1505,7 @@ func TestAMarkBetweenASettingsSaveAndItsRewriteSendsTheOldStateWhole(t *testing.
 
 	page.refresh(t)
 	page.rig.hub.catchUpNow()
-	after := page.conn.delta(t, 10*time.Second, "e")
+	after := page.conn.delta(t, "e")
 	page.held = applyLiveDelta(t, evalsView, page.held, after)
 	page.requireAtRoute(t, "the rewrite's delta")
 	moved := listItemsByID(t, page.held)

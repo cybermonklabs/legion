@@ -899,7 +899,7 @@ func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
 	}
 	holder := pauseInserts(t, r.rig, "eval_days", fmt.Sprintf("new.project_key = 'EVAL' and new.day = '%s'", day(5)))
 	move("EVAL-3", 5)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Minute); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 		t.Fatal("the pass of EVAL-3's move never reached its held write of the 5th")
 	}
 	burst := []struct {
@@ -1135,7 +1135,7 @@ func TestAWalkBatchThatStopsForAWakeKeepsItsDaysForTheNextPass(t *testing.T) {
 	holder := pauseInserts(t, r.rig, "eval_days", fmt.Sprintf("new.project_key = 'EVAL' and new.day = '%s'", start.AddDate(0, 0, 1).Format(time.DateOnly)))
 
 	loop := r.startLoop(t, gap, r.changesWake(t))
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Minute); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 		t.Fatal("the walk never reached its held write of its second day")
 	}
 	row := history.rows["EVAL-4"]

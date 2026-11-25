@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -97,7 +96,7 @@ func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
 	for index, change := range changes {
 		writers.Go(func() { _, failures[index] = r.registry.Register(t.Context(), change) })
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2, time.Minute); waiting < 2 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 2); waiting < 2 {
 		t.Fatalf("%d register writes wait for the eval's lock, want both", waiting)
 	}
 	if err := holder.Commit(t.Context()); err != nil {
