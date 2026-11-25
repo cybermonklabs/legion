@@ -1981,15 +1981,14 @@ func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool
 // the base branch, Phase the phase the issue stays in, PullRequest the pull request's number, and
 // Why the first of R0's reasons that held (MergeForward.Why), which the ask and the hold state.
 //
-// SentLaunch and SentBefore are carried by an ask the workflow sent again at a launch of the asked
-// role's claim (workflow's askAgain), which records that launch on the record's ask as the row is
-// queued, before anything tells it: SentLaunch is that launch, and SentBefore the launch the
-// record's ask named before (MergeForward.SentLaunch). A row of it that ends undelivered puts
-// SentBefore back where the record's ask is still the row's own (workflow's MergeForwardAskEnded),
-// so the record never names a launch nothing told. Every other row carries neither. A release
-// before the two keys refuses a row that carries them (DecodeOutboxPayload, DisallowUnknownFields),
-// so its rollback takes the two keys off such rows first, leaving a plain ask (docs/kubernetes.md,
-// "Rolling back the release that holds every worker while a merge forward is owed").
+// SentLaunch is carried by an ask the workflow sent again at a launch of the asked role's claim
+// (workflow's askAgain): that launch. A delivered row of it records the launch on the record's ask
+// (MergeForward.SentLaunch) where that ask is still the row's own, which a delivery the listener
+// named no holder of needs, since it names no launch told (workflow's MergeForwardAskEnded). Every
+// other row carries none. A release before the key refuses a row that carries it
+// (DecodeOutboxPayload, DisallowUnknownFields), so its rollback takes the key off such rows first,
+// leaving a plain ask (docs/kubernetes.md, "Rolling back the release that holds every worker while
+// a merge forward is owed").
 //
 // It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
 // a released claim, and a released implementer must still be woken for the merge; its executor
@@ -2004,7 +2003,6 @@ type MergeForwardMessage struct {
 	PullRequest int              `json:"pullRequest"`
 	Why         ConflictWhy      `json:"why,omitempty"`
 	SentLaunch  uint64           `json:"sentLaunch,omitempty"`
-	SentBefore  uint64           `json:"sentBefore,omitempty"`
 }
 
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
@@ -2726,11 +2724,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if mergeForwardReason(value.Why, value.Base) == "" && (value.Why != "" || !landing) {
 			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
 		}
-		if value.Step != MergeForwardAsk && (value.SentLaunch != 0 || value.SentBefore != 0) {
-			return fmt.Errorf("only a merge-forward ask sent again at a launch names the launch it was sent at and the one before; a %s names %d and %d", value.Step, value.SentLaunch, value.SentBefore)
-		}
-		if value.SentBefore != 0 && value.SentBefore >= value.SentLaunch {
-			return fmt.Errorf("a merge-forward ask sent again at a launch replaces an earlier launch; this one is sent at %d and replaces %d", value.SentLaunch, value.SentBefore)
+		if value.Step != MergeForwardAsk && value.SentLaunch != 0 {
+			return fmt.Errorf("only a merge-forward ask sent again at a launch names the launch it was sent at; a %s names %d", value.Step, value.SentLaunch)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id

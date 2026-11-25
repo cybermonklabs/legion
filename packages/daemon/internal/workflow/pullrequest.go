@@ -37,10 +37,10 @@ import (
 // of the pull request, so the test below names that field nowhere and this helper would mark
 // nothing for it either, and the walk the write sits in touches every pull request recorded on the
 // base with each row in hand already, so a second read apiece would buy nothing. The third is the
-// launch a merge forward's ask was last told (record.MergeForward.SentLaunch: askAgain and
+// launch a merge forward's ask was last told (record.MergeForward.SentLaunch: recordAskEnd, from
 // MergeForwardAskEnded), which the daemon's outbox executor writes with
-// record.Store.PutPullRequest and no engine at the end of an ask's row, and which changes the
-// merge forward alone, a field the test below leaves out. A new write site that only records a
+// record.Store.PutPullRequest and no engine at the delivered end of an ask's row, and which changes
+// the merge forward alone, a field the test below leaves out. A new write site that only records a
 // read belongs with those three; every write that changes what the record knows of the pull
 // request belongs here.
 //

@@ -306,10 +306,10 @@ func implementerAsked(at phase.Phase, why record.ConflictWhy) record.MergeForwar
 		Phase: at, PullRequest: 42, Why: why}
 }
 
-// sentAgain is ask as askAgain queues it at launch: it carries launch and before, the launch the
-// record's ask named before (record.MergeForwardMessage.SentLaunch, SentBefore).
-func sentAgain(ask record.MergeForwardMessage, launch, before uint64) record.MergeForwardMessage {
-	ask.SentLaunch, ask.SentBefore = launch, before
+// sentAgain is ask as askAgain queues it at launch: it carries launch
+// (record.MergeForwardMessage.SentLaunch).
+func sentAgain(ask record.MergeForwardMessage, launch uint64) record.MergeForwardMessage {
+	ask.SentLaunch = launch
 	return ask
 }
 

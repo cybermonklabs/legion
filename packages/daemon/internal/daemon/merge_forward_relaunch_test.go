@@ -4,8 +4,8 @@ package daemon
 // claim on the way. The workflow hears no fact of two of those ends: an operator's stop and the
 // agent's report of its own exit each retire the claim (supervise's stop and exit), and a row of
 // the ask queued for a retired claim ends undelivered (deliverHeld). So the ask is sent again at
-// the ready of the role's next launch, a launch later than the one it was last sent at
-// (record.MergeForward.SentLaunch). These tests end the implementer's claim by each cause through
+// the ready of the role's next launch, a launch later than the one a row of it was last delivered
+// to (record.MergeForward.SentLaunch). These tests end the implementer's claim by each cause through
 // its supervise machine, as the daemon does, and relaunch it through the operator's retry.
 //
 // The ready sends nothing while a row of the ask is still queued, and leaves the ask to that row.
@@ -673,8 +673,8 @@ func TestAnAskOwedToAClaimThatExitedIsSentAgainAtItsRelaunch(t *testing.T) {
 // relaunchSendsTheOwedAskOnce is what follows an end of the implementer's claim, named by ended,
 // while the ask is owed: the claim is retired and the end queued no ask, the issue is still in
 // testing and the tester still held; then the operator's retry relaunches the implementer, the
-// ready of its new launch queues the ask once and records that launch on the record's ask, and
-// the tester is still held.
+// ready of its new launch queues the ask once, carrying that launch, and leaves the record's ask
+// told the launch before until the row's delivery, and the tester is still held.
 func (r *freshSessionRig) relaunchSendsTheOwedAskOnce(ended string) {
 	r.t.Helper()
 	retired := r.machine.Claim()
@@ -702,12 +702,13 @@ func (r *freshSessionRig) relaunchSendsTheOwedAskOnce(ended string) {
 	launch := r.machine.Claim().Generation
 
 	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
-		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen, SentLaunch: launch, SentBefore: told}}
+		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen, SentLaunch: launch}}
 	if asks := r.queuedMergeForwards(); !slices.Equal(asks, want) {
 		r.t.Errorf("after the ready of the implementer's launch %d the outbox holds the merge-forward messages %+v, want %+v", launch, asks, want)
 	}
-	if asked := r.recordedAsk(); asked.SentLaunch != launch {
-		r.t.Errorf("after the ready of the implementer's launch %d the record's ask is %+v, want it sent at that launch", launch, asked)
+	if asked := r.recordedAsk(); asked.SentLaunch != told {
+		r.t.Errorf("after the ready of the implementer's launch %d the record's ask is %+v, want it still told launch %d: the row's delivery records launch %d",
+			launch, asked, told, launch)
 	}
 	r.testerHeld("after the relaunch")
 }

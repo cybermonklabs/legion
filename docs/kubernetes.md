@@ -2691,8 +2691,7 @@ The release before refuses three kinds of `merge_forward` row that this release 
 
 - a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`);
 
-- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and `sentBefore` too where the record's ask had been told an earlier launch, and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
-  No row carries `sentBefore` without `sentLaunch` (`validateOutboxPayload`).
+- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
 
 Its decode refuses each one (`DecodeOutboxPayload` and `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
 Run this with the daemon stopped, before the earlier image is pinned:
@@ -2701,14 +2700,14 @@ Run this with the daemon stopped, before the earlier image is pinned:
 -- The rows the release before knows no step or recipient of.
 delete from outbox where kind = 'merge_forward' and split_part(issue, '-', 1) = '<PROJECT>'
   and (payload->>'step' = 'withdrawn' or (payload->>'step' in ('hold', 'landed') and payload->>'role' = 'planner'));
--- An ask sent again at a launch: the keys it carries, which the release before knows as no field.
-update outbox set payload = payload - 'sentLaunch' - 'sentBefore'
+-- An ask sent again at a launch: the key it carries, which the release before knows as no field.
+update outbox set payload = payload - 'sentLaunch'
  where kind = 'merge_forward' and split_part(issue, '-', 1) = '<PROJECT>' and payload ? 'sentLaunch';
 ```
 
 A deleted withdrawal leaves the implementer with the ask it was told is no longer its work; a deleted row to the planner is a hold or a new head the planner does not read.
-An ask sent again loses only the two keys: it is then a plain ask, which the release before decodes and delivers, so the launch it was queued for is still told.
-The first ask of a merge forward carries neither key, so the statements leave it as it is.
+An ask sent again loses only the key: it is then a plain ask, which the release before decodes and delivers, so the launch it was queued for is still told.
+The first ask of a merge forward carries no such key, so the statements leave it as it is.
 `pull_requests.merge_forward` can hold the keys `withdrawn` and `sentLaunch`.
 The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), and its next write of the pull request's record drops both.
 Without `withdrawn` it reads a withdrawn ask as one its role still holds.

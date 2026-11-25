@@ -1140,16 +1140,15 @@ type ConflictRead struct {
 // head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts).
 // Withdrawn is whether the implementer was told that the ask is no longer its work (workflow's
 // MergeForwardWithdrawn): the merge of the head is owed to nobody then until a role is asked
-// again. SentLaunch is the latest launch of the asked role's claim (intake.ClaimReady.Launch) the
-// ask was told to: the launch a row of it was delivered to, or the launch it was sent again to, 0
-// while neither happened; a row sent again records its launch at the queue, and puts back the
-// launch named before where it ends undelivered (MergeForwardMessage.SentBefore). The ask is sent
-// again, and that launch recorded here, to a later launch of that role while the merge of the head
-// is still owed to it and no row of the ask is queued for it: at that launch's ready (workflow's
-// askAgainAtLaunch), and at the end of a row of the ask that did not reach it (workflow's
-// MergeForwardAskEnded), since a claim that failed, that an operator stopped or whose agent
-// reported its own exit takes no row of the ask queued after it ended. It is stored as the jsonb
-// of pull_requests.merge_forward (migration 20261119003157), null for nil;
+// again. SentLaunch is the latest launch of the asked role's claim (intake.ClaimReady.Launch) a
+// row of the ask was delivered to, 0 while none was; it is recorded only at a delivered end
+// (workflow's MergeForwardAskEnded), so it never names a launch nothing told. The ask is sent again
+// to a later launch of that role while the merge of the head is still owed to it and no row of the
+// ask is queued for it: at that launch's ready (workflow's askAgainAtLaunch), and at the end of a
+// row of the ask that did not reach it (workflow's MergeForwardAskEnded), since a claim that
+// failed, that an operator stopped or whose agent reported its own exit takes no row of the ask
+// queued after it ended. It is stored as the jsonb of pull_requests.merge_forward (migration
+// 20261119003157), null for nil;
 // the jsonb takes Earlier, Role, Withdrawn and SentLaunch with no migration of their own, and
 // leaves each out while it is empty, and a release before them reads the jsonb without them.
 type MergeForward struct {

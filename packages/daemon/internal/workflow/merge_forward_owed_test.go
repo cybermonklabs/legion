@@ -158,13 +158,13 @@ func TestAnAskOwedToAFailedClaimIsSentAgainAtItsNextLaunch(t *testing.T) {
 	}
 
 	applyRefusingNothing(t, pool, readsAfter(3*time.Minute), implementerReady(2))
-	again := []record.MergeForwardMessage{heldIn(claim.RoleTester, phase.Testing, why), sentAgain(implementerAsked(phase.Testing, why), 2, 1)}
+	again := []record.MergeForwardMessage{heldIn(claim.RoleTester, phase.Testing, why), sentAgain(implementerAsked(phase.Testing, why), 2)}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, again) {
 		t.Errorf("after the ready of the implementer's launch 2 the merge-forward messages are %+v, want %+v: the ask once more", got, again)
 	}
 	issue, pr = storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
-	if pr.MergeForward == nil || pr.MergeForward.SentLaunch != 2 {
-		t.Errorf("after the ready of launch 2 the record's ask is %+v, want it sent at launch 2", pr.MergeForward)
+	if pr.MergeForward == nil || pr.MergeForward.SentLaunch != 1 {
+		t.Errorf("after the ready of launch 2 the record's ask is %+v, want it still told launch 1: launch 2 is recorded at its row's delivery", pr.MergeForward)
 	}
 	if worker, held := heldWorker(issue, pr); !held || worker != claim.RoleTester {
 		t.Errorf("after the ready the fence's held rule names %q (held %t), want the tester", worker, held)
@@ -191,24 +191,24 @@ func TestAMergersAskIsSentAgainAtTheReadyOfItsRetriedLaunch(t *testing.T) {
 		t.Errorf("after the retry the merge-forward messages are %+v, want none: the retry's launch is not ready yet", got)
 	}
 	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.ClaimReady{Issue: "LEGION-208", Role: claim.RoleMerger, Launch: 2})
-	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, []record.MergeForwardMessage{sentAgain(mergerAsked(), 2, 1)}) {
+	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, []record.MergeForwardMessage{sentAgain(mergerAsked(), 2)}) {
 		t.Errorf("after the ready of the merger's launch 2 the merge-forward messages are %+v, want the merger's ask sent again", got)
 	}
-	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.SentLaunch != 2 {
-		t.Errorf("after the ready of launch 2 the record's ask is %+v, want it sent at launch 2", mf)
+	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.SentLaunch != 1 {
+		t.Errorf("after the ready of launch 2 the record's ask is %+v, want it still told launch 1: launch 2 is recorded at its row's delivery", mf)
 	}
 }
 
 // One launch is told an owed ask once: a second ready of the launch the ask was last sent at, and
 // a ready of an earlier launch, send nothing. The daemon applies one ready for each launch, so this
-// holds the record's own mark of the launch it sent the ask at.
+// holds the row still queued for launch 2, which no second ready writes again.
 func TestAReadyOfALaunchTheAskWasSentAtSendsItNoMore(t *testing.T) {
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	asksDelivered(t, pool, 1)
 	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), implementerReady(2))
 	why := record.ConflictCheckNotGreen
-	want := []record.MergeForwardMessage{heldIn(claim.RoleTester, phase.Testing, why), sentAgain(implementerAsked(phase.Testing, why), 2, 1)}
+	want := []record.MergeForwardMessage{heldIn(claim.RoleTester, phase.Testing, why), sentAgain(implementerAsked(phase.Testing, why), 2)}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the ready of the implementer's launch 2 the merge-forward messages are %+v, want %+v", got, want)
 	}
@@ -251,7 +251,7 @@ func TestAReadyAsksAgainOnlyWhileTheMergeIsOwed(t *testing.T) {
 			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 			confirmsConflict(t, pool, rules)
 			return pool
-		}, again: []record.MergeForwardMessage{sentAgain(implementerAsked(phase.Testing, why), 2, 1)}},
+		}, again: []record.MergeForwardMessage{sentAgain(implementerAsked(phase.Testing, why), 2)}},
 		{name: "the ask of implementing, withdrawn by the move back into planning", seed: func(t *testing.T) *pgxpool.Pool {
 			pool := seedConflictIssue(t, phase.Implementing, "in_progress", settledGreen("lint"))
 			confirmsConflict(t, pool, rules)

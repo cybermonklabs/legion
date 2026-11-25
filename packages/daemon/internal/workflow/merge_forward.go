@@ -368,17 +368,15 @@ func (e *Engine) holdSentWorker(ctx context.Context, tx pgx.Tx, issue record.Iss
 // askAgain sends the record's ask of issue's pull request again to role at launch, a launch of
 // role's claim later than the one the ask was last told (record.MergeForward.SentLaunch), while
 // the merge of the head is still owed to role where issue stands (owedAsk) and no row of that ask
-// is queued for role and head (record.Store.QueuedMergeForwardAsk), and records launch on the ask.
-// The row carries launch and the launch the record's ask named before
-// (record.MergeForwardMessage.SentLaunch, SentBefore), so a row that ends undelivered puts that
-// launch back (MergeForwardAskEnded): launch is recorded at the queue, before anything told it.
-// It answers the pull request it wrote, nil where it sent nothing. Launch 0 is no launch: a claim
-// that failed or retired, or one the daemon holds none of, is asked at the ready of its next
-// launch. A pull request that is not open and a tree that lingers tell nobody. Its callers are a
-// launch's ready (askAgainAtLaunch) and the end of a row of the ask (MergeForwardAskEnded), which
-// the daemon's executor makes without an engine, so it writes through store: the row through
-// queuedRow, and the pull request through record.Store.PutPullRequest rather than putPullRequest,
-// since it changes the merge forward alone, which is no news of the pull request (pullRequestNews).
+// is queued for role and head (record.Store.QueuedMergeForwardAsk). The row carries launch
+// (record.MergeForwardMessage.SentLaunch), and the record's ask is left as it is: the launch is
+// recorded only once a row of the ask is delivered (MergeForwardAskEnded), and while the row is
+// queued no second one is written. It answers the pull request, nil where it sent nothing. Launch
+// 0 is no launch: a claim that failed or retired, or one the daemon holds none of, is asked at the
+// ready of its next launch. A pull request that is not open and a tree that lingers tell nobody.
+// Its callers are a launch's ready (askAgainAtLaunch) and the end of a row of the ask
+// (MergeForwardAskEnded), which the daemon's executor makes without an engine, so it writes the row
+// through store (queuedRow).
 func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role, launch uint64, now time.Time) (*record.PullRequest, error) {
 	if launch == 0 || !record.MergeForwardReaches(record.MergeForwardAsk, role) || !record.InWorkflow(issue) {
 		return nil, nil
@@ -398,18 +396,12 @@ func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 		return nil, err
 	}
 	ask := mergeForwardMessageOf(issue, *pr, role, record.MergeForwardAsk, asked.Why)
-	ask.SentLaunch, ask.SentBefore = launch, asked.SentLaunch
+	ask.SentLaunch = launch
 	row, err := queuedRow(ctx, tx, store, issue.Key, ask, now)
 	if err != nil {
 		return nil, err
 	}
 	if err := store.Enqueue(ctx, tx, row); err != nil {
-		return nil, err
-	}
-	sent := asked
-	sent.SentLaunch = launch
-	pr.MergeForward = &sent
-	if err := store.PutPullRequest(ctx, tx, *pr); err != nil {
 		return nil, err
 	}
 	return pr, nil
@@ -424,16 +416,16 @@ func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 // reads it in tx, 0 where the claim has failed or retired or the daemon holds none. It answers
 // whether it sent the ask again.
 //
-// Where the record's ask is the row's own - of its head, naming its role, not landed - a row
-// delivered to told keeps told on it (record.MergeForward.SentLaunch) where it was last told an
-// earlier launch, so the ready of told, which can come after the delivery, sends nothing again.
-// A row sent again at a launch (askAgain) recorded that launch at the queue, before anything told
-// it; where it ends undelivered and the record's ask still names that launch, the end puts back
-// the launch the ask named before (record.MergeForwardMessage.SentBefore), so no later send skips
-// a launch nothing told. A newer ask, of another head or to another role, is not the row's own and
-// is left as it is, and a launch told since the queue is never taken back: the record names it in
-// place of the row's launch. A delivery the listener named no holder of is delivered and takes
-// nothing back, or the ask would be sent to the same launch at every end.
+// Where the record's ask is the row's own - of its head, naming its role, not landed - a delivered
+// row records on it (record.MergeForward.SentLaunch) the latest of the launch it names, told, and
+// the launch the row was sent at (record.MergeForwardMessage.SentLaunch), so the ready of told,
+// which can come after the delivery, sends nothing again, and a row the listener named no holder of
+// is still taken as told to the launch it was sent at, or the ask would be sent to that launch at
+// every end. A row that ends undelivered records nothing: no launch is recorded before a row
+// reaches it, so the record never names a launch nothing told and an end has nothing to take back.
+// A newer ask, of another head or to another role, is not the row's own and is left as it is; one
+// of the same head and role takes the row's delivery as its own, since the row tells the same merge
+// of the same head.
 //
 // Then, delivered or not, the ask is sent again at launch (askAgain): a launch whose ready came
 // while the row was still queued sent nothing and left the ask to the row, which reached an earlier
@@ -456,13 +448,12 @@ func MergeForwardAskEnded(ctx context.Context, store record.Store, tx pgx.Tx, ke
 	return pr != nil, err
 }
 
-// recordAskEnd writes what the end of ask's row says on the record's ask of issue key, where that
-// ask is the row's own - of its head, naming its role, not landed (MergeForwardAskEnded): a row
-// delivered to told, a later launch than the ask names, records told; a row sent again that ends
-// undelivered while the ask still names the launch it was sent at puts back the launch named
-// before (record.MergeForwardMessage.SentBefore). Every other end writes nothing.
+// recordAskEnd records on the record's ask of issue key the launch a delivered row of ask reached,
+// where that ask is the row's own - of its head, naming its role, not landed (MergeForwardAskEnded):
+// the latest of the launch the ask names, told, and the launch the row was sent at. A row that
+// ends undelivered, and a delivery that names no later launch, write nothing.
 func recordAskEnd(ctx context.Context, store record.Store, tx pgx.Tx, key string, ask record.MergeForwardMessage, delivered bool, told uint64) error {
-	if delivered && told == 0 || !delivered && ask.SentLaunch == 0 {
+	if !delivered || max(told, ask.SentLaunch) == 0 {
 		return nil
 	}
 	pr, err := store.PullRequest(ctx, tx, key)
@@ -473,14 +464,11 @@ func recordAskEnd(ctx context.Context, store record.Store, tx pgx.Tx, key string
 	if own.Head != ask.Head || own.Landed != "" || own.Asked() != ask.Role {
 		return nil
 	}
-	switch {
-	case delivered && told > own.SentLaunch:
-		own.SentLaunch = told
-	case !delivered && own.SentLaunch == ask.SentLaunch:
-		own.SentLaunch = ask.SentBefore
-	default:
+	sent := max(own.SentLaunch, told, ask.SentLaunch)
+	if sent == own.SentLaunch {
 		return nil
 	}
+	own.SentLaunch = sent
 	pr.MergeForward = &own
 	return store.PutPullRequest(ctx, tx, *pr)
 }
