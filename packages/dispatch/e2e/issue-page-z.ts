@@ -275,3 +275,39 @@ export function referenceReads(traffic: ApiRequests): ReferenceRead[] {
       return { kind: query.get("kind"), to: query.get("to") };
     });
 }
+
+/** The route of the issue's tree read (`GET /api/v1/issues/{key}/tree`), as `apiRoute` groups its
+ *  paths (`e2e/traffic.ts`): whatever issue it reads. */
+const TREE_ROUTE = "/api/v1/issues/:id/tree";
+
+/** What a request of the tree route names in its query beside the first page of the read with no
+ *  view and no kind: a view (`view`), Conversation's kinds (`kind`), and a next page or an older
+ *  comment page of a read (`cursor`, `comments_before`). */
+const NOT_THE_TREE_READ = ["view", "kind", "cursor", "comments_before"] as const;
+
+/** How many reads of the issue's tree with no view and no kind `traffic` saw - Graph's read, which
+ *  the run rows take too (`issueTreeQuery`) - each counted by its first page: a request of the
+ *  tree route whose query names none of `NOT_THE_TREE_READ`, since a read asks for its next pages
+ *  and its older comments itself. */
+export function noViewTreeReads(traffic: ApiRequests): number {
+  return traffic.requests.filter(({ path, route }) => {
+    if (route !== TREE_ROUTE) return false;
+    const query = new URL(path, baseUrl).searchParams;
+    return !NOT_THE_TREE_READ.some((name) => query.has(name));
+  }).length;
+}
+
+/** How long nothing may be in flight before a row counts what the page sent: the recorded
+ *  baseline's window, which `traffic.ts` reads a load's cost at. */
+const QUIET_MS = 1_500;
+
+/** Fails unless the page goes quiet (`quietFor`) after `what`, the moment a row counts what that
+ *  load or press sent. */
+export async function quietAfter(traffic: ApiRequests, what: string): Promise<void> {
+  await expect
+    .poll(() => traffic.quietFor(QUIET_MS), {
+      message: `the page never went quiet after ${what}`,
+      timeout: 30_000,
+    })
+    .toBe(true);
+}

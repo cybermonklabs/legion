@@ -4,8 +4,12 @@ import {
   RUN_PAGE_WORDS,
   STATE_LINES,
 } from "../web/src/features/issue-page/page-words";
-import { buildDispatchReference, buildRunPath } from "../web/src/features/refs/routes";
-import { gotoIssue, issuePage, issueRead, openDetails, phase } from "./issue-page";
+import {
+  buildDispatchReference,
+  buildIssuePath,
+  buildRunPath,
+} from "../web/src/features/refs/routes";
+import { gotoIssue, issuePage, openDetails, phase } from "./issue-page";
 import { DESKTOP } from "./issue-page-g";
 import { marginSection } from "./issue-page-h";
 import { withIssuePage } from "./issue-page-option";
@@ -15,6 +19,8 @@ import {
   listedRowsOf,
   mainContent,
   notFoundText,
+  noViewTreeReads,
+  quietAfter,
   RUN_COMMENT,
   RUN_QUESTION,
   RUN_WORD,
@@ -43,22 +49,29 @@ import { asUser } from "./users";
  * answers to the asker alone.
  */
 
-// SLOW(>=2s): three issues, a run and its three writes seeded, then three loads of the issue:
-// alice's, hers again with the tree read refused until its retries run out, and bob's in a
-// context of his own.
+// SLOW(>=2s): three issues, a run and its three writes seeded, then four loads of the issue:
+// alice's on Conversation, hers on Graph, hers on Conversation again with the tree read with no
+// view refused until its retries run out, and bob's on Conversation in a context of his own.
 // The run alice asked that changed the issue is a row of her Referenced by, after the list's own
 // rows, in the page's words and none of the graph's, its question whole, read from the tree read
-// with no view and counted in the control with the list's own rows; a tree read that fails
-// leaves the list's own rows drawn with the failure and its Retry under them; and bob, who asked
-// no run, reads the list's own rows alone. Which rows the list's own read holds is the server's
-// and the list's to say (`listedEdgesOf`): the row reads that the citing issue's comment is one
-// of them, and counts them as each reader's list draws them.
+// with no view and counted in the control with the list's own rows. The row counts the reads of
+// the tree with no view and no kind the page sent, each by its first page (`noViewTreeReads`):
+// on Conversation, which reads the tree through `kind`, its load sends none, the list's first
+// opening one and its second opening none more; on Graph, which reads the tree with no view on
+// its load, the list's opening sends none beyond Graph's own. That read refused leaves the list's
+// own rows drawn with the failure and its Retry under them; and bob, who asked no run, reads the
+// list's own rows alone. Which rows the list's own read holds is the server's and the list's to
+// say (`listedEdgesOf`): the row reads that the citing issue's comment is one of them, and counts
+// them as each reader's list draws them.
 test("a command bar run that changed the issue is a reference for the person who ran it", async ({
   browser,
 }) => {
   await phase(browser, seedRunIssue, async (page, seeded) => {
     const traffic = watchApiRequests(page);
-    await gotoIssue(page, seeded.path);
+    const conversation = buildIssuePath({ key: seeded.key, kind: "conversation" });
+    await gotoIssue(page, conversation);
+    await quietAfter(traffic, "Conversation's load");
+    expect(noViewTreeReads(traffic), "Conversation's load sends no tree read with no view").toBe(0);
     await openDetails(page);
     const control = referencesControl(page);
     await expect(control, "Details draws no Referenced by control").toHaveText(
@@ -70,6 +83,11 @@ test("a command bar run that changed the issue is a reference for the person who
     await expect(runRow.getByRole("link"), `the run's row reads ${RUN_WORD}`).toHaveText([
       RUN_WORD,
     ]);
+    await quietAfter(traffic, "the list's first opening");
+    expect(
+      noViewTreeReads(traffic),
+      "the list's first opening did not read the tree with no view once"
+    ).toBe(1);
     const listed = listedRowsOf(page);
     await expect(listed, "the list's own rows hold no row of the citing issue").toContainText([
       seeded.citing,
@@ -97,8 +115,8 @@ test("a command bar run that changed the issue is a reference for the person who
     ).toBeLessThanOrEqual(1_000);
     await expect(runRow.getByRole("link")).toHaveAttribute("href", buildRunPath(seeded.run));
 
-    // The run's row is the outline's tree read: the only reads of what references a node are the
-    // list's own of the issue and Blocks' of the issues it blocks.
+    // The run's row is the tree read's: the only reads of what references a node are the list's
+    // own of the issue and Blocks' of the issues it blocks.
     const issueReference = buildDispatchReference({ key: seeded.key, kind: "issue" });
     const reads = referenceReads(traffic);
     expect(
@@ -120,16 +138,55 @@ test("a command bar run that changed the issue is a reference for the person who
       expect(drawn, `Details' references read "${token}"`).not.toContain(token);
     }
 
-    // The tree read refused: the list's own rows stand, with the failure and its Retry under them.
-    await page.route("**/api/v1/issues/*/tree*", (route) =>
-      route.fulfill({
-        body: JSON.stringify({ code: "INTERNAL", error: "refused" }),
-        contentType: "application/json",
-        status: 500,
-      })
-    );
-    await page.reload();
-    await issueRead(page);
+    // The list closed and opened again reads the tree no more: its run rows are the read its
+    // first opening made.
+    const counted = referencesControl(page, own + 1);
+    await counted.click();
+    await expect(runRow, "the list's control did not close the list").toHaveCount(0);
+    await counted.click();
+    await expect(
+      runRow.getByRole("link"),
+      `the list's second opening draws no run's row reading ${RUN_WORD}`
+    ).toHaveText([RUN_WORD]);
+    await quietAfter(traffic, "the list's second opening");
+    expect(
+      noViewTreeReads(traffic),
+      "the list's second opening read the tree with no view again"
+    ).toBe(1);
+
+    // Graph, loaded again, reads the tree with no view on its load, and the list's opening there
+    // reads it no more: its run rows are Graph's read.
+    traffic.reset();
+    await gotoIssue(page, buildIssuePath({ key: seeded.key, kind: "graph" }));
+    await quietAfter(traffic, "Graph's load");
+    const graphs = noViewTreeReads(traffic);
+    expect(graphs, "Graph's load did not read the tree with no view").toBeGreaterThanOrEqual(1);
+    await openDetails(page);
+    await referencesControl(page).click();
+    await expect(
+      runRow.getByRole("link"),
+      `the list on Graph draws no run's row reading ${RUN_WORD}`
+    ).toHaveText([RUN_WORD]);
+    await quietAfter(traffic, "the list's opening on Graph");
+    expect(
+      noViewTreeReads(traffic),
+      "the list's opening on Graph read the tree beyond Graph's own read"
+    ).toBe(graphs);
+
+    // The tree read with no view refused, on Conversation again: Conversation's read through
+    // `kind` and the views still answer, and the list's own rows stand, with the failure and its
+    // Retry under them.
+    await page.route("**/api/v1/issues/*/tree*", (route) => {
+      const query = new URL(route.request().url()).searchParams;
+      return query.has("view") || query.has("kind")
+        ? route.continue()
+        : route.fulfill({
+            body: JSON.stringify({ code: "INTERNAL", error: "refused" }),
+            contentType: "application/json",
+            status: 500,
+          });
+    });
+    await gotoIssue(page, conversation);
     await openDetails(page);
     await referencesControl(page).click();
     await expect(
@@ -153,7 +210,7 @@ test("a command bar run that changed the issue is a reference for the person who
       await withIssuePage(bob, "bob");
       const his = await bob.newPage();
       await his.setViewportSize(DESKTOP);
-      await gotoIssue(his, seeded.path);
+      await gotoIssue(his, conversation);
       await openDetails(his);
       await referencesControl(his).click();
       await expect(
