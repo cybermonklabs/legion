@@ -27,8 +27,12 @@
 // - An ask item takes the page's focus when the focus goes inside it. Details then holds
 //   `[data-testid="focused-node-facts"]`, whose `data-focused-node` is the ask's id, and inside it
 //   `section[data-node-references]` with the `button` that opens what references the ask. These
-//   are the names `FocusedNodeFacts.tsx` and `node-references/NodeReferences.tsx` give them on
-//   the branch `legion/INFRA-3940`, so the row reads one page whichever lands first.
+//   are the names part M's `FocusedNodeFacts.tsx` and `node-references/NodeReferences.tsx` give
+//   them (dispatch://INFRA-3948), so the Details row runs only where the head holds part M's file
+//   (c-dashboard-new (4)); `features/dashboard/`'s unit tests read that the item sets the focus.
+
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { URGENCY_LABELS } from "../web/src/features/inbox/ask-urgency";
 import {
@@ -65,6 +69,12 @@ import { expectHeaderDrawn, waitingCount } from "./issue-page-p";
 import { decisionsBody } from "./issue-page-q";
 import { expect, type Locator, type Page, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
+
+/** Whether the head holds part M's Details facts of a focused node (dispatch://INFRA-3948), which
+ *  the Details row reads; c-dashboard-new (4) gates that row on the file, not on part M's merge. */
+const PART_M_DETAILS = existsSync(
+  fileURLToPath(new URL("../web/src/features/issue-page/FocusedNodeFacts.tsx", import.meta.url))
+);
 
 /** The view row's word for Dashboard, which `PRESET_NAMES` holds once Dashboard is a preset. */
 const DASHBOARD = "Dashboard";
@@ -693,6 +703,11 @@ test("a thread item's link opens the thread", async ({ browser }) => {
 // SLOW(>=2s): the whole Dashboard seed before one load of Dashboard, every item drawn, and Details
 // and the focused ask's references opened, each read until its request is sent.
 test("Details on a focused ask reads that ask and its references", async ({ browser }) => {
+  test.skip(
+    !PART_M_DETAILS,
+    "Details draws a focused node's facts only with part M's FocusedNodeFacts.tsx " +
+      "(dispatch://INFRA-3948), which this head does not hold; part M's branch runs this row"
+  );
   await phase(browser, seeded, async (page, seed) => {
     const ask = seed.asks.byOption.id;
     const reference = `dispatch://${seed.key}/ask/${ask}`;
