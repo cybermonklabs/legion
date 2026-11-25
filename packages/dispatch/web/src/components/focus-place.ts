@@ -668,9 +668,10 @@ export function outOfSight(element: Element): boolean {
 
 /** Whether the reader had scrolled the element the armed press last noted the focus on out of
  *  their sight, as the press last read it (`ArmedPress`'s `sight`), whatever element that is:
- *  false with nothing armed or nothing noted. The selection bar asks it as it goes once the focus
- *  has moved from it onto a control outside it that its press holds (`pressHolds`), which can have
- *  left the page, and the focus with it, before the bar can read its own going (`SelectionBar`). */
+ *  false with nothing armed or nothing noted. The selection bar asks it as it goes after a press
+ *  on a control outside it that its press holds took the focus from it (`repeatTookFocusFrom`):
+ *  the element that press focused can have left the page, and the focus with it, before the bar
+ *  can read its own going (`SelectionBar`). */
 export function focusedOutOfSight(): boolean {
   const watched = armed?.sight ?? null;
   return watched !== null && !watched.seen;
@@ -798,6 +799,17 @@ interface ArmedPress {
    *  animation frame while the press is armed, while that element is in the page and drawn; null
    *  while no element has held the focus since the arm. */
   sight: Sight | null;
+  /** The element that held the focus when the reader's first press on a control the press holds
+   *  outside its own control (`holds`) came, or when the focus first moved onto such a control:
+   *  a click or a tap on a marked row's held Start next while the selection bar's Take out of
+   *  epic has its writes out. Null where the focus was then on the body or on an element that has
+   *  left the page, and while no such press or move has come. A later press of that kind keeps
+   *  it, as the second click of a double click does. A move of the focus onto any other element
+   *  forgets it, save the move the pointer's press itself makes (`onFocus`): onto the pressed
+   *  control, or onto an element around it where the control takes no focus from a pointer, as a
+   *  button takes none in WebKit. A press that drops the focus onto the body fires no `focusin`,
+   *  and keeps it. */
+  takenFrom: Element | null;
 }
 
 /** The armed press while one is (`armHandOff`), else null. */
@@ -825,7 +837,9 @@ let armed: ArmedPress | null = null;
  * first press stays the cause, with its bounds as they were: a second Enter on the Inbox bar's
  * Snooze selected asks, held while the snooze picked in its list is out, though that pick took
  * the list's text box it was made in away. A press on a control held before the arm is the
- * reader's next act, and arms anew.
+ * reader's next act, and arms anew. A press on a control the armed press holds outside its own
+ * control notes where it took the focus from (`takenFrom`), which the selection bar reads as it
+ * goes (`repeatTookFocusFrom`).
  *
  * The press is live from the arm until a frame and a task after the last of what keeps it live
  * ends (`afterComponents`), so the commit that draws its answer and the effects after it are
@@ -983,6 +997,10 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
   let answerBegun = false;
   /** Whether a Tab of the reader's is still to land while the press's write is out. */
   let tabbing = false;
+  /** What the reader's pointer pressed last on a control the press holds outside its own control,
+   *  from that `pointerdown` until the first focus or key after it: the focus that pointer press
+   *  moves is its own, and keeps `takenFrom` (`onFocus`). */
+  let pointed: Element | null = null;
   /** The animation frame the next read of what the reader can see waits for, else 0. */
   let frame = 0;
   /** Whether the press has ended: from then on none of its timers, watches or listeners acts. */
@@ -1037,10 +1055,25 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
     tabbing = false;
     if (landing === null || madeIn?.contains(landing) !== true) end();
   };
+  /** Notes `from`, the element that held the focus, as where a press on a control the press holds
+   *  outside its own control, or a move of the focus onto one, took the focus from (`takenFrom`),
+   *  unless an earlier one did. The body, or an element that has left the page, notes nothing. */
+  const takeFocusFrom = (from: EventTarget | null) => {
+    if (press.takenFrom !== null || !(from instanceof Element)) return;
+    if (from !== document.body && from.isConnected) press.takenFrom = from;
+  };
   const onPointer = ({ target }: PointerEvent) => {
-    if (!(target instanceof Element && (control.contains(target) || holds(target)))) end();
+    if (!(target instanceof Element && (control.contains(target) || holds(target)))) {
+      end();
+    } else if (control.contains(target)) {
+      pointed = null;
+    } else {
+      pointed = target;
+      takeFocusFrom(document.activeElement);
+    }
   };
   const onKey = (event: KeyboardEvent) => {
+    pointed = null;
     if (!isPress(event) || LONE_MODIFIERS[event.key] === true) return;
     const { key, target } = event;
     if (key === "Tab") {
@@ -1054,10 +1087,18 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
     if (event.key === "Tab") settleTab(document.activeElement);
   };
   const onFocus = (event: globalThis.FocusEvent) => {
-    const { target } = event;
+    const { relatedTarget, target } = event;
     if (!(target instanceof Element)) return;
     settleTab(target);
-    if (armed === press) noteFocused(target);
+    if (armed !== press) return;
+    noteFocused(target);
+    // The focus a pointer's press on a held control moves is that press's own: onto the control,
+    // or onto an element around it where the control takes no focus from a pointer.
+    const pressed = pointed;
+    pointed = null;
+    if (pressed !== null && target.contains(pressed)) return;
+    if (!control.contains(target) && holds(target)) takeFocusFrom(relatedTarget);
+    else press.takenFrom = null;
   };
   const end = () => {
     if (over) return;
@@ -1084,6 +1125,7 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
     note: null,
     roots,
     sight: null,
+    takenFrom: null,
   };
   const deadline = window.setTimeout(() => {
     late = true;
@@ -1176,14 +1218,18 @@ export function pressArmed(): boolean {
   return armed !== null;
 }
 
-/** Whether the armed press (`armHandOff`) holds `element` now, by a hold that began after it
- *  (`ArmedPress`'s `holds`): false with nothing armed, and for an element that has left the page.
- *  A press on such a control takes nothing but its hold and leaves the armed press the cause, so a
- *  focus it moves there is still that press's: the selection bar keeps as its own the focus a
- *  click on a marked row's Start next takes from it while Take out of epic's writes hold that
- *  Start next (`SelectionBar`). */
-export function pressHolds(element: Element): boolean {
-  return armed?.holds(element) === true;
+/** Whether the reader's press on a control the armed press (`armHandOff`) holds outside its own
+ *  control, or a move of the focus onto such a control, took the focus from inside `place`, and
+ *  the focus has stayed since where such presses put it (`ArmedPress`'s `takenFrom`): false with
+ *  nothing armed. Such a press takes nothing but its hold and leaves the armed press the cause.
+ *  So the selection bar hands on as its own the focus that a click or a tap on a marked row's
+ *  held Start next took from it while Take out of epic's writes are out (`SelectionBar`). The
+ *  press's own events say it, never a later read of where the focus is: that press can put the
+ *  focus on the body or on the row around the Start next, from which a render of the bar cannot
+ *  tell where it came from. */
+export function repeatTookFocusFrom(place: Element): boolean {
+  const from = armed?.takenFrom ?? null;
+  return from !== null && place.contains(from);
 }
 
 /** Whether the armed press (`armHandOff`) was on a row's mark, while that mark is still in the

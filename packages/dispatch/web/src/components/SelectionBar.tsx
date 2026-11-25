@@ -21,7 +21,6 @@ import {
   armOnPress,
   causedByReader,
   focusedOutOfSight,
-  focusLost,
   focusNoScroll,
   focusOwnStop,
   inSightNow,
@@ -29,9 +28,9 @@ import {
   landWhole,
   type MovedUp,
   outOfSight,
-  pressHolds,
   pressMadeIn,
   pressOnRowMark,
+  repeatTookFocusFrom,
 } from "./focus-place";
 import { ROW_SELECTOR } from "./row-marker";
 
@@ -368,13 +367,14 @@ function markShown(
  * selection** pressed, Escape from a control inside it, a press on a row's mark that took the last
  * marked row away (`causedByReader`, `pressOnRowMark`) - hands the focus to what the page's
  * `returnFocus` names, rather than drop it onto the page, where a keyboard reader would start
- * again from the page's first link. So does a bar its own press takes away after the focus moved
- * from it onto a control outside it that the press holds while its write is out, where that
- * control goes as well: Take out of epic's writes hold every row's Start next, and a click on a
- * marked row's one moves the focus there and leaves the press the cause (`pressHolds`). So does a
- * bar that stays while the control holding the focus goes from it: **Select all**, which the bar
- * stops offering once it has run. The focus goes to the first of these that applies, which the
- * page's own hand-off focuses (`useLastMarkedPlace`). The checkbox of the row the reader marked
+ * again from the page's first link. So does a bar its own press takes away after the reader's
+ * press on a control outside it that the press holds while its write is out took the focus from
+ * it, where that control goes as well: Take out of epic's writes hold every row's Start next, and
+ * a click or a tap on a marked row's one puts the focus on that Start next, on the row around it
+ * or on the body, and leaves the press the cause (`repeatTookFocusFrom`). So does a bar that
+ * stays while the control holding the focus goes from it: **Select all**, which the bar stops
+ * offering once it has run. The focus goes to the first of these that applies, which the page's
+ * own hand-off focuses (`useLastMarkedPlace`). The checkbox of the row the reader marked
  * last, while the list holds it and no press is taking it away, out of sight or not. Else a row
  * the reader can see: after a press that took that row away, the row at its place or the nearest
  * before it, each judged where it will stand once the rows the press is taking away have gone,
@@ -396,9 +396,9 @@ function markShown(
  */
 export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactNode {
   // Set by the drawn bar to what held the focus when the focus dropped with it - the bar's
-  // element, or a control in it, as the bar goes, the bar's element as well where the focus was on
-  // a control outside it that the bar's press holds, or the focused control inside a bar that
-  // stays - and read after the commit that took it away.
+  // element, or a control in it, as the bar goes, the bar's element as well where the reader's
+  // press on a control outside it that the bar's press holds took the focus from it, or the
+  // focused control inside a bar that stays - and read after the commit that took it away.
   const wentHolding = useRef<Element | null>(null);
   // After every commit, so after the one that removed the bar's element, or the control, and
   // dropped the focus with it. No dependency list: the `returnFocus` called is this commit's own,
@@ -457,8 +457,8 @@ function DrawnBar({
   wentHolding,
 }: Omit<SelectionBarProps, "returnFocus"> & {
   /** Set to what held the focus when the bar, or the control inside it that held the focus, goes
-   *  with it: the bar's own element where the focus was on a control outside it that the bar's
-   *  press holds. */
+   *  with it: the bar's own element where the reader's press on a control outside it that the
+   *  bar's press holds took the focus from it. */
   readonly wentHolding: RefObject<Element | null>;
 }): ReactNode {
   const ownRef = useRef<HTMLElement>(null);
@@ -471,20 +471,21 @@ function DrawnBar({
   const atFoot = useMediaQuery(SM_VIEWPORT_QUERY);
   useFootInset(ref, atFoot, "page");
   // What inside the bar took the focus last, the bar's own element included, until the reader
-  // moves the focus off it: a focus event bubbles up to the bar from every control in it. A
-  // control outside the bar that the bar's press holds, which the focus has moved onto, takes its
-  // place (below).
+  // moves the focus off it: a focus event bubbles up to the bar from every control in it.
   const focused = useRef<Element | null>(null);
   // The cleanup runs before React takes the element out of the page, the one moment the focus
-  // can still be read inside it: the removal itself drops it onto the body. A focus the bar held
-  // and that has moved onto a control outside it that the bar's press holds while its write is
-  // out - a click on a marked row's Start next, held while Take out of epic's writes are out - is
-  // the bar's to hand on too: the press stays the cause (`armHandOff`). The commit that takes the
-  // bar away can take that control away first, with its row - the List draws its table before its
-  // bar - and the focus with it, so the focus is lost by now, or is still on that control, which
-  // the commit can still take away after the bar. The bar's own element is what it went holding
-  // then, the element that holds the press, unless the reader had scrolled that control out of
-  // their sight (`focusedOutOfSight`).
+  // can still be read inside it: the removal itself drops it onto the body. A focus that the
+  // reader's press on a control outside the bar took from it, where the bar's press holds that
+  // control while its write is out - a click or a tap on a marked row's Start next, held while
+  // Take out of epic's writes are out - is the bar's to hand on too: that press takes nothing but
+  // the hold, and the bar's press stays the cause (`armHandOff`). The armed press says so from
+  // its own events, whatever renders came between (`repeatTookFocusFrom`): the focus was in the
+  // bar as that press came, and has stayed since on that control, on the row around it, or on
+  // the body, where WebKit can leave it. The commit that takes the bar away can take that control
+  // away first, with its row - the List draws its table before its bar - and the focus with it.
+  // The bar's own element is what it went holding then, the element that holds the press, unless
+  // the reader had scrolled the element the focus was last on out of their sight
+  // (`focusedOutOfSight`).
   useLayoutEffect(() => {
     const node = ref.current;
     return () => {
@@ -492,12 +493,7 @@ function DrawnBar({
       if (node === null) return;
       if (node.contains(focus)) {
         wentHolding.current = focus;
-      } else if (
-        focused.current !== null &&
-        pressMadeIn(node) &&
-        (focusLost() || (focus !== null && pressHolds(focus))) &&
-        !focusedOutOfSight()
-      ) {
+      } else if (pressMadeIn(node) && repeatTookFocusFrom(node) && !focusedOutOfSight()) {
         wentHolding.current = node;
       }
     };
@@ -525,17 +521,10 @@ function DrawnBar({
   // fires for an element taken out of the page arrives while the element still reads as in the
   // page, so it cannot tell that going from the reader moving off. A control still in the page
   // that no longer holds the focus is one the reader moved off, so it is forgotten and its going
-  // later moves nothing, save where the focus is now on a control outside the bar that the bar's
-  // press holds (`pressHolds`), which the bar notes in its place.
+  // later moves nothing.
   useLayoutEffect(() => {
     const held = focused.current;
-    const focus = document.activeElement;
-    if (held === null || held === focus) return;
-    const node = ref.current;
-    if (node !== null && focus !== null && pressMadeIn(node) && pressHolds(focus)) {
-      focused.current = focus;
-      return;
-    }
+    if (held === null || held === document.activeElement) return;
     focused.current = null;
     if (!held.isConnected && focusOnDocument()) wentHolding.current = held;
   });

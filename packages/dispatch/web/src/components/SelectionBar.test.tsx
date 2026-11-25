@@ -469,9 +469,10 @@ const EPIC_KEYS = ["CORE-1", "CORE-2", "CORE-3", "CORE-4"];
 /** The project List under its Epic filter, as the bar's hand-off reads it once Take out of epic
  *  is pressed (`IssuesTable`): its section, which arms the hand-off at a press inside it
  *  (`ARM_ON_PRESS`), with its toolbar's Filter, then the rows `keys` names, each carrying the row
- *  marker, its mark and its Start next, then the bar with Take out of epic, drawn while `count` is
- *  above zero. While `held`, Take out of epic's writes are out, and they hold it and every row's
- *  Start next (`aria-disabled`), as the List's run of an action does (`perform`). */
+ *  marker, its mark and its Start next, and each focusable by a script and a pointer but not by
+ *  Tab, as the List's rows are (`IssueRow`), then the bar with Take out of epic, drawn while
+ *  `count` is above zero. While `held`, Take out of epic's writes are out, and they hold it and
+ *  every row's Start next (`aria-disabled`), as the List's run of an action does (`perform`). */
 function EpicList({
   count,
   held,
@@ -488,7 +489,7 @@ function EpicList({
     <section {...ARM_ON_PRESS}>
       <button type="button">Filter</button>
       {keys.map((key) => (
-        <div data-issue-row={key} key={key} {...ROW_MARKER}>
+        <div data-issue-row={key} key={key} tabIndex={-1} {...ROW_MARKER}>
           <input aria-label={`Select ${key}`} type="checkbox" />
           <button aria-disabled={hold} aria-label={`Start next ${key}`} type="button">
             Start next
@@ -507,6 +508,25 @@ function EpicList({
 /** The Start next of `EpicList`'s row `key`. */
 function startNextOf(key: string): HTMLElement {
   return screen.getByRole("button", { name: `Start next ${key}` });
+}
+
+/** `EpicList`'s row `key`, the element around its mark and its Start next. */
+function epicRow(key: string): HTMLElement {
+  const row = startNextOf(key).closest<HTMLElement>("[data-issue-row]");
+  if (row === null) throw new Error(`Start next ${key} stands in no row`);
+  return row;
+}
+
+/** The reader's click on `button` as WebKit makes it, where a pointer's press focuses no button:
+ *  its `pointerdown`, then the focus moved onto `around`, the element around the button that
+ *  takes it, or with none dropped onto the body, then its `click`. */
+function webKitClick(button: HTMLElement, around: HTMLElement | null): void {
+  act(() => {
+    button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    if (around !== null) around.focus();
+    else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    button.click();
+  });
 }
 
 /** Where the focus rests: the name of what holds it, else the body. */
@@ -598,12 +618,16 @@ async function eachTakenOut(
 
 // INFRA-3135, round 27 (the tester's 7d2a23eb): with Take out of epic's writes out, a click or a
 // double click on the held Start next of a marked row takes nothing but its hold, so the bar's
-// press stays the cause (`armHandOff`), and it moves the focus out of the bar onto that Start next.
-// The writes land, and their answer takes the row, and the Start next with it, away in the commit
-// that takes the bar away, the row first. The focus goes where Take out of epic alone puts it, to
-// what the page names - the mark of CORE-4, the row now at the place of the row marked last - and
-// not to the body, from which a keyboard reader would start again at the page's first link. So it
-// does whether or not a render of the bar came between the click and the bar's going.
+// press stays the cause (`armHandOff`), and it moves the focus out of the bar: onto that Start
+// next, as Chromium's and Firefox's click does, or, where a pointer's press focuses no button, as
+// in WebKit, onto the row around it or onto the body. The writes land, and their answer takes the
+// row, and the Start next with it, away in the commit that takes the bar away, the row first. The
+// focus goes where Take out of epic alone puts it, to what the page names - the mark of CORE-4,
+// the row now at the place of the row marked last - and not to the body, from which a keyboard
+// reader would start again at the page's first link. So it does whether or not a render of the
+// bar came between the click and the bar's going. In builds Job infra-3135-r27-selection-nh8z7,
+// this case's browser row (`e2e/table-controls.e2e.ts`) passed in Chromium and Firefox, and one
+// WebKit double click at 1440 left the focus on the body.
 test("a click or a double click on a marked row's held Start next while Take out of epic's writes are out hands the focus to what returnFocus names once the bar goes with that row", async () => {
   const handedOn = { asked: 1, landed: "Select CORE-4" };
   const { got, want } = await eachTakenOut({
@@ -619,6 +643,22 @@ test("a click or a double click on a marked row's held Start next while Take out
       belongs: handedOn,
       whileHeld: async (user, redraw) => {
         await user.dblClick(startNextOf("CORE-2"));
+        redraw();
+      },
+    },
+    "WebKit's double click on the marked row's held Start next, the focus on the body": {
+      belongs: handedOn,
+      whileHeld: async (_user, redraw) => {
+        webKitClick(startNextOf("CORE-2"), null);
+        webKitClick(startNextOf("CORE-2"), null);
+        redraw();
+      },
+    },
+    "WebKit's double click on the marked row's held Start next, the focus on its row": {
+      belongs: handedOn,
+      whileHeld: async (_user, redraw) => {
+        webKitClick(startNextOf("CORE-2"), epicRow("CORE-2"));
+        webKitClick(startNextOf("CORE-2"), epicRow("CORE-2"));
         redraw();
       },
     },
@@ -693,6 +733,37 @@ test("a marked row's held Start next the reader clicked and then scrolled out of
         start.getBoundingClientRect = () => new DOMRect(0, -400, 120, 32);
         // The armed press reads what the reader can see of the focused control at each frame.
         await act(nextFrame);
+        redraw();
+      },
+    },
+  });
+  expect(got).toEqual(want);
+});
+
+// The same press and writes, with a click on the marked row's held Start next that took no focus
+// from the bar, or whose focus the reader moved on before the bar went. Where the focus had left
+// the bar for the body before WebKit's click on that Start next, the bar no longer held the focus
+// that click took. A key on the Start next that a click focused does not end Take out of epic's
+// press, since the press holds that Start next. Where the key then moves the focus to the row
+// CORE-3, as a page's keymap can, the focus is where the reader put it, not where the click put
+// it. The bar's going hands on nothing in either case, whether or not a render of the bar came
+// between: the focus stays on the body, or goes with CORE-3's row, and the page is never asked.
+test("a click on a marked row's held Start next that took no focus from the bar, or whose focus a key then moved to another row, hands on nothing as the bar goes", async () => {
+  const { got, want } = await eachTakenOut({
+    "the focus dropped onto the body, then WebKit's click on the marked row's held Start next": {
+      belongs: { asked: 0, landed: "the body" },
+      whileHeld: async (_user, redraw) => {
+        act(() => screen.getByRole("button", { name: "Take out of epic" }).blur());
+        webKitClick(startNextOf("CORE-2"), null);
+        redraw();
+      },
+    },
+    "a click on the marked row's held Start next, then a key moving the focus to CORE-3's row": {
+      belongs: { asked: 0, landed: "the body" },
+      whileHeld: async (user, redraw) => {
+        await user.click(startNextOf("CORE-2"));
+        await user.keyboard("j");
+        act(() => epicRow("CORE-3").focus());
         redraw();
       },
     },
