@@ -483,6 +483,7 @@ func postCorrections(seq int64, ask string, actor dispatch.Actor) []json.RawMess
 // and the delete of that reply, which carry the ask's id, and of a message - move no turn, so a
 // window that holds them alone leaves the root waiting on the person.
 func TestCatchUpAppliesADeletedReplysTurnAndPassesOverTheCorrections(t *testing.T) {
+	t.Parallel()
 	t.Run("a deleted reply handing the open ask to the agent", func(t *testing.T) {
 		events := append([]json.RawMessage{deletedReply(9, "ask-root", "agent", alice)}, postCorrections(10, "ask-root", alice)...)
 		got := catchUpAwaitingRoot(t, record.Awaiting{Ask: "ask-root"}, nil, &awaitingDispatch{events: events})
