@@ -325,13 +325,14 @@ export async function executePhaseOp(
       return {};
     }
     case "review_verdict": {
-      // The verdict of a review step's agent on a head its pull request moved to past review: no
-      // completion and no handoff, so no record is read and no report looked up, and it ends no
-      // phase. The owning architect's names the issue it accepted, and the reviewer's leaves it
-      // out (`issueToSend`). Whether this claim ran a review step of the issue's task that has
-      // passed, the issue stands past review and the head is current is the daemon's to hold
-      // (VERDICT_CALLER_FORBIDDEN, VERDICT_NOT_PAST_REVIEW, VERDICT_HEAD_NOT_CURRENT). Not
-      // retried: each request is a verdict of its own.
+      // The verdict of a review step's agent on a head its pull request moved to once a review step
+      // of the issue's task has passed: no completion and no handoff, so no record is read and no
+      // report looked up, and it ends no phase. The owning architect's names the issue it accepted,
+      // and the reviewer's leaves it out (`issueToSend`). Whether this claim ran a review step of
+      // the issue's task, whether that step has passed, never the step that runs now, and whether
+      // the head is current is the daemon's to hold (VERDICT_CALLER_FORBIDDEN,
+      // VERDICT_NOT_PAST_REVIEW, VERDICT_HEAD_NOT_CURRENT). Not retried: each request is a verdict
+      // of its own.
       const issue = issueToSend(
         "review_verdict",
         claim,

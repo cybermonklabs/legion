@@ -68,6 +68,7 @@ func TestEachReviewStepSendsItsVerdictAtTheHeadItRead(t *testing.T) {
 			{"It takes your step's verdict only from the claim your step's record names as its agent", "(`VERDICT_CALLER_FORBIDDEN`)"},
 			{"Send it with `op: \"review_verdict\"`", "`commit` that head", "leave `issue` out"},
 			{"The daemon takes it only from the agent of a review step of the issue's task", "you for your step"},
+			{"only once your step has passed, never for the step that runs now (`VERDICT_NOT_PAST_REVIEW`)"},
 			{"each commit of the change has a reader", "an agent of a review step whose verdict at that head is `approve`, or of a testing step that passed there, whose claim records a session and none of whose sessions made that commit"},
 			{"A commit's makers are the sessions its `Omp-Session` lines name", "a commit with no such line has no agent maker"},
 			{"A pass or a verdict at an earlier commit counts at no later head", "your `approve` carries no pass of the testing step"},
@@ -81,7 +82,8 @@ func TestEachReviewStepSendsItsVerdictAtTheHeadItRead(t *testing.T) {
 			"the head the push left", "No other phase completion carries a `verdict` (`VERDICT_NOT_TAKEN`)",
 			"leaves the issue in `reviewing` until GitHub's own merge state for it comes clean",
 			"nothing of this tree pushes above it", "at least one of those review steps is independent", "A claim wrote part of the change",
-			"each check reads yes where the task has a tester step", "counts as no independent review"}, carry...)},
+			"each check reads yes where the task has a tester step", "counts as no independent review",
+			"only while the issue stands past its review"}, carry...)},
 		{"root architect", claim.RoleArchitect, true, owner, ownerRetired},
 		{"sub-architect", claim.RoleArchitect, false, owner, ownerRetired},
 		{"tester", claim.RoleTester, false, [][]string{

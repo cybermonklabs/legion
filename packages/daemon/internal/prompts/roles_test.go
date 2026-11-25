@@ -123,24 +123,61 @@ func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 
 // The repository is public, and its AGENTS.md forbids the tracker's issue keys in what it ships, so
 // no prompt part, of either tree, names one: a part describes the step a key stands for instead.
-// The one key a part names is the worked example of a role token, LEGION-41, which is no issue of
-// any tracker.
 func TestNoPromptPartNamesAnIssueKey(t *testing.T) {
-	key := regexp.MustCompile(`\b[A-Z]{2,}-[0-9]+\b`)
 	for _, tree := range []struct {
 		parts embed.FS
 		dir   string
 	}{{roleParts, "roles"}, {goParts, "go"}} {
 		err := eachPart(tree.parts, tree.dir, func(name string, body []byte) error {
-			for _, found := range key.FindAllString(string(body), -1) {
-				if found != "LEGION-41" {
-					t.Errorf("%s/%s names the issue key %s", tree.dir, name, found)
-				}
+			for _, found := range issueKeys(string(body)) {
+				t.Errorf("%s/%s names the issue key %s", tree.dir, name, found)
 			}
 			return nil
 		})
 		if err != nil {
 			t.Fatalf("read the %s parts: %v", tree.dir, err)
+		}
+	}
+}
+
+// issueKeys are the words of text shaped as a tracker's issue key, capitals, a hyphen and digits,
+// whose prefix is not one notAKey names, so each may name an issue of the deployment's tracker.
+// The test lists what is allowed rather than what is refused: the deployment's own project keys
+// are the ones to refuse, and writing them here would name them in this public repository. So an
+// unknown prefix fails, the safe side, and a new standard's name joins notAKey by a change a
+// reviewer reads.
+func issueKeys(text string) []string {
+	var found []string
+	for _, word := range issueKeyShape.FindAllStringSubmatch(text, -1) {
+		if !notAKey[word[1]] {
+			found = append(found, word[0])
+		}
+	}
+	return found
+}
+
+var issueKeyShape = regexp.MustCompile(`\b([A-Z]{2,})-[0-9]+\b`)
+
+// notAKey are the prefixes of words that issueKeys passes: Legion's own LEGION keys and the neutral
+// ACME key, which AGENTS.md allows, and the names of standards, which name no issue.
+var notAKey = map[string]bool{"LEGION": true, "ACME": true, "UTF": true, "SHA": true}
+
+// AGENTS.md allows Legion's own `LEGION-<n>` keys and the neutral `ACME` key, and a standard's
+// name such as UTF-8 or SHA-256 is no key at all, so issueKeys finds none of them; any other word
+// of that shape is a key it finds, a prefix nobody has seen among them.
+func TestIssueKeysAreTheWordsThatMayNameATrackersIssue(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want []string
+	}{
+		{"project `acme`, issue `LEGION-41`, and LEGION-208 beside it", nil},
+		{"a neutral key such as ACME-4 or ACME-12", nil},
+		{"the body is UTF-8, and the digest SHA-256 or SHA-1", nil},
+		{"by QUILL-12's break-glass step", []string{"QUILL-12"}},
+		{"ACME-4 and QUILL-12 and XY-9", []string{"QUILL-12", "XY-9"}},
+	} {
+		if got := issueKeys(tc.text); !slices.Equal(got, tc.want) {
+			t.Errorf("issueKeys(%q) = %q, want %q", tc.text, got, tc.want)
 		}
 	}
 }
