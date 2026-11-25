@@ -2,7 +2,7 @@ import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 
 import type { Actor, DispatchEvent } from "../../api/types";
 import { queuedWait } from "../conversation/delivery";
-import { blockInvalidDescription } from "../issue/event-description";
+import { blockInvalidDescription, documentCount } from "../issue/event-description";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 
 export function dateKey(iso: string): string {
@@ -124,6 +124,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":
       return `edited ${event.payload.name} v${event.payload.from_version} to v${event.payload.to_version}`;
+    case "artifact.indexed":
+      return `finished indexing ${documentCount(event.payload.artifact_ids.length)}`;
     case "comment.created":
       if (event.payload.ask_id !== null) {
         return `replied to “${event.payload.ask_question ?? "an ask"}”`;

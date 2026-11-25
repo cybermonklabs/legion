@@ -2171,6 +2171,17 @@ type ArtifactHumanEditedEventPayload struct {
 	DiffTruncated bool     `json:"diff_truncated"`
 }
 
+// ArtifactIndexedEventPayload is the payload of artifact.indexed, which the block-index
+// reconciliation appends on an issue once a pass of it has committed the block index of documents
+// of that issue that owed one (docs' queueIndexedEvent): ArtifactIDs names each document whose
+// owed index the pass cleared, the issue's tree artifact among them where it owed one, sorted. Each
+// read that answers otherwise while a document owes its index - the coverage read's
+// owed_documents and gaps, the tree read, the decisions read, a Verification document's indexed
+// checks and a document's blocks - answers from the index from then on.
+type ArtifactIndexedEventPayload struct {
+	ArtifactIDs []string `json:"artifact_ids"`
+}
+
 // ArtifactBlock is an addressable document block and its byte range in canonical markdown. Table
 // lists a table block's rows and cells; nil for every other block. Attributes is a typed block's
 // attributes in the order its type declares them, which is the order its opening line writes

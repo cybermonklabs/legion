@@ -61,6 +61,12 @@ function deliveryReceipt(
   return `${kind} ${receipt.state}: ${mode}`;
 }
 
+/** How many documents an `artifact.indexed` names, in words: its line in the Pinned tab and the
+ *  Activity tab alike. */
+export function documentCount(count: number): string {
+  return `${count} ${count === 1 ? "document" : "documents"}`;
+}
+
 function describe(event: DispatchEvent): string | AgentPart[] {
   switch (event.type) {
     case "project.created":
@@ -184,6 +190,10 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":
       return `Edited ${event.payload.name} v${event.payload.from_version} to v${event.payload.to_version}`;
+    // The block index caught up on documents a write left owing it: the reconciliation's own
+    // bookkeeping, which names the documents by id alone.
+    case "artifact.indexed":
+      return `Finished indexing ${documentCount(event.payload.artifact_ids.length)}`;
     case "suggestion.accepted":
       return "Suggestion accepted";
     case "suggestion.rejected":

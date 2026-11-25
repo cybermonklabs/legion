@@ -768,6 +768,26 @@ const rules: Record<string, Rule> = {
       refreshes: ["detail", "log", "projectList"],
       spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
     },
+  "a block index that caught up refreshes what the index holds back on the issue - its decisions, the named document's blocks and the names under the issue - and no document's own read":
+    {
+      event: event("artifact.indexed", { artifact_ids: ["artifact-1"] }, { notify: false }),
+      refreshes: ["detail", "log", "projectList", "decisions", "docBlocks", "referenceTargets"],
+      spares: [
+        "docAsks",
+        "specDocument",
+        "comments",
+        "asks",
+        "summary",
+        "referencesTab",
+        "specPanel",
+        "inbox",
+        "pinned",
+        "projects",
+        "replies",
+        "userState",
+        "unrelatedDetail",
+      ],
+    },
   "a recorded handoff refreshes the issue's handoff list, its steps and its log, and no rollup": {
     event: event("handoff.recorded", { handoff_id: "handoff-1", phase: "implement", version: 2 }),
     refreshes: ["handoffs", "detail", "log", "projectList", "steps"],
@@ -1739,6 +1759,27 @@ test("a document version refreshes the issue's coverage and its recorded results
   expect(keys).toContain(JSON.stringify(["issue", "CORE-1", "results"]));
 });
 
+// The block index catching up on a document a write left owing it moves every read the server
+// answers from that index while the document owes it - the coverage read's "still being indexed"
+// line, which it draws in place of every missing check and plan task, the Verification tab's
+// indexed checks, the Decisions view, and the blocks of each document the event names - and so the
+// issue's tree, which is built from those reads. Each issue read is named `exact`, so the branch
+// names every one of them itself, and the blocks of a document the event does not name stand.
+test("a block index that caught up refreshes the issue's coverage, results, decisions and each named document's blocks", () => {
+  const indexed = event("artifact.indexed", { artifact_ids: ["artifact-3", "artifact-4"] });
+  expect(eventRefreshTargets(indexed, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "coverage"],
+    ["issue", "CORE-1", "results"],
+    ["decisions", "CORE-1"],
+    ["artifact", "artifact-3", "blocks"],
+    ["artifact", "artifact-4", "blocks"],
+    ["reference-targets"],
+  ]);
+});
+
 // The Collaborators tab's read, and the "Not running" options the composer draws from it, hang
 // under the issue's key, and every issue target is `exact`, so the key needs a rule of its own
 // (`changesCollaborators`). The rule is the server's own list of what makes a collaborator
@@ -1889,6 +1930,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     from_version: 4,
     to_version: 7,
   }),
+  "artifact.indexed": event("artifact.indexed", { artifact_ids: ["artifact-3"] }),
   "ask.anchor_refreshed": event("ask.anchor_refreshed", { anchor: null, id: "ask-1" }),
   "ask.answered": event("ask.answered", { anchor: null, id: "ask-1" }),
   "ask.asked_of": event("ask.asked_of", { anchor: null, id: "ask-1", asked_of: "bob" }),

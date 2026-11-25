@@ -7,6 +7,7 @@ import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
+  artifactBlocksQuery,
   inboxQuery,
   inboxThreadsKey,
   myRepliesKey,
@@ -1273,6 +1274,22 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // `artifact.version` refreshed what it changed: a line in the issue's log and nothing more.
     return targets;
   }
+  if (event.type === "artifact.indexed") {
+    // The block index caught up on documents of the issue that a write left owing it, each of
+    // whose versions already sent its own `artifact.version`. What moves is what the server reads
+    // from the index: the coverage read, which drew a "still being indexed" line in place of every
+    // missing check and plan task (`owed_documents`), the Decisions view, the Verification tab's
+    // indexed checks, and the blocks of each document the event names - the reads the issue's tree
+    // is built from (`useIssueTree`). No document's text, name or version moves, so its own read,
+    // the issue's document list, its comments and its summary stand.
+    targets.push(
+      { exact: true, queryKey: ["issue", key, "coverage"] },
+      { exact: true, queryKey: ["issue", key, "results"] },
+      { exact: true, queryKey: ["decisions", key] },
+      ...event.payload.artifact_ids.map((id) => ({ queryKey: artifactBlocksQuery(id).queryKey }))
+    );
+    return targets;
+  }
   if (event.type === "artifact.created" || event.type === "artifact.version") {
     targets.push(
       { queryKey: ["artifacts", key] },
@@ -1796,7 +1813,9 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * A document's creation (`artifact.created`) gives words to an address a page cited before the
  * document existed, its rename (`artifact.renamed`) moves the name the read answers for an
  * address to the document, and its removal (`artifact.removed`) makes every address to it and to
- * its blocks name nothing (`gone`), so each refreshes them too.
+ * its blocks name nothing (`gone`), so each refreshes them too. A block index that caught up on
+ * documents a write left owing it (`artifact.indexed`) gives the words of their new version to the
+ * addresses of their blocks, which the reads naming the issue's addresses then read again.
  *
  * Of the names reads the app holds, each event refreshes those whose key holds an address it can
  * change: one of the issue or the project document it is on (`eventAddresses`), and, for a
@@ -1858,6 +1877,7 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.removed":
     case "artifact.renamed":
     case "artifact.version":
+    case "artifact.indexed":
     case "ask.edited":
     case "comment.edited":
     case "comment.deleted":

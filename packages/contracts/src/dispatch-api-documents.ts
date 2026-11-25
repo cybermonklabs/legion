@@ -252,6 +252,19 @@ export const ArtifactHumanEditedEventPayloadSchema = z.object({
   diff_truncated: artifactHumanEditedEventPayloadFields.diff_truncated.optional(),
 });
 
+/** `artifact.indexed`: the block-index reconciliation committed the block index of documents of
+ *  the issue whose versions their writes left owed one, each version announced already by its own
+ *  `artifact.version`. `artifact_ids` names each document whose owed index it cleared, sorted: the
+ *  coverage read's `owed_documents` and gaps, the tree read, the decisions read, the indexed checks
+ *  of a Verification document and a document's blocks answer from the index from then on. It is
+ *  quiet: it wakes nobody. A reader that does not know the type refreshes what it holds, as for any
+ *  event it cannot read. */
+export const ArtifactIndexedEventPayloadSchema = z
+  .strictObject({ artifact_ids: z.array(z.string()).readonly() })
+  .readonly();
+
+export type ArtifactIndexedEventPayload = z.output<typeof ArtifactIndexedEventPayloadSchema>;
+
 /** `artifact.approved` and `artifact.changes_requested`: a human review of a document,
  *  pinned to `version`; `reason` is required for changes requested; `ask_id` names the
  *  approval ask the review answered, null when given from the document header with no
