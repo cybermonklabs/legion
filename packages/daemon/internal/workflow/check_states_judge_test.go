@@ -235,8 +235,10 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 			given: func(r *statesRig) {
 				r.states(headOne, 1, passOf("k1", "tester"), stateOf("k2", "no", "fail", "tester"), k3Failed)
 			},
-			event:   func(r *statesRig) { r.complete(headOne, 3) },
-			then:    func(r *statesRig) { r.movedBackFailing(headOne, failingOf("k2", "no", "fail"), failingOf("k3", "no", "fail")) },
+			event: func(r *statesRig) { r.complete(headOne, 3) },
+			then: func(r *statesRig) {
+				r.movedBackFailing(headOne, failingOf("k2", "no", "fail"), failingOf("k3", "no", "fail"))
+			},
 			leaving: func(r *statesRig) { r.movedBackFailing(headOne, failingOf("k2", "no", "fail")) },
 		},
 		{
