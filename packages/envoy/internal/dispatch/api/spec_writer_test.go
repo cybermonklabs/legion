@@ -2066,10 +2066,10 @@ func TestSpecWriteChecksEachCopyOfAResolvedAsk(t *testing.T) {
 	notes := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.c.key, "notes.md", "The notes of the child issue.\n\n"+specWriterAsk(noted)).Artifact.ID
 	// A copy's source is held on the ask's node, and the text route serves it in the asks member,
 	// never on the block's opening line (agentText).
-	for _, copy := range []struct{ document, block string }{{spec, copied}, {notes, noted}} {
-		testwait.UntilPolling(t, 20*time.Millisecond, "the copy of "+copy.block+" in its document's asks", func() (string, bool) {
-			text := agentText(t, rig.handler, copy.document)
-			return text, strings.Contains(text, `copied_from="`+rig.asks[copy.block]+`"`)
+	for _, held := range []struct{ document, block string }{{spec, copied}, {notes, noted}} {
+		testwait.UntilPolling(t, 20*time.Millisecond, "the copy of "+held.block+" in its document's asks", func() (string, bool) {
+			text := agentText(t, rig.handler, held.document)
+			return text, strings.Contains(text, `copied_from="`+rig.asks[held.block]+`"`)
 		})
 	}
 	rig.quiet(t)
