@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -234,6 +235,27 @@ func RunWithdrawnSQL(run string) string {
 	         where p.request_id = ` + run + ` and c.id is null and m.id is null
 	       )`
 }
+
+// RunWithdrawal is the one frame a reader of a withdrawn run (RunWithdrawnSQL) is written, and all
+// it is written from then on: an error frame carrying contracts.GoingErrorAnswerWithdrawn, at the
+// sequence of the run's ending. The stream writes it, and stores it as the run's ending where the
+// run has stored none (api's goingWithdrawal); the graph read of the run's own address answers it
+// in place of every frame the run stored (refs' interactionFrames). Both read this one value, so
+// the two views of a withdrawn run answer one frame.
+var RunWithdrawal = going.Fault(contracts.GoingErrorAnswerWithdrawn)
+
+// RunWithdrawalData is RunWithdrawal's payload as the frame path encodes every frame's for
+// FrameValueSQL (api's appendGoingEvent): the JSON json.Marshal writes of it, encoded once, since
+// going.ErrorData is one string, which json.Marshal cannot fail on. The graph read of a withdrawn
+// run writes the frame's value from it (refs' interactionFrames), so the text it answers is the
+// text the frame path writes of the withdrawal where the stream stores it as the run's ending.
+var RunWithdrawalData = func() []byte {
+	data, err := json.Marshal(RunWithdrawal.Data)
+	if err != nil {
+		panic(fmt.Sprintf("encode the payload of the withdrawal frame: %v", err))
+	}
+	return data
+}()
 
 // RunWritten is what WriteRun did for one run: Held, whether the record holds the run, and Nodes
 // and Tuples, the nodes and tuples it stated of it, none where the store held its node already.
