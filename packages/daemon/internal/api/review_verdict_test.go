@@ -149,15 +149,16 @@ func stepVerdictAt(t *testing.T, h *harness, head string, place int) (store.Verd
 
 // R5 and C57: the verdict past review. With LEGION-208, a task of the default steps, in accepting,
 // retro or merging, no review round is open, and `POST /legion/v1/review-verdict` takes the verdict
-// of the agent of each review step of the task, as its step record names it: the reviewer's for the
-// reviewer's step, and the owner's, from the architect above LEGION-208 that ran its acceptance,
-// which names LEGION-208 as the issue it is for, since its own grant is its own issue's. The call
-// records that step's verdict at the pull request's current head, writes no handoff, leaves the
-// issue's phase as it was, and asks for the write of legion-verdict there in its own pass. The same
-// call from any other claim - the implementer's, the tester's, the planner's, or the architect's
-// naming no issue, so of its own issue, where it ran no review step - gets
-// VERDICT_CALLER_FORBIDDEN, and one that names another head VERDICT_HEAD_NOT_CURRENT; each refusal
-// records nothing and asks for no write.
+// of the agent of each review step of the task that has passed, as its step record names it: the
+// reviewer's for the reviewer's step, and in retro and merging the owner's, from the architect above
+// LEGION-208 that ran its acceptance, which names LEGION-208 as the issue it is for, since its own
+// grant is its own issue's. In accepting the owner's acceptance is the step that runs, whose verdict
+// is its sign_off, so its call there is refused (below). The call records that step's verdict at
+// the pull request's current head, writes no handoff, leaves the issue's phase as it was, and asks
+// for the write of legion-verdict there in its own pass. The same call from any other claim - the
+// implementer's, the tester's, the planner's, or the architect's naming no issue, so of its own
+// issue, where it ran no review step - gets VERDICT_CALLER_FORBIDDEN, and one that names another
+// head VERDICT_HEAD_NOT_CURRENT; each refusal records nothing and asks for no write.
 func TestReviewVerdictPastReviewTakesOnlyAReviewStepsAgent(t *testing.T) {
 	for _, at := range []phase.Phase{phase.Accepting, phase.Retro, phase.Merging} {
 		t.Run(string(at), func(t *testing.T) {
@@ -208,6 +209,9 @@ func TestReviewVerdictPastReviewTakesOnlyAReviewStepsAgent(t *testing.T) {
 				{"the reviewer's approve", reviewer, ReviewVerdictRequest{Verdict: "approve", Commit: headSHA, Summary: "the merge changes no code that runs"}, reviewerPlace},
 				{"the owner's approve", architect, ReviewVerdictRequest{Verdict: "approve", Commit: headSHA, Issue: "LEGION-208", Summary: "the owner read the merge"}, acceptancePlace},
 			} {
+				if at == phase.Accepting && tc.place == acceptancePlace {
+					continue
+				}
 				tc.sent.GrantID = tc.by.grant(t)
 				if recorder := h.reviewVerdict(tc.sent); recorder.Code != http.StatusOK {
 					t.Fatalf("%s = %d: %s", tc.name, recorder.Code, recorder.Body)
@@ -232,16 +236,20 @@ func TestReviewVerdictPastReviewTakesOnlyAReviewStepsAgent(t *testing.T) {
 		})
 	}
 
-	// The reviewer's verdict outside the three phases, and with a word or a commit missing.
+	// The reviewer's verdict in reviewing and the owner's in accepting, each while its own step runs,
+	// and the reviewer's with a word or a commit missing.
 	for _, tc := range []struct {
 		name   string
 		at     phase.Phase
+		owner  bool
 		sent   ReviewVerdictRequest
 		status int
 		code   string
 	}{
 		{name: "in reviewing, where its completion carries the verdict", at: phase.Reviewing,
 			sent: ReviewVerdictRequest{Verdict: "approve", Commit: headSHA, Summary: "reviewed"}, status: http.StatusConflict, code: "VERDICT_NOT_PAST_REVIEW"},
+		{name: "the owner's in accepting, where its sign_off carries the verdict", at: phase.Accepting, owner: true,
+			sent: ReviewVerdictRequest{Verdict: "approve", Commit: headSHA, Issue: "LEGION-208", Summary: "the owner read the merge"}, status: http.StatusConflict, code: "VERDICT_NOT_PAST_REVIEW"},
 		{name: "the tester's pass", at: phase.Retro,
 			sent: ReviewVerdictRequest{Verdict: "pass", Commit: headSHA, Summary: "read the merge"}, status: http.StatusBadRequest, code: "REVIEWER_VERDICT_REQUIRED"},
 		{name: "no commit", at: phase.Retro,
@@ -250,11 +258,16 @@ func TestReviewVerdictPastReviewTakesOnlyAReviewStepsAgent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked []string
 			h := newVerdictWritingHarness(t, &asked)
-			reviewer, _ := pastReviewChild(t, h, tc.at)
+			reviewer, architect := pastReviewChild(t, h, tc.at)
 			tc.sent.GrantID = reviewer.grant(t)
+			if tc.owner {
+				tc.sent.GrantID = architect.grant(t)
+			}
 			refused(t, h.reviewVerdict(tc.sent), tc.status, tc.code)
-			if given, found := stepVerdictAt(t, h, headSHA, reviewerPlace); found || len(asked) != 0 {
-				t.Fatalf("after the refusal the store holds %+v (found %t) and the workflow asked for writes on %v, want nothing", given, found, asked)
+			for _, place := range []int{reviewerPlace, acceptancePlace} {
+				if given, found := stepVerdictAt(t, h, headSHA, place); found || len(asked) != 0 {
+					t.Fatalf("after the refusal the store holds %+v of step %d (found %t) and the workflow asked for writes on %v, want nothing", given, place, found, asked)
+				}
 			}
 		})
 	}
