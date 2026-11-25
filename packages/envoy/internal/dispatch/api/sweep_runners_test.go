@@ -46,6 +46,24 @@ func countLeaseLines(logs *storetest.LockedLog, message, lease string) int {
 	return count
 }
 
+// runOneMaintenancePass runs the maintenance loop (RunMaintenanceSweep) over database until logs,
+// which the default logger writes to, holds its first leased pass, and then stops it and waits for
+// it to return.
+func runOneMaintenancePass(t *testing.T, database *store.Store, logs *storetest.LockedLog) {
+	t.Helper()
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), nil)
+	}()
+	testwait.UntilPolling(t, 20*time.Millisecond, "the maintenance loop's first leased pass (the lease lines it logged)", func() (string, bool) {
+		return logs.Lines("lease="), countLeaseLines(logs, "dispatch duty: leased pass ran", maintenanceLease) > 0
+	})
+	stop()
+	<-done
+}
+
 // countStatements counts the recorded statements holding needle.
 func countStatements(recorded []string, needle string) int {
 	count := 0

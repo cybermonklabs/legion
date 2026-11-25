@@ -762,8 +762,8 @@ func (s *server) dismissInboxThreads(
 	defer tx.Rollback(ctx)
 	// The statement bound and the transaction's now() beside it, as the mark-all reads them
 	// (markInboxReadThreads): the moment this route's events and marks are dated at.
-	var at time.Time
-	if err := tx.QueryRow(ctx, `select set_config('statement_timeout', $1, true), now()`, s.inboxStatementBoundSetting()).Scan(new(string), &at); err != nil {
+	at, err := s.boundInboxStatements(ctx, tx)
+	if err != nil {
 		return 0, nil, fmt.Errorf("bound the dismissal's statements: %w", err)
 	}
 	read, err := readInboxDismissThreads(ctx, tx, actor, login, plan, rows, scope)
@@ -833,7 +833,9 @@ func (s *server) dismissInboxThreads(
 			events = append(events, inboxEvent{event: userAgentStateEvent(actor, session), marks: agents.marks[session]})
 		}
 	}
-	return s.commitInboxMarks(ctx, tx, failpoint.InboxDismiss, at, changed, events)
+	// Only a restore's settle of the roots it locked writes where nothing changed
+	// (inboxRestoreSettleAgentRoots).
+	return s.commitInboxMarks(ctx, tx, failpoint.InboxDismiss, at, changed, events, plan.restore && len(read.agentRoots) > 0)
 }
 
 // readInboxDismissThreads reads both kinds of row this request changes, each list sorted so the

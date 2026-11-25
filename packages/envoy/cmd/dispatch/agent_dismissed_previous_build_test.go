@@ -63,19 +63,7 @@ func TestTheBaseReleasesAgentDismissalsKeepTheRootsColumn(t *testing.T) {
 	first, firstReply := thread("Can you look at the deploy?")
 	second, secondReply := thread("And the runbook?")
 
-	dismiss := func(server *dispatchProcess, root, reply string) {
-		t.Helper()
-		answer := server.send(t, http.MethodPost, "/api/v1/me/inbox/dismiss", encodeJSON(t, map[string]any{
-			"threads": []string{"agent:" + root},
-			"seen_replies": map[string]any{"agent:" + root: map[string]any{
-				"newest_reply": reply, "unread_replies": []string{reply},
-			}},
-		}), asUser("alice"))
-		if answer.status != http.StatusOK || !dismissedOne(t, answer) {
-			t.Fatalf("the base release's dismissal of %s: %s, want one thread dismissed", root, answer)
-		}
-	}
-	dismiss(previous, first, firstReply)
+	dismissAsTheBase(t, previous, first, firstReply)
 
 	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey})
 	current.waitHealthy(t)
@@ -83,7 +71,7 @@ func TestTheBaseReleasesAgentDismissalsKeepTheRootsColumn(t *testing.T) {
 	requireRootColumnIsAlicesMark(t, ctx, database, second, "a root no mark names")
 	requireInbox(t, current, []string{second}, []string{first})
 
-	dismiss(previous, second, secondReply)
+	dismissAsTheBase(t, previous, second, secondReply)
 	requireRootColumnIsAlicesMark(t, ctx, database, second, "the base release's dismissal while both serve")
 	requireInbox(t, current, nil, []string{first, second})
 
@@ -116,6 +104,22 @@ func sessionReplyAsTheBaseWritesIt(t *testing.T, ctx context.Context, database *
 		t.Fatalf("write s1's reply to %s: %v", parent, err)
 	}
 	return reply
+}
+
+// dismissAsTheBase dismisses alice's Agent thread under root through server's own route, as the
+// base release's Inbox sends it, with reply as the thread's newest reply and the one it drew
+// unread, and fails unless the answer says it changed that one thread.
+func dismissAsTheBase(t *testing.T, server *dispatchProcess, root, reply string) {
+	t.Helper()
+	answer := server.send(t, http.MethodPost, "/api/v1/me/inbox/dismiss", encodeJSON(t, map[string]any{
+		"threads": []string{"agent:" + root},
+		"seen_replies": map[string]any{"agent:" + root: map[string]any{
+			"newest_reply": reply, "unread_replies": []string{reply},
+		}},
+	}), asUser("alice"))
+	if answer.status != http.StatusOK || !dismissedOne(t, answer) {
+		t.Fatalf("the base release's dismissal of %s: %s, want one thread dismissed", root, answer)
+	}
 }
 
 // dismissedOne is whether a dismissal's answer says it changed one thread.

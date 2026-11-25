@@ -524,7 +524,7 @@ type server struct {
 	// outcome is its own choice rather than its machine's speed.
 	duplicateBound time.Duration
 	// inboxStatementBound overrides the statement_timeout of the mark-all's and the dismissal's
-	// transactions (inboxStatementBoundSetting); zero, which every server the deployment builds leaves
+	// transactions (boundInboxStatements); zero, which every server the deployment builds leaves
 	// it, means inboxReadStatementTimeout. Only a test sets it (testServerOptions'
 	// inboxStatementBound): a case that holds a dismissal behind a lock of its own while it takes
 	// its steps gives the dismissal a bound past any run, so the bound Postgres keeps from the

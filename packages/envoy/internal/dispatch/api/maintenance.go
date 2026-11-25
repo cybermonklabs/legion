@@ -137,15 +137,11 @@ func sweepAgentDismissalsOwed(ctx context.Context, pool *store.Pool) error {
 }
 
 // settleAgentDismissalsOwed is one batch of sweepAgentDismissalsOwed: the owed roots past after,
-// settled where taken and deleted where gone, in one transaction. It answers the roots the batch
-// read, which a batch shorter than agentDismissalsOwedBatch says were the last.
+// read on the pool, then settled where taken and deleted where gone, in one transaction, which a
+// batch that read no root never opens. It answers the roots the batch read, which a batch shorter
+// than agentDismissalsOwedBatch says were the last.
 func settleAgentDismissalsOwed(ctx context.Context, pool *store.Pool, after *string) ([]string, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, agentDismissalsOwedNext, after, agentDismissalsOwedBatch)
+	rows, err := pool.Query(ctx, agentDismissalsOwedNext, after, agentDismissalsOwedBatch)
 	if err != nil {
 		return nil, fmt.Errorf("read the owed agent roots: %w", err)
 	}
@@ -156,6 +152,11 @@ func settleAgentDismissalsOwed(ctx context.Context, pool *store.Pool, after *str
 	if len(roots) == 0 {
 		return nil, nil
 	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, agentDismissalsOwedSettle, roots); err != nil {
 		return nil, fmt.Errorf("settle the owed agent roots: %w", err)
 	}

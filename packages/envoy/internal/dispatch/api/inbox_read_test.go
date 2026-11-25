@@ -665,6 +665,15 @@ func holdGateThread(t *testing.T, database *store.Store, gate string) gateHold {
 	`, gate)
 }
 
+// holdGateAgentRoot holds an Agent thread's root, which is step 2 of that order, as a writer of it
+// holds the root: what names the hold. Its statement is not inboxwrite.RootLockStatement, since a
+// test that finds a writer waiting at the root by its statement's text needs the hold's text to be
+// another (storetest.WaitForStatementBehind).
+func holdGateAgentRoot(t *testing.T, database *store.Store, what, root string) gateHold {
+	t.Helper()
+	return holdGateRow(t, database, what, `select 1 from messages where id = $1 for no key update`, root)
+}
+
 // Two Mark all read presses by one person over the same threads, at once, with their query
 // plans forced apart (markAllOnPlan): two tabs, two devices, or a narrowed press racing an
 // unfiltered one. Both take the same owner's lock in shared mode, which orders nothing, and

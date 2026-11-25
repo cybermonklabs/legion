@@ -256,7 +256,9 @@ var myAgentRootsWithFacts = `
 
 // myAgentUnreadRootsOf is one branch of state=unread's roots: the person's one-off roots that pass
 // live, each holding a session reply the person has not read. myAgentInboxRootsOf is one branch of
-// state=inbox's: the person's one-off roots that pass live, read or not.
+// state=inbox's: the person's one-off roots that pass live, read or not. Each reads its roots from
+// from, `messages m` for the live branch and myAgentOwedRoots for the owed one
+// (myAgentLiveAndOwedRoots).
 func myAgentUnreadRootsOf(from, live string) string {
 	return `
 		select m.id as root_id, null::timestamptz as dismissed_at
@@ -279,6 +281,14 @@ func myAgentInboxRootsOf(from, live string) string {
 		  and ` + live
 }
 
+// myAgentLiveAndOwedRoots is a state's roots with each branch built by branch: the live branch
+// over messages (myAgentLiveRoot), then, in one union, the owed branch over myAgentOwedRoots
+// (myAgentOwedRoot).
+func myAgentLiveAndOwedRoots(branch func(from, live string) string) string {
+	return branch(`messages m`, myAgentLiveRoot("m")) + `
+		union all` + branch(myAgentOwedRoots, myAgentOwedRoot("m"))
+}
+
 // The roots each state reads, one `roots` set per state, each carrying the root and the dismissal
 // mark, which only the Dismissed view's rows have.
 var (
@@ -291,12 +301,10 @@ var (
 	// owed roots whose column outlived the person's mark (myAgentOwedRoot); a root is in at most
 	// one of the two branches, since one reads its column null and the other set.
 	myAgentUnreadRoots = myAgentMarks + `
-	roots as (` + myAgentUnreadRootsOf(`messages m`, myAgentLiveRoot("m")) + `
-		union all` + myAgentUnreadRootsOf(myAgentOwedRoots, myAgentOwedRoot("m")) + `
+	roots as (` + myAgentLiveAndOwedRoots(myAgentUnreadRootsOf) + `
 	)`
 	myAgentInboxRoots = myAgentMarks + `
-	roots as (` + myAgentInboxRootsOf(`messages m`, myAgentLiveRoot("m")) + `
-		union all` + myAgentInboxRootsOf(myAgentOwedRoots, myAgentOwedRoot("m")) + `
+	roots as (` + myAgentLiveAndOwedRoots(myAgentInboxRootsOf) + `
 	)`
 	// The Dismissed view's roots are the marks themselves, in the order the view answers in, so
 	// one index scan answers the narrowing, the order and the cursor
