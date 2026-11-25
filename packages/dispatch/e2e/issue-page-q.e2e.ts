@@ -1,5 +1,5 @@
 import { isIdPrefix } from "@legion/contracts";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 
 import { IDENTITY_HEIGHT_PROPERTY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
@@ -1243,5 +1243,100 @@ test("a change whose document read is never answered says why beside Send change
       ),
       step("the form says why the document read has not settled")
     ).toBeVisible();
+  });
+});
+
+// The tester's red row of round 20 (b45cd7f8, DecisionActions.tsx: "The line is the press's own:
+// it goes at the next press of Send change and with the form"). When a press's document read is
+// ended by the 30 s bound (`readWithinBound`) while the read is still out - its first attempt
+// answered 404 at 26 s, which restarts `client.ts`'s 30 s silence deadline, and its retry stays
+// unanswered - `keepUnsettled` holds the reason in `useUnsettledRead`. At the next press of Send
+// change, whose read is answered 200, DecisionActions.tsx:421 clears `readFailed` alone and leaves
+// `unsettled` drawn, so the form still shows "Dispatch did not answer within 30 seconds." after
+// the second change goes. Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): a seeded issue's Decisions view, a read held past the 30 s bound, and a second press.
+// @firefox: the bound and the read's own deadline are two timers, which each engine runs.
+test("a Change whose document read the bound ended loses that read's line at the next press of Send change @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const step = (text: string) => `a press after the bound: ${text}`;
+    const row = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedNewer)).first();
+    await page.setViewportSize(DESKTOP);
+    await openPreset(page, seeded.key, "decisions");
+    await row.locator('button[data-row-action="change"]').click();
+    await row.getByLabel(CONTROL_LABELS.your_change).fill("Tie it to the first statement instead.");
+    const commentsPath = `/api/v1/issues/${seeded.key}/comments`;
+    const held: Route[] = [];
+    let posts = 0;
+    let reads = 0;
+    let pressed = false;
+    await page.route(
+      (url) => url.pathname.startsWith("/api/"),
+      async (route) => {
+        const request = route.request();
+        const path = new URL(request.url()).pathname;
+        if (request.method() === "POST" && path === commentsPath) {
+          posts += 1;
+          await route.fulfill({
+            body: JSON.stringify({ code: "TARGET_AMBIGUOUS", error: '"Tie it" matches 2 places' }),
+            contentType: "application/json",
+            status: 409,
+          });
+          return;
+        }
+        if (
+          pressed &&
+          request.method() === "GET" &&
+          /^\/api\/v1\/artifacts\/[^/]+\/text$/.test(path)
+        ) {
+          reads += 1;
+          if (reads === 1) {
+            // Held 26 s before answering 404 so the client's 30 s silence deadline restarts on its
+            // retry and readWithinBound ends the wait at 30 s while that retry is still out.
+            const waited = Promise.withResolvers<void>();
+            setTimeout(waited.resolve, 26_000);
+            await waited.promise;
+            await route.fulfill({
+              body: JSON.stringify({ code: "NOT_FOUND", error: `no route for GET ${path}` }),
+              contentType: "application/json",
+              status: 404,
+            });
+            return;
+          }
+          if (reads === 2) {
+            held.push(route);
+            return;
+          }
+        }
+        await route.fallback();
+      }
+    );
+    const send = row.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
+    const unread = STATE_LINES.decisions_document_unreadable;
+    const readLine = row.getByRole("alert").filter({ hasText: unread });
+    pressed = true;
+    await send.click();
+    await expect(
+      readLine,
+      step("at the 30 s bound the form says why the read has not settled")
+    ).toHaveText([`${unread} Dispatch did not answer within 30 seconds.`], { timeout: 45_000 });
+    await expect
+      .poll(() => posts, { message: step("the first change goes"), timeout: 10_000 })
+      .toBe(1);
+    await expect.poll(() => held.length, { message: step("the read's retry is held") }).toBe(1);
+    try {
+      await send.click();
+      await expect
+        .poll(() => posts, { message: step("the second press sends its change"), timeout: 15_000 })
+        .toBe(2);
+      await expect(
+        readLine,
+        step("the next press of Send change, whose read is answered, takes the line away")
+      ).toHaveCount(0, { timeout: 2_000 });
+    } finally {
+      await held[0]?.abort("internetdisconnected").catch(() => undefined);
+    }
   });
 });
