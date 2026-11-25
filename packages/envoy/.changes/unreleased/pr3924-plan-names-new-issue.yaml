@@ -18,3 +18,8 @@ body: |-
   issue because Dispatch already held one for the external issue it names, and the skip names
   that issue. The plan shows such a value as the new issue's title and "(new)", which the person
   can replace with an issue's key.
+  A change of `dispatch_issue_update` that sets `include_children`, `unlink_children` or
+  `include_parent` is written out in the plan as one update change for each issue the option
+  changes, in the status change route's order and each needing the earlier changes of its parent
+  or child, so each row keeps its own approval, landing and Undo; the changes after it are
+  renumbered, each `"$N"` with them, and a plan the rows grow past 50 changes is refused.

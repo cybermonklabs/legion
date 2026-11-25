@@ -939,11 +939,23 @@ func (items goingSchemaItemsOf) repair(tool string, arguments map[string]any) {
 	}
 	switch tool {
 	case "dispatch_issue_update":
-		named := false
+		// An option goes with a status and no other field (the tool's rule), and writes no field
+		// of its own, so a call that names one gets a status. One set to true is never sent, by
+		// design: a plan writes it out as the rows of the issues it changes.
+		options, named := false, false
 		for name := range arguments {
-			named = named || (name != "issue" && name != "reason" && name != "advances_revision")
+			switch name {
+			case optionIncludeChildren, optionUnlinkChildren, optionIncludeParent:
+				options = true
+			case "issue", "reason", "advances_revision":
+			default:
+				named = true
+			}
 		}
-		if !named {
+		if options && !has("status") {
+			arguments["status"] = "todo"
+		}
+		if !named && !options {
 			arguments["title"] = "A title the update writes"
 		}
 		if has("reason") {
@@ -1140,7 +1152,8 @@ var goingSchemaStateOnly = map[string]string{
 // no route refuses one for its shape (goingSchemaShapeRefusal). Any other answer passes: a 404 for
 // an item the call did not make, a 409 for a state the seed did not set up, a 403 for a person
 // who may not. A call the bar never sends as written (goingUnsendable: a picture, a file, a link
-// where the bar names the place) is refused before any request, by design, and passes. A call
+// where the bar names the place, an option of a status change set to true, which a plan writes out
+// as the rows of the issues it changes) is refused before any request, by design, and passes. A call
 // naming its document by id (goingSchemaItemsOf.byID) writes, or fails the test. Every tool but
 // goingSchemaStateOnly's writes at least one of its calls, and the log tallies what each tool's
 // calls were answered.

@@ -986,9 +986,10 @@ const (
 	goingExcludedBar        = "the command bar's own route"
 	goingExcludedDaemon     = "only the Legion daemon writes it: every other caller is refused (403)"
 	// The status change writes several issues, each in a transaction of its own, so no landing of
-	// one request records it and no Undo walks it back; the bar refuses an update that sets one of
-	// its options (goingUnsendable) and changes each issue in a row of its own, through the PATCH.
-	goingExcludedStatusChange = "a status change with an option: the bar changes each issue on its own"
+	// one request records it and no Undo walks it back. The bar never calls it: a plan that sets
+	// an option of dispatch_issue_update is written out as one update row for each issue the
+	// option reaches (expandStatusOptions), each with its own landing and its own Undo.
+	goingExcludedStatusChange = "a status change with an option: the bar reaches its outcome through one update row for each issue it reaches"
 )
 
 // goingExcludedRoutes is every route a person's credential may call that no tool calls, by

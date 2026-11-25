@@ -901,6 +901,10 @@ func goingNewIssueShown(create goingPlanRowStored, edited map[string]any) string
 // update of an issue, not reopen a closed issue beside a field its route refuses there
 // (goingReopenRefusal); the first that does not refuses the plan CALL_REFUSED, naming the change
 // and why, which the model is told.
+// A dispatch_issue_update change that sets include_children, unlink_children or include_parent is
+// written out first as one update change for each issue the option changes (expandStatusOptions),
+// so every row of the plan is an ordinary update; the changes after it are renumbered, and a
+// refusal of one of them names its number in the plan so written out.
 // A send to an agent session is kept naming the session by its id and showing the issue it is
 // posted on (goingPlaceSend). A run whose latest plan still waits for its person, or has rows to
 // run, is refused another. A new-issue run's plan is one create of an issue, with the deployment's
@@ -935,8 +939,12 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused,
 			"plan %d of this run still waits for the person or has changes to run: propose no other plan until they answer it", open.plan)
 	}
-	rows := make([]goingPlanRowStored, 0, len(proposal.Changes))
-	for index, change := range proposal.Changes {
+	changes, refusal := a.expandStatusOptions(ctx, doer, proposal.Changes)
+	if refusal != nil {
+		return agentwire.CallAnswer{}, refusal
+	}
+	rows := make([]goingPlanRowStored, 0, len(changes))
+	for index, change := range changes {
 		if _, writes := goingWriteTools[change.Tool]; !writes {
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused,
 				"change %d names %q, which is no tool of Dispatch that changes something; find_tools names them", index, change.Tool)
@@ -950,8 +958,7 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 		needs = slices.Compact(needs)
 		for _, need := range needs {
 			if need < 0 || need >= index {
-				return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused,
-					"change %d needs change %d, which is not a change before it: list each change after the changes it needs", index, need)
+				return agentwire.CallAnswer{}, goingNeedsRefusal(index, need)
 			}
 		}
 		arguments, err := goingRowArguments(change.Arguments)

@@ -157,7 +157,9 @@ func (e goingUntranslatable) Error() string { return string(e) }
 // that does not close the issue, which the update posts only before a close; an update that sets
 // an option of the status change (include_children, unlink_children, include_parent), whose route
 // writes several issues, each in a transaction of its own, which no landing of one request records
-// and no Undo walks, where the bar makes each issue's change a row of its own; and a sync's source
+// and no Undo walks. A plan call never reaches this: it writes such a change out as one update row
+// for each issue the option reaches (expandStatusOptions), so no row of a plan carries an option,
+// and this refusal is the backstop for a call that reaches a row with one; and a sync's source
 // repository not written as owner/name, the two segments its route's path takes. An ask's `ref`
 // is none of these: the question carries it as a line of its own (goingAskBody). None needs a
 // read or a row, so GoingCaller refuses such a call before it holds the call to the tool's rule
@@ -212,7 +214,7 @@ func goingUnsendable(action string, arguments map[string]any) string {
 			return "the bar cannot send an upload with no text, since it uploads only the text the answer writes. Ask again with the text to upload written in your question."
 		}
 	case "dispatch_issue_update":
-		for _, option := range []string{optionIncludeChildren, optionUnlinkChildren, optionIncludeParent} {
+		for _, option := range goingStatusOptions {
 			if arguments[option] == true {
 				return "the bar cannot change the issues under or above an issue together with it in one change, since it takes back a change one issue at a time. Ask again for each issue's change on its own."
 			}

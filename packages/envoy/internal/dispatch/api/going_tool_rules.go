@@ -238,26 +238,102 @@ var goingToolRules = map[string]goingToolRule{
 	},
 }
 
-// goingIssueUpdateProblem is dispatch_issue_update's rule (`issueUpdateProblem`): a reason goes
-// with status done and with nothing else, labels and labels_add never go together, as the route
-// refuses both (400 LABELS_INPUT), and the update names at least one field to change. The bar's
-// close takes no reason (barTool), so a close without one keeps the rule here; one whose reason is
-// no text, or blank, would post an empty note, and breaks it as the spec's does.
-func goingIssueUpdateProblem(call goingRuleCall, _ string) string {
+// goingStatusOptions are the options of dispatch_issue_update that say what happens to the issues
+// under the issue or above it when its status changes, in the order of ISSUE_STATUS_OPTIONS
+// (dispatch-tools.ts). The bar never sends one: a plan call writes each out as one update row for
+// each issue the option reaches (expandStatusOptions), so no stored row carries one.
+var goingStatusOptions = []string{optionIncludeChildren, optionUnlinkChildren, optionIncludeParent}
+
+// goingStatusOptionsPatchFields are the fields of dispatch_issue_update the status change route
+// does not take, so no option goes with one of them (ISSUE_UPDATE_PATCH_FIELDS).
+var goingStatusOptionsPatchFields = []string{"title", "labels", "labels_add", "priority", "assignee", "external_links", "route",
+	"parent", "blocked_by", "advances", "advances_revision", "components", "repo", "before", "after"}
+
+// The refusals of the options' parts that need no list of fields, as the spec words them.
+const (
+	goingOptionsExclusiveRule = "include_children does not go with unlink_children. The open children move with the issue or leave it, so name one of the two."
+	goingOptionsDoneRule      = "include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it."
+)
+
+// goingStatusOptionsOf is the options of call that it sets to true, in the order of
+// goingStatusOptions (`issueStatusOptionsOf`). An option set to false asks for nothing.
+func goingStatusOptionsOf(call goingRuleCall) []string {
+	var set []string
+	for _, option := range goingStatusOptions {
+		if call[option] == true {
+			set = append(set, option)
+		}
+	}
+	return set
+}
+
+// goingStatusOptionsProblem is the refusal of the parts of the options' rule call breaks, "" where
+// it keeps it or sets no option to true (`issueStatusOptionsProblem`): include_children never goes
+// with unlink_children, nor with status done, which only a person signed in at a browser may do;
+// every option needs a status; and an option goes with status alone, and with reason when the
+// status is done.
+func goingStatusOptionsProblem(call goingRuleCall) string {
+	options := goingStatusOptionsOf(call)
+	if len(options) == 0 {
+		return ""
+	}
+	named := strings.Join(options, ", ")
+	if comma := strings.LastIndex(named, ", "); comma >= 0 {
+		named = named[:comma] + " and " + named[comma+len(", "):]
+	}
+	var others []string
+	for _, field := range goingStatusOptionsPatchFields {
+		if call.has(field) {
+			others = append(others, field)
+		}
+	}
+	return goingBrokenParts(
+		goingIfBroken(!(call[optionIncludeChildren] == true && call[optionUnlinkChildren] == true), goingOptionsExclusiveRule),
+		goingIfBroken(!(call[optionIncludeChildren] == true && call["status"] == "done"), goingOptionsDoneRule),
+		goingIfBroken(call.isText("status"), fmt.Sprintf("status is required with %s. Add status, or drop %s.", named, named)),
+		goingIfBroken(len(others) == 0, fmt.Sprintf("With %s, give status alone, and reason when the status is done. This call also names %s. "+
+			"Send those fields in a call of their own.", named, strings.Join(others, ", "))),
+	)
+}
+
+// goingIssueReasonProblem is the reason's part of dispatch_issue_update's rule
+// (`issueReasonProblem`): reason is the close's note, so status done takes it and every other
+// call goes without it. The bar's close takes no reason (barTool), so a close without one keeps the
+// rule here; one whose reason is no text, or blank, would post an empty note, and breaks it as
+// the spec's does.
+func goingIssueReasonProblem(call goingRuleCall) string {
 	if call["status"] == "done" {
 		if reason, isText := call.text("reason"); call.has("reason") && (!isText || strings.TrimSpace(reason) == "") {
 			return goingIssueUpdateDoneRule + "."
 		}
-	} else if call.has("reason") {
-		status := "an update without status done"
-		if named, isText := call.text("status"); isText {
-			status = "status " + named
-		}
-		return goingIssueUpdateReasonRule + ": it is the note posted on the issue as it closes, and " + status +
-			" closes nothing. Drop reason, or set status done to close the issue."
+		return ""
 	}
-	if call.has("labels") && call.has("labels_add") {
-		return goingIssueUpdateLabelsRule
+	if !call.has("reason") {
+		return ""
+	}
+	status := "an update without status done"
+	if named, isText := call.text("status"); isText {
+		status = "status " + named
+	}
+	return goingIssueUpdateReasonRule + ": it is the note posted on the issue as it closes, and " + status +
+		" closes nothing. Drop reason, or set status done to close the issue."
+}
+
+// goingIssueUpdateProblem is dispatch_issue_update's rule (`issueUpdateProblem`): a reason goes
+// with status done and with nothing else, labels and labels_add never go together, as the route
+// refuses both (400 LABELS_INPUT), an option of the status change goes with status alone
+// (goingStatusOptionsProblem), and the update names at least one field to change. It names every
+// part of the reason's, the labels' and the options' rules the call broke, joined by one space, so
+// its caller fixes them all and calls once. The field part is read only when the call keeps those
+// three: a call refused for its reason is never told it names no field.
+func goingIssueUpdateProblem(call goingRuleCall, _ string) string {
+	broken := goingBrokenParts(
+		goingIssueReasonProblem(call),
+		goingIfBroken(!(call.has("labels") && call.has("labels_add")), goingIssueUpdateLabelsRule),
+		goingStatusOptionsProblem(call),
+	)
+	if broken != "" {
+		return broken
 	}
 	_, numbered := goingNumber(call["priority"])
 	components, _ := call["components"].(map[string]any)
