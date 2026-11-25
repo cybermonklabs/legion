@@ -136,13 +136,21 @@ func priorityBacklogTerms(stated string) string {
 const priorityFaultRowColumns = `'key', i.key, 'title', i.title, 'project', i.project_key, 'status', i.status,
 			'assignee', i.assignee, 'claimed_by', i.claimed_by, 'claimed_at', i.claimed_at, 'changed_at', i.updated_at`
 
-// The names EXPLAIN gives the parts of priorityReadQuery that a test holds on their own: the
-// issues row of each member issue, read once for every part; the newest event's read of one event
-// of each member issue; and the second fault's read of each listed issue's move.
+// The terms of priorityReadQuery that a test holds on their own, and the names EXPLAIN gives
+// their plans: the issues row of each member issue, read once for every part; the newest event's
+// read of one event of each member issue; and the second fault's read of each listed issue's
+// move. The statement defines each term under its constant, so a test that reads a part's plan
+// by the name below reads the term the statement runs; the statement's own references to a term
+// spell its name, and a constant changed alone leaves them naming a term the statement no longer
+// defines, which Postgres refuses before it runs anything.
 const (
-	priorityMemberIssueCTE = "CTE member_issue"
-	priorityNewestEventCTE = "CTE member_event"
-	priorityBacklogListCTE = "CTE backlog_listed"
+	priorityMemberIssueTerm = "member_issue"
+	priorityNewestEventTerm = "member_event"
+	priorityBacklogListTerm = "backlog_listed"
+
+	priorityMemberIssueCTE = "CTE " + priorityMemberIssueTerm
+	priorityNewestEventCTE = "CTE " + priorityNewestEventTerm
+	priorityBacklogListCTE = "CTE " + priorityBacklogListTerm
 )
 
 // priorityReadQuery is the whole body of the full read but the priorities themselves, as one
@@ -233,14 +241,14 @@ const (
 // Each fault answers its whole count, its counts by project or by priority, and its newest
 // priorityFaultRows rows; the rows are cut by their order with the key's bytes breaking a tie
 // (`collate "C"`), which is the order priorityFault.resolve sorts them in again.
-var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, member_issue as materialized (
+var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, ` + priorityMemberIssueTerm + ` as materialized (
 		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at,
 		       i.closed_at, i.last_seq, i.last_event_at, i.last_event_at_seq
 		from members m
 		join issues i on i.key = m.key
 		where ` + priorityProjectFilter + `
 		group by i.key
-	), member_event as materialized (
+	), ` + priorityNewestEventTerm + ` as materialized (
 		select member_issue.key,
 		       case when member_issue.last_event_at_seq = member_issue.last_seq then member_issue.last_event_at
 		            else (select last_seq_event.created_at
@@ -260,7 +268,7 @@ var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, member_issu
 		select p.key, p.title, p.project_key, p.status, p.assignee, p.claimed_by, p.claimed_at, p.updated_at
 		from member_issue p
 		where p.key in (select key from advances_origins)
-	), backlog_listed as (
+	), ` + priorityBacklogListTerm + ` as (
 		select p.*, moved.created_at as moved_at, moved.actor as moved_by
 		from in_backlog p
 		` + backlogMoveLateral("p", "") + `
