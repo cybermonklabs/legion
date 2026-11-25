@@ -10,6 +10,7 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { STORED_TOPIC_KINDS } from "./stream-topics";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
 import {
   type ConnectionState,
@@ -40,19 +41,6 @@ const PUBLISH_COUNTS =
   `goes to, one that is stopped and gets it when it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours included, and ` +
   "recipients_connected is how many of those are running now. A listener that counts neither " +
   "sends neither, and a role topic names its holder instead.";
-
-/** The topic kinds the stream stores, as the two texts below list them. Each is a kind whose
- *  topics `streamStores` answers true for. */
-export const STORED_TOPIC_KINDS = [
-  "agent",
-  "dispatch",
-  "github",
-  "slack",
-  "legion",
-  "ghostwispr",
-  "whatsapp",
-  "team",
-] as const;
 
 /** What a subscription and a publish reach, in envoy_subscribe's and envoy_publish's texts. */
 export const STORED_DELIVERY =
