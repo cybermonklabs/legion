@@ -335,8 +335,9 @@ export interface ReadTrade {
  * key of its own for the client and sends it as the holder key (`holderKey`): the token is bound
  * to that key, which signs every proof presented beside it, and the proof key signs the trade
  * alone. Neither sends `launcher_credential`, which the broker reads as declined for a read
- * trade. The machine's own client already proves a key this process made, which holds no
- * launcher credential, and needs no holder key.
+ * trade. The machine's own client proves a key that holds no launcher credential, one this
+ * process made or a pod role's agent-secrets key, which the broker enrolls as a session key and
+ * mints no launcher credential on, and needs no holder key.
  */
 export async function brokerTokenClient(
   env: BrokerEnvironment,

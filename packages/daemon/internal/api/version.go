@@ -3692,6 +3692,11 @@ package api
 // (This change takes 275, the number INFRA-3118's architect allocated to it on 2026-11-24T18:27Z
 // under INFRA's controller's ruling that it allocates contract numbers until #5399 merges, at
 // the merge that brought main in at 5df00e2f13, which declares 250.)
+// (This change takes 248, the lowest number above main's 246 that no other open pull request
+// declares, at the merge that brought main in at 7e75126fae: a reading of `const
+// DaemonAPIVersion` at the head of each of the 473 open pull requests, from 2026-11-24T15:32:43Z
+// to 15:35:25Z, found 247 (#4580 and #5384), 250, 251, 252, 254 and 255 declared above 246, and
+// 248 by none.)
 // (This change keeps 241 at the merge that brought main in at acade9857d, which declares 232, 241
 // being above it.)
 // (This change takes 241, the lowest number above main's 228 that no other open pull request
