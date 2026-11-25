@@ -686,6 +686,22 @@ RUN test -n "$LEGION_REVISION" \
 # variable the final stage's ENV sets is one `runtime.kubernetes.pod.env` may not set
 # (sandbox/operatorpod.go ImageEnv). A go.env default leaves GOPROXY to an operator, a role or a
 # command that names its own. The process environment outranks go.env, so each of those wins.
+# Because the file proxy comes first, this cache serves a module's bytes, but not its checksum: its
+# sumdb/sum.golang.org holds no `supported` file, so the go command asks sum.golang.org itself, and
+# the first fetch of a module into a go.sum that lacks it reaches the network. In an issue pod on
+# 2026-11-20, with proxy.golang.org, sum.golang.org and github.com all answering 504, an empty
+# GOMODCACHE and a fresh `go mod init example.com/rig`,
+# `GOFLAGS=-mod=mod go get github.com/pkg/errors@v0.9.1` failed at `verifying module: … Get
+# "https://sum.golang.org/…": Gateway Timeout` in 3 runs. With go.sum already holding that
+# module's two lines (copied from packages/daemon/go.sum) it succeeded in 2 runs, and still made 2
+# requests, to proxy.golang.org and github.com, both answered 504. With all three faulted,
+# `go get github.com/mikefarah/yq/v4@v4.44.3`, a module the cache does not hold,
+# made 4 requests of proxy.golang.org, fell through to `direct` and died in git (`invalid version:
+# git ls-remote … CONNECT tunnel failed, response 504`, 2026-11-07). The checksum database is a
+# third host: with proxy.golang.org alone faulted, that module came through `direct` and the build
+# went on; with sum.golang.org faulted as well, it failed at `verifying module`. A rig faults all
+# three, names a module the image's cache does not hold, and runs with an empty GOMODCACHE of its
+# own (`GOMODCACHE=$(mktemp -d)`), since a role's own GOMODCACHE keeps what an earlier run fetched.
 # ghcr.io/cybermonklabs/legion/ci, the copy of debian:trixie-slim (.github/ci-images.yaml)
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS toolchain
 ARG UV_VERSION
@@ -971,6 +987,15 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # because it is only a Recommends of gcc-14, and Recommends stay out here as everywhere. cgo stays off
 # by default all the same (the final stage's `ENV CGO_ENABLED=0` and the toolchain stage's go.env line
 # say how).
+# No make and no g++ are on this list, so `command -v make` and `command -v g++` print nothing in a
+# pod while cc and gcc are there (the plugin stage installs both for its own install alone, since
+# node-gyp needs python3, make and g++). A dependency whose install falls back to node-gyp fails in
+# a pod for that reason: in node_modules/better-sqlite3,
+# `bunx --package node-gyp@11.4.2 node-gyp rebuild` printed `gyp ERR! stack Error: not found: make`
+# (2026-11-07). The exit status of such an install in a pod says nothing about its downloads, so
+# judge it by what it fetched (its download lines, a fault proxy's log, the lockfile's sha512), or
+# run it with --ignore-scripts from the start, on a cold cache, so its exit status is about its
+# downloads; the full install is CI's, on a runner that has make and g++.
 # python3-yaml: Debian's PyYAML for the image's python3, so `python3 -c "import yaml"` answers in a
 # pod. Six of this repository's own gates run python3 with `import yaml`:
 # .github/scripts/check-action-pins.sh, check-bun-version.sh, check-ci-images.sh,

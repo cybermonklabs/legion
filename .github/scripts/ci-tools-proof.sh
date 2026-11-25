@@ -955,7 +955,7 @@ esac
 [ -n "$host" ] || host=none
 
 # faulted <host>: the fault proxy's own rule for a host it holds, which is exact or dot-suffix
-# (.github/scripts/ci-fault-proxy.py lines 64 to 67 hold that same rule): github.com holds
+# (Fault.faults in .github/scripts/ci-fault-proxy.py holds that same rule): github.com holds
 # github.com and x.github.com, and it does not hold github.com.invalid, the reserved control
 # name the probe verb asks for.
 faulted() {
@@ -1047,11 +1047,13 @@ shorten_ladder() {
 
 # ---------------------------------------------------------------- start-fault
 
-# fault_env <proxy>: every variable a client reads before it decides where to send a request,
-# written to $GITHUB_ENV and printed as it was written.
-# The four spellings are the whole of what a client reads, and the two bypass lists are emptied
-# with a proxy set because either one holding a star sends every host past it. A cleared proxy
-# leaves those two alone: with nothing to go around, nothing reads them.
+# fault_env <proxy>: every variable curl, bun, gh and git read before they decide where to send a
+# request, written to $GITHUB_ENV and printed as it was written.
+# The four spellings are the whole of what those four read; node's fetch reads https_proxy and
+# HTTPS_PROXY only beside NODE_USE_ENV_PROXY=1, which this function does not set
+# (.github/scripts/ci-fault-proxy.py's header has the measurement). The two bypass lists are
+# emptied with a proxy set because either one holding a star sends every host past it. A cleared
+# proxy leaves those two alone: with nothing to go around, nothing reads them.
 # It goes through $GITHUB_ENV rather than a step `env:` map because GitHub refuses a map that
 # holds two spellings of one name, and the workflow would then not start at all.
 # Off a runner there is no $GITHUB_ENV, and the lines are printed and written nowhere.
