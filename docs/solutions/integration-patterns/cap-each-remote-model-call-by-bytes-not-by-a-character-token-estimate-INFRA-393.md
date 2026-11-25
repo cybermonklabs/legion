@@ -38,15 +38,5 @@ Azure's count, against an estimate of 8,000.
 
 With `azureMaxBatchBytes = 320_000` (`embed/azure.go`; about 20 s at the slowest rate measured),
 the same 50 comments went in 17 calls of at most 3 bodies and 287,988 bytes. All became current
-with no retry and no dead row.
-
-Bedrock has the same budget, `bedrockMaxBatchBytes = azureMaxBatchBytes` (`embed/bedrock.go`),
-since `embedqueue` ends every call at 60 s (`callBound`). It is Azure's measured rate applied to
-Bedrock, whose own rate this repository has not measured. A group fits the bound only while
-Bedrock embeds at least the budget in `callBound`: at one token a byte, 320,000 tokens in 60 s,
-about 5,300 a second, a third of Azure's slowest measured 16,152. If Bedrock is slower, the largest
-group runs out at the bound as an outage and is bisected until each half fits, so a budget set too
-large costs wasted calls and their token reservations, not rows. Its rows prove the grouping only:
-a text that would cross the edge starts the next group whole, never cut to fit
-(`TestABedrockGroupAtItsByteBudgetIsSplitNotCutOff`), and a group past the budget never reaches
-the call (`TestNoBedrockCallCarriesMoreThanItsByteBudget`).
+with no retry and no dead row. Bedrock sets no byte budget (`MaxBatchBytes` 0), so its batches are
+unchanged.
