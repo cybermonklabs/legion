@@ -5672,7 +5672,8 @@ So a deployment that runs a harness only on reviewers or mergers prints `UNKNOWN
 Its inputs are the fixtures of `scripts/e2e/lib/testdata/step-models/`, whose README says which are captured and which are made.
 Each fault above has its row, `--lower-one` fails both comparisons, and two issues each answer their own records.
 One row renders the made records through the real `dispatch steps` code and holds the text to the fixture.
-The made fixtures stand in for captures, so these rows do not yet show that the comparator reads real output.
+Three rows read what the whole-chain test captured in CI: a Claude Code session, and both issues' records, read lines and transcripts.
+The other rows read made records and read lines.
 
 ## review-range.sh
 

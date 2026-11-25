@@ -298,9 +298,9 @@ func fakeClaude() int {
 // out-refusal.jsonl, out-e529.jsonl and out-e429.jsonl these are). A stream is one recording
 // trimmed to the lines a case needs, and commandBlockInTurn is the only one whose lines stand in
 // another order than the recorded one, which its own comment says. command-init-first.jsonl is
-// made by hand, not recorded. subagent-turn.jsonl is the whole stream of one session of Claude
-// Code 2.1.311, recorded against a stand-in endpoint. TestASubagentLineEndsNoResponse says what
-// that endpoint served.
+// made by hand, not recorded. subagent-turn.jsonl is the one recording of another release, Claude
+// Code 2.1.311, which .claude-code-pin pins. It is the whole stream of one session against a
+// stand-in endpoint. TestASubagentLineEndsNoResponse says what that endpoint served.
 func replay(record *os.File, file string) {
 	raw, err := os.ReadFile(filepath.Join("testdata", file))
 	if err != nil {

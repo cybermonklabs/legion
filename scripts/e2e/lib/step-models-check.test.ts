@@ -11,10 +11,10 @@ import { heldModels, transcriptResponses } from "./step-models-check";
 
 // step-models-check.sh against the fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH.
 // The fake answers `dispatch steps --issue <KEY>` with that issue's records, lines of
-// testdata/step-models/printed-steps-16.txt, printed-steps-16-b.txt and printed-steps-16-c.txt.
-// The daemon's logs, the transcripts and the agents files are the other files of
-// testdata/step-models. Its README names each record (A0 to A8, C1 to C3, C1b, C3b, D1 to D9, T1
-// and S1), and says which fixtures are made.
+// testdata/step-models/printed-steps-16.txt, printed-steps-16-b.txt and printed-steps-16-c.txt, or
+// of the whole-chain test's printed-steps-16-captured-A.txt and -B.txt. The daemon's logs, the
+// transcripts and the agents files are the other files of testdata/step-models. Its README names
+// each record (A0 to A8, C1 to C3, C1b, C3b, D1 to D9, T1 and S1), and which fixtures are made.
 const script = join(import.meta.dir, "..", "step-models-check.sh");
 const data = join(import.meta.dir, "testdata", "step-models");
 const dir = temporaryDirectory("step-models-check-test");
@@ -546,6 +546,37 @@ describe("step-models-check.sh", () => {
     const answered = transcriptResponses(transcript, "claude").map((response) => response.model);
     expect(answered).not.toContain("anthropic/claude-model");
     expect([...heldModels(transcript, "claude")]).toContain("anthropic/claude-model");
+  });
+
+  test("the chain's captured records of both issues pass both comparisons", () => {
+    // Each issue's records are what `dispatch steps` printed in the whole-chain test, header first.
+    const [headerA, ...recordsA] = lines("printed-steps-16-captured-A.txt");
+    const [headerB, ...recordsB] = lines("printed-steps-16-captured-B.txt");
+    const [issueA, issueB] = [headerA, headerB].map((header) => header.split(":")[0]);
+    // The chain's own run judged these records before a step's completion call counted. Its two
+    // live-at-both-reads PASS lines stand, and its c-real answer was UNKNOWN.
+    const compared = lines("compare-captured.txt");
+    const livePasses = compared.filter((line) => line.startsWith("PASS: live-at-both-reads: "));
+    expect(livePasses.length).toBe(2);
+    expect(compared.slice(-2)).toEqual(["c-real: UNKNOWN", "live-at-both-reads: PASS"]);
+    const run = check(
+      { [issueA]: recordsA, [issueB]: recordsB },
+      join(data, "agents-captured.json"),
+      { log: join(data, "daemon-log-captured.jsonl") }
+    );
+    expect(run.stdout).toContain(
+      `PASS: c-real: harness omp: ${issueA} a 1 step attempt 2: smimplementera/smimplementera-model=3`
+    );
+    expect(run.stdout).toContain(
+      `PASS: c-real: harness claude: ${issueA} a 2 step attempt 2: anthropic/claude-model=3`
+    );
+    for (const line of livePasses) {
+      expect(run.stdout).toContain(line);
+    }
+    expect(run.stdout).not.toContain("FAIL");
+    expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: PASS"]);
+    expect(run.code).toBe(0);
+    expect(run.calls).toBe(`steps --issue ${issueA}\nsteps --issue ${issueB}\n`);
   });
 
   // The rows below read LEGION-3552's records. Each step that its agent ended calls the `legion`

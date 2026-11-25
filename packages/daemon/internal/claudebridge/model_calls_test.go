@@ -116,14 +116,15 @@ func TestARefusalTurnEndsOnlyTheResponseAModelWrote(t *testing.T) {
 	}
 }
 
-// subagent-turn.jsonl is captured, not made: the stdout of the pinned Claude Code (2.1.311) in one
-// print-mode session against a stand-in endpoint. Its init lines name the set model, claude-model.
-// The endpoint served claude-served-model for every response, so the set model never answered. Its
-// list of what it served is scripts/e2e/lib/testdata/step-models/capture-differ-served.json. It
-// names four responses of the main conversation, msg_standin_81 to 83 and msg_standin_85. Two
-// assistant lines carry msg_standin_81. It also names msg_standin_84, the response of a subagent.
-// That line names the tool call it serves in parent_tool_use_id. A subagent's line is no answer
-// of the agent's own conversation, so it ends no response. So the shim is told of four answers.
+// subagent-turn.jsonl is captured, not made: the stdout of Claude Code 2.1.311, the release
+// .claude-code-pin pins, in one print-mode session against a stand-in endpoint. Its init lines name
+// the set model, claude-model. The endpoint served claude-served-model for every response, so the
+// set model never answered. Its list of what it served is
+// scripts/e2e/lib/testdata/step-models/capture-differ-served.json. It names four responses of the
+// main conversation, msg_standin_81 to 83 and msg_standin_85. Two assistant lines carry
+// msg_standin_81. It also names msg_standin_84, the response of a subagent. That line names the
+// tool call it serves in parent_tool_use_id. A subagent's line is no answer of the agent's own
+// conversation, so it ends no response. So the shim is told of four answers.
 func TestASubagentLineEndsNoResponse(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
 	r.prompt("p1", "replay subagent-turn.jsonl")
