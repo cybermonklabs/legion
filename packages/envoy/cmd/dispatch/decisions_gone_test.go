@@ -63,8 +63,8 @@ var decisionsChecks = []struct{ name, write string }{
 //     stores_moved: the release before the decisions release, which lists none of the kinds that
 //     release added either, and the issue-room release, the release before this one, which lists
 //     every other kind this build lists and whose issue read still calls decisions_documents().
-//     Over each every object stays, the server serves, and the log names the announcement and
-//     stores_moved as what it lacks;
+//     Over each every object stays, a call of decisions_documents() answers after the boot, the
+//     server serves, and the log names the announcement and stores_moved as what it lacks;
 //   - one where decisions_documents() answers a document, a document with no role that its slug
 //     names: the function and the checks stay, the server serves, and the log names the document;
 //   - one this boot created from empty: the step deletes them at once.
@@ -516,8 +516,9 @@ func mapsEqual(a, b map[string]string) bool {
 // another build is of a release before this one: the release before the decisions release, which
 // lists none of the kinds that release added, and the issue-room release, the release before this
 // one, which lists every other kind this build lists and still reads decisions_documents(). Neither
-// lists stores_moved, so the step keeps every object over each and logs one line naming the
-// announcement and what it lacks.
+// lists stores_moved, so the step keeps every object over each, a call of decisions_documents()
+// still answers after the boot, as the issue-room release's issue read calls it, and the step logs
+// one line naming the announcement and what it lacks.
 func requireTheReleaseBeforeKeepsTheObjects(t *testing.T, binary string) {
 	for _, before := range []struct {
 		name, commit string
@@ -533,6 +534,9 @@ func requireTheReleaseBeforeKeepsTheObjects(t *testing.T, binary string) {
 				return slices.Contains(before.unlisted, kind)
 			}))
 			d.boot(t, binary)
+			// The function first: a step that dropped it fails here, naming it.
+			var standing int
+			d.scan(t, `select count(*) from decisions_documents()`, &standing)
 			requireKept(t, d, 1)
 			output := d.process.Output.String()
 			logged := slices.ContainsFunc(strings.Split(output, "\n"), func(line string) bool {

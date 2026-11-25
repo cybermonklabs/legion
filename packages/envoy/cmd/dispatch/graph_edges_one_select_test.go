@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -72,8 +73,9 @@ const (
 //   - children's release: the same, but the announcement is of the release before this one, which
 //     lists every kind of both children and no stores_moved: INFRA-1150's arms go, INFRA-1253's
 //     arms and joins stay, since that release writes a document's node with no row values, the log
-//     names the announcement and stores_moved as what it lacks, and every read equals the read
-//     before;
+//     names the announcement and stores_moved as what it lacks, every read equals the read before,
+//     and a document written after the boot as that release writes it, its node holding no
+//     artifact_id and no created_at, still answers its mentions and its attached_to;
 //   - roll window: a build of the release before wrote an issue link with no marker and a reply the
 //     comment writer marked as INFRA-1149's writer marks every comment: the step's backfill brings
 //     the link in, then the arms go, and every read equals the read before;
@@ -840,7 +842,8 @@ func requireAReferencePastTheBoundKeepsTheArms(t *testing.T, rootBuild string) {
 // requireTheChildrensReleaseKeepsTheIssueTreeArms boots the root's build over the released
 // database announced by the release before this one, dispatch://INFRA-1253's, which lists every
 // kind this build lists but stores_moved: the step deletes INFRA-1150's arms and keeps
-// INFRA-1253's, whose guard is stores_moved (startup.StoresMovedKinds), and logs why.
+// INFRA-1253's, whose guard is stores_moved (startup.StoresMovedKinds), and logs why. After the
+// boot a document written as that release writes it still answers its edges (writeAsTheIssueRoom).
 func requireTheChildrensReleaseKeepsTheIssueTreeArms(t *testing.T, rootBuild string) {
 	d, seed := releasedDatabase(t)
 	warmUp(t, d, rootBuild, seed)
@@ -866,6 +869,42 @@ func requireTheChildrensReleaseKeepsTheIssueTreeArms(t *testing.T, rootBuild str
 	requireChildrenArms(t, d, false, true)
 	requireReadsEqual(t, before, readView(t, database, before.targets))
 	requireServes(t, d.process)
+	document := writeAsTheIssueRoom(t, database)
+	requireGraphEdgeAnswered(t, database, "artifact "+document+" -mentions-> issue ARMS-4")
+	requireGraphEdgeAnswered(t, database, "artifact "+document+" -attached_to-> issue ARMS-3")
+}
+
+// writeAsTheIssueRoom writes, as a build of dispatch://INFRA-1253's release (810aa47bac) uploads it,
+// a document of ARMS-3 that mentions ARMS-4, and answers its uuid: the document's node with no row
+// values (graphstore.ArtifactRow first appears in this release), its part_of to ARMS-3, its mentions
+// tuple, its artifacts row naming its node, and the refs row of the mention.
+func writeAsTheIssueRoom(t *testing.T, database *store.Store) string {
+	t.Helper()
+	ctx := context.Background()
+	const refKey = "ARMS-3/rollback-md"
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	at := time.Now()
+	var id string
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(refKey, "ARMS", "", alice, at)}, []graphstore.Tuple{
+			graphstore.ArtifactPartOf(refKey, "ARMS-3", alice, at),
+			{FromKind: graphstore.KindArtifact, FromID: refKey, Kind: "mentions", ToKind: graphstore.KindIssue, ToID: "ARMS-4",
+				At: at, Who: alice, SourceEvent: graphstore.NoEvent, Asserted: true},
+		}); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+			values ('ARMS-3', 'ARMS', 'rollback-md', 'rollback.md', 'doc', false, '{"kind":"user","id":"alice"}', 'artifact', $1)
+			returning id::text`, refKey).Scan(&id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `insert into refs (from_kind, from_id, to_kind, to_id) values ('artifact', $1, 'issue', 'ARMS-4')`, id)
+		return err
+	}); err != nil {
+		t.Fatalf("write the document as the issue-room release writes it: %v", err)
+	}
+	return id
 }
 
 // releaseBeforeDatabase is an empty database migrated through the release before this tree, with
