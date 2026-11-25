@@ -182,6 +182,8 @@ var idRoutes = map[string]idRoute{
 	"POST /api/v1/issues/{key}/nodes/{id}/pointers": {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
 	"POST /api/v1/issues/{key}/nodes/{id}/state":    {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
 	"POST /api/v1/issues/{key}/nodes/{id}/settle":   {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
+	"PATCH /api/v1/issues/{key}/nodes/{id}":         {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
+	"DELETE /api/v1/issues/{key}/nodes/{id}":        {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
 
 	// The document test hooks, which address the live room this process holds under the
 	// document's own id and read no row of the artifacts table, so they answer no 404 of a

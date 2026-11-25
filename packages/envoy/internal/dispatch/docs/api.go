@@ -13,6 +13,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // API is the live document operation surface used by Dispatch's HTTP handlers.
@@ -38,6 +40,8 @@ type API interface {
 	FollowClosedIssueVersions(ctx context.Context, issueKey string) error
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error
 	SetAskBlockText(ctx context.Context, artifactID, blockID string, edit AskBlockEdit, actor model.Actor) (AskBlockText, error)
 	TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)
@@ -47,6 +51,7 @@ type API interface {
 	CopiesOf(ctx context.Context, ask model.Ask) ([]string, error)
 	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, scope *QuoteScope) (Anchored, error)
 	VerifyMark(ctx context.Context, artifactID string, kind MarkKind, id string) (Anchored, error)
+	AnchorOccurrences(ctx context.Context, artifactID string, anchors []CommentAnchorInBlock) (map[int]int, error)
 	BlockForQuote(ctx context.Context, artifactID, quote string) (string, error)
 	SuggestionKind(ctx context.Context, artifactID, id string) (string, error)
 	AcceptSuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor) error
@@ -56,7 +61,11 @@ type API interface {
 	Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger)
 	JoinWrite(ctx context.Context, artifactID string) error
 	NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error)
-	ReviseQueries(ctx context.Context, tx pgx.Tx, issueKey string, writer model.Actor) (graphstore.Uncaused, error)
+	DrainOwedQueries(ctx context.Context, issueKey string) []model.Event
+	MoveBlockText(ctx context.Context, artifactID string, move pmdoc.NodeTextMove, actor model.Actor) (bool, error)
+	DeleteBlocksText(ctx context.Context, taken map[string][]string, actor model.Actor) ([]string, error)
+	PlanDeleteBlocksText(ctx context.Context, taken map[string][]string) error
+	HoldStoredBlock(ctx context.Context, address string, block refs.StoredBlock) error
 	Evict(ctx context.Context, artifactID string) error
 	Quiesce(ctx context.Context) error
 }

@@ -47,8 +47,7 @@ import {
 // key its own reader builds, for issue CORE-1 (child of CORE-0, grandchild of CORE-00) and for
 // what sits beside it. A rule is what an event marks stale here, through the real scheduler.
 const READS = {
-  // The work under one priority, as a scoped issues table reads it: the Priorities page's open
-  // row and the priority's own page.
+  // The work under one priority, as a scoped issues table reads it: the priority's own page.
   advancesWork: { key: advancesIssuesQuery({ advances: "linkage-closure" }, true).queryKey },
   // A fault list of the Priorities page: the work under any priority standing in backlog or
   // icebox, with its move there, as that page's Issues table reads it.
@@ -1865,6 +1864,13 @@ test("a priority.updated of a deleted priority refetches no issue read that does
   ]);
 });
 
+// No read of the dashboard carries a project's owner, visibility or access list yet, so a change of
+// them refreshes nothing. The feed knows the type, so it is no unknown one, which would refresh
+// every query.
+test("a project.access_changed refreshes no read", () => {
+  expect(refreshedReads(eventsByType["project.access_changed"])).toEqual([]);
+});
+
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
 const eventsByType: Record<EventType, DispatchEvent> = {
@@ -1937,6 +1943,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     "priority.updated",
     { change: "updated", id: "linkage-closure" },
     { issue_key: null, project: undefined }
+  ),
+  "project.access_changed": event(
+    "project.access_changed",
+    { change: "owner", project: "PROJ" },
+    { issue_key: null, project: "PROJ" }
   ),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),

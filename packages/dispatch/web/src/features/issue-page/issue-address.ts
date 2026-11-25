@@ -36,9 +36,13 @@ export type AddressTarget =
    *  or a person wrote that is a turn of a thread the history holds (`agents-only.ts`), an entry
    *  of the panel's history (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
+  /** One node, by its id in the tree read, which `?node=` names: the row a store address in a
+   *  row's words links to (`lenses/store-link.ts`' `outlineRowPath`). Only the outline reads it,
+   *  Conversation's and Graph's, on an address that opens no document (`issueAddress`). */
+  | { readonly kind: "node"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
-   *  `t h`) names the first row of their group in the outline, which the page unfolds the path
-   *  to and puts the focus on. */
+   *  `t h`), which lands on their section above the outline (`children-section.tsx`, R14). The
+   *  tree's first child row tells the page whether the issue holds any (`pathToTarget`). */
   | { readonly kind: "children"; readonly id: string };
 
 /** What one address of the issue page opens. */
@@ -193,6 +197,23 @@ export function issueAddress(
   // `useOpensDocument`).
   const version = pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined);
   const addressed = routeDocument(route, specSlug);
+  // `?node=` names a node by its id in the tree read. It is read only on an address whose
+  // preset is the outline - Conversation's, or Graph's, which draws Graph's read as one outline -
+  // and which opens no document, and there it wins over `#b-`, `?ask=` and `?comment=`.
+  const nodeId = query.get("node") ?? "";
+  const outline = route.kind === "graph" || ROUTE_PRESETS[route.kind] === undefined;
+  if (nodeId !== "" && outline && addressed === undefined) {
+    return {
+      document: undefined,
+      documentItem: undefined,
+      filter: query.get("q") ?? "",
+      nodeMenu: false,
+      preset: ROUTE_PRESETS[route.kind] ?? "conversation",
+      target: { id: nodeId, kind: "node" },
+      version,
+      ...(route.kind === "graph" && route.node !== undefined ? { zoom: route.node } : {}),
+    };
+  }
   const marked = query.get("mark") ?? "";
   const documentItem = documentItemOf(addressed, item, version, marked);
   const outlineItem = documentItem === undefined && item !== null && item !== undefined;
@@ -262,8 +283,8 @@ function pathToNode(
  * `<slug>#b-<id>` (`tree-drafts.ts`'s `blockNodeId`) and a block id is the author's, unique
  * inside one document alone: `/issues/KEY/artifacts/plan-md#b-t1` would otherwise land on the
  * spec's own `#b-t1`. An address naming no document - a `#b-` fragment on the issue's own
- * address - has only the block id to go on, and the first node carrying it answers. The
- * children's address names the first child of their group.
+ * address - has only the block id to go on, and the first node carrying it answers. For the
+ * children's address it is the chain to the first child of the outline, where the tree holds one.
  */
 export function pathToTarget(
   root: TreeNode,
@@ -279,6 +300,7 @@ export function pathToTarget(
     const suffix = `#b-${target.id}`;
     return pathToNode(root, (node) => node.id.endsWith(suffix));
   }
+  if (target.kind === "node") return pathToNode(root, (node) => node.readId === target.id);
   const byId = pathToNode(root, (node) => node.id === target.id);
   if (byId !== undefined) return byId;
   const address = `/${target.id}`;

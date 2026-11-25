@@ -15,6 +15,11 @@ import type { PartWords } from "./page-words-parts";
 
 export default {
   add: {
+    NODE_TYPE_NAMES: {
+      /** A `prose` node: a document's plain paragraph, as the model stores it, which Graph draws
+       *  as a row of its own. The page draws the word a reader uses, never the model's token. */
+      prose: "paragraph",
+    },
     EMPTY_STATE_LINES: {
       /** Graph, the whole tree read, on an issue whose tree holds nothing under it. */
       graph: "This issue holds nothing yet.",
@@ -33,6 +38,10 @@ export default {
       /** The control above the outline's first row under the issue while the outline read
        *  answers older comments than it holds, which reads the next page of them (R15). */
       older_comments: "Older comments",
+      /** The control at the foot of the Contents list while the outline read answers older
+       *  comments than it holds, which reads the next page of them, the same page the control
+       *  above the outline reads (R15). */
+      contents_older: "Load older comments",
       /** The control after the last row of an outline or a view while its read answers a next
        *  page, which reads that page (R15): the count before it is how many nodes the read holds
        *  after the pages read (its `remaining`) and carries `AUTHOR_TEXT_ATTRIBUTE`, and the
@@ -44,6 +53,21 @@ export default {
       /** The reader's own comment carries it on its row: it sets the line at the foot of the
        *  outline to edit that comment, which `save` sends back (R11). */
       edit_comment: "Edit",
+      /** The heading of the children's section above the outline, its one control, which opens
+       *  and closes the list of the issue's children; the header's bar and both counts stand
+       *  beside it (R14). */
+      children_section: "Child issues",
+      /** The control after the children the section lists, while more remain, which lists the
+       *  next 20 (R14, R15): the count before it is how many children are left and carries
+       *  `AUTHOR_TEXT_ATTRIBUTE`, and the words agree with it: "1 more child", "3 more children". */
+      children_page_child: "more child",
+      children_page_children: "more children",
+    },
+    GLYPH_TOKENS: {
+      types: {
+        /** A `prose` node's shape (`NodeGlyph.tsx`), by the model's token, as every type's is. */
+        prose: "prose",
+      },
     },
   },
   unasked: [],

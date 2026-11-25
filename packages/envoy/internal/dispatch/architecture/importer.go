@@ -640,7 +640,7 @@ func heldElsewhere(ctx context.Context, tx pgx.Tx, source model.ArchitectureSour
 // and before the rows it replaces, it states the components in the store
 // (stateComponents): each component's node, its part_of and its depends_on, and
 // each component it drops gone; each row it writes names its component's node
-// (dispatch://INFRA-1253 R9).
+// (R9 of the issue-tree spec).
 func (i *Importer) project(
 	ctx context.Context,
 	source loadedSource,
@@ -809,7 +809,7 @@ func (i *Importer) project(
 }
 
 // stateComponents states in the store, in the import's transaction, what an import of parsed
-// makes of project's components (dispatch://INFRA-1253 R9), and answers, by component id, which
+// makes of project's components (R9 of the issue-tree spec), and answers, by component id, which
 // components the store now holds as the import projects them, whose rows name their node. Each
 // such component is its node (graphstore.ComponentNode), restated live; its part_of names its
 // parent component, or nothing for a component with none; and its depends_on names each component

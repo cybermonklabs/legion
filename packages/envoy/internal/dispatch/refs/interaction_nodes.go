@@ -10,8 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/going"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -70,20 +68,6 @@ func loadInteractionNodes(ctx context.Context, q Queryer, who model.Actor, _ str
 	return rows.Err()
 }
 
-// interactionWithdrawal is the one frame the stream writes a reader of a withdrawn run (api's
-// goingWithdrawal), and interactionWithdrawalData its payload as the frame path encodes every
-// frame's for graphstore.FrameValueSQL (api's appendGoingEvent): the JSON json.Marshal writes of
-// it, encoded once, since going.ErrorData is one string, which json.Marshal cannot fail on.
-var interactionWithdrawal = going.Fault(contracts.GoingErrorAnswerWithdrawn)
-
-var interactionWithdrawalData = func() []byte {
-	data, err := json.Marshal(interactionWithdrawal.Data)
-	if err != nil {
-		panic(fmt.Sprintf("encode the payload of the withdrawal frame: %v", err))
-	}
-	return data
-}()
-
 // interactionWithdrawalSequence is the sequence the stream writes the withdrawal of the run whose
 // uuid is run.id at (api's goingWithdrawal): its stored ending's (graphstore.RunEndingSQL), or,
 // where it has stored none, the one its ending takes when the stream stores it
@@ -92,10 +76,12 @@ var interactionWithdrawalSequence = `coalesce(` + graphstore.RunEndingSQL("run.i
 
 // interactionFramesOf is the frames the run's own address answers, over its node's graph_nodes row
 // held and its uuid run.id, with $5 the frame attribute, $6 the withdrawal's name and $7 its
-// payload's JSON (interactionFrames): for a withdrawn run (graphstore.RunWithdrawnSQL), the
-// withdrawal alone, its value written as graphstore.FrameValueSQL writes every frame's; for any
-// other, every frame value its node holds, in sequence, and null where it holds none.
-var interactionFramesOf = `case when ` + graphstore.RunWithdrawnSQL("run.id") + `
+// payload's JSON (interactionFrames): for a run whose going_requests row is gone
+// (graphstore.RunRowGoneSQL), null, no frame; for a withdrawn run (graphstore.RunWithdrawnSQL),
+// the withdrawal alone, its value written as graphstore.FrameValueSQL writes every frame's; for
+// any other, every frame value its node holds, in sequence, and null where it holds none.
+var interactionFramesOf = `case when ` + graphstore.RunRowGoneSQL("run.id") + ` then null
+		when ` + graphstore.RunWithdrawnSQL("run.id") + `
 		then jsonb_build_array(` + graphstore.FrameValueSQL(interactionWithdrawalSequence, "$6::text", "$7::jsonb") + `::jsonb)
 		else (select jsonb_agg(frame.to_id::jsonb order by (frame.to_id::jsonb ->> 'sequence')::integer, frame.seq)
 		      from graph_tuples frame
@@ -115,13 +101,21 @@ var interactionFramesOf = `case when ` + graphstore.RunWithdrawnSQL("run.id") + 
 // the stream decides on and does not decide it again (api's goingWithdrawal): once a comment or an
 // issue message whose text the run gave its model no longer stands (graphstore.RunWithdrawnSQL,
 // the one test the stream reads too), the node's frames are the one frame the stream writes, the
-// withdrawal (interactionWithdrawal), and none of the frames the run stored, which may quote the
+// withdrawal (graphstore.RunWithdrawal), and none of the frames the run stored, which may quote the
 // post. The withdrawal is encoded as every stored frame is (graphstore.FrameValueSQL over its name
-// and its payload's JSON), at the sequence of the run's stored ending, where the stream writes it;
-// where the run has stored no ending yet, at the sequence the stream's own ending of the run would
-// take (interactionWithdrawalSequence), and the read writes nothing. The verdict, the ending and
-// the frames are read in one statement, under the one predicate over the run's row, so a reader
-// the run is not answered to reads no withdrawal either.
+// and its payload's JSON, graphstore.RunWithdrawalData), at the sequence of the run's stored
+// ending, where the stream writes it; where the run has stored no ending yet, at the sequence the
+// stream's own ending of the run would take (interactionWithdrawalSequence), and the read writes
+// nothing. The row test, the verdict, the ending and the frames are read in one statement, under
+// the one predicate over the run's row, so a reader the run is not answered to reads no withdrawal
+// either.
+//
+// A run whose going_requests row is gone answers no frame (graphstore.RunRowGoneSQL). A process of
+// the release before removes that row an hour after the run was asked, and leaves the node live.
+// Its stream answers 404 GOING_REQUEST_NOT_FOUND for it. Its going_request_posts rows went with the
+// row, so no verdict on its posts can be read (graphstore.RunWithdrawnSQL). None of the frames it
+// stored, which may quote a deleted post, is answered. Its node stays live until this build's
+// sweep reads it as rowless (api's goingRowlessRuns) and states it gone.
 func interactionFrames(ctx context.Context, q Queryer, who model.Actor, id string) ([]model.GraphFrame, error) {
 	var frames *string
 	err := q.QueryRow(ctx, `
@@ -130,7 +124,7 @@ func interactionFrames(ctx context.Context, q Queryer, who model.Actor, id strin
 		cross join lateral (select `+store.CanonicalUUID("held.id")+` as id) run
 		where held.kind = $1 and held.id = $2 and held.state <> $3 and `+VisibleKindRow(graphstore.KindInteraction, "held", "$4"),
 		graphstore.KindInteraction, id, graphstore.StateGone, VisibilityArg(who), graphstore.AttributeFrame,
-		interactionWithdrawal.Name, interactionWithdrawalData).Scan(&frames)
+		graphstore.RunWithdrawal.Name, graphstore.RunWithdrawalData).Scan(&frames)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

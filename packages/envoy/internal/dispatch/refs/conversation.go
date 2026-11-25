@@ -9,18 +9,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// R2's test (dispatch://INFRA-1253/spec R2): which items of an issue are its conversation, the
+// R2's test (R2 of the issue-tree spec): which items of an issue are its conversation, the
 // back-and-forth a person and the issue's agents had, and so may be a node's parent and are what
 // a query of the issue's tree returns. An ask is always one. A comment or a message is one when a
 // person wrote it, or when it sits in a thread a person wrote in. Any other comment or message an
 // agent wrote - a status note, a round report, a handoff remark - is not, and neither is a message
-// of the Legion daemon's own session, wherever it sits. A block of an item - a part of an ask, a
-// block of a comment or of a message - is one when its item is.
+// of the Legion daemon's own session, wherever it sits, nor any message of a thread whose root
+// that session posted, whoever wrote it, a person's reply included (daemonThread). A block of an
+// item - a part of an ask, a block of a comment or of a message - is one when its item is.
 //
 // The test is read as of a time, so a version's walk reads it as it stood at that version: an
 // agent's thread a person replies in later holds conversation nodes from the time of that reply
@@ -36,11 +39,23 @@ import (
 // IsConversationNode answers the test for one node, ConversationNodes for every item of an issue,
 // and conversationTargets for the item blocks a write's pointers name (BlockTargets); all three
 // read conversationItemIDs, so no two of them can disagree.
+//
+// The daemon's rule is one SQL test (daemonThread, over the threads messageThreads reads). The
+// message's statement binds it, and DaemonThreadParents reads it the other way round: the blocks
+// of documents that still stand under a message it refuses, placed there before the rule, which
+// the census counts (graphcensus.ReadDaemonThreadCensus) and docs' step re-places
+// (docs.DaemonThreadStep).
 
 // daemonSessionPrefix starts the session id the Legion daemon writes an issue's status and
 // lifecycle messages under, legion-daemon:<PROJECT> (packages/daemon's DaemonSession, and api's
 // legionDaemonSessionPrefix, which keeps the daemon off an issue's collaborators).
 const daemonSessionPrefix = "legion-daemon:"
+
+// daemonAuthor is the SQL test of a stored author, the jsonb at column, being the Legion daemon's
+// own session (daemonSessionPrefix).
+func daemonAuthor(column string) string {
+	return `(` + column + `->>'kind' = 'session' and starts_with(` + column + `->>'id', '` + daemonSessionPrefix + `'))`
+}
 
 // personAuthor is the SQL test of a stored author, the jsonb at column, being a person.
 func personAuthor(column string) string {
@@ -75,9 +90,9 @@ func conversationKind(kind, id string) (item ItemKind, itemID, blockNode string,
 // above): an ask, a comment or a message that stood at `at`, or a block of one, by its storage
 // kind or as a `block` node. An ask always is; a comment or a message is when a person wrote it
 // or when a person had written in its thread by `at`; a message of the Legion daemon's session
-// never is. A block is one when its item is and the item holds a block of that node id, current
-// or removed. Any other kind, an id that names no item, and an item that did not stand at `at`
-// answer false.
+// never is, and neither is a message of a thread whose root that session posted. A block is one
+// when its item is and the item holds a block of that node id, current or removed. Any other
+// kind, an id that names no item, and an item that did not stand at `at` answer false.
 func IsConversationNode(ctx context.Context, q Queryer, kind, id string, at time.Time) (bool, error) {
 	item, itemID, blockNode, ok := conversationKind(kind, id)
 	if !ok {
@@ -262,7 +277,8 @@ func conversationBlocks(ctx context.Context, q Queryer, items []edgeRow) (map[[2
 // conversationItemIDs is the set of ids among ids, each the uuid of an item of kind, that R2's
 // test passes at `at`: an ask that stood at `at`; a comment or a message that stood at `at`,
 // that a person wrote, or whose thread a person had written in by `at`; never a message of the
-// Legion daemon's session. An id that is no uuid, or that names no item, is not in the set.
+// Legion daemon's session, nor one of a thread whose root that session posted. An id that is no
+// uuid, or that names no item, is not in the set.
 func conversationItemIDs(ctx context.Context, q Queryer, kind ItemKind, ids []string, at time.Time) (map[string]bool, error) {
 	passing := make(map[string]bool, len(ids))
 	subjects := make([]string, 0, len(ids))
@@ -518,23 +534,42 @@ func CommentsOffPage(ctx context.Context, q Queryer, issueKey string, at time.Ti
 	return off, rows.Err()
 }
 
-// messageConversationStatement is R2's test over the messages $1 names, at $2, its walks bounded
-// at $3 links: each message's thread is the root its in_reply_to chain climbs to (api's
-// messageThreadCTE), and a person wrote in it by $2 when one of its messages written by then is a
-// person's. A message of the Legion daemon's session passes never.
-var messageConversationStatement = `
-	with recursive up as (
+// messageThreads is the two common table expressions a reading of messages' threads starts from,
+// over the messages m the SQL condition subjects selects: up, each such message's in_reply_to
+// chain, at most depth links up (SQL text), and top, each of them (subject) with the root its
+// chain climbs to (api's messageThreadCTE). A statement opens them with `with recursive`.
+func messageThreads(subjects, depth string) string {
+	return `up as (
 		select m.id as subject, m.id, m.in_reply_to, 0 as depth
-		from messages m where m.id = any($1::uuid[]) and m.created_at <= $2
+		from messages m where ` + subjects + `
 		union all
 		select up.subject, p.id, p.in_reply_to, up.depth + 1
 		from up join messages p on p.id = up.in_reply_to
-		where up.depth < $3
+		where up.depth < ` + depth + `
 	),
 	top as (
 		select distinct on (subject) subject, id as root
 		from up order by subject, depth desc
-	),
+	)`
+}
+
+// daemonThread is the SQL test of a row of top (messageThreads), aliased alias, being a message
+// R2's rule of the Legion daemon refuses: one the daemon's own session posted, wherever it sits,
+// or one of a thread whose root that session posted, whoever wrote the message itself. It is two
+// probes of the messages table's primary key. A message's in_reply_to is set once at its insert,
+// and its author never moves, so the test answers the same at every time.
+func daemonThread(alias string) string {
+	return `exists (select 1 from messages posted
+		where posted.id in (` + alias + `.subject, ` + alias + `.root) and ` + daemonAuthor(`posted.author`) + `)`
+}
+
+// messageConversationStatement is R2's test over the messages $1 names, at $2, its walks bounded
+// at $3 links: each message's thread is the root its in_reply_to chain climbs to
+// (messageThreads), and a person wrote in it by $2 when one of its messages written by then is a
+// person's. A message of the Legion daemon's session passes never, and neither does any message
+// of a thread whose root that session posted (daemonThread).
+var messageConversationStatement = `
+	with recursive ` + messageThreads(`m.id = any($1::uuid[]) and m.created_at <= $2`, `$3`) + `,
 	member as (
 		select roots.root, roots.root as id, 0 as depth from (select distinct root from top) roots
 		union all
@@ -549,8 +584,119 @@ var messageConversationStatement = `
 	)
 	select t.subject::text
 	from top t join messages m on m.id = t.subject
-	where not (m.author->>'kind' = 'session' and starts_with(m.author->>'id', '` + daemonSessionPrefix + `'))
+	where not ` + daemonThread(`t`) + `
 	  and (` + personAuthor("m.author") + ` or t.root in (select root from voiced))`
+
+// BlockPlacementSQL is the read of the current part_of of the block whose address is the SQL
+// node, as the subquery of a lateral join: its far end's to_kind and to_id and its seq, the
+// placement revision a move of the block states (api's placement_seq). It is the newest tuple to
+// each far end, kept while it asserts (graphstore.CurrentTupleRead), and of those the newest; a
+// block that stands under nothing answers no row.
+func BlockPlacementSQL(node string) string {
+	return `select newest.to_kind, newest.to_id, newest.seq from (
+				` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.seq, t.asserted`,
+		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = `+node+` and t.kind = '`+graphstore.TuplePartOf+`'
+					and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+			) newest
+			where newest.asserted
+			order by newest.seq desc
+			limit 1`
+}
+
+// DaemonThreadParent is one current part_of R2's rule of the Legion daemon left behind: a block
+// of a document that stands under a message of a daemon thread (daemonThread), or under a block
+// of one, because a parent pointer named it before the rule.
+type DaemonThreadParent struct {
+	// Node is the block's address, `<ref_key>#<block id>`.
+	Node string
+	// Parent is the far end of that part_of: the message, or a block of it.
+	Parent Target
+	// Seq is the seq of that part_of, the placement revision a write that moves the block states.
+	Seq int64
+	// Holder is the issue that holds the message.
+	Holder string
+	// Issue is the issue the block is re-placed under: the one its own document belongs to,
+	// which is Holder but for a block of a document of an issue below it, whose parent pointer
+	// named a message of an issue above; and Holder for a block whose document no issue holds.
+	// A block with no parent to hang under hangs from its own issue (this issue's spec R3), and
+	// the walk of an issue's tree takes a block placed above it only under a block or a
+	// conversation node of an issue above (TreePlacedAbove), never under that issue's own node.
+	Issue string
+}
+
+// daemonThreadParentsStatement is DaemonThreadParents' read: held, each block of a document
+// that states a part_of into a message or a block of one, after the address $2 in byte order;
+// placed, of those the ones whose current part_of (BlockPlacementSQL) is such a far end, with
+// the message it names; and, of the threads of those messages (messageThreads, bounded at $1
+// links), the ones the daemon's rule refuses (daemonThread), each with the issue that holds the
+// message and the issue the block's own document belongs to, in the blocks' byte order, at most
+// $3 of them, every one where $3 is null. A block is a document's where its id names no lens
+// and no ask, comment or message: a finding stands under its lens, and a block of an item
+// under its item. held reads graph_tuples through graph_tuples_as_of_in, by the far end's kind.
+var daemonThreadParentsStatement = `
+	with recursive held as (
+		select distinct t.from_id as node
+		from graph_tuples t
+		where t.to_kind in ('` + string(ItemMessage) + `', '` + ItemMessage.BlockKind() + `')
+		  and t.kind = '` + graphstore.TuplePartOf + `' and t.asserted
+		  and t.from_kind = '` + BlockNodeKind + `' and not ` + graphstore.FindingIDSQL(`t.from_id`) + `
+		  and split_part(t.from_id, '/', 1) not in ('` + string(ItemAsk) + `', '` + string(ItemComment) + `', '` + string(ItemMessage) + `')
+		  and t.from_id collate "C" > $2::text
+	),
+	placed as (
+		select held.node, standing.to_kind, standing.to_id, standing.seq,
+		       ` + store.CastableUUID(`(case when standing.to_kind = '`+string(ItemMessage)+`' then standing.to_id
+		            else split_part(split_part(standing.to_id, '#', 1), '/', 2) end)`) + ` as message
+		from held
+		cross join lateral (` + BlockPlacementSQL(`held.node`) + `) standing
+		where standing.to_kind in ('` + string(ItemMessage) + `', '` + ItemMessage.BlockKind() + `')
+	),
+	` + messageThreads(`m.id in (select placed.message from placed)`, `$1`) + `
+	select placed.node, placed.to_kind, placed.to_id, placed.seq, m.issue_key,
+	       coalesce(` + documentIssueSQL(`split_part(placed.node, '#', 1)`) + `, m.issue_key)
+	from placed
+	join top t on t.subject = placed.message
+	join messages m on m.id = placed.message
+	where m.issue_key is not null and ` + daemonThread(`t`) + `
+	order by placed.node collate "C"
+	limit $3::bigint`
+
+// DaemonThreadParents is each block of a document whose current part_of names a message of a
+// daemon thread, or a block of one (DaemonThreadParent): a message the Legion daemon's session
+// posted, or one of a thread whose root it posted, which R2's test passes never, so no walk of
+// the issue's tree reaches what stands under it. They come in the byte order of their addresses,
+// those after the address after ("" for the first), at most limit of them, and every one where
+// limit is 0. It reads and writes nothing else: the census counts them
+// (graphcensus.ReadDaemonThreadCensus) and docs' step re-places each under its issue
+// (docs.DaemonThreadStep).
+//
+// It answers blocks of documents alone, which a parent pointer or a move places. A reply stands
+// under the message it answers and a block of a message under its message, each by its own row,
+// and a lens stands on the node it analyses, so none of those is re-placed, and none is counted.
+func DaemonThreadParents(ctx context.Context, q Queryer, after string, limit int) ([]DaemonThreadParent, error) {
+	var most *int64
+	if limit > 0 {
+		bound := int64(limit)
+		most = &bound
+	}
+	rows, err := q.Query(ctx, daemonThreadParentsStatement, IssueDepthCap, after, most)
+	if err != nil {
+		return nil, fmt.Errorf("read the blocks that stand under a message of a daemon thread: %w", err)
+	}
+	defer rows.Close()
+	var parents []DaemonThreadParent
+	for rows.Next() {
+		var parent DaemonThreadParent
+		if err := rows.Scan(&parent.Node, &parent.Parent.Kind, &parent.Parent.ID, &parent.Seq, &parent.Holder, &parent.Issue); err != nil {
+			return nil, fmt.Errorf("scan a block that stands under a message of a daemon thread: %w", err)
+		}
+		parents = append(parents, parent)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the blocks that stand under a message of a daemon thread: %w", err)
+	}
+	return parents, nil
+}
 
 // conversationTargets is each ask, comment or message targets names, itself or a block of it,
 // that stands now, by node id (text.TargetID: an item's uuid, a block's `<kind>/<uuid>#<id>`), as

@@ -178,6 +178,15 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The result moved the record of the Verification query of the check's issue, whose version
+	// its transaction left owed (issue_query_marks): the drain writes it now that the result has
+	// committed, before the result's event is published, so a reader the event wakes reads the
+	// version (docs.Service.DrainOwedQueries). What the drain appended follows the result's event,
+	// in the log and in the publish below.
+	var drained []model.Event
+	if written.marked {
+		drained = s.deps.Docs.DrainOwedQueries(r.Context(), written.result.CheckIssueKey)
+	}
 	// The read-through runs before the event: the Verification tab refetches on
 	// result.recorded, and no later event refreshes it, so a tab that read the results before
 	// the pull request row landed would show this result standing at no basis until something
@@ -188,7 +197,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		readThrough = request.linkedCommitRepo
 	}
 	s.readThroughPullRequests(r.Context(), request.check.IssueKey, written.result.CommitSHA, readThrough)
-	s.publish(r.Context(), written.event)
+	s.publish(r.Context(), append([]model.Event{written.event}, drained...)...)
 	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		// The check as the transaction that wrote the row saw it, which after a redo is not the
@@ -351,13 +360,15 @@ const checkContended = "CHECK_CONTENDED"
 const checkContendedRetryAfter = 1
 
 // recordedCheckResult is what one results write produces: the row it wrote, the event it
-// appended, and the check as the transaction that wrote them saw it. That check is not the one
-// the route resolved when a redo made the resolution again, so the pull-request body line is
-// written from this one.
+// appended, the check as the transaction that wrote them saw it, and whether the write marked the
+// queries of the check's issue owed a version (docs.QueueQueryMark), which its drain then writes.
+// That check is not the one the route resolved when a redo made the resolution again, so the
+// pull-request body line is written from this one.
 type recordedCheckResult struct {
 	result model.CheckResult
 	event  model.Event
 	check  resolvedCheck
+	marked bool
 }
 
 // recordResultWithFreshWords records one result against the check as the transaction that writes
@@ -450,13 +461,10 @@ func (s *server) recordResultUnderOwnerLocks(
 	if _, err := lockIssueOwners(ctx, tx, issueKey, check.IssueKey); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
-	// The result moves the record of the check's issue's Verification query, which takes a version
-	// in its issue's room once the result is written (reviseQueriesUnder). That room's lock comes
-	// here, after the owner locks and before the event's owner row and every write, in the order
-	// docs/persistence.go sets for a transaction that takes both (docs.LockQueryRooms).
-	if err := docs.LockQueryRooms(ctx, tx, check.IssueKey); err != nil {
-		return recordedCheckResult{}, indexedCheck{}, err
-	}
+	// The result moves the record of the check's issue's Verification query. This transaction
+	// writes no version of that query and takes no lock of the issue's room: its batch marks the
+	// issue's queries owed (writeRecordedResult), and the drain writes the version once it has
+	// committed (recordCheckResult).
 	recordingOpen, checkOpen, err := issuesOpenForResult(ctx, tx, issueKey, check.IssueKey)
 	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
@@ -527,10 +535,8 @@ func (s *server) recordResultUnderOwnerLocks(
 	}
 	seq := int64(event.Seq)
 	result.EventSeq = &seq
-	if err := writeRecordedResult(ctx, tx, &result, project, check.NodeAddress, screenshots, event.ID); err != nil {
-		return recordedCheckResult{}, indexedCheck{}, err
-	}
-	if err := s.reviseQueriesUnder(ctx, tx, check.IssueKey, actor, event.ID); err != nil {
+	marked, err := writeRecordedResult(ctx, tx, &result, project, check.NodeAddress, screenshots, event.ID)
+	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -540,6 +546,7 @@ func (s *server) recordResultUnderOwnerLocks(
 		result: result,
 		event:  event,
 		check:  resolvedCheck{checkBlockRef: check, checkResolution: resolved},
+		marked: marked,
 	}, indexed, nil
 }
 
@@ -1442,21 +1449,27 @@ func resultScope(ctx context.Context, tx pgx.Tx, checkIssueKey string) (string, 
 // writeRecordedResult writes one recorded result in tx, the record route's transaction, after the
 // result.recorded event whose id is event, in one batch (store.RunWrite), its write phase's last:
 // its check_results row, dated at the result's created_at, then the result's node, its values and
-// its tuples (graphstore.ResultFacts), caused by that event and dated at that same time. project
-// is the project of the check's issue, which the node is in, and the time the transaction's now(),
-// both read in the read phase (resultScope). check is the address of the check block's node, under
-// the artifact the row is keyed by, and screenshots the ref_key of each image the result names
-// (refuseResultScreenshots). A result whose check's address is past the store's bound keeps its
-// row and states nothing, which the census counts as a class of its own.
+// its tuples (graphstore.ResultFacts), caused by that event and dated at that same time, then the
+// mark of the queries of the check's issue owed a version, whose record the result moved
+// (docs.QueueQueryMark), with that event and the last tuple's sequence as its causes, that tuple's
+// writer, the result's recorder, being the one the drain names its version after, and last the
+// head rows of what the result states. project is the project of the check's issue, which the
+// node is in, and the time the transaction's now(), both read in the read phase (resultScope).
+// check is the address of the check block's node, under the artifact the row is keyed by, and
+// screenshots the ref_key of each image the result names (refuseResultScreenshots). A result whose
+// check's address is past the store's bound keeps its row and states nothing, which the census
+// counts as a class of its own, and moves no query's record, so it marks nothing. It answers
+// whether the batch marked the issue's queries, which it does only where the issue has converted.
 //
 // It takes no lock of its own. The route holds the owner locks of the recording issue and the
 // check's issue (lockIssueOwners) and appended the event on the check's, so this follows the
-// store's lock order: the owner's lock, the event, the row, then the node and its tuples. The row
-// carries no foreign key into graph_nodes, so it may precede its node, and it does.
-func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult, project, check string, screenshots []string, event int64) error {
+// store's lock order: the owner's lock, the event, the row, then the node and its tuples, and the
+// head rows last. The row carries no foreign key into graph_nodes, so it may precede its node, and
+// it does.
+func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult, project, check string, screenshots []string, event int64) (bool, error) {
 	actorJSON, err := encodeJSON(result.Actor)
 	if err != nil {
-		return err
+		return false, err
 	}
 	nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
 		ID: result.ID, Project: project, Check: check,
@@ -1467,7 +1480,8 @@ func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResu
 		Session: result.Session, Screenshots: screenshots,
 		Recorder: result.Actor, At: result.CreatedAt, Event: event,
 	})
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+	marked := false
+	err = store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		b.Queue("record the result", `
 			insert into check_results (
 				id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
@@ -1486,29 +1500,11 @@ func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResu
 			return nil
 		}
 		graphstore.QueueWrite(b, nodes, tuples)
+		docs.QueueQueryMark(b, result.CheckIssueKey, event, &marked)
 		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
 		return nil
 	})
-}
-
-// reviseQueriesUnder appends, in tx, a version of each query document of the issue issueKey whose
-// record the route's write, which has run in tx, moved (docs.Service.ReviseQueries): a result
-// recorded or retracted moves the record of the Verification query of the check's issue, and a
-// version of that document holds it where the issue has converted. It causes what those versions
-// state under event, the event the route appended for its write (graphstore.QueueCaused), and their
-// head rows after them in the same batch (graphstore.QueueHeads). The route
-// holds the issue's owner lock and took the issue room's lock right after it, before its event
-// and its first write (docs.LockQueryRooms), so the room lock ReviseQueries takes waits on nothing.
-func (s *server) reviseQueriesUnder(ctx context.Context, tx pgx.Tx, issueKey string, writer model.Actor, event int64) error {
-	revised, err := s.deps.Docs.ReviseQueries(ctx, tx, issueKey, writer)
-	if err != nil {
-		return err
-	}
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		graphstore.QueueCaused(b, revised, event)
-		graphstore.QueueHeads(b, graphstore.HeldHeads(revised))
-		return nil
-	})
+	return marked, err
 }
 
 // loadCheckResults is every result recorded against the checks of one Verification document,

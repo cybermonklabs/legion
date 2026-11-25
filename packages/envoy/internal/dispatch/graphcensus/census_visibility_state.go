@@ -6,8 +6,8 @@ import (
 )
 
 // visibilityStateProjections are the census's kinds of the visibility and the state of each node
-// of the kinds dispatch://INFRA-1950 adds (projections) - a run, a lens, a finding of one, a risk,
-// a constraint and a lens kind - each held to the store's own record of them
+// of the kinds the node-visibility spec adds (projections) - a run, a lens, a finding of one, a
+// risk, a constraint and a lens kind - each held to the store's own record of them
 // (baseAttributeCensus). A deployment can hold none of these, so none refuses on zero rows.
 var visibilityStateProjections = []projection{
 	baseAttributeCensus(graphstore.KindInteraction, graphstore.KindInteraction, nil, graphstore.VisibilityAuthor),

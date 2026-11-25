@@ -62,6 +62,9 @@ type routeShape struct {
 	// `query:"<key>"`; nil for a route that reads none. Path parameters are not here: they are
 	// read off the pattern.
 	Params any
+	// Headers are the request headers the route reads beyond the ones every route reads, each with
+	// whether a request must send it, which the emitter declares as header parameters.
+	Headers []routeHeader
 	// Advice is a zero value of the advice shape the success answer carries beside its payload
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
@@ -80,6 +83,32 @@ type routeShape struct {
 	OpaqueRequest string
 }
 
+// routeHeader is one request header a route reads (routeShape.Headers): its name, whether a
+// request must send it, and what it carries.
+type routeHeader struct {
+	Name        string
+	Required    bool
+	Description string
+}
+
+// placementIfMatch is the If-Match header of a node's move: the node's placement_seq as the tree
+// read answers it, as a quoted entity tag, compared strongly (RFC 9110 section 13.1.1).
+var placementIfMatch = routeHeader{
+	Name: "If-Match", Required: true,
+	Description: `the node's placement_seq, the seq of its current part_of that the tree read answers on every node, as a ` +
+		`quoted entity tag ("123"): none is 428 PRECONDITION_REQUIRED, and a tag that is no longer the node's ` +
+		`placement_seq is 412 PRECONDITION_FAILED`,
+}
+
+// deleteIfMatch is the If-Match header of a node's delete: the placement_seq of the node, as the
+// move names it (placementIfMatch), which the delete itself must send and its dry run reads not.
+var deleteIfMatch = routeHeader{
+	Name: "If-Match",
+	Description: `the node's placement_seq, the seq of its current part_of that the tree read answers on every node, as a ` +
+		`quoted entity tag ("123"), which the delete itself must send: none is 428 PRECONDITION_REQUIRED, and a tag that is ` +
+		`no longer the node's placement_seq is 412 PRECONDITION_FAILED; the dry run (dry_run=true) reads none`,
+}
+
 // --- the query-parameter structs -------------------------------------------------------------
 //
 // One struct per route, or per set of routes reading the same keys, each field carrying the key
@@ -95,6 +124,18 @@ type routeShape struct {
 type projectArtifactsQuery struct {
 	// Unlinked, `true`, lists only the project's documents that belong to no issue.
 	Unlinked bool `query:"unlinked"`
+}
+
+// nodeDeleteQuery is DELETE /api/v1/issues/{key}/nodes/{id}'s query (node_delete.go).
+type nodeDeleteQuery struct {
+	// DryRun, `true`, writes nothing and answers {count}, the number of nodes the delete would take
+	// that a read of the issue's tree returns to the caller, after every refusal the delete reads
+	// before it writes; any value but true or false is 400 DELETE_INPUT.
+	DryRun bool `query:"dry_run"`
+	// ExpectedCount is the count the dry run answered, which the delete itself must name (400
+	// DELETE_INPUT without it) and takes or refuses: a count that has moved since is 409
+	// DELETE_COUNT_MOVED, carrying the count now. The dry run reads none.
+	ExpectedCount int `query:"expected_count"`
 }
 
 // relatedQuery is GET /api/v1/projects/{key}/related's query: the related-item check an issue
@@ -198,6 +239,12 @@ type issueListQuery struct {
 	// issue above them states, over every project; `none` lists those that advance no live
 	// priority and `any` those that advance one, which is every other issue.
 	Advances []string `query:"advances"`
+	// Own, `true`, keeps, of the issues the Advances values answer, those whose own row names a
+	// priority a value matches and no issue above them carries it: a child that only inherits a
+	// priority, or restates one an issue above it carries, is left out, and `none`, which
+	// matches no priority, keeps nothing. Without an Advances value it filters nothing.
+	// `advances=any&own=true` over backlog and icebox is the second fault of GET /api/v1/priorities.
+	Own bool `query:"own"`
 	// Moved, `true`, adds moved_at and moved_by to each row standing in backlog or icebox: when
 	// the issue was moved there and who moved it. A listing without it reads neither.
 	Moved bool `query:"moved"`
@@ -518,6 +565,14 @@ type openAsksQuery struct {
 type issueCommentsQuery struct {
 	// Artifact scopes the comments to one document of the issue.
 	Artifact string `query:"artifact"`
+	// NodeAnchor asks for each comment's node_anchor (R31 of the issue-tree spec).
+	NodeAnchor bool `query:"node_anchor"`
+}
+
+// commentReadQuery is GET /api/v1/comments/{id}'s query.
+type commentReadQuery struct {
+	// NodeAnchor asks for the comment's node_anchor (R31 of the issue-tree spec).
+	NodeAnchor bool `query:"node_anchor"`
 }
 
 // credentialApproverQuery is the query GET /api/v1/credential-requests and
@@ -837,6 +892,19 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/nodes/{id}/settle": {
 		Status: http.StatusOK, Response: nodeStateWritten{}, Request: actorInput{}, OptionalRequest: true,
 	},
+	// The move of a node (node_move.go): its parent and its place among its siblings, answered with
+	// the parent, the sibling it follows and the new placement_seq.
+	"PATCH /api/v1/issues/{key}/nodes/{id}": {
+		Status: http.StatusOK, Response: nodeMoved{}, Request: nodeMoveInput{},
+		Headers: []routeHeader{placementIfMatch},
+	},
+	// The delete of a node and its subtree, and its dry run (node_delete.go): the count, and the
+	// count now where the expected_count it confirms has moved.
+	"DELETE /api/v1/issues/{key}/nodes/{id}": {
+		Status: http.StatusOK, Response: nodeDeleted{}, Request: actorInput{}, OptionalRequest: true,
+		Params: nodeDeleteQuery{}, Headers: []routeHeader{deleteIfMatch},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: deleteCountMoved{}}},
+	},
 	"GET /api/v1/issues/{key}/proposed": {Status: http.StatusOK, Response: issueProposed{}},
 	// The pre-mortem conversion (premortem_convert.go): the map from each
 	// risk to its checks, read entry by entry, and the report the command prints too.
@@ -961,14 +1029,14 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: resolveAskInput{}},
 	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
-		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
+		Status: http.StatusOK, Response: []nodeAnchoredComment{}, Params: issueCommentsQuery{},
 	},
 	"POST /api/v1/issues/{key}/comments": {
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
 	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
-	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
+	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: nodeAnchoredCommentRead{}, Params: commentReadQuery{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"GET /api/v1/comments/{id}/history":  {Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{}},
 	"POST /api/v1/comments/{id}/deliveries": {

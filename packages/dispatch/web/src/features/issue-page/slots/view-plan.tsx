@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -14,7 +15,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useTreeReadRunning } from "../tree-read/tree-read";
+import { useTreeReadRunning, viewQuery } from "../tree-read/tree-read";
 import { NextViewPage } from "../tree-read/view-read";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
@@ -45,7 +46,8 @@ export function ViewPlanSlot({
   //
   // Every read the view watches - these two, and the plan's blocks again for the order they are
   // written in (`PlanFilterBody`) - is watched under the key `useIssueTree` fills, by an observer
-  // that `useIssueTree` mounts (`useOutlineReads`' `blocksOf`): all three are the one tree read,
+  // that `useIssueTree` mounts (`useOutlineReads`' `blocksOf`): under the Plan filter the plan's
+  // blocks are Plan's own view read and the spec's the outline read, each a read of the tree
   // kept fresh by its own rule (`TREE_FRESH`). So the view sends no request of its own and sees
   // whatever the tree's observer fetches; `refetch` still fetches, which is what Retry asks. A
   // document the issue does not name needs no read.
@@ -57,7 +59,7 @@ export function ViewPlanSlot({
   // failure again (`failure`). The view draws its tasks, its switch and its empty line once both
   // reads hold data, so it never says the issue has no plan tasks before they are in; until then
   // its tree holds nothing, and the read that failed is one line over the tree, with a Retry that
-  // asks that read alone again (`PlanFilterBody`), one line for both documents. The view
+  // reads again each refused read (`PlanFilterBody`), one line for both documents. The view
   // stays mounted through all of it, as the outline does (`slots/body.tsx`), so no read takes
   // from the reader the press of "Steps", the focused row and its mark, a step being edited, or
   // the address's step having taken the focus, which it takes once.
@@ -70,20 +72,26 @@ export function ViewPlanSlot({
   const answered =
     (planId === undefined || planBlocks.data !== undefined) &&
     (specId === undefined || specBlocks.data !== undefined);
-  // Both are the one tree read, so its refusal is one line with one Retry: the statements' where
+  // The two reads' refusals are one line with one Retry (`retry`): the statements' where
   // the issue names a spec, else the plan's.
   const watched = [
     { id: specId === undefined ? planId : undefined, query: planBlocks, read: "plan" },
     { id: specId, query: specBlocks, read: "statements" },
   ] as const;
+  // The one line's Retry reads again each of the two reads that stands refused, and is busy while
+  // either runs, the view read's running from an observer of its own that sends nothing.
+  const viewRunning = useQuery({ ...viewQuery(issue.key, "plan"), enabled: false }).isFetching;
+  const retry = (): void => {
+    for (const query of [planBlocks, specBlocks]) if (standsFailed(query)) void query.refetch();
+  };
   const failed = watched.flatMap(({ id, query, read }): PlanFailedRead[] =>
     id !== undefined && standsFailed(query)
       ? [
           {
             failure: query.errorUpdateCount,
             read,
-            retry: query.refetch,
-            retrying: running,
+            retry,
+            retrying: running || viewRunning,
           },
         ]
       : []

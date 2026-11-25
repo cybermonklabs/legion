@@ -102,6 +102,11 @@ export const ArtifactApprovalSchema = z
     /** The latest review's kind, so a reader can say an approval is a plan review's rather than a
      *  person's; absent while no review stands, and from a Dispatch older than review kinds. */
     kind: ArtifactReviewKindSchema.optional(),
+    /** The version a carried approval was carried from (`artifact_review_carries`); absent for a
+     *  person's own approval, for no review, and from a Dispatch older than the carry record. A
+     *  carried person's approval reads `kind: person` with the person as its actor, so this member
+     *  is how a reader tells the carry from the person's own act. */
+    carried_from_version: z.number().int().optional(),
     /** Every document the open request covers, each at the version the request names, this one
      *  included; absent when it covers this document alone. It is the request's own list
      *  (`AskApprovalDocument`), so each entry carries the `requested_version` the request records
@@ -254,9 +259,13 @@ export const ArtifactHumanEditedEventPayloadSchema = z.object({
  *  `artifact.approved` in a human's name at a later version whose change since the version he
  *  approved is one the carry takes - a version whose text is byte for byte the approved
  *  version's with no ask block in it decided since, among others. A person's answer, resolve or
- *  decline of an ask writes one version, which changes only the server-owned attributes of the
- *  ask's block, and the carry takes it; a closed issue's settlement carries nothing, so the
- *  version an issue's close writes carries no approval. Its `reason` names the carry and the version it
+ *  decline of an ask writes one version. When the answer, resolve or decline is that version's
+ *  whole change, the version changes only the server-owned attributes of the ask's block, and the
+ *  carry takes it. The version carries an approval only when the person's answer, resolve or
+ *  decline is its whole change. If text that a person was editing in the browser is settled into
+ *  the same version, the approval does not carry, and the request goes back to its agent. A closed
+ *  issue's settlement carries nothing, so the version an issue's close writes carries no approval.
+ *  Its `reason` names the carry and the version it
  *  follows, and its `ask_id` is null unless a request was open at the carry, which it answers
  *  (see `ArtifactReview`). */
 export const artifactReviewEventPayloadFields = {

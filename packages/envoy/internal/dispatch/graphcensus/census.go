@@ -147,6 +147,12 @@ type KindReport struct {
 	// none of them compared and none a difference (projection.unstated).
 	CountsUnstated bool
 	Unstated       int64
+	// CountsOwed says the kind holds its rows that a pass of the backfill still owes a write as a
+	// class of its own, and Owed is how many there are, none of them a difference: the Keeps a
+	// release before summed over a decision's words with `shaped` (CensusOfKeepSums), which the
+	// backfill's Keep pass rewrites, and which read zero once it has run.
+	CountsOwed bool
+	Owed       int64
 	// EmptyAgrees says a kind that read no row, no present node and no unmarked row is no refusal
 	// (projection.emptyAgrees).
 	EmptyAgrees bool
@@ -186,13 +192,22 @@ type StoreReport struct {
 	// how many reach one in a document that still owes its block index (storeOnlyRead). An
 	// unresolved far end refuses the census; a count does not, and neither does a far end left out.
 	StoreOnly []StoreOnlyReport
-	// Dangling is the dangling-citation counter over the restore's work (DanglingCitations), and
+	// Dangling is the dangling-citation counter over the restore's work (danglingCitations), and
 	// Collisions the collision census of the same work (CollisionsOf), the block ids the restore
 	// must change for each issue: both read the census's snapshot, so both answer before the
 	// restore moves anything. Neither refuses the census: the returning set counts before the
 	// restore by design, and the moved set is a finding the driver that watches it holds to zero.
 	Dangling   DanglingReport
 	Collisions []Collision
+	// UnresolvedCitations is the counter of every block citation whose address resolves to no
+	// node, directly or through a moved_to tuple (UnresolvedCitations), read in the census's
+	// snapshot. It refuses nothing: an instance already holds prose citations of blocks no version
+	// holds.
+	UnresolvedCitations UnresolvedCitationReport
+	// MovedOwnerWindows is how many windows the documents converted into their issues' rooms still
+	// hold under their own artifact ids (movedOwnerWindows), read in the census's snapshot. It
+	// refuses nothing: the root's pull request deletes them.
+	MovedOwnerWindows int64
 	// Decisions is what the decisions step's third phase still owes (DecisionsCensus), set by the
 	// census command from docs' reader of the decisions documents' sections, nil where no caller
 	// read it. It refuses nothing.
@@ -366,12 +381,16 @@ var projections = slices.Concat(
 // and the fill finds nothing of it to do (projectBackfills). The asks and their followers run
 // after the project passes, whose object pass wrote the node of every ask (decisionBackfills).
 // Every other topic's passes run after those, once every issue, document, ask and message holds
-// its node. rule is the marking rule the block passes mark by (blockBackfills).
+// its node. The Keep pass, which rewrites the sums of Keeps a release before summed over a
+// decision's words with `shaped`, runs after them and before the head fill, which runs last
+// (keepBackfills, headBackfills). rule is the marking rule the block passes mark by
+// (blockBackfills).
 func backfillPasses(rule int) []backfillPass {
 	return slices.Concat(
 		blockBackfills(rule), commentBackfills, runBackfills, preventionBackfills, actorBackfills, projectBackfills,
 		decisionBackfills, issueBackfills, componentBackfills, resultBackfills, versionBackfills, refBackfills,
-		approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills, anchorBackfills, headBackfills,
+		approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills, anchorBackfills, keepBackfills,
+		headBackfills,
 	)
 }
 
@@ -686,7 +705,7 @@ func commentPeople(authors string) string {
 // tie and not the node is a difference here. An ask a build before the store wrote states no
 // authored_by until the backfill marks its row, so it names no author here.
 //
-// The authors of artifact_versions name people and sessions too (dispatch://INFRA-1253's T7):
+// The authors of artifact_versions name people and sessions too (T7 of the issue-tree plan):
 // every author of the version that first held each block whose authors the block_author kind
 // holds - an authored node or a block of an issue room, of a document that owes no block index
 // (blockVersionAuthors, blockAuthorsHeld) - since the block index states an authored_by to each of
@@ -1106,7 +1125,13 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, declined 
 			return nil, err
 		}
 		report.Collisions = CollisionsOf(work)
-		if report.Dangling, err = danglingCitationsOver(ctx, tx, work, declined); err != nil {
+		if report.Dangling, err = danglingCitations(ctx, tx, work, declined); err != nil {
+			return nil, err
+		}
+		if report.UnresolvedCitations, err = UnresolvedCitations(ctx, tx); err != nil {
+			return nil, err
+		}
+		if report.MovedOwnerWindows, err = movedOwnerWindows(ctx, tx); err != nil {
 			return nil, err
 		}
 		if report.Projects, err = ProjectCensus(ctx, tx); err != nil {
@@ -1369,16 +1394,19 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 			}
 		}
 	}
-	// The head projection is read last, as one kind of its own over every node kind
-	// (CensusOfHeads), once every projection of the nodes its rows read has been read.
-	heads, err := CensusOfHeads(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	kinds = append(kinds, heads)
-	if afterKind != nil {
-		if err := afterKind(ctx, heads.Kind); err != nil {
+	// The Go readers come after the projections: Keeps, whose decisions' words only Go renders;
+	// review carries, whose legacy reasons Go parses; and last the head projection, over every
+	// node kind, once every projection of the nodes its rows read has been read.
+	for _, read := range []func(context.Context, pgx.Tx) (KindReport, error){CensusOfKeepSums, censusOfReviewCarries, CensusOfHeads} {
+		kind, err := read(ctx, tx)
+		if err != nil {
 			return nil, err
+		}
+		kinds = append(kinds, kind)
+		if afterKind != nil {
+			if err := afterKind(ctx, kind.Kind); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return kinds, nil
@@ -1668,7 +1696,8 @@ func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string, args []an
 func (r *StoreReport) Write(w io.Writer) { r.write(w, false) }
 
 // WriteVerbose is Write with one line for each citation the dangling-citation counter counted,
-// naming its set, the node that cites and the address it cites, under the counter's line.
+// naming its set, the node that cites and the address it cites, under the counter's line, and one
+// for each citation the counter of unresolved citations counted (writeUnresolvedCitations).
 func (r *StoreReport) WriteVerbose(w io.Writer) { r.write(w, true) }
 
 func (r *StoreReport) write(w io.Writer, verbose bool) {
@@ -1694,6 +1723,10 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 			fmt.Fprintf(w, "census: store kind=%s unstated_rows=%s (rows of a document of an issue that has not converted which no pass of this build's rule has stated, as the release before leaves them: counted, compared with nothing)\n",
 				kind.Kind, pgmigrate.Thousands(kind.Unstated))
 		}
+		if kind.CountsOwed {
+			fmt.Fprintf(w, "census: store kind=%s owed_rows=%s (rows a pass of the backfill still owes a write, which it makes on its next run: counted, no difference)\n",
+				kind.Kind, pgmigrate.Thousands(kind.Owed))
+		}
 		switch {
 		case kind.EmptyAgrees && kind.Empty():
 			fmt.Fprintf(w, "census: store kind=%s holds no row and no %s: nothing of it is written yet, which is no refusal\n", kind.Kind, side)
@@ -1711,6 +1744,8 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 	}
 	if !r.Absent {
 		writeMoves(w, r.Dangling, r.Collisions, verbose)
+		writeUnresolvedCitations(w, r.UnresolvedCitations, verbose)
+		writeMovedOwnerWindows(w, r.MovedOwnerWindows)
 		// kept for one release: decisions-documents-fn
 		if r.Decisions != nil {
 			writeDecisions(w, *r.Decisions)

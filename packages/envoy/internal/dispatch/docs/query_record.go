@@ -15,7 +15,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -41,9 +40,8 @@ const (
 // brought into a view through its room is no node of the view's spec and no part of the record an
 // approval of it covers (R23). The verification takes the checks and the results under them. The
 // plan takes the plan nodes. The decisions query takes asks, decisions and readings by a rule of
-// its own (decisionsTakes), which the tree read's decisions view answers its nodes by (Takes); it
-// holds no entry here until its record is built, so a record of it is refused, as a record of a
-// query with no entry is.
+// its own (decisionsTakes), which the tree read's decisions view answers its nodes by (Takes) and
+// whose record each version of the decisions query node holds the digest of (R14, R15).
 var queryDefinitions = map[string]func(tree IssueTree, index int) bool{
 	graphstore.QuerySpec: func(tree IssueTree, index int) bool {
 		if tree.ViewOf != "" {
@@ -66,6 +64,7 @@ var queryDefinitions = map[string]func(tree IssueTree, index int) bool{
 	graphstore.QueryPlan: func(tree IssueTree, index int) bool {
 		return slices.Contains(queryTakes[graphstore.QueryPlan], tree.Nodes[index].Type)
 	},
+	graphstore.QueryDecisions: decisionsTakes,
 }
 
 // queryTakes is graphstore.QueryTakes of each query a definition holds, and of the decisions
@@ -166,18 +165,22 @@ type IssueTree struct {
 // children. A node's children are the nodes whose part_of names it at the cut and, for the issue's
 // own node, each ask, comment and message of the issue that the conversation test passes at the
 // cut (refs.ConversationNodes) whose loader names no parent that passes it too. An item whose loader
-// names such a parent hangs under it: a reply under its head, a comment in an ask's thread under
-// the ask, a reply to a block under that block. A comment written on a document whose anchor lies
-// inside a typed block hangs under that block's node - the anchor's own block where it is typed,
-// else its nearest typed ancestor - read through the comment's anchored_in at the cut and, where
-// that address is no node of the walk, through the moved_to tuples that carry it to one (the
-// node in a converted issue's room); every other item hangs under the issue. Under a conversation
-// item, its own blocks come first, in their position order. Then, under every node, the ranked
-// children by increasing rank and the unranked ones - an ask, a comment, a message, a lens, a risk,
-// a result - by when each was made, an item whose row has no node yet by its row's created_at,
-// each tie by the lower address. A rank and an address compare byte for byte. The walk does not
-// enter an issue under the issue, nor a node of another issue, so a parent's record holds no node
-// of a child.
+// names such a parent hangs under it, under what it answers (this issue's spec R8): a comment under
+// coalesce(answers, reply_to, ask_id), so a reply to a reply under the comment it answers, a reply
+// to the head under the head, and a reply that names a block of a comment or a part of an ask under
+// that comment or that ask; a message under coalesce(in_reply_to, replies_to_block), so a reply that
+// names a block of a message under that message. A comment that answers nothing hangs under the
+// node its anchor's part_of names at the cut (this issue's spec R31): the block it quotes, an
+// untyped block among them, or the lens, finding, risk, constraint or result it quotes; where that
+// node is no node of the walk, under the node the moved_to tuples carry its address to (the node in
+// a converted issue's room). A comment enters the walk through the conversation alone, never as a
+// part_of child (takeLevels). Every other item hangs under the issue. Under a
+// conversation item, its own blocks come first, in their position order. Then, under every node,
+// the ranked children by increasing rank and the unranked ones - an ask, a comment, a message, a
+// lens, a risk, a result - by when each was made, an item whose row has no node yet by its row's
+// created_at, each tie by the lower address. A rank and an address compare byte for byte. The walk
+// does not enter an issue under the issue, nor a node of another issue, so a parent's record holds
+// no node of a child.
 //
 // The second part takes each node of the issue whose parent is a node of an issue above
 // (refs.IssueAncestors, refs.TreePlacedAbove), by the parent's address, then rank, then its own
@@ -375,7 +378,7 @@ func (w *treeWalk) liftHidden() []refs.Target {
 	for _, parent := range slices.SortedFunc(maps.Keys(hidden), refs.CompareAddresses) {
 		holds := false
 		for _, child := range hidden[parent] {
-			if w.hiddenBlock(child.Node) {
+			if w.hiddenBlock(child.Node) || child.Node.Kind == graphstore.KindComment {
 				continue
 			}
 			holds = true
@@ -565,7 +568,7 @@ func (w *treeWalk) takeLevels(frontier []refs.Target, under map[refs.Target][]re
 				continue
 			}
 			for _, child := range under[parent] {
-				if _, seen := w.nodes[child.Node]; seen || !refs.TreeOwns(w.owner, child.Node) || w.hiddenBlock(child.Node) {
+				if _, seen := w.nodes[child.Node]; seen || child.Node.Kind == graphstore.KindComment || !refs.TreeOwns(w.owner, child.Node) || w.hiddenBlock(child.Node) {
 					continue
 				}
 				w.nodes[child.Node] = treeNodeOf(child, above)
@@ -588,11 +591,11 @@ func treeNodeOf(child refs.TreeChild, above bool) TreeNode {
 }
 
 // placeItems hangs each conversation item under its parent (WalkIssueTree): the parent its loader
-// names where that is a node of the conversation, for a comment written on a document the typed
-// block its anchor lies inside, and else the issue. A walk of the skeleton names the parent of a
-// comment it hangs under the issue that way where the walk of the whole tree hangs it under that
-// parent: a comment of another page of the conversation, or of one of its blocks (offPage), and
-// the typed block of a document the walk does not enter that the comment's anchor lies inside
+// names where that is a node of the conversation, for a comment that answers nothing the node its
+// anchor's part_of names (anchorParent), and else the issue. A walk of the skeleton names the
+// parent of a comment it hangs under the issue that way where the walk of the whole tree hangs it
+// under that parent: a comment of another page of the conversation, or of one of its blocks
+// (offPage), and the block of a document the walk does not enter that the comment's anchor quotes
 // (nameAnchors).
 func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 	w.hanging = map[refs.Target][]refs.Target{}
@@ -614,7 +617,7 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 		if comment := w.pagedComment(parent); comment != "" && off[comment] {
 			w.name(item, parent)
 		}
-		if item.Kind == graphstore.KindComment && loaded != nil && loaded.Kind == graphstore.KindArtifact {
+		if item.Kind == graphstore.KindComment && loaded != nil && (loaded.Kind == graphstore.KindArtifact || loaded.Kind == graphstore.KindIssue) {
 			anchored = append(anchored, item)
 			continue
 		}
@@ -627,14 +630,14 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 	if err != nil {
 		return err
 	}
-	addresses := map[refs.Target]string{}
+	on := map[refs.Target]refs.Target{}
 	var unheld []string
 	for _, comment := range anchored {
 		for _, relation := range facts[comment].Relations {
-			if relation.Kind != graphstore.TupleAnchoredIn || relation.To.Kind != refs.BlockNodeKind {
+			if relation.Kind != graphstore.TuplePartOf || relation.To.Kind == graphstore.KindValue {
 				continue
 			}
-			addresses[comment] = relation.To.ID
+			on[comment] = relation.To
 			if _, held := w.nodes[relation.To]; !held {
 				unheld = append(unheld, relation.To.ID)
 			}
@@ -646,11 +649,10 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 	}
 	unentered := map[refs.Target]refs.Target{}
 	for _, comment := range anchored {
-		parent := w.anchorParent(addresses[comment], moved)
+		parent := w.anchorParent(on[comment], moved)
 		w.hang(comment, parent)
-		document, _, _ := strings.Cut(addresses[comment], "#")
-		if parent == w.issue && addresses[comment] != "" && !w.enters(refs.Target{Kind: graphstore.KindArtifact, ID: document}) {
-			unentered[comment] = refs.Target{Kind: refs.BlockNodeKind, ID: addresses[comment]}
+		if parent == w.issue && w.hiddenBlock(on[comment]) {
+			unentered[comment] = on[comment]
 		}
 	}
 	return w.nameAnchors(ctx, q, unentered)
@@ -706,59 +708,31 @@ func (w *treeWalk) name(item, parent refs.Target) {
 }
 
 // nameAnchors names, for each comment of anchored, which a walk of the skeleton hangs under the
-// issue because its anchor, the block it maps the comment to, lies in a document the walk does not
-// enter, the typed block the walk of the whole tree hangs the comment under: the anchor's own block
-// where it is typed, else its nearest typed ancestor, and none where no block at or above it is
-// typed or one of them is gone. It reads the blocks from the anchors up, one level at a time, each
-// level's facts and rows in a statement each (refs.TreeFactsOf, refs.TreeNodeRows), as the walk of
-// the tuples reads a node's type off its supertag and its text's opening line (refs.TreeNodeType).
+// issue because the block its anchor's part_of names lies in a document the walk does not enter,
+// the node the walk of the whole tree hangs the comment under: that block itself, an untyped one
+// among them (R31), and none where the block is gone, which no walk takes. It reads the blocks'
+// facts in one statement (refs.TreeFactsOf).
 func (w *treeWalk) nameAnchors(ctx context.Context, q Queryer, anchored map[refs.Target]refs.Target) error {
-	for steps := 0; len(anchored) > 0 && steps <= maxAnchorClimb; steps++ {
-		level := make([]refs.Target, 0, len(anchored))
-		for _, block := range anchored {
-			if !slices.Contains(level, block) {
-				level = append(level, block)
-			}
+	if len(anchored) == 0 {
+		return nil
+	}
+	blocks := make([]refs.Target, 0, len(anchored))
+	for _, block := range anchored {
+		if !slices.Contains(blocks, block) {
+			blocks = append(blocks, block)
 		}
-		facts, err := refs.TreeFactsOf(ctx, q, level, w.cut)
-		if err != nil {
-			return err
-		}
-		rows, err := refs.TreeNodeRows(ctx, q, level)
-		if err != nil {
-			return err
-		}
-		for comment, block := range anchored {
-			held := facts[block]
-			opening, _, _ := strings.Cut(held.Values[graphstore.AttributeText], "\n")
-			switch {
-			case held.Values[graphstore.AttributeState] == graphstore.StateGone:
-				delete(anchored, comment)
-				continue
-			case pmdoc.IsTypedBlock(refs.TreeNodeType(block.Kind, rows[block].Supertag, opening)):
-				w.name(comment, block)
-				delete(anchored, comment)
-				continue
-			}
-			above := refs.Target{}
-			for _, relation := range held.Relations {
-				if relation.Kind == graphstore.TuplePartOf {
-					above = relation.To
-				}
-			}
-			if above.Kind != refs.BlockNodeKind {
-				delete(anchored, comment)
-				continue
-			}
-			anchored[comment] = above
+	}
+	facts, err := refs.TreeFactsOf(ctx, q, blocks, w.cut)
+	if err != nil {
+		return err
+	}
+	for comment, block := range anchored {
+		if facts[block].Values[graphstore.AttributeState] != graphstore.StateGone {
+			w.name(comment, block)
 		}
 	}
 	return nil
 }
-
-// maxAnchorClimb bounds the levels nameAnchors climbs, past any document's depth, so a cycle of
-// part_of tuples ends it.
-const maxAnchorClimb = 256
 
 // conversationParent is the node a loader's parent names, and whether it is a node of the walk's
 // conversation, which only a node the conversation test passes is: an item, by its kind, or a current block of
@@ -776,32 +750,21 @@ func (w *treeWalk) conversationParent(loaded *model.NodeParent) (refs.Target, bo
 	return parent, item
 }
 
-// anchorParent is the node a comment anchored at the block address hangs under: the nearest typed
-// block at or above the node the address names, or the node its moves reach (moved), and the
-// issue where none is a node of the walk or none of them is typed.
-func (w *treeWalk) anchorParent(address string, moved map[string][]string) refs.Target {
-	if address == "" {
+// anchorParent is the node a comment that answers nothing hangs under, by the part_of its anchor
+// states (R31), on: that node where the walk takes it, an untyped block among them, else the first
+// node of the walk its moved_to tuples carry its address to (moved), else the issue, which a
+// comment whose anchor states no part_of - none, or one orphaned - hangs under too.
+func (w *treeWalk) anchorParent(on refs.Target, moved map[string][]string) refs.Target {
+	if on == (refs.Target{}) {
 		return w.issue
 	}
-	start := refs.Target{Kind: refs.BlockNodeKind, ID: address}
-	if _, held := w.nodes[start]; !held {
-		start = refs.Target{}
-		for _, reached := range moved[address] {
-			if _, held := w.nodes[refs.Target{Kind: refs.BlockNodeKind, ID: reached}]; held {
-				start = refs.Target{Kind: refs.BlockNodeKind, ID: reached}
-				break
-			}
-		}
+	if _, held := w.nodes[on]; held {
+		return on
 	}
-	for at, steps := start, 0; at != (refs.Target{}) && at != w.issue && steps <= len(w.nodes); steps++ {
-		node, held := w.nodes[at]
-		if !held {
-			break
+	for _, reached := range moved[on.ID] {
+		if target := (refs.Target{Kind: on.Kind, ID: reached}); w.nodes[target].Kind != "" {
+			return target
 		}
-		if node.Kind == refs.BlockNodeKind && pmdoc.IsTypedBlock(node.Type) {
-			return at
-		}
-		at = node.Parent
 	}
 	return w.issue
 }
@@ -877,14 +840,10 @@ func ReadQueryRecord(ctx context.Context, q Queryer, issueKey, query string, cut
 }
 
 // Takes is the index in the walk of each node the query takes, in the walk's order, by the one
-// definition its record is built by (queryDefinitions), or for the decisions query, whose record is
-// not built yet, by its rule (decisionsTakes), and false where neither names the query. The tree
-// read's view of a query answers these nodes as the query's.
+// definition its record is built by (queryDefinitions), and false where none names the query. The
+// tree read's view of a query answers these nodes as the query's.
 func (tree IssueTree) Takes(query string) ([]int, bool) {
 	takes, defined := queryDefinitions[query]
-	if !defined && query == graphstore.QueryDecisions {
-		takes, defined = decisionsTakes, true
-	}
 	if !defined {
 		return nil, false
 	}
@@ -971,4 +930,28 @@ func writeRecordField(record *bytes.Buffer, field string) {
 	record.WriteString(strconv.Itoa(len(field)))
 	record.WriteByte(' ')
 	record.WriteString(field)
+}
+
+// recordNodeFields is how many fields a record writes of each node it takes (QueryRecord): its
+// address, its type, its parent's address, its rank, its values, its text and its relations.
+const recordNodeFields = 7
+
+// nextRecordEntry is the entry of the first node record holds, the bytes of a query's record from
+// a node's first field on (QueryRecord): that node's recordNodeFields fields, each its byte length,
+// one space and its bytes (writeRecordField); and the record after it. ok is false where record
+// does not open with a whole entry.
+func nextRecordEntry(record []byte) (entry, rest []byte, ok bool) {
+	rest = record
+	for range recordNodeFields {
+		space := bytes.IndexByte(rest, ' ')
+		if space < 1 {
+			return nil, nil, false
+		}
+		length, err := strconv.Atoi(string(rest[:space]))
+		if err != nil || length < 0 || length > len(rest)-space-1 {
+			return nil, nil, false
+		}
+		rest = rest[space+1+length:]
+	}
+	return record[:len(record)-len(rest)], rest, true
 }

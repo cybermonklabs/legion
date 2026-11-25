@@ -42,17 +42,17 @@ import { asUser } from "./users";
  * them (decision 2 of the parts).
  *
  * The page is the one the reader turns on (`withIssuePage`), opened at the issue's own address
- * with `page.goto`; the body is `slots/body.tsx`'s: G's rows drew every branch unfolded, and
- * part I's outline later, which folds to the frontier: so a row that reads a node unfolds every
- * folded branch first (`unfoldEveryBranch`), and holds on either body.
+ * with `page.goto`; the body is `slots/body.tsx`'s, whose outline opens with every node unfolded
+ * and folds a node only where the reader folds it: a row that reads a node the reader may have
+ * folded unfolds every folded branch first (`unfoldEveryBranch`).
  *
  * The DOM a row reads: each node is a `role="treeitem"` `[data-node-row]` inside the
  * `role="tree"` named "Issue tree", carrying `data-node-id`, `data-node-type`, `data-node-state`
  * and `aria-level`; inside it the bullet `[data-node-bullet]` (the fold control where the node
  * holds nodes), the words `[data-node-words]` with their trail of chips `[data-node-chip]`, the
  * group `[data-node-margin]` (tag `[data-node-tag]`, author `[data-node-author]`, time
- * `[data-node-time]`, state `[data-node-state]`), the body `[data-node-body]` of the focused or
- * pinned row, and the focused row's acts `[data-row-act]` and `[data-row-copy]`.
+ * `[data-node-time]`, state `[data-node-state]`), the body `[data-node-body]` that every row's
+ * face draws whatever the focus, and the focused row's acts `[data-row-act]` and `[data-row-copy]`.
  *
  * A reader answers through one `page.evaluate` and returns what is there - an empty list for a
  * page that draws none of it - and a row asserts on that answer.
@@ -169,13 +169,11 @@ export function rowAct(row: Locator, act: "answer" | "change-answer" | "reply"):
 }
 
 /** Puts the focus on node `id`'s row, as a press or a key puts it there, and waits until the row
- *  holds it and draws its body, which every row draws while it has the focus: a row draws its
- *  card whether or not it has the focus, so the card says nothing of it. */
+ *  holds it. A row draws its body whatever the focus, so the focus opens nothing to wait for. */
 export async function focusRow(page: Page, id: string): Promise<Locator> {
   const row = nodeRow(page, id).first();
   await row.focus();
   await expect(row).toBeFocused();
-  await expect(rowBody(row)).toHaveCount(1);
   return row;
 }
 
@@ -255,19 +253,15 @@ function cssValue(value: string): string {
 const BRANCHES_OPENED_AT_MOST = 200;
 
 /**
- * Opens every branch a fold left shut, as a reader does to read past one: these rows were drawn
- * with every branch open before the outline, which folds to the frontier and draws a
- * branch deeper than the levels it draws - one below 1024 px, three from there up - as one
- * `[data-branch-more]` line counting its nodes. So a row that reads what a branch holds presses
- * each fold control and each such line's control, until neither is left, rather than asserting
- * that the first drawing carried it. It ends with the focus on no row: a press may leave it on
- * the row it opened, and a focused row draws its body, while the rows read the tree as it stands
- * with no row focused.
+ * Opens every branch a fold left shut, as a reader does to read past one: the outline opens with
+ * every node unfolded, and a row that folded one, or a node that arrives under a fold, is read
+ * only once its branch is open again. So a row that reads what a branch holds presses each fold
+ * control until none is left, rather than asserting that the first drawing carried it. It ends
+ * with the focus on no row: a press may leave it on the row it opened, while the rows read the
+ * tree as it stands with no row focused.
  */
 export async function unfoldEveryBranch(page: Page): Promise<void> {
-  const controls = nodeRows(page)
-    .getByRole("button", { exact: true, name: CONTROL_LABELS.unfold })
-    .or(issuePage(page).locator("[data-branch-more] button"));
+  const controls = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
     const first = controls.first();
     // A caller waits for the tree it opens first - a settled load, or an expect.poll that reads
@@ -287,16 +281,32 @@ export async function unfoldEveryBranch(page: Page): Promise<void> {
 /** How long `expectSeedDrawn` waits for the seed's rows and the names their chips read. */
 const SEED_DRAWN_MS = 30_000;
 
+/** The seeded nodes Conversation draws no row of: its read holds no result, plan task or
+ *  message, and a comment on a node's text is drawn beside that node and not as a row. Graph,
+ *  which draws the whole tree read, draws each of them as Conversation draws a node. */
+export function leftOutOfConversation(seeded: RowSeed): string[] {
+  return [
+    seeded.result,
+    seeded.longMessage,
+    seeded.linked,
+    ...seeded.replies,
+    seeded.change,
+    blockNode(seeded.slugs.plan, "t1"),
+    blockNode(seeded.slugs.plan, "t2"),
+  ];
+}
+
 /**
- * Waits until the page draws a row for every node the seed wrote that a row reads, and the names
- * of what their chips cite. The tree is drawn with the issue alone; its comments, messages,
- * questions, decisions, results and blocks arrive after it, and the batched names last
- * (`useIssueTree.ts`), so a reading taken as soon as the tree exists may find a row, or a chip's
- * name, not drawn yet. The needs chip of `t2` draws nothing until the names have come
- * (`NodeRow.tsx`'s `Chip`), so it stands for them. Each poll first opens every branch a fold
- * left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
+ * Waits until the page draws a row for every node the seed wrote that Conversation draws, and
+ * the names of what their chips cite. The tree is drawn with the issue alone; its nodes, the
+ * kept reads and the batched names arrive after it (`useIssueTree.ts`), so a reading taken as
+ * soon as the tree exists may find a row, or a chip's name, not drawn yet. The unsure decision
+ * cites the plan's `t1`, which Conversation's read does not hold, so its chip names `t1` only
+ * once the batched names have come, and it stands for them. Each poll first opens every branch
+ * a fold left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
  */
 export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void> {
+  const leftOut = leftOutOfConversation(seeded);
   const ids = [
     seeded.child,
     seeded.blocker,
@@ -322,8 +332,10 @@ export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void
     blockNode(seeded.slugs.plan, "t1"),
     blockNode(seeded.slugs.plan, "t2"),
     blockNode(seeded.slugs.verification, "c1"),
-  ];
-  const needs = blockNode(seeded.slugs.plan, "t2");
+  ].filter((id) => !leftOut.includes(id));
+  const cited = nodeRow(page, seeded.unsure)
+    .first()
+    .locator(`${SELECTORS.nodeWords} a[data-row-chip]`);
   await expect
     .poll(
       async () => {
@@ -331,7 +343,7 @@ export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void
         const rows = await drawnRows(page);
         return {
           missing: ids.filter((id) => rowOf(rows, id) === undefined),
-          named: (rowOf(rows, needs)?.chips.length ?? 0) > 0,
+          named: /^1\. Stand/u.test((await cited.allTextContents()).join("").trim()),
         };
       },
       {
@@ -1090,7 +1102,7 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * change - and its `decision` block of the plan holding `:::requirement{#r1}` and a block's
  * address, so `r1` is a requirement of a document other than the spec (decision 246); a
  * picture; an open question with two options waiting on the reader, an answered one, and the
- * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
+ * long texts c-cut reads. It is at most three levels deep.
  *
  * A decision is a `decision` block of the document that holds it, which the seed names by the
  * id it writes on it: Dispatch refuses a document of decisions (409 `DECISIONS_ARE_NODES`).

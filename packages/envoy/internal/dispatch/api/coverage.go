@@ -29,7 +29,8 @@ import (
 // after the spec's approval. A requirement whose block's node state is proposed is a question
 // still open (spec requirement r-proposed), so it raises neither gap here and the
 // approval request's answer names none for it; one at settled or live is counted as every
-// requirement is, and cybermonklabs/legion#4180 gives overtaken its meaning. A check or a plan task
+// requirement is, and one at overtaken is closed (R7 of the issue-tree spec), so it raises
+// neither gap either. A check or a plan task
 // whose block is proposed is a question still open too, so it serves nothing yet and its
 // requirement is counted without it (queueServingBlockCounts). An issue that is a view on its
 // ancestor's spec (docs.ViewOf) holds no requirement of its own: its coverage lists the
@@ -330,10 +331,11 @@ func coverageIssues(ctx context.Context, q queryer, who model.Actor, issueKey st
 // coverRequirements fills in each of requirements, the requirement blocks of the spec of the issue
 // issueKey, for who: its reference, its node's state (queueRequirementStates), how many checks and
 // plan tasks of the documents of issues serve it (queueServingBlockCounts), both read in one batch,
-// and its gaps. A proposed requirement is a question still open and lacks nothing, and so does
-// every requirement while owed, while a document of the issue owes its block index, whose checks
-// and plan tasks the counts may not hold yet (owedGap names that document instead); any other
-// lacks a check where none serves it, and a plan task where hasPlan and none serves it.
+// and its gaps. A proposed requirement is a question still open and lacks nothing, an overtaken one
+// is closed (R7 of the issue-tree spec) and lacks nothing either, and so does every requirement
+// while owed, while a document of the issue owes its block index, whose checks and plan tasks the
+// counts may not hold yet (owedGap names that document instead); any other lacks a check where none
+// serves it, and a plan task where hasPlan and none serves it.
 func coverRequirements(ctx context.Context, q queryer, who model.Actor, issueKey string, spec coverageSpec, requirements []model.RequirementCoverage, issues []string, hasPlan, owed bool) error {
 	batch := &pgx.Batch{}
 	states := make(map[string]string, len(requirements))
@@ -352,9 +354,10 @@ func coverRequirements(ctx context.Context, q queryer, who model.Actor, issueKey
 		requirement.Checks, requirement.PlanTasks = counts.checks, counts.planTasks
 		requirement.State = cmp.Or(states[requirement.BlockID], graphstore.StateLive)
 		requirement.Gaps = []string{}
-		// A proposed requirement is a question still open, never work left undone; and while a
-		// document owes its block index, what serves a requirement is not counted yet.
-		if requirement.State != graphstore.StateProposed && !owed {
+		// A proposed requirement is a question still open, and an overtaken one closed, never work
+		// left undone; and while a document owes its block index, what serves a requirement is not
+		// counted yet.
+		if requirement.State != graphstore.StateProposed && requirement.State != graphstore.StateOvertaken && !owed {
 			if requirement.Checks == 0 {
 				requirement.Gaps = append(requirement.Gaps, noCheckReason)
 			}

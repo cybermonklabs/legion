@@ -383,6 +383,39 @@ func TreeNodeType(kind, supertag, opening string) string {
 	return supertag
 }
 
+// trimContainerMarkers drops the indentation, quote markers (`>`), list markers (`-`, `*`, `+`, or
+// a number and `.` or `)`, each followed by a space or a tab) and footnote labels (`[^label]:` with
+// a label that is not blank), each with the spaces and tabs after it, that a block nested in a
+// quote, a list item or a footnote is written after. The renderer writes the first block of a list
+// item or of a footnote's definition on the marker's or the label's line, so a typed block's
+// opening line can start with them.
+func trimContainerMarkers(line string) string {
+	for {
+		line = strings.TrimLeft(line, " \t")
+		switch {
+		case strings.HasPrefix(line, ">"):
+			line = line[1:]
+		case len(line) > 1 && (line[0] == '-' || line[0] == '*' || line[0] == '+') && (line[1] == ' ' || line[1] == '\t'):
+			line = line[2:]
+		case strings.HasPrefix(line, "[^"):
+			label, rest, closed := strings.Cut(line[2:], "]")
+			if !closed || !strings.HasPrefix(rest, ":") || strings.TrimSpace(label) == "" {
+				return line
+			}
+			line = rest[1:]
+		default:
+			digits := 0
+			for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {
+				digits++
+			}
+			if digits == 0 || digits+1 >= len(line) || (line[digits] != '.' && line[digits] != ')') || (line[digits+1] != ' ' && line[digits+1] != '\t') {
+				return line
+			}
+			line = line[digits+2:]
+		}
+	}
+}
+
 // documentMembers is a lateral's body reading, at the cut the SQL predicate bound names, the
 // blocks whose in_document names the document whose ref_key the SQL refKey names: of each block's
 // in_document tuples into it, read into the document through graph_tuples_as_of_in, the newest,

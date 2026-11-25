@@ -21,8 +21,7 @@
 // (comments, messages, broadcasts, asks, reviews and results), to docs (document versions) and to
 // architecture (component prose), and no one of those three can import the other two. It reads
 // the rows directly, which is also the only way to reach the stored texts no API list answers -
-// a broadcast's body and a direct message's are two of them. It imports docs for one constant,
-// docs.ReviewOrder, the order every read of artifact_reviews in this module takes its rows in.
+// a broadcast's body and a direct message's are two of them.
 package texttreefill
 
 import (
@@ -37,7 +36,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -139,7 +137,7 @@ const storedTexts = `
 // the cursor was written. The moment is all it answers: the keys of the rows a batch takes come
 // from wholeBatch, so a key read here would be a key read twice and eight batches of them sorted
 // for nothing. One statement a kind rather than one over the union above, for two reasons: a
-// kind's newest-first key is its own - the reviews' is docs.ReviewOrder, the order their events
+// kind's newest-first key is its own - the reviews' is model.ReviewOrder, the order their events
 // committed, because artifact_reviews.created_at is its transaction's start and its id is random
 // (api's TestEveryReviewReadOrdersByReviewOrder holds every read of that table in the module to
 // it) - and each statement then sorts one table's rows rather than an eight-way union's.
@@ -161,7 +159,7 @@ var headOfKind = map[string]string{
 		 order by created_at desc limit $2`,
 	kindReview: `select created_at from artifact_reviews
 		 where reason is not null and reason <> '' and created_at < $1
-		 order by ` + docs.ReviewOrder + ` limit $2`,
+		 order by ` + model.ReviewOrder + ` limit $2`,
 	kindResult: `select created_at from check_results
 		 where observed <> '' and created_at < $1 order by created_at desc limit $2`,
 	kindComponent: `select snapshot.imported_at

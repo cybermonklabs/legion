@@ -13,12 +13,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// issueTreeMigration is the name every migration of dispatch://INFRA-1253 takes,
+// issueTreeMigration is the name every migration of the issue-tree spec takes,
 // <timestamp>_issue_tree_<what>.up.sql, as store's TestThisChildsMigrationsTouchNoTableAboveTheCensusLimit
 // finds them: the type migrations this branch adds are the ones of store.TypeMigrations it names.
 var issueTreeMigration = regexp.MustCompile(`^[0-9]{14}_issue_tree_[a-z0-9_]+\.up\.sql$`)
 
-// The branch moves the block schema one version, once (dispatch://INFRA-1253/spec R21): its
+// The branch moves the block schema one version, once (R21 of the issue-tree spec): its
 // elements stand at the version after the one the type migrations before it carry, however many
 // type migrations it adds. The test reads the version blocks.json gives at this head and the one
 // the store's type nodes build once every migration has run, which must agree, and then the version

@@ -338,10 +338,10 @@ func TestTheSearchForAViewsAncestorPassesOverAViewAncestor(t *testing.T) {
 		t.Errorf("the tree read of %s, under the view %s, answers view_of %s, want %s", grandchild.Key, view.Key, viewOfValue(read.ViewOf), root.Key)
 	}
 	requireRefused(t, "a requirement written on "+grandchild.Key, insertRequirement(t, handler, grandchild.PrimaryArtifactID, "gr1", "The grandchild's own work."),
-		http.StatusConflict, codeRequirementBelongsToAncestor, "a view on the spec of "+root.Key+" ")
+		http.StatusConflict, codeRequirementBelongsToAncestor, root.Key)
 	requireRefused(t, "a create under "+view.Key+" whose spec holds a requirement", createIssueRequest(t, handler, map[string]any{
 		"project": "PASS", "title": "Another grandchild", "spec": requirementMarkdown("gr2", "Its own work."), "parent": view.Key, "force": true,
-	}), http.StatusConflict, codeRequirementBelongsToAncestor, "a view on the spec of "+root.Key+" ")
+	}), http.StatusConflict, codeRequirementBelongsToAncestor, root.Key)
 }
 
 // TestAViewsSpecQueryTakesOnlyItsMemo: on a view whose spec opens with its memo callout, a client

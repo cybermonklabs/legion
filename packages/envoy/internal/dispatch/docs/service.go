@@ -341,6 +341,10 @@ type Service struct {
 	// holder takes - the window the commit's cursors must already stand at the head for
 	// (Ledger.takeRoomCursors).
 	afterLiveCommit func(room string)
+	// fillHold, where a test set it (HoldFills), runs at the start of each fill of a record digest
+	// a write left owed (fillOwedDigests), once that write has committed and before the fill's own
+	// transaction begins. Unset outside tests.
+	fillHold atomic.Pointer[func(issueKey string)]
 	// beforeFlushMeasure runs once a flush has copied the room's shadow window and the classes it
 	// is to store under the state's lock and released that lock, and before it measures them on
 	// the shadow (Service.flushThrough, storedClasses). Nil outside tests; tests use it to drop

@@ -3,6 +3,7 @@
 
 import { PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { getIssue } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { closeDetails, openDetails, phase } from "./issue-page";
 import { nodeRow } from "./issue-page-g";
@@ -14,6 +15,8 @@ import {
   idReadsOf,
   idSet,
   idsOfType,
+  LOAD_BOUND,
+  loadViews,
   pastStaleTime,
   pressFilter,
   ROW_MS,
@@ -73,6 +76,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       spec: viewAnswerOf(page, "spec"),
       verification: viewAnswerOf(page, "verification"),
     } satisfies Record<(typeof VIEW_FILTERS)[number], TreeAnswerWatch>;
+    const conversation = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
     const live = watchLiveFrames(page);
     await page.clock.install();
@@ -85,7 +89,19 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     expect(blocksReads(load), "the first load sends no blocks read").toEqual([]);
     expect(
       load.length,
-      "the first load sends no more requests under /api/ than the reads did"
+      `the first load sends at most ${LOAD_BOUND} requests under /api/`
+    ).toBeLessThanOrEqual(LOAD_BOUND);
+    // The view reads R4 sends with a load of Conversation for this seed's issue, which is a child
+    // (the seed files it under a parent) and a parent whose Conversation's answer holds no check
+    // of a child: Plan's always, Spec's for a child, Verification's for such a parent.
+    const issue = await getIssue(seeded.key);
+    const answer = await heldAnswer(conversation, "Conversation's read");
+    const extras = loadViews(issue, answer);
+    expect(
+      load.length - extras.reduce((sum, view) => sum + treeReads(load, seeded.key, view), 0),
+      `each request beyond the fixture's count is one of R4's view reads for the seed: ${extras
+        .map((view) => `view=${view}`)
+        .join(", ")}`
     ).toBeLessThanOrEqual(fixtureSeed("seedWholeIssue").loadRequests);
     await openDetails(page);
     await expectLoadSettled(traffic);
@@ -103,13 +119,18 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     for (const filter of VIEW_FILTERS) {
       const name = PRESET_NAMES[filter];
       const late = filter === "plan";
+      // A view R4 sent with the load is held, and its filter turned on sends no second read.
+      const withLoad = extras.includes(filter);
       if (late) await pastStaleTime(page, traffic, live);
       const first = traffic.requests.length;
       await pressFilter(page, traffic, filter);
       await heldAnswer(views[filter], `the ${name} view read`);
       await expectLoadSettled(traffic);
       const pressed = traffic.requests.slice(first);
-      expect(treeReads(pressed, seeded.key, filter), `${name} sends one view read`).toBe(1);
+      expect(
+        treeReads(pressed, seeded.key, filter),
+        withLoad ? `${name}, read with the load, sends no view read` : `${name} sends one view read`
+      ).toBe(withLoad ? 0 : 1);
       expect(blocksReads(pressed), `${name} sends no blocks read`).toEqual([]);
       if (late) {
         expect(

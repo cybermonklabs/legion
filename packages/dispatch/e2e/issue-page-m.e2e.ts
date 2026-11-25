@@ -105,7 +105,7 @@ import {
   marginSectionDisclosure,
   pinsList,
 } from "./issue-page-h";
-import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
+import { focusedNodeId, focusInside } from "./issue-page-i";
 import {
   askFacts,
   drawnInstant,
@@ -322,7 +322,6 @@ test("the conversation is the outline and the history is in the panel", async ({
     await expectLoadSettled(settling);
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
-    await openEveryDeeperBranch(page);
     const turns = [
       ...seeded.comments.threads,
       ...seeded.comments.replies,

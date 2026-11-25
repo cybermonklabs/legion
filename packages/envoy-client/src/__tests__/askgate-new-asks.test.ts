@@ -133,6 +133,15 @@ describe("an ask block's text is its body, read past its containers", () => {
     ).toEqual(["window"]);
   });
 
+  // An empty item takes its content from the next line where that line reaches the item's
+  // content column and no blank line stands between them. So the list stays open, though goldmark
+  // closes it at a marker of another bullet character (pmdoc's emptyItemGuard.Continue).
+  test("a block opens where a list stays open at its empty last item's content column", () => {
+    expect(askBlocks("-\n   *\n\t:::ask{#q1}\n\tWhich?\n\t:::")).toEqual([
+      { kind: "block", id: "q1", text: "Which?", opening: "Which?" },
+    ]);
+  });
+
   // A footnote definition takes every space and tab after its label as part of its prefix, so an
   // opener on the label's line stands at column zero inside the definition however far along the
   // line it is written (pmdoc's footnoteDefinitionParser.Open).
@@ -151,6 +160,14 @@ describe("an ask block's text is its body, read past its containers", () => {
     expect(ids(askBlocks(markdown))).toEqual(["window"]);
   });
 
+  // A backslash before a `]` escapes it, so that `]` belongs to the label, and the label ends at
+  // the next `]` (pmdoc's rule, which the block reader in @legion/contracts follows).
+  test("a block opens on the line of a footnote label that holds an escaped bracket", () => {
+    expect(askBlocks("[^a\\]b]: :::ask{#window}\n    Which?\n    :::")).toEqual([
+      { kind: "block", id: "window", text: "Which?", opening: "Which?" },
+    ]);
+  });
+
   test("a CR LF line break reads as a line feed", () => {
     expect(askBlocks(":::ask{#window}\r\nWhich deployment window?\r\n:::\r\n")).toEqual([
       {
@@ -160,6 +177,29 @@ describe("an ask block's text is its body, read past its containers", () => {
         opening: "Which deployment window?",
       },
     ]);
+  });
+
+  // A pattern with two runs of spaces and tabs side by side tries each split of a long run between
+  // them, so a line of many tabs and then a character that ends the match took seconds. The
+  // second and third lines go on with the paragraph (a table's delimiter row is looked for in
+  // each), the fourth is a blank line, and the sixth and seventh stand inside the ask block (a
+  // closing line is looked for in the sixth). Each is read in time linear in its length.
+  test("lines of 50,000 tabs are read in under one second", () => {
+    const tabs = "\t".repeat(50_000);
+    const spec = [
+      "Some text.",
+      `${tabs}|`,
+      `|-${tabs}x|`,
+      tabs,
+      ":::ask{#a}",
+      `:${tabs}x`,
+      tabs,
+      ":::",
+    ];
+    const start = performance.now();
+    const asks = newAsks("dispatch_issue", { issue: "DSP-1", spec: spec.join("\n") });
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(asks).toEqual([{ kind: "block", id: "a", text: `:${tabs}x`, opening: ": x" }]);
   });
 
   test("a block with no id has none", () => {
@@ -250,6 +290,14 @@ describe("an item numbered 10 opens a list only where the browser editor's parse
       "> Quote.\n    code\n10. :::ask{#window}\n    Which?\n    :::",
       ["window"],
     ],
+    // After indented code, a line of only `>` counts as blank only where the list opens in no
+    // container that its own line opens (pmdoc's interruptsOpenBlock). Here the `>` line opened
+    // the quote a line before the item, so the code holds nothing open on the item's line.
+    [
+      "after indented code and a line of `>` that opens the quote",
+      "    code\n>\n> 10. :::ask{#window}\n>     Which?\n>     :::",
+      ["window"],
+    ],
   ] as const) {
     test(name, () => {
       expect(ids(askBlocks(markdown))).toEqual([...asks]);
@@ -279,9 +327,18 @@ describe("a document's front matter is no markdown", () => {
     ]);
   });
 
+  // No typed block opens at the document's level after an opener that nothing closes either
+  // (pmdoc's frontmatterAttempt, which wraps the typed block's parser in pmdoc/parse.go), so the
+  // second opener is paragraph text too.
   test("after an opener nothing closes, no quote opens at the document's level", () => {
     const markdown = "---\n> :::ask{#quoted}\n> Which?\n> :::\n\n:::ask{#window}\nWhich?\n:::";
-    expect(ids(askBlocks(markdown))).toEqual(["window"]);
+    expect(ids(askBlocks(markdown))).toEqual([]);
+  });
+
+  // A callout does not open at the document's level after such an opener, so the ask block's
+  // opener inside it is paragraph text (pmdoc's frontmatterAttempt).
+  test("after an opener nothing closes, neither a callout nor an ask block in it opens", () => {
+    expect(askBlocks("---\n:::callout{}\n:::ask{#window}\nWhich?\n:::\n:::")).toEqual([]);
   });
 });
 

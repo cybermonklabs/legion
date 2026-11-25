@@ -408,7 +408,10 @@ header or from the approval question in your Dispatch Inbox; **Request changes**
 your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone approves the new version.
-Your answer to an ask block writes one version, whose only change is the block's `state`, answerer and time, and Dispatch carries an approval across it, so it neither closes the gate nor approves the spec.
+Your answer to an ask block writes one version.
+When your answer is that version's whole change, the version changes only the block's `state`, answerer and time, and Dispatch carries an approval across it, so it neither closes the gate nor approves the spec.
+The version carries an approval only when the person's answer, resolve or decline is its whole change.
+If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
 When the architect adds an ask to an approved spec, that version closes the gate.
 After you answer, the architect writes what the answer changes and asks you to approve again, naming what changed since your approval.
 Work already in flight carries on while the gate is closed, and of that work only the merge waits until you approve the new version.

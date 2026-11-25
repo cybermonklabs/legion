@@ -1,6 +1,6 @@
 kind: Fixed
 body: |-
-    A question block's `copied_from` is read only from a real opener: the server's scan of a document's question blocks skips a footnote's label, as it skips quote and list markers, so a fence opened on that line is tracked and an opener quoted in its code names no ask a copy's `#id` resolves to. The scan also skips the front matter a document opens with, which pmdoc keeps as one node and no line of which opens a block.
+    A question block's `copied_from` is read only from a real opener: the server's scan of a document's question blocks reads the document's blocks as pmdoc's parser reads them. A line goes past a quote's `>`, a list item's columns, and a footnote definition's label or four columns. A footnote label can hold an escaped `]`, as the renderer writes one, so a fence opened on that line is tracked. A line four columns or more past its containers opens no block. So an opener quoted in fenced or indented code names no ask that a copy's `#id` resolves to, and a block four columns into a footnote definition is read. The scan also skips the front matter a document opens with, which pmdoc keeps as one node and no line of which opens a block. After a `---` that no line closes, no quote, list, footnote definition or typed block opens at the document's level.
 time: 2026-11-24T05:00:53.000000000Z
 custom:
     Issue: pr4173

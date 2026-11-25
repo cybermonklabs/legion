@@ -12,8 +12,9 @@ import (
 // document, taken as an upload is taken, then pmdoc.Render), without writing anything. Nothing
 // else of those writes is run here, since nothing else of them changes the markdown.
 //
-// Two callers read it. The near-copy gate compares a new spec with document_search.search, the
-// vector of the markdown the seed stored, and a rendering differs from the text it was parsed
+// Two callers read it. The near-copy gate compares a new spec with the vector of the primary
+// document's latest version (duplicateEqualLexemesQuery), the vector of the markdown the seed
+// stored, and a rendering differs from the text it was parsed
 // from wherever the renderer normalises one: an ordered list is renumbered, and Postgres keeps a
 // list's numbers as lexemes, so `1.` `1.` is stored as `1.` `2.` and an exact copy of that spec
 // would hold different lexemes from the row it copies. POST /api/v1/markdown/round-trip answers

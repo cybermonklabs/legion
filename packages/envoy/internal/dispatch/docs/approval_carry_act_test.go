@@ -17,9 +17,11 @@ import (
 
 // An answer an agent made for its person under an act - the agent's session and the scopes its
 // credential held - is held on the ask's node and its row like any other answer, and writes one
-// version, whose only change is the server-owned attributes of the ask's block that a version
-// keeps (keptAskState: the state, who answered and when), so R10's case carries the person's
-// approval across it, whatever the act holds. The release before carried an approval to the
+// version. When the answer is that version's whole change (changesAskAttributesAlone: text a
+// person was editing in the browser can settle into the same version), the version changes only
+// the server-owned attributes of the ask's block that a version keeps (keptAskState: the state,
+// who answered and when), so R10's case carries the person's approval across it, whatever the act
+// holds. The release before carried an approval to the
 // version an answer wrote, and read the act's scopes to decide whether it could; that carry is
 // gone, and no carry reads an act: R10's case compares the two renderings and each ask with its
 // node alone (carryVerdict, TestCarryVerdictOverTheApprovedAndTheNewVersion).

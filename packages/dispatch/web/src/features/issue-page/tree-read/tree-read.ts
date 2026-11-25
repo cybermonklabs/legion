@@ -110,16 +110,14 @@ export function dropViews(queryClient: QueryClient, key: string): void {
  *  (`issueTreeKey`), so every event of the issue reaches both. */
 export type Outline = "conversation" | "graph";
 
-/** The tree route's query as the page writes it: the route's own (`view`, `cursor`,
- *  `comments_before`), with `kind`, the filter by node kind, which the generated contract does not
- *  name yet. `routeUrl` writes a list as one `kind=` per value (`paths.ts`' `pathWithQuery`). */
-type TreeQuery = RouteQuery<"/api/v1/issues/{key}/tree", "get"> & {
-  readonly kind?: readonly string[];
-};
+/** The tree route's query as the page writes it: the route's own (`view`, `kind`, `v`, `cursor`,
+ *  `comments_before`). `routeUrl` writes a list as one `kind=` per value (`paths.ts`'
+ *  `pathWithQuery`). */
+type TreeQuery = RouteQuery<"/api/v1/issues/{key}/tree", "get">;
 
 /** What each outline's read asks the route for, beside a page's `cursor` or `comments_before`. */
 const OUTLINE_QUERIES: Readonly<Record<Outline, TreeQuery>> = {
-  conversation: { kind: CONVERSATION_KINDS },
+  conversation: { kind: [...CONVERSATION_KINDS] },
   graph: {},
 };
 
@@ -344,12 +342,24 @@ export const outlineQuery = (key: string, outline: Outline) =>
  *  turned on (`ViewReadProvider`) reads its view as any new observer of the tree's reads does
  *  (`TREE_FRESH`): where the view was never read, where a write or an event marked its answer
  *  stale, and, where its read was refused, only where it was asked for again since. A filter
- *  turned off and on again asks for nothing, so it reads a refused view no more. */
-export const viewQuery = (key: string, filter: TreeFilter) =>
+ *  turned off and on again asks for nothing, so it reads a refused view no more. A read at a
+ *  `version` asks for the view at that version (`v`) on each page it reads, and is a read of its
+ *  own: its key is the view's with `{ v: version }` after it, still under the tree's, so every
+ *  event of the issue reaches it, while the read at none sends no `v` and keeps the view's key
+ *  (`viewKey`). */
+export const viewQuery = (key: string, filter: TreeFilter, version?: number) =>
   queryOptions({
     ...TREE_FRESH,
-    queryKey: viewKey(key, filter),
-    queryFn: (context) => readTree(key, { view: filter }, context),
+    queryKey:
+      version === undefined
+        ? viewKey(key, filter)
+        : ([...viewKey(key, filter), { v: version }] as const),
+    queryFn: (context) =>
+      readTree(
+        key,
+        version === undefined ? { view: filter } : { view: filter, v: version },
+        context
+      ),
   });
 
 /** Which outline read a load of `preset` holds (R1, R4, R13): Graph's in Graph (R10),
@@ -644,15 +654,19 @@ export function readOlderComments(
 export type PagedRead = Outline | TreeFilter;
 
 /** What `read` asks the tree route for beside a page's `cursor`, and the key its answer stands
- *  under in the cache. */
+ *  under in the cache: a view's at `version` where it is read at one (`viewQuery`). */
 function pagedQuery(
   key: string,
-  read: PagedRead
+  read: PagedRead,
+  version: number | undefined
 ): { readonly query: TreeQuery; readonly queryKey: QueryKey } {
   if (read === "conversation" || read === "graph") {
     return { query: OUTLINE_QUERIES[read], queryKey: outlineQuery(key, read).queryKey };
   }
-  return { query: { view: read }, queryKey: viewKey(key, read) };
+  return {
+    query: version === undefined ? { view: read } : { view: read, v: version },
+    queryKey: viewQuery(key, read, version).queryKey,
+  };
 }
 
 /** The next pages out, by client, each by its query and the cursor it reads
@@ -675,14 +689,16 @@ const treePagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
  * no write of the issue (`subscribeTreeFreshness`), and marks how far the read has got
  * (`treePagesOf`), so a read made again reads as far (`readTree`). A query an event or a write had
  * marked stale stays marked, so the read it owes is still made. A refused page leaves the answer
- * as it was, and the press may be made again.
+ * as it was, and the press may be made again. A view read at a `version` (`viewQuery`) reads its
+ * next page at that version too, under its own key.
  */
 export function readNextTreePage(
   queryClient: QueryClient,
   key: string,
-  read: PagedRead
+  read: PagedRead,
+  version?: number
 ): Promise<void> {
-  const { query, queryKey } = pagedQuery(key, read);
+  const { query, queryKey } = pagedQuery(key, read, version);
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   const cursor = held === undefined ? undefined : nextTreeCursor(held);
   if (cursor === undefined) return Promise.resolve();

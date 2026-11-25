@@ -2004,3 +2004,20 @@ test("an older comment page merges into the answer in the read's order", async (
     read.mockRestore();
   }
 });
+
+// R10: Graph draws every node of its read the page draws as a row, and the tree read's prose node
+// - a document's plain paragraph, as the model stores it - is one: it is drafted as a row of its
+// own kind, by its own words, under the parent the read gives it, and the page names that kind.
+test("a prose node of the tree read is drafted and named in Graph", () => {
+  const { root } = drawn(
+    answer([block("r1", "requirement", KEY, SPEC, 0), node("p1", "prose", "r1")])
+  );
+
+  expect(
+    nodesOf(root)
+      .filter((one) => one.type === "prose")
+      .map((one) => [one.id, nodeWords(one)])
+  ).toEqual([["p1", "Words of p1."]]);
+  expect(placementsOf(root, "p1").map((one) => one.parent)).toEqual([blockNodeId("spec", "r1")]);
+  expect(NODE_TYPE_NAMES.prose).toBe("paragraph");
+});

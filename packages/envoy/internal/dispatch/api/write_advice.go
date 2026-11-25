@@ -710,9 +710,11 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		join projects p on p.key = i.project_key
 		where g.artifact_id = $1 and not (i.status = any($3::text[]))
 		  and g.step = any($2::text[]) -- kept for one release: design-gate-rows
-		  and coalesce(g.holds, g.step = any(p.gated_steps) or (g.step = $4 and p.gated_steps = array[$5]::text[]))
+		  and coalesce(g.holds, g.step = any(p.gated_steps) or (g.step = $4 and p.gated_steps = array[$5]::text[])) -- kept for one release: check-narrowings
 		order by g.issue, array_position($2::text[], g.step)
-	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow, model.GatedStepSpec, retiredDecisionsStep)
+	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow,
+		// kept for one release: check-narrowings
+		model.GatedStepSpec, retiredDecisionsStep)
 	if err != nil {
 		return nil, fmt.Errorf("read the design gates this document records: %w", err)
 	}

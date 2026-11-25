@@ -72,6 +72,8 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(askEditRead{}):             "AskEditWithTrees",
 	reflect.TypeOf(askEditPreviousRead{}):     "AskEditPreviousWithTrees",
 	reflect.TypeOf(shapedComment{}):           "CommentWithTrees",
+	reflect.TypeOf(nodeAnchoredComment{}):     "CommentWithNodeAnchor",
+	reflect.TypeOf(nodeAnchoredCommentRead{}): "CommentRead",
 	reflect.TypeOf(shapedMessage{}):           "MessageWithTrees",
 	reflect.TypeOf(replyBlockRead{}):          "ReplyBlockWithTrees",
 	reflect.TypeOf(artifactRead{}):            "ArtifactWithTrees",

@@ -63,7 +63,7 @@ func ArtifactNode(refKey, project, session string, who model.Actor, at time.Time
 
 // ArtifactPartOf is the fact that hangs a document under the issue that owns it: the part_of tuple
 // from the document's node, addressed by its ref_key, to the issue's node, which
-// artifacts.issue_key projects (R16 of dispatch://INFRA-1253). Every write of the node of an
+// artifacts.issue_key projects (R16 of the issue-tree spec). Every write of the node of an
 // issue's document states it beside that node, and a document no issue owns - a project's, or a
 // file of an agent's conversation - states none. It carries who wrote it and when; its cause is
 // Caused's to fill, or the sentinel where no event recorded the write.
@@ -104,7 +104,7 @@ func ArtifactBytes(tuples []Tuple, refKey, mime string, size int64, sha256 strin
 }
 
 // KindVersion is what this store calls one version of a document: one accepted write of it, which
-// its artifact_versions row projects (R16 of dispatch://INFRA-1253). A version's address is its
+// its artifact_versions row projects (R16 of the issue-tree spec). A version's address is its
 // document's ref_key, `@v` and its number (VersionID).
 const KindVersion = "version"
 
@@ -152,12 +152,14 @@ const (
 
 // queryTakes is the supertags each query takes out of the issue's tree, in the order its
 // definition names them: the spec its memo callout, its criteria and its requirements; the
-// verification its checks and their results; the plan its plan nodes; and the decisions the asks,
-// the decisions and the readings under an agent's decision (dispatch://INFRA-1150's supertags).
+// verification its checks and their results; the plan its plan nodes and the role blocks of their
+// owners (plan_role, a type no block schema of this build declares, so a schema that declares it
+// reaches the view with no change here); and the decisions the asks, the decisions and the
+// readings under an agent's decision (the decisions-tree spec's supertags).
 var queryTakes = map[string][]string{
 	QuerySpec:         {"callout", "criterion", "requirement"},
 	QueryVerification: {"check", "result"},
-	QueryPlan:         {"plan_task"},
+	QueryPlan:         {"plan_task", "plan_role"},
 	QueryDecisions:    {"ask", "decision", "reading"},
 }
 
@@ -196,7 +198,7 @@ func QueryNode(refKey, project, query string, who model.Actor, at time.Time) Nod
 // row's document plays as a query node (QueryNode): its query value, `verification`, `plan` or
 // `decisions`, and null for the spec's `spec`, whose part is the row's is_primary, and for a
 // document whose node is no query node. A document of an issue born converted writes no role in its
-// row (decision 2 of dispatch://INFRA-1253's plan), so a reader of the role it plays reads this
+// row (decision 2 of the issue-tree plan), so a reader of the role it plays reads this
 // beside the row's own.
 const ArtifactQueryRoleSQL = `(select nullif(node.attributes->>'` + AttributeQuery + `', '` + QuerySpec + `')
 	from graph_nodes node

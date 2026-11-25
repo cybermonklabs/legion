@@ -40,6 +40,12 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  * gates are.
  */
 
+/** The choice the page's status question offers to move the issue's parents into work with it,
+ *  as a person reads and presses it: `ParentStatusDialog.tsx`' `CHOICE_LABELS.include_parent`,
+ *  copied, since that file keeps the words to itself and this change leaves today's issue page
+ *  as it is. */
+const MOVE_PARENTS_TOO = "Move the parents into work too";
+
 // c-fresh, with its status clause: a status write sends one or two tree reads - its event's, and
 // one more where the event lands while the settle's read is out - and needs no line at the foot of
 // the outline.
@@ -61,8 +67,16 @@ test("a write is drawn without a reload", async ({ browser }) => {
     // the Status control's value once attached is the status the row starts from, before a pick.
     const was = await status.inputValue();
     const next = was === "testing" ? "todo" : "testing";
-    const picked = traffic.requests.length;
     await status.selectOption(next);
+    // The page's status writers ask Dispatch before they write (a dry run of the move), and ask
+    // the person where Dispatch's rule would refuse it: the seed's issue stands under a parent
+    // that is not in work, so a move into work asks, and the person moves the parents into work
+    // too, which writes the status.
+    const ask = page.getByRole("dialog", { name: new RegExp(`^Move ${seeded.key} to `) });
+    const confirm = ask.getByRole("button", { exact: true, name: MOVE_PARENTS_TOO });
+    await expect(confirm, "the status pick asks nothing that a person confirms").toBeEnabled();
+    const picked = traffic.requests.length;
+    await confirm.click();
     await expect
       .poll(async () => (await getIssue(seeded.key)).status, {
         message: "the status picked was never written",
@@ -71,7 +85,8 @@ test("a write is drawn without a reload", async ({ browser }) => {
     await expectLoadSettled(traffic);
     const sincePick = traffic.requests.slice(picked);
     const write = sincePick.findIndex(
-      (request) => request.method === "PATCH" && request.path === `/api/v1/issues/${seeded.key}`
+      (request) =>
+        request.method === "POST" && request.path === `/api/v1/issues/${seeded.key}/status-change`
     );
     expect(write, "the status pick sent no write of the issue").toBeGreaterThanOrEqual(0);
     expectOneOrTwoReads(

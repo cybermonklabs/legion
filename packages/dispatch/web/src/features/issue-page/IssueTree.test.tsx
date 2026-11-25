@@ -758,7 +758,7 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
     await waitFor(() => expect(kept).toHaveBeenCalled());
     await waitFor(() => expect(keep).toHaveProperty("disabled", true));
     expect(document.activeElement, "the focus stayed on Keep, which its write disables").toBe(row);
-    expect(row.querySelector("[data-node-face]"), "the decision's face closed").not.toBeNull();
+    expect(row.querySelector("[data-node-body]"), "the decision's face closed").not.toBeNull();
 
     await act(async () => answer.resolve({ ...decision, waiting_review: false } as never));
     await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
@@ -795,7 +795,7 @@ test("Send change keeps the focus on its decision's row while the comment is out
       document.activeElement,
       "the focus stayed on Send change, which its write disables"
     ).toBe(row);
-    expect(row.querySelector("[data-node-face]"), "the decision's face closed").not.toBeNull();
+    expect(row.querySelector("[data-node-body]"), "the decision's face closed").not.toBeNull();
 
     await act(async () => answer.resolve({ id: "comment-1" } as never));
     await waitFor(() => expect(view.queryByRole("textbox", { name: "Your change" })).toBeNull());
@@ -2691,7 +2691,9 @@ test("a key that takes the focus out of the row before its editor has drawn the 
     document.activeElement?.closest('[contenteditable="true"]') ?? null,
     "an editor holds the focus"
   ).toBeNull();
-  expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+  // The page hears the editing's end from a passive effect (`useNodeEditing`'s `onEditing`),
+  // which runs a task after the commit that drew the row's end, so the read waits for it.
+  await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
   expect(
     rowsFor(view.container, "spec#b-r1")[0]?.querySelector('[contenteditable="true"]') ?? null,
     "the statement's row still holds the editor"
@@ -4946,7 +4948,7 @@ test("a row whose editor's hold fails to load ends the editing and says its edit
       row?.querySelector("[data-row-report]") != null,
       "the report is not at the statement's row"
     ).toBe(true);
-    expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+    await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
     await waitFor(() =>
       expect(
         row?.querySelector('[contenteditable="true"]') == null,
@@ -4994,7 +4996,7 @@ test("a hold that fails to load before the row is handed an editor ends the edit
         "the row whose hold failed to load did not say its editor could not open"
       ).toBe(KEY_REPORTS.editor_closed)
     );
-    expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+    await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
     expect(document.activeElement === row, "the focus is not on the statement's row").toBe(true);
   } finally {
     load.mockRestore();
@@ -5166,7 +5168,7 @@ test("a page that hands the row no editor gets no caret: the editing ends and th
       "the row handed no editor did not say its editor could not open"
     ).toBe(KEY_REPORTS.editor_closed)
   );
-  expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+  await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
   expect(
     editable.contains(window.getSelection()?.anchorNode ?? null),
     "a caret went into an editor the row was never handed"
@@ -6486,83 +6488,6 @@ test("Right on the row the tree is zoomed to moves to its first child, or says n
   expect(focusedRow(view.container)).toBe("comment-2");
 });
 
-/** An issue whose outline holds a comment and then the group of its two children. */
-function childrenTree(): TreeNode {
-  return node({
-    children: [
-      node({
-        children: [node({ id: "comment-1a", text: "Under the first.", type: "comment" })],
-        held: 1,
-        id: "comment-1",
-        text: "The first words.",
-        type: "comment",
-      }),
-      node({ id: "CORE-2", text: "The first child", type: "child_issue" }),
-      node({ id: "CORE-3", text: "The second child", type: "child_issue" }),
-    ],
-    id: KEY,
-    type: "issue",
-  });
-}
-
-// `t h` opens the children's own address and puts the focus on the group's first row
-// each time it is pressed. The address alone moves the focus once per address, so a second
-// `t h` after the reader had moved on moved nothing.
-test("t h puts the focus on the first child's row, and again after the reader moved on", async () => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const view = renderTree(childrenTree());
-  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-
-  await user.keyboard("th");
-  await waitFor(() => expect(focusedRow(view.container)).toBe("CORE-2"));
-  expect(view.address()).toBe(buildIssuePath({ key: KEY, kind: "children" }));
-  await user.keyboard("j");
-  await waitFor(() => expect(focusedRow(view.container)).toBe("CORE-3"));
-  await user.keyboard("th");
-  await waitFor(() => expect(focusedRow(view.container)).toBe("CORE-2"));
-});
-
-// A zoomed tree is rooted at the node the reader zoomed into, which holds no child, so the
-// children are no rows of it: `t h` leaves the zoom for the whole outline, as every key that
-// takes the reader to a node does.
-test("t h from a zoom into a node puts the focus on the first child's row", async () => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const view = renderTree(childrenTree());
-  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-  await user.keyboard(".");
-  await waitFor(() => expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull());
-  expect(rowsFor(view.container, "CORE-2")).toHaveLength(0);
-
-  await user.keyboard("th");
-  await waitFor(() => expect(focusedRow(view.container)).toBe("CORE-2"));
-  expect(view.container.querySelector("[data-crumb]")).toBeNull();
-});
-
-// `t h` is offered only where the outline holds a child: on an issue with none it opens no
-// address, moves no focus and draws no line.
-test("t h on an issue with no children changes nothing", async () => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const root = node({
-    children: [
-      node({ id: "comment-1", text: "The first words.", type: "comment" }),
-      node({ id: "comment-2", text: "The second words.", type: "comment" }),
-    ],
-    id: KEY,
-    type: "issue",
-  });
-  const view = renderTree(root);
-  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-  const before = view.address();
-
-  await user.keyboard("th");
-  expect(view.address()).toBe(before);
-  expect(focusedRow(view.container)).toBe("comment-1");
-  expect(rowReport(view.container)).toBeUndefined();
-});
-
 // `.` zooms into the focused node, and the key then takes the reader to that node so its row
 // keeps the focus (`useTreeKeymap.ts`'s `tree-zoom-in`); on the zoomed node's own row it holds
 // the zoom where it is rather than walking back out one level. Read below 1024 px, where the
@@ -7659,6 +7584,44 @@ test("a key with nowhere to go says so at its row, until the next move", async (
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
   expect(rowReport(view.container)).toBeUndefined();
+});
+
+// Down and Up scroll the page from the page's body: the outline takes them only from a row or a
+// control inside one, where they move as `j` and `k` do, while `j` from the page's body still
+// goes to the first row.
+test("the outline: an arrow with the focus on the page's body is not taken", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(twoCommentsTree());
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+    expect(document.activeElement).toBe(document.body);
+    for (const key of ["ArrowDown", "ArrowUp"]) {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+      act(() => {
+        document.body.dispatchEvent(event);
+      });
+      expect(event.defaultPrevented, `the outline took ${key} from the page's body`).toBe(false);
+      expect(document.activeElement, `${key} from the page's body moved the focus`).toBe(
+        document.body
+      );
+    }
+    await user.keyboard("j");
+    await waitFor(() =>
+      expect(focusedRow(view.container), "j from the page's body did not go to the first row").toBe(
+        "comment-1"
+      )
+    );
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() =>
+      expect(focusedRow(view.container), "Down from a row did not go to the next").toBe(
+        "comment-1a"
+      )
+    );
+  } finally {
+    view.unmount();
+  }
 });
 
 /**

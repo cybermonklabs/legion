@@ -358,6 +358,11 @@ func storedKindSQL(kindExpr string) string {
 	return `(case ` + kindExpr + registrySQL.storedRewrites + ` else ` + kindExpr + ` end)`
 }
 
+// StoredKindSQL is storedKindSQL for a statement of another package: the kind the store keys the
+// node whose kind is the SQL kindExpr by, a finding of a lens named lens_block read as the
+// store's block.
+func StoredKindSQL(kindExpr string) string { return storedKindSQL(kindExpr) }
+
 // artifactStoreAddress is the ref_key of the artifact whose uuid expr names.
 func artifactStoreAddress(expr string) string {
 	return `(select store_artifact.ref_key from artifacts store_artifact where store_artifact.id::text = ` + expr + `)`

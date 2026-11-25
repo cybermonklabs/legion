@@ -164,7 +164,7 @@ test("an author is drawn by a name and a shape of its own kind", () => {
       const shape = shown?.querySelector("svg[data-glyph]");
       return {
         chrome: shown === null ? null : shown.querySelector("[data-page-chrome]") !== null,
-        face: shown === null ? null : shown.closest("[data-node-face]") !== null,
+        face: shown === null ? null : shown.closest("[data-node-body]") !== null,
         margin: shown === null ? null : shown.closest("[data-node-margin]") !== null,
         name: shape?.getAttribute("aria-label") ?? null,
         role: shape?.getAttribute("role") ?? null,
@@ -323,7 +323,7 @@ test("an agent's decision draws the session its entry names as its decider, by t
       const text = (selector: string) =>
         view.container.querySelector(selector)?.textContent ?? null;
       return {
-        face: text("[data-node-face] [data-node-author]"),
+        face: text("[data-node-body] [data-node-author]"),
         kind: view.container.querySelector("[data-author-kind]")?.getAttribute("data-author-kind"),
         row: text("[data-node-margin] [data-node-author]"),
         title: text("[data-node-author-title]"),
@@ -823,6 +823,34 @@ test("a reading row draws its own word and shape, in an agent's grey", () => {
   expect(shapes, "another shape the page draws is a reading's").not.toContain(reading.shape);
 });
 
+// R21: a kind is told by its word and a shape of its own, never by colour alone, so every type
+// token draws a shape no other token draws, and none draws the dash a token with no shape falls
+// back to. `NodeGlyph.tsx` has no test file of its own, so its shapes are read here, drawn.
+test("every type token has its own glyph path and none falls back", () => {
+  const shapeOf = (token: string) => {
+    const view = render(<NodeGlyph token={token} />);
+    try {
+      return view.container.querySelector("path")?.getAttribute("d") ?? null;
+    } finally {
+      view.unmount();
+    }
+  };
+  const fallback = shapeOf("a token with no shape");
+  const types: readonly string[] = Object.values(GLYPH_TOKENS.types);
+  expect(types).toContain(GLYPH_TOKENS.types.prose);
+  const shapes = new Map(Object.keys(GLYPH_NAMES).map((token) => [token, shapeOf(token)]));
+  expect(
+    types.filter((token) => shapes.get(token) === fallback),
+    "a type token drew the fallback"
+  ).toEqual([]);
+  expect(
+    types.filter((token) =>
+      [...shapes].some(([other, shape]) => other !== token && shape === shapes.get(token))
+    ),
+    "a type token drew a shape another token draws"
+  ).toEqual([]);
+});
+
 // R11: a node the reader folded is the one place a row draws one line of its node: the first
 // line, cut at its first sentence end, and how many nodes it holds, whatever the focus - the
 // focus changes no row's text.
@@ -937,7 +965,7 @@ function drawnGap(drawn: TreeNode): { chip: string | undefined; line: string | u
   try {
     return {
       chip: view.container.querySelector("[data-gap]")?.textContent ?? undefined,
-      line: [...view.container.querySelectorAll("[data-node-face] p")]
+      line: [...view.container.querySelectorAll("[data-node-body] p")]
         .map((paragraph) => paragraph.textContent ?? "")
         .find((text) => text.endsWith(".")),
     };
@@ -1983,7 +2011,8 @@ test("a press on an option of an unfocused row picks it and focuses the row in o
 });
 
 // Ruling 5: a child issue's row is one line - its title, then how it stands and what blocks it -
-// and its key is the row's tag, a link to the child's own page; it names no author and no time.
+// and its key is the row's tag, which opens the child in the children's section above the outline
+// (R9, R14) and links nowhere itself; it names no author and no time.
 test("a child issue's row draws its title, its facts and its key as the tag", () => {
   const child: IssueChild = {
     active_at: "2026-11-05T12:00:00Z",
@@ -2003,7 +2032,8 @@ test("a child issue's row draws its title, its facts and its key as the tag", ()
     expect(view.container.querySelector("[data-child-facts]")?.textContent).toContain("CORE-3");
     const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
     expect(tag?.textContent).toBe("CORE-2");
-    expect(tag?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-2");
+    expect(tag?.querySelector("button[data-child-key]")?.textContent).toBe("CORE-2");
+    expect(tag?.querySelector("a"), "the child's tag is a link").toBeNull();
     expect(view.container.querySelector("[data-node-author]")).toBeNull();
     expect(view.container.querySelector("[data-node-time]")).toBeNull();
   } finally {

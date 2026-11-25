@@ -94,9 +94,11 @@ var retirementEvents = events.NewBroker()
 // document out (roomLayoutSQL): the room reloads without its fragment, so nothing typed into that
 // fragment is reconciled, versioned or indexed, and the room's block index keeps the blocks it
 // recorded of the document as they stood (refs.PlanBlocks). A socket that comes back is refused
-// (ServeHTTP), api refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED, and this
+// (ServeHTTP), api refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED, or
+// DECISIONS_ARE_NODES for an issue's decisions document (api's retiredDocumentRefusal), and this
 // package refuses a live write, a version and a rebuild of it (retiredWriteRefusal, and
-// refuseRetiredFragment for a document of an issue room).
+// refuseRetiredFragment for a document of an issue room), a rebuild only where DOCUMENT_LIVE and
+// DOCUMENT_LOADS do not refuse it first.
 //
 // No version is written, so the approval is not left behind a later version as a write leaves
 // one: the approval read answers a retired document's approval stale (api's applyApprovals), and

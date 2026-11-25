@@ -245,7 +245,7 @@ async function seedEveryRoute(): Promise<Seeded> {
   });
   // The priorities page draws its table only where a priority is written, and a priority's own
   // page draws the work advancing it, so one priority is written with an issue in flight under
-  // it; the two fault lists of the page are drawn whatever they hold.
+  // it; the page's tabs for its two fault lists are drawn whatever those hold.
   const priority = await createPriority({
     description: "Every page is served from either build while a release overlaps the two.",
     owner: "alice",
@@ -473,19 +473,19 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, "Priorities"),
         page.locator('section[aria-label="Priorities"]'),
         page.getByRole("table", { name: "Priorities table" }),
-        page.locator('section[aria-label="In flight under no priority"]'),
-        page.locator('section[aria-label="Priority work in backlog or icebox"]'),
+        page.getByRole("tablist", { name: "Priorities page" }),
       ],
       url: "/priorities",
     },
     {
-      // Three reads, each its own request: the priority itself, which the title and the owner
-      // are written in where they are read (alice is a person, and every priority write is the
-      // deployment's), the issues advancing it under them, and the history in the margin.
+      // Three reads, each its own request: the priority itself, whose title is the header's
+      // heading and whose owner the chip under it, each a control that opens where it is read
+      // (alice is a person, and every priority write is the deployment's), the issues advancing
+      // it under them, and the history in the margin.
       route: "/priorities/:id",
       shows: (page) => [
-        page.getByRole("textbox", { name: "Title" }),
-        page.getByRole("combobox", { name: "Owner" }),
+        page.getByTestId("priority-header").getByRole("heading", { level: 1 }),
+        page.getByTestId("priority-header").getByRole("button", { name: /^Owner / }),
         page.locator('section[aria-label="Description"]'),
         page.locator('section[aria-label="Work advancing this priority"]'),
         page.getByRole("complementary", { name: "Margin" }),

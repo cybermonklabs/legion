@@ -157,6 +157,9 @@ var itemRowWriters = map[string]map[string]string{
 			"own transaction before the row is read (refs.LockItemOwner)",
 	},
 	"internal/dispatch/docs/anchor_refresh.go": {
+		"Queue": "the owner lock of each orphaned comment's issue, which the node DELETE that queues " +
+			"it takes before it reads them (deleteNode's lockNodeRouteOwners over readDeleteLocks' " +
+			"docs.NodeAnchorIssues), refusing an orphan of an issue it did not lock",
 		"refreshAnchors": "the document's owner lock, which the version write that calls it " +
 			"holds (lockArtifactOwner, writeVersionTx)",
 	},
@@ -179,6 +182,11 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/docs/decision_restore.go": {
 		"moveRows": "the issue's owner lock, which the decisions step's restore takes first in the " +
 			"transaction it opens (restoreIssueDecisions, lockArtifactOwner)",
+	},
+	"internal/dispatch/docs/issue_conversion.go": {
+		"moveAsks": "the issue's owner lock, which the conversion takes first in the transaction it " +
+			"runs in (issueConversion.run, store.LockOwner); the asks and comments it moves hang on " +
+			"the issue's documents, whose owner is the issue (store.OwnerOf)",
 	},
 	"internal/dispatch/graphcensus/backfill_asks.go": {
 		"writeAskBatch": "the owner locks of the batch's asks, taken first in the transaction it " +
@@ -414,8 +422,11 @@ var itemRowLockNoRow = map[string]map[string]string{
 			"the lock table's row for that backfill drives a comment's row, whose pin is " +
 			"pinCommentAnchorBlock, and an ask's pin is the same transaction over the asks table",
 	},
-	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
-	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
+	"internal/dispatch/docs/anchor_refresh.go": {
+		"Queue":          itemRowCallersTransaction,
+		"refreshAnchors": itemRowCallersTransaction,
+	},
+	"internal/dispatch/docs/approval_ask.go": {"rewriteApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/ask_blocks.go": {
 		"createAskBlock":     itemRowCallersTransaction,
 		"reconcileAskBlocks": itemRowCallersTransaction,
@@ -424,6 +435,12 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"moveRows": "runs in the decisions step's restore of one issue, a background pass no " +
 			"request makes; its lock-step driver holds the restore behind the issue's owner lock " +
 			"(docs' TestTheDecisionsStepsWritersTakeTheStoreLockOrder)",
+	},
+	"internal/dispatch/docs/issue_conversion.go": {
+		"moveAsks": "runs in the issue room step's conversion of one issue (docs.ConvertIssue), a " +
+			"background pass no request makes, in the transaction that takes the issue's owner lock " +
+			"before anything else; the store's lock-step register names its site " +
+			"(storetest/lockstep's sites.go, graphstore's TestEveryStoreWriteTakesOneLockOrder)",
 	},
 	"internal/dispatch/graphcensus/backfill_asks.go": {
 		"writeAskBatch": "a boot pass of graphcensus.Backfill, no request's; its lock-step test " +

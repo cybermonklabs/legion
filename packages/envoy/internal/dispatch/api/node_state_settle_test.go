@@ -388,11 +388,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	// error and not the end of the test, so a run where the route takes them all names each node.
 	stateTuples := func(storeID string) int {
 		t.Helper()
-		history, err := graphstore.History(ctx, rig.database.Pool, refs.BlockNodeKind, storeID, graphstore.AttributeState)
-		if err != nil {
-			t.Fatalf("read the state history of %s: %v", storeID, err)
-		}
-		return len(history)
+		return len(stateHistoryOfNode(t, rig.database, refs.BlockNodeKind, storeID))
 	}
 	// requireRefusedMove holds move, a write of the state of the block at address, whose store id
 	// is storeID, to its refusal naming the block, and the block to held and to its state tuples.

@@ -41,6 +41,11 @@ type headRig struct {
 	// walked is the text of the statement the walk of the tuples reads the subtrees with
 	// (refs.TreeSubtrees), which a head read never sends.
 	walked string
+	// served is the server the handler mounts; observe, where it is set, is handed each state of
+	// the store the rig holds (requireAsWalk) once the rig has held it, with the readers it read
+	// that state as (TestTheTwoCutsAnswerAsTheUncutWalk).
+	served  *server
+	observe func(r headRig, class, key string, logins []string)
 }
 
 // headWho is the writer a write of the release before names on the tuples it appends.
@@ -138,8 +143,8 @@ func (r headRig) after(class, key string, logins ...string) {
 // requireAsWalk reads the tree of key with no view and with each view the route answers, as each of
 // logins (alice and bob where none is named), as the head read answers it and as the walk does,
 // and fails on each answer that differs, naming the first node that differs; then it takes the
-// census kind issue_head_node (requireCensus). A read of a marked issue that walked the tuples
-// fails too.
+// census kind issue_head_node (requireCensus), and hands the state to observe where the rig holds
+// one. A read of a marked issue that walked the tuples fails too.
 func (r headRig) requireAsWalk(class, key string, logins ...string) {
 	r.t.Helper()
 	if len(logins) == 0 {
@@ -162,6 +167,9 @@ func (r headRig) requireAsWalk(class, key string, logins ...string) {
 	r.t.Logf("after the %s write: %d reads of %s from the head and %d of an unmarked issue, each held to its walk, statuses %v, at most %d nodes",
 		class, heads, key, walks, statuses, nodes)
 	r.requireCensus(class)
+	if r.observe != nil {
+		r.observe(r, class, key, logins)
+	}
 }
 
 // compare reads the tree of key with view as login from the head and from the walk, and fails
@@ -516,12 +524,20 @@ func (r headRig) begin() (pgx.Tx, int32) {
 // update while a write of the release before holds it for share and appends a part_of into the
 // tree.
 func TestTheHeadProjectionAnswersAsTheWalk(t *testing.T) {
+	requireHeadProjectionStates(t, nil)
+}
+
+// requireHeadProjectionStates writes, on a server of its own, each state of the store
+// TestTheHeadProjectionAnswersAsTheWalk names, holds every read of each to the walk, and hands each
+// state, once it is held, to observe where it is set (TestTheTwoCutsAnswerAsTheUncutWalk).
+func requireHeadProjectionStates(t *testing.T, observe func(r headRig, class, key string, logins []string)) {
+	t.Helper()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	// A settlement runs when the test asks for it (settleIssue), so no write of the server's own
 	// lands between the two reads of a pair.
-	handler, _, deps := newTestServer(t, testServerOptions{store: traced, settle: time.Hour})
+	handler, _, deps, served := newRegisteredTestServer(t, testServerOptions{store: traced, settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
 
@@ -534,7 +550,7 @@ func TestTheHeadProjectionAnswersAsTheWalk(t *testing.T) {
 	if _, err := refs.TreeSubtrees(ctx, capture, []refs.Target{{Kind: graphstore.KindIssue, ID: key}}, key, refs.TreeCut{ReadSeq: 1}); err != nil || len(capture.sql) != 1 {
 		t.Fatalf("read the walk's subtrees statement: %d statements, %v", len(capture.sql), err)
 	}
-	r := headRig{t: t, handler: handler, database: database, counter: counter, walked: capture.sql[0]}
+	r := headRig{t: t, handler: handler, database: database, counter: counter, walked: capture.sql[0], served: served, observe: observe}
 	r.requireMarked(key)
 	r.after("issue create", key)
 

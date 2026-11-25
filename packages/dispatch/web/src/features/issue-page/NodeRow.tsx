@@ -33,10 +33,11 @@ import { DeletedBody, EditedMark } from "../refs/PostBody";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
+import { openChildEntry } from "./children-section";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
-import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
+import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import { presetNodePath } from "./issue-address";
 import { isStatement, type NodeChip, type ParentLine, type TreeNode } from "./issue-tree";
@@ -599,6 +600,7 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     case "handoff":
     case "image":
     case "issue":
+    case "prose":
       return "issue";
   }
 }
@@ -720,15 +722,26 @@ export function RowMargin({
   const authored = author.kind !== "unknown";
   const agentText = useAgentText();
   if (node.child !== undefined) {
-    // A child issue's tag is its key, a link to its own page; its row names no author, no time
+    // A child issue's tag is its key, which opens the child in the children's section above the
+    // outline (R9, R14), where its entry links to its own page; its row names no author, no time
     // and no state, which its facts after its title say (ruling 5, the prototype's `.kr`).
+    const key = node.child.key;
     return (
       <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
         <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
-          {/* A plain span: its link stays inline, so the 6 px a link's touch target takes above
-              and below it on a phone adds nothing to the line's height. */}
+          {/* A plain span: its control stays inline, so the 6 px a control's touch target takes
+              above and below it on a phone adds nothing to the line's height. */}
           <span data-node-tag="">
-            <ChildIssueTag child={node.child} tabStops={tabStops} />
+            <button
+              className={`dispatch-inline-link font-semibold whitespace-nowrap ${pageKindTag.child}`}
+              data-child-key=""
+              onClick={() => openChildEntry(key)}
+              tabIndex={tabStops ? undefined : -1}
+              type="button"
+              {...authorText}
+            >
+              {key}
+            </button>
           </span>
         </div>
       </div>
@@ -1307,7 +1320,9 @@ export function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boo
  * coverage read's own lines a requirement draws in their place while a document of the issue is
  * still being indexed (`TreeNode.coverageNotes`, in the server's words, which name the document),
  * the two counts the coverage read carries for a requirement, and Keep and Change on a decision
- * that waits (`DecisionActions.tsx`). A node with none of these draws nothing here.
+ * that waits (`DecisionActions.tsx`). A node with none of these draws nothing here. It carries
+ * the page's one mark of what a row draws under its words, `data-node-body`, which the views'
+ * own rows (the Verification view's facts, the Decisions view's body) carry too.
  */
 function NodeFace({
   author,
@@ -1334,7 +1349,7 @@ function NodeFace({
     reviewed;
   if (!holds) return null;
   return (
-    <div className="mt-1 flex min-w-0 flex-col gap-1 text-sm" data-node-face="">
+    <div className="mt-1 flex min-w-0 flex-col gap-1 text-sm" data-node-body="">
       {authored ? <BodyAuthor author={author} /> : null}
       <NodeFacts facts={node.facts} tabStops={tabStops} />
       {node.gaps.map((gap) => (

@@ -1,5 +1,5 @@
-// spec_writer_test.go holds the behavior tests of R1 of INFRA-4764: on an issue Legion runs, a
-// version of the spec or the Verification document from a writer who is no person and no
+// spec_writer_test.go holds the behavior tests of R1 of the spec-writer spec: on an issue Legion
+// runs, a version of the spec or the Verification document from a writer who is no person and no
 // architect of the issue, or of an issue above it, is refused with 403
 // DOCUMENT_WRITER_NOT_ARCHITECT on every route that writes one (spec_writer.go). Its rig
 // (specWriterServer, specWriterRig) builds a project of its own for each run, and uses only routes

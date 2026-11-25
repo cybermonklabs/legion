@@ -3,7 +3,7 @@ import { expect, type Locator, type Page, type Request, type Response } from "@p
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { gotoIssue, marginShell, openDetails } from "./issue-page";
 import { focusRow, nodeRow, unfoldEveryBranch } from "./issue-page-g";
-import { focusedNodeId, openEveryDeeperBranch } from "./issue-page-i";
+import { focusedNodeId } from "./issue-page-i";
 import { settledState } from "./settled";
 
 /**
@@ -213,7 +213,6 @@ export async function focusedRowFacts(page: Page, id: string): Promise<Locator> 
   await expect
     .poll(async () => {
       await unfoldEveryBranch(page);
-      await openEveryDeeperBranch(page);
       return nodeRow(page, id).count();
     }, `${id} is never drawn as a row of the outline`)
     .toBeGreaterThan(0);
