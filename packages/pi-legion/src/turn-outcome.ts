@@ -24,7 +24,11 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * the issue, and any other counts in the claim's run of provider-error turns. No run of refused
  * turns fails a claim. Naming no task is how this plugin says a turn was not the take's, so it
  * sends neither the `unprompted` mark nor an `httpStatus` of its own beside `providerError`, which
- * a plugin from before the task's number sends (below daemon API contract 274).
+ * a plugin from before the task's number sends (below daemon API contract 274). A refusal Oh My
+ * Pi goes on from, a step of its own retry or model-fallback walk (`turnGoesOn`, `./turn-end`),
+ * ends no turn, so it is not reported: the `agent_end` entry of `extensions/legion.ts` hears it
+ * neither here nor in the claim's take, and the end of the attempt the host goes on to is the
+ * turn's end, reported in its turn.
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and

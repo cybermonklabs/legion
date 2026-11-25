@@ -2804,6 +2804,127 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       }
     });
 
+    /** One step of Oh My Pi's own retry or model fallback: a refusal it goes on from. */
+    const step = {
+      willContinue: true,
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 rate limit" }],
+    };
+    /** The pane's turn-outcome reports, as `[sequence, outcome, task]`. */
+    const reportedTurns = (pane: ClaimPane) =>
+      daemonRequests(pane.requests)
+        .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+        .map((request) => {
+          const body = request.body as Record<string, unknown>;
+          return [body.sequence, body.outcome, body.task];
+        });
+
+    // What INFRA-764's workers did on 2026-11-23
+    // (dispatch://INFRA-4508/comment/fd89b8eb-d326-46d6-82b6-6ae84fe76f67): at each step of its
+    // fallback chain Oh My Pi ends the run with `willContinue`, the refused attempt's message last,
+    // and goes on to the next model. The steps and the end that settles them are one turn: a step
+    // reports nothing, so it names no task and spends no sequence.
+    test("a refusal Oh My Pi goes on from reports nothing and spends no sequence", async () => {
+      const worker = await bootStalling({});
+
+      await worker.starts();
+      await worker.ends(step);
+      await worker.starts();
+      await worker.ends(step);
+      await worker.starts();
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "error" }] });
+
+      expect(reportedTurns(worker)).toEqual([[1, "refused", undefined]]);
+    });
+
+    // A fallback walk whose next model answers is one turn, and an answered one: the refused step
+    // reports nothing, so the one report the turn makes is clean, and it ends the daemon's run of
+    // refusals rather than adding one to it.
+    test("a refusal Oh My Pi goes on from, then an answered end, reports one clean turn", async () => {
+      const worker = await bootStalling({});
+
+      await worker.starts();
+      await worker.ends(step);
+      await worker.starts();
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+
+      expect(reportedTurns(worker)).toEqual([[1, "clean", undefined]]);
+      const [report] = daemonRequests(worker.requests).filter(
+        (request) => request.path === "/legion/v1/claims/turn-outcome"
+      );
+      expect(report?.body).not.toHaveProperty("message");
+      expect(report?.body).not.toHaveProperty("providerError");
+    });
+
+    // The host also goes on from an answered turn, as when the phase reminder continues it: that
+    // turn ended clean, and it ends the run of refusals before it.
+    test("an answered turn the host goes on from is reported clean", async () => {
+      const worker = await bootStalling({});
+
+      await worker.starts();
+      await worker.ends({
+        willContinue: true,
+        messages: [{ role: "assistant", stopReason: "stop" }],
+      });
+
+      expect(reportedTurns(worker)).toEqual([[1, "clean", undefined]]);
+    });
+
+    // A turn that ends waiting only on a background job's result has settled: the pane is idle
+    // until the result starts the next run.
+    test("a refusal that waits only on a background job's result is reported", async () => {
+      const worker = await bootStalling({});
+
+      await worker.starts();
+      await worker.ends({ ...step, awaitingAsyncWork: true });
+
+      expect(reportedTurns(worker)).toEqual([[1, "refused", undefined]]);
+    });
+
+    // The take's side of the same walk: the first model of the task's turn is refused and the
+    // host goes on to the next, which answers. The refused step is no end of the task's turn, so
+    // the take keeps the number running through it: it is neither given up as a provider error,
+    // which the daemon would take back and write again while the host still runs the turn, nor
+    // reported. The answered end is the turn's one report, which names the task and finishes it,
+    // and a newer revision of the number the daemon writes meanwhile runs nothing.
+    test("a take's turn whose first model's refusal the host goes on from and whose next model answers is finished once by that answered end's report", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      let taken = 0;
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => true,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/take") taken += 1;
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+      await turns(() => worker.sentUserMessages.length > 0);
+      expect(worker.sentUserMessages).toEqual([text]);
+
+      await worker.starts();
+      await worker.ends(step);
+      envoyPluginInterface().taskValues.taker?.({
+        kind: "value",
+        session: "ses_stall",
+        value: {
+          claim: worker.claimToken,
+          epoch: value.epoch,
+          revision: value.revision + 1,
+          op: "put",
+          task: value.number,
+        },
+      });
+      await turns(() => false);
+      await worker.starts();
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      await turns(() => false);
+
+      expect(reportedTurns(worker)).toEqual([[1, "clean", value.number]]);
+      expect(taken).toBe(1);
+      expect(worker.sentUserMessages).toEqual([text]);
+    });
+
     test("a turn that ends on a tool call written as text is told the call did not run", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);

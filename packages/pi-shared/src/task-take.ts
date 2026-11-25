@@ -159,9 +159,11 @@ export interface TaskTake {
    */
   readonly held: () => number | undefined;
   /**
-   * That run ended (its `agent_end`): the number of the task whose turn it was, which the turn's
-   * report names, or undefined for a run of no task. `providerError` is whether that report
-   * carries the provider's failure (`reportsProviderError` in `packages/pi-legion/src/turn-outcome.ts`).
+   * That run ended (its `agent_end`; a refusal the host goes on from, a step of its own retry or
+   * model-fallback walk, ends no run, and `packages/pi-legion/extensions/legion.ts` calls nothing
+   * for it): the number of the task whose turn it was, which the turn's report names, or
+   * undefined for a run of no task. `providerError` is whether that report carries the
+   * provider's failure (`reportsProviderError` in `packages/pi-legion/src/turn-outcome.ts`).
    * The daemon finishes a current claim's task on a report naming its number with no provider
    * error, so from such a run's end the take holds that number finished, beside a reading's
    * `finished`, until the daemon refuses that report (`reportRefused`): a newer revision of the

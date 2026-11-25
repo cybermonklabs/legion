@@ -83,6 +83,7 @@ import { createStallTeller } from "../src/stall-evidence";
 import { createStallExits } from "../src/stall-exits";
 import { createStallProcesses, type StallProcessesDeps } from "../src/stall-recovery";
 import { createLegionTool } from "../src/tools";
+import { turnGoesOn } from "../src/turn-end";
 import { createTurnOutcomeReporter, reportsProviderError } from "../src/turn-outcome";
 import {
   branchHoldsWorkspaceRecreatedNotice,
@@ -938,14 +939,23 @@ export default function legionExtension(pi: PiApi): void {
   // The report's answer settles that mark: a 2xx finished the number in the record, so it stays,
   // and a 4xx refusal of a report that would have finished it applied nothing, so the take holds
   // the number finished no longer (`reportRefused`), and takes a newer revision of it as owed.
+  //
+  // A refusal Oh My Pi goes on from (`turnGoesOn`) ends no turn: the host has already scheduled a
+  // retry or the next model of its fallback chain, and the end of that attempt is the turn's end.
+  // So neither the take nor the report hears it, a subagent's included: heard, each step of the
+  // walk would end the task's turn with a provider error, which gives up the task's number and
+  // has the daemon take the task back while the host still runs the turn, and would count one
+  // more refused turn of the claim's run (dispatch://INFRA-4508). An answered end the host goes on
+  // from is heard, and ends that run of refusals; so is an end that waits only on a background
+  // job's result, which has settled.
   pi.on("agent_end", async (event, context) => {
+    const providerError = reportsProviderError(event);
+    if (providerError && turnGoesOn(event)) return;
     const sessionID = context.sessionManager.getSessionId();
     let take: TaskTake | undefined;
     let task: number | undefined;
     let held: number | undefined;
-    let providerError = false;
     if (!subagentEvent(context)) {
-      providerError = reportsProviderError(event);
       take = sessionTake(sessionID);
       held = take?.held();
       task = take?.runEnded(providerError);

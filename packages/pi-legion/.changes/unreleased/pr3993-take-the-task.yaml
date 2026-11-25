@@ -6,7 +6,10 @@ body: |-
   read has answered, no Envoy message starts a turn, one sent to the session itself included. A
   task accepted while a run is going waits for that run's end and starts a turn of its own, and
   that run's report names the task as `held`. Each turn's end is reported to the daemon until the
-  daemon answers. The daemon-launched controller reports ready and reads its start task before it
-  claims its role and follows its topics and Slack channels, so its start task is its first turn,
-  and its reports name that task's number.
+  daemon answers. A refused end the host goes on from, with a retry or the next model of its
+  fallback chain, ends no turn: the task's take keeps its number and nothing is reported, so the
+  daemon does not take the task back while the host still runs its turn, and the end of the attempt
+  that settles the turn is the one report. The daemon-launched controller reports ready and reads
+  its start task before it claims its role and follows its topics and Slack channels, so its start
+  task is its first turn, and its reports name that task's number.
   The `LEGION_CLAIM_FIRST_TURN_BOUND_MS` setting is gone.
