@@ -716,7 +716,10 @@ its architect's to retry or escalate, and `holdReason: "escalated"` means it wen
 controller. A hold whose `holdReason` is `task-stopped` (its owner stopped its task, or a step
 failed with no earlier step of the type implementation to take its work back, which stops the
 task) or `children` (a parent waits, before its retro, for the issues beneath it) is no failure,
-and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
+and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. So is `fix` (a fix of its
+task runs, or a step failed beside one) or `ci` (its last step passed and a check a CI job runs has
+not passed at its head), refused with `FIX_RUNNING` or `CI_PENDING`: the fix's end, or each such
+check passing, ends it. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
 restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
@@ -1277,7 +1280,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 - **An issue's work is gone after its pod was replaced.** That is the shape of the runtime, not a
   failure: an issue's disk is its pod's own and is deleted with the pod, so a stop, a close, a
   node loss or a launch that replaces the pod takes the workspace with it. What survives is what
-  was pushed to `legion/<issue>` and each role's conversation, which lives in the session
+  was pushed to `legion/<issue>`, or, beside a running fix, to the branches of the fix and of the
+  steps beside it, `legion-beside/<issue>/…`, which Legion deletes itself, and each role's
+  conversation, which lives in the session
   database; the next pod provisions the workspace from that branch, and the agent is told its
   workspace is newer than its conversation before its next turn.
   A microVM issue pod under `runtime.kubernetes.sandbox.microvm.keep_volume` is the exception: its
@@ -1491,7 +1496,7 @@ These arrive as messages on the Dispatch issue:
   role's own topic, and posted this record of it. Nothing is held: the phase the move opened
   started its worker, and each role answers in its own turn. No hook writes to an architect: the
   daemon's own wake to an architect is a notice.
-- **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
+- **A red check.** Nothing moves for it, but on a task that takes a fix (below). The daemon names every check GitHub reported, with the
   conclusion GitHub gave it, in one message each to the architect that owns the issue, the worker
   of the issue's current phase and the implementer, and judges none of them. Re-run a check that
   failed on itself, have the implementer fix code that is at fault, or leave it to GitHub, which
@@ -1500,6 +1505,15 @@ These arrive as messages on the Dispatch issue:
   there without a pass, the daemon also tells the implementer alone at once, in any phase, in one
   message naming the check, the head and the job's case, and starts nothing; a second state that
   says the same failure, or one at a head the pull request has left, tells nobody.
+  On a task whose run started on this release, such a failure is not told so: while the task's
+  implementation step runs it goes to that step, and after it Legion starts that step again as a
+  fix, beside the step the issue stands in. The fix and each step beside it push to branches of
+  their own until the fix ends, and the fix pushes `legion/<KEY>` once, at its end. On that task a
+  settlement's message is a report of the runs that newly ended, and a change of a check's state
+  prompts the step that runs to read Dispatch again; on every task, a settlement that comes while
+  Legion itself acts next (a fix, a hold before the retro, a testing step that waits for Dispatch's
+  states) names that act and asks nothing. Every task waits before its retro until each check a CI
+  job runs passes at its head.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a
@@ -1691,7 +1705,8 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"].pullRequest'
 ```
 
 The daemon reads the checks GitHub reports and judges none of them, so no state there holds work
-back and no state there moves it. Read on GitHub what the base branch requires and what the head's
+back and no state there moves it; Dispatch's state of a check a CI job runs is what holds a task
+before its retro, and starts a fix on a task that takes one (above). Read on GitHub what the base branch requires and what the head's
 checks say: that pair is what decides whether the pull request can merge, and the merger waits on
 GitHub for it.
 
