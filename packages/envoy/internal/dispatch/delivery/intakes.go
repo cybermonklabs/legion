@@ -3,7 +3,6 @@ package delivery
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -114,15 +113,16 @@ func StartIntakes(
 	return startIntakes(ctx, newIntakeTuning(), connect, pool, leases, github, broker, settingsWake, pushes, attributor)
 }
 
-// startIntakes is StartIntakes with both intakes timed by tuning: production's values from
-// StartIntakes, or a test's.
+// startIntakes is StartIntakes with both intakes, and the settings cache they route by, timed by
+// tuning and logging to its logger (intakeTuning.log): production's values from StartIntakes, or a
+// test's.
 func startIntakes(
 	ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool,
 	leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{},
 	pushes PushImports, attributor *Attributor,
 ) (stop func(), err error) {
 	if github == nil {
-		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
+		tuning.log.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
 	}
 	intakeClient, err := connect(intakeConnectionName)
@@ -134,7 +134,7 @@ func startIntakes(
 		intakeClient.Close()
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
-	settings := newSettingsCache(pool, settingsWake)
+	settings := newSettingsCache(pool, settingsWake, tuning.log)
 	intake := newIntake(tuning, intakeClient, pool, leases.events, github, broker, settings, attributor)
 	intake.pushes = pushes
 	job := newJobIntake(tuning, jobClient, pool, leases.jobs, github, realJobClock{}, settings)
