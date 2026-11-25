@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, type RefObject, useEffect, useRef } fro
 import { Link } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   pageFailedText,
   pageField,
@@ -151,7 +152,7 @@ export function BlockedByControl({
           onKeyDown={(event) => {
             // A press that ends an IME composition gives up what the reader was composing, not
             // the editor: the form leaves it alone, unmarked, as the key registry does.
-            if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+            if (event.key !== "Escape" || inputMethodKey(event.nativeEvent)) return;
             // Escape anywhere in the editor, its box, its Save or its Cancel, is Cancel's, and is
             // held as Cancel is while the save is out. It is marked taken: the page's own Escape,
             // which closes Details and the phone's Details sheet with it, passes over a press a

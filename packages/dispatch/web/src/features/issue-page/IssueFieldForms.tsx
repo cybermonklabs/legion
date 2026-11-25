@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import type { IssueDetails } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   focusBorder,
   focusVisibleRing,
@@ -156,7 +157,7 @@ function EditorForm({
     <form
       className="flex w-full min-w-0 flex-wrap items-center gap-2"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        if (event.key !== "Escape" || inputMethodKey(event.nativeEvent)) return;
         event.preventDefault();
         event.stopPropagation();
         cancel();
