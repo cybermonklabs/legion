@@ -54,15 +54,13 @@ func TestAnApproveOnlyTokenAnswersAnApprovalAskAndNoOtherAsk(t *testing.T) {
 	if requested.Code != http.StatusCreated {
 		t.Fatalf("open the approval request = %d %s; want 201", requested.Code, requested.Body.String())
 	}
-	approval := decodeBody[struct {
-		ID  string `json:"id"`
+	approvalID := decodeBody[struct {
 		Ask struct {
 			ID string `json:"id"`
 		} `json:"ask"`
-	}](t, requested)
-	approvalID := approval.ID
+	}](t, requested).Ask.ID
 	if approvalID == "" {
-		approvalID = approval.Ask.ID
+		t.Fatalf("the approval request opened no ask: %s", requested.Body.String())
 	}
 	approved := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+approvalID+"/answer", approveOnly, map[string]any{
 		"selected": []string{"Approve"}, "expected_edited_at": nil,

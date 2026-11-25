@@ -433,12 +433,6 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
-	// approveOnlyRefusal is the message every route the approve list does not name answers an
-	// approve-only token with (refuseApproveOnlyToken): the approve list as register found it, in
-	// words. register builds it once, before it wraps the first row, so the rows share one text
-	// rather than each holding a copy of its own. A server register did not build has none, and
-	// refuseApproveOnlyToken wraps no route of one rather than answer an empty message.
-	approveOnlyRefusal string
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
 	going GoingCatalogue
@@ -871,10 +865,6 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// rather than mounted (approveScopeRoutes).
 		panic("api.Register: the route table's approve list names a route the table does not mount: " + strings.Join(refused, "; "))
 	}
-	// After the check above, so the list it names is one the table mounts, and before the first
-	// row is wrapped, since every row the list does not name answers it (refuseApproveOnlyToken).
-	s.approveOnlyRefusal = "this request's credential is an approve-only token, which may call only the routes Dispatch's approve list names (" +
-		strings.Join(approveScopeRoutes, ", ") + "): nothing ran"
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
 		// A catalogue entry naming a row this table does not hold or does not class as a write,
@@ -972,7 +962,7 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// Beside it, for the same reasons and at the same depth, an approve-only token on a row the
 	// approve list does not name: refused before the row's scopes, which it would otherwise pass
 	// with both of its person's scopes, and before anything the row does.
-	handler = s.refuseApproveOnlyToken(route.ApproveOnly, handler)
+	handler = refuseApproveOnlyToken(route.ApproveOnly, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
 	// trees an answer written for a reader without them. It is outside the scope gate and the
@@ -1039,7 +1029,7 @@ const liveSocketPattern = "/ws/live"
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
 		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
-			s.refuseApproveOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))))
+			refuseApproveOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))))
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1666,19 +1656,14 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 // answered 403 APPROVE_ONLY_TOKEN and next does not run; every other request runs next as it always
 // did. A row the list names is handed back as it is. It reads the decision decideBrokerToken
 // carried and resolves nothing of its own, for the reason refuseReadOnlyToken gives, and carries no
-// WWW-Authenticate challenge, since no scope makes such a route the token's to call. A server
-// register did not build holds no refusal, and wrapping a route of it panics.
-func (s *server) refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
+// WWW-Authenticate challenge, since no scope makes such a route the token's to call.
+func refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
 	if listed {
 		return next
 	}
-	refusal := s.approveOnlyRefusal
-	if refusal == "" {
-		panic("api: refuseApproveOnlyToken wraps a route of a server register did not build, which holds no approve-only refusal to answer")
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if approveOnlyRequest(r) {
-			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, refusal)
+			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, approveOnlyRefusal)
 			return
 		}
 		next(w, r)
@@ -1686,13 +1671,22 @@ func (s *server) refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http
 }
 
 // approveOnlyRequest reports whether decideBrokerToken resolved r's caller to an approve-only
-// credential (model.Credential.ApproveOnly). The person actor a handler acts as (actingPerson)
-// carries no credential, so a handler that holds such a token to less than its route reads it
-// here: answerAsk, which answers an approval request alone for it.
+// credential (model.Credential.ApproveOnly), read as readOnlyCredential reads a read-only one
+// (resolvedCredential). The person actor a handler acts as (actingPerson) carries no credential,
+// so a handler that holds such a token to less than its route reads it here: answerAsk, which
+// answers an approval request alone for it.
 func approveOnlyRequest(r *http.Request) bool {
-	caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
-	return decided && caller.err == nil && caller.actor.Credential != nil && caller.actor.Credential.ApproveOnly
+	credential := resolvedCredential(r.Context())
+	return credential != nil && credential.ApproveOnly
 }
+
+// approveOnlyRefusal is the message of every 403 APPROVE_ONLY_TOKEN refuseApproveOnlyToken answers:
+// the approve list (approveScopeRoutes) in words. It is built from the list itself, so it names
+// every route the list names on the day the list changes, and each of them is a route a running
+// Dispatch serves, since register refuses to mount a table whose list names any other
+// (routesNotMounted).
+var approveOnlyRefusal = "this request's credential is an approve-only token, which may call only the routes Dispatch's approve list names (" +
+	strings.Join(approveScopeRoutes, ", ") + "): nothing ran"
 
 // readOnlyRefusal is the message of every 403 READ_ONLY_TOKEN refuseReadOnlyToken answers: one
 // text that names no route, since the read class is the table's own and a refusal that listed it
