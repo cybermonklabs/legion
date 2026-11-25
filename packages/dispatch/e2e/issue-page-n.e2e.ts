@@ -685,18 +685,18 @@ function phrasesOf(value: unknown): string[] {
   return [];
 }
 
-// c-plain-words, and part N's R9 over INV-2's word states (`WORD_STATES`): no view, each view,
-// the node menu open and a document open, at 1440 px and at 390 px.
+// c-plain-words, and part N's R9 over INV-2's word states (`WORD_STATES`): each control of the
+// view row on, Documents' list among them, and a document open, at 1440 px and at 390 px.
 test("the page draws no internal word and no helper text @phone", async ({ browser }) => {
   // The check reads the page's chrome in INV-2's fourteen word states and in the body of every
   // row the seeded issue draws with every branch open - 58 of them - each reading read against
   // seven patterns and the declared list. One `expect` per reading was 70,000 calls at about
   // 4 ms each - 281 s of assertion beside 20 s of page work - so each state gathers every
   // offender it finds and names them in one assertion, which reads the same strength and says
-  // more: a state that draws three internal words names all three rather than the first. The
-  // whole walk measured about 66 s on chromium in the issue pod, alone, so the row carries a
-  // deadline of its own, with room for a slow leg.
-  test.setTimeout(600_000);
+  // more: a state that draws three internal words names all three rather than the first.
+  // Measured in the issue pod, alone, over every state but the document's two loads: 28.5 s on
+  // chromium and 26.2 s on iphone; the bound is about six times that, for a slow leg.
+  test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // The page's one declared list of what it draws unasked holds names, states, labels and
     // one-line lines that say what a place, a node or the issue holds or lacks; an entry that
@@ -709,6 +709,7 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
       return !lines.has(phrase) || /\bthe page\b/iu.test(phrase) || words.includes("row");
     });
     expect(helperText, "the page declares helper text among what it draws unasked").toEqual([]);
+    // The phase words, the ask body's and decision card's lists join once N's stack has INFRA-5702.
     // What the page says only in answer to the reader's own act, read on each fresh load below.
     const answers = ANSWER_PHRASES.map((phrase) => phrase.trim()).filter(
       (phrase) => phrase.length > 3
@@ -756,7 +757,7 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
 
     for (const { state, width } of WORD_STATES) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
-      // `openPageState` waits for what the state draws - a view's rows, the menu's items, the
+      // `openPageState` waits for what the state draws - a view's rows, the list's rows, the
       // document's words - since a page read before its own reads land is a head and a frame,
       // which draw no internal word because they draw almost nothing. What it cannot say is that
       // the page has finished filling: it reads the state's first rows, and the walk over every
@@ -1110,37 +1111,37 @@ test("documents open from the node menu and are never rows of the outline @phone
   });
 });
 
-// c-reflow, and part N's R9 over INV-2's reflow states (`REFLOW_STATES`): no view, each view, the
-// node menu open, a document open and the Outline sheet open, at six widths.
+// c-reflow, and part N's R9 over INV-2's reflow states (`REFLOW_STATES`): each control of the view
+// row on, Documents' list among them, a document open and the Outline sheet open, at seven widths.
 test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
-  // Eight states at six widths, each a load of the page, with a clipping walk over every row a
-  // view draws, each read in the browser, plus the page's own fit, the open menu's, the open
-  // document's, the sheet's and the panel's. Measured in the issue pod, alone: 2.6 min on
-  // chromium and 2.5 min on iphone, which read the same six widths; the bound is about four
-  // times that, for a slow leg.
-  test.setTimeout(600_000);
+  // Eight states at seven widths, each a load of the page, with a clipping walk over every row a
+  // view draws, each read in the browser, plus the page's own fit, Documents' list's, the open
+  // document's, the sheet's and the panel's. Measured in the issue pod, alone: 1.6 min on
+  // chromium and 1.7 min on iphone, which read the same seven widths, where CI read 2.6 min at
+  // six; the bound is about four times the pod's, for a slow leg.
+  test.setTimeout(420_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // The test sets the viewport and writes no width rule of its own: every measure is the page's.
     for (const { state, width } of REFLOW_STATES) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
-      // Nothing below is measured until the state is drawn: a view's rows, the menu's items, the
+      // Nothing below is measured until the state is drawn: a view's rows, the list's rows, the
       // document's words (`openPageState`). `gotoIssue` waits for the head alone, and the tree
       // is drawn empty and fills as the reads land, so a measurement taken then would read a
       // page that holds no row - and a page that holds no row is a page that fits, which is the
       // first thing `assertPageFits` retries its way into passing on. What the wait cannot say is
       // that the last row has landed; the walk below reads the rows that are drawn when it runs,
-      // and six widths read them six times.
+      // and seven widths read them seven times.
       await openPageState(page, seeded.key, state);
       const at = `${stateName(state)} at ${width} px`;
       // In every state the page fits its viewport, with its header and its view row whole.
       await assertPageFits(page);
       await assertWhole(identityBlock(page));
       await assertWhole(presetRow(page));
-      if (state.kind === "node-menu") {
-        // The open menu - its filter, its items and the controls on each - fits across the
-        // screen; at 760 px and below it stands in the Outline sheet, which does too (R4).
-        await assertWholeAcross(openMenu(page).locator(".."));
-        if (width <= 760) await assertWholeAcross(outlineSheet(page));
+      if (state.kind === "view" && state.preset === "documents") {
+        // Documents' list, drawn in place of the outline - its filter, Upload, New document and
+        // each row with its controls - scrolls down with the page and is read for a sideways clip
+        // and a clamped line, as Details is.
+        await assertWholeAcross(documentsList(page));
         continue;
       }
       if (state.kind === "document") {
@@ -1159,7 +1160,8 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
         // From 1024 px the Contents pane stands at the outline's left: its list scrolls down by
         // design and is read for a sideways clip, and each of its one-line rows for a box that
         // reaches past its own. Below 1024 px the Outline control opened the same list in a
-        // sheet over the page, which leaves the page fitting its viewport.
+        // sheet over the Spec view, with the view row's small controls above it, which leaves
+        // the page fitting its viewport.
         if (width >= 1024) {
           await assertWholeAcross(contentsPane(page));
           // The pane lists the tree whose rows the state's wait saw drawn, so one read finds its

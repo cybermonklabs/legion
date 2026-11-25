@@ -27,6 +27,7 @@ import {
   outlineSheet,
 } from "./issue-page";
 import { expectIssuePageDrawn, nodeRows } from "./issue-page-g";
+import { expectActivePreset, pickPreset } from "./issue-page-i";
 import type { Box } from "./layout";
 import { navigateInApp } from "./sends";
 import { expandedState, settledState } from "./settled";
@@ -1506,11 +1507,11 @@ export function drawsPart(part: AddressPart): boolean {
 // INV-2: the states and widths of part N's R9.
 // ---------------------------------------------------------------------------------------------
 
-/** One state of the page R9 reads: Conversation, which is no view on, or one of the four views;
- *  the node menu open; a document open in place of the outline; or the Outline sheet open. */
+/** One state of the page R9 reads: a control of the view row on - Conversation, which is no view
+ *  on, each of the four views, or Documents, whose list is drawn in place of the outline; a
+ *  document open in place of the outline; or the Outline sheet open. */
 export type PageState =
   | { readonly kind: "view"; readonly preset: Preset }
-  | { readonly kind: "node-menu" }
   | { readonly kind: "document" }
   | { readonly kind: "outline-sheet" };
 
@@ -1520,7 +1521,9 @@ export interface StateAtWidth {
   readonly width: number;
 }
 
-/** No view on, and each of the four views. */
+/** Each control of the view row on, in the order the row draws them (`PRESET_ORDER`): no view,
+ *  each of the four views, and Documents' list. Dashboard, Threads and Graph join through
+ *  `PRESET_ORDER` once each is on `main`. */
 const VIEWS: readonly PageState[] = PRESET_ORDER.map((preset) => ({ kind: "view", preset }));
 
 /** Each of `states` at each of `widths`, the widths outermost: the page is resized once for every
@@ -1530,48 +1533,59 @@ function atEachWidth(states: readonly PageState[], widths: readonly number[]): S
 }
 
 /** INV-2's states in which no text the page draws as its own holds an internal word (R9's first
- *  sentence, `c-documents` (4)): no view, each view, the node menu open and a document open, at
- *  1440 px and at 390 px. */
+ *  sentence, `c-documents` (4)): each control of the view row on, Documents' list among them,
+ *  and a document open, at 1440 px and at 390 px. */
 export const WORD_STATES: readonly StateAtWidth[] = atEachWidth(
-  [...VIEWS, { kind: "node-menu" }, { kind: "document" }],
+  [...VIEWS, { kind: "document" }],
   [1440, 390]
 );
 
 /** INV-2's states in which no part of the page scrolls in two dimensions (R9's second sentence,
- *  `c-documents` (5)): no view, each view, the node menu open, a document open and the Outline
- *  sheet open, at the six widths. */
+ *  `c-documents` (5)): each control of the view row on, Documents' list among them, a document
+ *  open and the Outline sheet open, at R9's seven widths. */
 export const REFLOW_STATES: readonly StateAtWidth[] = atEachWidth(
-  [...VIEWS, { kind: "node-menu" }, { kind: "document" }, { kind: "outline-sheet" }],
-  [320, 390, 768, 1024, 1280, 1440]
+  [...VIEWS, { kind: "document" }, { kind: "outline-sheet" }],
+  [320, 390, 768, 1024, 1280, 1440, 1920]
 );
 
 /** How a failure names `state`. */
 export function stateName(state: PageState): string {
   switch (state.kind) {
     case "view":
-      return state.preset === "conversation" ? "no view" : `the ${PRESET_NAMES[state.preset]} view`;
-    case "node-menu":
-      return `the ${CONTROL_LABELS.other_nodes} menu open`;
+      if (state.preset === "conversation") return "no view";
+      if (state.preset === "documents") return `${PRESET_NAMES.documents}' list`;
+      return `the ${PRESET_NAMES[state.preset]} view`;
     case "document":
       return "the spec open as a document";
     case "outline-sheet":
-      return "the Outline sheet open";
+      return `the Outline sheet open over the ${PRESET_NAMES.spec} view`;
   }
 }
 
 /**
  * Loads issue `key` in `state`, as a reader reaches it, and waits until the page draws it: a
- * view at its address, with the rows it draws; the node menu at `/artifacts`, the address that
- * opens it (R6), with its items - at 760 px and below inside the Outline sheet, which that
- * address opens with it (R4); the issue's spec at its own address, with its editor's words; and
- * the Outline sheet opened by its control from the issue's address, below 1024 px. From 1024 px
- * the page draws no Outline control, and the same list stands in the Contents pane beside the
- * outline, which is drawn open.
+ * view at its address, with the rows it draws, and Documents' list at its address with its rows;
+ * the issue's spec at its own address, `/issues/<key>/artifacts/<slug>`, which is where the
+ * spec's row of Documents' list goes, with its editor's words; and below 1024 px the Outline
+ * sheet opened by its control with the Spec view on, where the sheet holds the view row's small
+ * controls besides the outline's list (R4). From 1024 px the page draws no Outline control, and
+ * with no view on the same list stands in the Contents pane beside the outline, which is drawn
+ * open; under a view it draws no Contents pane.
  */
 export async function openPageState(page: Page, key: string, state: PageState): Promise<void> {
   switch (state.kind) {
     case "view":
       await gotoIssue(page, presetPath(key, state.preset));
+      if (state.preset === "documents") {
+        // The list is drawn in place of the outline, so the page draws no tree to wait for. Its
+        // rows come with the issue's read, all at once, so its first row says they are drawn.
+        await expect(documentsList(page), `${stateName(state)} is not drawn`).toBeVisible();
+        await expect(
+          documentsList(page).getByRole("listitem").first(),
+          `${stateName(state)} draws no row`
+        ).toBeVisible();
+        return;
+      }
       await expectIssuePageDrawn(page);
       await expect
         .poll(async () => await nodeRows(page).count(), {
@@ -1579,17 +1593,13 @@ export async function openPageState(page: Page, key: string, state: PageState): 
         })
         .toBeGreaterThan(0);
       return;
-    case "node-menu":
-      await gotoIssue(page, `/issues/${key}/artifacts`);
-      await expect(openMenu(page), "/artifacts does not open the node menu").toBeVisible();
-      await expect(openMenu(page).getByRole("menuitem").first()).toBeVisible();
-      return;
     case "document":
       await gotoIssue(page, await specAddress(key));
       await expect(openedEditor(page), "the spec's address opens no editor").toBeVisible();
       await expect(openedEditor(page)).toContainText(/\S/u);
       return;
     case "outline-sheet": {
+      // With no view on, the page says which of the two it draws the outline's list in.
       await gotoIssue(page, `/issues/${key}`);
       await expectIssuePageDrawn(page);
       await expect.poll(async () => await nodeRows(page).count()).toBeGreaterThan(0);
@@ -1598,6 +1608,15 @@ export async function openPageState(page: Page, key: string, state: PageState): 
         ["Contents pane", contentsPane(page)],
       ]);
       if (drawn === "Contents pane") return;
+      // The Spec view is turned on from the view row, as a reader turns it on, and the sheet is
+      // opened once the view draws its rows.
+      await pickPreset(page, PRESET_NAMES.spec);
+      await expectActivePreset(page, PRESET_NAMES.spec);
+      await expect
+        .poll(async () => await nodeRows(page).count(), {
+          message: `the ${PRESET_NAMES.spec} view draws no row`,
+        })
+        .toBeGreaterThan(0);
       await outlineControl(page).click();
       await expect(outlineSheet(page), "the Outline control opens no sheet").toBeVisible();
       return;
