@@ -3,10 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -24,12 +21,7 @@ func TestTheGuardChecksGoToTheirRoutesJoinedOntoTheEndpointURLs(t *testing.T) {
 	const name, agent, listener = "loadtest-join", "join-agent-token", "join-listener-token"
 	for _, c := range joinURLCases {
 		t.Run(c.name, func(t *testing.T) {
-			var mu sync.Mutex
-			var asked []url.URL
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				mu.Lock()
-				asked = append(asked, *r.URL)
-				mu.Unlock()
+			base, asked := joinAskedStand(t, func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/varz"):
 					_, _ = w.Write([]byte(`{"server_name":"` + name + `"}`))
@@ -42,20 +34,18 @@ func TestTheGuardChecksGoToTheirRoutesJoinedOntoTheEndpointURLs(t *testing.T) {
 				default:
 					http.NotFound(w, r)
 				}
-			}))
-			t.Cleanup(srv.Close)
-			endpoint := srv.URL + c.suffix
+			})
+			endpoint := base + c.suffix
 			err := checkStack(context.Background(), endpoints{natsMon: endpoint, natsServerName: name, dispatch: endpoint, token: agent, listener: endpoint, listenerToken: listener})
-			mu.Lock()
-			defer mu.Unlock()
+			got := asked()
 			want := []string{"/prefix/varz", "/prefix/api/v1/projects", "/prefix/v1/sessions", "/prefix/v1/sessions"}
-			for i, u := range asked {
+			for i, u := range got {
 				if i >= len(want) || u.Path != want[i] || u.RawQuery != c.query {
 					t.Errorf("check %d of an endpoint URL ending %q went to path %q with query %q; want the paths %q, each with query %q", i+1, c.suffix, u.Path, u.RawQuery, want, c.query)
 				}
 			}
-			if len(asked) != len(want) {
-				t.Errorf("the endpoints were asked %d times; want %d", len(asked), len(want))
+			if len(got) != len(want) {
+				t.Errorf("the endpoints were asked %d times; want %d", len(got), len(want))
 			}
 			if err != nil {
 				t.Errorf("checkStack = %v; want the stand-in taken for the stack's own", err)
@@ -69,28 +59,12 @@ func TestTheGuardChecksGoToTheirRoutesJoinedOntoTheEndpointURLs(t *testing.T) {
 // information and its query, fails the guard's check in fixed words, with none of the URL
 // (<check>-unparsed); http.NewRequest's error, which the check printed before, quotes it whole
 // (twin). An endpoint URL that parses, whose joined URL, as url.URL.String writes it, url.Parse
-// refuses (an IPv6 zone holding a byte that is not ASCII, which String escapes as %FD), is refused
-// the same way (<check>-reparsed); its twin shows http.NewRequest's error for the joined URL holds
-// the credentials. Captures loadtest.guard-url/<check>-<case>.
+// refuses (an IPv6 zone escape), is refused the same way (<check>-reparsed); its twin shows
+// http.NewRequest's error for the joined URL holds the credentials. Captures
+// loadtest.guard-url/<check>-<case>.
 func TestAGuardEndpointURLThatDoesNotJoinPrintsNoneOfIt(t *testing.T) {
-	param := "access" + "_token"
-	userinfo := redacttest.User + ":" + redacttest.Password + "@"
-	unparsed := "http://" + userinfo + "127.0.0.1:1/endpoint%zz?" + param + "=" + redacttest.Token
-	reparsed := "http://" + userinfo + "[::%25\xfd]/endpoint?" + param + "=" + redacttest.Token
-	t.Run("twin", func(t *testing.T) {
-		if _, err := http.NewRequest(http.MethodGet, unparsed+"/varz", nil); err == nil || len(redacttest.Held(err.Error())) != len(redacttest.Secrets) {
-			t.Errorf("http.NewRequest = %v; want an error that quotes the credentials, so the row can see them", err)
-		}
-	})
-	t.Run("reparsed-twin", func(t *testing.T) {
-		parsed, err := url.Parse(reparsed)
-		if err != nil {
-			t.Fatalf("url.Parse refused the endpoint URL (%v); the row needs one it takes", err)
-		}
-		if _, err := http.NewRequest(http.MethodGet, parsed.JoinPath("varz").String(), nil); err == nil || len(redacttest.Held(err.Error())) != len(redacttest.Secrets) {
-			t.Errorf("http.NewRequest of the joined URL = %v; want an error that quotes the credentials, so the row can see them", err)
-		}
-	})
+	unparsed, reparsed := joinRefusedURLs("/endpoint")
+	joinRequireTwins(t, unparsed, reparsed, "/varz")
 	checks := []struct {
 		name      string
 		endpoints func(endpoint string) endpoints

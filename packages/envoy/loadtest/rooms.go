@@ -155,10 +155,10 @@ func readWindow(ctx context.Context, ep endpoints) windowReading {
 	return r
 }
 
-// getJSON decodes the body of a GET of route joined onto base, an endpoint's URL (urljoin.Join:
-// onto its path, after its query, its fragment dropped, where route appended to the URL's text
-// would sit inside a query or a fragment and the endpoint would be asked another path), into v
-// (getOK). A base that does not join is refused in fixed words: url.Parse's error, which
+// getJSON decodes into v the body of a GET (getOK) of route joined onto base, an endpoint's URL
+// (urljoin.Join): onto its path, after its query, its fragment dropped, where route appended to
+// the URL's text would sit inside a query or a fragment and the endpoint would be asked another
+// path. A base that does not join is refused in fixed words: url.Parse's error, which
 // http.NewRequest's carries, quotes the URL whole, user information and query included. The body
 // is the server's words, or the words of whatever answers in its place, and a decoder's error can
 // quote a value it could not read (time.Time's does), so an answer that does not decode is named
