@@ -483,7 +483,7 @@ func run(repo, inventoryPath string, o options, out io.Writer) int {
 	if g.unknowns > 0 {
 		return g.stopUnknown(4, "baseline")
 	}
-	fmt.Fprintf(out, "PASS stage 4 (baseline): %d rows' tests pass unmutated; the longest correct run is %s (row %s); each run's bound is row_timeout, %s, plus four times its start-up run\n", len(gated), g.longest.Round(time.Second), g.longestRow, g.rowTimeout)
+	fmt.Fprintln(out, baselinePassed(gated, g.longest, g.longestRow, g.rowTimeout))
 	for _, r := range gated {
 		g.gateRow(r, ranges[r])
 	}
