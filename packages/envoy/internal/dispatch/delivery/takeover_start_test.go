@@ -14,10 +14,11 @@ import (
 )
 
 // A take-over's start, row by row, with no server: each row is a durable as ConsumerInfo reports
-// it, or the start a hold's token recorded for a durable that does not exist, the stream's ends,
-// and the stream sequence the take-over creates the durable at (takeOverStart, withinStream, which
-// say why each row starts where it does). The two tests after it take the durable over on a server,
-// through the take-over's one read of the stream's ends (readStreamEnds).
+// it, or the start a hold's token recorded for a durable that does not exist (0 for none), the
+// stream's ends, and the stream sequence the take-over creates the durable at (takeOverStart for
+// the first, createStart for the second, which say why each row starts where it does). The two
+// tests after it take the durable over on a server, through the take-over's one read of the
+// stream's ends (readStreamEnds).
 func TestATakeOverStartsAtTheFloorRuleOrTheTip(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -42,6 +43,18 @@ func TestATakeOverStartsAtTheFloorRuleOrTheTip(t *testing.T) {
 			name:     "a durable with no start of its own whose own counts are 0, on an empty stream, starts at 1",
 			deployed: &natsgo.ConsumerInfo{},
 			want:     startPlan{start: 1},
+		},
+		{
+			// The jobs durable as main and the build before holds create it when it is absent: at
+			// DeliverNew, with no start of its own, created when the stream's last message was 41,
+			// and never delivered a message. The job events stored since its create are its own.
+			name: "a DeliverNew durable with no start of its own that was never delivered a message starts after its floor",
+			deployed: &natsgo.ConsumerInfo{
+				Config:   natsgo.ConsumerConfig{DeliverPolicy: natsgo.DeliverNewPolicy},
+				AckFloor: natsgo.SequenceInfo{Stream: 41}, Delivered: natsgo.SequenceInfo{Stream: 41},
+			},
+			ends: streamEnds{first: 1, last: 100},
+			want: startPlan{start: 42},
 		},
 		{
 			// nats-server v2.15.1's fresh durable: delivered and acked up to the sequence before
@@ -128,6 +141,11 @@ func TestATakeOverStartsAtTheFloorRuleOrTheTip(t *testing.T) {
 			ends:     streamEnds{first: 1, last: 20},
 			want:     startPlan{start: 7},
 		},
+		{
+			name: "a durable that does not exist, with no recorded start, is created after the stream's last message",
+			ends: streamEnds{first: 1, last: 20},
+			want: startPlan{start: 21},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -140,7 +158,7 @@ func TestATakeOverStartsAtTheFloorRuleOrTheTip(t *testing.T) {
 						created.DeliverPolicy, created.OptStartSeq, got.start)
 				}
 			} else {
-				got = withinStream(row.recorded, row.ends)
+				got = createStart(row.recorded, row.ends)
 			}
 			if got != row.want {
 				t.Fatalf("the take-over starts the durable at %d (moved back from %d), want %d (moved back from %d)",

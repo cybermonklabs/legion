@@ -9,11 +9,12 @@ import (
 )
 
 // A take-over's start: where an intake creates its durable, the rules that decide it
-// (takeOverStart, withinStream) and the one read of the stream they need (readStreamEnds). The
-// rules are pure functions of what the server reported, so TestATakeOverStartsAtTheFloorRuleOrTheTip
-// holds each row of them without a server, and the read is the one place a take-over learns the
-// stream's ends, so TestATakeOverOfADurableThatDeliveredNothingStartsAfterTheStreamsLastMessage
-// fails when that read answers nothing.
+// (takeOverStart for a durable that exists, createStart for one that does not, withinStream for
+// both) and the one read of the stream they need (readStreamEnds). The rules are pure functions of
+// what the server reported, so TestATakeOverStartsAtTheFloorRuleOrTheTip holds each row of them
+// without a server, and the read is the one place a take-over learns the stream's ends, so
+// TestATakeOverOfADurableThatDeliveredNothingStartsAfterTheStreamsLastMessage fails when that read
+// answers nothing.
 
 // streamEnds is the stream's first and last sequence, as one read of it answered (readStreamEnds).
 // A stream that has stored nothing reports 0 for both.
@@ -23,8 +24,11 @@ type streamEnds struct {
 
 // readStreamEnds reads the stream's ends for one take-over, and answers false, having logged why,
 // when the read failed: the take-over then stops, and the next attempt makes it again. It is read
-// after the durable's own state (takeOver), so no sequence the durable reports is past the stream's
-// end as this read answers it.
+// after the durable's own state (takeOver), so a sequence the durable reports is never past the
+// stream's end because this read came too early: one that lies past the end does so because the
+// stream was cut or created again (withinStream). That is why one read is enough here, where the
+// session consumers read the stream a second time when a start lies past the end of a read they
+// joined before the consumer's (bus.SessionConsumers' pastStreamEnd).
 func (d *heldDurable) readStreamEnds(ctx context.Context) (streamEnds, bool) {
 	stream, err := d.nats.JS().StreamInfo(bus.Stream, natsgo.Context(ctx))
 	if err != nil {
@@ -36,20 +40,9 @@ func (d *heldDurable) readStreamEnds(ctx context.Context) (streamEnds, bool) {
 
 // startPlan is the stream sequence a take-over creates the durable at, and pastEnd the start the
 // rules first read when that one lay past the stream's end and was moved back (withinStream), 0
-// when none was.
+// when none was. finishTakeOver logs that move at ERROR once the create has succeeded.
 type startPlan struct {
 	start, pastEnd uint64
-}
-
-// startAt is plan's start, logging at ERROR a start moved back from past the stream's end: the
-// stream's sequence fell below what the durable had read, so the stream was cut or created again,
-// and what it held between the two is gone.
-func (d *heldDurable) startAt(plan startPlan) uint64 {
-	if plan.pastEnd != 0 {
-		d.tuning.log.Error("dispatch delivery: a NATS consumer's start lay past the stream's end; it is created at the first message the stream holds",
-			"name", d.name, "start_seq", plan.pastEnd, "created_at", plan.start)
-	}
-	return plan.start
 }
 
 // takeOverConfig is the config a take-over recreates the durable deployed describes with: the
@@ -70,8 +63,9 @@ func takeOverConfig(deployed *natsgo.ConsumerInfo, wanted natsgo.ConsumerConfig,
 	return startingAt(config, start)
 }
 
-// takeOverStart is where a take-over starts the durable deployed, ends being the stream's, and the
-// one place the intakes' start rules are written.
+// takeOverStart is where a take-over starts the durable deployed, ends being the stream's. With
+// createStart, for a durable that does not exist, it is where the intakes' start rules are
+// written.
 //
 // A durable with an ack floor starts right after it, the floor the session consumers read
 // (bus.AckFloor, over consumerPosition): the recreated durable redelivers at once every message
@@ -91,14 +85,19 @@ func takeOverConfig(deployed *natsgo.ConsumerInfo, wanted natsgo.ConsumerConfig,
 // delivered stream sequence and ack floor as the sequence before its start (server/consumer.go
 // v2.15.1, lines 3594 and 6478), so a test on it sees no difference from that term.
 //
-// A durable that records no start of its own and that, by its own consumer counts, was delivered
-// nothing and acknowledged nothing (startsAtTheTip) starts after the stream's last message, as a
-// first create does. That is a durable a build before this one created with no start sequence --
-// the events durable of generation 1 at DeliverAll above all -- which no process bound: every
-// message the stream holds reached it with nobody reading, and the floor rule would hand the new
-// holder all of them. Its stream counts cannot say so, since a DeliverAll consumer starts at the
-// stream's first sequence (line 6383) and reports the sequence before it as delivered: 0 on a
-// stream whose first message is 1, and more once the first messages have aged out.
+// A durable that delivers from the stream's first message (DeliverAll), records no start of its
+// own and, by its own consumer counts, was delivered nothing and acknowledged nothing
+// (startsAtTheTip) starts after the stream's last message, as a first create does. That is a
+// durable a build before this one created with no start sequence -- the events durable of
+// generation 1 above all -- which no process bound: every message the stream holds reached it with
+// nobody reading, and the floor rule would hand the new holder all of them. Its stream counts
+// cannot say so, since a DeliverAll consumer starts at the stream's first sequence (line 6383) and
+// reports the sequence before it as delivered: 0 on a stream whose first message is 1, and more
+// once the first messages have aged out. A DeliverNew durable with no start of its own -- the jobs
+// durable as main and the build before holds create it when it is absent -- starts at the
+// stream's next message when it is created, and the server reports the sequence before that as
+// delivered, so the floor rule starts it there again, and the job events stored since its create,
+// which those builds deliver, are delivered.
 //
 // A start past the stream's end is moved back to the first message the stream holds
 // (withinStream).
@@ -107,6 +106,18 @@ func takeOverStart(deployed *natsgo.ConsumerInfo, ends streamEnds) startPlan {
 		return startPlan{start: ends.last + 1}
 	}
 	return withinStream(bus.AckFloor(consumerPosition(deployed))+1, ends)
+}
+
+// createStart is where a take-over creates a durable that does not exist, recorded being the start
+// the hold's token records (intakeHoldToken) and ends the stream's: after the stream's last message
+// when the token records none, as a first create does, and otherwise at that start, which a take-over
+// that did not create the durable again or a check that found it lost (check) recorded, moved back
+// to the first message the stream holds when it lies past the stream's end (withinStream).
+func createStart(recorded uint64, ends streamEnds) startPlan {
+	if recorded == 0 {
+		return startPlan{start: ends.last + 1}
+	}
+	return withinStream(recorded, ends)
 }
 
 // withinStream is start, or, when start lies past the sequence after the stream's last, the first
@@ -124,9 +135,11 @@ func withinStream(start uint64, ends streamEnds) startPlan {
 }
 
 // startsAtTheTip reports whether a take-over starts deployed after the stream's last message
-// (takeOverStart): it records no start sequence, and deliveredNothing holds of it.
+// (takeOverStart): it delivers from the stream's first message (DeliverAll), records no start
+// sequence, and deliveredNothing holds of it.
 func startsAtTheTip(deployed *natsgo.ConsumerInfo) bool {
-	return deployed.Config.OptStartSeq == 0 && deliveredNothing(deployed)
+	return deployed.Config.DeliverPolicy == natsgo.DeliverAllPolicy && deployed.Config.OptStartSeq == 0 &&
+		deliveredNothing(deployed)
 }
 
 // deliveredNothing reports whether, by the durable's own consumer counts, which start at 0 at
