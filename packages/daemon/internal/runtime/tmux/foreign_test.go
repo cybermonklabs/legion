@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A tmux daemon that takes over a project's store from a daemon that ran it under runtime
@@ -231,13 +232,9 @@ func TestAResumeOverAForeignIncarnationOpensThePaneOnTheCarriedSession(t *testin
 		_, err := f.Resume(ctx, &prev, spec)
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Resume over a foreign incarnation: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Resume over a foreign incarnation waited for a process this runtime cannot see")
+	// A resume that waited for the previous incarnation would wait out the hour-long stop grace.
+	if err := testwait.Receive(t, "the resume over a foreign incarnation, which waits for no process this runtime cannot see", done); err != nil {
+		t.Fatalf("Resume over a foreign incarnation: %v", err)
 	}
 	var command string
 	for _, argv := range f.argvs {

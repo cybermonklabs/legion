@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"golang.org/x/sys/unix"
@@ -69,7 +70,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	defer func() {
 		_ = source.remove()
 	}()
-	if err := ensureRepoClone(ctx, run, WallClock{}, workspace.Clone, GitHubURL(request.Repo), request.DefaultBranch, source); err != nil {
+	if err := ensureRepoClone(ctx, run, clock.Real(), workspace.Clone, GitHubURL(request.Repo), request.DefaultBranch, source); err != nil {
 		return Workspace{}, err
 	}
 	if err := ensureFetchConfiguration(ctx, run, workspace.Clone, source); err != nil {

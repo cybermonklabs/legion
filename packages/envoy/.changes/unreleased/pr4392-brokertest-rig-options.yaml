@@ -1,0 +1,12 @@
+kind: Added
+custom:
+  Issue: pr4392
+body: |-
+  The broker's test rig (`internal/cipher/ciphertest` and its public facade
+  `packages/envoy/ciphertest`) takes `WithAccessLifetime`, how long an access token its broker
+  issues lasts, fifteen minutes unless a test sets another. Its token exchange also lists a Legion
+  daemon's own pod (`DaemonExchangeAccount`, whose entry fixes the session `legion-daemon:EXAMPLE`
+  and names the rig's person) and a pod of a second project (`OtherProjectAccount`, of the project
+  `OTHER`). `Rig.Introspect` reads one of its broker's access tokens back at
+  `POST /v1/oauth/introspect`, asked as the Envoy listener asks, and the facade names the answer's
+  type `Introspection`.

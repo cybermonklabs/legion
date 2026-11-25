@@ -384,17 +384,23 @@ func (s *supervision) endTakenRounds(ctx context.Context, issue, operation strin
 //
 // It answers what the finish of r did, which is nothing where took is true, and whether the round is
 // over: false where the store refused the finish, and the round stays open with r for a later sweep.
+// Whom either end names is read of each member as it stands now (lostClaims, workOnRoundPod), over
+// the store's record of the disk of the round's pod (roundPodHoldsEarlierWork), as every end of a
+// round reads it.
 func (s *supervision) endRecordedRound(ctx context.Context, group []supervise.Claim, r store.PodReplacement, rec replacementRecord, took bool) (store.PodReplacementFinish, bool) {
 	if !took {
-		return s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lostClaims(group, rec.Round), rec.read(r.PodUID), group, r, false)
+		earlierWork := s.roundPodHoldsEarlierWork(ctx, r.Issue, rec.Round)
+		lost := lostClaims(group, rec.Round, earlierWork)
+		return s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lost, lost, rec.read(r.PodUID), group, earlierWork, r, false)
 	}
 	attrs := []any{"issue", r.Issue, "pod", r.PodUID, "operation", r.Operation, "round", rec.Round}
 	if s.roundOver(r.Issue, group, rec.Round) {
 		s.log.Info("supervise: the finish of a launch's act took this record of a replacement of the issue's pod, whose update round is over already", attrs...)
 		return store.PodReplacementFinish{}, true
 	}
+	earlierWork := s.roundPodHoldsEarlierWork(ctx, r.Issue, rec.Round)
 	s.log.Info("supervise: the finish of a launch's act took this record of the update round's replacement of the issue's pod with it; the round ends as that act, with no notice of its own",
-		append(attrs, "unansweredMembers", namesOf(lostClaims(group, rec.Round)))...)
+		append(attrs, "unansweredMembers", namesOf(lostClaims(group, rec.Round, earlierWork)))...)
 	s.endPodUpdates(r.Issue, group, rec.Round)
 	return store.PodReplacementFinish{}, true
 }

@@ -16,12 +16,15 @@ package daemon
 // the store and restored as a boot restores them (newPodUpdateRig's sup.restore).
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -307,6 +310,69 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The round passed over the implementer, a claim the daemon suspended, and the implementer answers
+// the round while the sweep decides the replacement: its machine has published the answer and
+// waits on the store's write of it, which the test holds with a lock on the claim's row. The
+// replacement's decision reads such a claim as one that has not answered (masked), but the round
+// waits for no answer of a claim it passed over, so the replacement is made at this sweep. The
+// read of the workspace is made before every replacement (readPodWorkspace, R7 of #5285), through
+// the tester, and it finds work; the round is over a drift that breaks the pod, so the replacement
+// takes the pod all the same. The keep, the line and the architect's notice read the claim as it
+// holds its answer (noticeGroup): the implementer answered the round, so it pushed its work, and
+// no claim is left that the round did not wait for and that had not answered. So the line names
+// no claim under notWaitedFor, the architect's workspace-taken notice names no role, and the issue
+// is written nothing.
+func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *testing.T) {
+	rig := newPodUpdateRig(t, suspendedRole(claim.RoleImplementer, supervise.SuspendedByDaemon), readyWorker(claim.RoleTester))
+	token := rig.tokens[claim.RoleImplementer]
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+	rig.drifts(roundBreakingDrift)
+
+	rig.tick()
+	rig.awaitAsked(claim.RoleTester, podUpdateRound)
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.signal(claim.RoleTester, "c0ffee")
+	rig.settleAll()
+	if n := len(rig.replacements()); n != 0 {
+		t.Fatalf("the pod was replaced %d times before the sweep the test holds the implementer's answer at, want none", n)
+	}
+
+	// The lock is taken on a context the pool sees no hold on, as a second session of the
+	// database takes it, and it is let go before the rig stops the machines.
+	lock, err := rig.pool.BeginTx(context.Background(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin the locking transaction: %v", err)
+	}
+	unlock := func() { _ = lock.Rollback(context.Background()) }
+	t.Cleanup(unlock)
+	if _, err := lock.Exec(context.Background(), "select 1 from claims where token = $1 for update", string(token)); err != nil {
+		t.Fatalf("lock the implementer's claim row: %v", err)
+	}
+	answering := rig.claimOf(claim.RoleImplementer)
+	rig.sup.post(token, supervise.PodUpdateSignalled{Claim: token, Generation: answering.Generation, Session: answering.Session,
+		Round: answering.UpdateRound, Head: "c0ffee"})
+	m, _ := rig.sup.Machine(token)
+	testwait.Eventually(t, "the implementer's machine to publish its answer and wait on the store's write of it", func() bool {
+		return m.Deciding() != nil && m.View().Claim.UpdateSignalledAt != nil
+	})
+	rig.tick()
+	unlock()
+
+	if n := len(rig.replacements()); n != 1 {
+		t.Fatalf("the pod was replaced %d times at the sweep, want once: the tester answered and the round passed over the implementer", n)
+	}
+	rig.awaitClaim(claim.RoleImplementer, "its answer written and the round's end taken", func(c supervise.Claim) bool {
+		return c.UpdateRound == ""
+	})
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 {
+		t.Fatalf("the replacement was logged %+v, want one line", lines)
+	}
+	wantReadThroughTheTester(t, rig, lines[0], "found work")
+	wantField(t, lines[0], "notWaitedFor")
+	wantToldTaken(t, rig)
 }
 
 // R3's last round: a claim an operator suspended, restored as a boot restores it, beside a worker

@@ -246,10 +246,11 @@ func (s *supervision) readKeptPod(ctx context.Context, step keptPodRead) {
 			"issue", issue, "pod", pod, "working", workingClaims(group))
 		return
 	}
-	process, running := podProcess(group, inPod)
-	by := viaIssue
-	if running {
-		by = viaProcess
+	// A claim whose launch waits on the pod runs no process there to read through (podProcess,
+	// awaitsRoundPod), so the pod's launcher reads, as where no claim reaches the pod.
+	process, by := runtime.Known{}, viaIssue
+	if through, reached := podProcess(group, inPod); reached && !awaitsRoundPod(through, inPod) {
+		process, by = podKnown(through), viaProcess
 	}
 	read := s.readPodWorkspace(ctx, issue, inPod, process, by, at)
 	if read.clean() {
