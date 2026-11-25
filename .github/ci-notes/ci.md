@@ -3153,14 +3153,15 @@ why one job).
 
 ## Why a lane's sizing step comes after its retried module download
 
-Seven jobs size their PostgreSQL service for the Dispatch processes they start in a step named
-"Size the service for this lane's Dispatch processes": dispatch-memory, dispatch-multiprocess,
-envoy-go, envoy-go-race, envoy-go-race-api, envoy-go-race-docs and envoy-session-stall. That
-step runs .github/scripts/pg-connection-ceiling.sh, whose `go run`
+Each job that sizes its PostgreSQL service for the Dispatch processes it starts does so in a step
+named "Size the service for this lane's Dispatch processes". At c7939327bc14 ten such steps stand
+in ten jobs: dispatch-memory, dispatch-multiprocess, envoy-go, envoy-go-race, envoy-go-race-api,
+envoy-go-race-docs, envoy-session-stall, daemon-go-race, dispatch-two-builds and
+dispatch-two-builds-same. That step runs .github/scripts/pg-connection-ceiling.sh, whose `go run`
 builds envoy's internal/dispatch/store/cmd/connections, so each puts it after the job's retried
 `go mod download`, and after its module cache restore where the job has one: the build then reads
-the modules those leave and fetches none unretried, as daemon-go-race's step of that name runs
-after its own download (dispatch://INFRA-1545). The step names this section with a `# why:` line.
+the modules those leave and fetches none unretried (dispatch://INFRA-1545). The step names this
+section with a `# why:` line.
 
 ## The pr-title job's budget
 

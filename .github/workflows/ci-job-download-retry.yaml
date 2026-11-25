@@ -681,7 +681,7 @@ jobs:
   # 290 for the held-port image, 380 for the browser image and 230 for the worker image: 80 s,
   # the inline retry's last sleep, plus the longest single attempt of a retried call in that
   # arm's own builds, rounded up to the next whole 10 s, as the comment beside each start step
-  # derives. Why each host is listed, which RUN lines each run faults and the seven no run faults:
+  # derives. Why each host is listed, which RUN lines each run faults and the ones none faults:
   # .github/ci-notes/ci-job-download-retry.md#the-image-arms-outages-and-their-coverage
   # Each report holds its build to the price the gate puts on that build where the image is built
   # for real (.github/scripts/check-download-retry.sh, rule 10), plus the probe's 20 s, plus 150
@@ -919,11 +919,11 @@ jobs:
   # key. Run 1 lists every host any run lists, registry.yarnpkg.com among them although no run
   # reaches it: neither by-host list of job 138666740482 names it, and INFRA-1310's architect
   # ruled at 04:17Z that it stays. It lists the 7 hosts of Oh My Pi's model catalog too, which
-  # runtime 40/40's `legion probe-image` reaches and no run faults: that fetch is no retried
-  # call, so the run that faulted them alone drove no retry, and its report failed on the attempt
-  # check (job 138996340757). The same architect ruled at 05:59Z on 2026-11-25 that they stay in
-  # run 1. Runs 2 to 5 each list one cluster of hosts alone, so that its first request opens an
-  # outage where the build reaches it, and the matrix names each cluster.
+  # runtime 40/40's `legion probe-image` reaches, and run 1 faults them or not as stage timing
+  # falls: that fetch is no retried call, so the run that faulted them alone drove no retry, and
+  # its report failed on the attempt check (job 138996340757). They stay in run 1 by the same
+  # architect's 05:59Z ruling. Runs 2 to 5 each list one cluster of hosts alone, so its first
+  # request opens an outage where the build reaches it.
   #
   # It pulls no base image in a step of its own: BuildKit pulls the worker Dockerfile's FROM
   # images inside the build, as worker-image.yaml's own build does, through the daemon's own
