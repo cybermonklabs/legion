@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -407,5 +408,35 @@ func TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim(t *testing.T) {
 	if err != nil || answer != (TurnOutcomeAnswer{}) {
 		t.Fatalf("the clean report answered %+v, %v; want no run and not failed: the prompt result's 400 failed the claim after this report's decision",
 			answer, err)
+	}
+}
+
+// A report the table ignores runs no judgment, so it failed nothing, and its answer says so. The
+// report of a plugin turn refused with a 400 fails the claim and answers that it did; the claim
+// is failed then (and a failed claim takes no suspension, table.go's onSuspend), so the next
+// report reaches a state whose row ignores it (onTurnOutcome, failedClaim): it is refused and
+// turnOutcome does not run for it. That report's answer must not be the earlier report's, since
+// HandleTurnOutcome's caller reads Failed as "this report failed the claim".
+func TestAnIgnoredTurnOutcomeAnswersNotFailed(t *testing.T) {
+	h := workingClaim(t)
+	answer, err := h.m.HandleTurnOutcome(h.ctx, RequestTurnOutcome{
+		Claim: h.token, Generation: h.generation(), Sequence: 1, Refused: true, HTTPStatus: 400, Unprompted: true,
+	})
+	if err != nil || !answer.Failed {
+		t.Fatalf("the 400 answered %+v, %v; want it failed", answer, err)
+	}
+	h.wantState(StateFailed)
+
+	answer, err = h.m.HandleTurnOutcome(h.ctx, RequestTurnOutcome{
+		Claim: h.token, Generation: h.generation(), Sequence: 2, Refused: true, HTTPStatus: 400, Unprompted: true,
+	})
+
+	h.wantState(StateFailed)
+	var refused *RefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("the report to the failed claim returned %v, want the table's refusal: the failed claim ignores it", err)
+	}
+	if answer.Failed {
+		t.Errorf("the report the failed claim ignored answered %+v; want it not failed: it judged nothing, and the failure was the report before it", answer)
 	}
 }

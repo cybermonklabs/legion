@@ -40,8 +40,10 @@ import {
   parseNodeReference,
 } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
+import { useMediaQuery } from "../../shell/useDialog";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
+import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { standingParts } from "../decisions-filter/entry-standing";
@@ -80,7 +82,7 @@ import type { DrawnRow } from "../tree-fold";
 import { outOfCounts } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { issueTreeQuery, useTreeRead, useTreeReadRunning, viewQuery } from "../tree-read/tree-read";
-import { issueAsksQuery, type NamesFailure, useLastAnswer } from "../useIssueTree";
+import { issueAskThreadsQuery, type NamesFailure, useLastAnswer } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
@@ -196,7 +198,7 @@ export function SpecFilterBody({
   const treeQuery = issueTreeQuery(issue.key);
   const resultsQuery = issueResultsQuery(issue.key);
   const specQuery = viewQuery(issue.key, "spec");
-  const asksQuery = issueAsksQuery(issue.key);
+  const asksQuery = issueAskThreadsQuery(issue.key);
   const coverageRead = useQuery(treeRead(coverageQuery));
   const { blocksOf } = useTreeRead(issue);
   // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`): what a line
@@ -261,14 +263,15 @@ export function SpecFilterBody({
   // held a run whose cell draws no decision may yet have one, so nothing says that none did.
   const decidedHeld = decisionsHeld && asksHeld;
   // Each line of the reads that stand failed (`standsFailed`), in the page's words for such a
-  // read (`STATE_LINES`), under the key it is drawn by: the coverage's and the spec's blocks' as
-  // the statements', the results' and the Verification document's blocks' as the results', which
-  // leave every statement unmarked alike, then the Spec view read's as the decisions', and the
-  // asks'. A line stays, its Retry busy, while a read of it that stands failed runs again, until
-  // the read answers. A line's Retry asks again the reads of that line that stand failed
-  // (`failed`), and no other, and none of them while it is read again already. Each read of a
-  // line is paired with its key's hash (`lineRead`), and each line carries how many times its
-  // reads have been refused since it last stood (`useLineRefusals`), which keys its alert.
+  // read (`STATE_LINES`), under the key it is drawn by: the coverage's, the spec's blocks' and
+  // the Spec view read's as the statements' - one line for that read, which the decisions come
+  // from (decision 450) - the results' and the Verification document's blocks' as the results',
+  // which leave every statement unmarked alike, and the asks'. A line stays, its Retry busy,
+  // while a read of it that stands failed runs again, until the read answers. A line's Retry
+  // asks again the reads of that line that stand failed (`failed`), and no other, and none of
+  // them while it is read again already. Each read of a line is paired with its key's hash
+  // (`lineRead`), and each line carries how many times its reads have been refused since it last
+  // stood (`useLineRefusals`), which keys its alert.
   // The names read's line (`namesFailure`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
@@ -276,17 +279,16 @@ export function SpecFilterBody({
     {
       line: "statements",
       message: STATE_LINES.statements_unreadable,
-      reads: [lineRead(coverageQuery, coverageRead), lineRead(treeQuery, specBlocksRead)],
+      reads: [
+        lineRead(coverageQuery, coverageRead),
+        lineRead(treeQuery, specBlocksRead),
+        lineRead(specQuery, decisionsRead),
+      ],
     },
     {
       line: "results",
       message: STATE_LINES.spec_results_unreadable,
       reads: [lineRead(resultsQuery, resultsRead), lineRead(treeQuery, checksRead)],
-    },
-    {
-      line: "decisions",
-      message: STATE_LINES.issue_decisions_unreadable,
-      reads: [lineRead(specQuery, decisionsRead)],
     },
     {
       line: "asks",
@@ -333,6 +335,9 @@ export function SpecFilterBody({
   }, [root]);
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
+  // From 1024 px up the Contents pane stands beside the view and holds the issue's three
+  // sentences, so the view draws no first group of them there, and they are drawn once (R13).
+  const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const tree = useRef<HTMLDivElement | null>(null);
@@ -513,7 +518,6 @@ export function SpecFilterBody({
     },
     onEditEnd: NOTHING,
     onFold: NOTHING,
-    onOpenDeeper: NOTHING,
     onPin: NOTHING,
     // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
     // holds. `q` walks the open questions, which the asks read brings, so the flag is
@@ -542,7 +546,6 @@ export function SpecFilterBody({
       if (path !== undefined) navigate(path);
     },
     onZoom: NOTHING,
-    oneNodeAtATime: false,
     readsHeld: asksHeld,
     rows,
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no
@@ -605,17 +608,19 @@ export function SpecFilterBody({
       </div>
       {/* The issue's three sentences, the first group, in the statements' column, as the
           prototype's `renderSpec` puts them after the column heads. */}
-      <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
-        <IssueThreeThings
-          look="spec"
-          nameOf={nameOf}
-          // The head says the spec holds no summary only once its blocks are held; the
-          // sentences themselves come with the batched names read, which waits until no read
-          // of the tree is still out (`slots/contents.tsx`).
-          specHeld={spec !== undefined && specBlocksRead.data !== undefined}
-          summary={summary}
-        />
-      </div>
+      {paned ? null : (
+        <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
+          <IssueThreeThings
+            look="spec"
+            nameOf={nameOf}
+            // The head says the spec holds no summary only once its blocks are held; the
+            // sentences themselves come with the batched names read, which waits until no read
+            // of the tree is still out (`slots/contents.tsx`).
+            specHeld={spec !== undefined && specBlocksRead.data !== undefined}
+            summary={summary}
+          />
+        </div>
+      )}
       {/* The outline the page draws under the Spec filter, which is this body's two columns:
           one tree, named as the tree every other filter draws, so a reader meets one outline
           on every address (R2, `IssueTree.tsx`). Its items are each statement and each
@@ -1445,7 +1450,7 @@ function Statement({
         <Because decision={decision} statement={statement} />
         {/* The constraints the statement names, as the outline draws them: out of the tab
             order, as the row's other controls are. */}
-        <LensLines body={false} node={node} tabStops={false} />
+        <LensLines node={node} tabStops={false} />
         <RowReport line={report} />
       </div>
       {/* No mark until its reads hold an answer; the row's third column keeps its width, so

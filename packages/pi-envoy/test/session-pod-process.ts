@@ -113,7 +113,7 @@ const context = processSessionContext({ sessionID, cwd: "/tmp/session-pod-proces
 
 // The stand-in host is a subset of the real `PiApi`: the extension reads only what the suite's
 // host supplies, and the cast is that same narrowing.
-envoyExtension(pi as unknown as PiApi);
+await envoyExtension(pi as unknown as PiApi);
 const start: EventHandler | undefined = handlers.get("session_start");
 if (start === undefined) throw new Error("the extension registered no session_start handler");
 await start({}, context);

@@ -762,7 +762,6 @@ export function DecisionsFilterBody({
     },
     onEditEnd: NOTHING,
     onFold: NOTHING,
-    onOpenDeeper: NOTHING,
     // `o` names the row by its key (`rowKeyOf`), the view's id before the node's, and the list
     // pins a row by its node's id, as the row's own control does.
     onPin: (rowKey) => {
@@ -772,7 +771,6 @@ export function DecisionsFilterBody({
     onReport: reportHere,
     onReveal: goToOrOpen,
     onZoom: NOTHING,
-    oneNodeAtATime: false,
     readsHeld,
     rows,
     root: keyOrder,

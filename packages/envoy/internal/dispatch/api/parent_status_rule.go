@@ -216,22 +216,24 @@ type ruleIssue struct {
 	parent      *string
 }
 
-// issueWriteRow is an issue's row as the builder of a plan reads it to fill in its steps.
+// issueWriteRow is an issue's row as the builder of a plan reads it to fill in its steps. project
+// is the project the issue belongs to, which a status change holds a scoped caller to
+// (refuseStepsOutsideCallerProject).
 type issueWriteRow struct {
-	key, title, status string
-	parent             *string
-	lastSeq            int
+	key, title, status, project string
+	parent                      *string
+	lastSeq                     int
 }
 
 // readIssueWriteRows reads the rows of the issues keys, by key.
 func readIssueWriteRows(ctx context.Context, q queryer, keys []string) (map[string]issueWriteRow, error) {
-	rows, err := q.Query(ctx, `select key, title, status, parent_key, last_seq from issues where key = any($1)`, keys)
+	rows, err := q.Query(ctx, `select key, title, status, project_key, parent_key, last_seq from issues where key = any($1)`, keys)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of a plan: %w", err)
 	}
 	collected, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueWriteRow, error) {
 		var read issueWriteRow
-		err := row.Scan(&read.key, &read.title, &read.status, &read.parent, &read.lastSeq)
+		err := row.Scan(&read.key, &read.title, &read.status, &read.project, &read.parent, &read.lastSeq)
 		return read, err
 	})
 	if err != nil {

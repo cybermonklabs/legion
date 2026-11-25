@@ -2,7 +2,7 @@ import { primarySpec } from "../../../api/issue-cache";
 import type { Actor, Decision, DecisionLink, DisplayTree, IssueDetails } from "../../../api/types";
 import { buildDispatchReference, parseDispatchReference } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
-import { blockIdOfNode, firstOfEachId } from "../decision-review";
+import { blockIdOfNode, decisionContent, firstOfEachId } from "../decision-review";
 import type { IssueTreeReads, TreeAsk } from "../issue-tree";
 import { storedReading } from "../stored-reading";
 import { blockNodeId, deciderOf } from "../tree-drafts";
@@ -135,23 +135,29 @@ export function decisionsOfAnswer(
 /**
  * The words of the decision's first paragraph, which a Change is anchored to: the server matches
  * an anchor's quote against the document's own text (`pmdoc.FindQuote`), never its markdown, so
- * they are read from the decision's reading, whose top-level blocks are its paragraphs, a heading
- * passed over, with a list's items one space apart and a hard break as one space (`wordsOf`): the
- * server's reading of the decision's words (`text_tree`), and where the read carried none that
- * holds blocks - a pod of the build before during a rolling deploy - the reading of its stored
- * text (`storedReading`), which the decision holds, so it is remembered while the decision lives.
- * So a decision's quote is the words of its text either way, never its markdown. Undefined for a
- * decision that holds no paragraph.
+ * they are read from the reading of the decision's own content (`decision-review.ts`'
+ * `decisionContent`): the tree read answers a decision node's text as its whole stored block, the
+ * lines that open and close its `decision` directive included, and any reading it sends of that
+ * text as one `decision` node, so its own words are that text without those two lines
+ * (`ownWords`) and its own reading that node's content at the top level (`ownTree`). Of that
+ * reading, whose top-level blocks are its paragraphs, the first that is no heading is quoted,
+ * with a list's items one space apart and a hard break as one space (`wordsOf`): the server's
+ * reading of the decision's words (`text_tree`), and where the read carried none that holds
+ * blocks - as the tree read answers a decision node today, and a pod of the build before during
+ * a rolling deploy - the reading of its own stored words (`storedReading`), which the decision
+ * holds, so it is remembered while the decision lives. So a decision's quote is the words of its
+ * first paragraph alone either way, never its markdown, its heading, its directive's lines or
+ * another paragraph. Undefined for a decision that holds no paragraph.
  */
 function decisionQuote(decision: {
   readonly text: string;
   readonly text_tree?: DisplayTree;
 }): string | undefined {
-  const tree = decision.text_tree;
+  const own = decisionContent(decision);
   const reading =
-    tree !== undefined && Array.isArray(tree.content)
-      ? tree
-      : storedReading(decision.text, decision);
+    own.tree !== undefined && Array.isArray(own.tree.content)
+      ? own.tree
+      : storedReading(own.text, decision);
   const blocks = reading.content;
   const block = Array.isArray(blocks)
     ? (blocks as DisplayTree[]).find((node) => node.type !== "heading")

@@ -96,19 +96,15 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   }
 
   // The slots, each given the same props: the header and the view row across the page; then the
-  // Contents pane against the rail with no view on (`contents-frame.tsx`), beside the one column
-  // that holds the stage and the foot, 10 px under the row and inset 28 px each side (14 px
-  // below 768 px), at least the screen's height so the foot stands at the screen's foot however
-  // short the stage is; then Details' slot, whose fill the shell draws in its drawer
-  // (R14). At 1440 px, beside the rail of 56 px, the page is 1384 px wide:
-  // under a view the stage has 1328 px inside its insets, and beside the 260 px pane 1068 px.
-  // The column is where the document's content ends, and it says so (`data-document-scroll`,
-  // `hooks/useFootInset.ts`): the foot's end room for the floats goes in it, as its bottom
-  // padding, rather than in the shell's `main`. The pane is stuck in the row, which holds it
-  // within the row's content box, and that box ends where the column, the row's tallest child,
-  // ends: room in the column grows both, so the pane keeps its place at the end of the scroll.
-  // Room below the column - in `main`, or as the row's own padding, outside its content box -
-  // carried the pane 180px off its place at 1024x500.
+  // Contents pane against the rail beside Conversation, each filter and Graph
+  // (`contents-frame.tsx`), beside the one column that holds the stage and the foot, 10 px under
+  // the row and inset 28 px each side (14 px below 768 px), at least the screen's height so the
+  // foot stands at the screen's foot however short the stage is; then Details' slot, whose fill
+  // the shell draws in its drawer (R14). At 1440 px, beside the rail of 56 px, the page is 1384 px
+  // wide: in a view with no pane the stage has 1328 px inside its insets, and beside the 260 px
+  // pane 1068 px.
+  // The column carries `data-document-scroll`, so the foot's end room for the floats goes here
+  // (`FOOT_LAYERS` in `hooks/useFootInset.ts` says why).
   const props: SlotProps = { issue: issue.data, route };
   return (
     <ProvidersSlot {...props}>

@@ -1,15 +1,16 @@
 package api
 
-// status_change_refusals.go gives every refusal of POST /api/v1/issues/{key}/status-change the
-// changed that the route's declared refusals require (StatusChangeRefusal and
-// StatusChangeConflict in the OpenAPI document). The handler and the keyed layer write it
-// themselves, since they know which steps committed (writeStatusChangeRefusal,
-// refuseStatusChangeKey). Every layer register puts outside the keyed layer - the read-only and
-// scope gates, the sign-in and Dispatch-Login checks, the project and session checks, a refused
-// path parameter, the drain's 413 - refuses before any step runs, with the {code, error} it
-// answers on every route. Under such a refusal nothing ran, so its changed is [] whichever layer
-// refused, and one layer of this route alone adds it, rather than a branch for this route in each
-// of those layers.
+// status_change_refusals.go gives every refusal that reaches POST
+// /api/v1/issues/{key}/status-change's layers the changed that the route's declared refusals
+// require (StatusChangeRefusal and StatusChangeConflict in the OpenAPI document). The handler and
+// the keyed layer write it themselves, since they know which steps committed
+// (writeStatusChangeRefusal, refuseStatusChangeKey). Every layer register puts outside the keyed
+// layer - the read-only and scope gates, the sign-in and Dispatch-Login checks, the project and
+// session checks, a refused path parameter, the drain's 413 - refuses before any step runs, with
+// the {code, error} it answers on every route. Under such a refusal nothing ran, so its changed is
+// [] whichever layer refused, and one layer of this route alone adds it, rather than a branch for
+// this route in each of those layers. The router's cookie-origin check (enforceCookieOrigin)
+// answers its 403 before any of those layers, on every route, and carries no changed.
 //
 // That layer holds every final answer of the route, the passing ones too, until the handler
 // returns, and writes it then in one call (changedRefusalWriter.finish). Holding delays no byte

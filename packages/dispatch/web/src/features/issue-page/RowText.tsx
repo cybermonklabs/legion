@@ -1,4 +1,6 @@
+import { replaceEqualDeep } from "@tanstack/react-query";
 import {
+  type FocusEvent,
   Fragment,
   type MouseEvent,
   type ReactNode,
@@ -7,6 +9,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
@@ -18,6 +21,7 @@ import { isPlainClick } from "../refs/picture-lightbox";
 import { deletedLineText, type PostDeletion } from "../refs/post-marks";
 import { type DispatchReferenceRoute, parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
+import { storeLinkPath } from "./lenses/store-link";
 import { chipWords } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
@@ -259,7 +263,7 @@ function StoredText({
   let at = 0;
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
-    <p className="whitespace-pre-wrap break-words" onClick={follow} {...authorText}>
+    <p className="whitespace-pre-wrap [overflow-wrap:anywhere]" onClick={follow} {...authorText}>
       {found.map((one) => {
         const before = markdown.slice(at, one.start);
         at = one.end;
@@ -484,10 +488,41 @@ export function useOutOfTabOrder(
   }, [box, keepScrollers, out]);
 }
 
+/** `value`, or the one this hook last answered while `value` holds the same values, as TanStack
+ *  Query's `replaceEqualDeep` compares two answers of a read (`api/queries.ts`). A later read of
+ *  the tree hands a row the same reading and record in objects of its own (`tree-nodes.ts`'s
+ *  `readingOf`, `text-references.ts`'s `textSourceOf`), and the body paints again for every new
+ *  reading it is handed (`useRenderedMarkdown`), which replaces the link the reader is on. */
+function useSameValue<T>(value: T): T {
+  const [held, hold] = useState(value);
+  // `replaceEqualDeep` gives back the old value where the new one holds the same values.
+  if (replaceEqualDeep(held, value) === held) return held;
+  // React draws the component again at once with the state its render set, before it commits
+  // anything, and that render finds the value held.
+  hold(value);
+  return value;
+}
+
+/** The link in `root` of the address `link` has: the reference a row's own link names, else its
+ *  `href`. Undefined where `link` has no address, or `root` holds no link of it. */
+function linkOfAddress(root: HTMLElement, link: HTMLAnchorElement): HTMLAnchorElement | undefined {
+  const mark = link.hasAttribute("data-row-reference") ? "data-row-reference" : "href";
+  const address = link.getAttribute(mark);
+  if (address === null) return undefined;
+  return [...root.querySelectorAll("a")].find((anchor) => anchor.getAttribute(mark) === address);
+}
+
 /** A text drawn from its reading, with every control it holds taken out of the tab order unless
  *  `tabStops` holds: the ones it is drawn with, and the ones the reading puts in after - a
  *  reference's link once its target answers, a picture once it loads - as they arrive. A
- *  reference to a corrected post carries its mark (`RowText`). */
+ *  reference to a corrected post carries its mark (`RowText`). A reading that holds the same
+ *  words as the one painted paints nothing again (`useSameValue`), and a paint of other words
+ *  keeps the focus on the link the reader was on: the new link of its address takes it, where the
+ *  new words hold one. A store address the words name by its node is a link to that node's row
+ *  (`lenses/store-link.ts`' `storeLinkPath`), followed in place as every other link of the row
+ *  is. The words break a word or a link that would end past their column
+ *  (`overflow-wrap: anywhere`), which `break-word` does not do inside a flex or grid row: there it
+ *  leaves the box as wide as its longest word, and a long address widens the page. */
 function DrawnText({
   focused,
   markdown,
@@ -502,6 +537,17 @@ function DrawnText({
   tree: DisplayTree;
 }): ReactNode {
   const drawn = useRef<HTMLDivElement>(null);
+  // The reading and the record the body was last handed, while the new ones hold the same values.
+  const reading = useSameValue(tree);
+  const record = useSameValue(source);
+  /** The link inside the words that took the focus last, until the focus moves to another
+   *  element. */
+  const focusedLink = useRef<HTMLAnchorElement | null>(null);
+  // The page's address, which the link pass reads at each paint: a store link opens a row of the
+  // issue it names (`storeLinkPath`).
+  const location = useLocation();
+  const page = useRef(location);
+  page.current = location;
   const read = useKnownReferenceNames();
   const ambiguous = useKnownAmbiguousReferences();
   const edited = useKnownEditedReferences();
@@ -539,14 +585,61 @@ function DrawnText({
       }
       if (tabStops) anchor.removeAttribute("tabindex");
     }
+    // A store address named in the words links to its node's row. The body's reference pass
+    // would read a link to the row's path as one to its issue, so the path waits in the title,
+    // and only the path the link names is taken.
+    for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-dispatch-href]")) {
+      const href = anchor.getAttribute("data-dispatch-href") ?? "";
+      const path = storeLinkPath(href, anchor.getAttribute("title") ?? "", page.current);
+      if (path === undefined) continue;
+      anchor.setAttribute("href", path);
+      anchor.removeAttribute("title");
+    }
+    // A paint of other words replaces every node of them, the link the reader was on with it,
+    // and the focus falls to nothing. The new link of the same address takes it back; a reader
+    // who has put the focus elsewhere since keeps it there, and a link the words no longer hold
+    // takes nothing.
+    const last = focusedLink.current;
+    if (last !== null && !last.isConnected) {
+      const active = document.activeElement;
+      const again =
+        active === null || active === document.body ? linkOfAddress(element, last) : undefined;
+      again?.focus({ preventScroll: true });
+      focusedLink.current = again ?? null;
+    }
   }, [ambiguous, deleted, edited, names, tabStops]);
   useLayoutEffect(link, [link]);
   useOutOfTabOrder(drawn, !tabStops, { keepScrollers: focused });
   const follow = useFollowInPlace();
+  const enter = (event: FocusEvent<HTMLDivElement>): void => {
+    if (event.target instanceof HTMLAnchorElement) focusedLink.current = event.target;
+  };
+  // A focus that goes to another element forgets the link. One that goes to nothing keeps it
+  // only where the link itself is gone, as a paint removes it: a reader who puts the focus on
+  // nothing - a press on the page's blank space, a move to another window - leaves the link
+  // drawn, and the next paint gives them no focus they did not ask for.
+  const leave = (event: FocusEvent<HTMLDivElement>): void => {
+    const left: EventTarget = event.target;
+    if (event.relatedTarget !== null) {
+      focusedLink.current = null;
+      return;
+    }
+    queueMicrotask(() => {
+      const held = focusedLink.current;
+      if (held !== null && held === left && held.isConnected) focusedLink.current = null;
+    });
+  };
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the press is the links' own, followed in place.
     // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
-    <div className="min-w-0 break-words" onClick={follow} ref={drawn} {...authorText}>
+    <div
+      className="min-w-0 [overflow-wrap:anywhere]"
+      onBlur={leave}
+      onClick={follow}
+      onFocus={enter}
+      ref={drawn}
+      {...authorText}
+    >
       <TextAskCard.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
             reads no target, and the row's pass links what the words cite (`linkRowReferences`). */}
@@ -554,8 +647,8 @@ function DrawnText({
           markdown={markdown}
           onRendered={link}
           referenceText=""
-          source={source}
-          tree={tree}
+          source={record}
+          tree={reading}
         />
       </TextAskCard.Provider>
     </div>

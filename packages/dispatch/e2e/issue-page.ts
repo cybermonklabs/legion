@@ -36,9 +36,10 @@ import { asUser } from "./users";
  * - **Details**, the shell's margin as a drawer over the right of the page,
  *   `[data-testid="desktop-margin-shell"]`, `hidden` while closed, which is how every load opens
  *   it; its head's Close is `[data-testid="details-close"]` (`features/margin/Margin.tsx`).
- * - **The Contents pane** `aside[data-testid="issue-contents"]` from 1024 px up with no view on,
- *   and below 1024 px the `button` named `CONTROL_LABELS.outline` beside the view control, which
- *   opens the same slot in `[data-testid="issue-outline-sheet"]` (`contents-frame.tsx`).
+ * - **The Contents pane** `aside[data-testid="issue-contents"]` from 1024 px up beside
+ *   Conversation, each filter and Graph, and below 1024 px the `button` named
+ *   `CONTROL_LABELS.outline` beside the view control there, which opens the same slot in
+ *   `[data-testid="issue-outline-sheet"]` (`contents-frame.tsx`).
  */
 
 /** The size every row's page opens at. The `iphone` project runs each `@phone` row too, so a
@@ -209,12 +210,14 @@ export async function closeDetails(page: Page): Promise<void> {
   ).toBe(false);
 }
 
-/** The Contents pane at the page's left, from 1024 px up with no view on. */
+/** The Contents pane at the page's left, from 1024 px up beside Conversation, each filter and
+ *  Graph. */
 export function contentsPane(page: Page): Locator {
   return page.getByTestId("issue-contents");
 }
 
-/** The Outline control beside the view control, below 1024 px with no view on. */
+/** The Outline control beside the view control, below 1024 px beside Conversation, each filter
+ *  and Graph. */
 export function outlineControl(page: Page): Locator {
   return page.getByRole("button", { exact: true, name: CONTROL_LABELS.outline });
 }

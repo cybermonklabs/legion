@@ -3,10 +3,13 @@ import { QueryClient } from "@tanstack/react-query";
 
 import { api } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
+import { routeUrl } from "../../../api/paths";
+import { CONVERSATION_KINDS } from "../../../api/queries";
 import type {
   Artifact,
   Ask,
   CheckBlock,
+  Comment,
   DecisionLink,
   DisplayTree,
   IssueCoverage,
@@ -36,12 +39,22 @@ import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./
 import {
   blocksOfRole,
   nextTreeCursor,
+  nodesRemaining,
   type TreeDraftMark,
   treeDraftMarks,
   treeDraftsFrom,
   treeIdOf,
 } from "./tree-nodes";
-import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode, type TreeTuple } from "./tree-read";
+import {
+  issueTreeQuery,
+  outlineQuery,
+  readNextTreePage,
+  readOlderComments,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  type TreeTuple,
+  viewQuery,
+} from "./tree-read";
 
 /**
  * The tree read's answer as the outline's drafts. Each case writes the answer as the route sends
@@ -1196,52 +1209,93 @@ test("a draft carries its read id, and the context answers its tree id and its l
   }
 });
 
-// R1: the tree read asks for its first page, then for the page its cursor names, in turn, and
-// answers once the last page has answered, the pages merged, so the tree is built once and never
-// from part of the walk: while the second page is out the read holds no answer. The tree then
-// holds each node of both pages once, a node of the second page under its parent on the first,
-// and a tuple whose near end is on the second page places it.
-test("the cursor's pages are read in turn and the tree is built once", async () => {
-  // The whole walk, as one read answers it, cut into the two pages the server answers.
+/** `page` as the server answers it where the read goes on past it: the `cursor` that names the
+ *  next page, and how many nodes the read holds after this one (`remaining`), which the server
+ *  answers beside the cursor and the generated contract does not name yet. */
+function pagedAnswer(page: TreeAnswer, cursor: string | null, remaining?: number): TreeAnswer {
+  const count = remaining === undefined ? {} : { remaining };
+  return { ...page, cursor, ...count };
+}
+
+// R1, R15: a load reads each outline read's first page, which holds the newest comment page, and
+// each view's first page, and no next page, though each page names one: the answer is that page,
+// which names the next (`cursor`) and how many nodes the read holds after it (`remaining`), and
+// the tree is built from it, its issue marked as holding more to read.
+test("the load reads one page and no next page", async () => {
+  const first = pagedAnswer(
+    answer([block("r1", "requirement", KEY, SPEC, 0), node("c1", "comment", "r1")]),
+    "page-2",
+    3
+  );
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
+    query?.cursor === undefined
+      ? first
+      : pagedAnswer(treeAnswer([node("c2", "comment", "r1")], [], { converted: true }), null)
+  );
+  try {
+    const client = new QueryClient();
+    const whole = await client.fetchQuery(issueTreeQuery(KEY));
+    await client.fetchQuery(outlineQuery(KEY, "conversation"));
+    await client.fetchQuery(viewQuery(KEY, "plan"));
+    expect<unknown>(read.mock.calls.map(([key, query]) => [key, query])).toEqual([
+      [KEY, {}],
+      [KEY, { kind: [...CONVERSATION_KINDS] }],
+      [KEY, { view: "plan" }],
+    ]);
+    expect(whole).toEqual(first);
+    expect([nextTreeCursor(whole), nodesRemaining(whole)]).toEqual(["page-2", 3]);
+    const root = buildIssueTree({ issue: issueDetails(), tree: whole });
+    expect(nodesOf(root).map((one) => one.id)).toEqual([KEY, blockNodeId("spec", "r1"), "c1"]);
+    expect(root.moreToRead).toBe(true);
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// R15: a press of the control after the last row reads the page the answer's cursor names, once
+// however often it is pressed while that page is out, and merges it into the answer the page
+// holds after the pages it holds, in the read's order: a node of the second page stands under its
+// parent on the first, a tuple whose near end is on the second page places it, and the answer
+// then names the page after it, with its count. A press once no page is left reads nothing, and
+// the issue is no longer marked as holding more to read.
+test("a press reads the next page and draws its rows in order", async () => {
   const whole = answer(
     [
       block("r1", "requirement", KEY, SPEC, 0),
       node("c1", "comment", "r1"),
       block("t1", "plan_task", "r1", PLAN, 0),
       node("c2", "comment", "r1", { made_at: "2026-11-06T00:00:00Z" }),
+      node("c3", "comment", KEY, { made_at: "2026-11-07T00:00:00Z" }),
     ],
     [tuple("serves", "t1", "r1")]
   );
-  const first: TreeAnswer = {
-    ...whole,
-    cursor: "page-2",
-    nodes: (whole.nodes ?? []).slice(0, 3),
-    tuples: [],
-  };
-  const second: TreeAnswer = { ...whole, nodes: (whole.nodes ?? []).slice(3) };
-  // The second page answers when the case releases it, and says when it was asked for.
-  const later = Promise.withResolvers<TreeAnswer>();
-  const asked = Promise.withResolvers<void>();
-  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) => {
-    if (page?.cursor === undefined) return first;
-    asked.resolve();
-    return later.promise;
-  });
+  const nodes = whole.nodes ?? [];
+  const first = pagedAnswer({ ...whole, nodes: nodes.slice(0, 3), tuples: [] }, "page-2", 3);
+  const second = pagedAnswer({ ...whole, nodes: nodes.slice(3, 5) }, "page-3", 1);
+  const third = pagedAnswer({ ...whole, nodes: nodes.slice(5), tuples: [] }, null);
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? first : query.cursor === "page-2" ? second : third
+  );
   try {
     const client = new QueryClient();
-    const query = issueTreeQuery(KEY);
-    const reading = client.fetchQuery(query);
-    await asked.promise;
-    expect(read.mock.calls.map(([key, page]) => [key, page])).toEqual([
+    const { queryKey } = issueTreeQuery(KEY);
+    await client.fetchQuery(issueTreeQuery(KEY));
+
+    await Promise.all([
+      readNextTreePage(client, KEY, "graph"),
+      readNextTreePage(client, KEY, "graph"),
+    ]);
+    expect(read.mock.calls.map(([key, query]) => [key, query])).toEqual([
       [KEY, {}],
       [KEY, { cursor: "page-2" }],
     ]);
-    expect(read.mock.calls.every(([, , init]) => init?.signal instanceof AbortSignal)).toBe(true);
-    expect(client.getQueryData(query.queryKey)).toBeUndefined();
-
-    later.resolve(second);
-    const root = buildIssueTree({ issue: issueDetails(), tree: await reading });
-    expect(read).toHaveBeenCalledTimes(2);
+    const two = client.getQueryData<TreeAnswer>(queryKey);
+    expect(two?.nodes?.map((one) => one.id)).toEqual(nodes.slice(0, 5).map((one) => one.id));
+    expect(two === undefined ? [] : [nextTreeCursor(two), nodesRemaining(two)]).toEqual([
+      "page-3",
+      1,
+    ]);
+    const root = buildIssueTree({ issue: issueDetails(), tree: two });
     expect(nodesOf(root).map((one) => one.id)).toEqual([
       KEY,
       blockNodeId("spec", "r1"),
@@ -1249,6 +1303,22 @@ test("the cursor's pages are read in turn and the tree is built once", async () 
       blockNodeId("plan-md", "t1"),
       "c2",
     ]);
+    expect(root.moreToRead).toBe(true);
+
+    await readNextTreePage(client, KEY, "graph");
+    const all = client.getQueryData<TreeAnswer>(queryKey);
+    expect(all?.nodes?.map((one) => one.id)).toEqual(nodes.map((one) => one.id));
+    expect(all === undefined ? "none" : nextTreeCursor(all)).toBeUndefined();
+    expect(rowsOf(buildIssueTree({ issue: issueDetails(), tree: all }))).toEqual([
+      `${blockNodeId("spec", "r1")} requirement`,
+      "-c1 comment",
+      `-${blockNodeId("plan-md", "t1")} plan_task`,
+      "-c2 comment",
+      "c3 comment",
+    ]);
+    expect(buildIssueTree({ issue: issueDetails(), tree: all }).moreToRead).toBeUndefined();
+    await readNextTreePage(client, KEY, "graph");
+    expect(read, "a press with no page left").toHaveBeenCalledTimes(3);
   } finally {
     read.mockRestore();
   }
@@ -1340,19 +1410,33 @@ test("a page's cursor names no next page where it is null, left out or empty", (
 });
 
 // A server that names a cursor it named already has a fault, and the pages past it are missing:
-// the walk asks for each page at most once, and the read fails with an error that names the
-// cursor, rather than answer the pages it read as the whole tree or ask without end.
+// the reader's press reads the page the answer names, and where that page names a cursor the read
+// has asked for already, the press fails with an error that names the cursor, and the answer stays
+// as it was, rather than hold that page as if the next were still to come, or read without end.
 test("a cursor the server names twice fails the read, naming the cursor", async () => {
-  const { cursors, outcome } = await walkWith((cursor) =>
-    cursor === undefined
-      ? { ...answer([block("r1", "requirement", KEY, SPEC, 0)]), cursor: "page-2" }
-      : {
-          ...treeAnswer([node("c1", "comment", "r1")], [], { converted: true }),
-          cursor: "page-2",
-        }
+  const first = pagedAnswer(answer([block("r1", "requirement", KEY, SPEC, 0)]), "page-2", 1);
+  const again = pagedAnswer(
+    treeAnswer([node("c1", "comment", "r1")], [], { converted: true }),
+    "page-2",
+    1
   );
-  expect(cursors).toEqual([undefined, "page-2"]);
-  expect(outcome).toEqual({ error: expect.stringContaining('the cursor "page-2" twice') });
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? first : again
+  );
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { queryKey } = outlineQuery(KEY, "conversation");
+    await client.fetchQuery(outlineQuery(KEY, "conversation"));
+    const outcome = await readNextTreePage(client, KEY, "conversation").then(
+      () => "merged",
+      (error: unknown) => String(error)
+    );
+    expect(read.mock.calls.map(([, query]) => query?.cursor)).toEqual([undefined, "page-2"]);
+    expect(outcome).toContain('the cursor "page-2" twice');
+    expect(client.getQueryData<TreeAnswer>(queryKey)).toEqual(first);
+  } finally {
+    read.mockRestore();
+  }
 });
 
 /** Each row of `root` as its depth in dashes, its id and its kind, every branch open. */
@@ -1836,4 +1920,205 @@ test("a requirement whose From line cites a document carries its chip from the t
     nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map(({ name, ref }) => ({ name, ref })),
     "the requirement draws no chip for the document its From line cites"
   ).toEqual([{ name: NODE_TYPE_NAMES.document, ref: cites }]);
+});
+
+/** A comment of the comments read, a person's on the issue, as the route answers it, which
+ *  `extra` anchors to text or makes a reply. */
+function commentRead(id: string, extra: Partial<Comment> = {}): Comment {
+  return {
+    anchor: null,
+    answers: null,
+    artifact_id: null,
+    ask_id: null,
+    author: { id: "alice", kind: "user" },
+    body: `Words of ${id}.`,
+    created_at: "2026-11-05T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
+    deliveries: [],
+    edited_at: null,
+    id,
+    issue_key: KEY,
+    mentions: [],
+    reply_block: null,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+    ...extra,
+  };
+}
+
+/** The anchor of a comment on the words of `block` in `document`. */
+function anchorIn(document: Artifact, block: string): NonNullable<Comment["anchor"]> {
+  return {
+    artifact_id: document.id,
+    block_id: block,
+    mark_id: `mark-${block}`,
+    orphaned: false,
+    quote: `Words of ${block}.`,
+    version: 1,
+  };
+}
+
+// R9, R1: Conversation's read repeats `kind` for root R1's kinds, each by the name the read's
+// `kind` filter gives it and never by the supertag `block`, in one order, so its key is the same
+// in every load; the route writes one `kind=` for each. Graph's read is the tree read, which
+// names none.
+test("Conversation's read names root R1's kinds and never block", async () => {
+  expect(CONVERSATION_KINDS).toEqual([
+    "ask",
+    "comment",
+    "reading",
+    "lens",
+    "finding",
+    "risk",
+    "criterion",
+    "requirement",
+    "check",
+    "decision",
+    "issue",
+    "prose",
+    "callout",
+  ]);
+  expect(CONVERSATION_KINDS).not.toContain("block");
+  const conversation = outlineQuery(KEY, "conversation");
+  expect<unknown>(conversation.queryKey).toEqual([
+    "issue-tree",
+    KEY,
+    { kind: [...CONVERSATION_KINDS] },
+  ]);
+  expect(outlineQuery(KEY, "conversation").queryKey, "the key of another load").toEqual(
+    conversation.queryKey
+  );
+  expect(outlineQuery(KEY, "graph").queryKey).toEqual(issueTreeQuery(KEY).queryKey);
+  const read = spyOn(api, "getIssueTree").mockResolvedValue(answer([]));
+  try {
+    const client = new QueryClient();
+    await client.fetchQuery(conversation);
+    await client.fetchQuery(issueTreeQuery(KEY));
+    const [kinds, whole] = read.mock.calls.map(([, query]) => query);
+    expect<unknown>(kinds).toEqual({ kind: [...CONVERSATION_KINDS] });
+    expect(whole).toEqual({});
+    expect(routeUrl("/api/v1/issues/{key}/tree", { key: KEY }, kinds)).toBe(
+      `/api/v1/issues/${KEY}/tree?${CONVERSATION_KINDS.map((kind) => `kind=${kind}`).join("&")}`
+    );
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// R9, R10: a comment on a node's text - one the comments read anchors and the read hangs under
+// that node - is no row of either outline, and neither is a reply in its thread: both stay in the
+// answer the tree is built from, for the margin to draw. A post on the issue, a comment tied to no
+// text, is a row with its replies, and so is a comment anchored in a document whose block the
+// answer holds no node for, which the read hangs under the issue. With no comments read nothing
+// marks a comment as on text, and the read's placement stands.
+test("a comment on a node's text is no row", () => {
+  const tree = answer([
+    block("r1", "requirement", KEY, SPEC, 0),
+    personsComment("c-on", "r1", "2026-11-05T01:00:00Z"),
+    personsComment("c-on-reply", "c-on", "2026-11-05T02:00:00Z"),
+    personsComment("c-post", KEY, "2026-11-05T03:00:00Z"),
+    personsComment("c-post-reply", "c-post", "2026-11-05T04:00:00Z"),
+    personsComment("c-unplaced", KEY, "2026-11-05T05:00:00Z"),
+  ]);
+  const comments = [
+    commentRead("c-on", { anchor: anchorIn(SPEC, "r1") }),
+    commentRead("c-on-reply", { reply_to: "c-on" }),
+    commentRead("c-post"),
+    commentRead("c-post-reply", { reply_to: "c-post" }),
+    commentRead("c-unplaced", { anchor: anchorIn(DECISIONS, "d9") }),
+  ];
+  const { drafts, root } = drawn(tree, { comments, issue: issueDetails() });
+
+  expect(["c-on", "c-on-reply"].map((id) => [nodeOf(root, id), drafts.has(id)])).toEqual([
+    [undefined, false],
+    [undefined, false],
+  ]);
+  expect(
+    ["c-post", "c-post-reply", "c-unplaced"].map((id) =>
+      placementsOf(root, id).map((one) => one.parent)
+    )
+  ).toEqual([[KEY], ["c-post"], [KEY]]);
+  expect((tree.nodes ?? []).map((one) => one.id)).toEqual(
+    expect.arrayContaining(["c-on", "c-on-reply"])
+  );
+  expect(placementsOf(drawn(tree).root, "c-on").map((one) => one.parent)).toEqual([
+    blockNodeId("spec", "r1"),
+  ]);
+});
+
+// R15: the older comment page `?comments_before=` answers merges into the outline read's answer
+// where the read's order puts each node: each comment under the issue among the issue's children
+// by when it was made, after the ranked statement, a reply under its comment, and a reply to an
+// ask of the newer page under that ask, which the page alone held as under the issue. The two
+// controls pressed while the page is out read it once, and once no older comment remains a press
+// reads nothing.
+test("an older comment page merges into the answer in the read's order", async () => {
+  const newest = answer(
+    [
+      block("r1", "requirement", KEY, SPEC, 0, { rank: "a" }),
+      node("q1", "ask", KEY, { made_at: "2026-11-05T12:00:00Z" }),
+      personsComment("c-3", KEY, "2026-11-07T00:00:00Z"),
+      personsComment("c-4", KEY, "2026-11-08T00:00:00Z"),
+    ],
+    [],
+    { comments_before: "2026-11-07T00:00:00.000000Z,c-3" }
+  );
+  const older = treeAnswer(
+    [
+      personsComment("c-1", KEY, "2026-11-05T00:00:00Z"),
+      personsComment("c-1-reply", "c-1", "2026-11-05T06:00:00Z"),
+      personsComment("c-q", "q1", "2026-11-05T13:00:00Z"),
+      personsComment("c-2", KEY, "2026-11-06T00:00:00Z"),
+    ],
+    [],
+    { comments_before: null, converted: true }
+  );
+  const read = spyOn(api, "getIssueTree").mockResolvedValue(older);
+  try {
+    const client = new QueryClient();
+    const { queryKey } = outlineQuery(KEY, "conversation");
+    client.setQueryData(queryKey, newest);
+    await Promise.all([
+      readOlderComments(client, KEY, "conversation"),
+      readOlderComments(client, KEY, "conversation"),
+    ]);
+    expect<unknown>(read.mock.calls.map(([key, query]) => [key, query])).toEqual([
+      [KEY, { comments_before: "2026-11-07T00:00:00.000000Z,c-3", kind: [...CONVERSATION_KINDS] }],
+    ]);
+    const merged = client.getQueryData<TreeAnswer>(queryKey);
+    expect(merged?.nodes?.map((one) => one.id)).toEqual([
+      KEY,
+      `${KEY}/spec#r1`,
+      "c-1",
+      "c-1-reply",
+      "q1",
+      "c-q",
+      "c-2",
+      "c-3",
+      "c-4",
+    ]);
+    expect(merged?.comments_before).toBeNull();
+    await readOlderComments(client, KEY, "conversation");
+    expect(read, "a press with no older comment left").toHaveBeenCalledTimes(1);
+
+    const { root } = drawn(merged ?? newest);
+    expect(nodesOf(root).map((one) => one.id)).toEqual([
+      KEY,
+      blockNodeId("spec", "r1"),
+      "c-1",
+      "c-1-reply",
+      "q1",
+      "c-q",
+      "c-2",
+      "c-3",
+      "c-4",
+    ]);
+  } finally {
+    read.mockRestore();
+  }
 });

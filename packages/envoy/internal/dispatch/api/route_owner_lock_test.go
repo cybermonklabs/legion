@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The lock table (item_row_owner_lock_test.go) holds every writer of an item row behind the owner
@@ -776,13 +777,16 @@ func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *te
 		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
 			map[string]any{"body": "Did this ship?", "target": "session:s1", "delivery": "btw"}, "alice")
 	}()
-	select {
-	case <-entered:
-	case response := <-answered:
-		t.Fatalf("the message answered %d %s before its send reached the listener", response.Code, response.Body.String())
-	case <-time.After(30 * time.Second):
-		t.Fatal("the message's send never reached the listener")
-	}
+	testwait.Until(t, "the message's send to reach the listener", func() (bool, bool) {
+		select {
+		case <-entered:
+			return true, true
+		case response := <-answered:
+			t.Fatalf("the message answered %d %s before its send reached the listener", response.Code, response.Body.String())
+		default:
+		}
+		return false, false
+	})
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the holder: %v", err)

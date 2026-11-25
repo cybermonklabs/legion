@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../../api/client";
@@ -77,6 +78,8 @@ function treeOf(comments: readonly Comment[], blocks: readonly TreeAnswerNode[])
 const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
   conversation: "2",
   decisions: "0",
+  // Graph draws no count (R10), which `toEqual` reads as a member that holds none.
+  graph: undefined as never,
   plan: "0",
   spec: "2",
   verification: "0",
@@ -90,7 +93,7 @@ const NAMES_ALONE = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join("");
  *  the answer of the read it holds out or fails. */
 function answerReads() {
   return {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
@@ -417,5 +420,80 @@ test("with no filter the view row draws the real counts while the names read is 
     view.unmount();
     restoreMatchMedia();
     for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
+/** A phone's width, the 390 px pictures', below the 1024 px from which the Contents pane stands
+ *  beside the stage. */
+const PHONE = 390;
+
+/** The Outline control the row draws below 1024 px: the one control of the row that opens a
+ *  dialog, the Outline sheet (`contents-frame.tsx`). */
+const OUTLINE_CONTROL = 'button[aria-haspopup="dialog"]';
+
+/** The view row of the fixtures' issue at `preset`'s own address, under the page's providers,
+ *  with the route the page reads from that address: the issue's in Conversation and the view's
+ *  own in every other, where `renderViewRow` hands the row the issue's route at every address. */
+function renderRowAt(client: QueryClient, preset: Preset) {
+  const issue = issueDetails();
+  const route =
+    preset === "conversation"
+      ? ({ key: issue.key, kind: "issue" } as const)
+      : ({ key: issue.key, kind: preset } as const);
+  return render(
+    <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <ProvidersSlot issue={issue} route={route}>
+            <ViewRowSlot issue={issue} route={route} />
+          </ProvidersSlot>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// R13: below 1024 px the row draws the Outline control in Conversation, in each filter and in
+// Graph, and it opens the Contents list as a sheet, which holds the list's entries and not the
+// three sentences, since there the view draws them above its first row. From 1024 px up the pane
+// stands beside each of those views and the row draws no Outline control.
+test("below 1024 px the view row draws the Outline control in Conversation, each filter and Graph, and its sheet draws the Contents list", async () => {
+  const user = userEvent.setup();
+  for (const width of [PHONE, DESKTOP_WIDTH]) {
+    const restoreMatchMedia = stubViewport(width);
+    const reads = answerReads();
+    try {
+      for (const preset of PRESET_ORDER) {
+        const where = `with ${PRESET_NAMES[preset]} on at ${width} px`;
+        const client = newClient();
+        const view = renderRowAt(client, preset);
+        try {
+          const control = view.container.querySelector<HTMLElement>(OUTLINE_CONTROL);
+          if (width === DESKTOP_WIDTH) {
+            expect(control, `the row draws the Outline control ${where}`).toBeNull();
+            continue;
+          }
+          expect(control, `the row draws no Outline control ${where}`).not.toBeNull();
+          await user.click(control as HTMLElement);
+          const sheet = () => document.querySelector('[data-testid="issue-outline-sheet"]');
+          await waitFor(() =>
+            expect(
+              sheet()?.querySelectorAll('[role="tree"] [data-contents-entry]').length,
+              `the Outline sheet does not list the reader's two threads ${where}`
+            ).toBe(2)
+          );
+          expect(
+            sheet()?.querySelector('[data-testid="issue-three-things"]'),
+            `the Outline sheet draws the three sentences ${where}`
+          ).toBeNull();
+        } finally {
+          view.unmount();
+          client.clear();
+        }
+      }
+    } finally {
+      restoreMatchMedia();
+      for (const spy of Object.values(reads)) spy.mockRestore();
+    }
   }
 });

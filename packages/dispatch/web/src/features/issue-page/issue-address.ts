@@ -1,7 +1,8 @@
 import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
 
 import type { Ask, Comment, MessageRead } from "../../api/types";
-import { buildIssuePath, type IssueRoute } from "../refs/routes";
+import { blockFragment } from "../refs/block-reference";
+import { buildIssuePath, type IssueRoute, parseNodeReference } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
@@ -36,8 +37,9 @@ export type AddressTarget =
    *  (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
   /** One node, by its id in the tree read, which `?node=` names: the row a chip of a lens line
-   *  links to, and the row of a lens the reader just invoked. Only the outline reads it, on an
-   *  address that opens no document (`issueAddress`). */
+   *  links to, and the row of a lens the reader just invoked. Conversation reads it on the issue's
+   *  own address and Graph on its own, each on an address that opens no document
+   *  (`issueAddress`, R7). */
   | { readonly kind: "node"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
    *  `t h`) names the first row of their group in the outline, which the page unfolds the path
@@ -70,6 +72,9 @@ export interface IssueAddress {
   /** Whether the address opens the node menu, which `/artifacts` does (R20). */
   readonly nodeMenu: boolean;
   readonly preset: Preset;
+  /** The node Graph's address roots Graph at (`/graph/<node id>`), by the id the tree draws it by
+   *  (`TreeNode.id`); absent on every other address (R10). */
+  readonly zoom?: string;
   /** The node the address names, which the page unfolds the path to and focuses (R19). */
   readonly target: AddressTarget | undefined;
   /** The version the address pins (`?v=`): of the document it opens, and otherwise of the
@@ -77,19 +82,35 @@ export interface IssueAddress {
   readonly version: number | undefined;
 }
 
-/** Which filter each kind of route opens (R20). Every route not named here is the page with no
- *  filter on, Conversation, whose own address is the issue's. */
+/** Which filter each kind of route opens (R20), and Graph's own route, Graph (R10). Every route
+ *  not named here is the page with no filter on, Conversation, whose own address is the issue's. */
 const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
   decisions: "decisions",
+  graph: "graph",
   plan: "plan",
   spec: "spec",
   verification: "verification",
 };
 
 /** The address of `preset` on `key`, which is the address its own control carries (R2, R20):
- *  each filter its old tab's, and Conversation, the page with no filter on, the issue's own. */
+ *  each filter its old tab's, Graph its own (`/graph`), and Conversation, the page with no
+ *  filter on, the issue's own. */
 export function presetPath(key: string, preset: Preset): string {
   return buildIssuePath(preset === "conversation" ? { key, kind: "issue" } : { key, kind: preset });
+}
+
+/** The address that opens `preset` at `node`: the view's own address with the `#b-` fragment of
+ *  the block the node's reference names, which the view lands on as on any block its address
+ *  names (`issueAddress`). Undefined for a node whose reference names no block of an issue. */
+export function presetNodePath(
+  preset: Preset,
+  node: Pick<TreeNode, "reference">
+): string | undefined {
+  const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
+  if (route === undefined || !("key" in route) || !("block" in route)) return undefined;
+  return route.block === undefined
+    ? undefined
+    : `${presetPath(route.key, preset)}${blockFragment(route.block.id)}`;
 }
 
 /** A positive integer `?v=` holds, or undefined for anything else. */
@@ -178,18 +199,27 @@ export function issueAddress(
   const version = pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined);
   const addressed = routeDocument(route, specSlug);
   // `?node=` names a node by its id in the tree read. It is read only on an address whose
-  // preset is the outline and which opens no document, and there it wins over `#b-`, `?ask=`
-  // and `?comment=`.
+  // preset is Conversation or Graph and which opens no document, so a filter's reads none, and
+  // there it wins over `#b-`, `?ask=` and `?comment=`. On Graph's own address it names the node
+  // Graph lands on, as the issue's own address names Conversation's (R7), and a zoom address
+  // (`/graph/<node id>`) keeps its zoom.
   const nodeId = query.get("node") ?? "";
-  if (nodeId !== "" && ROUTE_PRESETS[route.kind] === undefined && addressed === undefined) {
+  const nodePreset =
+    route.kind === "graph"
+      ? "graph"
+      : ROUTE_PRESETS[route.kind] === undefined && addressed === undefined
+        ? "conversation"
+        : undefined;
+  if (nodeId !== "" && nodePreset !== undefined) {
     return {
       document: undefined,
       documentItem: undefined,
       filter: query.get("q") ?? "",
       nodeMenu: false,
-      preset: "conversation",
+      preset: nodePreset,
       target: { id: nodeId, kind: "node" },
       version,
+      ...(route.kind === "graph" && route.node !== undefined ? { zoom: route.node } : {}),
     };
   }
   const marked = query.get("mark") ?? "";
@@ -213,6 +243,7 @@ export function issueAddress(
           : named
         : { id: documentItem.id, kind: "item" },
     version,
+    ...(route.kind === "graph" && route.node !== undefined ? { zoom: route.node } : {}),
   };
 }
 

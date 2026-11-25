@@ -18,8 +18,11 @@ import { blockFragment, parseBlockReference } from "./block-reference";
  * server's `text.parseStoreAddress` (`internal/dispatch/text/refs.go`), and both are tested
  * against the shared text table (`DISPATCH_TEXT_REFERENCES`).
  *
- * The dashboard has no page for these nodes, so a reference to one is a reference without a route:
- * text cites it as the server indexes it, and nothing links it.
+ * No route of `routes.ts` names one, so a reference to one is a reference without a route, which
+ * text cites as the server indexes it, and which today's page links nowhere. The new issue page
+ * writes one in a row's words as its node's name, linked to that node's row, where its tree read
+ * holds the node, and as its kind's word otherwise (`issue-page/tree-drafts.ts`'s
+ * `addressesAsShortForms`, `issue-page/lenses/store-words.ts`).
  */
 const STORE_ADDRESS = {
   /** The kinds addressed by a uuid. */

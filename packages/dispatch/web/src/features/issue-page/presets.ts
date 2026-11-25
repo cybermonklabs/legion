@@ -12,6 +12,7 @@ import {
   nodeWords,
   type ParentLine,
   type TreeNode,
+  type TreeViews,
 } from "./issue-tree";
 import { closeOvertaken, marksOf, stateIdOf } from "./node-states/node-states";
 import {
@@ -22,13 +23,13 @@ import {
   type Preset,
 } from "./page-words";
 import { outOfCounts } from "./tree-fold";
-import { readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
+import { nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on, and the four filters, as views of the one tree.
  *
- * With no filter on - Conversation - the view is the whole tree, folded to the frontier by the
+ * With no filter on - Conversation - the view is the whole tree, every node of it unfolded by the
  * outline (`tree-fold.ts`). The words filter (`?q=`) narrows it to the nodes whose words hold
  * what is typed together with the chain above each, which is drawn faint and marked as context
  * (`data-node-context`), so a match is read where it stands in the conversation.
@@ -62,12 +63,18 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * signals the filter row draws (`IssuePresets.tsx`) and the unit tests all read the same model.
  */
 
-/** One of the four filters: every control of the row but Conversation, which turns them off. */
-export type Filter = Exclude<Preset, "conversation">;
+/** The four filters, each a control of the row that draws the tree's nodes of its own kinds (R2):
+ *  every control but Conversation, which turns them off, and the views that are no filter -
+ *  Graph (R10), and Dashboard, Threads and Documents once their parts add them. */
+const FILTERS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly Preset[];
 
-/** Whether `preset` is a filter rather than the page with no filter on. */
+/** One of the four filters (`FILTERS`). */
+export type Filter = (typeof FILTERS)[number];
+
+/** Whether `preset` is a filter rather than the page with no filter on or a view that is no
+ *  filter: Graph draws the whole tree read, and no version control (R10). */
 export function isFilter(preset: Preset): preset is Filter {
-  return preset !== "conversation";
+  return (FILTERS as readonly Preset[]).includes(preset);
 }
 
 /** The kinds each filter draws as rows of its own (R2). */
@@ -112,11 +119,6 @@ export interface PresetView {
   /** The ids of the rows drawn as context: with no filter on, the chain above a match of the
    *  words filter; under Verification, each requirement. */
   readonly context: ReadonlySet<string>;
-  /** Whether this view is filtered at all: false for the page with no filter on and no words
-   *  typed, whose fold is the frontier's alone (R1). While one is, every branch the view kept
-   *  is drawn open (`IssueTree.tsx`): a filter exists to show what it matched, and the fold may
-   *  not hide it. */
-  readonly filtering: boolean;
   /** The decisions and constraints of the view read each row carries as a line of its own, by
    *  the row's id: in the view read of Spec, Verification or Plan, a decision or a constraint is
    *  a line of a row and never a row itself. Empty where the view is read off the tree. */
@@ -175,11 +177,13 @@ function holds(node: TreeNode, wanted: string): boolean {
 /**
  * The tree as `preset`, `query` and the address's own node leave it. With no filter on the root
  * is always drawn, because an issue whose words filter matches nothing still has to say so
- * somewhere, and it is context whenever nothing matched it.
+ * somewhere, and it is context whenever nothing matched it. Graph, a view and no filter (R10), is
+ * drawn so too, from Graph's read: every node the page draws as a row, each check and plan task
+ * under each requirement it serves as well.
  *
  * `memo` is the spec's summary callout, which the head draws as the issue's three sentences
  * (R8) and which is no row of the conversation (c-tree: "The memo callout is not a row of the
- * outline"), unless an address names it.
+ * outline"), nor of Graph, unless an address names it.
  */
 export function presetView(
   root: TreeNode,
@@ -189,7 +193,9 @@ export function presetView(
   memo?: string
 ): PresetView {
   const wanted = query.trim().toLowerCase();
-  if (!isFilter(preset)) return conversationView(root, wanted, named, memo);
+  if (!isFilter(preset)) {
+    return conversationView(root, wanted, named, memo, preset === "conversation");
+  }
   // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members.
   if (preset === "decisions") return filterView(root, preset, wanted, named);
   const held = root.views?.[preset];
@@ -202,13 +208,107 @@ export function presetView(
   return filterView(root, preset, wanted, named);
 }
 
-/** The page with no filter on: the whole tree but the memo, or under a words filter each match
- *  with the chain above it as context. */
+/** The kinds Conversation draws no row of (R9), each with the filter whose rows they are, which
+ *  an address of one opens in Conversation's place (`filterOfUndrawn`): a plan task's Plan and a
+ *  result's Verification. The answer may hold one as an ancestor of a row, which is drawn whole
+ *  with its kind. A constraint is a line on each requirement it constrains, and no step drafts
+ *  one (`tree-read/tree-nodes.ts`). */
+const NO_CONVERSATION_ROW: Readonly<Partial<Record<NodeType, Filter>>> = {
+  plan_task: "plan",
+  result: "verification",
+};
+
+/** The filter an address of `node` opens in Conversation's place, where Conversation draws no row
+ *  of it (R9): a plan task's Plan and a result's Verification, where it holds no node a row
+ *  stands for. Undefined for every node Conversation draws as a row. */
+export function filterOfUndrawn(node: TreeNode): Filter | undefined {
+  return node.children.length === 0 ? NO_CONVERSATION_ROW[node.type] : undefined;
+}
+
+/** The filters whose held view answer an address of a block Conversation's read holds no node of
+ *  is looked up in, in this order (`filterHolding`): Decisions' view is the decisions read. */
+const VIEW_FILTERS = ["spec", "verification", "plan"] as const satisfies readonly Filter[];
+
+/**
+ * The filter whose view answer the page holds (`TreeNode.views`) answers the block `target` names
+ * as a node of that filter's own kinds (`ROW_KINDS`): the filter an address of a node
+ * Conversation's read does not hold opens at that node (R9), a plan task's Plan, a result's
+ * Verification. Undefined where no held view answers it.
+ */
+export function filterHolding(
+  views: TreeViews | undefined,
+  target: BlockTarget
+): Filter | undefined {
+  return VIEW_FILTERS.find((filter) => answerHolds(views?.[filter], target, ROW_KINDS[filter]));
+}
+
+/** The block an address names: its id, and the document that holds it where the address names
+ *  one (`issue-address.ts`' block `AddressTarget`). */
+interface BlockTarget {
+  readonly document?: string;
+  readonly id: string;
+}
+
+/** Whether `answer` holds the block `target` names as a node of one of `kinds`, or of any kind
+ *  where none is given: the node whose block id is `target.id`, in the document `target.document`
+ *  names where it names one. Graph draws every node of its read (R10), so an address of a block
+ *  Conversation's read holds none of opens Graph where Graph's read, as the page holds it,
+ *  answers the block. */
+export function answerHolds(
+  answer: TreeAnswer | undefined,
+  target: BlockTarget,
+  kinds?: readonly NodeType[]
+): boolean {
+  return (answer?.nodes ?? []).some(
+    (node) =>
+      (kinds === undefined || (kinds as readonly string[]).includes(node.supertag)) &&
+      blockIdOfNode(node) === target.id &&
+      (target.document === undefined || node.document?.slug === target.document)
+  );
+}
+
+/** The filter a row's kind tag opens its node in (R9): a criterion or a statement in Spec, a
+ *  check in Verification, a decision in Decisions. Undefined for every other node, whose tag
+ *  opens nothing: a requirement that is no statement and a check that is no check of the
+ *  Verification document (`kindOf`) among them. */
+export function tagFilter(node: TreeNode): Filter | undefined {
+  if (node.type === "criterion") return "spec";
+  switch (kindOf(node)) {
+    case "requirement":
+      return "spec";
+    case "check":
+      return "verification";
+    case "decision":
+      return "decisions";
+    default:
+      return undefined;
+  }
+}
+
+/** The kinds of a turn of the conversation, which a message's thread holds under it. */
+const TURN_KINDS: readonly NodeType[] = ["comment", "message"];
+
+/** Whether `node` is a message under which a node it produced stands - any node but a turn of
+ *  its thread - which Conversation draws as one context row with its kind (R9): the thread's
+ *  reply is written in Threads, so its row takes none. */
+export function isThreadContext(node: Pick<TreeNode, "children" | "type">): boolean {
+  return node.type === "message" && node.children.some((child) => !TURN_KINDS.includes(child.type));
+}
+
+/**
+ * The page with no filter on, or Graph: the whole tree but the memo, or under a words filter each
+ * match with the chain above it as context. In Conversation (`conversation`), which draws
+ * Conversation's read and nothing else (R9), a result and a plan task are no row
+ * (`NO_CONVERSATION_ROW`) but where a row stands under one or the address names it, and a message
+ * under which a node it produced stands - any node but a turn of its thread - is one context row
+ * with its kind. Graph draws every node of the tree as a row.
+ */
 function conversationView(
   root: TreeNode,
   wanted: string,
   named: ReadonlySet<string>,
-  memo: string | undefined
+  memo: string | undefined,
+  conversation: boolean
 ): PresetView {
   const context = new Set<string>();
   const matched = new Set<string>();
@@ -217,18 +317,25 @@ function conversationView(
     const children = node.children
       .map(prune)
       .filter((child): child is TreeNode => child !== undefined);
+    if (
+      conversation &&
+      NO_CONVERSATION_ROW[node.type] !== undefined &&
+      children.length === 0 &&
+      !named.has(node.id)
+    ) {
+      return undefined;
+    }
     const own = named.has(node.id) || holds(node, wanted);
     if (!own && children.length === 0) return undefined;
     if (own) matched.add(node.id);
     else context.add(node.id);
+    if (conversation && isThreadContext({ children, type: node.type })) context.add(node.id);
     return { ...node, children, held: heldBy(children) };
   };
-  const filtering = wanted !== "";
   const pruned = prune(root);
   if (pruned !== undefined) {
     return {
       context,
-      filtering,
       lines: NO_LINES,
       matches: matched.size,
       root: pruned,
@@ -239,7 +346,6 @@ function conversationView(
   context.add(root.id);
   return {
     context,
-    filtering,
     lines: NO_LINES,
     matches: 0,
     root: { ...root, children: [], held: 0 },
@@ -321,7 +427,6 @@ function filterView(
   const top = root.children.flatMap((child) => lift(child, everyPlacement, rowOf).rows);
   return {
     context,
-    filtering: true,
     lines: NO_LINES,
     matches: matched.size,
     root: { ...root, children: top, held: heldBy(top) },
@@ -550,12 +655,19 @@ function heldFilterView(
       : { drawn: true, rows: part.rows.map((row) => ({ ...row, parentLine: line })) };
   };
   const children = amongView(top, liftedTop, drawTop).flatMap((part) => part.rows);
+  // The view says by its own read alone whether nodes remain to read (`TreeNode.moreToRead`),
+  // never by the outline read's mark on the root.
+  const { moreToRead: _outline, ...issueNode } = root;
   return {
     context,
-    filtering: true,
     lines: viewLines(answer, treeNodeOf, drawnIds),
     matches: matched.size,
-    root: { ...root, children, held: heldBy(children) },
+    root: {
+      ...issueNode,
+      children,
+      held: heldBy(children),
+      ...(nextTreeCursor(answer) === undefined ? {} : { moreToRead: true }),
+    },
     rootRow: false,
   };
 }
@@ -665,6 +777,9 @@ export interface PresetSignal {
   /** The part of the count that asks something of the reader, with the word it is drawn with:
    *  the checks that failed, the decisions waiting for the reader's review. */
   readonly flag?: { readonly count: number; readonly word: keyof typeof FILTER_SIGNAL_WORDS };
+  /** Whether the read the count is read from holds nodes no page read yet holds, so the count is
+   *  of the nodes loaded and carries "+" (R15, `TreeNode.moreToRead`). */
+  readonly more?: true;
   /** The noun the count is drawn in, where the picture draws one ("13 steps"). */
   readonly unit?: keyof typeof FILTER_SIGNAL_WORDS;
 }
@@ -697,12 +812,18 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
   return found.size;
 }
 
-/** The signal each filter's control draws under `query`, which its count follows. */
+/** The signal each filter's control draws under `query`, which its count follows. A count read
+ *  from a read that names a next page carries "+" (`PresetSignal.more`): the held view's own read
+ *  for a filter whose view is held, and the tree's for every other. */
 export function filterSignals(
   root: TreeNode,
   query: string
 ): Readonly<Record<Filter, PresetSignal>> {
   const view = (filter: Filter) => presetView(root, filter, query);
+  const more = (answer: TreeAnswer | undefined): Pick<PresetSignal, "more"> =>
+    (answer === undefined ? root.moreToRead === true : nextTreeCursor(answer) !== undefined)
+      ? { more: true }
+      : {};
   // Once a filter's view read is held, its count is the held view's own nodes of its main kind
   // whose words hold the query; until then, what the view read off the tree draws.
   const count = (filter: TreeFilter): number => {
@@ -740,12 +861,14 @@ export function filterSignals(
     decisions: {
       count: decisions.matches,
       ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
+      ...more(undefined),
     },
-    plan: { count: count("plan"), unit: "steps" },
-    spec: { count: count("spec") },
+    plan: { count: count("plan"), ...more(root.views?.plan), unit: "steps" },
+    spec: { count: count("spec"), ...more(root.views?.spec) },
     verification: {
       count: count("verification"),
       ...(failing === 0 ? {} : { flag: { count: failing, word: "failing" } }),
+      ...more(root.views?.verification),
     },
   };
 }

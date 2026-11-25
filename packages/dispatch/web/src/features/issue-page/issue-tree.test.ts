@@ -3074,11 +3074,10 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
 });
 
 // A person may ask two changes of one decision before its agent edits it. The read hangs
-// each comment anchored in the decision's own block under the decision, and each change newer
-// than the decision's words is drawn there, not only the newest, so neither sits at the
-// outline's foot with nothing tying it to what it changes; a comment older than the decision's
-// words stands under it too and is no change.
-test("every Change newer than a decision's words is drawn under it", () => {
+// each comment anchored in the decision's own block under the decision, and the decision reads
+// changed; a comment older than the decision's words stands under it too and is no change. On the
+// decision's words, none of them is a row (R9): the margin beside the decision draws them.
+test("every Change newer than a decision's words changes it, and none is a row", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
   const reviewed: Decision = {
@@ -3111,9 +3110,9 @@ test("every Change newer than a decision's words is drawn under it", () => {
   });
   const id = blockNodeId("decisions-md", "d1");
 
-  expect(placementsOf(root, "c-first").map((one) => one.parent)).toEqual([id]);
-  expect(placementsOf(root, "c-second").map((one) => one.parent)).toEqual([id]);
-  expect(placementsOf(root, "c-older").map((one) => one.parent)).toEqual([id]);
+  for (const one of ["c-first", "c-second", "c-older"]) {
+    expect(placementsOf(root, one), `${one}, a comment on the decision's words`).toEqual([]);
+  }
   expect(nodeOf(root, id)).toMatchObject({ state: "change_requested", waiting: false });
 });
 
@@ -3121,8 +3120,9 @@ test("every Change newer than a decision's words is drawn under it", () => {
 // a decision's words hangs under that decision's node - here the second decision's, though the
 // first decision holds the same words too. So the Change lands on
 // the decision the person changed, which reads Changed by and leaves the review list,
-// and not on the first that holds its words, which still waits on them.
-test("a Change anchored in one decision is drawn under it, though another decision holds its words", () => {
+// and not on the first that holds its words, which still waits on them. On the decision's words,
+// the Change is no row (R9): the margin draws it.
+test("a Change anchored in one decision changes it, though another decision holds its words", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
   const waiting = (id: string, text: string): Decision => {
@@ -3159,7 +3159,7 @@ test("a Change anchored in one decision is drawn under it, though another decisi
   const changed = blockNodeId("decisions-md", "d2");
   const other = blockNodeId("decisions-md", "d1");
 
-  expect(placementsOf(root, "c-change").map((one) => one.parent)).toEqual([changed]);
+  expect(placementsOf(root, "c-change"), "a comment on the decision's words").toEqual([]);
   expect(nodeOf(root, changed)).toMatchObject({ state: "change_requested", waiting: false });
   expect(nodeOf(root, other)).toMatchObject({ state: "waiting_review", waiting: true });
 });
@@ -3564,11 +3564,18 @@ test("a check block outside the Verification document draws no state and is coun
     covered: true,
     state: "met",
   });
-  // Nothing under the statement is open, so the fold leaves it folded.
-  expect(treeRows(root).some((row) => row.kind === "node" && row.node.id === planned)).toBe(false);
-  expect(
-    treeRows(root).find((row) => row.kind === "node" && row.node.id === statement)
-  ).toMatchObject({ expanded: false });
+  // No node opens folded (R11): the statement is drawn unfolded, and every node under it, the
+  // check outside the Verification document among them, is a row.
+  const rows = treeRows(root);
+  expect(rows.find((row) => row.kind === "node" && row.node.id === statement)).toMatchObject({
+    expanded: true,
+  });
+  for (const id of [verified, planned]) {
+    expect(
+      rows.some((row) => row.kind === "node" && row.node.id === id),
+      id
+    ).toBe(true);
+  }
 });
 
 /** The state the page reads for the one check of a Verification document: what `payload`

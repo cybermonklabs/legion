@@ -16,6 +16,7 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Each test below holds the hooked server at one hold point and shows the hold is real: the
@@ -26,7 +27,7 @@ import (
 // at the wait for the hold to be reached.
 
 // held is how long a test watches for what a hold keeps from happening, and reachWithin how long
-// it waits for what the release lets happen.
+// it waits for a call or a receive the release lets happen.
 const (
 	held        = 500 * time.Millisecond
 	reachWithin = 30 * time.Second
@@ -99,21 +100,22 @@ func (c *heldConsumer) state(t *testing.T, file string) *natsserver.ConsumerStat
 	return state
 }
 
-// awaitFloor waits for C's file to hold the ack floor floor.
+// awaitFloor waits for C's file to hold the ack floor floor. The wait ends on that state, bounded
+// only by the test binary's deadline (testwait.UntilPolling): the server's flusher writes the file
+// after the ack lands, which a loaded machine delays without anything being wrong, so a fixed span
+// (reachWithin, before) failed the row when the write came late. It reads the file every
+// floorPoll.
 func (c *heldConsumer) awaitFloor(t *testing.T, file string, floor uint64) {
 	t.Helper()
-	deadline := time.Now().Add(reachWithin)
-	for {
+	testwait.UntilPolling(t, floorPoll, fmt.Sprintf("C's %s to reach ack floor %d", file, floor), func() (string, bool) {
 		state := c.state(t, file)
-		if state != nil && state.AckFloor.Stream == floor {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("C's %s did not reach ack floor %d within %s: %+v", file, floor, reachWithin, state)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%+v", state), state != nil && state.AckFloor.Stream == floor
+	})
 }
+
+// floorPoll is how often awaitFloor reads C's file: the 20 ms its fixed-span loop read it at
+// before.
+const floorPoll = 20 * time.Millisecond
 
 // staysBelow watches C's file for held, and fails when it reaches the ack floor floor.
 func (c *heldConsumer) staysBelow(t *testing.T, file string, floor uint64) {

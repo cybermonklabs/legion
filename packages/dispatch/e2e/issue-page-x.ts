@@ -6,8 +6,7 @@ import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { blockIdOfNode } from "../web/src/features/issue-page/decision-review";
 import { PRESET_NAMES, type Preset } from "../web/src/features/issue-page/page-words";
 import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
-import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { closedReadIds } from "../web/src/features/issue-page/waiting";
+import type { TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { buildDispatchReference } from "../web/src/features/refs/routes";
 import {
   baseUrlOf,
@@ -70,10 +69,8 @@ import type { ApiRequest } from "./traffic";
  * - **What the page sent**: the requests to the node state routes (`nodeStateRequests`) and the
  *   address each settle names (`settlesSent`).
  * - **The gates** a row reads once, each holding back the readings that need code not yet under
- *   the head: Details' facts of the focused row (`FOCUSED_FACTS_GATE`), the Graph control
- *   (`graphGate`), a page that opens with every node drawn open (`drawnOpenGate`) and a live node
- *   drawn open on load in a given node's place (`openOnLoadGate`), each noted as owed
- *   (`noteOwed`) where it is not met.
+ *   the head: Details' facts of the focused row (`FOCUSED_FACTS_GATE`) and the Graph control
+ *   (`graphGate`), each noted as owed (`noteOwed`) where it is not met.
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -594,9 +591,8 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
     under.applied,
     "the spec does not take the criterion and the statement under the question"
   ).toBe(1);
-  // No check serves the statement under the question, so it is open and unanswered and the fold's
-  // path to it (`tree-fold.ts`' `frontier`) runs through the question: a live question in the
-  // overtaken one's place is drawn open on load, which is what row 4 reads first.
+  // No check serves the statement under the question, so live it would draw "No check": row 4
+  // reads that under the overtaken question it draws no gap.
   await readUntil(
     () => getIssueCoverage(key),
     (read) =>
@@ -1227,114 +1223,6 @@ export function focusedNodeFacts(page: Page): Locator {
 // ---------------------------------------------------------------------------------------------
 // What the page draws once the parts after this one are under the head.
 // ---------------------------------------------------------------------------------------------
-
-/** The rows of the page's tree as it opened, read once it draws a row: the caller waited for its
- *  load to settle. */
-async function rowsAsOpened(page: Page): Promise<TreeItem[]> {
-  await expect
-    .poll(async () => (await treeItemsDrawn(page)).length, {
-      message: "the page draws no row of the outline to read its folds on",
-    })
-    .toBeGreaterThan(0);
-  // The caller waited for its load to settle, and the poll above for a row, so one read of the
-  // rows is the page as it opened.
-  return treeItemsDrawn(page);
-}
-
-/**
- * Whether the page opens with every node drawn open (part T's R11), read once, on the page as it
- * opened and before any press, of the issue whose tree read is `answer`, with `reads` the issue
- * read and the asks read as the page's reader reads them (`treeIdReads`): no row of a node the
- * page does not close is folded, no branch below the drawn levels stands as one line, and at
- * least one such row holds an open branch, so a page that draws no branch is not taken for one
- * that draws them all open. The nodes this part draws open, at or under an overtaken one, are
- * left out, as the header's count leaves them out (`waiting.ts`' `closedReadIds`), by the read id
- * each row carries, which for a question's row is that of the block it is drawn from, closed
- * where its ask's node is overtaken, the block paired with its ask as the page pairs them, open
- * or answered: so the gate never reads this part's own behaviour, and a build that draws an
- * overtaken node folded fails the readings of that node and does not turn them owed.
- */
-export async function drawnOpenGate(
-  page: Page,
-  answer: IssueTreeRead,
-  reads: TreeIdReads
-): Promise<Gate> {
-  const closed = closedReadIds(answer, reads);
-  const rows = (await rowsAsOpened(page)).filter(
-    (item) => item.readId === null || !closed.has(item.readId)
-  );
-  // A branch below the drawn levels stands as one line the moment the rows are drawn, so this
-  // read, made once they are, holds every such line.
-  const deeper = await issuePage(page).locator("[data-branch-more]").count();
-  return {
-    met:
-      deeper === 0 &&
-      rows.some((row) => row.expanded === "true") &&
-      !rows.some((row) => row.expanded === "false"),
-    owed:
-      "owed until part T's R11 is under the head: the page opens with a branch folded here, so " +
-      `a node is not drawn open on load; ${OWED_BY}`,
-  };
-}
-
-/** What `openOnLoadGate` reads a node's place by. */
-export interface PlaceOnLoad {
-  /** The tree read of the issue the page is open on. */
-  readonly answer: IssueTreeRead;
-  /** How many levels one opening draws at the page's width: `tree-fold.ts`' `DRAWN_LEVELS` from
-   *  1024 px up, `NARROW_LEVELS` below. */
-  readonly levels: number;
-  /** The read id of the node whose place is read. */
-  readonly readId: string;
-  /** That issue's read and its asks read, as the page's reader reads them (`treeIdReads`), which
-   *  pair each question's block with its ask, open or answered (`closedReadIds`). */
-  readonly reads: TreeIdReads;
-  /** How the owed note names the node. */
-  readonly what: string;
-}
-
-/**
- * Whether the page's own fold draws a live node open, with the rows under it, in the place of the
- * node `readId`, read once, on the page as it opened and before any press: where it does, that
- * node drawn folded on load is a failure of this part and a reading of it is never owed; where it
- * does not, a live node in its place is folded on load too, and the reading is owed (c-use). On
- * load the fold opens the path to what is open and unanswered (`tree-fold.ts`' `frontier`), and
- * every branch once part T's R11 is under the head; an opening draws a branch's rows as deep as
- * `levels` reaches, and below that one line, counted as `treeRows` counts them, from the issue at
- * 1. The page draws no row for the issue, so a row's `aria-level` is one less, and an opening of a
- * row draws its rows where its `aria-level` is below `levels`. The gate is met where the row of
- * `readId` stands there and every live row at its level or above that holds a branch is drawn
- * open, at least one of them: the page opens every branch that deep on this load. It reads no path
- * of the frontier, so it is read for a node under which nothing is open, in whose place the
- * frontier opens no live node. The rows at or under an overtaken node, as the header's count
- * finds them (`waiting.ts`' `closedReadIds`), the row of a question whose ask's node is overtaken
- * among them, told by the id the page draws each under (`treeIdOf` over `reads`, which gives a
- * question's ask the row of the block it was indexed from), are left out, so the gate never reads
- * this part's own behaviour.
- */
-export async function openOnLoadGate(
-  page: Page,
-  { answer, levels, readId, reads, what }: PlaceOnLoad
-): Promise<Gate> {
-  const closed = new Set([...closedReadIds(answer, reads)].map(treeIdOf(answer, reads)));
-  const rows = await rowsAsOpened(page);
-  // A node whose row the load does not draw stands in no place an opening draws the rows of.
-  const level = rows.find((item) => item.readId === readId)?.level ?? Number.POSITIVE_INFINITY;
-  const within = level < levels;
-  const branches = rows.filter(
-    (item) => !closed.has(item.id) && item.expanded !== null && item.level <= level
-  );
-  return {
-    met: within && branches.length > 0 && branches.every((item) => item.expanded === "true"),
-    owed: within
-      ? "owed until part T's R11 is under the head: the page opens with a live branch at or " +
-        `above ${what}'s level folded here, so a live node in its place is folded on load too, ` +
-        `and ${what} is not read drawn open on load; ${OWED_BY}`
-      : `owed at this width: ${what}'s row is not drawn on load or stands at or below the levels ` +
-        "one opening draws here (tree-fold.ts's DRAWN_LEVELS and NARROW_LEVELS), so a live node " +
-        `in its place is not drawn open on load, and ${what} is not read drawn open on load; ${OWED_BY}`,
-  };
-}
 
 /** The name of the Graph control in the page's word list, which holds none until part T's Graph
  *  is under the head. */

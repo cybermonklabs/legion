@@ -22,7 +22,7 @@ import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
-import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
+import { type Gate, OWED_BY, type TreeAnswerWatch } from "./issue-page-t-tree";
 
 /**
  * What the rows of `e2e/issue-page-w.e2e.ts` write and read, and what any other row that needs
@@ -42,16 +42,18 @@ import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
  *   words `[data-chip-name]`, and its stored words `[data-author-text]`), the focused row's act
  *   `[data-row-lens]`, the menu it opens (`role="menu"`, each `role="menuitem"` holding a kind's
  *   words `[data-lens-kind-words]` and its standard `[data-lens-kind-standard]`) with its line
- *   `[data-lens-menu-line]`, a focused lens's chain (`[data-lens-show-chain]`, each entry
+ *   `[data-lens-menu-line]`, a lens's chain (`[data-lens-show-chain]`, each entry
  *   `[data-lens-chain-entry]`), a row by the id the tree read gives its node
- *   (`data-node-read-id`).
+ *   (`data-node-read-id`), and the row after a node's first page of children that stands for the
+ *   rest (`[data-tree-page]`).
  * - **The tree read**: what the page received of `GET /api/v1/issues/{key}/tree` - its newest
  *   read whose every page answered, `e2e/issue-page-t-tree.ts`'s `treeAnswerOf`, held until it holds
  *   what a row waits for (`heldTreeAnswer`), and the pages of each read (`treePagesOf`) - and
  *   the read ids of the nodes `seedLenses` wrote, read from that answer (`lensReadIds`), so a
  *   row names each node by the id the page itself received and never builds one.
- * - **The gate** `findingGate`, which a clause of a row waits on as the rows wait on the gates
- *   of `e2e/issue-page-t-tree.ts`: a `Gate`, read by that file's `owedUnless`.
+ * - **The gates** `findingGate` and `kindFilterGate`, which a clause of a row waits on as the
+ *   rows wait on the gates of `e2e/issue-page-t-tree.ts`: each a `Gate`, read by that file's
+ *   `owedUnless`.
  */
 
 /** What the writers answer, each the 201 body of its route as `@legion/contracts` names it:
@@ -197,8 +199,17 @@ export interface LensSeed {
   readonly riskB: RiskWritten;
   /** The standard constraint, which statement 5 is constrained by. */
   readonly standard: ConstraintRead;
-  /** The first, fifth and sixth statements of the spec, in document order. */
-  readonly statements: { readonly five: string; readonly one: string; readonly six: string };
+  /** The first, third, fourth, fifth and sixth statements of the spec, in document order. */
+  readonly statements: {
+    readonly five: string;
+    readonly four: string;
+    readonly one: string;
+    readonly six: string;
+    readonly three: string;
+  };
+  /** The threat model on statement 4, with no verdict: the catalogue's kind whose words run to
+   *  129 characters. */
+  readonly threatModel: LensInvoked;
   /** The trade-off analysis on statement 1, with no verdict. */
   readonly tradeOff: LensInvoked;
 }
@@ -206,11 +217,13 @@ export interface LensSeed {
 /**
  * Writes, on the issue `key` that `seedWholeIssue` made: a trade-off analysis on statement 1
  * with one finding and no verdict; a pre-mortem on statement 1 triggered by it, with a verdict,
- * and two risks under it, A prevented by check 1 and B by nothing; a standard and a measurement
- * constraint; and statement 5 constrained by the standard and statement 6 by the catalogue's
- * `lens_kinds[0].sources[0].ref`. Each statement's and the check's address is read from the
- * server (the coverage read's `ref`, the results read's check `ref`), never built. The lens
- * kinds are the catalogue's ids (migration `20261116123354_lens_catalogue.up.sql`). The writes
+ * and two risks under it, A prevented by check 1 and B by nothing; a threat model on statement
+ * 4 with no verdict; a standard and a measurement constraint; and statement 5 constrained by the
+ * standard and statement 6 by the catalogue's `lens_kinds[0].sources[0].ref`. Each statement's
+ * and the check's address is read from the server (the coverage read's `ref`, the results read's
+ * check `ref`), never built; statement 3's is read for the rows that write on it. The lens kinds
+ * are the catalogue's ids (migrations `20261123174710_lens_catalogue.up.sql` and
+ * `20261123174720_lens_catalogue_further_kinds.up.sql`, which holds `threat-model`). The writes
  * go one after another, so the lenses of statement 1 stand in the order written.
  */
 export async function seedLenses(key: string): Promise<LensSeed> {
@@ -225,7 +238,13 @@ export async function seedLenses(key: string): Promise<LensSeed> {
       throw new Error(`the coverage read of ${key} holds no statement ${place}`);
     return ref;
   };
-  const statements = { five: statement(5), one: statement(1), six: statement(6) };
+  const statements = {
+    five: statement(5),
+    four: statement(4),
+    one: statement(1),
+    six: statement(6),
+    three: statement(3),
+  };
   const check1 = results.checks?.[0]?.ref;
   if (check1 === undefined) throw new Error(`the results read of ${key} holds no check`);
   const catalogueConstraint = catalogue[0]?.sources?.[0]?.ref;
@@ -258,6 +277,7 @@ export async function seedLenses(key: string): Promise<LensSeed> {
     lens: preMortem.address,
     prevention: "The tree read answers every lens of the issue in one request.",
   });
+  const threatModel = await invokeLens(key, { kind: "threat-model", on: statements.four });
   const standard = await writeConstraint(key, {
     reference: "Success Criterion 2.4.11, Focus Not Obscured (Minimum)",
     standard: "Web Content Accessibility Guidelines 2.2",
@@ -280,6 +300,7 @@ export async function seedLenses(key: string): Promise<LensSeed> {
     riskB,
     standard,
     statements,
+    threatModel,
     tradeOff,
   };
 }
@@ -306,10 +327,12 @@ const SELECTORS = {
   lensLine: "[data-lens-line]",
   nodeRow: "[data-node-row]",
   pageChrome: "[data-page-chrome]",
+  treePage: "[data-tree-page]",
 } as const;
 
 /** One chip of a lens line: the words it names its target by, and the link to the target's row
- *  (`/issues/<key>?node=<id>`), or null where it draws the words alone. */
+ *  in the view that draws it (`/issues/<key>?node=<id>` in Conversation,
+ *  `/issues/<key>/graph?node=<id>` in Graph), or null where it draws the words alone. */
 export interface LensLineChip {
   readonly href: string | null;
   readonly words: string;
@@ -319,9 +342,9 @@ export interface LensLineChip {
 export interface LensLine {
   /** Its chips, in order. */
   readonly chips: readonly LensLineChip[];
-  /** Its label, the page's own words; empty on a line that draws none (`kind`, `reference`). */
+  /** Its label, the page's own words; empty on a line that draws none (`reference`). */
   readonly label: string;
-  /** Its `data-lens-line`: the `LENS_WORDS` key of its label, or `kind` or `reference`. */
+  /** Its `data-lens-line`: the `LENS_WORDS` key of its label, or `reference`. */
   readonly line: string;
   /** The stored words it draws outside its chips; empty on a line that draws none. */
   readonly words: string;
@@ -417,19 +440,44 @@ export function focusedRowReadId(page: Page): Promise<string | null> {
   }, SELECTORS.nodeRow);
 }
 
+/** Whether the row drawn as `id` (`data-node-id`) draws a row that stands for the children it
+ *  draws no row for yet (`[data-tree-page]`, part T's page of a node's children, `tree-fold.ts`'s
+ *  `CHILD_PAGE`): one level under it after the last child it draws, before the next row at its
+ *  own level or above. False where it draws every child, or where the page draws no row `id`. */
+export function drawsChildPageRow(page: Page, id: string): Promise<boolean> {
+  return issuePage(page)
+    .locator(`${SELECTORS.nodeRow}, ${SELECTORS.treePage}`)
+    .evaluateAll(
+      (rows, { nodeRow, own, treePage }) => {
+        const at = rows.findIndex(
+          (row) => row.matches(nodeRow) && row.getAttribute("data-node-id") === own
+        );
+        if (at === -1) return false;
+        const level = Number(rows[at]?.getAttribute("aria-level") ?? "");
+        for (const row of rows.slice(at + 1)) {
+          const depth = Number(row.getAttribute("aria-level") ?? "");
+          if (depth <= level) return false;
+          if (depth === level + 1 && row.matches(treePage)) return true;
+        }
+        return false;
+      },
+      { nodeRow: SELECTORS.nodeRow, own: id, treePage: SELECTORS.treePage }
+    );
+}
+
 /** The links of the chips one line of the row `row` locates draws (`data-lens-line`, the
  *  `LENS_WORDS` key of its label). */
 export function lensChipLinks(row: Locator, line: LineName): Locator {
   return row.locator(`${SELECTORS.lensLine}[data-lens-line="${line}"] ${SELECTORS.chip} a[href]`);
 }
 
-/** The control of a focused lens that reads its chain. */
+/** The control of a lens that reads its chain. */
 export function lensShowChain(row: Locator): Locator {
   return row.locator("[data-lens-show-chain]");
 }
 
 /** One entry of a drawn chain: its lens's kind's words, as the `lens_kind` node holds them, and
- *  the first line of the row that lens stands under; empty where it draws none. */
+ *  the whole words of the row that lens stands under; empty where it draws none. */
 export interface LensChainEntry {
   readonly kind: string;
   readonly line: string;
@@ -546,22 +594,31 @@ export interface LensReadIds {
   /** The issue's own statements in the read's order, which is the spec's: statement N is
    *  `statements[N - 1]`, as `seedLenses` counts them from the coverage read. */
   readonly statements: readonly string[];
+  /** The lens under statement 4. */
+  readonly threatModel: string;
   /** The lens the pre-mortem's `triggered_by` tuple names. */
   readonly tradeOff: string;
+}
+
+/** The nodes of `answer` that belong to issue `key` itself: neither a node of another issue nor
+ *  the context (`role: "context"`) a view or a catalogue tuple brings in. */
+function ownNodes(answer: IssueTreeRead, key: string): IssueTreeNode[] {
+  return (answer.nodes ?? []).filter(
+    (node) => (node.issue === undefined || node.issue === key) && node.role !== "context"
+  );
 }
 
 /**
  * The read id of each node `seedLenses` wrote on issue `key`, found in `answer` by what the seed
  * wrote into it and by the server's own tuples, never built: the pre-mortem by its verdict, the
  * trade-off analysis by the pre-mortem's `triggered_by`, the finding as the node under it, each
- * risk by its heading and check 1 by the `prevented_by` of risk A, each constraint by its
- * standard or its measurement. A node of another issue, and the context a view or a catalogue
- * tuple brings in, is none of them. Throws, naming the node, where the answer holds none.
+ * risk by its heading and check 1 by the `prevented_by` of risk A, the threat model as the lens
+ * under statement 4, each constraint by its standard or its measurement. A node of another
+ * issue, and the context a view or a catalogue tuple brings in, is none of them. Throws, naming
+ * the node, where the answer holds none.
  */
 export function lensReadIds(answer: IssueTreeRead, key: string, seeded: LensSeed): LensReadIds {
-  const own = (answer.nodes ?? []).filter(
-    (node) => (node.issue === undefined || node.issue === key) && node.role !== "context"
-  );
+  const own = ownNodes(answer, key);
   const idOf = (what: string, node: IssueTreeNode | undefined): string => {
     if (node === undefined) throw new Error(`the tree read of ${key} holds no ${what}`);
     return node.id;
@@ -576,6 +633,7 @@ export function lensReadIds(answer: IssueTreeRead, key: string, seeded: LensSeed
   const preMortem = idOf("pre-mortem", holding("lens", "verdict", seeded.preMortem.verdict));
   const tradeOff = targetOf("trigger of the pre-mortem", "triggered_by", preMortem);
   const riskA = idOf("risk A", holding("risk", "heading", seeded.riskA.heading));
+  const statements = own.filter((node) => node.supertag === "requirement").map((node) => node.id);
   return {
     check1: targetOf("check that prevents risk A", "prevented_by", riskA),
     finding: idOf(
@@ -593,7 +651,11 @@ export function lensReadIds(answer: IssueTreeRead, key: string, seeded: LensSeed
       "standard constraint",
       holding("constraint", "standard", seeded.standard.standard)
     ),
-    statements: own.filter((node) => node.supertag === "requirement").map((node) => node.id),
+    statements,
+    threatModel: idOf(
+      "threat model",
+      own.find((node) => node.supertag === "lens" && node.parent?.id === statements[3])
+    ),
     tradeOff,
   };
 }
@@ -604,18 +666,21 @@ export function lensIdsIn(answer: IssueTreeRead): string[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The gate: a clause whose server change is not on the base is a row of its own, which skips.
+// The gates: a clause whose server change is not on the base is a row of its own, which skips.
 // ---------------------------------------------------------------------------------------------
 
 /** Issue `key`'s tree read with no view, every page of it in order, read through the signed-in
- *  page's own request context, as `issue-page-t-tree.ts`'s gates read it. */
-async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeRead> {
+ *  page's own request context, as `issue-page-t-tree.ts`'s gates read it: the whole tree, or,
+ *  where `kind` is given, the read by kind that Conversation's read is (`?kind=`, once for each
+ *  kind), which the model's filter by kind answers with the nodes of those kinds and a base
+ *  without that filter answers as the whole tree. */
+async function requestedTreeRead(
+  page: Page,
+  key: string,
+  kind?: readonly string[]
+): Promise<IssueTreeRead> {
   const pageAt = async (cursor: string | null): Promise<IssueTreeRead> => {
-    const path = routeUrl(
-      "/api/v1/issues/{key}/tree",
-      { key },
-      cursor === null ? undefined : { cursor }
-    );
+    const path = routeUrl("/api/v1/issues/{key}/tree", { key }, { cursor, kind });
     const response = await page.request.get(path);
     if (!response.ok()) {
       throw new Error(`GET ${path} failed: ${response.status()} ${await response.text()}`);
@@ -653,5 +718,30 @@ export async function findingGate(page: Page, key: string, seeded: LensSeed): Pr
     owed:
       "owed until a lens invoked on a finding stands under that finding in the tree read " +
       "(the node model's commit 5c85ffdc1b)",
+  };
+}
+
+/**
+ * Whether the model's filter of the tree read by kind is on the base: the read with `kind`, which
+ * Conversation's read is, answers the nodes of those kinds, and so Conversation draws no
+ * constraint of the issue as a row, which no kind it names takes. A base without it answers that
+ * read as the whole tree, the constraints and every other kind of node in it. The probe reads
+ * every page of issue `key`'s tree read with `kind=ask` through the signed-in page's own request
+ * context, as `issue-page-t-tree.ts`'s `treeReadGate` reads it: met only where that read holds
+ * no node of this issue of another kind than an ask, but the issue's own node and the nodes it
+ * holds as context, to place the asks (`role: "context"`).
+ */
+export async function kindFilterGate(page: Page, key: string): Promise<Gate> {
+  const answer = await requestedTreeRead(page, key, ["ask"]);
+  const others = ownNodes(answer, key).filter(
+    (node) =>
+      node.supertag !== "ask" &&
+      !(node.supertag === "issue" && (node.id === key || node.parent === null))
+  );
+  return {
+    met: others.length === 0,
+    owed:
+      "owed until the model's filter of the tree read by kind is on this branch's base: the " +
+      `read with kind=ask answers nodes of other kinds here; ${OWED_BY}`,
   };
 }

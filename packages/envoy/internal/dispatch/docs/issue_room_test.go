@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // issueRoom is a converted issue of the test store (createIssueRoom): its tree artifact, whose
@@ -370,7 +371,7 @@ func TestASchemaSwitchClosesEverySocketOfTheIssueRoom(t *testing.T) {
 			OnSwitch: func() { service.CloseDocumentSockets() },
 		}).Run(installing)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stopInstalling()
 		<-stopped
 	})
@@ -956,9 +957,9 @@ func seedJoinedDocument(t *testing.T, service *Service, room issueRoom, slug, ma
 	if err != nil {
 		t.Fatalf("begin the join's transaction: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(ctx) })
 	joined, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	testcleanup.Add(t, ledger.Discard)
 	if _, err := tx.Exec(ctx, `select 1 from issues where key = $1 for no key update`, room.issue); err != nil {
 		t.Fatalf("take the issue's row: %v", err)
 	}
@@ -1191,7 +1192,7 @@ func TestTheCompactionSweepDropsTheEntryOfAMovedDocument(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	due := storeAgedRows(t, database, 3, time.Hour)
 	young := storeAgedRows(t, database, 3, 0)
 	dueRows, youngRows := storedRows(t, database, due), storedRows(t, database, young)

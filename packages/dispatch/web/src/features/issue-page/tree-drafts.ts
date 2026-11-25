@@ -21,6 +21,7 @@ import {
   parseNodeReference,
   shortForm,
 } from "../refs/routes";
+import { storeAddressReference } from "../refs/store-address";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
@@ -34,6 +35,7 @@ import type {
   NodeOption,
 } from "./issue-tree";
 import type { LensFacts } from "./lenses/lens-drafts";
+import { storeKindOf } from "./lenses/store-link";
 import {
   type AskState,
   type CheckState,
@@ -504,19 +506,40 @@ export function titleWords(title: string): string {
  *
  * An address is found as the page finds a reference in text (`referenceSpans`), and only the
  * address itself is written short: what `trimReference` cuts off its end stays where it stood, so
- * `see dispatch://CORE-2.` reads `see CORE-2.`. A span that names no target
- * (`parseDispatchReference`) is left as written.
+ * `see dispatch://CORE-2.` reads `see CORE-2.`. A store address, which no route names
+ * (`refs/store-address.ts`), is written as the page's word for its node's kind
+ * (`storeKindWord`): `dispatch://lens/<uuid>` reads `lens`, and a risk's, a constraint's and a
+ * finding's read `risk`, `constraint` and `finding`, so no uuid is drawn. The node's own name, and
+ * a link to its row, are the tree read's to give, which this pure rule does not read
+ * (`lenses/store-words.ts`). Any other span that names no target (`parseDispatchReference`), an
+ * interaction's or a lens kind's address among them, is left as written.
  */
 export function addressesAsShortForms(words: string): string {
   let shortened = "";
   let cursor = 0;
   for (const { start, value } of referenceSpans(words, "dispatch://")) {
     const route = parseDispatchReference(value);
+    const address = route === undefined ? storeAddressReference(value) : undefined;
+    const word = address === undefined ? undefined : storeKindWord(address);
+    if (word !== undefined) {
+      shortened += `${words.slice(cursor, start)}${word}`;
+      cursor = start + value.length;
+      continue;
+    }
     if (route === undefined) continue;
     shortened += `${words.slice(cursor, start)}${shortForm(route)}`;
     cursor = start + value.length;
   }
   return shortened + words.slice(cursor);
+}
+
+/** The page's word for the kind of node the store address `address` names
+ *  (`lenses/store-link.ts`' `storeKindOf`): what a place reads such an address by where it knows
+ *  no name for the node: `lens`, `risk`, `constraint`, and `finding` for a block of a lens.
+ *  Undefined for an interaction's and a lens kind's address. */
+export function storeKindWord(address: string): string | undefined {
+  const kind = storeKindOf(address);
+  return kind === undefined ? undefined : NODE_TYPE_NAMES[kind];
 }
 
 /**

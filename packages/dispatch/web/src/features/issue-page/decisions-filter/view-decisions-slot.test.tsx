@@ -42,8 +42,8 @@ import {
 } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { treeNode } from "../tree-read/tree-fixtures";
-import { issueTreeQuery, type TreeAnswerNode } from "../tree-read/tree-read";
-import { issueAsksQuery } from "../useIssueTree";
+import { outlineQuery, type TreeAnswerNode } from "../tree-read/tree-read";
+import { issueAskThreadsQuery } from "../useIssueTree";
 import {
   decision,
   decisionNode,
@@ -187,7 +187,7 @@ function answerWriteUpTree(before: readonly TreeAnswerNode[] = []): void {
 // write-up keeps the view and lands on the row of the question it answers, though a question
 // still open stands first in the list and the stage would give its row the focus.
 test("a person's write-up of an answered question, named on the Decisions view's address, keeps the view, with the focus on the question's row", async () => {
-  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
   answerWriteUpTree();
   // The messages read, which answers last: with it every read is held, and the view has told the
   // stage whether its tree draws the write-up.
@@ -218,7 +218,7 @@ test("a person's write-up of an answered question, named on the Decisions view's
 // land on that row, which leaves the list once they answer and would take the focus with it.
 test("a write-up's address waits for the asks read, which answers after the tree read, and lands on the question's row", async () => {
   const asksOut = Promise.withResolvers<IssueAskRow[]>();
-  const asks = spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
+  const asks = spyOn(api, "listIssueAskThreads").mockReturnValue(asksOut.promise as never);
   answerWriteUpTree();
   try {
     const view = drawStage("#b-writeup");
@@ -245,7 +245,7 @@ test("a write-up's address waits for the asks read, which answers after the tree
 // write-up's address has no row of the view to land on. The stage draws the outline in the view's
 // place, which draws the write-up as a row under the question it answers and lands on it.
 test("a write-up's address under words its question does not hold draws the outline, with the focus on the write-up's row", async () => {
-  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
   answerWriteUpTree();
   try {
     const view = drawStage("?q=flag#b-writeup");
@@ -275,7 +275,7 @@ async function writeUpRowAfter(
   press?: () => void
 ): Promise<HTMLElement> {
   const asksOut = Promise.withResolvers<IssueAskRow[]>();
-  spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
+  spyOn(api, "listIssueAskThreads").mockReturnValue(asksOut.promise as never);
   answerWriteUpTree();
   const view = drawStage("?q=flag#b-writeup");
   await waitFor(() =>
@@ -336,7 +336,7 @@ function askRow(id: string): string {
 // comments read out the view draws the questions, `j` is pressed on the first one's row, and once
 // the comments answer, the outline's line that the issue holds no such comment takes the focus.
 test("`j` on a row of the Decisions view, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
-  spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
+  spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
   answerWriteUpTree();
   const commentsOut = Promise.withResolvers<Comment[]>();
   spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
@@ -367,7 +367,9 @@ test("`j` on a row of the Decisions view, before it draws the outline's line for
 // focus. The read refused here is the asks read, one the view draws its own line for.
 test("Enter on the Retry of the Decisions view's refused asks read, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
   const asksOut = Promise.withResolvers<IssueAskRow[]>();
-  spyOn(api, "listIssueAsks").mockRejectedValueOnce(REFUSED).mockReturnValueOnce(asksOut.promise);
+  spyOn(api, "listIssueAskThreads")
+    .mockRejectedValueOnce(REFUSED)
+    .mockReturnValueOnce(asksOut.promise as never);
   const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`);
@@ -423,14 +425,18 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
     { checks: [], issue: KEY, verification_artifact_id: "" },
     answered
   );
-  client.setQueryData(issueAsksQuery(KEY).queryKey, [], answered);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, [], answered);
   // The issue holds two threads, so the outline draws rows.
   client.setQueryData(["comments", KEY], [...TWO_THREADS], answered);
   client.setQueryData(["issue-messages", KEY], [], answered);
   // What the reader holds unread on the issue, which a thread's read mark reads.
   client.setQueryData(myRepliesOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
   // The tree read: the issue's two threads, each comment a node of it.
-  client.setQueryData(issueTreeQuery(KEY).queryKey, treeOf(commentNodes(TWO_THREADS)), answered);
+  client.setQueryData(
+    outlineQuery(KEY, "conversation").queryKey,
+    treeOf(commentNodes(TWO_THREADS)),
+    answered
+  );
   // The names of what the tree's rows name: the issue itself and each of its comments.
   const named = [
     buildDispatchReference({ key: KEY, kind: "issue" }),
@@ -547,7 +553,7 @@ test("a thread's read mark drawn after the app's staleTime asks the unread set n
 // list where the words match no question it answers: the stage draws the outline in the view's
 // place, which lands on the write-up's row.
 test("under the Decisions view and words, a fragment the browser changes under one key from a decision to a write-up the list draws no row for draws the outline, with the focus on the write-up's row", async () => {
-  spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
+  spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
   answerWriteUpTree([decision("d1")]);
   // The messages read is the one held: it answers last, and with it every read the tree is built
   // from is held.

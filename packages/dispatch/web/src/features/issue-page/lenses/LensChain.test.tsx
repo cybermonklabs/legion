@@ -8,11 +8,12 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { answerRequests } from "../../../__tests__/network";
+import { pageKindBullet, pageKindTag } from "../../../theme/classes";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { node } from "../decisions-filter/decisions-fixtures";
-import { drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
+import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
-import { chipWords } from "../node-row-chip";
 import {
   authorKind,
   CONTROL_LABELS,
@@ -20,15 +21,16 @@ import {
   LENS_WORDS,
   NODE_TYPE_NAMES,
 } from "../page-words";
-import { statementRef } from "../spec-filter/spec-fixtures";
+import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId } from "../tree-drafts";
+import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { LensLines } from "./LensLines";
 import { kindWords, type LensFacts, type LensPlace } from "./lens-drafts";
 import { lensChainQuery } from "./lens-reads";
 
 /**
- * What a lens's row draws of its chain, and the lines a lens, a risk, a constrained statement and
- * a constraint draw under their words.
+ * What a lens's row draws of its chain, the lines a lens, a risk, a constrained statement and a
+ * constraint draw under their words, and the colour their rows are drawn in.
  *
  * The chain is read through the page's own client (`lens-reads.ts`, `api.getLenses`), answered at
  * `fetch` by the suite's network (`answerRequests`), so a request the row sends is one the test
@@ -45,21 +47,20 @@ const FURTHER = "dispatch://lens/0c6f1d2e-5555-4a6b-9c1d-5e2f3a4b5c65";
 const ELSEWHERE = "dispatch://lens/0c6f1d2e-6666-4a6b-9c1d-5e2f3a4b5c66";
 const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
 
-/** The statement both lenses read: its words, longer than one line, and the one line its row
- *  draws of them, which the chain names it by. */
+/** The statement both lenses read: its words, longer than one line, which the chain names it by,
+ *  whole. */
 const STATEMENT = statementRef("r1");
 const STATEMENT_WORDS =
   "Store the notices for a day in the store the listener writes, and drop each one that is older than a day when the next notice of its issue arrives";
-const STATEMENT_LINE = drawnLine(firstLineOf(STATEMENT_WORDS));
 
 function facts(partial: Partial<LensFacts>): LensFacts {
   return { constrainedBy: [], preventedBy: [], triggered: [], triggeredBy: [], ...partial };
 }
 
-/** Every lens of the tree the focused pre-mortem stands in, by address. */
+/** Every lens of the tree the pre-mortem stands in, by address. */
 const PLACES: ReadonlyMap<string, LensPlace> = new Map([
-  [TRADE_OFF, { id: "lens/1111", kindWords: "trade-off analysis", onLine: STATEMENT_WORDS }],
-  [PREMORTEM, { id: "lens/2222", kindWords: "pre-mortem", onLine: STATEMENT_WORDS }],
+  [TRADE_OFF, { id: "lens/1111", kindWords: "trade-off analysis", onWords: STATEMENT_WORDS }],
+  [PREMORTEM, { id: "lens/2222", kindWords: "pre-mortem", onWords: STATEMENT_WORDS }],
 ]);
 
 /** The pre-mortem on the statement, triggered by the trade-off analysis. */
@@ -130,23 +131,20 @@ const NOBODY_RECORDED = {
 };
 
 /** One row the way the tree draws it: unfocused until a focus lands inside it, unless it starts
- *  focused, and then the focused row, with its body open. */
+ *  focused. */
 function LensRow({ drawn, focused: start = false }: { drawn: TreeNode; focused?: boolean }) {
   const [focused, setFocused] = useState(start);
   return (
     <NodeRow
       author={NOBODY_RECORDED}
-      body={focused}
       context={false}
       focused={focused}
       isClosed={false}
       level={1}
       node={drawn}
       onFocus={() => setFocused(true)}
-      onPin={() => {}}
       onToggle={() => {}}
       ownAnswer={false}
-      pinned={false}
       rowKey="row"
       tabStop={false}
     />
@@ -158,11 +156,16 @@ function testClient(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
 }
 
-/** `page` on this issue's route, so a chip's link takes the route's key. */
-function renderOnIssue(page: ReactNode, queryClient = testClient()): RenderResult {
+/** `page` on this issue's route, so a chip's link takes the route's key: at Conversation's
+ *  address unless the case names another (`path`). */
+function renderOnIssue(
+  page: ReactNode,
+  queryClient = testClient(),
+  path = `/issues/${KEY}`
+): RenderResult {
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+      <MemoryRouter initialEntries={[path]}>
         <NoTooltips>
           <Routes>
             <Route element={page} path="/issues/:key/*" />
@@ -181,7 +184,7 @@ function showChain(view: RenderResult): HTMLButtonElement | null {
 async function drawnControl(view: RenderResult): Promise<HTMLButtonElement> {
   return waitFor(() => {
     const control = showChain(view);
-    if (control === null) throw new Error("the focused lens draws no control for its chain");
+    if (control === null) throw new Error("the lens draws no control for its chain");
     return control;
   });
 }
@@ -218,8 +221,9 @@ async function letRequestsSettle(): Promise<void> {
 }
 
 // The lens read is sent at a press of the control alone, never at the focus, which `j`
-// gives every row; once in a load, so a second press, and a press on the row focused again,
-// draw the held answer and send nothing.
+// gives every row, nor at drawing the row, which draws the control with or without the focus;
+// once in a load, so a second press, and a press on the row focused again, draw the held answer
+// and send nothing.
 test("the chain is read at a press and not at the focus", async () => {
   const user = userEvent.setup();
   const out = Promise.withResolvers<void>();
@@ -230,15 +234,17 @@ test("the chain is read at a press and not at the focus", async () => {
   const queryClient = testClient();
   const first = renderOnIssue(<LensRow drawn={premortem()} />, queryClient);
   try {
-    expect(showChain(first), "an unfocused lens draws the control").toBeNull();
-    const row = first.container.querySelector<HTMLElement>("[data-node-row]");
-    act(() => row?.focus());
+    // The row draws the control before it has the focus.
     const control = await drawnControl(first);
     expect(control.textContent).toBe(LENS_WORDS.show_chain);
     expect(control.hasAttribute("data-page-chrome")).toBe(true);
     expect(control.tabIndex, "the control is in the tab order").toBe(-1);
     await letRequestsSettle();
+    expect(asked, "drawing the row sent the lens read").toEqual([]);
+    act(() => first.container.querySelector<HTMLElement>("[data-node-row]")?.focus());
+    await letRequestsSettle();
     expect(asked, "the focus sent the lens read").toEqual([]);
+    expect(showChain(first), "the focus changed the control").toBe(control);
     expect(chainStatus(first)).toBeNull();
 
     await user.click(control);
@@ -290,8 +296,8 @@ test("the chain is read at a press and not at the focus", async () => {
 
 // The answer holds the chain this lens stands in and the chains of the lenses invoked on
 // it, which are its rows; only the first is drawn, in the answer's order, each lens by its
-// kind's words as held - the tree's, else the read's, else the page's word - and by the first
-// line of the row it stands under where the tree drew it.
+// kind's words as held - the tree's, else the read's, else the page's word - and by the whole
+// words of the row it stands under where the tree drew it.
 test("only the chain that holds the lens is drawn", async () => {
   const user = userEvent.setup();
   const asked = answerLensReads(() =>
@@ -313,8 +319,8 @@ test("only the chain that holds the lens is drawn", async () => {
     await waitFor(() => expect(chainAddresses(view)).toHaveLength(4));
     expect(asked).toEqual([PREMORTEM]);
     expect(chainEntries(view)).toEqual([
-      { address: TRADE_OFF, kind: "trade-off analysis", line: STATEMENT_LINE, marked: "author" },
-      { address: PREMORTEM, kind: "pre-mortem", line: STATEMENT_LINE, marked: "author" },
+      { address: TRADE_OFF, kind: "trade-off analysis", line: STATEMENT_WORDS, marked: "author" },
+      { address: PREMORTEM, kind: "pre-mortem", line: STATEMENT_WORDS, marked: "author" },
       { address: FOLLOW_UP, kind: "second opinion", line: null, marked: "author" },
       { address: UNNAMED, kind: NODE_TYPE_NAMES.lens, line: null, marked: "page" },
     ]);
@@ -329,7 +335,7 @@ test("only the chain that holds the lens is drawn", async () => {
 });
 
 // A chain the read cut at its depth names the lens it stopped at, last, by a chip of its
-// kind's words cut as the tag is, linked to its row where the tree drew one.
+// kind's words, whole as the tag is, linked to its row where the tree drew one.
 test("a stopped_at ends the chain with More lenses past this one", async () => {
   const user = userEvent.setup();
   answerLensReads(() =>
@@ -362,14 +368,14 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
   const further = new Map(PLACES).set(FURTHER, {
     id: "lens/5555",
     kindWords: furtherKind,
-    onLine: STATEMENT_WORDS,
+    onWords: STATEMENT_WORDS,
   });
   expect(await drawnEnd(further)).toEqual({
     href: "/issues/CORE-1?node=lens%2F5555",
     label: LENS_WORDS.more_lenses,
     labelMarked: true,
     more: true,
-    words: chipWords(kindWords(furtherKind)),
+    words: kindWords(furtherKind),
     wordsMarked: "author",
   });
   // A lens the tree drew no row for is named by the page's word for a lens, marked as the
@@ -451,18 +457,15 @@ test("a chain drawn stays drawn when a read again fails", async () => {
 });
 
 /**
- * What a reader reads of each line `drawn` draws on this issue's route, with its body open where
- * `body` holds: what the line is, its label in the page's words, the author's words it holds, and
- * each chip's words and where its link goes.
+ * What a reader reads of each line `drawn` draws at `path`, this issue's Conversation unless the
+ * case names another of its views: what the line is, its label in the page's words, the author's
+ * words it holds, and each chip's words and where its link goes.
  */
-function linesDrawn(drawn: TreeNode, body = false) {
+function linesDrawn(drawn: TreeNode, path = `/issues/${KEY}`) {
   const view = render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+    <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route
-          element={<LensLines body={body} node={drawn} tabStops={false} />}
-          path="/issues/:key/*"
-        />
+        <Route element={<LensLines node={drawn} tabStops={false} />} path="/issues/:key/*" />
       </Routes>
     </MemoryRouter>
   );
@@ -499,9 +502,11 @@ function risk(partial: Partial<LensFacts>): TreeNode {
   });
 }
 
-/** The address's query as it stands, drawn where a case reads where a press went. */
-function AddressQuery(): ReactNode {
-  return <span data-address-query={useLocation().search} />;
+/** The address as it stands, its path and its query, drawn where a case reads where a press
+ *  went. */
+function AddressDrawn(): ReactNode {
+  const { pathname, search } = useLocation();
+  return <span data-address={`${pathname}${search}`} />;
 }
 
 describe("the lines under a row", () => {
@@ -576,7 +581,8 @@ describe("the lines under a row", () => {
   // the tree draws it, at every press: the address puts the focus on its node once, and no more
   // after the reader's first act, so a second press on the same chip, after the reader went back
   // to the risk, focuses the check's row all the same. The chip names the check by its id in the
-  // tree read, and the row carries the id the tree draws a typed block by.
+  // tree read, and the row carries the id the tree draws a typed block by. In Conversation and in
+  // Graph alike, the link is the open view's own address of the row (R7).
   test("a chip focuses its row at every press", async () => {
     const user = userEvent.setup();
     const checkId = blockNodeId("verification-md", "c1");
@@ -590,68 +596,147 @@ describe("the lines under a row", () => {
       text: "Notices older than a day are gone",
       type: "check",
     });
-    const view = renderOnIssue(
-      <>
-        <div aria-label={CONTROL_LABELS.tree} role="tree">
-          <LensRow drawn={prevented} />
-          <LensRow drawn={check} />
-        </div>
-        <AddressQuery />
-      </>
-    );
-    const rowOf = (id: string) =>
-      view.container.querySelector<HTMLElement>(
-        `[data-node-row][data-node-id="${CSS.escape(id)}"]`
+    for (const path of [`/issues/${KEY}`, `/issues/${KEY}/graph`]) {
+      const view = renderOnIssue(
+        <>
+          <div aria-label={CONTROL_LABELS.tree} role="tree">
+            <LensRow drawn={prevented} />
+            <LensRow drawn={check} />
+          </div>
+          <AddressDrawn />
+        </>,
+        testClient(),
+        path
       );
-    const chip = () => {
-      const link = rowOf(prevented.id)?.querySelector<HTMLElement>("[data-node-chip] a");
-      if (link === null || link === undefined) throw new Error("the risk draws no chip's link");
-      return link;
-    };
-    const query = () =>
-      view.container.querySelector("[data-address-query]")?.getAttribute("data-address-query");
-    try {
-      await user.click(chip());
-      expect(document.activeElement, "the press left the focus").toBe(rowOf(checkId));
-      expect(query()).toBe("?node=c1");
+      const rowOf = (id: string) =>
+        view.container.querySelector<HTMLElement>(
+          `[data-node-row][data-node-id="${CSS.escape(id)}"]`
+        );
+      const chip = () => {
+        const link = rowOf(prevented.id)?.querySelector<HTMLElement>("[data-node-chip] a");
+        if (link === null || link === undefined) throw new Error("the risk draws no chip's link");
+        return link;
+      };
+      const address = () =>
+        view.container.querySelector("[data-address]")?.getAttribute("data-address");
+      try {
+        await user.click(chip());
+        expect(document.activeElement, `the press at ${path} left the focus`).toBe(rowOf(checkId));
+        expect(address()).toBe(`${path}?node=c1`);
 
-      // The reader goes back to the risk, and `f` steps to its chip.
-      act(() => rowOf(prevented.id)?.focus());
-      act(() => chip().focus());
-      await user.keyboard("{Enter}");
-      expect(document.activeElement, "Enter on the chip left the focus").toBe(rowOf(checkId));
-      expect(query()).toBe("?node=c1");
-    } finally {
-      view.unmount();
+        // The reader goes back to the risk, and `f` steps to its chip.
+        act(() => rowOf(prevented.id)?.focus());
+        act(() => chip().focus());
+        await user.keyboard("{Enter}");
+        expect(document.activeElement, `Enter on the chip at ${path} left the focus`).toBe(
+          rowOf(checkId)
+        );
+        expect(address()).toBe(`${path}?node=c1`);
+      } finally {
+        view.unmount();
+      }
     }
   });
 
   // A statement names each constraint it is held to; one of the issue's is a row and its
-  // chip a link, and one of the catalogue has no row, so its chip is words with no link.
+  // chip a link, and one of the catalogue has no row, so its chip is words with no link. Where
+  // the open view draws the issue's constraint's row, the chip links it there; where only Graph
+  // draws it (`graphOnly`), as Conversation's answer and the Spec view's give it, the chip links
+  // Graph's row of it from every view (R7).
   test("a statement names its constraints, the issue's linked and the catalogue's as words", () => {
-    const drawn = node({
-      id: "spec#b-r5",
-      lens: facts({
-        constrainedBy: [
-          { address: ISSUE_CONSTRAINT, id: "constraint/9a1b", words: "Retention under 24 hours" },
-          { address: CATALOGUE_CONSTRAINT, words: "OWASP ASVS 4.0 V8.3" },
-        ],
-      }),
-      reference: "dispatch://CORE-1/spec#b-r5",
-      text: "Notices expire",
-      type: "requirement",
-    });
-    expect(linesDrawn(drawn)).toEqual([
+    const statement = (graphOnly: boolean) =>
+      node({
+        id: "spec#b-r5",
+        lens: facts({
+          constrainedBy: [
+            {
+              address: ISSUE_CONSTRAINT,
+              id: "constraint/9a1b",
+              words: "Retention under 24 hours",
+              ...(graphOnly ? { graphOnly: true } : {}),
+            },
+            { address: CATALOGUE_CONSTRAINT, words: "OWASP ASVS 4.0 V8.3" },
+          ],
+        }),
+        reference: "dispatch://CORE-1/spec#b-r5",
+        text: "Notices expire",
+        type: "requirement",
+      });
+    const line = (href: string) => [
       {
         chips: [
-          { href: "/issues/CORE-1?node=constraint%2F9a1b", words: "Retention under 24 hours" },
+          { href, words: "Retention under 24 hours" },
           { href: null, words: "OWASP ASVS 4.0 V8.3" },
         ],
         label: LENS_WORDS.constrained_by,
         line: "constrained_by",
         words: [],
       },
-    ]);
+    ];
+    const inConversation = "/issues/CORE-1?node=constraint%2F9a1b";
+    const inGraph = "/issues/CORE-1/graph?node=constraint%2F9a1b";
+    expect(linesDrawn(statement(false))).toEqual(line(inConversation));
+    for (const path of [`/issues/${KEY}`, `/issues/${KEY}/spec`, `/issues/${KEY}/graph`]) {
+      expect(linesDrawn(statement(true), path), `at ${path}`).toEqual(line(inGraph));
+    }
+    expect(linesDrawn(statement(false), `/issues/${KEY}/graph`)).toEqual(line(inGraph));
+  });
+
+  // In Conversation a press on the chip of a constraint only Graph draws opens Graph at its row,
+  // and focuses no row Conversation draws there: Graph's address puts the focus on the row as
+  // Graph opens.
+  test("a constraint's chip in Conversation opens Graph at its row", async () => {
+    const user = userEvent.setup();
+    const constraintId = "constraint/9a1b";
+    const statement = node({
+      id: "spec#b-r5",
+      lens: facts({
+        constrainedBy: [
+          {
+            address: ISSUE_CONSTRAINT,
+            graphOnly: true,
+            id: constraintId,
+            words: "Retention under 24 hours",
+          },
+        ],
+      }),
+      reference: "dispatch://CORE-1/spec#b-r5",
+      text: "Notices expire",
+      type: "requirement",
+    });
+    const constraint = node({
+      id: constraintId,
+      readId: constraintId,
+      reference: ISSUE_CONSTRAINT,
+      text: "Retention under 24 hours",
+      type: "constraint",
+    });
+    const view = renderOnIssue(
+      <>
+        <div aria-label={CONTROL_LABELS.tree} role="tree">
+          <LensRow drawn={statement} />
+          <LensRow drawn={constraint} />
+        </div>
+        <AddressDrawn />
+      </>
+    );
+    try {
+      const link = view.container.querySelector<HTMLElement>(
+        `[data-node-row][data-node-id="${CSS.escape(statement.id)}"] [data-node-chip] a`
+      );
+      if (link === null) throw new Error("the statement draws no chip's link");
+      await user.click(link);
+      expect(
+        view.container.querySelector("[data-address]")?.getAttribute("data-address"),
+        "the press did not open Graph"
+      ).toBe("/issues/CORE-1/graph?node=constraint%2F9a1b");
+      expect(
+        document.activeElement?.getAttribute("data-node-id"),
+        "the press focused a row Conversation draws"
+      ).not.toBe(constraintId);
+    } finally {
+      view.unmount();
+    }
   });
 
   // The plan's decision on a constraint's row: a standard's line holds its reference, and a
@@ -677,40 +762,229 @@ describe("the lines under a row", () => {
     ]);
   });
 
-  // An open body draws a lens's kind's words whole, which its tag cuts, and a risk's
-  // prevention; a closed one draws neither.
-  test("an open body adds a lens's kind's words whole and a risk's prevention", () => {
+  // A lens draws no line for its kind, which its tag carries whole; a risk draws its
+  // prevention after its early warning, whether or not its row has the focus.
+  test("a lens draws no line for its kind and a risk draws its prevention", () => {
     const lens = node({
       id: "lens/5555",
       lens: facts({ kind: "risk review of the notice store's retention" }),
       reference: FURTHER,
       type: "lens",
     });
-    expect(linesDrawn(lens, true)).toEqual([
-      {
-        chips: [],
-        label: null,
-        line: "kind",
-        words: ["Risk review of the notice store's retention"],
-      },
-    ]);
     expect(linesDrawn(lens)).toEqual([]);
 
     const prevents = risk({ prevention: "Expire notices every hour" });
-    expect(linesDrawn(prevents, true).map(({ line }) => line)).toEqual([
+    expect(linesDrawn(prevents).map(({ line }) => line)).toEqual([
       "early_warning",
       "prevention",
       "prevented_by_nothing",
     ]);
-    expect(linesDrawn(prevents, true)[1]).toEqual({
+    expect(linesDrawn(prevents)[1]).toEqual({
       chips: [],
       label: LENS_WORDS.prevention,
       line: "prevention",
       words: ["Expire notices every hour"],
     });
-    expect(linesDrawn(prevents).map(({ line }) => line)).toEqual([
-      "early_warning",
-      "prevented_by_nothing",
-    ]);
   });
+});
+
+// A lens's tag and the chips of its lines name a lens by its kind's words, which can run to 129
+// characters: each is drawn whole and is not held to one line, so it wraps inside its column
+// instead of widening the page. The tag keeps part T's one line for every other kind
+// (`whitespace-nowrap`), so a lens's tag draws its kind's words in a span of their own that wraps
+// anywhere, its shape in another at the top, beside their first line (`NodeRow.tsx`'s `KindTag`).
+test("a lens's tag and its chips draw a kind of 129 characters whole, and wrap", () => {
+  const kind =
+    "pre-mortem: imagine the work failed a year from now, then name each warning the team missed and say why nobody acted on it at all";
+  expect(kind).toHaveLength(129);
+  const drawn = node({
+    id: "lens/2222",
+    lens: facts({
+      kind,
+      triggeredBy: [{ address: TRADE_OFF, id: "lens/1111", words: kindWords(kind) }],
+    }),
+    reference: PREMORTEM,
+    type: "lens",
+  });
+  const view = renderOnIssue(<LensRow drawn={drawn} />);
+  try {
+    const tag = view.container.querySelector("[data-node-tag]");
+    const words = tag?.querySelector("[data-author-text]");
+    const shape = tag?.querySelector("svg")?.parentElement;
+    const chip = view.container.querySelector("[data-node-chip] [data-chip-name]");
+    expect(tag?.textContent).toBe(kindWords(kind));
+    expect(words?.textContent).toBe(kindWords(kind));
+    expect(chip?.textContent).toBe(kindWords(kind));
+    expect(words?.className, "the tag's words hold one line").toContain("whitespace-normal");
+    expect(words?.className, "the tag's words break no word").toContain("[overflow-wrap:anywhere]");
+    expect(shape?.className, "the shape is not at the top of the tag").toContain("self-start");
+    expect(chip?.className, "the chip holds one line").not.toContain("whitespace-nowrap");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The tone, as `pageKindBullet` and `pageKindTag` name it, that `drawn`'s row draws its bullet
+ *  and its tag in. */
+function tonesDrawn(drawn: TreeNode) {
+  const view = renderOnIssue(<LensRow drawn={drawn} />);
+  try {
+    const dot = view.container.querySelector("[data-node-bullet] i");
+    const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+    return {
+      bullet:
+        Object.entries(pageKindBullet).find(([, drawnAs]) =>
+          dot?.classList.contains(drawnAs)
+        )?.[0] ?? null,
+      tag:
+        Object.entries(pageKindTag).find(([, drawnAs]) => tag?.classList.contains(drawnAs))?.[0] ??
+        null,
+    };
+  } finally {
+    view.unmount();
+  }
+}
+
+// The spec's Design: a constraint's row draws its bullet and its tag in a statement's colour,
+// though it is no block of the spec and so never `isStatement`; a lens, a finding and a risk
+// draw theirs in the lenses' own.
+test("a constraint's row takes a statement's colour, and a lens's, a finding's and a risk's the lenses'", () => {
+  const constraint = node({
+    id: "constraint/9a1b",
+    lens: facts({ reference: "ISO/IEC 27001 A.8.10" }),
+    reference: ISSUE_CONSTRAINT,
+    text: "Information deletion",
+    type: "constraint",
+  });
+  expect(tonesDrawn(constraint), "the constraint").toEqual({
+    bullet: "statement",
+    tag: "statement",
+  });
+  const finding = node({
+    id: "lens/2222#b-f1",
+    text: "The store keeps no expiry",
+    type: "finding",
+  });
+  for (const drawn of [premortem(), finding, risk({})]) {
+    expect(tonesDrawn(drawn), `the ${drawn.type}`).toEqual({ bullet: "lens", tag: "lens" });
+  }
+});
+
+// A lens's verdict that links its author's words to a risk the tree read holds,
+// `[the failover risk](dispatch://risk/<uuid>)`, draws those words as a link that opens the
+// risk's row (`?node=`), as the lens's row draws its words from the tree read
+// (`buildIssueTree`).
+test("a lens row draws its verdict's author's link to a risk as a link to the risk's row", async () => {
+  await warmMarkdownRenderer();
+  const lens = "c3000000-0000-4000-8000-000000000003";
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY, {
+          attributes: { verdict: `See [the failover risk](dispatch://risk/${risk}) first.` },
+        }),
+        treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
+      ],
+      [],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children.find((row) => row.id === lens);
+  if (drawn === undefined) throw new Error("the tree draws no row of the lens");
+  const view = renderOnIssue(<LensRow drawn={drawn} />);
+  try {
+    await waitFor(() => {
+      const links = [...view.container.querySelectorAll("a")].filter(
+        (anchor) => anchor.textContent === "the failover risk"
+      );
+      expect(links.map((link) => link.getAttribute("href"))).toEqual([
+        `/issues/${KEY}?node=${risk}`,
+      ]);
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The ids of the risk row the early-warning cases draw: a lens on the issue, a risk under it,
+ *  and a constraint of the issue the risk's early warning cites. */
+const WARNING_ROW = {
+  constraint: "e5000000-0000-4000-8000-000000000005",
+  lens: "c3000000-0000-4000-8000-000000000003",
+  risk: "d4000000-0000-4000-8000-000000000004",
+} as const;
+
+/** Draws a risk row from the tree read (`buildIssueTree`) whose early warning is `earlyWarning`,
+ *  and waits until its line draws `expected`: its author's words, and each link in it as its
+ *  words and its address. */
+async function expectEarlyWarningDrawn(
+  earlyWarning: string,
+  expected: [string, [string, string][]]
+): Promise<void> {
+  await warmMarkdownRenderer();
+  const { constraint, lens, risk } = WARNING_ROW;
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY),
+        treeNode(risk, "risk", lens, {
+          attributes: { early_warning: earlyWarning, heading: "Replies break the HTTP rule" },
+        }),
+        treeNode(constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } }),
+      ],
+      [],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children
+    .find((row) => row.id === lens)
+    ?.children.find((row) => row.id === risk);
+  if (drawn === undefined) throw new Error("the tree draws no row of the risk");
+  const view = renderOnIssue(<LensRow drawn={drawn} />);
+  try {
+    await waitFor(() => {
+      const line = view.container.querySelector('[data-lens-line="early_warning"]');
+      const links = [...(line?.querySelectorAll("a") ?? [])];
+      expect([
+        line?.querySelector("[data-author-text]")?.textContent ?? "",
+        links.map((link): [string, string] => [
+          link.textContent ?? "",
+          link.getAttribute("href") ?? "",
+        ]),
+      ]).toEqual(expected);
+    });
+  } finally {
+    view.unmount();
+  }
+}
+
+// A risk's early warning that cites a constraint the tree read holds by its bare address,
+// `dispatch://constraint/<uuid>`, draws the constraint's words in its line as a link that opens
+// the constraint's row (`?node=`), as the risk's row draws its lines from the tree read
+// (`buildIssueTree`).
+test("a risk row draws its early warning's address of a constraint as a link to the constraint's row", async () => {
+  const { constraint } = WARNING_ROW;
+  await expectEarlyWarningDrawn(`A reply breaks dispatch://constraint/${constraint} first.`, [
+    "A reply breaks RFC 9110 first.",
+    [["RFC 9110", `/issues/${KEY}?node=${constraint}`]],
+  ]);
+});
+
+// A risk's early warning whose author's link to a constraint the tree read holds has words that
+// carry a mark, `[the **HTTP** rule](dispatch://constraint/<uuid>)`, draws those words as one link
+// that opens the constraint's row (`?node=`), not one link for each run of them.
+test("a risk row draws its early warning's author's link of marked words as one link", async () => {
+  const { constraint } = WARNING_ROW;
+  await expectEarlyWarningDrawn(
+    `A reply breaks [the **HTTP** rule](dispatch://constraint/${constraint}) first.`,
+    [
+      "A reply breaks the HTTP rule first.",
+      [["the HTTP rule", `/issues/${KEY}?node=${constraint}`]],
+    ]
+  );
 });

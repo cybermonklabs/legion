@@ -1,3 +1,4 @@
+/** the Spec view reads the server's stored decisions, ties and results */
 import type { Locator } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";

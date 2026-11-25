@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,8 +36,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/encoding"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -735,17 +738,38 @@ func readFixture(t *testing.T, fixtures, name string, into any) {
 }
 
 // hrefReadApart is an href the writer's and the reader's href tables both hold and map to
-// different references: the reference grammar changed between the two builds.
+// different references: the reference grammar changed between the two builds. writerRow and
+// readerRow are the refs rows the two references name (`kind id`, as documentRefs reads them), and
+// d10 is whether the two readings are D10's (decisionsReadings).
 type hrefReadApart struct {
 	href, writerRef, readerRef string
+	writerRow, readerRow       string
+	d10                        bool
+}
+
+// decisionsPage is D10's href form, the Decisions tab of an issue: `/issues/KEY/decisions`, with
+// or without a fragment.
+var decisionsPage = regexp.MustCompile(`^/issues/([A-Z][A-Z0-9]*-[1-9][0-9]*)/decisions(#.*)?$`)
+
+// decisionsReadings reports whether href is the Decisions tab of an issue (decisionsPage) and
+// readings are exactly the two readings of it D10 names, in either order: the issue KEY,
+// `dispatch://KEY/decisions`, in a build that carries D10, and the issue's decisions document,
+// `dispatch://KEY/artifact/decisions-md`, in a build before it.
+func decisionsReadings(href string, readings ...string) bool {
+	match := decisionsPage.FindStringSubmatch(href)
+	if match == nil || len(readings) != 2 {
+		return false
+	}
+	issue, document := "dispatch://"+match[1]+"/decisions", "dispatch://"+match[1]+"/artifact/"+refs.RetiredDecisionsSlug
+	return (readings[0] == issue && readings[1] == document) || (readings[0] == document && readings[1] == issue)
 }
 
 // hrefsReadApart is each href the reader's own href table maps to another reference than the
-// writer's table does, keyed by the refs row the reader's reference names (`kind id`, as
-// documentRefs reads it). When the reader rewrites a body holding that href, it adds that row by
-// its own grammar. The one such href is D10's grammar change: the Decisions tab's
-// `/issues/KEY/decisions` reads as the issue KEY in a build that carries it, and as the document
-// KEY/decisions-md in a build before it.
+// writer's table does, keyed by both refs rows it reads as: the writer's reading and the reader's.
+// Either build rewrites a body holding that href with its own reading, and so does either build's
+// block-index pass that re-indexes it (awaitReferencesSettled). The one such href is D10's grammar
+// change: the Decisions tab's `/issues/KEY/decisions` reads as the issue KEY in a build that
+// carries it, and as the document KEY/decisions-md in a build before it.
 func hrefsReadApart(t *testing.T, writer, reader documentSide) map[string]hrefReadApart {
 	t.Helper()
 	writerRefs := map[string]string{}
@@ -758,13 +782,43 @@ func hrefsReadApart(t *testing.T, writer, reader documentSide) map[string]hrefRe
 		if !both || writerRef == row.Ref {
 			continue
 		}
-		ref, ok := text.ParseRef(row.Ref, "")
-		if !ok {
-			t.Fatalf("the %s's href table maps %s to %s, which names no reference", reader.name, row.Href, row.Ref)
+		href := hrefReadApart{
+			href: row.Href, writerRef: writerRef, readerRef: row.Ref,
+			writerRow: refRow(t, writer, row.Href, writerRef), readerRow: refRow(t, reader, row.Href, row.Ref),
+			d10: decisionsReadings(row.Href, writerRef, row.Ref),
 		}
-		apart[ref.Kind+" "+text.TargetID(ref)] = hrefReadApart{href: row.Href, writerRef: writerRef, readerRef: row.Ref}
+		apart[href.writerRow], apart[href.readerRow] = href, href
 	}
 	return apart
+}
+
+// refRow is the refs row the reference ref names, `kind id`, as documentRefs reads it; side's href
+// table maps href to ref.
+func refRow(t *testing.T, side documentSide, href, ref string) string {
+	t.Helper()
+	parsed, ok := text.ParseRef(ref, "")
+	if !ok {
+		t.Fatalf("the %s's href table maps %s to %s, which names no reference", side.name, href, ref)
+	}
+	return parsed.Kind + " " + text.TargetID(parsed)
+}
+
+// documentReading is, for D10's href, the refs row of the reading that names the decisions
+// document: the reading of a build before D10, which only that reading of the href writes.
+func (href hrefReadApart) documentReading() string {
+	if strings.HasPrefix(href.writerRow, "artifact ") {
+		return href.writerRow
+	}
+	return href.readerRow
+}
+
+// otherReading is, for a refs row that is one build's reading of an href the two builds read
+// apart, the row the other build reads that href as.
+func (href hrefReadApart) otherReading(row string) string {
+	if row == href.writerRow {
+		return href.readerRow
+	}
+	return href.writerRow
 }
 
 // opensTypedBlock reports whether a line of body starts with the `:::` of a typed block's fence.
@@ -789,21 +843,56 @@ func documentRefs(t *testing.T, builds *twoBuilds, artifactID string) []string {
 		t.Fatalf("read the document's refs: %v", err)
 	}
 	defer rows.Close()
-	refs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		t.Fatalf("read the document's refs: %v", err)
 	}
-	return refs
+	return held
 }
 
-// referencesSettle is how long the references row waits after Y's edit before it reads the refs
-// rows again: past the default two-second settle delay, so a settlement that rewrites the document
-// after the edit has rewritten it too.
-const referencesSettle = 4 * time.Second
+// referencesSettleWait bounds awaitReferencesSettled: the block-index tick of each build comes
+// every docs.BlockIndexReconcileInterval, and the re-index a version owes takes two of them, the
+// one that drains the document's scope row and the one whose batch indexes the document it owed.
+const referencesSettleWait = 3*docs.BlockIndexReconcileInterval + 30*time.Second
+
+// awaitReferencesSettled waits until the document owes no pass that rewrites its refs rows, and
+// fails once referencesSettleWait passes. Every version either build writes owes the document's
+// scope a re-index (refs_grammar_owed, migration 20261103205041). The block-index tick of
+// whichever build takes it next drains that row by owing the document a block index (docs'
+// reindexScope), and a batch of the same build indexes the document's latest version whole,
+// its references with that build's own grammar (indexOwedDocument). So the rows after a write
+// stand only once that queue holds no row naming the document and its block index is at its
+// latest version with no store mark owed (document_block_versions). A wait of fixed length reads
+// the rows before a tick that is due, or between a tick of the one build and one of the other.
+func awaitReferencesSettled(t *testing.T, builds *twoBuilds, artifactID string) {
+	t.Helper()
+	deadline := time.Now().Add(referencesSettleWait)
+	for {
+		var queued, indexed bool
+		var owed string
+		if err := builds.database.Pool.QueryRow(context.Background(), `
+			select exists (select 1 from refs_grammar_owed where id = $1::uuid),
+			       coalesce((select b.version = (select max(v.number) from artifact_versions v where v.artifact_id = $1::uuid)
+			                   and b.store_owed_at is null
+			                 from document_block_versions b where b.artifact_id = $1::uuid), false),
+			       coalesce((select string_agg(kind, ', ' order by kind) from refs_grammar_owed where id = $1::uuid), '')
+		`, artifactID).Scan(&queued, &indexed, &owed); err != nil {
+			t.Fatalf("read what the document %s owes: %v", artifactID, err)
+		}
+		if !queued && indexed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after %s the document %s still owes a re-index: re-index queue rows %q, block index at its latest version with no store mark %v",
+				referencesSettleWait, artifactID, owed, indexed)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
 
 // requireReferencesKeptAcrossBuilds creates the body holding every reference form of X's
 // text/testdata on X, appends a paragraph on Y, and checks the refs rows after the rewrite and
-// after it settled (requireRefsKept).
+// after every pass it owed has rewritten them (awaitReferencesSettled, requireRefsKept).
 func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, reader documentSide, project string) {
 	_, artifactID := createDocument(t, writer.process, project, "Every reference form", referencesMarkdown(t, writer.fixtures))
 	written := documentRefs(t, builds, artifactID)
@@ -813,7 +902,7 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 	apart := hrefsReadApart(t, writer, reader)
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
 	requireRefsKept(t, documentRefs(t, builds, artifactID), written, apart, "after the "+reader.name+" rewrote the body", writer.name, reader)
-	time.Sleep(referencesSettle)
+	awaitReferencesSettled(t, builds, artifactID)
 	dropped := requireRefsKept(t, documentRefs(t, builds, artifactID), written, apart, "after the "+reader.name+"'s rewrite settled", writer.name, reader)
 	t.Logf("%d of the %d refs rows the %s wrote survived the %s's rewrite", len(written)-len(dropped), len(written), writer.name, reader.name)
 }
@@ -830,9 +919,13 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 // It may add rows, but only of a kind that written holds no row of: a kind it extracts and the
 // writer does not, such as `block` from a `#b-` link when the writer is a build before the block
 // graph. A row it adds of a kind the writer wrote means the two builds read one reference form as
-// different targets, unless the reader's own href table maps an href of the body to that row and
-// the writer's maps it elsewhere (apart, hrefsReadApart): that row is D10's grammar change, which
-// is logged. It returns the edges the reader dropped.
+// different targets, unless that row is one build's reading of an href the two builds read apart
+// (apart, hrefsReadApart): that is D10's grammar change, which is logged. D10's href stands in the
+// rows by the reading of whichever build last indexed the body - the writer's own write, the
+// reader's rewrite, or the block-index pass of either build that re-indexes it after each - so the
+// row of written that is its document reading (`artifact KEY/decisions-md`, which only a build
+// before D10 writes from it, documentReading) is kept while the issue reading's row is held. No
+// other row of written is kept by another row. It returns the edges the reader dropped.
 func requireRefsKept(t *testing.T, got, written []string, apart map[string]hrefReadApart, when, writer string, reader documentSide) []string {
 	t.Helper()
 	keepsUnknownKinds := len(reader.manifest.Nodes) > 0
@@ -846,9 +939,17 @@ func requireRefsKept(t *testing.T, got, written []string, apart map[string]hrefR
 		kind, _, _ := strings.Cut(row, " ")
 		extracted[kind] = true
 	}
+	regrammar := func(row string, href hrefReadApart) string {
+		return fmt.Sprintf("\t%s: %s reads as %s in the %s and as %s in the %s\n",
+			row, href.href, href.writerRef, writer, href.readerRef, reader.name)
+	}
 	var lost, dropped, added, regrammared []string
 	for _, row := range written {
 		if slices.Contains(got, row) {
+			continue
+		}
+		if href, ok := apart[row]; ok && href.d10 && row == href.documentReading() && slices.Contains(got, href.otherReading(row)) {
+			regrammared = append(regrammared, regrammar(href.otherReading(row), href))
 			continue
 		}
 		if kind, _, _ := strings.Cut(row, " "); !keepsUnknownKinds && !extracted[kind] {
@@ -862,8 +963,9 @@ func requireRefsKept(t *testing.T, got, written []string, apart map[string]hrefR
 			continue
 		}
 		if href, ok := apart[row]; ok {
-			regrammared = append(regrammared, fmt.Sprintf("\t%s: its href table maps %s to %s, the %s's to %s\n",
-				row, href.href, href.readerRef, writer, href.writerRef))
+			if !slices.Contains(regrammared, regrammar(row, href)) {
+				regrammared = append(regrammared, regrammar(row, href))
+			}
 			continue
 		}
 		added = append(added, row)
@@ -873,8 +975,8 @@ func requireRefsKept(t *testing.T, got, written []string, apart map[string]hrefR
 			when, reader.name, len(dropped), len(written), writer, refRowsText(dropped))
 	}
 	if len(regrammared) > 0 {
-		t.Logf("%s, the %s added %d rows by D10's grammar change, each the reference its own href table maps a link of the body to:\n%s",
-			when, reader.name, len(regrammared), strings.Join(regrammared, ""))
+		t.Logf("%s, %d rows are the reading of an href the two builds read apart by D10's grammar change, other than the one written holds:\n%s",
+			when, len(regrammared), strings.Join(regrammared, ""))
 	}
 	if len(lost) > 0 || len(added) > 0 {
 		t.Fatalf("%s, the body's refs rows lack %d of the %d the %s wrote\n%s\nand hold %d rows of kinds the %s wrote that it did not write\n%s\nall rows now:\n%s",

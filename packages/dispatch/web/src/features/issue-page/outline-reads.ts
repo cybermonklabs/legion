@@ -8,7 +8,7 @@ import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
   type IssueTreeView,
-  issueAsksQuery,
+  issueAskThreadsQuery,
   issueCommentsQuery,
   issueMessagesQuery,
   useIssueTree,
@@ -139,7 +139,7 @@ function fiveReads(key: string) {
       bringsQuestions: true,
       line: "asks",
       message: STATE_LINES.asks_unreadable,
-      query: { ...issueAsksQuery(key), ...EVENT_FRESH },
+      query: { ...issueAskThreadsQuery(key), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,

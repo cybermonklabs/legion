@@ -4,7 +4,7 @@ import { type ReactNode, useState } from "react";
 
 import { ApiError } from "../../../api/client";
 import { pageFailedText, pageQuietText } from "../../../theme/classes";
-import { drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
+import type { TreeNode } from "../issue-tree";
 import { NodeMarks, useNodeStatesByReference } from "../node-states/NodeMarks";
 import { marksAt } from "../node-states/node-states";
 import { authorText, pageChrome } from "../page-structure";
@@ -14,15 +14,16 @@ import { lensChainQuery } from "./lens-reads";
 import { NodeLink } from "./NodeLink";
 
 /**
- * The chain a focused lens stands in: the lenses that triggered it and the lenses it triggered,
- * from the lens read at the lens's own address. It is drawn only for a lens that has a trigger
- * chip, and the read is sent only once the reader presses `LENS_WORDS.show_chain`: the focus
- * alone sends nothing, because `j` passes every row. The read is held once in a load
- * (`lensChainQuery`), so a later press draws the held answer and sends nothing.
+ * The chain a lens stands in: the lenses that triggered it and the lenses it triggered, from the
+ * lens read at the lens's own address. Every row of a lens that has a trigger chip draws the
+ * control, whether or not it has the focus, and the read is sent only once the reader presses
+ * `LENS_WORDS.show_chain`: neither drawing the row nor focusing it sends anything, because `j`
+ * passes every row. The read is held once in a load (`lensChainQuery`), so a later press draws
+ * the held answer and sends nothing.
  *
  * Of the answer's chains it draws the one that holds this lens, in the answer's order. The
  * others are the chains of the lenses invoked on this lens, which are its rows. Each entry names
- * its lens by its kind's words as the `lens_kind` node holds them, and by the first line of the
+ * its lens by its kind's words as the `lens_kind` node holds them, and by the whole words of the
  * row it stands under where the tree drew that row. A chain the read cut short ends with
  * `LENS_WORDS.more_lenses` and the chip of the lens it stopped at.
  *
@@ -121,8 +122,8 @@ function ChainAnswer({
   );
 }
 
-/** The one chain that holds the focused lens, entry by entry, and, where the read cut it short,
- *  the lens it stopped at. */
+/** The one chain that holds the lens, entry by entry, and, where the read cut it short, the lens
+ *  it stopped at. */
 function ChainEntries({
   chain,
   lens,
@@ -144,9 +145,8 @@ function ChainEntries({
           const place = lens.lenses?.get(entry.address);
           const placed = place?.kindWords;
           const held = filled(placed) ? placed : entry.kind?.words;
-          // The line of the row the lens stands under, cut as that row draws its one line, so
-          // the chain names the row by the words a reader sees on it.
-          const onLine = filled(place?.onLine) ? drawnLine(firstLineOf(place.onLine)) : undefined;
+          // The whole words of the row the lens stands under, which the chain names it by.
+          const onWords = place?.onWords;
           return (
             <li
               className="flex min-w-0 flex-wrap items-baseline gap-x-2"
@@ -170,9 +170,9 @@ function ChainEntries({
               {/* After the lens's name, in the chain's own size; none where the tree holds no
                   node at that address. */}
               <NodeMarks compact marks={marksAt(states, entry.address) ?? {}} />
-              {filled(onLine) ? (
+              {filled(onWords) ? (
                 <span className="min-w-0 break-words" data-lens-chain-line="" {...authorText}>
-                  {onLine}
+                  {onWords}
                 </span>
               ) : null}
             </li>

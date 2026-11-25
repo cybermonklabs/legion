@@ -20,7 +20,7 @@ import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
 import { askRead, issueDetails } from "../spec-filter/spec-fixtures";
 import { treeAnswer as fixtureAnswer, treeNode } from "../tree-read/tree-fixtures";
 import {
-  issueTreeQuery,
+  outlineQuery,
   subscribeTreeFreshness,
   type TreeAnswer,
   viewQuery,
@@ -30,9 +30,10 @@ import { SettleIssueProvider } from "./settle-write";
 
 /**
  * Settle on a focused proposed row, drawn by `NodeRow.tsx`'s `RowActs` in the row as the page
- * draws it, beside the reads the page holds while the row is drawn: the tree read, the coverage
- * read and the one view a slot has on (Verification), each under the query options `tree-read.ts`
- * gives it, with the Spec view's read held from the load and read by nobody now, and the
+ * draws it, beside the reads the page holds while the row is drawn: the outline's read of the
+ * tree on Conversation (`OUTLINE`), the coverage read and the one view a slot has on
+ * (Verification), each under the query options `tree-read.ts` gives it, with the Spec view's read
+ * held from the load and read by nobody now, and the
  * tree read's subscription (`subscribeTreeFreshness`) keeping them fresh as the page does, with
  * the live feed up as the shell's event feed holds it: with the feed down nothing tells what a
  * write did, so the subscription reads the tree and every view itself at each write's settle,
@@ -49,6 +50,9 @@ const SETTLE_PATH =
  *  which a slot has on: each under its key (`viewKey`), as `viewQuery` gives it. */
 const HELD_VIEW = viewQuery(KEY, "spec").queryKey;
 const OPEN_VIEW = viewQuery(KEY, "verification").queryKey;
+/** The read the outline draws its rows from on Conversation, under its own key
+ *  (`conversationTreeKey`), as the page holds it: the read a settle's landing is told by. */
+const OUTLINE = outlineQuery(KEY, "conversation");
 
 /** Requirement 7, which an agent proposed and nobody has settled: the tree read names it by the
  *  id `readId` holds. */
@@ -99,7 +103,7 @@ function settled(): unknown {
 /** The reads the page holds while the row is drawn: the tree, the coverage, and the view a slot
  *  has on. */
 function PageReads(): ReactNode {
-  useQuery(issueTreeQuery(KEY));
+  useQuery(OUTLINE);
   useQuery(issueCoverageQuery(KEY));
   useQuery(viewQuery(KEY, "verification"));
   return null;
@@ -111,11 +115,10 @@ function PageReads(): ReactNode {
  *  that holds it settled draws it with no mark and no act; else as given. The read is watched by
  *  an observer that is never enabled, so it sends no request. */
 function TreeRow({ focused, node }: { focused: boolean; node: TreeNode }): ReactNode {
-  const answer = useQuery({ ...issueTreeQuery(KEY), enabled: false }).data;
+  const answer = useQuery({ ...OUTLINE, enabled: false }).data;
   return (
     <NodeRow
       author={{ kind: "person", name: "bob", reader: false }}
-      body={false}
       context={false}
       focused={focused}
       isClosed={false}
@@ -124,10 +127,8 @@ function TreeRow({ focused, node }: { focused: boolean; node: TreeNode }): React
         answer?.nodes?.some((read) => read.id === node.readId) ? closeOvertaken(node, answer) : node
       }
       onFocus={() => {}}
-      onPin={() => {}}
       onToggle={() => {}}
       ownAnswer={false}
-      pinned={false}
       rowKey="row"
       tabStop
     />
@@ -198,7 +199,7 @@ function drawRow(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(issueTreeQuery(KEY).queryKey, treeAnswer());
+  client.setQueryData(OUTLINE.queryKey, treeAnswer());
   client.setQueryData(HELD_VIEW, treeAnswer());
   client.setQueryData(OPEN_VIEW, treeAnswer());
   client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
@@ -470,7 +471,7 @@ test("a settle of another issue's node holds the reads of the tree it is drawn i
     await waitFor(() => expect(drawn.sent).toHaveLength(1));
     expect(drawn.sent[0]?.path).toBe(OTHER_SETTLE_PATH);
     await act(async () => {
-      await drawn.client.invalidateQueries({ exact: true, queryKey: issueTreeQuery(KEY).queryKey });
+      await drawn.client.invalidateQueries({ exact: true, queryKey: OUTLINE.queryKey });
     });
     expect(drawn.reads, "the tree was read while the settle was out").toEqual([]);
     await act(async () => landing.resolve(settled()));
@@ -609,7 +610,7 @@ test("after a 200 Settling… is said until the tree read answers", async () => 
   const user = userEvent.setup();
   const answer = Promise.withResolvers<TreeAnswer>();
   const drawn = drawRow(async () => settled(), { tree: () => answer.promise });
-  const tree = () => drawn.client.getQueryState(issueTreeQuery(KEY).queryKey);
+  const tree = () => drawn.client.getQueryState(OUTLINE.queryKey);
   try {
     await user.click(drawn.settle());
     await waitFor(() => expect(drawn.client.isMutating(), "the write is still out").toBe(0));
@@ -641,7 +642,7 @@ test("after a 200 the tree read that answers the node settled takes the act and 
   const user = userEvent.setup();
   const answer = Promise.withResolvers<TreeAnswer>();
   const drawn = drawRow(async () => settled(), { tree: () => answer.promise });
-  const tree = () => drawn.client.getQueryState(issueTreeQuery(KEY).queryKey);
+  const tree = () => drawn.client.getQueryState(OUTLINE.queryKey);
   // What the act said each time it was drawn taking a press on a row still marked proposed.
   const pressable: string[] = [];
   const watch = new MutationObserver(() => {
@@ -692,7 +693,7 @@ test("after a 200 an act drawn again says Settling… until the tree read answer
   const user = userEvent.setup();
   const answer = Promise.withResolvers<TreeAnswer>();
   const drawn = drawRow(async () => settled(), { tree: () => answer.promise });
-  const tree = () => drawn.client.getQueryState(issueTreeQuery(KEY).queryKey);
+  const tree = () => drawn.client.getQueryState(OUTLINE.queryKey);
   try {
     await user.click(drawn.settle());
     await waitFor(() => expect(drawn.client.isMutating(), "the write is still out").toBe(0));
@@ -724,7 +725,7 @@ test("an act drawn again while the write is out says Settling… until the tree 
   const landing = Promise.withResolvers<unknown>();
   const answer = Promise.withResolvers<TreeAnswer>();
   const drawn = drawRow(() => landing.promise, { tree: () => answer.promise });
-  const tree = () => drawn.client.getQueryState(issueTreeQuery(KEY).queryKey);
+  const tree = () => drawn.client.getQueryState(OUTLINE.queryKey);
   try {
     await user.click(drawn.settle());
     await waitFor(() => expect(drawn.sent).toHaveLength(1));

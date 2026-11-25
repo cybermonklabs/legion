@@ -35,11 +35,12 @@ type MovePlan = (
 /** One PATCH of a move, made by a keyed write of the board's. */
 type MoveWrite = (variables: BoardMoveVariables) => Promise<Issue | null>;
 
-/** Told when a move places its card later than the call that made it: once the rule's dry run
- *  answered that it asks nothing, or once a choice of the rule's question landed, with each other
- *  issue that choice moved already in its cell. A move placed at once, in the call itself, does
- *  not tell it: its caller reads the place when the call returns. A keyboard move says where the
- *  card landed then, as it says it at once otherwise. */
+/** Told each time a move places its card: in the call itself, before its PATCH goes out, for a
+ *  card the board knows no parent or open child of (`cardHasParentOrOpenChild`), and at once for
+ *  a move that leaves the card where it is; once the rule's dry run answered that it asks nothing;
+ *  and once a choice of the rule's question landed, with each other issue that choice moved
+ *  already in its cell. A move that ends with its card not placed - kept, cancelled, or refused
+ *  before it was placed - does not tell it. A keyboard move says then where the card landed. */
 type OnPlaced = () => void;
 
 /** What the board says of the move of `key` that did not land. One the reader stopped may have
@@ -96,8 +97,8 @@ function withStatusChange(
  * sends the status change with that option, then a PATCH of the card's place (`rank`, and
  * `priority` for a lane move), and only then is the card placed. That PATCH's refusal leaves the
  * status as Dispatch changed it. A move of a card the board knew no parent or open child of that
- * Dispatch refuses under the rule asks the same question. A move placed after its call returned
- * tells its caller once the card is placed (`OnPlaced`).
+ * Dispatch refuses under the rule asks the same question. A move tells its caller each time it
+ * places the card (`OnPlaced`).
  *
  * With filters active, `labels` names the query the board actually renders (the same key the
  * List shares), so the optimistic write, rollback and refetch hit the list on screen; a
@@ -263,13 +264,14 @@ export function useBoardMoves(
   );
   /** Commits a move `plan` makes of the list: through the question where the rule could refuse
    *  it, else optimistic write, PATCH, rollback-and-refetch on failure, refetch on success - the
-   *  one tail `moveCard` and `moveCardToLane` share. A move placed at once tells `onPlaced`
-   *  nothing; one placed later, after the dry run or a choice of the question, tells it then. */
+   *  one tail `moveCard` and `moveCardToLane` share. Each path tells `onPlaced` once the card is
+   *  placed. */
   const commit = useCallback(
     async (key: string, plan: MovePlan, onPlaced?: OnPlaced) => {
       const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
       const moved = previous === undefined ? undefined : plan(previous);
       if (moved === undefined) {
+        onPlaced?.();
         return;
       }
       // The status the move writes, where it moves the card to another column.
@@ -279,7 +281,7 @@ export function useBoardMoves(
         await inScope(() => checked(key, status, plan, onPlaced));
         return;
       }
-      const { landed, refusal } = await place(key, () => moved, patchMove);
+      const { landed, refusal } = await place(key, () => moved, patchMove, onPlaced);
       await refetch(landed);
       if (status !== undefined && isParentStatusConflict(refusal)) {
         await inScope(() => asked(key, status, plan, refusal, onPlaced));

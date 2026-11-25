@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // reopenedPool opens a second pool on pool's database, from the configuration pool was opened
@@ -29,7 +30,7 @@ func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config
 		t.Fatalf("open a second pool on the same database: %v", err)
 	}
 	reopened := store.NewPool(opened)
-	t.Cleanup(reopened.Close)
+	testcleanup.Add(t, reopened.Close)
 	return reopened
 }
 

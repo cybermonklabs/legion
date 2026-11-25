@@ -55,6 +55,7 @@ var composedUploadAgent = model.Actor{Kind: "session", ID: "session-0123456789ab
 // stays the issue's one row for the question, and the document reads as it read before the
 // upload: the block under its id, and the person's answer in the asks member of the text read.
 func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadDocument)
@@ -109,6 +110,7 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testin
 // (ErrAnsweredAskKept): that body is refused and writes nothing, so the agent asks it beside the
 // answered question, which it writes from the question alone as above.
 func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadDocument)
@@ -186,6 +188,7 @@ func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T)
 // the person's answer stays the issue's one row for the question, and the text read answers that
 // answer for the block in its asks member.
 func TestAnAgentsComposedUploadKeepsTheAnsweredAskWhenItsNeighboursChange(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadSurroundedDocument)

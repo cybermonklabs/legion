@@ -20,8 +20,8 @@ import {
   patchIssue,
   replyToMessageDelivery,
 } from "./api";
+import { expectFootClear } from "./foot-probe";
 import { pendingWrites } from "./keyed-writes";
-import { boxesApart } from "./layout";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
 import { expect, type Locator, type Page, test } from "./test";
@@ -584,9 +584,10 @@ test("an agent row stands at the height recorded for its width @phone", async ({
 // The broadcast composer and Pending changes, two layers of the foot of the screen
 // (`web/src/hooks/useFootInset.ts`), "so no float lies over a foot element". Scrolled to its
 // end, the page leaves the composer resting above the section of ended sessions, in the upper
-// half of a short window, with room under it. At each of four such windows the panel's box and
-// the composer's must not meet: the panel's corner then lay over the composer's message box, its
-// mode and Send, or its recipients.
+// half of a short window, with room under it. At each of four such windows the foot is read
+// through the shared probe (`expectFootClear`, e2e/foot-probe.ts) at the real end of every
+// scroller, and there the panel's box and the composer's must not meet: the panel's corner then
+// lay over the composer's message box, its mode and Send, or its recipients.
 test("scrolled to its end in a short window, the Agents page's broadcast composer and Pending changes do not meet @foot", async ({
   browser,
 }) => {
@@ -625,8 +626,8 @@ test("scrolled to its end in a short window, the Agents page's broadcast compose
     for (const title of titles.slice(0, 3)) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
-    const broadcast = page.getByRole("region", { name: "Broadcast" });
     const ended = page.getByRole("region", { name: "Replied, no longer connected" });
+    const broadcast = page.getByRole("region", { name: "Broadcast" });
     for (const size of [
       { width: 800, height: 600 },
       { width: 1024, height: 500 },
@@ -635,24 +636,14 @@ test("scrolled to its end in a short window, the Agents page's broadcast compose
     ]) {
       await page.setViewportSize(size);
       // The list sets its height from the rows it measures, a frame or more after a resize, and
-      // the page's end can grow once a float's band counts: a scroll made before that stops
-      // short. So the scroll is made again until the ended sessions show.
-      await expect(async () => {
-        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-        await expect(ended).toBeInViewport({ timeout: 1_000 });
-      }).toPass({ timeout: 15_000 });
-      await expect
-        .poll(
-          async () => {
-            const composer = await broadcast.boundingBox();
-            const panel = await pending.boundingBox();
-            return composer !== null && panel !== null && boxesApart(composer, panel);
-          },
-          {
-            message: `Pending changes meets the broadcast composer at ${size.width}x${size.height}`,
-          }
-        )
-        .toBe(true);
+      // the page's end can grow once a float's band counts: the probe reads the page at the end
+      // of its scroll as it then stands, until the reading holds, and the ended sessions show
+      // there.
+      await expectFootClear(page, `agents ${size.width}x${size.height} pending`);
+      await expect(ended).toBeInViewport();
+      // Both boxes the row reads apart are there: the probe leaves out an element with no box.
+      await expect(broadcast).toBeVisible();
+      await expect(pending).toBeVisible();
     }
   } finally {
     await context.close();

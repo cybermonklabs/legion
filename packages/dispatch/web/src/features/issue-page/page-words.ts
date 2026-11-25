@@ -39,6 +39,23 @@
  *
  * The last three are the module's links to files today's pages use.
  *
+ * Each table here is joined with the words of each open part of the page. A part keeps its new
+ * words in its own file, `page-words-<letter>.ts`. `joinWords` from `./page-words-parts` makes
+ * each table. It is a fifth helper beside the four above, and it makes each table with `freeze`.
+ * It adds to the table the keys that each part's file gives for it. `PART_UNASKED_SOURCES` and
+ * `PART_ANSWER_SOURCES` are data of the same module. This module exports each part's own tables
+ * again, and `UNASKED_SOURCES` and `ANSWER_SOURCES` hold them too. A word goes in one place:
+ *
+ * - Change a word in the file that holds it. Do not move it to another file.
+ * - Put a part's own tables, and its new keys for a table of this module, in the part's file.
+ * - Put every new key for `PRESET_NAMES`, `CHECK_WHEN_WORDS`, `RESULT_STANDS_WORDS`,
+ *   `DELIVERY_STATE_WORDS` and `AUTHOR_KIND_WORDS` in this module. A closed type fixes their keys.
+ * - Put a new key for a table that a part's file declares in that file, from any pull request.
+ *   TypeScript reads the keys of a table where the table is declared.
+ * - Put every other new word of a pull request that is no part in this module.
+ *
+ * A key that two files give fails `page-words.test.ts`, which names the key and both files.
+ *
  * A test, a browser spec and a component therefore all read the same list.
  */
 
@@ -61,6 +78,20 @@ import {
   MARGIN_SECTION_NAMES,
   PROPERTY_LABELS,
 } from "./page-structure";
+import { joinWords, PART_ANSWER_SOURCES, PART_UNASKED_SOURCES } from "./page-words-parts";
+import { ROW_MARK_WORDS, type RowMark } from "./page-words-x";
+
+export * from "./page-words-j";
+export * from "./page-words-l";
+export * from "./page-words-m";
+export * from "./page-words-n";
+export * from "./page-words-s";
+export * from "./page-words-t";
+export * from "./page-words-u";
+export * from "./page-words-w";
+export * from "./page-words-x";
+export * from "./page-words-y";
+export * from "./page-words-z";
 
 /** The keys of `value`, as its own key type rather than as plain strings. */
 function keysOf<T extends object>(value: T): readonly (keyof T)[] {
@@ -81,7 +112,7 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
  * because the page draws it inside its own sentences and rows, where a capital would read as a
  * proper noun; `sentenceCase` supplies the capital where a name opens a sentence or a heading.
  */
-export const NODE_TYPE_NAMES = freeze({
+export const NODE_TYPE_NAMES = joinWords("NODE_TYPE_NAMES", {
   /** An `ask`: the word the approved pictures draw on its tag, "question" (R34). */
   ask: "question",
   /** A `callout` block: a note somebody set apart from the text around it. The page draws the
@@ -90,23 +121,14 @@ export const NODE_TYPE_NAMES = freeze({
   check: "check",
   child_issue: "child issue",
   comment: "comment",
-  /** A constraint of the issue or of the lens catalogue: a standard the work keeps, or a
-   *  measurement taken of it. */
-  constraint: "constraint",
   /** A `criterion` block: what a person wants to be able to do, in their own words, which a
    *  statement answers. The schema's own word is a plain one, so the page draws it. */
   criterion: "criterion",
   decision: "decision",
   document: "document",
-  /** One block a lens wrote under itself: a `block` node whose parent is a lens, which the model
-   *  gives no kind of its own. */
-  finding: "finding",
   handoff: "handoff",
   image: "image",
   issue: "issue",
-  /** One analysis of a kind of the lens catalogue, invoked on a node of the issue. Its row's tag
-   *  draws its kind's words; this names its shape. */
-  lens: "lens",
   message: "message",
   plan_task: "plan task",
   /** A `reading` block: an agent's reading of a decision, or of a question a person answered,
@@ -116,8 +138,6 @@ export const NODE_TYPE_NAMES = freeze({
    *  sentence that must be true of the software. */
   requirement: "statement",
   result: "result",
-  /** What a pre-mortem says could go wrong, a row under that lens. */
-  risk: "risk",
 } as const);
 
 /** One kind of node the page draws, by the model's own token for it. */
@@ -130,7 +150,7 @@ export type NodeType = keyof typeof NODE_TYPE_NAMES;
  * never "statement" (decision 246), as a `check` block outside the Verification document draws
  * no state word (decision 152).
  */
-export const BLOCK_TYPE_NAMES = freeze({
+export const BLOCK_TYPE_NAMES = joinWords("BLOCK_TYPE_NAMES", {
   requirement: "requirement",
 } as const);
 
@@ -154,7 +174,7 @@ export const BLOCK_TYPE_NAMES = freeze({
  * chunk loads takes additions only (root R33). A decision in none of them - an agent's that
  * nobody has reviewed and nothing replaced, or a person's own section - draws no state.
  */
-export const NODE_STATE_WORDS = freeze({
+export const NODE_STATE_WORDS = joinWords("NODE_STATE_WORDS", {
   ask: {
     answered: "Answered",
     open: "Open",
@@ -279,6 +299,10 @@ export const PRESET_ORDER = freeze([
   "verification",
   "plan",
   "decisions",
+  // Root R2's one list of views holds Graph last, the whole tree read, a view and no filter (R10,
+  // R12). Dashboard (first), Threads and Documents (after Decisions) are each one line of this
+  // list that its own part adds with its view, at its place in root R2's order.
+  "graph",
 ] as const);
 
 /** One control of the filter row, by its own token: `conversation`, which turns every filter
@@ -287,9 +311,10 @@ export type Preset = (typeof PRESET_ORDER)[number];
 
 /** The name of each control of the filter row. Verification is his word for the filter that
  *  draws the checks (2026-11-11 21:57Z), and nothing is called Tree (R2). */
-export const PRESET_NAMES = freeze({
+export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   conversation: "Conversation",
   decisions: "Decisions",
+  graph: "Graph",
   plan: "Plan",
   spec: "Spec",
   verification: "Verification",
@@ -301,7 +326,7 @@ export const PRESET_NAMES = freeze({
  * "Decisions 6 to review"), and the noun the Plan filter counts its tasks in ("Plan 13
  * steps", R26's "ordered steps"). The count itself is a number and no word.
  */
-export const FILTER_SIGNAL_WORDS = freeze({
+export const FILTER_SIGNAL_WORDS = joinWords("FILTER_SIGNAL_WORDS", {
   /** After the number of checks whose state is failed at the commit the server names for each
    *  (`checkStanding`), the state their rows draw. */
   failing: "failing",
@@ -317,7 +342,7 @@ export const FILTER_SIGNAL_WORDS = freeze({
  * review, the child issues, and the statements a check of theirs failed. Each is drawn as its
  * kind's shape and its count, and named by these words (R6, R22).
  */
-export const CONTENTS_MARK_WORDS = freeze({
+export const CONTENTS_MARK_WORDS = joinWords("CONTENTS_MARK_WORDS", {
   children: "child issues",
   failing: "failing statements",
   for_review: "decisions to review",
@@ -326,21 +351,6 @@ export const CONTENTS_MARK_WORDS = freeze({
 
 /** One mark of a Contents entry, by its own token, which is its `data-contents-mark`. */
 export type ContentsMark = keyof typeof CONTENTS_MARK_WORDS;
-
-/**
- * The marks a row carries beside its state where the model holds them: a proposal nobody has
- * settled yet, what a later version of the issue overtook, and what only its author may read. Each
- * is drawn as its shape and this word, in the row's margin and in the compact form after a chip's
- * name, and the word names that shape.
- */
-export const ROW_MARK_WORDS = freeze({
-  only_you: "Only you",
-  overtaken: "Overtaken",
-  proposed: "Proposed",
-} as const);
-
-/** One mark of a row, by its own token, which is its `data-node-mark`. */
-export type RowMark = keyof typeof ROW_MARK_WORDS;
 
 /**
  * The words the Spec filter's body draws of its own (dispatch://INFRA-1196 R5, R17, R22, R35,
@@ -352,7 +362,7 @@ export type RowMark = keyof typeof ROW_MARK_WORDS;
  * decision shaped is an empty line (`EMPTY_STATE_LINES.spec_no_decision_one`,
  * `spec_no_decision_many`).
  */
-export const SPEC_WORDS = freeze({
+export const SPEC_WORDS = joinWords("SPEC_WORDS", {
   /** Opens the line under a statement that names the decision that shaped it. */
   because: "because:",
   /** On a decision's line, where the statement's own words changed after the decision was
@@ -384,7 +394,7 @@ export const SPEC_WORDS = freeze({
  * explains the four parts: their headings are the whole of it. How a decision stands is
  * `NODE_STATE_WORDS.decision`, which the outline draws too.
  */
-export const DECISIONS_WORDS = freeze({
+export const DECISIONS_WORDS = joinWords("DECISIONS_WORDS", {
   /** The fourth part's heading, which is the control that folds and unfolds it, after the count
    *  of the decisions it holds; the words agree with the count (R2: "at the foot and unfolded,
    *  the agents' decisions no statement rests on, which the page folds only when the reader
@@ -393,11 +403,6 @@ export const DECISIONS_WORDS = freeze({
   agents_one: "agent decision that no statement rests on",
   /** Before the reader's words of a Change they sent on a decision, under that decision. */
   change: "change asked for",
-  /** What a decision with a Change reads in place of its state's own word
-   *  (`NODE_STATE_WORDS.decision.change_requested`), wherever the page draws it, the outline's
-   *  row as much as this view: then the name of the person whose Change it waits on, the
-   *  reader's own where they asked (R2, R3). */
-  changed_by: "Changed by",
   /** After the name of the person who declined a question, so the row reads as a question that
    *  person declined and never as an answer (R2). */
   declined: "declined to answer",
@@ -405,15 +410,6 @@ export const DECISIONS_WORDS = freeze({
   in_conversation: "in the conversation",
   /** Before the spec's statements that an entry's links tie it to, as the picture draws it. */
   informs: "informs",
-  /** After the count of a part's entries not yet drawn, on the control under the part that
-   *  draws the next of them, which says it in brackets after what a press draws: "Show the next
-   *  20 (25 left)" (R2: a control at a part's foot "that says how many are left", decision 424). */
-  page_left: "left",
-  /** The control under a part whose entries are not all drawn, before the count of those a
-   *  press draws, at most 20, the size root R40 pages a flat list by: "Show the next 20 (25
-   *  left)". Each part draws its first 20 entries as the view opens, and a press draws the next
-   *  ones; a page is no fold (R2, decision 424). */
-  page_next: "Show the next",
   /** The headings of the headed parts, in the order the filter draws them (R2): the reader's
    *  own decisions are "his own decisions", and what another person answered, declined, kept or
    *  asked to change stands under a heading that says it is theirs. */
@@ -432,7 +428,7 @@ export const DECISIONS_WORDS = freeze({
  * `requirement` block has no state, so these are not `NODE_STATE_WORDS.requirement` and never
  * become one. No count, legend or heading reads proven, or met for the coverage count.
  */
-export const VERIFICATION_WORDS = freeze({
+export const VERIFICATION_WORDS = joinWords("VERIFICATION_WORDS", {
   /** The chip that narrows to nothing, which is the body as it opens. */
   all: "All",
   /** The heading over the checks that serve each statement. */
@@ -473,7 +469,7 @@ export type StatementState = keyof typeof VERIFICATION_WORDS.states;
  * switches between, the chart's two headings, the line for tasks that need each other, and the
  * mark of a bar whose task holds no size.
  */
-export const PLAN_WORDS = freeze({
+export const PLAN_WORDS = joinWords("PLAN_WORDS", {
   /** The chart of time: one bar per task, after every task it needs (R26). */
   chart: "Chart",
   /** The line that lists tasks which need each other, so no order can put one after the rest. */
@@ -496,7 +492,7 @@ export const PLAN_WORDS = freeze({
  * own words. What the list says while its read is out and when it failed is the page's answer to
  * the reader opening it (`ANSWER_LINES.references_loading`, `references_unreadable`).
  */
-export const NODE_REFERENCES_WORDS = freeze({
+export const NODE_REFERENCES_WORDS = joinWords("NODE_REFERENCES_WORDS", {
   /** The relation each kind of tuple puts the citing node in with the row the reader is on, in
    *  the words the old page's Referenced-by panel drew for the same edges
    *  (`features/refs/ReferencedBy.tsx`'s `STRUCTURAL_LABELS`). */
@@ -506,14 +502,11 @@ export const NODE_REFERENCES_WORDS = freeze({
     attached_to: "attached document",
     blocked_by: "blocked issue",
     child_of: "child issue",
-    constrained_by: "constrained statement",
     followed_by: "follower",
     needs: "needed by",
     owned_by: "owned item",
-    prevented_by: "prevented risk",
     replies_to: "reply",
     serves: "served by",
-    triggered_by: "triggered lens",
   },
   /** The page's word for each kind of node the graph answers with, which names a row whose
    *  edge is a mention. `artifact` and `block` are both a document to a reader, and a session is
@@ -524,71 +517,14 @@ export const NODE_REFERENCES_WORDS = freeze({
     block: "document",
     comment: "comment",
     component: "component",
-    constraint: "constraint",
     issue: "issue",
-    lens: "lens",
-    /** A lens's finding, whose address is the lens's with the block's anchor after it. */
-    lens_block: "finding",
-    lens_kind: "lens kind",
     message: "message",
-    risk: "risk",
     session: "agent",
   },
   /** The control in Details that lists what references the row the reader is on (R14, R19).
    *  It names the row, because Details' References section holds the issue's own Referenced by
    *  beside it and two lists cannot share one name. */
   what_references: "What references this row",
-} as const);
-
-/**
- * The words the rows of a lens, a finding, a risk and a constraint draw of their own: the lines
- * under a lens's, a risk's and a statement's words, the chain a focused lens unfolds, and the
- * act that opens the menu of lens kinds with that menu's heading. `taken_at` is lowercase
- * because a measurement's line draws it between the author's own words. What a read or an
- * invocation the reader started says while it is out and when it failed is `LENS_ANSWERS`.
- */
-export const LENS_WORDS = freeze({
-  /** Where a lens's verdict goes, as its words, when it has none. */
-  no_verdict: "No verdict yet",
-  /** The line of chips for the lenses this lens's `triggered_by` names, and the line for the
-   *  lenses whose `triggered_by` names this one. */
-  triggered_by: "Triggered by",
-  triggered: "Triggered",
-  /** A risk's line that opens its `early_warning` words, the line of chips for the checks that
-   *  prevent it or the one line saying none does, and the focused body's line that opens its
-   *  `prevention` words. */
-  early_warning: "Early warning:",
-  prevented_by: "Prevented by",
-  prevented_by_nothing: "Prevented by nothing",
-  prevention: "Prevention:",
-  /** The control of a focused lens that reads its chain, and the end of a chain the read cut
-   *  short, before the chip of the lens it stopped at. */
-  show_chain: "Show the whole chain",
-  more_lenses: "More lenses past this one",
-  /** The menu of lens kinds' heading, and the act of a focused row that opens it. */
-  menu_title: "Examine through a lens",
-  act: "Lens",
-  /** A statement's line of chips for the constraints it names, and what a measurement's line
-   *  draws before where it was taken. */
-  constrained_by: "Constrained by",
-  taken_at: "taken at",
-} as const);
-
-/**
- * What the lens rows say in answer to the reader's own act, and never on load: the menu of lens
- * kinds while its catalogue is read and when that read failed, an invocation while it is out
- * and when Dispatch refused it, and a chain while it is read and when that read failed. Each is
- * at most one sentence.
- */
-export const LENS_ANSWERS = freeze({
-  loading_kinds: "Loading lens kinds…",
-  kinds_failed: "Could not load the lens kinds.",
-  examining: "Examining…",
-  /** A refusal with 404, of an invocation and of a chain's read alike. */
-  gone: "This is no longer here.",
-  failed: "Could not examine this through a lens.",
-  loading_chain: "Loading the chain…",
-  chain_failed: "Could not load the chain.",
 } as const);
 
 /**
@@ -612,7 +548,7 @@ export function issueStatusWord(token: string): string {
  * query matches nothing, and a spec with no summary. Each is one sentence, in the simple
  * present, saying what is absent rather than what the reader should do about it.
  */
-export const EMPTY_STATE_LINES = freeze({
+export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
   conversation: "This issue holds nothing yet.",
   decisions: "This issue has no decisions yet.",
@@ -660,7 +596,7 @@ export const EMPTY_STATE_LINES = freeze({
  * because the line is drawn in the node's own body, and a declaration is what a person asked
  * for.
  */
-export const GAP_LINES = freeze({
+export const GAP_LINES = joinWords("GAP_LINES", {
   no_check: "No check serves this statement.",
   nobody_asked: "This task names no statement it serves and nothing a person asked for.",
   serves_not_requirement: "What this says it serves is not a statement.",
@@ -675,7 +611,7 @@ export type GapKind = keyof typeof GAP_LINES;
  * a row is one line). The sentence above is drawn in the node's body, where there is room for
  * it, so a reader sees that something is absent on the row and reads what it is by focusing it.
  */
-export const GAP_WORDS = freeze({
+export const GAP_WORDS = joinWords("GAP_WORDS", {
   no_check: "No check",
   /** The task names no requirement it serves and nothing a person asked for, so no reason
    *  stands behind it. The chip says that and passes no judgement on the work. */
@@ -685,7 +621,7 @@ export const GAP_WORDS = freeze({
   /** A decision says it shaped the node, and the node says it came from somewhere else: the
    *  two name different sources. */
   shaped_disagreement: "Sources disagree",
-} as const satisfies Record<GapKind, string>);
+} as const) satisfies Record<GapKind, string>;
 
 /**
  * Which gap one line of the coverage read names, where it names one the page draws. The server
@@ -741,7 +677,7 @@ export function coverageNotes(coverage: IssueCoverage | undefined): string[] {
 /** The noun a progress count is written with: `1/1 item`, `3/7 items` of the spec's checklist
  *  (`PROPERTY_LABELS.tasks`), `0/1 child`, `2/5 children`. The count itself is the issue's own
  *  and carries `AUTHOR_TEXT_ATTRIBUTE`. */
-export const PROGRESS_NOUNS = freeze({
+export const PROGRESS_NOUNS = joinWords("PROGRESS_NOUNS", {
   child: "child",
   children: "children",
   task: "item",
@@ -752,7 +688,7 @@ export const PROGRESS_NOUNS = freeze({
  *  issue, whose writes the identity block refuses, and an issue that advances as many
  *  priorities as one may, whose priority row offers no control that adds another
  *  (`features/priorities/IssuePriorityLine.tsx`). One line each, saying what is so. */
-export const STATE_LINES = freeze({
+export const STATE_LINES = joinWords("STATE_LINES", {
   advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
   closed: "This issue is closed.",
   /** What Details says of a GitHub link whose issue or pull request Dispatch cannot read, since
@@ -784,16 +720,8 @@ export const STATE_LINES = freeze({
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
-  /** What the Spec view says over its columns, on load as much as later, of a group of its reads
-   *  that stands failed, beside one Retry for the group (`spec-filter/SpecFilterBody.tsx`): the
-   *  spec's blocks and their coverage, and the results and the Verification document's blocks.
-   *  The second is not the outline's `results_unreadable` above, which names the results read
-   *  alone. */
-  statements_unreadable: "Could not load the statements.",
-  spec_results_unreadable: "Could not load the results.",
-  /** What the Spec view and the Decisions view say, beside one Retry, where the reads their
-   *  decisions come from stand failed: the Spec view read, and the tree read with its Decisions
-   *  view (`spec-filter/SpecFilterBody.tsx`, `decisions-filter/DecisionsFilterBody.tsx`). */
+  /** What the Decisions view says, beside one Retry, where the reads its decisions come from stand
+   *  failed: the tree read and its Decisions view (`decisions-filter/DecisionsFilterBody.tsx`). */
   issue_decisions_unreadable: "Could not load this issue's decisions.",
 } as const);
 
@@ -805,7 +733,7 @@ export const STATE_LINES = freeze({
  * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
  */
-export const ANSWER_LINES = freeze({
+export const ANSWER_LINES = joinWords("ANSWER_LINES", {
   /** What a copy control says once the command is on the clipboard, and when the browser
    *  refused it; the toolbar's says what to do instead. */
   copied: "Copied",
@@ -822,9 +750,6 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the outline says when the issue's tree could not be read before it first answered,
-   *  so it holds no row to draw. */
-  outline_unreadable: "Could not load the outline.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
@@ -852,7 +777,7 @@ export const ANSWER_LINES = freeze({
  * mirrors; `page-words.test.ts` reads that schema, so a new choice fails until it has words
  * here.
  */
-export const CHECK_WHEN_WORDS = freeze({
+export const CHECK_WHEN_WORDS = joinWords("CHECK_WHEN_WORDS", {
   after_merge: "after the merge",
   before_merge: "before the merge",
   default_branch: "on the default branch",
@@ -869,7 +794,7 @@ export const CHECK_WHEN_WORDS = freeze({
  *  commit (`check-facts.ts`). That word is the one its check's `older` state reads: a check's
  *  row and its result's fact read one standing, the server's for that check, so one fact has
  *  one word, on the result and on its check. */
-export const RESULT_STANDS_WORDS = freeze({
+export const RESULT_STANDS_WORDS = joinWords("RESULT_STANDS_WORDS", {
   at_basis: "Up to date",
   other_commit: NODE_STATE_WORDS.check.older,
   unknown: undefined,
@@ -877,7 +802,7 @@ export const RESULT_STANDS_WORDS = freeze({
 
 /** What a recorded result says it saw, in the page's own words rather than the wire's `pass`
  *  and `fail`: the verdict is drawn as a fact of the result's own node (R15). */
-export const RESULT_VERDICT_WORDS = freeze({
+export const RESULT_VERDICT_WORDS = joinWords("RESULT_VERDICT_WORDS", {
   fail: "Fail",
   pass: "Pass",
 } as const);
@@ -886,7 +811,7 @@ export const RESULT_VERDICT_WORDS = freeze({
  *  row's facts, in words rather than the delivery's `failed`, `pending`, `queued` and `sent`
  *  (R22). Keyed by the states the API declares, so a state added there is a compile error here
  *  rather than a delivery that draws no word. */
-export const DELIVERY_STATE_WORDS = freeze({
+export const DELIVERY_STATE_WORDS = joinWords("DELIVERY_STATE_WORDS", {
   failed: "Not delivered",
   pending: "Sending",
   queued: "Queued",
@@ -903,7 +828,7 @@ export const DELIVERY_STATE_WORDS = freeze({
  * `DEPENDENCY_CYCLE` is two, the issue the list would make wait on itself, or none for a chain
  * longer than Dispatch follows (`packages/envoy/internal/dispatch/api/issue_parent.go`).
  */
-export const BLOCKED_BY_REFUSALS = freeze({
+export const BLOCKED_BY_REFUSALS = joinWords("BLOCKED_BY_REFUSALS", {
   cycle: {
     after:
       " would then wait on itself, through the issues it waits on, its parent or its children.",
@@ -923,30 +848,12 @@ export const BLOCKED_BY_REFUSALS = freeze({
 export type BlockedByRefusalWords = keyof typeof BLOCKED_BY_REFUSALS;
 
 /**
- * What Settle says while its write is out, and the one sentence it draws after itself when
- * Dispatch refuses the write, in place of the server's message: the act reads the refusal's status
- * and code, never its text. One of the tables `ANSWER_SOURCES` gathers.
- */
-export const SETTLE_ANSWERS = freeze({
-  /** Every refusal the three below do not name: a refusal of any other status or code. */
-  failed: "Could not settle this.",
-  /** 404: nothing answers to the row's address now. */
-  gone: "This is no longer here.",
-  /** 403 `SETTLE_NOT_PERMITTED`. */
-  not_permitted: "You may not settle this.",
-  /** 409 `NODE_NOT_PROPOSED`: the row is no proposal now. */
-  not_proposed: "This is no longer proposed.",
-  /** While the write is out: Dispatch has not answered, so it does not say the row is settled. */
-  settling: "Settling…",
-} as const);
-
-/**
  * How a document of the issue stands with its reviewers, in words (R5): the head's "How it gets
  * done" row says this of the plan. The keys are `ArtifactApproval.state`; the version a review
  * covers is no part of the word, because the head is one line and the document's own toolbar
  * carries the version.
  */
-export const APPROVAL_STATE_WORDS = freeze({
+export const APPROVAL_STATE_WORDS = joinWords("APPROVAL_STATE_WORDS", {
   approved: "Approved",
   awaiting: "Awaiting approval",
   changes_requested: "Changes requested",
@@ -971,7 +878,7 @@ export function approvalStateWord(token: string): string {
  * values a control acts on - a title, a label, an author's name - are the author's words and
  * carry `AUTHOR_TEXT_ATTRIBUTE` instead.
  */
-export const CONTROL_LABELS = freeze({
+export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Takes a suggestion's replacement into its document, in the panel's facts of the focused
    *  comment that carries it (the old conversation's thread card's control). */
   accept: "Accept",
@@ -1258,9 +1165,6 @@ export const CONTROL_LABELS = freeze({
   serving_plan_tasks: "Plan tasks serving it",
   /** Gives an issue with no parent one (R11, row one). */
   set_parent: "Set parent issue",
-  /** Makes a proposed row the issue's own, among the focused row's acts: its mark goes, and the
-   *  row draws its gaps and is counted. */
-  settle: "Settle",
   /** Ends that comparison and draws the pinned version itself (R16). */
   show_version: "Show version",
   /** Opens the rest of a list of unbounded length in Details, which shows its first ten
@@ -1356,7 +1260,7 @@ export const CONTROL_LABELS = freeze({
  *
  * A label is lowercase, like the block name it sits under, and the stylesheet adds the colon.
  */
-export const BLOCK_ATTRIBUTE_LABELS = freeze({
+export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   answer: "answer",
   answered_at: "answered at",
   answered_by: "answered by",
@@ -1425,7 +1329,7 @@ export function blockAttributeLabel(name: string): string {
  *
  * A label is lowercase, like the attribute labels it sits beside, and the row draws the colon.
  */
-export const NODE_FACT_LABELS = freeze({
+export const NODE_FACT_LABELS = joinWords("NODE_FACT_LABELS", {
   /** Why a check CI proves has no result: the server's own sentence for what its run showed at
    *  the head it read (`CheckBlock.ci.detail`), drawn where an ordinary check draws none. */
   ci_unproved: "why no result",
@@ -1475,7 +1379,7 @@ export function isReader(actor: Actor | undefined, reader: string | undefined): 
 
 /** What each kind of author is called, in the accessible name of its shape: "Written by a
  *  person", "Written by an agent", "Written by an author nobody recorded". */
-export const AUTHOR_KIND_WORDS = freeze({
+export const AUTHOR_KIND_WORDS = joinWords("AUTHOR_KIND_WORDS", {
   agent: "an agent",
   person: "a person",
   unknown: "an author nobody recorded",
@@ -1484,7 +1388,7 @@ export const AUTHOR_KIND_WORDS = freeze({
 /** What the node menu says beside each file's name (R3, R22): its kind, in a reader's word where
  *  the Artifacts list drew the kind's own token (`doc`), and the mark on the issue's spec, which
  *  that list drew as its Primary badge. A kind this build does not know is a file. */
-export const FILE_WORDS = freeze({
+export const FILE_WORDS = joinWords("FILE_WORDS", {
   doc: "document",
   file: "file",
   image: "image",
@@ -1507,19 +1411,11 @@ export const FILE_WORDS = freeze({
  * `authors` holds one token per kind of author (R9), drawn beside the author's name: the shape
  * says what kind of author made the node, and the name beside it says who.
  */
-export const GLYPH_TOKENS = freeze({
+export const GLYPH_TOKENS = joinWords("GLYPH_TOKENS", {
   authors: {
     agent: "author-agent",
     person: "author-person",
     unknown: "author-unknown",
-  },
-  /** One shape per mark a row carries beside its state (`ROW_MARK_WORDS`), each named by its
-   *  mark's word, so a proposed, an overtaken and a reserved row are told apart by a word and a
-   *  shape. */
-  marks: {
-    only_you: "mark-only-you",
-    overtaken: "mark-overtaken",
-    proposed: "mark-proposed",
   },
   states: {
     ask: {
@@ -1563,23 +1459,19 @@ export const GLYPH_TOKENS = freeze({
     check: "check",
     child_issue: "child-issue",
     comment: "comment",
-    constraint: "constraint",
     criterion: "criterion",
     decision: "decision",
     document: "document",
-    finding: "finding",
     handoff: "handoff",
     image: "image",
     issue: "issue",
-    lens: "lens",
     message: "message",
     plan_task: "plan-task",
     reading: "reading",
     requirement: "requirement",
     result: "result",
-    risk: "risk",
   },
-} as const satisfies {
+} as const) satisfies {
   readonly authors: Record<AuthorKind, string>;
   readonly marks: Record<RowMark, string>;
   readonly no_check: string;
@@ -1590,7 +1482,7 @@ export const GLYPH_TOKENS = freeze({
   };
   readonly statements: Record<StatementState, string>;
   readonly types: Record<NodeType, string>;
-});
+};
 
 /** Every type whose state the page draws, which is every key of `NODE_STATE_WORDS`. */
 const STATE_TYPES = freeze(keysOf(NODE_STATE_WORDS));
@@ -1707,8 +1599,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   VERIFICATION_WORDS,
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
-  ROW_MARK_WORDS,
-  LENS_WORDS,
+  ...PART_UNASKED_SOURCES,
 ]);
 
 /** What the page says only in answer to the reader's own act, and never on load
@@ -1718,8 +1609,7 @@ export const ANSWER_SOURCES: readonly unknown[] = freeze([
   BLOCKED_BY_REFUSALS,
   HELP_LINES,
   KEY_REPORTS,
-  SETTLE_ANSWERS,
-  LENS_ANSWERS,
+  ...PART_ANSWER_SOURCES,
 ]);
 
 /** Every string the answers above hold, in the order they hold them: a browser check reads a

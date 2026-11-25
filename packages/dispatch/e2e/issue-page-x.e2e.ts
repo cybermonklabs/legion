@@ -1,3 +1,6 @@
+/** a write the server settles changes what the outline draws; another reader's page holds what
+ *  the read answers it */
+
 import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
@@ -14,8 +17,7 @@ import {
   ROW_MARK_WORDS,
   SETTLE_ANSWERS,
 } from "../web/src/features/issue-page/page-words";
-import { DRAWN_LEVELS, NARROW_LEVELS } from "../web/src/features/issue-page/tree-fold";
-import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { parseNodeReference } from "../web/src/features/refs/routes";
 import { wordsOf as readingWords } from "../web/src/features/refs/tree-fragment";
 import { pageStateText } from "../web/src/theme/classes";
@@ -76,7 +78,6 @@ import {
   compactMarks,
   coveredCount,
   type DrawnMark,
-  drawnOpenGate,
   FOCUSED_FACTS_GATE,
   type FoldedCount,
   filterCount,
@@ -91,7 +92,6 @@ import {
   nodeHolding,
   nodeStateRequests,
   noteOwed,
-  openOnLoadGate,
   ownMarks,
   RESERVED_NODES,
   rawValueTexts,
@@ -136,17 +136,12 @@ import { asUser } from "./users";
  *
  * What a row reads of code that is not under this head it reads behind a gate, and notes as owed
  * where the gate is not met (`noteOwed`): Details' facts of the focused row
- * (`FOCUSED_FACTS_GATE`), each Graph reading (`graphGate`), each reading of the criterion the seed
- * wrote under the overtaken question (`criterionGate`: part Y draws criteria, and until it does
- * the page draws and counts the statement under the question alone), row 1's readings of
- * statement 8 as a load draws it, made where the page's own fold draws a live node in its place
- * open on load (`openOnLoadGate`), and row 3 whole until the page opens with every node drawn
- * open (`drawnOpenGate`). A gate never reads what this part draws: the nodes the page closes, at
- * or under an overtaken one, with the block of a question whose ask's node is overtaken, are left
- * out of the page's opening as the header's count leaves them out (`waiting.ts`'
- * `closedReadIds`, over the issue read and the asks read as the page's reader reads them,
- * `treeIdReads`), so a build that draws an overtaken node folded where a live one is drawn open
- * fails the reading of that node and does not turn it owed.
+ * (`FOCUSED_FACTS_GATE`), each Graph reading (`graphGate`), and each reading of the criterion the
+ * seed wrote under the overtaken question (`criterionGate`: part Y draws criteria, and until it
+ * does the page draws and counts the statement under the question alone). The page opens with
+ * every node drawn open (part T's R11), so what a row reads of a node drawn open on load - row
+ * 1's readings of statement 8, row 4's of the overtaken question, row 3 whole - is read
+ * unconditionally and never owed.
  */
 
 /** The mark of a proposed node, an overtaken one and one reserved for its reader, each as the
@@ -423,8 +418,6 @@ interface LoadedPage {
   readonly answer: IssueTreeRead;
   readonly key: string;
   readonly plain: string;
-  /** The issue read and the asks read as alice reads them (`treeIdReads`), once the seed wrote. */
-  readonly reads: TreeIdReads;
   readonly seeded: NodeStateSeed;
   readonly traffic: ApiRequests;
   readonly treeId: (readId: string) => string;
@@ -450,7 +443,7 @@ async function loadedPage(page: Page, seeded: NodeStateSeed): Promise<LoadedPage
     )
   );
   const reads = await treeIdReads(key);
-  return { answer, key, plain, reads, seeded, traffic, treeId: treeIdOf(answer, reads) };
+  return { answer, key, plain, seeded, traffic, treeId: treeIdOf(answer, reads) };
 }
 
 /**
@@ -562,12 +555,10 @@ async function expectWaitsLeaveOut(page: Page, read: LoadedPage): Promise<readon
 // Row 1: a proposed node is marked and settled, and an overtaken one is drawn open and marked.
 // ---------------------------------------------------------------------------------------------
 
-/** What row 1 reads its page with, and the readings it holds back until the code they need is
- *  under the head: a Graph control (`graph`), and a live node drawn open on load in statement 8's
- *  place at this width (`opens`, `openOnLoadGate`), read on the first load, before any press. */
+/** What row 1 reads its page with, and the reading it holds back until the code it needs is under
+ *  the head: a Graph control (`graph`), read on the first load, before any press. */
 interface ProposedPage extends LoadedPage {
   readonly graph: Gate;
-  readonly opens: Gate;
 }
 
 /** How many statements the seed writes: twelve, the one that cites a document, and the one under
@@ -583,17 +574,10 @@ const UNCOUNTED_BEFORE_SETTLE = 3;
 
 /**
  * The first reading of step (2), on the page as it first opened, before any press, unfold or
- * reload: statement 8 is drawn open with its lens, read where the page's own fold draws a live
- * node in its place open on that load (`opens`) and noted as owed elsewhere. Nothing the seed
- * stands under statement 8 is open - its lens asks nothing of the reader - so the fold's path to
- * what is open opens no live node there; a page that opens every branch (part T's R11) does, as
- * deep as one opening draws. The rows draw statement 8 at level 2, under the spec's document
- * at level 1, and its lens at level 3, which `treeRows` counts one deeper from the issue at 1:
- * at 1440 px an opening of statement 8 draws its lens (`DRAWN_LEVELS`), and at 390 px it draws
- * one line (`NARROW_LEVELS`), so there the reading is owed.
+ * reload: statement 8 is drawn open with its lens, as every node is on load (part T's R11), at
+ * 1440 px and at 390 px alike.
  */
 async function expectOpenOnLoad(page: Page, read: ProposedPage): Promise<void> {
-  if (!noteOwed(read.opens)) return;
   const { ids } = read.seeded;
   await expectDrawnOpen(
     page,
@@ -898,8 +882,7 @@ async function expectOvertakenMarks(page: Page, read: ProposedPage): Promise<voi
  * carrying "Overtaken" and no gap, open with its lens under it; every folded branch's count
  * counts it; no row reads "1 overtaken"; `j` and `k` reach and leave its row; its fold control
  * folds it with its lens and opens it again; the overtaken decision and the chip naming statement
- * 8 carry the mark. Where the page's own fold draws a live node in statement 8's place open on
- * load (`opens`), statement 8 stays open with its lens after a reload.
+ * 8 carry the mark; and statement 8 stays open with its lens after a reload.
  */
 async function expectOvertakenRows(page: Page, read: ProposedPage): Promise<void> {
   const { plain, seeded, traffic } = read;
@@ -934,8 +917,7 @@ async function expectOvertakenRows(page: Page, read: ProposedPage): Promise<void
   await expectOvertakenMarks(page, read);
   await expectNoRawValue(page, "in the outline");
 
-  // Statement 8 stays open after a reload, where a live node in its place is drawn open on load.
-  if (!noteOwed(read.opens)) return;
+  // Statement 8 stays open after a reload, as every node is drawn open on load.
   await page.reload();
   await issueRead(page);
   await expectDrawnOpen(
@@ -1309,18 +1291,10 @@ test("a proposed node is marked and settled on the page, and an overtaken one is
       nodeStateRequests(loaded.traffic.requests),
       "the load sends a request of the node state routes"
     ).toEqual([]);
-    // The gates that read the page as it opened, and the reading of statement 8 on it, before any
-    // press. One opening draws `NARROW_LEVELS` below 1024 px, on the `iphone` project, and
-    // `DRAWN_LEVELS` at 1440 px (`tree-fold.ts`).
+    // The gate that reads the page as it opened, and the reading of statement 8 on it, before any
+    // press.
     const graph = await graphGate(page);
-    const opens = await openOnLoadGate(page, {
-      answer: loaded.answer,
-      levels: size === PHONE ? NARROW_LEVELS : DRAWN_LEVELS,
-      readId: seeded.ids.statement8,
-      reads: loaded.reads,
-      what: "statement 8",
-    });
-    const read: ProposedPage = { ...loaded, graph, opens };
+    const read: ProposedPage = { ...loaded, graph };
     await expectOpenOnLoad(page, read);
     await expectOvertakenOpen(page, read);
     await expectProposedMarks(page, read);
@@ -1447,12 +1421,10 @@ function drawnUnderQuestion({ criteria, seeded }: SeededPage): {
 
 /**
  * Row 4's first reading, on the page's first plain load, before any press, unfold or reload: the
- * overtaken question is drawn open with its statement under it. No check serves that statement
- * (`seedNodeStates` reads the coverage read so), so it is open and unanswered and the fold's path
- * to it runs through the question (`tree-fold.ts`' `frontier`): a live question in its place is
- * drawn open on this load, at every width, and the reading is never owed. Answers the read id of
- * each row drawn right under the question on this load, among which its criterion is read once
- * the criterion gate, which opens every branch, finds the page drawing one.
+ * overtaken question is drawn open with its statement under it, as its live self is and as every
+ * node is on load (part T's R11), at every width, and the reading is never owed. Answers the read
+ * id of each row drawn right under the question on this load, among which its criterion is read
+ * once the criterion gate, which opens every branch, finds the page drawing one.
  */
 async function expectQuestionOpenOnLoad(
   page: Page,
@@ -2235,13 +2207,8 @@ test("a node reserved for its author is on its author's page and on nobody else'
     const plain = presetPath(key, "conversation");
     const hers = await readTree(key, null);
     expect(hers.converted, "the seeded issue's tree read does not answer converted").toBe(true);
-    // The row is owed whole until the page opens with every node drawn open (part T's R11): its
-    // readings are of that page. The gate reads a page that holds branches, so it is made on the
-    // row's own issue, once it is seeded.
     await page.setViewportSize(DESKTOP);
     const traffic = watchApiRequests(page);
-    await gotoSettled(page, traffic, plain);
-    owedUnless(await drawnOpenGate(page, hers, await treeIdReads(key)));
     const reserved = new Map(
       RESERVED_NODES.map((name) => [
         name,

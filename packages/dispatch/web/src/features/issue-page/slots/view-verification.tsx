@@ -12,6 +12,7 @@ import { NoTooltips } from "../NoTooltips";
 import { blocksKey, useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
 import { type TreeBlocksRead, useTreeReadRunning } from "../tree-read/tree-read";
+import { NextViewPage } from "../tree-read/view-read";
 import {
   type FailedRead,
   queryTyped,
@@ -83,6 +84,8 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
           view={view.root}
           whole={whole}
         />
+        {/* While the view read answers a next page, the control that reads it (R15). */}
+        <NextViewPage filter="verification" issueKey={issue.key} />
       </div>
     </NoTooltips>
   );

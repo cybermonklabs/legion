@@ -32,6 +32,9 @@ type Parsed = ParsedRoot["children"][number];
 /** One row of a parsed table, the header row or a body row. */
 type ParsedRow = Extract<Parsed, { type: "tableRow" }>;
 
+/** A link of the parse, inline, an autolink, or by reference. */
+type ParsedLink = Extract<Parsed, { type: "link" | "linkReference" }>;
+
 /**
  * The parse a stored text is read with: CommonMark with GFM's tables, strikethrough with one
  * tilde or two, task boxes and footnotes, and YAML front matter, a `---` fenced block a text opens
@@ -62,6 +65,9 @@ type ParsedRow = Extract<Parsed, { type: "tableRow" }>;
  * directive (a typed block such as `:::ask`) reads as its literal fence lines and the content
  * between them, and a Proof mark span (`<span data-proof=…>`) reads as HTML around its text. The
  * extensions hold nothing of any one parse, so one set serves every text.
+ *
+ * Its last step finds the target of each link by reference, its definition's url
+ * (`resolveReferences`), which the link's mark holds (`withLink`).
  */
 const STORED_TEXT_PARSE: Options = {
   extensions: [
@@ -77,6 +83,7 @@ const STORED_TEXT_PARSE: Options = {
     gfmTableFromMarkdown(),
     gfmTaskListItemFromMarkdown(),
     frontmatterFromMarkdown(["yaml"]),
+    { transforms: [resolveReferences] },
   ],
 };
 
@@ -148,7 +155,9 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
  * would hold (R21).
  *
  * The reading holds what decides the words and where they stand apart: the blocks, the text runs
- * and the marks on them, by the server's names. It holds no attribute, since no word lies in one,
+ * and the marks on them, by the server's names, a link's mark with the link's target (`href`)
+ * as the server's reading holds it, which `lenses/store-words.ts` reads to name the node a link
+ * to a store address names. It holds no other attribute, since no word lies in one,
  * but the number a numbered list starts at where that is not 1 (`order`), which it holds as the
  * server's reading does so that the two readings have one shape; nothing on the page reads it. A
  * block opens a space before its words and after them. A mark sits on the runs it covers, so a
@@ -352,7 +361,7 @@ function addRuns(
         break;
       case "link":
       case "linkReference":
-        addRuns(runs, node.children, withMark(marks, "link"));
+        addRuns(runs, node.children, withLink(marks, node));
         break;
       case "break":
         runs.push({ type: "hardbreak" });
@@ -375,6 +384,42 @@ function addRuns(
  *  once, as the server's reading holds a run's marks as a set. */
 function withMark(marks: readonly DisplayTree[], type: string): readonly DisplayTree[] {
   return marks.some((mark) => mark.type === type) ? marks : [...marks, { type }];
+}
+
+/** `marks` with a link mark added, unless one is there already (`withMark`): the mark holds the
+ *  target of `link`, its url or, for a link by reference, its definition's (`referenceTargets`),
+ *  as the server's reading holds it, and nothing where no definition names it. */
+function withLink(marks: readonly DisplayTree[], link: ParsedLink): readonly DisplayTree[] {
+  const href = link.type === "link" ? link.url : referenceTargets.get(link);
+  return href === undefined || marks.some((mark) => mark.type === "link")
+    ? withMark(marks, "link")
+    : [...marks, { attrs: { href }, type: "link" }];
+}
+
+/** The url each link by reference of a parse links to, by the reference's own node
+ *  (`resolveReferences`). A parse's nodes are its own, so each entry goes with its parse. */
+const referenceTargets = new WeakMap<ParsedLink, string>();
+
+/** The parse's last step (`STORED_TEXT_PARSE`): puts in `referenceTargets` the url each link by
+ *  reference in `root` links to, the first definition of its label, as CommonMark reads it.
+ *  Definitions stand anywhere in the text, so every one is found before any reference reads. */
+function resolveReferences(root: ParsedRoot): void {
+  const urls = new Map<string, string>();
+  const references: Extract<ParsedLink, { type: "linkReference" }>[] = [];
+  const walk = (nodes: readonly Parsed[]): void => {
+    for (const node of nodes) {
+      if (node.type === "definition" && !urls.has(node.identifier)) {
+        urls.set(node.identifier, node.url);
+      }
+      if (node.type === "linkReference") references.push(node);
+      if ("children" in node) walk(node.children);
+    }
+  };
+  walk(root.children);
+  for (const reference of references) {
+    const url = urls.get(reference.identifier);
+    if (url !== undefined) referenceTargets.set(reference, url);
+  }
 }
 
 /** Adds a run of `text` carrying `marks` to `runs`, unless the text is empty: an empty text node

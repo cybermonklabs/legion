@@ -1,26 +1,32 @@
 import type { MouseEvent, ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 import { pageMutedText } from "../../../theme/classes";
 import { isPlainClick } from "../../refs/picture-lightbox";
-import { buildIssuePath } from "../../refs/routes";
 import { NodeMarks, useNodeStatesByReference } from "../node-states/NodeMarks";
 import { marksAt } from "../node-states/node-states";
 import { authorText, pageChrome } from "../page-structure";
 import { statesOfRead } from "../tree-read/tree-nodes";
 import type { LensChip } from "./lens-drafts";
+import { lensPlaceOf, rowPathIn } from "./lens-reads";
 
 /**
- * One chip of a lens line: a lens, a check or a constraint, by its words. Where a step drafted
- * the target, the tree read gives its id, and the words are the link to its row on this issue's
- * page (`?node=`), drawn as `NodeRow.tsx`'s `Chip` draws its link. The issue's key is the
- * route's own (`/issues/:key/*`), so the link works in the outline and in the Spec view alike. A
- * target with no id, or a route with no key, draws the words alone.
+ * One chip of a lens line: a lens, a check or a constraint, by its words; or a node a fact line
+ * names (`LensLines.tsx`'s `FactWords`), by the words the line names it by. Where the tree read
+ * gives the target's id, the words are the link to its row on this issue's page (`?node=`), drawn
+ * as `NodeRow.tsx`'s `Chip` draws its link, in the view that draws the row (R7): in the open
+ * outline where it draws it - Graph, which draws every row, and Conversation, but for a target
+ * only Graph draws (`LensChip.graphOnly`), as an issue constraint is in Conversation - and in Graph
+ * from anywhere else: from Conversation for such a target, and from the Spec view. The issue's key
+ * is the address's own (`lensPlaceOf`), so the link works in each view alike. A target with no
+ * id, or an address that names no issue, draws the words alone. A chip's words are whole, and
+ * wrap inside the line they stand in, as `NodeRow.tsx`'s `ParentLink` does.
  *
- * A press on the link also focuses the target's row where the tree the chip stands in draws it
- * already (`focusDrawnRow`), at every press: the address puts the focus on its node once, and
- * no more after the reader's first act, so a second press on the same chip, once the reader has
- * moved on, would otherwise move nothing.
+ * A press on a link to the open outline also focuses the target's row where the tree the chip
+ * stands in draws it already (`focusDrawnRow`), at every press: the address puts the focus on its
+ * node once, and no more after the reader's first act, so a second press on the same chip, once
+ * the reader has moved on, would otherwise move nothing. A link to Graph from another view only
+ * goes there, and Graph puts the focus on the row as its address names it.
  *
  * The link is out of the tab order, as every other control inside a row is, unless `tabStops`
  * holds: `f` steps to it and Enter follows it (`useTreeKeymap.ts`'s `rowStops`). The words are
@@ -30,25 +36,28 @@ import type { LensChip } from "./lens-drafts";
  * `Chip` marks the page's word for a document.
  */
 export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean }): ReactNode {
-  const { key = "" } = useParams<{ key: string }>();
+  const { pathname, search } = useLocation();
   // The marks of the tree's nodes, by reference, for a chip that carries no state of its own: the
   // lens a cut-short chain stopped at is drawn from the lens facts' own map, which holds none.
   const states = useNodeStatesByReference();
   const id = chip.id;
+  const place = id === undefined ? undefined : lensPlaceOf(pathname, search);
   const marks = chip.chrome === true ? pageChrome : authorText;
+  const view =
+    place?.outline === "conversation" && chip.graphOnly !== true ? "conversation" : "graph";
   return (
     <span className="min-w-0 [overflow-wrap:anywhere]" data-node-chip="">
-      {id === undefined || key === "" ? (
-        <span className="whitespace-nowrap" data-chip-name="" {...marks}>
+      {id === undefined || place === undefined ? (
+        <span data-chip-name="" {...marks}>
           {chip.words}
         </span>
       ) : (
         <Link
-          className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
+          className={`dispatch-inline-link font-medium underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
           data-chip-name=""
-          onClick={(event) => focusDrawnRow(event, id)}
+          onClick={view === place.outline ? (event) => focusDrawnRow(event, id) : undefined}
           tabIndex={tabStops ? undefined : -1}
-          to={`${buildIssuePath({ key, kind: "issue" })}?node=${encodeURIComponent(id)}`}
+          to={rowPathIn(view, place.issueKey, id)}
           {...marks}
         >
           {chip.words}

@@ -659,3 +659,18 @@ test("a decision read with no reading that holds blocks takes its heading from i
     "Keep the model pure.",
   ]);
 });
+
+// The tree read answers a decision node's text as its whole stored block, the lines that open
+// and close the `decision` directive included, and no reading (`text_tree`): measured on a
+// preview of e55b07e9, where no decision node of INFRA-1196 or LAY-2 carried one. The heading,
+// which a Change quotes (R3: "a quote of the decision's first paragraph") and its form draws, is
+// then still the words of the first paragraph inside the block, a heading passed over: never
+// the words of the whole block run together.
+test("a decision the tree read answers as its whole stored block takes its heading from the block's first paragraph", () => {
+  const text =
+    ':::decision{#d-stored shaped="dispatch://LAY-1/spec#b-r1" replaced="false"}\n' +
+    "### Purity\n\nKeep the model pure.\n\nWhy it holds.\n:::";
+  const tree = answer([decision("d-stored", { text, text_tree: undefined })]);
+
+  expect(decisionNodes(tree, READS).map((one) => one.heading)).toEqual(["Keep the model pure."]);
+});

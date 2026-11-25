@@ -171,6 +171,7 @@ func requireStatedBy(t *testing.T, what string, tuple graphstore.Tuple, cause ve
 // write. And a value is no node, so with every cutover row on, the view's tuple arm answers the
 // block's own edge and no edge whose far end is one of its values.
 func TestAnAttributeHistoryWrittenByTheBlockIndexReadsBackAsARelationHistoryDoes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 

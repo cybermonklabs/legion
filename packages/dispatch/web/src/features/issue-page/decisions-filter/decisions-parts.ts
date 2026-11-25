@@ -217,8 +217,8 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
  * Every entry that waits on the reader, in the filter's order: each open question whose turn
  * is the reader's, then each decision of the review list. It is what the header's count of
  * what waits walks: each press goes to the next of them (R13, the tester's F12).
- * An entry at or under an overtaken node stands in its part but waits on nobody, so the walk
- * leaves it out.
+ * An entry at or under an overtaken node stands in its part, but no reader waits on it, so the
+ * walk leaves it out.
  */
 export function waitingOrder(parts: DecisionsParts): readonly string[] {
   parts = { ...parts, review: parts.review.filter((entry) => entry.node.closed !== true) };

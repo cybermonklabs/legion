@@ -48,6 +48,7 @@ func displayCorpusDocuments(t *testing.T) []string {
 // testdata/display.json. Run it with PMDOC_WRITE_DISPLAY=1 to write that file from what this
 // build reads, and read the diff: every line of it is a change to what a reader is shown.
 func TestReadForDisplayMatchesItsFixtures(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join("testdata", "display.json")
 	fixtures := make([]displayFixture, 0, len(displayCorpusDocuments(t)))
 	for _, document := range displayCorpusDocuments(t) {
@@ -137,6 +138,7 @@ func sameDisplayJSON(t *testing.T, got, want json.RawMessage) bool {
 // TestReadForDisplayRefusesNothingTheWriterRefuses reads every document no writer stores and
 // answers a tree for each: the display read never refuses (ReadForDisplay).
 func TestReadForDisplayRefusesNothingTheWriterRefuses(t *testing.T) {
+	t.Parallel()
 	paths, err := filepath.Glob(filepath.Join("testdata", "corpus-errors", "*.md"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("testdata/corpus-errors: %d documents, %v", len(paths), err)
@@ -162,6 +164,7 @@ func TestReadForDisplayRefusesNothingTheWriterRefuses(t *testing.T) {
 // MaxDocumentElements as one paragraph of literal text per part between blank lines, the answer
 // to a refusal no block can be named for (ReadForDisplay).
 func TestReadForDisplayShowsADocumentPastTheElementLimitAsItsText(t *testing.T) {
+	t.Parallel()
 	markdown := strings.Repeat(")_", MaxDocumentElements) + "\n\nthe second part\n"
 	if _, err := Parse(markdown); !errors.Is(err, ErrTooManyElements) {
 		t.Fatalf("Parse() = %v, want ErrTooManyElements", err)
@@ -186,6 +189,7 @@ func TestReadForDisplayShowsADocumentPastTheElementLimitAsItsText(t *testing.T) 
 // and goldmark keeps as written so no writer stores it, is shown as its own text, and the blocks
 // around it keep their formatting.
 func TestReadForDisplayShowsARefusedBlockAsItsTextAndKeepsTheOthers(t *testing.T) {
+	t.Parallel()
 	fence := "```"
 	markdown := "# A heading\n\n" + fence + "go&amp;x\nx := 1\n" + fence + "\n\n*emphasis* after\n"
 	if _, err := Parse(markdown); err == nil {
@@ -222,6 +226,7 @@ func TestReadForDisplayShowsARefusedBlockAsItsTextAndKeepsTheOthers(t *testing.T
 // a text node is worse than a wrong block: HTML draws neither CR nor CRLF as a break, so the
 // lines run together on the page.
 func TestReadForDisplayEndsAnUnknownBlocksLinesAtEveryLineEnding(t *testing.T) {
+	t.Parallel()
 	want := []string{":::a", "body words", ":::"}
 	for _, ending := range []struct{ name, between string }{
 		{"a line feed", "\n"},
@@ -280,6 +285,7 @@ var nulCorpusDocuments = []string{
 // rule must hold at. The walk below reads all three, over every document written to carry a NUL
 // (nulCorpusDocuments).
 func TestReadForDisplayReplacesANulAsEveryOtherReaderDoes(t *testing.T) {
+	t.Parallel()
 	for _, name := range nulCorpusDocuments {
 		t.Run(name, func(t *testing.T) {
 			markdown, err := os.ReadFile(filepath.Join("testdata", "corpus", name+".md"))

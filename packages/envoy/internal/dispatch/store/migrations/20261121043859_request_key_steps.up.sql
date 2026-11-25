@@ -7,10 +7,11 @@
 -- and the mark that every step ran with the answer's issue. Each step that writes adds its row
 -- here in its own transaction, in the statement that adds to the head, right after the step's
 -- write phase (api's writeIssue, through docs.Ledger.AfterWrites), and every reader of the point
--- reads the rows back under its changed member (api's recoveryPointRead), so a repeat answers each
--- entry's issue as its step's write answered it rather than as it stands then. A row goes with its
--- key through the cascade: when the sweep deletes keys past their window (sweepRequestKeys), and
--- when a claim finds its key past its window (claimRequestKey). The release of a key that
+-- reads the rows back under its changed and moved members (api's recoveryPointRead), so a repeat
+-- answers each entry's issue as its step's write answered it rather than as it stands then, and
+-- its comment on the issue the call names lists what the steps before it changed. A row goes with
+-- its key through the cascade: when the sweep deletes keys past their window (sweepRequestKeys),
+-- and when a claim finds its key past its window (claimRequestKey). The release of a key that
 -- committed nothing never removes one, since a key that holds step rows holds a point.
 --
 --   id                the order the steps committed in, which the readers aggregate by, and with
@@ -20,6 +21,10 @@
 --   entry             the step's entry as the route answers it: the issue's key, its status and
 --                     parent after the step, its last_seq before the step, and the issue as the
 --                     step's write answered it (api's statusChangeEntry).
+--   moved             what the step of an option changed, which the comment on the issue the call
+--                     names lists: the issue's key, the option, and the status the step moved it
+--                     from and to, none for an unlink (api's statusChangeMove). Null for the named
+--                     issue's own step, which no option makes.
 --
 -- A table of its own rather than a member of the head: each step adds one row, where rewriting a
 -- growing jsonb value at every step costs the square of the steps. The primary key leads with the
@@ -38,6 +43,7 @@ create table request_key_steps (
     login text not null,
     idempotency_key text not null,
     entry jsonb not null,
+    moved jsonb,
     primary key (login, idempotency_key, id),
     foreign key (login, idempotency_key) references request_keys (login, idempotency_key) on delete cascade
 );

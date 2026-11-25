@@ -105,6 +105,39 @@ export function issueTreeKey(key: string): readonly ["issue-tree", string] {
   return ["issue-tree", key];
 }
 
+/** The kinds Conversation's read names (`?kind=`, repeated, one each), in the one order every
+ *  load writes them in, so its key is the same in every load (`conversationTreeKey`): root R1's
+ *  kinds, each by the name the read's `kind` filter gives it - the asks, the comments, the
+ *  readings, the lenses with their findings and risks, the criteria, the requirements, the
+ *  checks, the decisions, the child issues (`issue`) and the blocks written in the conversation
+ *  (`prose`) - and the memo's callout (`callout`), which the three sentences draw and no row does.
+ *  None is `block`, the supertag every untyped block holds, which the filter takes no value of. */
+export const CONVERSATION_KINDS = [
+  "ask",
+  "comment",
+  "reading",
+  "lens",
+  "finding",
+  "risk",
+  "criterion",
+  "requirement",
+  "check",
+  "decision",
+  "issue",
+  "prose",
+  "callout",
+] as const;
+
+/** Conversation's read's key: the tree read with `kind` repeated for `CONVERSATION_KINDS`, under
+ *  the tree's key (`issueTreeKey`), so every event of the issue reaches it as it reaches the tree
+ *  read and each view (`event-refresh.ts`). The kinds it reads are its last member, in their one
+ *  order, so no view's name (`["issue-tree", key, view]`) is it. */
+export function conversationTreeKey(
+  key: string
+): readonly ["issue-tree", string, { readonly kind: typeof CONVERSATION_KINDS }] {
+  return [...issueTreeKey(key), { kind: CONVERSATION_KINDS }];
+}
+
 /** The filters that read a role document's view of the tree, in this order. Decisions reads a
  *  view too, the decisions view, which plays no role (`features/issue-page/tree-read/tree-read.ts`'
  *  `TREE_VIEWS`). */

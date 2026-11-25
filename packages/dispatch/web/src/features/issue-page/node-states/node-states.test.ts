@@ -9,9 +9,9 @@ import { MemoryRouter, Route, Routes, useNavigate, useSearchParams } from "react
 import { api, type WriteRequest } from "../../../api/client";
 import {
   artifactBlocksQuery,
+  conversationTreeKey,
   issueCoverageQuery,
   issueResultsQuery,
-  issueTreeKey,
 } from "../../../api/queries";
 import type {
   CheckBlock,
@@ -388,28 +388,22 @@ function rowIds(container: HTMLElement): (string | undefined)[] {
 }
 
 // An overtaken node is a row at its place among its parent's other children, at their level, and
-// carries the word Overtaken and its shape; drawn whole, here by the cycle key's last state, its
+// carries the word Overtaken and its shape; drawn whole, as the page opens with every node, its
 // child is a row under it, one level down, as under any row.
 test("an overtaken node is a row at its place with its mark and its child row under it", async () => {
   readWide();
-  const user = userEvent.setup();
   const view = renderTree(overtakenBetween());
   const levelOf = (id: string) => Number(rowOf(view.container, id)?.getAttribute("aria-level"));
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    expect(rowIds(view.container)).toEqual(["comment-1", "spec#b-r8", "comment-3"]);
+    expect(rowIds(view.container)).toEqual(["comment-1", "spec#b-r8", "comment-8", "comment-3"]);
     expect(levelOf("spec#b-r8")).toBe(levelOf("comment-1"));
+    expect(levelOf("comment-8")).toBe(levelOf("spec#b-r8") + 1);
     const row = rowOf(view.container, "spec#b-r8");
     expect(marksIn(row)).toEqual(["overtaken"]);
     const mark = row?.querySelector("[data-node-mark]");
     expect(mark?.textContent).toBe(ROW_MARK_WORDS.overtaken);
     expect(mark?.querySelector("svg")).toHaveAttribute("data-glyph", GLYPH_TOKENS.marks.overtaken);
-
-    await user.keyboard("z");
-    await user.keyboard("z");
-    await waitFor(() => expect(rowOf(view.container, "comment-8")).not.toBeNull());
-    expect(rowIds(view.container)).toEqual(["comment-1", "spec#b-r8", "comment-8", "comment-3"]);
-    expect(levelOf("comment-8")).toBe(levelOf("spec#b-r8") + 1);
   } finally {
     view.unmount();
   }
@@ -492,7 +486,6 @@ function renderTreeAt(
                 artifacts: new Map(),
                 context: new Set<string>(),
                 emptyLine: "Nothing here.",
-                filtering: false,
                 focusReveal: reveal !== undefined,
                 holdsEscape: false,
                 isClosed: false,
@@ -524,7 +517,8 @@ function focusedRow(container: HTMLElement): string | undefined {
 }
 
 // `j` and `k` step onto an overtaken row and off it as they do any row: down from the row above
-// it, on to the row after it, and back up, the row the reader is on holding the tree's tab stop.
+// it, on to the row after it, its child, drawn open as every row is, and back up, the row the
+// reader is on holding the tree's tab stop.
 test("`j` and `k` reach and leave an overtaken row as any row", async () => {
   readWide();
   const user = userEvent.setup();
@@ -533,7 +527,9 @@ test("`j` and `k` reach and leave an overtaken row as any row", async () => {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
     const steps = [
       ["j", "spec#b-r8"],
+      ["j", "comment-8"],
       ["j", "comment-3"],
+      ["k", "comment-8"],
       ["k", "spec#b-r8"],
       ["k", "comment-1"],
     ] as const;
@@ -547,8 +543,8 @@ test("`j` and `k` reach and leave an overtaken row as any row", async () => {
   }
 });
 
-// An overtaken row's fold control opens its branch and folds it again as any row's does: its
-// child is a row under it while the branch is open, and none once it is folded.
+// An overtaken row is drawn open, and its fold control folds it and opens it again as any row's
+// does: its child is a row under it while the branch is open, and none once it is folded.
 test("an overtaken row's fold control folds it and opens it again", async () => {
   readWide();
   const user = userEvent.setup();
@@ -557,8 +553,9 @@ test("an overtaken row's fold control folds it and opens it again", async () => 
     rowOf(view.container, "spec#b-r8")?.querySelector<HTMLElement>("button[data-node-bullet]");
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    expect(rowOf(view.container, "comment-8")).not.toBeNull();
+    expect(rowOf(view.container, "spec#b-r8")).toHaveAttribute("aria-expanded", "true");
     const presses = [
-      [CONTROL_LABELS.unfold, true],
       [CONTROL_LABELS.fold, false],
       [CONTROL_LABELS.unfold, true],
     ] as const;
@@ -595,9 +592,9 @@ test("an address to an overtaken node focuses its row", async () => {
 });
 
 // An overtaken open question that waited on the reader waits no more, so the page opens on the
-// outline's first row, though the question is a row of its own with its mark. A question under an
-// overtaken node is on the frontier as under any node, so that node's branch arrives open with the
-// question drawn in it, and the page does not open on that question either.
+// outline's first row, though the question is a row of its own with its mark. An overtaken node's
+// branch arrives open as every branch does, with the question under it drawn in it, and the page
+// does not open on that question either.
 test("the page does not open on an overtaken open question", async () => {
   readWide();
   const asking = { question: true, state: "open", waiting: true } as const;
@@ -1254,9 +1251,10 @@ function drawSpec(
   client.setQueryData(issueResultsQuery(KEY).queryKey, results);
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(artifactBlocksQuery(issue.primary_artifact_id).queryKey, []);
-  // The tree read and the Spec view's read, held answered with no node, as the page holds them
-  // once read: the body takes its decisions from the view read and reads nothing on its own.
-  client.setQueryData(issueTreeKey(KEY), readAnswer([]));
+  // Conversation's read of the tree and the Spec view's read, held answered with no node, as the
+  // page holds them once read: the body takes its decisions from the view read and reads nothing
+  // on its own.
+  client.setQueryData(conversationTreeKey(KEY), readAnswer([]));
   client.setQueryData(viewKey(KEY, "spec"), readAnswer([]));
   // The asks read, held answered with no question unless the case keeps it out: the body says
   // where `q` and `w` go nowhere only once every read it draws from holds an answer
@@ -2533,7 +2531,7 @@ function drawDecisions(
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   const held = decisionsAnswer(made, shapedTuples(made));
-  client.setQueryData(issueTreeKey(KEY), held);
+  client.setQueryData(conversationTreeKey(KEY), held);
   client.setQueryData(viewKey(KEY, "decisions"), held);
   client.setQueryData(["asks", KEY], []);
   client.setQueryData(["comments", KEY], []);
@@ -2687,6 +2685,7 @@ test("an address to an overtaken decision keeps Decisions on and focuses its row
     }),
     spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
     spyOn(api, "getIssueTree").mockResolvedValue(tree),
@@ -2923,7 +2922,6 @@ function planBody(
               artifacts: new Map(),
               context: new Set<string>(),
               emptyLine: EMPTY_STATE_LINES.plan,
-              filtering: true,
               focusReveal: true,
               holdsEscape: search !== "",
               isClosed: false,
@@ -3192,17 +3190,12 @@ test("a proposed lens, finding, risk or constraint carries Settle, sent under th
     return { node: {}, previous: "proposed" };
   }) as typeof api.send);
   try {
+    // Every node is drawn open as the page opens, a proposed one too, so the finding is a row
+    // under its open lens.
+    await waitFor(() =>
+      expect(rowOf(view.container, LENS)).toHaveAttribute("aria-expanded", "true")
+    );
     for (const id of [LENS, FINDING, RISK, CONSTRAINT]) {
-      if (id === FINDING) {
-        // A proposed node opens no path of the fold (R2), so the lens stays folded and its
-        // finding is a row once the reader opens the lens.
-        expect(rowOf(view.container, LENS)).toHaveAttribute("aria-expanded", "false");
-        act(() => rowOf(view.container, LENS)?.focus());
-        await user.keyboard("{ArrowRight}");
-        await waitFor(() =>
-          expect(rowOf(view.container, LENS)).toHaveAttribute("aria-expanded", "true")
-        );
-      }
       await waitFor(() => expect(rowOf(view.container, id), `${id} is a row`).not.toBeNull());
       act(() => rowOf(view.container, id)?.focus());
       await waitFor(() =>

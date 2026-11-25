@@ -18,7 +18,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 	"golang.org/x/sys/unix"
@@ -435,8 +434,8 @@ func useGitLockProc(t *testing.T, proc string) {
 }
 
 // roleStart is a start of role's generation that runs argv and exits, carrying env besides the
-// workspace it names: the restore and the sweep both read LEGION_WORKSPACE from the environment
-// the launcher merges for the generation.
+// workspace it names: the sweep reads LEGION_WORKSPACE from the environment the launcher merges
+// for the generation.
 func roleStart(generation uint64, ws string, env []string) shimwire.LauncherStart {
 	return shimwire.LauncherStart{
 		ID: "start-" + strconv.FormatUint(generation, 10), Generation: generation,
@@ -648,66 +647,12 @@ func TestTheFirstPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 	})
 }
 
-// The pod's one workspace-bundle restore runs real git and jj against the clone, and a stale lock
-// fails it: the restore is exactly the work a wedged clone costs the issue before a role has even
-// started. The first pass runs before it, both ways the launcher reaches a workspace — from its
-// own working directory, before it serves any role at all, and from the first role start, whose
+// A stale lock fails every git and jj the pod's roles run against the clone: it is the work a
+// wedged clone costs the issue. The first pass runs before the first role starts, both ways the
+// launcher reaches a workspace — from its own working directory, before it serves any role at all
+// (TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory), and from the first role start, whose
 // answer waits for the pass.
-func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
-	t.Run("a lock that would fail the restore is gone before it runs", func(t *testing.T) {
-		testbin.RequireJJFilters(t)
-		requireRoleNamespaces(t)
-		f := newBundleFixture(t)
-		f.workOne()
-		saved := f.bundleWorkspaceOne()
-		ws := f.secondPod("ws2")
-		// The lock the restore's own `git update-ref` takes for each saved head: one left
-		// behind fails that command with "cannot lock ref", and the restore gives up with the
-		// released pod's work left in the daemon's database for good.
-		gitDir := f.gitDir(ws)
-		var planted []string
-		for index := range saved.Tips {
-			path := filepath.Join(gitDir, "refs", "heads", restoreRefPrefix+strconv.Itoa(index)+".lock")
-			if err := os.WriteFile(path, []byte("stale\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			planted = append(planted, path)
-		}
-
-		t.Chdir(ws)
-		useSweepingLauncher(t)
-		fleet := newFleetOf(t, Config{StopGrace: 5 * time.Second, Workspace: ws}, "tester")
-		for _, path := range planted {
-			if !swept(path) {
-				t.Fatalf("the launcher's first pass left %s where it was; its log:\n%s", path, fleet.stderr.String())
-			}
-		}
-		frames, err := shimwire.SplitWorkspaceBundle("restore-ws2", bundleRelease, saved)
-		if err != nil {
-			t.Fatal(err)
-		}
-		conn := fleet.role("tester")
-		for _, frame := range frames {
-			if got, ok := conn.answer(frame).(shimwire.LauncherBundleResult); !ok || !got.OK {
-				t.Fatalf("slice %d answered %#v", frame.Index, got)
-			}
-		}
-		if got := conn.start(roleStart(1, ws, f.env)); !got.OK {
-			t.Fatalf("the start after the bundle answered %#v; the launcher's log:\n%s", got, fleet.stderr.String())
-		}
-		conn.awaitExit(1)
-		if conn.restored == nil || !conn.restored.OK {
-			t.Fatalf("the launcher reported %#v of the restore; its log:\n%s", conn.restored, fleet.stderr.String())
-		}
-		if !strings.Contains(fleet.stderr.String(), "the released workspace's saved work is restored") {
-			t.Fatalf("the restore left no notice in the container's log:\n%s", fleet.stderr.String())
-		}
-		// The work the stale lock would have cost the issue is in the workspace.
-		if body, err := os.ReadFile(filepath.Join(ws, "wip.txt")); err != nil || string(body) != "wip\n" {
-			t.Fatalf("the restored working copy's own change reads %q (%v)", body, err)
-		}
-	})
-
+func TestTheFirstPassRunsBeforeTheFirstRoleStarts(t *testing.T) {
 	t.Run("no role start is answered until the pass returns", func(t *testing.T) {
 		requireRoleNamespaces(t)
 		c := newLockClone(t)
@@ -816,7 +761,7 @@ func TestTheLaunchersFirstPassKeepsEveryLockWhileAGitItCannotReadRuns(t *testing
 // directory the runtime's layout does not account for, which is every directory outside
 // <state>/workspaces/<owner>/<name>/<issue> — says so once and sweeps nothing, since it has no
 // clone to sweep. The first role start it serves names the workspace (LEGION_WORKSPACE), and
-// that is the clone it sweeps, under the first pass's rule, before the start's own restore runs.
+// that is the clone it sweeps, under the first pass's rule, before the start's own child runs.
 func TestALauncherWhoseDirectoryIsNoWorkspaceSweepsAtTheFirstRoleStart(t *testing.T) {
 	requireRoleNamespaces(t)
 	c := newLockClone(t)

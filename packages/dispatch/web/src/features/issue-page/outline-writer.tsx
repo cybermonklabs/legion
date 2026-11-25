@@ -10,7 +10,7 @@ import { type AgentText, useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
-import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueAskThreadsQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * Where the reader writes on the issue page (R16): the one line at the foot
@@ -159,7 +159,7 @@ export function OutlineWriterProvider({
   // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
   // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
   // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
-  const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
+  const asks = useQuery({ ...issueAskThreadsQuery(issueKey), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   const focus = useCallback(() => {

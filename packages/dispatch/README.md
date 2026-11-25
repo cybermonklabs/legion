@@ -1027,10 +1027,38 @@ real stack: what the server decides, a read of the row's own write, a frame the 
 a clock. A stubbed row skips only inside its own body: a `describe`-level skip whose condition
 reads a worker fixture is seen by neither the row map nor the replay (`e2e/tools/row-map.ts`).
 
-A new real-stack spec file needs a line in `e2e/stub/real-stack-reasons.ts` saying what the
-server decides for its rows, and a new stub file a header comment saying why a recording can
-answer its rows. After either, `bun e2e/tools/row-map.ts --write` regenerates `e2e/row-map.md`,
-which `e2e/__tests__/row-map.test.ts` holds to a fresh generation.
+`bun e2e/tools/row-map.ts` generates the row map and prints it. Git does not keep the map.
+`--write` writes it to `e2e/row-map.md`, which git ignores, so no commit keeps the file.
+`e2e/__tests__/row-map.test.ts` generates the map on each run and fails on each refusal of the
+tool. CI generates the map in each run of `dispatch-ui`, the job that runs that test.
+
+`e2e/stub/real-stack-reasons.ts` keeps the reasons of the real-stack spec files that were there
+when its list closed. A change to one of those reasons is made in `real-stack-reasons.ts`.
+A new real-stack spec file gives its reason to `real-stack-reasons.ts` in a `/** … */` comment at
+the very start of the file. A stub file gives its reason to `e2e/tools/row-map.ts` the same way.
+A real-stack file's reason says what the server decides for its rows. A stub file's reason says
+why a recording can answer its rows.
+
+Each open part of the new issue page adds its words in `page-words-<letter>.ts`, a file of its own
+beside `web/src/features/issue-page/page-words.ts`. A part's `page-words-<letter>.ts` holds the
+tables that the part adds, each a named export that it lists in `unasked` or `answers`. Under
+`add`, it holds the part's new keys for a table that `page-words.ts` declares. The open parts are
+J, L, M, N, S, T, U, W, X, Y and Z.
+
+A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
+from any pull request. TypeScript reads the keys of a table where the table is declared. The tables
+`PRESET_NAMES`, `CHECK_WHEN_WORDS`, `RESULT_STANDS_WORDS`, `DELIVERY_STATE_WORDS` and
+`AUTHOR_KIND_WORDS` take keys only in `page-words.ts`, because a closed type fixes their keys. The
+type of a part's `add` gives each of them the type `never`, so the type check refuses words for
+one of them in a part's file whose `add` has a literal type, with or without `satisfies PartWords`.
+A case of `page-words.test.ts` refuses such a key, and a key for a table that `page-words.ts` does
+not declare, in any part's file whatever the type of its `add`, and names the file and the table
+(`page-words-parts.ts`, `PartWords.add`).
+
+A change to a word is made in place, in the file that holds it: `page-words.ts` or a part's file.
+Every other new word of a pull request that is not an open part goes in `page-words.ts`. The four
+tables of `page-structure.ts`, and code in `page-words.ts`, stay shared. A key that two files give
+fails `page-words.test.ts`, which names the key and both files.
 
 The stubbed layer reads three variables of its own, and a run that is not recording needs none
 of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write

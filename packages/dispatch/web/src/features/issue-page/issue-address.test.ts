@@ -390,11 +390,7 @@ test("a path through an overtaken node is the path to its row", () => {
     const ids = ["CORE-1", "spec", ...below.split(">")];
     const path = pathToTarget(root, address.target);
     expect(path?.map((found) => found.id)).toEqual(ids);
-    const rows = treeRows(root, {
-      ...NOTHING_OPENED,
-      branches: new Set(ids.slice(0, -1)),
-      deeper: new Set(ids),
-    });
+    const rows = treeRows(root, NOTHING_OPENED, [], ids.slice(-1));
     const row = rows.find((drawn) => drawn.kind === "node" && drawn.node.id === ids.at(-1));
     expect(row, `${below} is no row`).toBeDefined();
     expect(row === undefined ? undefined : rowKeyOf(row)).toBe(ids.join(">"));
