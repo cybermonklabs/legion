@@ -204,10 +204,10 @@ func (in *Intake) handlePushEnvelope(ctx context.Context, payload map[string]str
 func (in *Intake) recordDeployed(ctx context.Context, settings DeliverySettings) {
 	written, err := RecordDeployedEvents(ctx, in.pool, settings, in.events)
 	if err != nil {
-		slog.Error("dispatch delivery: record issue.deployed after an envelope", "error", err)
+		in.tuning.log.Error("dispatch delivery: record issue.deployed after an envelope", "error", err)
 	}
 	if written > 0 {
-		slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "intake")
+		in.tuning.log.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "intake")
 	}
 }
 
@@ -405,7 +405,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	headNotStored := false
 	defer func() {
 		if handling.Err() != nil {
-			slog.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
+			in.tuning.log.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
 			d.handBack(msg)
 			return
 		}
@@ -422,7 +422,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	if envelope == nil {
 		decoded, err := decodeEnvelope(msg.Data)
 		if err != nil {
-			slog.Error("dispatch delivery: decode envelope", "subject", msg.Subject, "error", err)
+			in.tuning.log.Error("dispatch delivery: decode envelope", "subject", msg.Subject, "error", err)
 			return
 		}
 		envelope = &decoded
@@ -434,28 +434,28 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	handled, err := in.route(ctx, *settings, envelope.Payload)
 	switch {
 	case errors.Is(err, errMalformedPayload):
-		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
+		in.tuning.log.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
 		return
 	case errors.Is(err, ErrHeadNotStored):
-		delivered, spent := headWriteDeliveriesSpent(msg, in.tuning.headWriteMaxDeliveries)
+		delivered, spent := headWriteDeliveriesSpent(in.tuning.log, msg, in.tuning.headWriteMaxDeliveries)
 		if spent {
-			slog.Error("dispatch delivery: a pull request's head row could not be stored in the deliveries allowed; acknowledging the envelope, whose pull request now has no head row until a later `pull_request` event for it, or the read-through a recorded result makes, writes one",
+			in.tuning.log.Error("dispatch delivery: a pull request's head row could not be stored in the deliveries allowed; acknowledging the envelope, whose pull request now has no head row until a later `pull_request` event for it, or the read-through a recorded result makes, writes one",
 				"subject", msg.Subject, "deliveries", delivered, "error", err)
 			return
 		}
-		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
+		in.tuning.log.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
 			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", in.tuning.headWriteMaxDeliveries,
 			"redeliver_after", headWriteRedeliverAfter, "error", err)
 		headNotStored = true
 		return
 	case err != nil:
-		slog.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
+		in.tuning.log.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
 		return
 	case !handled:
 		return
 	}
 	if err := RecordEventAt(ctx, in.pool); err != nil {
-		slog.Error("dispatch delivery: record event freshness", "error", err)
+		in.tuning.log.Error("dispatch delivery: record event freshness", "error", err)
 	}
 }
 
@@ -515,17 +515,17 @@ const headWriteMaxDeliveries uint64 = 30
 
 // headWriteDeliveriesSpent reports how many times the server has delivered msg and whether
 // that is every delivery the intake allows a head write to fail in (allowed, its
-// headWriteMaxDeliveries).
+// headWriteMaxDeliveries), writing a metadata read that fails to logger, the intake's.
 //
 // A message whose metadata cannot be read is not a JetStream message at all (Msg.Metadata
 // answers an error for one with no JetStream reply subject). No count can be read from it and
 // so no cap can be applied, and the answer is "not spent": the caller hands it back, which is
 // the answer that keeps the head row's one chance of being written, and the ack wait bounds a
 // hand-back the server never takes.
-func headWriteDeliveriesSpent(msg *natsgo.Msg, allowed uint64) (delivered uint64, spent bool) {
+func headWriteDeliveriesSpent(logger *slog.Logger, msg *natsgo.Msg, allowed uint64) (delivered uint64, spent bool) {
 	meta, err := msg.Metadata()
 	if err != nil {
-		slog.Error("dispatch delivery: read how often the envelope whose head row was not stored has been delivered",
+		logger.Error("dispatch delivery: read how often the envelope whose head row was not stored has been delivered",
 			"subject", msg.Subject, "error", err)
 		return 0, false
 	}
@@ -568,7 +568,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 	// the same commits once rather than twice.
 	messages, headErr := in.recordPullRequestHead(ctx, payload, number)
 	if headErr != nil {
-		slog.Warn("dispatch delivery: record a pull request's head",
+		in.tuning.log.Warn("dispatch delivery: record a pull request's head",
 			"repo", repoFull, "number", number, "error", headErr)
 		if errors.Is(headErr, ErrHeadNotStored) {
 			return false, headErr

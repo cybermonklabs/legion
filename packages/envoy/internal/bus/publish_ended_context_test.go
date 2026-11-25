@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A publish whose context has already ended sends nothing and says so: never a message on the wire
@@ -106,8 +107,8 @@ func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
 
 			// The control: a live context publishes, the subscriber receives it, and the stream
 			// retains it where it captures the topic.
-			live, cancelLive := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancelLive()
+			// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+			live := testwait.Context(t)
 			if err := client.PublishWithin(live, envelope); err != nil {
 				t.Fatalf("publish under a live context: %v", err)
 			}
@@ -188,8 +189,9 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 		t.Fatalf("publishConfirmed whose window ended after its publish = %v, want the spent window's error, not ErrWindowEndedBeforePublish", lateErr)
 	}
 
-	live, cancelLive := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelLive()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong. forgedWait,
+	// since publishConfirmed reads a context with no deadline (-timeout 0) as a spent window.
+	live := forgedWait(t)
 	if err := client.publishConfirmed(live, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish); err != nil {
 		t.Fatalf("publishConfirmed with a deadline ahead: %v", err)
 	}
