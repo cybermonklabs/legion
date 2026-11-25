@@ -262,15 +262,33 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	return nil
 }
 
+// SessionAccessChannel is the Postgres channel each write of what the session content rule reads
+// (access.SessionContentClause) notifies inside its own statement, when the statement wrote a row,
+// so every Dispatch process hears it once the write commits and none hears a write that did not:
+// the tie and the reached projects a broker-issued token is to record (access.TieSession,
+// access.RecordListedReach, which no code in this tree calls yet), and the writes later slices
+// add, of a session's tie to a person or a project it wrote in and of a stored listener answer. It
+// carries no payload. A later slice moves each process's document access epoch on it, so a
+// document socket asks its rule again before its next frame; a project's owner, visibility or
+// access list and a group announce on store.AccessChangedChannel instead.
+const SessionAccessChannel = "dispatch_session_access_changed"
+
+// AnnounceSessionAccess is the notification on SessionAccessChannel as an SQL expression, for the
+// select list of a statement over the rows it wrote: Postgres sends one notification however many
+// rows select it in a transaction, none when no row does, and none when the transaction does not
+// commit.
+const AnnounceSessionAccess = `pg_notify('` + SessionAccessChannel + `', '')`
+
 // eventOwnerKey requires at most one of IssueKey/ArtifactID/ProjectKey, and an event naming none
-// of them is one of exactly two kinds, each told by its payload: a session-addressed message or
-// viewer state (agentEventSessionID), keyed "agent:<session>", and a priority's write
-// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>". Any other ownerless
-// event is refused, so there is still no ownerless event for a plain configuration change: a
-// cross-project singleton settings table (no project, issue, or artifact of its own) has
-// nothing valid to pass here. See api/settings_delivery.go's putDeliverySettings doc comment for
-// a worked example of a route that checked this directly and deliberately skips appending an
-// event rather than inventing an owner.
+// of them is one of exactly three kinds, each told by its payload: a session-addressed message or
+// viewer state (agentEventSessionID), keyed "agent:<session>"; a priority's write
+// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>"; and a group's write
+// (model.AccessGroupEventPayload, `access_group.changed`), keyed "access_group:<name>", since a
+// group belongs to no project. Any other ownerless event is refused, so there is still no
+// ownerless event for a plain configuration change: a cross-project singleton settings table (no
+// project, issue, or artifact of its own) has nothing valid to pass here. See
+// api/settings_delivery.go's putDeliverySettings doc comment for a worked example of a route that
+// checked this directly and deliberately skips appending an event rather than inventing an owner.
 //
 // The key of an ownerless event locks nothing: eventOwnerLock names no owner lock for it, so
 // LockOwners takes none and lockEventOwner takes only the transaction id, and QueueAppend's
@@ -291,11 +309,17 @@ func eventOwnerKey(e model.Event) (string, error) {
 		owners++
 	}
 	if owners == 0 {
-		if payload, ok := e.Payload.(model.PriorityEventPayload); ok {
+		switch payload := e.Payload.(type) {
+		case model.PriorityEventPayload:
 			if e.Type != "priority.updated" || payload.ID == "" {
 				return "", fmt.Errorf("ownerless priority event requires type priority.updated and a priority id")
 			}
 			return "priority:" + payload.ID, nil
+		case model.AccessGroupEventPayload:
+			if e.Type != "access_group.changed" || payload.Name == "" {
+				return "", fmt.Errorf("ownerless group event requires type access_group.changed and a group name")
+			}
+			return "access_group:" + payload.Name, nil
 		}
 		sessionID, err := agentEventSessionID(e)
 		if err != nil {
@@ -307,10 +331,10 @@ func eventOwnerKey(e model.Event) (string, error) {
 		return "", fmt.Errorf("event requires at most one owner")
 	}
 	if e.IssueKey != nil {
-		return "issue:" + *e.IssueKey, nil
+		return issueOwnerPrefix + *e.IssueKey, nil
 	}
 	if e.ArtifactID != nil {
-		return "artifact:" + *e.ArtifactID, nil
+		return artifactOwnerPrefix + *e.ArtifactID, nil
 	}
 	return "project:" + *e.ProjectKey, nil
 }
@@ -426,14 +450,17 @@ func Quiet(e model.Event) bool {
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
-		"user_thread_state.updated", "decision.kept", "priority.updated":
+		"user_thread_state.updated", "decision.kept", "priority.updated",
+		"project.access_changed", "access_group.changed":
 		// Settings, importer and per-viewer bookkeeping: retained on their log and carried by
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
-		// and nobody is asked anything by. This build writes no settings.repo_project.updated;
-		// the case stays for the events and outbox rows an earlier build wrote
-		// (outbox/publisher.go).
+		// and nobody is asked anything by. A change of a project's access list, owner or
+		// visibility, or of a group, is who may see what: every reader resolves its viewer again
+		// on it, and nobody is asked anything by it. This build writes no
+		// settings.repo_project.updated; the case stays for the events and outbox rows an earlier
+		// build wrote (outbox/publisher.go).
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was
@@ -493,7 +520,7 @@ func namedVersion(payload any) bool {
 // Quiet is asked of one event from two payload shapes, and must answer the same for both: at
 // append time (Broker.Notify) the payload is the typed value the caller built, and at publish
 // time it is the event the outbox scanned out of Postgres, whose payload JSON decodes into a
-// map[string]any (outbox/publisher.go, scanPendingEvents). quietAskEdit and namedVersion read
+// map[string]any (outbox/batch_read.go, readRows). quietAskEdit and namedVersion read
 // their field the same way.
 func targetedMessage(payload any) bool {
 	switch message := payload.(type) {

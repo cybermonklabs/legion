@@ -25,6 +25,7 @@ import (
 // The child's phase says it runs nothing (record.InWorkflow reads both), and its next launch writes
 // a fresh catch-up, so the row finishes without a publish.
 func TestAParkedChildsCatchUpEndsAfterAPersonMovesItToARunningStatus(t *testing.T) {
+	t.Parallel()
 	// The record state is reachable: a park, then a person's in_progress, leaves the child done at
 	// its generation, under a status no out-of-workflow check names.
 	rig := newChildArchitectRig(t)

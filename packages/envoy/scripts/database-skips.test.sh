@@ -2,11 +2,11 @@
 # packages/envoy/scripts/database-skips.test.sh
 #
 # Tests database-skips.sh, the skip counter of the envoy module's database-backed packages, with
-# five controls. Each control must fail as it states, or this test fails; each beside it a run
+# six controls. Each control must fail as it states, or this test fails; each beside it a run
 # the counter must pass, so a counter that fails everything fails here too:
 #
-#   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/ and
-#      ./internal/dispatch/api/, one at a time, through a Go overlay (GOFLAGS=-overlay) that adds
+#   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/, ./internal/holdrecord/
+#      and ./internal/dispatch/api/, one at a time, through a Go overlay (GOFLAGS=-overlay) that adds
 #      zz_planted_skip_test.go, is printed as `SKIP <package> TestPlantedSkip` and fails the
 #      counter; the same run without the overlay passes;
 #   2. with its variable unset or empty, the counter prints `database_skips=UNKNOWN` naming it,
@@ -34,6 +34,10 @@
 #      gives no reason is refused; and with either of `--var DISPATCH_TEST_DATABASE_URL --var
 #      BROKER_TEST_DATABASE_URL` unset or empty beside the other set, the counter prints
 #      `database_skips=UNKNOWN` naming that one and runs no test.
+#   6. --module-except, whose pattern here keeps internal/fold alone of the module beside the
+#      broker API's package: a skip planted in internal/fold is not counted and the run passes,
+#      printing that package's time; a failure planted there fails the counter, which prints it;
+#      and the option is refused beside --report.
 #
 # Every run narrows its packages to the tests it is about with
 # GOFLAGS=-run=..., which go test reads as its own -run (and go list ignores): what the counter
@@ -137,11 +141,12 @@ WAIT_BODY='func TestPlantedWait(t *testing.T) { t.Parallel(); time.Sleep(3 * tim
 
 func TestPlantedQuick(t *testing.T) { t.Parallel(); time.Sleep(100 * time.Millisecond) }'
 
-echo "database-skips.test.sh: control 1, a planted skip in each of three packages" >&2
+echo "database-skips.test.sh: control 1, a planted skip in each of four packages" >&2
 # Each package's -run names the planted test and a test the package passes with the database set
 # (the API package's, the tests its table excuses), so the run without the overlay holds tests.
 for row in "internal/cipher/api ^(TestPlantedSkip|TestHealthzIsPublic)$" \
   "cmd/cipherd ^(TestPlantedSkip|TestBootBindsOnlyAfterTheCatchUp)$" \
+  "internal/holdrecord ^(TestPlantedSkip|TestNewRefusesAnIncompleteConfiguration)$" \
   "internal/dispatch/api ^(TestPlantedSkip|$API_ANCHOR|$api_expected)$"; do
   read -r dir run <<<"$row"
   name="planted-${dir//\//-}"
@@ -195,7 +200,7 @@ unknown_report() {
 { ev pass "$MODULE/internal/dispatch/store" TestElsewhere; ev skip "$MODULE/internal/dispatch/store" TestSkippedElsewhere
   ev pass "$MODULE/internal/dispatch/store"; } >"$WORK/elsewhere.json"
 count elsewhere bash "$COUNTER" --report "$WORK/elsewhere.json"
-unknown_report elsewhere 'holds no test of a package under ./internal/cipher/... ./cmd/cipherd/ that passed or failed' \
+unknown_report elsewhere 'holds no test of a package under ./internal/cipher/... ./cmd/cipherd/ ./internal/holdrecord/ that passed or failed' \
   "a report holding no test of a package the patterns name is UNKNOWN"
 : >"$WORK/empty.json"
 count empty-report bash "$COUNTER" --report "$WORK/empty.json"
@@ -348,6 +353,33 @@ for name in DISPATCH_TEST_DATABASE_URL BROKER_TEST_DATABASE_URL; do
       "control 5: with $name $how beside the other variable set, the counter prints UNKNOWN naming it and runs no test" "$(seen "var-$how")"
   done
 done
+
+echo "database-skips.test.sh: control 6, --module-except" >&2
+# The module's other packages run in the counter's one go test, as envoy-go's unit step runs them:
+# a skip of theirs is not counted, a failure of theirs fails the counter, and each prints its
+# time. The pattern takes out every package of the module but internal/fold, each by its whole
+# import path, so the run is of that package and the broker API's, both narrowed by -run.
+fold="$MODULE/internal/fold"
+except="$(cd "$ENVOY" && go list ./... | grep -vxF "$fold" | sed -e 's/[.]/\\./g' -e 's/.*/^&$/' | paste -sd '|')"
+module_run='-run=^(TestPlantedSkip|TestPlantedFail|TestHealthzIsPublic)$'
+plant fold-skip internal/fold "$SKIP_BODY"
+count module-skip env GOFLAGS="-overlay=$WORK/fold-skip.overlay $module_run" bash "$COUNTER" \
+  --module-except "$except" ./internal/cipher/api/
+judge "$([ "$(code module-skip)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/module-skip.out" &&
+  grep -qxF 'go_test_exit=0' "$WORK/module-skip.out" && grep -qE "^pass $fold " "$WORK/module-skip.err" &&
+  echo 0 || echo 1)" \
+  "control 6: a skip planted in a package --module-except adds is not counted, and that package's time is printed" \
+  "$(seen module-skip); stderr $(tr '\n' '|' <"$WORK/module-skip.err")"
+plant fold-fail internal/fold 'func TestPlantedFail(t *testing.T) { t.Fatal("planted failure") }'
+count module-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $module_run" bash "$COUNTER" \
+  --module-except "$except" ./internal/cipher/api/
+judge "$([ "$(code module-fail)" = 1 ] && grep -qxF 'database_skips=0' "$WORK/module-fail.out" &&
+  grep -qE '^go_test_exit=[1-9]' "$WORK/module-fail.out" && said module-fail "FAIL $fold TestPlantedFail" &&
+  said module-fail 'planted failure' && echo 0 || echo 1)" \
+  "control 6: a failure planted in a package --module-except adds fails the counter, which prints it" "$(seen module-fail)"
+count module-report bash "$COUNTER" --report "$WORK/quiet.json" --module-except "$except" "${QUIET[@]}"
+judge "$([ "$(code module-report)" = 1 ] && said module-report 'refused beside it' && echo 0 || echo 1)" \
+  "control 6: --module-except is refused beside --report" "$(seen module-report)"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "database-skips.test.sh: failed ($FAILED of $((PASSED + FAILED)))"

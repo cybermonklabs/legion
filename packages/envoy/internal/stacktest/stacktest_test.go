@@ -14,7 +14,9 @@ const statusEnv = "ENVOY_STACKTEST_STATUS"
 // TestUnderReportsChildStatus makes each child outcome observable from the test binary that owns
 // it. A stack overflow ends that binary, so the cases must run out of process. Each verdict is
 // matched on the child's own unindented line, so a copy quoted inside a message cannot stand in
-// for it.
+// for it. The children run side by side, each on one P (GOMAXPROCS=1): a copy of this binary left
+// to size GOMAXPROCS to the host starts a thread for each P its collector's idle mark workers
+// take, about 80 on a 288-CPU host.
 func TestUnderReportsChildStatus(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -31,7 +33,7 @@ func TestUnderReportsChildStatus(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			child := exec.Command(os.Args[0], "-test.run", "^TestUnderChildStatus$", "-test.v", "-test.count=1")
-			child.Env = append(os.Environ(), statusEnv+"="+test.name)
+			child.Env = append(os.Environ(), "GOMAXPROCS=1", statusEnv+"="+test.name)
 			output, err := child.CombinedOutput()
 			if (err != nil) != test.fails {
 				t.Fatalf("child error = %v, want failure %t\n%s", err, test.fails, output)

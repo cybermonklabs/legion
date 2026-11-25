@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -170,12 +171,25 @@ func (issuePod) prepare(l *launch) error {
 	if spec.Repository.IsZero() {
 		return errors.New("no repository: a pod's init container provisions the issue's workspace from one")
 	}
-	working, err := workspace.Location(TreeRoot, spec.Repository, spec.Issue)
+	dir, err := WorkspaceDir(spec.Repository, spec.Issue)
 	if err != nil {
 		return err
 	}
-	l.workspace = working.Dir
+	l.workspace = dir
 	return nil
+}
+
+// WorkspaceDir is the directory of issue's workspace of repository in its pod: its place on the
+// issue's disk (workspace.Location under TreeRoot), the working directory of every role container
+// of the pod (issuePod.prepare), and so the directory each agent of the issue starts in. The
+// workflow engine names it in every task it composes (workflow.Config.WorkspaceDir, which the
+// daemon reads from here).
+func WorkspaceDir(repository ghrepo.Repository, issue string) (string, error) {
+	working, err := workspace.Location(TreeRoot, repository, issue)
+	if err != nil {
+		return "", err
+	}
+	return working.Dir, nil
 }
 
 // labels carry the pod's tree and issue and no role: a role belongs to a process locator, not to a

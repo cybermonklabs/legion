@@ -126,7 +126,7 @@ func parkedRelaunchCauses() []parkedRelaunchCause {
 func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
 	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
 		if park.Load() {
 			return now.Add(time.Hour)
 		}
@@ -244,7 +244,7 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
 	t.Helper()
 	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
 		if park.Load() {
 			return now.Add(time.Hour)
 		}
@@ -255,7 +255,7 @@ func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
 	park.Store(true)
 	m, _ := h.supervisor.Machine(token)
 	stale := m.Claim()
-	stale.PluginContract = DaemonAPIVersion - 1
+	stale.PluginContract = DaemonAPIVersion() - 1
 	if err := h.store.PutClaim(h.ctx, stale); err != nil {
 		t.Fatalf("seed %s at an earlier plugin contract: %v", token, err)
 	}
@@ -779,7 +779,7 @@ func workingController(t *testing.T, h *harness) claim.Token {
 	generation := m.Claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses_controller",
-			SessionFile: "/sessions/ses_controller.jsonl", CapabilityHash: capabilityHash("secret"), PluginContract: DaemonAPIVersion},
+			SessionFile: "/sessions/ses_controller.jsonl", CapabilityHash: capabilityHash("secret"), PluginContract: DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: "ses_controller"},
 		supervise.StreamTurnStart{Claim: token},
 	} {
@@ -1164,7 +1164,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 		t.Run("the read: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
 			var park atomic.Bool
-			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
 				if park.Load() {
 					return now.Add(time.Hour)
 				}

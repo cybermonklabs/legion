@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry
+  `GET /api/v1/issues/{key}/legion` and its answer, `LegionIssueResponse`:
+  `{issue, project, configured, state, read, runs_revision}`, with `configured` a required boolean.
+  They also carry the parts of the answer: `LegionIssueState`, `LegionIssueRead`,
+  `LegionIssueWaitingLine` and `LegionRoleClaim`. `waiting_on` is the daemon's object as Dispatch
+  stored it: its type names the fields the daemon writes today and admits other fields.
+  `src/dispatch-api-live.ts` adds the kind `legion_issue` to `DeliveryLiveView`, as
+  `{kind: "legion_issue", issue}`, and `LegionIssueResponse` to `DeliveryLiveBody`, the union of
+  the bodies that the snapshot and the deltas of a delivery view carry. Dispatch never refuses a
+  `legion_issue` view for a project that names no daemon: its body says `configured` `false`.
+time: 2026-11-23T23:41:12Z
+custom:
+    Issue: INFRA-4869

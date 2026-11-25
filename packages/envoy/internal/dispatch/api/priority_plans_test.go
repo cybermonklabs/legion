@@ -29,7 +29,7 @@ import (
 // read through unnest, whose rows a generic plan sizes at 10 whatever the arrays hold, the four
 // statements over it touched 6.7 to 45.8 times the shared buffers of the plans made for their
 // arguments under the generic plan, which the held connection ran from its sixth run on
-// (PostgreSQL 18.6, 2026-11-22); priorityMemberTerms says how the seed is read now. The test reads
+// (PostgreSQL 18.6, 2026-11-22); priorityRelationSeed says how the seed is read now. The test reads
 // the plans a connection really ran, where the speed tests (priority_speed_test.go) count each
 // statement under a plan they force.
 
@@ -62,6 +62,9 @@ const planBuffersRatio = 2
 // A run that reports a statement the baseline did not, misses one, or reports from another
 // connection fails, so a run that read nothing cannot pass, and each run's counts are printed.
 func TestPrioritiesReadKeepsItsPlans(t *testing.T) {
+	// Not parallel: it holds shared-buffer counts of its own statements to a ratio, and the
+	// shared buffers and their caching are the whole Postgres server's, which the package's
+	// parallel tests use at the same time; it runs alone, as it did on main.
 	corpus := seedSpeedCorpus(t)
 	database := corpus.server.deps.Store
 

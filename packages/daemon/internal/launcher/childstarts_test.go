@@ -53,11 +53,11 @@ var heldStarts = map[string]heldStart{
 // every child that process starts and waits for itself must start where no reap takes it: through
 // pidGuard (a procgroup.Starter of the guard's), or as a generation its manager records. The
 // leak-check install's run of the check once started with a bare cmd.Run, and the reaper took its
-// exit before the install's own wait could; the put-back's jj and git had done the same before it.
-// This check walks the call graph from launcher.Run and launcher.RoleInit and fails on every start
-// it reaches that heldStarts does not hold, naming the call site and a path to it. A start through
-// procgroup.NoReaper counts as such a start: it is where the walk ends up when code the launcher
-// reaches is handed the start of a process that does not reap.
+// exit before the install's own wait could. This check walks the call graph from launcher.Run and
+// launcher.RoleInit and fails on every start it reaches that heldStarts does not hold, naming the
+// call site and a path to it. A start through procgroup.NoReaper counts as such a start: it is
+// where the walk ends up when code the launcher reaches is handed the start of a process that does
+// not reap.
 //
 // The walk is internal/startwalk's: variable type analysis over the program, with its rules for
 // the callbacks the standard library makes and for functions stored in package variables.
@@ -65,8 +65,8 @@ var heldStarts = map[string]heldStart{
 // It cannot pass by reading nothing, nor with a rule of its own broken: its control plants starts
 // the launcher would reach, and must see each named (plantedStarts): a bare cmd.Run in
 // newCheckInstall; one in a package variable's function that newCheckInstall hands to
-// context.AfterFunc; procgroup.NoReaper given to the workspace restore in place of the guard's
-// starter; the install's run of the check as it was before the guard took it (a bare cmd.Run in
+// context.AfterFunc; procgroup.NoReaper handed to procgroup.Run in place of the guard's starter;
+// the install's run of the check as it was before the guard took it (a bare cmd.Run in
 // leakguard.verifyServed); a closure only sync.Once.Do calls; a start made through each other
 // shape Go gives it: a method value called, a method value handed to a helper, to errgroup.Go and
 // to sync.OnceValue, a method expression, and a method promoted from an embedded *exec.Cmd and
@@ -74,6 +74,7 @@ var heldStarts = map[string]heldStart{
 // variable; and functions an init stores into a package variable's field and element. And a
 // command only formatted, which starts nothing, must stay unnamed.
 func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testing.T) {
+	t.Parallel()
 	t.Run("this tree", func(t *testing.T) {
 		sites := map[string][]startwalk.Start{}
 		for _, start := range launcherProcessStarts(t, nil) {
@@ -105,8 +106,6 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 				"\t_ = context.AfterFunc(context.Background(), plantedCallback)\n"+
 				"\tplantedStarts()\n")
 		plant(t, overlay, "leakcheck.go", "", "\nvar plantedCallback = func() { _ = exec.Command(\"/bin/false\").Run() }\n")
-		plant(t, overlay, "launcher.go", "restore := newBundleRestore(guard.starter())",
-			"restore := newBundleRestore(procgroup.NoReaper)")
 		// The defect this check came from: the install's run of the check with a bare cmd.Run, in
 		// another package the launcher calls.
 		plant(t, overlay, "../leakguard/install.go", "procgroup.Err(procgroup.Run(cmd, start))",
@@ -164,6 +163,8 @@ import (
 	"sync"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 func plantedStarts() {
@@ -178,9 +179,14 @@ func plantedStarts() {
 	plantedInterfaceHanded()
 	plantedStoredBound()
 	plantedFieldStored()
+	plantedNoReaper()
 }
 
 func plantedFormatted() { _ = fmt.Sprint(exec.Command("/bin/true")) }
+
+// plantedNoReaper hands procgroup.Run the start of a process that does not reap, where every child
+// of the launcher's own starts through the guard's starter (pidGuard.starter).
+func plantedNoReaper() { _ = procgroup.Run(exec.Command("/bin/true"), procgroup.NoReaper) }
 
 func plantedClosure() {
 	var once sync.Once

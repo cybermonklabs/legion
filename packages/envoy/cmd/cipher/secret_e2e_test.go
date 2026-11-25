@@ -10,7 +10,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
@@ -18,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // secretsLocalWithoutValue is an agent-tier secret owner holds with no value, which the broker
@@ -105,10 +103,10 @@ func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
 	if code != 0 || !strings.Contains(stdout, "broker: rereading FRESH_KEY from ") || strings.Contains(stdout, "broker: serving") {
 		t.Fatalf("create with no broker identity: exit %d, stdout %q, stderr %q; want 0 and the reread sent with no proof", code, stdout, stderr)
 	}
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+	if !heldBeforeGiveUp(t, func() bool {
 		_, served := rig.Policy.Get().Secrets["FRESH_KEY"]
 		return served
 	}) {
-		t.Fatal("the broker does not serve FRESH_KEY within 5s of the create's reread; want the reread a call with no proof asked for run after its answer")
+		t.Fatalf("the broker did not serve FRESH_KEY after the create's reread, %s before the test binary's deadline; want the reread a call with no proof asked for run after its answer", waitMargin)
 	}
 }

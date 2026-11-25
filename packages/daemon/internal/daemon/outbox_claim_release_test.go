@@ -172,7 +172,7 @@ func (r *claimReleaseRig) heldByOperator() {
 	if err != nil {
 		r.t.Fatalf("the project token of LEGION: %v", err)
 	}
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, claimTree, treelifecycle.AuthorityOperator)
 		return err
 	}); err != nil {
@@ -274,6 +274,7 @@ func seedControllerClaim(t *testing.T, pool *store.Pool, project, session string
 // Dispatch's answers, and that an issue's release row waiting on its holder holds nothing else of
 // that issue back.
 func TestReleaseClaimRow(t *testing.T) {
+	t.Parallel()
 	t.Run("holders", testReleaseClaimHolders)
 	t.Run("the record", testReleaseClaimRecord)
 	t.Run("answers", testReleaseClaimAnswers)

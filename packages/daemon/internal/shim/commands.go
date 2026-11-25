@@ -16,10 +16,10 @@ import (
 // The commands the daemon asks this shim for: the working copy's adoption, answered in a
 // goroutine of its own (answer), the context every such command runs on, which the shim ends at
 // its own end and waits out before Run returns (endCommands, drainCommands), and the start of
-// every command that runs in the role's workspace (openWorkspace). The release's save is a
-// command of this kind too and lives in bundle.go, which is long enough to be a file of its own.
+// every command that runs in the role's workspace (openWorkspace). The workspace read is a
+// command of this kind too and lives in workspace_work.go.
 
-// answer runs one frame's answer — the adoption, the release's save — in a goroutine of its own,
+// answer runs one frame's answer — the adoption, the workspace read — in a goroutine of its own,
 // so the connection's reader never waits on the git and jj it starts, and counts it so that Run
 // waits for it before it returns (drainCommands). Every one of them is dispatched from
 // fromDaemon, which the reader calls one frame at a time, so a command is counted before the
@@ -75,11 +75,12 @@ func (s *shim) sinceCommandsEnded() time.Duration {
 // daemon asked for is still running, seconds after it returned, which is the line a person reads
 // while diagnosing that very stop. A shim that answered no such frame has nothing in flight either.
 //
-// The wait is bounded by that stop's own span, procgroup.StopGrace plus the procgroup.WaitDelay
-// exec then waits for anything still holding the command's pipes — counted from the moment the
-// commands were ended, not from here. On the daemon's `shutdown` those are not the same moment:
-// terminate ends the commands and then the agent has its whole grace, which this wait would
-// otherwise follow with a span the command has already spent. Counting the difference into
+// The wait is bounded by that stop's own span, the stop's grace (procgroup.StopGraceNow) plus the
+// WaitDelay exec then waits for anything still holding the command's pipes (procgroup.WaitDelayNow)
+// — counted from
+// the moment the commands were ended, not from here. On the daemon's `shutdown` those are not the
+// same moment: terminate ends the commands and then the agent has its whole grace, which this wait
+// would otherwise follow with a span the command has already spent. Counting the difference into
 // MinStopGrace instead would raise the smallest `worker_stop_timeout_seconds` the daemon accepts
 // (internal/config refuses one under it, and its refusal names the number), which is a change to
 // which deployments are accepted and not this wait's to make. A command still running past the
@@ -104,7 +105,7 @@ func (s *shim) drainCommands() {
 		close(returned)
 	}()
 	spent := s.sinceCommandsEnded()
-	bound := max(procgroup.StopGrace+procgroup.WaitDelay-spent, 0)
+	bound := max(procgroup.StopGraceNow()+procgroup.WaitDelayNow()-spent, 0)
 	select {
 	case <-returned:
 	case <-s.clock.After(bound):
@@ -123,17 +124,17 @@ type openedWorkspace struct {
 }
 
 // openWorkspace is the one start of every request a shim answers in its role's workspace: the
-// save (runBundle), the read (readWorkspaceWork) and the adoption (runAdoption). The workspace is
-// the one the shim's environment names in LEGION_WORKSPACE, which the runtime sets on every role,
-// and the jj is the one of PATH, which the pane's or pod's own shell runs, since no runtime pins it
-// on a pane or a pod. env is the environment the request's commands run with: the shim's own
-// (s.cfg.Env) for the save and the read, and for the adoption that environment with the requested
-// identity added (JJ_USER, JJ_EMAIL). The budget is a bound on the shim's command context
-// (s.commands) rather than a context of its own, so the shim's own end ends the request's commands
-// at once and a command that outlives the budget is still reported as a timeout. The caller calls
-// done once its commands have run. verb is what the caller does to the workspace ("bundle",
-// "read", "adopt"), which both refusals name: "no workspace to <verb>" for a shim with no
-// LEGION_WORKSPACE, and "no jj to <verb> the workspace with" for a PATH with no jj.
+// read (readWorkspaceWork) and the adoption (runAdoption). The workspace is the one the shim's
+// environment names in LEGION_WORKSPACE, which the runtime sets on every role, and the jj is the
+// one of PATH, which the pane's or pod's own shell runs, since no runtime pins it on a pane or a
+// pod. env is the environment the request's commands run with: the shim's own (s.cfg.Env) for the
+// read, and for the adoption that environment with the requested identity added (JJ_USER,
+// JJ_EMAIL). The budget is a bound on the shim's command context (s.commands) rather than a
+// context of its own, so the shim's own end ends the request's commands at once and a command that
+// outlives the budget is still reported as a timeout. The caller calls done once its commands have
+// run. verb is what the caller does to the workspace ("read", "adopt"), which both refusals name:
+// "no workspace to <verb>" for a shim with no LEGION_WORKSPACE, and "no jj to <verb> the
+// workspace with" for a PATH with no jj.
 func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
 	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
 	if dir == "" {
@@ -152,8 +153,8 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	return openedWorkspace{dir: dir, jj: jj, run: run}, cancel, nil
 }
 
-// adopt answers `adopt-working-copy` (the adoption branch of createShimBridge's onLine,
-// worker-shim.ts). A request the shim cannot act on is answered with the reason when it names an
+// adopt answers `adopt-working-copy`, which fromDaemon hands it, with the adoption's outcome
+// (runAdoption). A request the shim cannot act on is answered with the reason when it names an
 // id to answer. The answer goes out as one line, so a refusal carries at most maxAnswerErrorBytes
 // of its reason (cutAnswerError): jj's standard error has no bound of its own.
 func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
@@ -170,10 +171,10 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	s.toDaemon(result)
 }
 
-// adoptionArgs is the one adoption command both executors run (adoptWorkingCopyCommand,
-// packages/workspace/src/workspace.ts): the working copy's author becomes the identity in
-// the command's environment, and only while it is undescribed — a described working copy is a
-// previous phase's work and keeps its author.
+// adoptionArgs is the adoption's change of an undescribed working copy, in the one adoption the
+// daemon asks a role's shim to run before a phase task (runAdoption): its author becomes the
+// identity in the command's environment, and only while it is undescribed — a described working
+// copy is a previous phase's work and keeps its author.
 func adoptionArgs(jj, dir string) []string {
 	return []string{jj, "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", dir}
 }
@@ -189,13 +190,15 @@ func describedArgs(jj, dir string) []string {
 // shares the workspace, so a working copy the previous role left described (its pushed commit) is
 // kept as it is, and the incoming role starts on a fresh one of its own (`jj new`): otherwise its
 // work would land in the previous role's commit, authored by the previous role's App. One read
-// decides which of the two changes the working copy needs, and only that one runs. Both commands
+// decides which of the two changes the working copy needs, and only that one runs: `jj metaedit
+// --update-author` on an undescribed @ (adoptionArgs), `jj new` on a described one. That read, like
+// any jj command run without --ignore-working-copy, first snapshots the working copy. Both commands
 // run in the workspace itself, never in the shim's own directory: jj reads the repository of the
 // directory it runs in, whatever -R names, and migrates that repository's legacy configuration
-// (workspace.RunCommand). A failure is reported the way the shipped runner does (commandFailure,
-// packages/workspace/src/workspace.ts): the daemon decides what a failed adoption means. A shim
-// without LEGION_WORKSPACE was not started by a runtime, and refuses (runWorkingCopyAdoption,
-// worker-shim.ts); a PATH without jj refuses naming jj and the PATH searched.
+// (workspace.RunCommand). A failure is answered in workspace.RunCommand's words, which name the
+// command and its exit or its timeout, with jj's standard error: the daemon decides what a failed
+// adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and refuses; a
+// PATH without jj refuses naming jj and the PATH searched (openWorkspace).
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	opened, done, err := s.openWorkspace("adopt", env, time.Duration(request.TimeoutMs)*time.Millisecond)

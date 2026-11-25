@@ -172,6 +172,7 @@ func callerFunctions(stack string) []string {
 // segments, so a path that hands the parser its text raw fails too, the comment, ask and message
 // triggers among them, which remove no ask block.
 func TestSearchHandsTheParserNoRunJoinedAcrossAnAskBlock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	const actor = `{"kind":"user","id":"alice"}`

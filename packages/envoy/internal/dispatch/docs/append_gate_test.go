@@ -10,6 +10,7 @@ import "testing"
 // transaction queued would be admitted at the head instead of refused (historyReplaced), and
 // every case below but the first would fail.
 func TestAppendGateReadAfterAQueuedRebuildHoldsNothingOfTheRoom(t *testing.T) {
+	t.Parallel()
 	// A history standing at version 9 whose oldest stored row is 3: a room holding every version
 	// through 5 is behind an intact history, which a browser's update is admitted on.
 	stored := appendGateRead{latest: 9, oldest: 3}

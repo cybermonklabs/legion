@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  An edge listener's relay socket sends a data frame in fragments of 4 KiB, so a close or a ping
+  waits for the fragment being written, not the whole frame, and a client that reads slowly gets
+  the close (`1013 slow_consumer` among them) in the middle of a frame. Before this,
+  gorilla/websocket wrote a frame of more than 8 KiB as one fragment under its write lock, and a
+  close waited for that whole write for at most one second: a client that read the frame slower
+  than that, about 700 KB a second for a frame of 512 KiB, was dropped with no close frame and
+  read `1006`, on which it opens the socket again at once rather than after the 5 s a `1013` asks
+  for. A close the socket cannot write within the second, as for a client that reads nothing, is
+  still not sent.
+time: 2026-11-23T13:22:34Z
+custom:
+    Issue: pr5242

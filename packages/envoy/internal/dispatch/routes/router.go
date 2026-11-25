@@ -78,9 +78,10 @@ type AppContext struct {
 	// lifetime is AppContextOptions.Lifetime, which New passes to api.Register.
 	lifetime context.Context
 	// devSignInHost is the dashboard origin's host:port when the dev sign-in route is mounted,
-	// and empty otherwise. Only BuildAppContext sets it, from DevSignInOrigin, so no caller can
-	// turn the route on without the origin check.
-	devSignInHost string
+	// and empty otherwise, and devSignInOrigin that origin, scheme://host:port, the one place the
+	// route sends a browser. Only BuildAppContext sets them, from DevSignInOrigin, so no caller
+	// can turn the route on without the origin check.
+	devSignInHost, devSignInOrigin string
 	// eventHead reads the event_head GET /auth/whoami answers: nil for a context with a Store, whose
 	// router reads it through the API server it registers (api.Background's EventHead, an id at or
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
@@ -128,7 +129,9 @@ type AppContextOptions struct {
 	// machine's identity token every listener call presents in EnvoyToken's place instead
 	// (cmd/dispatch); empty presents none.
 	EnvoyGoogleAudience string
-	Docs                docs.API
+	// Docs is the document service, which BuildAppContext requires (api.NewDeps refuses none):
+	// its caller builds it and shuts it down once the router is done with it. See api.DepsInput.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
@@ -157,6 +160,8 @@ type AppContextOptions struct {
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See api.Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.
 	Files            files.Store
@@ -191,6 +196,9 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
+	// See api.Deps.ParentStatusRule.
+	ParentStatusRule api.ParentStatusRule
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -207,7 +215,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	if opts.Identity == nil {
 		return nil, fmt.Errorf("BuildAppContext: Identity required")
 	}
-	var devSignInHost string
+	var devSignInHost, devSignInOrigin string
 	if opts.DevSignIn {
 		if opts.Sessions == nil {
 			return nil, fmt.Errorf("BuildAppContext: DevSignIn requires a Sessions store")
@@ -216,7 +224,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		if err != nil {
 			return nil, fmt.Errorf("BuildAppContext: %w", err)
 		}
-		devSignInHost = host
+		// DevSignInOrigin has parsed ServerURL already, so this parse cannot fail.
+		parsed, _ := url.Parse(opts.ServerURL)
+		devSignInHost, devSignInOrigin = host, parsed.Scheme+"://"+host
 	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
@@ -242,6 +252,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
+		LegionStatusScope:      opts.LegionStatusScope,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -254,6 +265,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -265,21 +277,22 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		eventHead = func(context.Context) (int64, error) { return 0, errNoEventLog }
 	}
 	return &AppContext{
-		SigningKey:     opts.SigningKey,
-		WebDistDir:     opts.WebDistDir,
-		AssetStore:     opts.AssetStore,
-		Sessions:       opts.Sessions,
-		People:         opts.People,
-		Identity:       opts.Identity,
-		Store:          opts.Store,
-		ServerURL:      strings.TrimSuffix(opts.ServerURL, "/"),
-		SignIn:         opts.SignIn,
-		SignInRule:     opts.SignInRule,
-		InsecureCookie: opts.InsecureCookie,
-		devSignInHost:  devSignInHost,
-		apiDeps:        apiDeps,
-		eventHead:      eventHead,
-		lifetime:       opts.Lifetime,
+		SigningKey:      opts.SigningKey,
+		WebDistDir:      opts.WebDistDir,
+		AssetStore:      opts.AssetStore,
+		Sessions:        opts.Sessions,
+		People:          opts.People,
+		Identity:        opts.Identity,
+		Store:           opts.Store,
+		ServerURL:       strings.TrimSuffix(opts.ServerURL, "/"),
+		SignIn:          opts.SignIn,
+		SignInRule:      opts.SignInRule,
+		InsecureCookie:  opts.InsecureCookie,
+		devSignInHost:   devSignInHost,
+		devSignInOrigin: devSignInOrigin,
+		apiDeps:         apiDeps,
+		eventHead:       eventHead,
+		lifetime:        opts.Lifetime,
 	}, nil
 }
 
@@ -837,8 +850,12 @@ func isBrowserRoute(normalized string) bool {
 	}
 	// Issue routes carry user-controlled segments (artifact slugs, ask/comment
 	// ids) that may legitimately contain a dot, so the file-extension
-	// heuristic below must never apply to them.
+	// heuristic below must never apply to them. A person's page carries one
+	// too, and it always holds a dot: a login is an email.
 	if normalized == "/issues" || strings.HasPrefix(normalized, "/issues/") {
+		return true
+	}
+	if strings.HasPrefix(normalized, "/people/") {
 		return true
 	}
 	return !strings.Contains(filepath.Base(normalized), ".")

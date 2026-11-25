@@ -51,15 +51,19 @@ import {
 import { AgentMessageComposer } from "../agents/AgentMessageComposer";
 import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";
-import type { ComposerOwner } from "../conversation/composer-model";
+import { type ComposerOwner, commentListKey } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import { deliveryMode, noDeliveryLine } from "../conversation/delivery";
+import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout, unreadWrites } from "../threads/thread-layout";
@@ -67,12 +71,22 @@ import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
 
-/** One message of a thread, whatever route it was read from. */
+/** One message of a thread, whatever route it was read from. A flattened view model, so the two
+ *  marks a corrected post carries are read into it rather than from the row. */
 interface ThreadTurn {
   readonly id: string;
   readonly author: Actor;
   readonly body: string;
   readonly created_at: string;
+  /** Which record the turn is, so its body is drawn as that record's own text: the comment or
+   *  the issue message the route it was read from answered with. */
+  readonly kind: "comment" | "message";
+  /** The issue that record is on; null for a direct message. */
+  readonly issue: string | null;
+  /** The post's deletion, null for one nobody deleted. */
+  readonly deleted: PostDeletion | null;
+  /** When the post's author last replaced its body; null for one nobody edited. */
+  readonly edited: string | null;
   /** The reading Go sent with `body`, which the turn draws rather than parsing the markdown
    *  again (`MarkdownBody`). */
   readonly tree?: DisplayTree;
@@ -92,6 +106,7 @@ function ThreadQuote({ thread }: { thread: MyReplyRow }): ReactNode {
       className={`mt-2 border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}
       data-inbox-thread-quote=""
     >
+      {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
       {quote}
     </blockquote>
   );
@@ -117,6 +132,7 @@ function ThreadTurnView({
       <p className={`mb-1 flex flex-wrap items-center gap-x-2 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={turn.author} inline /> · <Timestamp at={turn.created_at} />
+          <EditedMark at={turn.edited} deleted={turn.deleted} />
         </span>
         {unread ? (
           <span
@@ -127,7 +143,13 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={turn.body} tree={turn.tree} />
+        <PostBody
+          deleted={turn.deleted}
+          markdown={turn.body}
+          source={textSourceOf(turn.kind, turn.id, turn.issue)}
+          surface="inbox-thread-turn"
+          tree={turn.tree}
+        />
       </div>
       {turn.note}
     </div>
@@ -300,10 +322,7 @@ function CommentThreadBody({
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   // The reads the issue's Conversation and the document's margin already hold, under their own
   // keys: the same request, shared rather than made a second time.
-  const commentsKey =
-    owner.kind === "issue"
-      ? ["comments", owner.issueKey]
-      : ["artifact", owner.artifactId, "comments"];
+  const commentsKey = commentListKey(owner);
   const comments = useQuery({
     queryKey: commentsKey,
     queryFn: () =>
@@ -330,7 +349,16 @@ function CommentThreadBody({
   return (
     <ThreadTurns
       composer={
-        root === undefined ? null : (
+        root === undefined ? null : postDeletion(root) !== null ? (
+          // A root its author deleted takes no reply (`409 POST_DELETED`), so the thread draws no
+          // box under it, as the margin's card draws no reply composer there: a reply the reader
+          // kept for it is drawn itself, with Discard my draft (`KeptReplyToDeleted`).
+          <KeptReplyToDeleted
+            actor={root.author}
+            mutationKey={threadSendKey(thread.thread_id)}
+            parentKind="comment"
+          />
+        ) : (
           // Keyed by the thread its send is named for (`threadSendKey`): the column draws this
           // body for one thread after another, and the composer holds the uploads made in it -
           // an upload's refusal and its Retry with them - so the next thread is drawn with a
@@ -339,6 +367,7 @@ function CommentThreadBody({
           // comes back to this thread. The key names the composer too: the thread's root is
           // drawn beside it under the thread's id, and siblings are told apart by their keys.
           <MentionComposer
+            box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
@@ -351,6 +380,7 @@ function CommentThreadBody({
               void queryClient.invalidateQueries({ queryKey: myRepliesKey });
             }}
             owner={owner}
+            replyParent={root}
             replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
             standing
           />
@@ -371,7 +401,11 @@ function commentTurn(comment: CommentWithTrees): ThreadTurn {
     author: comment.author,
     body: comment.body,
     created_at: comment.created_at,
+    deleted: postDeletion(comment),
+    edited: comment.edited_at,
     id: comment.id,
+    issue: comment.issue_key,
+    kind: "comment",
     tree: comment.body_tree,
   };
 }
@@ -381,7 +415,11 @@ function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
     author: message.author,
     body: message.body,
     created_at: message.created_at,
+    deleted: postDeletion(message),
+    edited: message.edited_at,
     id: message.id,
+    issue: message.issue_key,
+    kind: "message",
     tree: message.body_tree,
     ...(note === undefined ? {} : { note }),
   };
@@ -422,9 +460,17 @@ function MessageThreadBody({
   return (
     <ThreadTurns
       composer={
-        root === undefined ? null : (
+        root === undefined ? null : postDeletion(root) !== null ? (
+          // A deleted root takes no reply, as a comment thread's does (`CommentThreadBody`).
+          <KeptReplyToDeleted
+            actor={root.author}
+            mutationKey={threadSendKey(thread.thread_id)}
+            parentKind="message"
+          />
+        ) : (
           // Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`).
           <MentionComposer
+            box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
@@ -436,6 +482,7 @@ function MessageThreadBody({
               void queryClient.invalidateQueries({ queryKey: myRepliesKey });
             }}
             owner={{ issueKey, kind: "issue" }}
+            replyParent={root}
             replyTo={{
               actor: root.author,
               excerpt: "",
@@ -586,6 +633,7 @@ function AgentThreadBody({
                 key={`composer:${thread.thread_id}`}
                 onCancelReply={noReturn}
                 onClose={noReturn}
+                replyParent={newest}
                 replyTo={agentReplyTo(agent, read, newest)}
                 sendKey={sendKey}
                 standing

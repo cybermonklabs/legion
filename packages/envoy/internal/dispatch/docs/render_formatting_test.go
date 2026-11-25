@@ -49,6 +49,7 @@ var formattingWords = strings.Fields("one two three alpha beta gamma")
 // exactly the formatting the room committed, under writes of both kinds: the room's own local
 // transactions, which it never cleans up after, and its browsers' updates, which it does.
 func TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly(t *testing.T) {
+	t.Parallel()
 	// The storm below runs four seeds by 160 steps, and two by 60 under the race detector or
 	// -short, where each round costs several times as much. The read sits in the test rather
 	// than in the helper it passes the sizes to, since that is what makes this test the one
@@ -265,13 +266,14 @@ func formattingDocument() string {
 	return "# Formatting\n\n**_" + formattingRun + "_**\n\nAlpha beta gamma.\n\n- Delta epsilon\n- Zeta eta\n\n```\ncode stays plain\n```\n\nTheta iota kappa.\n"
 }
 
-// newFormattingRoom is a service whose settlement waits an hour, with renders watched from before
-// the formatting document is seeded, its room loaded, and its replica started and caught up by one
-// browser edit.
+// newFormattingRoom is a service whose settlement waits an hour and whose rooms stay resident for
+// the test's run (holdRoomsResident), with renders watched from before the formatting document is
+// seeded, its room loaded, and its replica started and caught up by one browser edit.
 func newFormattingRoom(t *testing.T) (*Service, string, *renderShadow, *crdt.Doc, *renderedReplica) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	seedServiceText(t, service, artifactID, formattingDocument())
 	editAsConnectedPeer(t, service, artifactID, 1, reuseAlice, replaceRun("Alpha beta", "Alpha beta beta"))

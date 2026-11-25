@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
@@ -653,11 +654,14 @@ func reportStatus(cfg RoleInitConfig, state *os.ProcessState) {
 	_ = file.Close()
 }
 
+// roleLogf writes one line of role-init's own to cfg.Stderr, through the URL rule
+// (redact.URLCredentials): cfg.Stderr is the stream the role's shim is handed as its own, so the
+// rule is applied to this line alone rather than to the stream.
 func roleLogf(cfg RoleInitConfig, format string, args ...any) {
 	if cfg.Stderr == nil {
 		return
 	}
-	fmt.Fprintf(cfg.Stderr, format+"\n", args...)
+	fmt.Fprintln(cfg.Stderr, redact.URLCredentials(fmt.Sprintf(format, args...)))
 }
 
 // mountsUnder are the mount points strictly under dir that a path reaches, sorted, so a mount

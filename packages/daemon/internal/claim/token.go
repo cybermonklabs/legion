@@ -16,7 +16,7 @@ var (
 	notAlphanumeric = regexp.MustCompile(`[^a-z0-9]`)
 )
 
-// Roles are the six roles a claim can be on, in the order the workflow reaches them.
+// Roles are the six roles a claim can be on, in the order of the default steps (each task names its own).
 var Roles = []Role{RoleArchitect, RolePlanner, RoleImplementer, RoleTester, RoleReviewer, RoleMerger}
 
 // ProjectToken is the project as every token, and the private tmux server, spell it: the

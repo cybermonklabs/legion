@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -155,33 +156,52 @@ func validateSpawnSpec(spec runtime.SpawnSpec, providerKeys []string, operatorEn
 }
 
 // workspaceDir is where spec's agent works, under the daemon's state directory: the issue's jj
-// workspace the daemon provisioned at `<state_dir>/workspaces/<owner>/<repo>/<issue>`
-// (workspace.Location), which must exist; for a configuration with no repository,
-// `<state_dir>/workspaces/<issue>`, made here; and for the controller, which works no checkout,
-// `<state_dir>/controller`, made here.
+// workspace the daemon provisioned (WorkspaceDir), which must exist; for a configuration with no
+// repository, `<state_dir>/workspaces/<issue>`, made here; and for the controller, which works no
+// checkout, `<state_dir>/controller`, made here.
 func (r *Runtime) workspaceDir(spec runtime.SpawnSpec) (string, error) {
-	if spec.Role == claim.RoleController || spec.Repository.IsZero() {
-		dir := filepath.Join(r.stateDir, "workspaces", spec.Issue)
-		if spec.Role == claim.RoleController {
-			dir = filepath.Join(r.stateDir, controllerWindow)
-		}
+	if spec.Role == claim.RoleController {
+		dir := filepath.Join(r.stateDir, controllerWindow)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", fmt.Errorf("the workspace: %w", err)
 		}
 		return dir, nil
 	}
-	working, err := workspace.Location(r.stateDir, spec.Repository, spec.Issue)
+	dir, err := WorkspaceDir(r.stateDir, spec.Repository, spec.Issue)
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Stat(working.Dir)
+	if spec.Repository.IsZero() {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", fmt.Errorf("the workspace: %w", err)
+		}
+		return dir, nil
+	}
+	info, err := os.Stat(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return "", fmt.Errorf("workspace %s does not exist: the issue's workspace was never provisioned", working.Dir)
+		return "", fmt.Errorf("workspace %s does not exist: the issue's workspace was never provisioned", dir)
 	case err != nil:
 		return "", fmt.Errorf("the workspace: %w", err)
 	case !info.IsDir():
-		return "", fmt.Errorf("workspace %s is not a directory", working.Dir)
+		return "", fmt.Errorf("workspace %s is not a directory", dir)
+	}
+	return dir, nil
+}
+
+// WorkspaceDir is the directory a pane of issue's role starts in under the state directory
+// stateDir (workspaceDir, whose `cd` is the pane's first command): the issue's jj workspace of
+// repository at `<state_dir>/workspaces/<owner>/<repo>/<issue>` (workspace.Location), and
+// `<state_dir>/workspaces/<issue>` for a configuration with no repository. It reads and makes
+// nothing. The workflow engine names it in every task it composes (workflow.Config.WorkspaceDir,
+// which the daemon reads from here).
+func WorkspaceDir(stateDir string, repository ghrepo.Repository, issue string) (string, error) {
+	if repository.IsZero() {
+		return filepath.Join(stateDir, "workspaces", issue), nil
+	}
+	working, err := workspace.Location(stateDir, repository, issue)
+	if err != nil {
+		return "", err
 	}
 	return working.Dir, nil
 }
@@ -256,8 +276,8 @@ type PaneInputs struct {
 // LEGION_GH_OWNERS_DIR, the bundle's root, and
 // LEGION_GH_PATH, the real gh the `legion gh` wrapper first on the pane's PATH runs;
 // PI_SHELL_PREFIX, which keeps this daemon's launcher directory first in the agent's bash tool
-// (its legion, its gh and, where workerbin.Install writes one, its git); PI_CONFIG_FILES, the
-// operator's overlays, then the role's own, then the
+// (its legion, its gh and, where workerbin.Install writes each, its git and its jj);
+// PI_CONFIG_FILES, the operator's overlays, then the role's own, then the
 // overlays of each arm this pane's unit was drawn into, in the order the project's file declares
 // the experiments, and nothing of Legion's own, which names no
 // settings overlay at all — empty where none of the three names one), the
@@ -270,9 +290,8 @@ type PaneInputs struct {
 // issue it serves, then the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value. No other tool path
-// is told: a pane's jj is the first jj on its PATH, the daemon's, and its git is the launcher
-// directory's git wrapper where workerbin.Install writes one, and the first git on that PATH
-// otherwise.
+// is told: a pane's jj and its git are the launcher directory's jj and git wrappers where
+// workerbin.Install writes each, and the first jj and the first git on that PATH otherwise.
 //
 // A composed name is told once, which is why the operator's loop leaves it out: a second pair of
 // one name leaves the value the pane's process reads to the C library's lookup, which answers
@@ -800,14 +819,17 @@ func (r *Runtime) openPane(ctx context.Context, spec runtime.SpawnSpec, ghDefaul
 // meanwhile is left to the caller's identity read, which reports it; one still the server's copy
 // when the bound runs out is an error, and the caller kills its pane (killUnrecorded), so no
 // process the daemon never recorded runs on.
+// The bound runs on the runtime's clock (Options.Clock), so a test that moves that clock past
+// the command timeout ends this wait too. The pause between two reads is the machine's 10 ms, so
+// a fake clock that stands still keeps the launch reading the pane until the pane execs.
 func (r *Runtime) awaitPaneCommand(ctx context.Context, report paneReport) error {
-	deadline := time.Now().Add(r.commandTimeout)
+	deadline := r.clock.Now().Add(r.commandTimeout)
 	for {
 		fork, err := r.serverFork(report.pid)
 		if err != nil || !fork {
 			return err
 		}
-		if time.Now().After(deadline) {
+		if r.clock.Now().After(deadline) {
 			return fmt.Errorf("pane %s pid %d did not start its command within %s", report.pane, report.pid, r.commandTimeout)
 		}
 		select {

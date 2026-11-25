@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The broker's airlock proxy also refuses an IPv6 address that carries a refused IPv4 address in
+  two older forms: the IPv4-translated form of SIIT (`::ffff:0:0:0/96`, the IPv4 address in the
+  last 32 bits, such as `::ffff:0:a9fe:a9fe`) and an ISATAP interface identifier (`0:5efe` or
+  `200:5efe` and then the IPv4 address, under any prefix, such as
+  `2606:4700:4700:1:0:5efe:a9fe:a9fe`). An ISATAP relay sends the packet to the IPv4 address
+  inside, and a translator or host that reads the IPv4-translated form's last 32 bits reaches the
+  address there, so the proxy now refuses the address `403` with that IPv4 address's own rule,
+  naming the form. The same forms carrying a public IPv4 address still open.
+time: 2026-11-22T21:42:31Z
+custom:
+    Issue: airlock-translated-isatap

@@ -18,8 +18,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The two re-entrant helpers of this file: the stage, which builds a role layout in a mount
@@ -42,7 +40,7 @@ func init() {
 
 // roleGroupBound bounds every wait the stage and the stand-in make for a process of the role to
 // start, stop, end or be reaped: far past what a loaded machine takes for any of them, short of
-// the stage's own hang guard (roleGroupReport).
+// the stage's own deadline (reentry, roleGroupReport).
 const roleGroupBound = 30 * time.Second
 
 // roleGroupPlan is what the stage builds and runs: a role layout under Dir, which it covers with a
@@ -61,9 +59,9 @@ type roleGroupPlan struct {
 
 // roleStageAttr is how a test starts a stage that runs role-init, or a probe of a role's
 // namespaces: in user, mount and PID namespaces of its own, with uid and gid 0 there mapped to the
-// test's own. The stage is the init of its PID namespace, so a hang guard's kill of the stage ends
-// role-init and every process the stage started with it, where a stage in the test's PID namespace
-// would leave role-init and its role running behind the failed test
+// test's own. The stage is the init of its PID namespace, so the stage's end, at its own deadline
+// or at a kill, ends role-init and every process the stage started with it, where a stage in the
+// test's PID namespace would leave role-init and its role running behind the failed test
 // (TestAStageWhoseHangGuardFiresLeavesNoRoleInitBehind).
 func roleStageAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{
@@ -107,7 +105,7 @@ func TestAStageWhoseHangGuardFiresLeavesNoRoleInitBehind(t *testing.T) {
 	}
 	ctx, guard := context.WithCancel(context.Background())
 	defer guard()
-	stage := exec.CommandContext(ctx, self, "-test.run=^TestRoleGroupStageHelper$")
+	stage := exec.CommandContext(ctx, self, reentry(t, "TestRoleGroupStageHelper")...)
 	stage.WaitDelay = time.Second
 	stage.Env = append(os.Environ(), roleGroupStageEnv+"="+string(encoded))
 	stage.SysProcAttr = roleStageAttr()
@@ -191,7 +189,7 @@ func onlyChildOf(parent int) (int, error) {
 		if err != nil {
 			continue
 		}
-		if ppid, _, _, err := procStat(pid); err == nil && ppid == parent {
+		if ppid, _, _, err := procGroupStat(pid); err == nil && ppid == parent {
 			children = append(children, pid)
 		}
 	}
@@ -293,11 +291,13 @@ func TestARoleStopKeepsItsGraceAndItsSaveWithTheShimInRoleInitsGroup(t *testing.
 	}
 }
 
-// roleGroupReport runs the stage of plan in user, mount and PID namespaces of its own, and answers
-// every `group <key>=<value>` line it and its role printed, with its whole output for a failure's
-// message. Its deadline is a hang guard alone. The stage is the init of its PID namespace, so the
-// guard's kill of the stage ends role-init and every process the role started with it: a role that
-// hangs leaves nothing running behind the failed test.
+// roleGroupReport runs the stage of plan in user, mount and PID namespaces of its own
+// (roleStageAttr), and answers every `group <key>=<value>` line it and its role printed, with its
+// whole output for a failure's message. It waits for the stage to end with no bound of its own
+// (reentry): the stage's own -test.timeout ends it, and its role-init's ends role-init before
+// that, so a stage or a role-init that never ends fails here with its own alarm and goroutine
+// dump. The stage is the init of its PID namespace, so its end ends role-init and every process
+// the role started with it: a role that hangs leaves nothing running behind the failed test.
 func roleGroupReport(t *testing.T, plan roleGroupPlan) (map[string]string, string) {
 	t.Helper()
 	self, err := os.Executable()
@@ -308,17 +308,13 @@ func roleGroupReport(t *testing.T, plan roleGroupPlan) (map[string]string, strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard := testwait.Bounded(t, 3*time.Minute, 10*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), guard)
-	defer cancel()
-	stage := exec.CommandContext(ctx, self, "-test.run=^TestRoleGroupStageHelper$")
+	stage := exec.Command(self, reentry(t, "TestRoleGroupStageHelper")...)
+	// Once the stage has exited, its output is read for a second more at most: a process of the
+	// role's that still held the pipe would otherwise hold this wait.
 	stage.WaitDelay = time.Second
 	stage.Env = append(os.Environ(), roleGroupStageEnv+"="+string(encoded))
 	stage.SysProcAttr = roleStageAttr()
 	output, err := stage.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("the stage had not ended %s after it started, the hang guard: role-init or the stand-in shim never finished\n%s", guard, output)
-	}
 	if err != nil {
 		t.Fatalf("the stage: %v\n%s", err, output)
 	}
@@ -340,6 +336,7 @@ func roleGroupReport(t *testing.T, plan roleGroupPlan) (map[string]string, strin
 // where the plan says so, and reports the shim's status and the files the stand-in leaves in the
 // role's own /tmp once the role's namespace is gone.
 func TestRoleGroupStageHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	encoded := os.Getenv(roleGroupStageEnv)
 	if encoded == "" {
 		return
@@ -347,16 +344,16 @@ func TestRoleGroupStageHelper(t *testing.T) {
 	var plan roleGroupPlan
 	err := json.Unmarshal([]byte(encoded), &plan)
 	if err == nil {
-		err = runRoleGroupStage(plan)
+		err = runRoleGroupStage(t, plan)
 	}
 	if err != nil {
 		fmt.Println("stage error:", err)
 		os.Exit(1)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
-func runRoleGroupStage(plan roleGroupPlan) error {
+func runRoleGroupStage(t *testing.T, plan roleGroupPlan) error {
 	if err := privateMounts(); err != nil {
 		return err
 	}
@@ -366,7 +363,7 @@ func runRoleGroupStage(plan roleGroupPlan) error {
 	if err := mountTmpfs(plan.Dir, "size=16m"); err != nil {
 		return err
 	}
-	roleInitLaunch = roleInitHelperLaunch(stageSelf)
+	roleInitLaunch = roleInitHelperLaunch(t, stageSelf)
 	const role = "group"
 	cfg := RoleInitConfig{
 		RolesDir: filepath.Join(plan.Dir, "roles"), Role: role, Generation: 1,
@@ -456,6 +453,7 @@ func awaitPath(path string, ended <-chan struct{}) bool {
 // TestRoleGroupShimHelper is the stand-in shim role-init starts, and its own children, by
 // roleGroupShimEnv.
 func TestRoleGroupShimHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	var code int
 	switch mode := os.Getenv(roleGroupShimEnv); mode {
 	case "":
@@ -494,7 +492,7 @@ func groupShimOrphan() int {
 		fmt.Printf("group error=%v\n", err)
 		return 1
 	}
-	parent, group, _, err := procStat(orphan)
+	parent, group, _, err := procGroupStat(orphan)
 	if err != nil {
 		fmt.Printf("group error=read the orphan: %v\n", err)
 		return 1
@@ -649,7 +647,7 @@ func orphanedByExit() (string, error) {
 	}
 	deadline := time.Now().Add(roleGroupBound)
 	for {
-		_, _, state, err := procStat(member)
+		_, _, state, err := procGroupStat(member)
 		switch {
 		case errors.Is(err, os.ErrNotExist) || state == "Z":
 			return "yes", nil
@@ -718,7 +716,7 @@ func leaveOrphan(seconds string) (int, error) {
 func awaitReaped(pid int) string {
 	deadline := time.Now().Add(roleGroupBound)
 	for {
-		_, _, state, err := procStat(pid)
+		_, _, state, err := procGroupStat(pid)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			return "reaped"
@@ -733,8 +731,8 @@ func awaitReaped(pid int) string {
 	}
 }
 
-// procStat reads pid's parent, process group and state from the /proc the caller sees.
-func procStat(pid int) (parent, group int, state string, err error) {
+// procGroupStat reads pid's parent, process group and state from the /proc the caller sees.
+func procGroupStat(pid int) (parent, group int, state string, err error) {
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
 		return 0, 0, "", err

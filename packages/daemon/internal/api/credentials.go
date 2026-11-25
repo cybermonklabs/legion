@@ -97,7 +97,7 @@ func (s *server) grant(w http.ResponseWriter, r *http.Request) {
 	case !s.operatorAuthorized(r):
 		s.writeFailure(w, r, http.StatusForbidden, "INVALID_OPERATOR_TOKEN", invalidOperatorToken)
 	default:
-		grant, err := s.grants.MintOperatorController()
+		grant, err := s.grants.MintOperatorController(0)
 		s.writeControllerGrant(w, r, grant, err)
 	}
 }
@@ -185,9 +185,10 @@ const timeFormat = "2006-01-02T15:04:05.999999999Z07:00"
 // A controller grant is returned here without consulting the controller record at all (LEGION-164):
 // its own staleness is refused at mint (controllerSessionGrant -> refuseIfStaleController), grants
 // live in process memory and die with a daemon restart, and a registration that changes the
-// record's contract comes after a mint that revokes every controller grant (RevokeControllers), so
-// a redeemable controller grant was always minted for a controller current at the time. Refusing
-// here on the record's contract would also catch the operator-bearer grant `legion issue status`
+// record's contract comes after a mint whose commit revokes every controller grant of a lower
+// generation (credential.Grants.RevokeControllersBelow), so a redeemable controller grant was
+// always minted for a controller current at the time. Refusing here on the record's contract
+// would also catch the operator-bearer grant `legion issue status`
 // redeems on this route — also Controller: true — which after migration 0042 leaves every existing
 // controllers row at plugin_contract 0 until its next registration, refusing the operator's own
 // call at the first boot on this release.

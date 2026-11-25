@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+    A role on the cluster's gVisor no longer ends when a process of its shim's group is stopped and
+    another process of that group, left behind by a tool call (a `cmd &` whose shell exits), is
+    reaped. gVisor counts, per process group, the members whose parent is in another group of the
+    session, takes one from that count when such a member is reaped, and adds none when a member is
+    reparented. Each orphan the namespace's init reaped from another group lowered the shim's group's
+    count until the group read as orphaned while the shim still ran, and a stopped member then
+    brought SIGHUP and SIGCONT to the group: the shim stopped on the SIGHUP, and Oh My Pi in rpc
+    mode exited 129. role-init now starts the shim in role-init's own process group, so it reaps
+    each such orphan inside that group. In the controller pod's single-role form, which has no
+    role-init, the launcher starts the shim with the new `legion worker-shim --reap-orphans`: the
+    shim makes itself the child subreaper of everything it starts and reaps the orphans of its group
+    itself. Every child the shim waits for itself (Oh My Pi, the secrets keygen and renewer, the
+    commands the daemon asks for, the CodeGraph warm-up) starts through one guard that this reaper
+    passes over, so the shim still reports Oh My Pi's own exit status. A role process that signals
+    its own process group (`kill 0`) now reaches role-init too, which takes a SIGTERM or a SIGINT
+    as a stop of the role; the same signal already ended the role through its shim.
+time: 2026-11-23T01:44:02Z
+custom:
+    Issue: pr5173

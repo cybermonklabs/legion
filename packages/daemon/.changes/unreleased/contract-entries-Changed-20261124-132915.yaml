@@ -1,0 +1,5 @@
+kind: Changed
+body: 'A change to the daemon''s API contract is now an entry, one file of its own in `internal/api` (`contract_<id>_<slug>.go`, whose id is the UTC second its author made it), and no file holds a new number: `version.go`''s numbered entries end at `LastNumberedContract`, and each build numbers its entries from there in the order main merged them. The release and worker-image builds stamp that order into `legion` (`-X github.com/sjawhar/legion/daemon/internal/api.contractOrder=v1:<ids>`); a build with no stamp numbers its entries by id. `legion` refuses to run any command when its stamp does not name exactly the entries it registers, naming each id it names that no entry has and each entry it leaves out. `legion version --contracts` prints the build''s contract, whether its order is stamped, and each entry''s id, number and slug; `legion version` prints what it printed before. `packages/contracts/fixtures/daemon-api/released-contracts.json`, the numbered contracts, replaces `version.json`.'
+time: 2026-11-24T13:29:15.410604697Z
+custom:
+    Issue: contract-entries

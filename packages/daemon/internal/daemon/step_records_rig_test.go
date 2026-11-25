@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -138,7 +139,8 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 
 // walkTitles is the title of each issue of a run, in order. Dispatch refuses a new issue whose
 // title is a near copy of an open one's (POSSIBLE_DUPLICATE), so no two share a word that counts.
-var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated"}
+var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated",
+	"Fifth ticket runs reordered"}
 
 // on moves the walk's steps to issue key of the run.
 func (r *stepRecordsRig) on(key string) {
@@ -177,7 +179,7 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 	t.Helper()
 	ctx := context.Background()
 	approved := 1
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: "One issue walks to done", Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
@@ -724,7 +726,8 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 
 // stepClaimant is one role's claim as its pane reaches the daemon: the shim connected with the
 // launch's boot token, the session registered and ready, and a reader that answers what the daemon
-// asks of the shim and hands each prompt to the walk, starting its turn as Oh My Pi does.
+// asks of the shim and hands each prompt to the walk, starting its turn as Oh My Pi does — but the
+// architect's, whose pane works each of its tasks in a turn of its own (workAlone).
 type stepClaimant struct {
 	r     *stepRecordsRig
 	token claim.Token
@@ -745,6 +748,9 @@ type stepClaimant struct {
 	sh *shim
 	// open is the id of each prompt whose turn has started and not ended.
 	open []string
+	// inTurn is whether the session is in a turn the walk began on it (send's agent_start, until
+	// its agent_end): a task the daemon sends meanwhile joins that turn (workAlone).
+	inTurn bool
 }
 
 // worker is role's claimant on the walk's issue (workerOf).
@@ -771,7 +777,7 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
-		AgentID: c.session, PluginContract: api.DaemonAPIVersion,
+		AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)
@@ -793,17 +799,45 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 }
 
 // reconnect is the pane's shim connecting to the daemon that runs now with the boot token it has
-// held since its launch, as it does after the daemon restarts.
+// held since its launch, as it does after the daemon restarts. A daemon that acknowledges no hello
+// of it fails the walk with what that daemon made of the claim (refusedHello).
 func (c *stepClaimant) reconnect() {
 	c.r.built.mu.Lock()
 	address := c.r.built.address
 	c.r.built.mu.Unlock()
-	sh := dialShimUntilAcked(c.r.t, address, c.bootToken)
+	sh, err := ackedShim(c.r.t, address, c.bootToken)
+	if err != nil {
+		c.r.t.Fatal(c.refusedHello(err))
+	}
 	c.mu.Lock()
 	c.sh = sh
 	c.mu.Unlock()
 	d := c.r.d
 	sh.serve(func() { c.serve(sh, d) })
+}
+
+// refusedHello says why the daemon that runs now acknowledged no hello of c's pane, naming what it
+// compared: the plugin contract the claim records against its own (api.DaemonAPIVersion), the
+// claim as it holds it now, and the launch of the claim this boot made. A boot relaunches at once a
+// claim of another contract that its store holds out of a turn (supervise's refreshPlugin), and
+// that launch gives the claim a boot token the pane does not hold. The worker stream closes a hello
+// of a token it does not know with no frame, which the shim reads as an EOF, so last, the shim's own
+// refusal, says none of that.
+func (c *stepClaimant) refusedHello(last error) string {
+	c.r.t.Helper()
+	held := c.r.d.claim(c.token)
+	launch := "this boot made no launch of it under another boot token, so the daemon's log says why it refused the pane's (worker-stream: rejected hello)"
+	for _, call := range slices.Backward(c.r.rt.Calls()) {
+		if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == c.token {
+			if call.Spec.BootToken != c.bootToken {
+				launch = fmt.Sprintf("this boot launched it again (%s at generation %d) under a boot token of its own, so the pane's is one the daemon no longer knows",
+					call.Method, call.Spec.Generation)
+			}
+			break
+		}
+	}
+	return fmt.Sprintf("the daemon at contract %d acknowledged no hello of %s's pane, whose claim records plugin contract %d: the daemon holds the claim %s at generation %d, and %s; the pane holds boot token %s, and the shim's last refusal was %v",
+		api.DaemonAPIVersion(), c.token, held.PluginContract, held.State, held.Generation, launch, c.bootToken, last)
 }
 
 // serve reads every frame the daemon d sends sh until the connection closes or the test ends it
@@ -839,6 +873,9 @@ func (c *stepClaimant) serve(sh *shim, d *daemon) {
 			reply(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
 		case shimwire.Prompt:
 			reply(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
+			if c.workAlone(reply, f) {
+				continue
+			}
 			c.mu.Lock()
 			c.open = append(c.open, f.ID)
 			c.mu.Unlock()
@@ -851,25 +888,68 @@ func (c *stepClaimant) serve(sh *shim, d *daemon) {
 	}
 }
 
-// send writes one frame to the daemon that runs now.
-func (c *stepClaimant) send(frame shimwire.Frame) {
+// workAlone is the architect's pane working prompt in a turn of its own that ends, as Oh My Pi
+// runs a task the daemon sends a session in no turn: the turn's agent_start naming its delivery,
+// its agent_end and the prompt's result, each through reply. It answers false and writes nothing
+// for every other role, whose task the walk takes (take) and whose turn the walk ends (finish),
+// and for a prompt that arrives while a turn the walk began on the architect's session is open
+// (inTurn), which joins that turn as the pane would run it.
+//
+// The walk takes no task of the architect's: its steps are turns the walk begins itself (ownTurn).
+// A turn a task of the architect's began and nothing ended, or the architect's send in flight, is
+// what the daemon reads as the issue's shared working copy in use (supervise's IssueInTurn), so the
+// issue's next phase task waited on it, and only a turn's end wakes that task (IssueTurnEnded):
+// the first step of a root whose gate opened as its architect's start task went out waited for
+// ever. The model answers nothing in this turn, so a record of the architect's step names the
+// model of the walk's own turn. The check of inTurn and the three frames are one hold of c.mu,
+// which send takes around the walk's agent_start and agent_end, so the walk's turn never begins
+// or ends inside this one.
+func (c *stepClaimant) workAlone(reply func(shimwire.Frame), prompt shimwire.Prompt) bool {
+	if c.role != claim.RoleArchitect {
+		return false
+	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inTurn {
+		return false
+	}
+	reply(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
+	reply(shimwire.AgentEnd{})
+	reply(shimwire.PromptResult{ID: prompt.ID, AgentInvoked: true})
+	return true
+}
+
+// send writes one frame to the daemon that runs now. An agent_start begins the walk's turn on the
+// session before it is written and an agent_end ends it once it is (inTurn), so no turn of the
+// architect's pane (workAlone) lands between the two.
+func (c *stepClaimant) send(frame shimwire.Frame) {
+	_, starts := frame.(shimwire.AgentStart)
+	_, ends := frame.(shimwire.AgentEnd)
+	c.mu.Lock()
+	c.inTurn = c.inTurn || starts
 	sh := c.sh
 	c.mu.Unlock()
 	if err := sh.writer.WriteFrame(frame); err != nil {
 		c.r.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
 	}
+	if ends {
+		c.mu.Lock()
+		c.inTurn = false
+		c.mu.Unlock()
+	}
 }
 
 // take waits for the daemon's next task of this claim and starts the turn that works it, its
 // model answering first: the claim's machine reads a connection's frames in order, so once the
-// turn's start shows the claim working, the answer before it has been read too.
-func (c *stepClaimant) take() {
+// turn's start shows the claim working, the answer before it has been read too. It answers the
+// prompt that carried the task, which a walk reads where it holds what the claim was told.
+func (c *stepClaimant) take() shimwire.Prompt {
 	c.r.t.Helper()
 	prompt := c.receive()
 	c.answer()
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
+	return prompt
 }
 
 // receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged
@@ -890,7 +970,7 @@ func (c *stepClaimant) receive() shimwire.Prompt {
 // shim next connects, so the daemon's state probe finds it idle.
 func (c *stepClaimant) endTurnUnseen() {
 	c.mu.Lock()
-	c.open = nil
+	c.open, c.inTurn = nil, false
 	c.mu.Unlock()
 }
 
@@ -905,15 +985,22 @@ func (c *stepClaimant) ownTurn() {
 	c.waitState(supervise.StateIdle)
 }
 
-// waitState waits for the daemon to hold the claim in state.
+// waitState waits for the daemon to hold the claim in state, both as its machine publishes the
+// claim and as its store holds it. A machine publishes a claim before the write that keeps it
+// (supervise's putClaim and putClaimAndPending), and a restart's stop ends a write still in flight,
+// so a walk that went on at the published state alone could stop the daemon while its store still
+// held the claim as it was: the next boot reads only the store, and relaunches at once a claim of
+// another plugin contract that it reads out of a turn (supervise's refreshPlugin), under a boot
+// token the pane does not hold (refusedHello).
 func (c *stepClaimant) waitState(state supervise.ClaimState) {
 	c.r.t.Helper()
-	var last string
+	var published string
+	var stored supervise.ClaimState
 	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
-		last = c.r.d.claim(c.token).State
-		return last == string(state)
+		published, stored = c.r.d.claim(c.token).State, storedClaimState(c.r.t, c.r.st.Pool(), c.token)
+		return published == string(state) && stored == state
 	}) {
-		c.r.t.Fatalf("%s is %s, want %s", c.token, last, state)
+		c.r.t.Fatalf("%s is %s, and %s in the store, want %s in both", c.token, published, stored, state)
 	}
 }
 
@@ -1025,6 +1112,13 @@ func (g *stepRecordsGitHub) open(branch string, number int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch})
+}
+
+// opened says whether the walk opened pull request number (find).
+func (g *stepRecordsGitHub) opened(number int) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.find(number) != nil
 }
 
 // merged is GitHub's merge of pull request number: every read from now on answers it merged. A

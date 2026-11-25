@@ -1,12 +1,12 @@
 package bus_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The drain cursor's body is read by both writers of a role's kept lane - the listener's walk,
@@ -20,6 +20,7 @@ import (
 // with nothing claimed carry no dead_letter key at all, and a body with no dead_letter key decodes
 // with no reason.
 func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		written bus.KeptRoleCursor
 		body    string
@@ -74,6 +75,7 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 // says, and its clock is not even read, since the listener's walk counts the reads it makes of
 // its own clock (cmd/listener/role_keep.go, walkKeptRole).
 func TestAKeptRoleCursorsClaimIsOutstandingOnlyWhileItIsYoungerThanTheWindow(t *testing.T) {
+	t.Parallel()
 	stored := time.Now()
 	claimed := bus.KeptRoleCursor{Kept: 4, Claiming: 5}
 	for _, age := range []time.Duration{0, bus.KeptRoleClaimWindow - time.Millisecond} {
@@ -107,9 +109,10 @@ func TestAKeptRoleCursorsClaimIsOutstandingOnlyWhileItIsYoungerThanTheWindow(t *
 // how old the claim it carries is. A lane no walk has written a cursor for is no error but the
 // zero cursor, since every copy on such a lane is past it.
 func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	const role = "cursor-reader"
 
 	unwritten, err := client.ReadKeptRoleCursor(ctx, role)

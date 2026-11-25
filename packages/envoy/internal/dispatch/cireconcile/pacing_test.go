@@ -746,7 +746,7 @@ func TestAPassCutShortInsideAPageStopsAtTheHeadItWasWriting(t *testing.T) {
 	}
 	// The head the bound fell on is the only one whose write failed: the heads after it were
 	// never written at all, where a pass reading on would have written both into a dead context.
-	failed := h.lines("ci reconcile did not record a check run")
+	failed := h.lines("ci reconcile did not record the check runs of a head")
 	if len(failed) != 1 || failed[0]["pr"] != "3" {
 		t.Fatalf("the pass failed %d check-run writes, want the one the bound fell on: %+v", len(failed), failed)
 	}

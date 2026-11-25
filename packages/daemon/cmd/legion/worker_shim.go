@@ -28,6 +28,10 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 // loaded machine makes slow to act on its SIGTERM is not killed at 5 s.
 var workerShimGrace = shim.DefaultGrace
 
+func init() {
+	programbound.Register(&workerShimGrace)
+}
+
 // newWorkerShimCommand is `legion worker-shim`, the command a runtime puts in front of every phase
 // worker's OMP: it dials the daemon's worker stream, and bridges OMP to it once acked. Its lines
 // go to stdout, which is what the pane shows, through the URL rule (redact.Writer), and so do its
@@ -38,8 +42,9 @@ var workerShimGrace = shim.DefaultGrace
 // it unset, and nothing else — Legion writes no settings overlay of its own, so PI_CONFIG_FILES
 // rides through as the runtime composed it and nothing of a repository's settings is held off),
 // with the scratch
-// directories the runtime told this role to write under made (podsafety.EnsureScratch) and Oh My
-// Pi's profile directory made under the role's XDG_STATE_HOME (podsafety.EnsureStateHome). With
+// directories the runtime told this role to write under made (podsafety.EnsureScratch), Oh My
+// Pi's profile directory made under the role's XDG_STATE_HOME (podsafety.EnsureStateHome) and the
+// image's gh extensions linked where gh reads them (podsafety.EnsureGhExtensions). With
 // --warm-codegraph, which the Sandbox runtime passes for a role in an issue pod — never for a
 // tmux pane, whose workspace the daemon warms itself (internal/daemon/outbox.go), nor for the
 // controller, which has no workspace — the shim builds the CodeGraph index of the workspace
@@ -140,14 +145,19 @@ func runWorkerShim(ctx context.Context, cmd *cobra.Command, given workerShimFlag
 // role told a temporary directory nothing created cannot run — and Oh My Pi's profile directory
 // under the XDG_STATE_HOME the runtime names for this role, the one directory of the set that is
 // this role's alone, without which Oh My Pi would not read the variable and its browser broker's
-// lock would be the name every role of the pod takes. A directory that cannot be made is a
-// refusal to start, naming it, as a providers key that cannot be read is.
+// lock would be the name every role of the pod takes; then the image's gh extensions linked into
+// gh's extension directory under the data home, where gh reads them and nothing else puts them
+// (podsafety.EnsureGhExtensions). A directory or link that cannot be made is a refusal to start,
+// naming it, as a providers key that cannot be read is.
 func podSafeEnvironment(environ []string) ([]string, error) {
 	environ = podsafety.Apply(environ)
 	if err := podsafety.EnsureScratch(environ); err != nil {
 		return nil, err
 	}
 	if err := podsafety.EnsureStateHome(environ); err != nil {
+		return nil, err
+	}
+	if err := podsafety.EnsureGhExtensions(environ, podsafety.GhExtensionsDir); err != nil {
 		return nil, err
 	}
 	return environ, nil

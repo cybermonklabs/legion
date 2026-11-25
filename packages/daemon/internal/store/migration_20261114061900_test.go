@@ -21,6 +21,7 @@ const phaseEntryVerbatimVersion = 20261114061900
 // whose task is sent as written whatever the mark says. A mark written after it reads back as it
 // was written, through a store reopened as a daemon restart reopens it.
 func TestThePhaseEntryVerbatimMigrationLeavesEveryRowUnmarkedAndTheMarkRoundTrips(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseEntryVerbatimVersion-1)
@@ -50,7 +51,7 @@ func TestThePhaseEntryVerbatimMigrationLeavesEveryRowUnmarkedAndTheMarkRoundTrip
 	// The resume of an answered root raises the architect's entry 2 and marks its task.
 	want := phaseRowOf(t, store, "LEGION-208", claim.RoleArchitect)
 	want.Entry, want.EntryTask, want.EntryVerbatim = 2, "A person answered your ask ask-1 on LEGION-208; read it. Continue.", true
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, want)
 	}); err != nil {
 		t.Fatalf("put the architect's row of the resume's entry: %v", err)

@@ -119,12 +119,12 @@ func flakyBroker(t *testing.T, polls []pollAnswer) (*httptest.Server, *atomic.In
 }
 
 // TestExecFormWaitOutlivesFailedStatusPolls: a status poll that got no answer about the request
-// (a reset connection, a 503 from the broker, a front door's bare 502) does not end the exec
-// form's wait. The command keeps polling until --wait runs out, says so once per run of such
-// failures, and runs the command when a later poll finds the request granted. A wait that runs
-// out while its polls still fail exits 75, as a wait that ran out on a pending request does,
-// naming the request, the last failure and the command that still collects the grant. A refusal
-// no retry changes (an unknown request's 404) still ends the wait at once.
+// (a reset connection, an outage from the broker or a front door before it: a 5xx, a 408 or a
+// 429) does not end the exec form's wait. The command keeps polling until --wait runs out, says so
+// once per run of such failures, and runs the command when a later poll finds the request granted.
+// A wait that runs out while its polls still fail exits 75, as a wait that ran out on a pending
+// request does, naming the request, the last failure and the command that still collects the
+// grant. A refusal no retry changes (an unknown request's 404) still ends the wait at once.
 func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
@@ -166,6 +166,16 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 			exit:  0, lines: 1, says: []string{"HTTP 502: ", keepsWaiting},
 		},
 		{
+			name: "a front door's bare 408, then granted", wait: "1m",
+			polls: []pollAnswer{refusedPoll(http.StatusRequestTimeout, "text/html", "<html><body><h1>408 Request Timeout</h1></body></html>"), granted},
+			exit:  0, lines: 1, says: []string{"HTTP 408: ", keepsWaiting},
+		},
+		{
+			name: "the broker's 500, then granted", wait: "1m",
+			polls: []pollAnswer{refusedPoll(http.StatusInternalServerError, "application/json", `{"code":"INTERNAL","error":"the broker could not read its store"}`), granted},
+			exit:  0, lines: 1, says: []string{"the broker could not read its store (INTERNAL); asked ", keepsWaiting},
+		},
+		{
 			name: "every poll reset until the wait runs out", wait: "3s", polls: []pollAnswer{reset},
 			exit: exitPending, lines: 1,
 			says: []string{ranOut, "ran out while its status could not be read: ", "connection reset by peer" + checkIt},
@@ -183,7 +193,10 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			broker, served := flakyBroker(t, row.polls)
-			stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil,
+			// The rows run side by side, each binary on one P: one left to size GOMAXPROCS to the
+			// host starts a thread for each P its collector's idle mark workers take, about 80 on
+			// a 288-CPU host.
+			stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, []string{"GOMAXPROCS=1"},
 				"FLAKY_ME", "--wait", row.wait, "--", "sh", "-c", `test "$FLAKY_ME" = `+flakyValue+` && echo ran-the-child`)
 			ran := strings.Contains(stdout, "ran-the-child")
 			if exit != row.exit || ran != (row.exit == 0) {
@@ -215,8 +228,8 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 }
 
 // TestOnlyAFailureARetryCanCureIsRetried pins retryable, the exec form's wait's test of a failed
-// status poll: a transport failure, or a 429, 502, 503 or 504 with the broker's envelope or
-// without it, is polled again; every other refusal, and a call never sent, is not.
+// status poll: a transport failure, or an outage (any 5xx, a 408 or a 429) with the broker's
+// envelope or without it, is polled again; every other refusal, and a call never sent, is not.
 func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 	const base = "http://broker.example"
 	reset := unreachable(cipheraddr.New(base), http.MethodGet, base+"/v1/requests/"+flakyRequestID, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
@@ -238,7 +251,11 @@ func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 		{&apiError{Status: http.StatusGatewayTimeout, Message: "upstream timed out"}, true},
 		{&apiError{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no such request"}, false},
 		{&apiError{Status: http.StatusUnauthorized, Code: "PROOF_INVALID", Message: "proof invalid"}, false},
-		{&apiError{Status: http.StatusInternalServerError, Message: "internal"}, false},
+		{&apiError{Status: http.StatusInternalServerError, Message: "internal"}, true},
+		{&apiError{Status: http.StatusNotImplemented, Message: "<html>501 Not Implemented</html>"}, true},
+		{&apiError{Status: http.StatusHTTPVersionNotSupported, Message: "<html>505</html>"}, true},
+		{&apiError{Status: http.StatusRequestTimeout, Message: "<html>408 Request Timeout</html>"}, true},
+		{&apiError{Status: http.StatusConflict, Code: "CONFLICT", Message: "conflict"}, false},
 		{&refusedBeforeCall{"a request id must name one path segment"}, false},
 		{errors.New("decode request status: unexpected end of JSON input"), false},
 	} {

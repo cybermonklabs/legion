@@ -35,13 +35,19 @@ export function itemOfBlock(
   if (!("block" in route) || route.block === undefined) {
     return undefined;
   }
-  if (route.kind === "document") {
-    return route.item;
-  }
-  // Every other route that names an item carries its id; a document's or a spec's does not.
-  return "id" in route && isBlockItemKind(route.kind)
-    ? { id: route.id, kind: route.kind }
-    : undefined;
+  return routeItem(route);
+}
+
+/** The ask, comment or issue message `route` names, itself or through a block of it; undefined
+ *  for every other route. */
+export function routeItem(
+  route: DispatchReferenceRoute
+): { kind: BlockItemKind; id: string } | undefined {
+  return route.kind === "document"
+    ? route.item
+    : "id" in route && isBlockItemKind(route.kind)
+      ? { id: route.id, kind: route.kind }
+      : undefined;
 }
 
 /** `route` naming its block `id`, pinned to `pin` when one is given, as the server's
@@ -50,8 +56,8 @@ export function itemOfBlock(
  *  document's, pinned to a revision of the ask's parts; a block of a comment, an issue's or a
  *  project document's (an ask's parts and a comment's blocks are its own, so the document's
  *  version is dropped), pinned to a revision of the comment; and an unpinned block of an issue
- *  message, which never changes. Undefined for any other route. Whether text cites the block is
- *  the caller's to ask (`routeInBound`, `target-id.ts`), as it is for every route. */
+ *  message, which records no revisions. Undefined for any other route. Whether text cites the
+ *  block is the caller's to ask (`routeInBound`, `target-id.ts`), as it is for every route. */
 export function withBlock(
   route: DispatchReferenceRoute | undefined,
   id: string,
