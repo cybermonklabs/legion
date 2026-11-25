@@ -604,8 +604,9 @@ export function createLegionTool(deps: {
         "again is answered as taken, and adds you to its givers), another document than the plan " +
         "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
         "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
-        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
-        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), a plan given for a run of the issue " +
+        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION), and every plan of a recorded issue whose tree " +
+        "lingers after it left the workflow, the plan in force among them (TREE_LINGERING). " +
         "Legion takes no plan for a recorded issue whose experiment's group runs the project's default steps (PLAN_NOT_TAKEN, naming " +
         "the group): it records nothing, and the same plan given again gets the same answer. " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
