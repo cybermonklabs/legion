@@ -484,8 +484,8 @@ func TestARateLimitedStartReadHandsEveryHeadLeftToItsBase(t *testing.T) {
 	w.readIssuesAtStart(ctx)
 	for _, key := range []string{"CAPTURE-1", "CAPTURE-2"} {
 		testwait.Eventually(t, key+"'s round to end on its base's read after the start read was rate-limited", func() bool {
-			issue, _, err := issueRecord(context.Background(), pool, record.NewStore(), key)
-			return err == nil && issue != nil && issue.Phase == phase.Accepting
+			stored, err := issueRecord(context.Background(), pool, record.NewStore(), key, "")
+			return err == nil && stored.issue != nil && stored.issue.Phase == phase.Accepting
 		})
 	}
 	if got := restReads.Load(); got != 1 {

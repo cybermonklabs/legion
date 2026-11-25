@@ -61,7 +61,8 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 	const issue = "notifications.dispatch.issue.CAPTURE-3."
 	const repo = "notifications.github.sjawhar.legion."
 	pr := func(action string, extra map[string]any) map[string]any {
-		fields := map[string]any{"kind": "pr", "action": action, "number": "42", "head_ref": "legion/LEGION-208", "head_sha": "head-2", "base_ref": "main"}
+		fields := map[string]any{"kind": "pr", "action": action, "number": "42", "head_ref": "legion/LEGION-208", "head_sha": "head-2", "base_ref": "main",
+			"head_repo": "sjawhar/legion"}
 		for key, value := range extra {
 			fields[key] = value
 		}
