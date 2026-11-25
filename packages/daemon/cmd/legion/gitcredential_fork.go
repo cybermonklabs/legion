@@ -147,11 +147,12 @@ type forkUpstream struct {
 
 // readForkAnswer is GitHub's answer to the fork read of repo, where it is a 200 that says repo is
 // a fork, and an error naming the answer otherwise. In order: a curl that got no answer
-// (CurlResponse.Unreached) or that failed after it heard one, a rate limit, with its reset or its
-// wait (CurlResponse.RateLimit), any status but 200, with GitHub's message and, for a redirect,
-// where it points, since curl follows none; and, of a 200, a body that is not JSON, an answer for
-// another repository than repo (a full_name that differs from it beyond case), and an answer
-// with no "fork" field or a false one.
+// (CurlResponse.Unreached) or that failed after it heard one, quoting what curl said as the rule
+// reads it (CurlResponse.Said), a rate limit, with its reset or its wait (CurlResponse.RateLimit),
+// any status but 200, with GitHub's message and, for a redirect, where it points, since curl
+// follows none; and, of a 200, a body that is not JSON, an answer for another repository than
+// repo (a full_name that differs from it beyond case), and an answer with no "fork" field or a
+// false one.
 //
 // Each value of GitHub's answer an error names is GitHub's word, read with no record of the
 // token the read carried, so it prints only in a shape that holds no credential: a message of
@@ -163,7 +164,7 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 		if unreached := response.Unreached(); unreached != nil {
 			return forkAnswer{}, fmt.Errorf("the read of %s failed: %w", repo, unreached)
 		}
-		return forkAnswer{}, fmt.Errorf("curl's read of %s exited %d: %s", repo, response.Exit, strings.TrimSpace(response.Stderr))
+		return forkAnswer{}, fmt.Errorf("curl's read of %s exited %d: %s", repo, response.Exit, response.Said())
 	}
 	if limited := response.RateLimit(); limited != nil {
 		return forkAnswer{}, fmt.Errorf("GitHub refused the read of %s: %w", repo, limited)
