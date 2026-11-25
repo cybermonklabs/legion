@@ -16,7 +16,7 @@ import (
 // in its place, refuses the decision, and redirects it, under a reason phrase that quotes a
 // credential's URL. The decision's detail names the status by its code and the standard phrase
 // (redact.StatusLine), and none of the phrase the endpoint wrote: Decide's refusal
-// (decide-refused) and the redirect its client refuses to follow (redirect). Captures
+// (decide-refused) and the redirect its transport refuses (redirect). Captures
 // agentloop.status-line/<case>.
 func TestAProviderAnswerNamesItsStatusWithNoPhraseItWrote(t *testing.T) {
 	t.Parallel()
