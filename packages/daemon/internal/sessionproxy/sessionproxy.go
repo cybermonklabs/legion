@@ -638,19 +638,11 @@ func connectorOptions(ctx context.Context, signer Signer, endpoints googleEndpoi
 		if err != nil {
 			return nil, fmt.Errorf("impersonate %s: %w", account, err)
 		}
-		adminScope := oauth2call.Scope[oauth2.TokenSource](ctx)
-		api, err = oauth2call.Call(adminScope.Read(impersonate.CredentialsTokenSource(adminScope.Context(), impersonate.CredentialsConfig{
-			TargetPrincipal: account,
-			Scopes:          []string{sqlAdminScope, cloudPlatformScope},
-		}, option.WithHTTPClient(adminScope.Client(iam)))))
+		api, err = impersonatedSource(ctx, iam, account, sqlAdminScope, cloudPlatformScope)
 		if err != nil {
 			return nil, fmt.Errorf("impersonate %s for the Admin API: %w", account, err)
 		}
-		loginScope := oauth2call.Scope[oauth2.TokenSource](ctx)
-		login, err = oauth2call.Call(loginScope.Read(impersonate.CredentialsTokenSource(loginScope.Context(), impersonate.CredentialsConfig{
-			TargetPrincipal: account,
-			Scopes:          []string{sqlLoginScope},
-		}, option.WithHTTPClient(loginScope.Client(iam)))))
+		login, err = impersonatedSource(ctx, iam, account, sqlLoginScope)
 		if err != nil {
 			return nil, fmt.Errorf("impersonate %s for the database login: %w", account, err)
 		}
@@ -677,6 +669,17 @@ func podTokenSource(ctx context.Context, timeout time.Duration, scopes ...string
 		return nil, err
 	}
 	return credentials.TokenSource, nil
+}
+
+// impersonatedSource is a source of account's tokens for scopes, minted through iam, the IAM
+// Credentials client (impersonationClient). CredentialsTokenSource is a text-only library call, so
+// it runs under a scope of its own, which iam's requests are recorded in.
+func impersonatedSource(ctx context.Context, iam *http.Client, account string, scopes ...string) (oauth2.TokenSource, error) {
+	s := oauth2call.Scope[oauth2.TokenSource](ctx)
+	return oauth2call.Call(s.Read(impersonate.CredentialsTokenSource(s.Context(), impersonate.CredentialsConfig{
+		TargetPrincipal: account,
+		Scopes:          scopes,
+	}, option.WithHTTPClient(s.Client(iam)))))
 }
 
 // impersonationClient is the IAM Credentials client the impersonation calls generateAccessToken
