@@ -285,7 +285,7 @@ func (b *liveDispatch) putExperiment(key, id string, req *http.Request, w http.R
 	if !ok {
 		return
 	}
-	b.writeStep(key, id, write, false, w)
+	b.writeStep(key, id, write, false, req, w)
 }
 
 // daemonWrite decodes a write to a record of key, which only the session legion-daemon:<project>
