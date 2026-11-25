@@ -3,19 +3,23 @@ custom:
   Issue: pr4392
 body: |-
   `dispatch api --path <route>` sends one request of a route under `/api/v1` that no other command
-  sends, with the session's own credential as every `dispatch` command presents it, and prints
-  Dispatch's JSON answer for `jq`. It sends a GET, or with `--method` a `POST`, `PUT`, `PATCH` or
-  `DELETE`, whose JSON body, taken only beside a method, it reads from a file with
-  `--body-file <file>` or from standard input with `--body-file -`. A write that a named `dispatch`
-  command makes goes through that command. In a session whose AskGate reviews Dispatch writes, it
-  sends GET alone: it refuses each other method before anything is sent, naming the `dispatch`
-  command that makes that write, and exits 1, and the session's ledger records that refusal with
-  AskGate's mark, so AskGate's report counts it. Before it sends anything, it refuses, with exit 2,
-  a path that does not begin `/api/v1`, a path that holds a space, a backslash, a `#` or a character
-  outside printable ASCII, a path that holds `"`, `<`, `>`, `^`, `` ` ``, `{` or `}` before its
-  query, and a path with a `.` or `..` segment, plain or percent-encoded. It sends the request
-  once, and once more only after Dispatch answers that the token it presented is not live
-  (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
-  `Idempotency-Key`. When Dispatch refuses the request, the command prints Dispatch's error with
-  its code and, where Dispatch gives one, its hint, and exits 1; a path Dispatch has no route for
-  is answered at once, not sent again. `dispatch api --path /api/v1` lists every route.
+  sends, with the session's own credential as every `dispatch` command presents it, and prints the
+  answer's body: Dispatch's JSON for `jq`, or any other body of a 2xx, such as a file version's
+  bytes or a document version's Markdown, as it came. It sends a GET, or with `--method` a `POST`,
+  `PUT`, `PATCH` or `DELETE`, whose JSON body, taken only beside a method, it reads from a file
+  with `--body-file <file>` or from standard input with `--body-file -`. A write that a named
+  `dispatch` command makes goes through that command. In a session whose AskGate reviews Dispatch
+  writes, it sends GET alone: it refuses each other method before anything is sent, naming the
+  `dispatch` command that makes that write, and exits 1, and the session's ledger records that
+  refusal with AskGate's mark, so AskGate's report counts it. Before it sends anything, it
+  refuses, with exit 2, a path that does not begin `/api/v1`, a path that holds a space, a
+  backslash, a `#` or a character outside printable ASCII, a path that holds `"`, `<`, `>`, `^`,
+  `` ` ``, `{` or `}` before its query, and a path with a `.` or `..` segment, plain or
+  percent-encoded. It sends the request once, and once more only after Dispatch answers that the
+  token it presented is not live (Dispatch authenticated nothing, so nothing ran), with no
+  redirect followed and no `Idempotency-Key`. On a 2xx answer it prints the body as it came and
+  exits 0, any body that is not JSON written unchanged with nothing added. On any other answer it
+  exits 1 with the answer's code: when Dispatch refuses the request, the command prints
+  Dispatch's error with its code and, where Dispatch gives one, its hint, and an answer that is
+  neither a 2xx nor Dispatch's JSON is named by its status; a path Dispatch has no route for is
+  answered at once, not sent again. `dispatch api --path /api/v1` lists every route.

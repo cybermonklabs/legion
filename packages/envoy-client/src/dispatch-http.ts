@@ -127,6 +127,16 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
+/**
+ * What `readRoute` and `sendRoute` answer: `payload`, Dispatch's JSON as `#payloadOf` reads it (a
+ * bodiless 204 or 205 as the empty text), or, for a 2xx whose body is not JSON, `body`, the bytes
+ * that came, with `type`, the answer's Content-Type where it named one. A file version answers its
+ * bytes under its own MIME type, and a document version read with `?download=true` its Markdown.
+ */
+export type RouteAnswer =
+  | { readonly payload: unknown }
+  | { readonly body: Uint8Array; readonly type: string | undefined };
+
 /** The members of Dispatch's refusal beside its code and its message that `DispatchServiceError`
  *  keeps: one list, which the refusal reader (`DispatchRefusal`) and the error's own details
  *  both name, so a member one of them carries cannot be dropped by the other. */
@@ -173,11 +183,13 @@ export class DispatchServiceError extends Error {
 /**
  * An answer that is not Dispatch's JSON, so whatever answers in its place (a proxy, a load
  * balancer, an auth gateway, a captive portal) wrote it: a non-2xx, or a 2xx that a read, a PUT or
- * a DELETE could not read as JSON (`#response`; a POST's or a PATCH's 2xx is the write table's,
- * `answerEvent`). `answer` says what came back and `advice` what asking again can do, judged from
- * the method and the status alone; the message joins them. A caller that knows more about what
- * its own request did gives `answer` advice of its own instead. `code` is `HTTP_<status>`, as for
- * any refusal that names no code.
+ * a DELETE of a route this client reads as JSON could not read as JSON (`#response`). A keyed
+ * write's 2xx is the write table's (`answerEvent`), and `readRoute` and `sendRoute`, which send a
+ * route their caller wrote, give a 2xx's body that is not JSON back as it came (`#route`).
+ * `answer` says what came back and `advice` what asking again can do, judged from the method and
+ * the status alone; the message joins them. A caller that knows more about what its own request
+ * did gives `answer` advice of its own instead. `code` is `HTTP_<status>`, as for any refusal
+ * that names no code.
  */
 export class DispatchGatewayError extends DispatchServiceError {
   override readonly fromDispatch = false;
@@ -985,10 +997,11 @@ const GATEWAY_PAGE = "which looks like a proxy or gateway page rather than Dispa
 /**
  * What asking again can do once a gateway answered `method` with `status`. A status that cannot
  * clear answers the same request the same way. One that can (`gatewayClears`) may clear for a
- * read, and for a 2xx, which reaches here only for a read, a PUT or a DELETE (`#response`), none
- * of which writes twice. A write answered so may already have taken effect only when the request
- * reached Dispatch (`reachesDispatch`), where a blind retry could apply it twice; otherwise it did
- * not, and a retry may succeed as for a read.
+ * read, and for a 2xx, which reaches here only for a read, a PUT or a DELETE, none of which writes
+ * twice: a keyed write's 2xx is the write table's (`#endWrite` reads it, never `#payloadOf`), and
+ * `#route` gives a 2xx's body that is not JSON back as it came. A write answered so may already
+ * have taken effect only when the request reached Dispatch (`reachesDispatch`), where a blind
+ * retry could apply it twice; otherwise it did not, and a retry may succeed as for a read.
  */
 function gatewayAdvice(method: string, status: number): string {
   if (!gatewayClears(status)) {
@@ -1454,27 +1467,29 @@ export class DispatchClient {
   /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
    *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
    *  scheme, a host and a dot segment, so it resolves under this client's server as every other
-   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
+   *  route does (`#url`). Answers Dispatch's JSON, or a 2xx's body that is not JSON as the bytes
+   *  that came (`RouteAnswer`, `#route`).
    *
    *  It sends the GET through one `#send` (once, and once more only after Dispatch answers that
-   *  the token presented is not live) and throws a refusal as `#response` throws it, an answer
+   *  the token presented is not live) and throws a refusal as `#payloadOf` throws it, an answer
    *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
    *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
    *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
    *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
    *  so Dispatch's own refusal, which names the route, is printed as it came. */
-  async readRoute(path: string): Promise<unknown> {
+  async readRoute(path: string): Promise<RouteAnswer> {
     return this.#route("GET", path);
   }
 
   /** `<method> <path>`, for `dispatch api --method`: one write of a route no method here names,
    *  `path` resolved as `readRoute` resolves it, with `body`, where given, sent as written as
    *  the request's JSON body. Like `readRoute` it goes through one `#send`, skipping `#noRoute`,
-   *  and answers Dispatch's JSON or throws its refusal as `#response` does. It is no write of
-   *  `#write`'s: it goes once, and once more only after Dispatch answers that the token it
-   *  presented is not live (Dispatch authenticated nothing, so nothing ran), with no redirect
-   *  followed and no `Idempotency-Key`, so a caller that repeats it decides that itself. */
-  async sendRoute(method: DispatchApiMethod, path: string, body?: string): Promise<unknown> {
+   *  and answers as `readRoute` does: Dispatch's JSON, a 2xx's body that is not JSON as it came,
+   *  or Dispatch's refusal thrown. It is no write of `#write`'s: it goes once, and once more only
+   *  after Dispatch answers that the token it presented is not live (Dispatch authenticated
+   *  nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`, so a caller
+   *  that repeats it decides that itself. */
+  async sendRoute(method: DispatchApiMethod, path: string, body?: string): Promise<RouteAnswer> {
     return this.#route(method, path, body);
   }
 
@@ -2408,11 +2423,26 @@ export class DispatchClient {
 
   /** `readRoute`'s and `sendRoute`'s one request of `path`, the route its caller wrote, resolved
    *  under this client's server, with `body`, where given, as its JSON body: one `#send`, skipping
-   *  `#noRoute`, its answer read by `#response`. */
-  async #route(method: "GET" | DispatchApiMethod, path: string, body?: string): Promise<unknown> {
+   *  `#noRoute`. A 2xx whose body is not JSON, but for a bodiless 204 or 205, is the route's own
+   *  answer (a file version's bytes, a document's Markdown download), so it comes back as the
+   *  bytes that came; every other answer is read by `#payloadOf`, Dispatch's refusal and a
+   *  gateway's page among them. */
+  async #route(
+    method: "GET" | DispatchApiMethod,
+    path: string,
+    body?: string
+  ): Promise<RouteAnswer> {
     const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
     const encoded = body === undefined ? undefined : { content: body, type: "application/json" };
-    return this.#response(method, url, await this.#send(method, url, encoded));
+    const response = await this.#send(method, url, encoded);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    // Only a body that can be Dispatch's JSON is read as text: a typed JSON one, or a refusal's.
+    const text = response.ok && !isJson(response) ? "" : new TextDecoder().decode(bytes);
+    const json = parsedJson(response, text);
+    if (response.ok && json === undefined && !NULL_BODY_STATUSES.has(response.status)) {
+      return { body: bytes, type: response.headers.get("Content-Type") ?? undefined };
+    }
+    return { payload: this.#payloadOf(method, url, { response, text, json }) };
   }
 
   /**
@@ -2445,8 +2475,9 @@ export class DispatchClient {
     return (await this.#sendOnce(method, url, body, accept, signal)).answer;
   }
 
-  /** One request of a read, presenting the credential for it, and the headers it presented;
-   *  `signal` aborts it beside the client's own signal. */
+  /** One request of `#send`'s (a read, a PUT, a DELETE or `sendRoute`'s write), presenting the
+   *  credential for it, and the headers it presented; `signal` aborts it beside the client's own
+   *  signal. */
   async #sendOnce(
     method: string,
     url: string,

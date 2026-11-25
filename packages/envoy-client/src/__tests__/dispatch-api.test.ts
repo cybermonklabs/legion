@@ -2,14 +2,15 @@
 //
 // `dispatch api --path <route> [--method POST|PUT|PATCH|DELETE] [--body-file <file>|-]` sends one
 // request of Dispatch's HTTP API with the credential every `dispatch` command resolves, and prints
-// Dispatch's JSON answer. These rows drive it through `runDispatchCli` against a stub secrets
-// broker (`stubBroker`) and a stub Dispatch of this file's own, which keeps each request it was
-// sent and answers by path: its own whoami, the 401 and the 404 captured from a production
-// Dispatch, a proxy's 502 page, a bodiless 204 and a redirect. They hold the paths it refuses
-// before anything is sent, the credential it presents and the session its trade names, with a
-// host and without one, and the AskGate rule: in a session whose gate is on it sends GET alone,
-// and names the command that makes the write; the gate sits in the command itself, under a host
-// and with none.
+// the answer's body: Dispatch's JSON, or any other body of a 2xx as it came. These rows drive it
+// through `runDispatchCli` against a stub secrets broker (`stubBroker`) and a stub Dispatch of
+// this file's own, which keeps each request it was sent and answers by path: its own whoami, the
+// 401 and the 404 captured from a production Dispatch, a proxy's 502 page, a bodiless 204, a
+// redirect, a document version's Markdown download, a picture version's bytes and a write's
+// answer in plain text. They hold the paths it refuses before anything is sent, the credential it
+// presents and the session its trade names, with a host and without one, and the AskGate rule: in
+// a session whose gate is on it sends GET alone, and names the command that makes the write; the
+// gate sits in the command itself, under a host and with none.
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -48,6 +49,19 @@ const PROXY_PAGE = "<html><body><h1>502 Bad Gateway</h1></body></html>";
 /** A JSON answer in Dispatch's place that carries a `code` and is no refusal of Dispatch's,
  *  which always carries its `error`. */
 const FOREIGN_JSON = { code: "UPSTREAM_DOWN", message: "the upstream is down" };
+/** A document version's Markdown, as `?download=true` answers it: no newline at its end, so one
+ *  the command added would show. */
+const MARKDOWN = "# Plan\n\nShip the client first.";
+/** A picture version's bytes as Dispatch stores them: a PNG's signature, then two bytes no UTF-8
+ *  text holds, which a round trip through text would change. */
+const PNG = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe);
+/** The version of a document, and of a picture, the stub answers. */
+const DOCUMENT_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000002/versions/3";
+const PICTURE_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000003/versions/1";
+/** A write's answer in plain text, as something no Dispatch route answers yet could. */
+const ACCEPTED = "accepted";
+/** A plain-text answer longer than the most Claude Code shows (`CLAUDE_OUTPUT_MAX`). */
+const LONG = "one line of a long answer\n".repeat(1_500);
 
 /** One request a stub server was sent, as it arrived. */
 interface Sent {
@@ -61,8 +75,10 @@ interface Sent {
  * A Dispatch that keeps every request it is sent and answers by path: `/api/v1`, whoami, the
  * captured 401 (`/api/v1/signed-out`) and 404 (`/api/v1/no-such-route`), a proxy's 502 page
  * (`/api/v1/proxied`), a JSON 503 that is no refusal of Dispatch's (`/api/v1/foreign`), a bodiless
- * 204 (`/api/v1/nothing`), a 307 to `redirectTo` (`/api/v1/moved`), and any other request with the
- * method and path it was sent.
+ * 204 (`/api/v1/nothing`), a 307 to `redirectTo` (`/api/v1/moved`), a document version as its
+ * JSON or, with `?download=true`, its Markdown (`DOCUMENT_VERSION`), a picture version's bytes
+ * (`PICTURE_VERSION`), plain text to any method (`/api/v1/accepted`, `/api/v1/long`), and any
+ * other request with the method and path it was sent.
  */
 function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: Sent[] } {
   const sent: Sent[] = [];
@@ -100,6 +116,18 @@ function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: S
             status: 307,
             headers: { Location: `${redirectTo}/api/v1/whoami` },
           });
+        case DOCUMENT_VERSION:
+          return url.searchParams.get("download") === "true"
+            ? new Response(MARKDOWN, {
+                headers: { "Content-Type": "text/markdown; charset=utf-8" },
+              })
+            : Response.json({ number: 3, markdown: MARKDOWN });
+        case PICTURE_VERSION:
+          return new Response(PNG, { headers: { "Content-Type": "image/png" } });
+        case "/api/v1/accepted":
+          return new Response(ACCEPTED, { headers: { "Content-Type": "text/plain" } });
+        case "/api/v1/long":
+          return new Response(LONG, { headers: { "Content-Type": "text/plain" } });
         default:
           return Response.json({ method: request.method, path: url.pathname });
       }
@@ -113,6 +141,8 @@ function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: S
 interface Ran {
   readonly code: number;
   readonly stdout: string;
+  /** Standard output as the bytes written to it, its text and its bytes in the order written. */
+  readonly bytes: Uint8Array;
   readonly stderr: string;
   readonly stdinReads: number;
 }
@@ -124,12 +154,15 @@ async function dispatch(
   stdin = "",
   cwd = tempDir()
 ): Promise<Ran> {
-  let stdout = "";
+  const written: Uint8Array[] = [];
   let stderr = "";
   let stdinReads = 0;
   const code = await runDispatchCli(argv, env, {
     stdout: (text) => {
-      stdout += text;
+      written.push(new TextEncoder().encode(text));
+    },
+    stdoutBytes: (bytes) => {
+      written.push(bytes.slice());
     },
     stderr: (text) => {
       stderr += text;
@@ -141,7 +174,8 @@ async function dispatch(
     },
     cwd,
   });
-  return { code, stdout, stderr, stdinReads };
+  const bytes = new Uint8Array(Buffer.concat(written));
+  return { code, stdout: new TextDecoder().decode(bytes), bytes, stderr, stdinReads };
 }
 
 /** The claims of a JWT, a DPoP proof here. */
@@ -434,6 +468,131 @@ describe("a request", () => {
     expect(broker.trades).toHaveLength(0);
     expect(server.sent[0]?.headers.get("Authorization")).toBe(`Bearer ${bearer}`);
     expect(server.sent[0]?.headers.get("DPoP")).toBeNull();
+  });
+});
+
+/** The two ways the command runs: as an Oh My Pi session, and in a job no host runs. */
+const RUNS = [
+  ["with a host", sessionEnvironment],
+  ["with no host", jobEnvironment],
+] as const;
+
+// Review 6059716082, finding 1: Dispatch answers some routes with a body that is not JSON (a file
+// version's bytes under its own MIME type, a document version's Markdown with `?download=true`),
+// and the command prints any 2xx's body as it came and exits 0: on standard output the bytes that
+// came and nothing else, with no newline added and no round trip through text.
+describe("a 2xx answer that is not JSON", () => {
+  test.each(
+    RUNS
+  )("a document version's Markdown download is printed exactly as it came, and it exits 0: %s", async (_, environment) => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const ran = await dispatch(
+      ["api", "--path", `${DOCUMENT_VERSION}?download=true`],
+      environment(broker.url, server.url, tempDir())
+    );
+    expect(ran.code, ran.stdout).toBe(0);
+    expect(ran.stdout).toBe(MARKDOWN);
+    expect(ran.stderr).toBe("");
+    expect(server.sent).toHaveLength(1);
+  });
+
+  test.each(
+    RUNS
+  )("a picture version's bytes go to standard output unchanged, and it exits 0: %s", async (_, environment) => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const ran = await dispatch(
+      ["api", "--path", PICTURE_VERSION],
+      environment(broker.url, server.url, tempDir())
+    );
+    expect(ran.code, ran.stdout).toBe(0);
+    expect(ran.bytes).toEqual(PNG);
+    expect(ran.stderr).toBe("");
+  });
+
+  test.each(
+    RUNS
+  )("a POST answered 200 in plain text prints it, and it exits 0: %s", async (_, environment) => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const ran = await dispatch(
+      ["api", "--method", "POST", "--path", "/api/v1/accepted", "--body-file", bodyFile(COMMENT)],
+      environment(broker.url, server.url, tempDir())
+    );
+    expect(ran.code, ran.stdout).toBe(0);
+    expect(ran.stdout).toBe(ACCEPTED);
+    expect(ran.stderr).toBe("");
+    expect(server.sent.map((sent) => sent.method)).toEqual(["POST"]);
+  });
+
+  test("the same version read without download=true is Dispatch's JSON, printed as every JSON answer is", async () => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const ran = await dispatch(
+      ["api", "--path", DOCUMENT_VERSION],
+      jobEnvironment(broker.url, server.url, tempDir())
+    );
+    expect(ran.code, ran.stdout).toBe(0);
+    expect(ran.stdout).toBe(`${JSON.stringify({ number: 3, markdown: MARKDOWN }, null, 2)}\n`);
+  });
+
+  test("with a host, the ledger records the body's type and size, never its bytes", async () => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const stateDir = tempDir();
+    const ran = await dispatch(
+      ["api", "--path", PICTURE_VERSION],
+      sessionEnvironment(broker.url, server.url, stateDir)
+    );
+    expect(ran.code, ran.stdout).toBe(0);
+    expect(ledgerOf(stateDir, SESSION)).toEqual([
+      {
+        at: expect.any(String),
+        tool: "dispatch_api",
+        details: { path: PICTURE_VERSION, content_type: "image/png", bytes: PNG.byteLength },
+      },
+    ]);
+  });
+
+  test("under Claude Code a body longer than the output limit is written whole, and no file holds it", async () => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const stateDir = tempDir();
+    const ran = await dispatch(["api", "--path", "/api/v1/long"], {
+      ...jobEnvironment(broker.url, server.url, stateDir),
+      DISPATCH_HOST: "claude",
+      CLAUDE_CODE_SESSION_ID: "claude-ses",
+    });
+    expect(ran.code, ran.stdout.slice(0, 200)).toBe(0);
+    expect(ran.stdout).toBe(LONG);
+    expect(ran.stderr).toBe("");
+    expect(ledgerOf(stateDir, "claude-ses").map((entry) => entry.details)).toEqual([
+      { path: "/api/v1/long", content_type: "text/plain", bytes: LONG.length },
+    ]);
+    expect(existsSync(join(stateDir, "sessions", "claude-ses", "out"))).toBe(false);
+  });
+
+  test("with a host, a note of the CLI's own goes to standard error beside bytes, and before a JSON answer as for every command", async () => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const env = sessionEnvironment(broker.url, server.url, tempDir());
+    // A checkout's OpenCode-era file, which the CLI names on every call and does not read.
+    const cwd = tempDir();
+    mkdirSync(join(cwd, ".opencode"), { recursive: true });
+    writeFileSync(join(cwd, ".opencode", "envoy.json"), "{}");
+
+    const picture = await dispatch(["api", "--path", PICTURE_VERSION], env, "", cwd);
+    expect(picture.code, picture.stdout).toBe(0);
+    expect(picture.bytes).toEqual(PNG);
+    expect(picture.stderr).toStartWith(
+      `dispatch: ${join(cwd, ".opencode", "envoy.json")} is not read`
+    );
+
+    const whoami = await dispatch(["api", "--path", "/api/v1/whoami"], env, "", cwd);
+    expect(whoami.code, whoami.stdout).toBe(0);
+    expect(whoami.stdout).toBe(`${picture.stderr}${JSON.stringify(WHOAMI, null, 2)}\n`);
+    expect(whoami.stderr).toBe("");
   });
 });
 

@@ -4,33 +4,26 @@
 // that no named command sends, a GET or the method `--method` names, sent through the client
 // every command uses, so it presents the credential every command presents (a set bearer, the
 // token files' broker token, else a token traded at the secrets broker, with a new DPoP proof for
-// the request), and Dispatch's JSON answer printed for `jq` to read. The contract's rule refused
-// a path that could leave `/api/v1` (`apiPathProblem`), and a body with no method
-// (`apiCallProblem`), before this runs. The request goes once (`DispatchClient.readRoute` and
-// `sendRoute`), and once more only after Dispatch answers that the token it presented is not
-// live (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
-// `Idempotency-Key`. A refusal is Dispatch's own error, thrown as the client throws it, which the
-// command prints and exits 1 on.
+// the request), and the answer's body printed: Dispatch's JSON for `jq` to read, and any other
+// body of a 2xx, such as a file version's bytes, as it came. The contract's rule refused a path
+// that could leave `/api/v1` (`apiPathProblem`), and a body with no method (`apiCallProblem`),
+// before this runs. The request goes once (`DispatchClient.readRoute` and `sendRoute`), and once
+// more only after Dispatch answers that the token it presented is not live (Dispatch
+// authenticated nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. A
+// refusal is Dispatch's own error, thrown as the client throws it, which the command prints and
+// exits 1 on.
 //
 // A script and a job send it too: a broker token is bound to a key, so no script can send it as a
 // bearer. Where no host is found, as in a GitHub Actions job, the CLI reads Dispatch from the
-// environment alone (`unhostedDispatch`). In a session whose AskGate reviews Dispatch writes it
-// sends GET alone, and names the command that makes the write, which the gate reviews
-// (`gatedWrite`, src/askgate-marker.ts). The gate sits in the command itself (`sendApiCall`),
-// under a host and with none.
+// environment alone (`unhostedDispatch`, host-session.ts). In a session whose AskGate reviews
+// Dispatch writes it sends GET alone, and names the command that makes the write, which the gate
+// reviews (`gatedWrite`, src/askgate-marker.ts). The gate sits in the command itself
+// (`sendApiCall`), under a host and with none.
 
 import type { DispatchApiMethod } from "@legion/contracts";
 import { type AskgateState, askgateState } from "../askgate-marker";
-import { brokerRouteConfigured } from "../broker-credential";
-import {
-  type ActiveDispatchConfig,
-  type DispatchEnvironment,
-  dispatchSettings,
-  tokenFilesSet,
-} from "../dispatch-config";
 import type { DispatchClient } from "../dispatch-http";
-import { sessionDirectory } from "../dispatch-session-directory";
-import type { EnvoyConfig } from "../envoy-config";
+import { SESSION_VARIABLES, sessionDirectory } from "../dispatch-session-directory";
 import { ToolInputError } from "../tool-input-errors";
 import {
   type DispatchToolResult,
@@ -40,7 +33,6 @@ import {
   stringArg,
   type ToolArguments,
 } from "./context";
-import { SESSION_VARIABLES } from "./host-session";
 
 /** Why the gate refuses a write here, as the refusal and its ledger line's AskGate mark say it:
  *  AskGate reviews the `dispatch` commands, and no `dispatch api` call. */
@@ -49,23 +41,6 @@ const GATED_WHY =
 
 /** Where a route no command writes leaves the command its refusal names. */
 const NO_ROW = "the dispatch command that makes it (dispatch --help lists them)";
-
-/** What the command refuses with, where it has no host, when the environment names no Dispatch
- *  or no credential for it. */
-const NO_DISPATCH =
-  "no Dispatch is set; set DISPATCH_URL, and a credential (DISPATCH_TOKEN, DISPATCH_TOKEN_FILE, DISPATCH_BROKER_TOKEN_FILE and DISPATCH_BROKER_DPOP_KEY_FILE, or the broker's AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY)";
-
-/** The configuration a command with no host reads: no envoy.json at all, so no file under HOME
- *  speaks for a job that no session runs, and Dispatch is read from the environment alone. */
-const NO_FILE: EnvoyConfig = {
-  kind: "read",
-  path: "",
-  dispatch: {},
-  envoy: {},
-  checkout: null,
-  missing: null,
-  warnings: [],
-};
 
 /** A write route a `dispatch` command sends: its method, its path with each `{name}` standing for
  *  one segment, and the commands that send it. */
@@ -241,8 +216,9 @@ function gatedWriteRefusal(
  * Sends `args`, a `dispatch_api` call the contract's schema checked, through `client`, in `env`:
  * a GET of its path through `readRoute`, or its method with its body through `sendRoute`, which
  * a session whose AskGate reviews Dispatch writes refuses first (`gatedWriteRefusal`). Answers
- * Dispatch's JSON, printed for `jq`; a bodiless 204 or 205 prints as the empty text the client
- * reads it as.
+ * Dispatch's JSON, printed for `jq` (a bodiless 204 or 205 as the empty text the client reads it
+ * as), or a 2xx's body that is not JSON as `body`, the bytes that came, which its details record
+ * by their Content-Type and their count alone.
  */
 export async function sendApiCall(
   args: ToolArguments,
@@ -259,9 +235,19 @@ export async function sendApiCall(
     method === undefined
       ? await client.readRoute(path)
       : await client.sendRoute(method, path, optionalString(args, "body"));
+  const details = { path, ...defined("method", method) };
+  if ("body" in answer) {
+    const { body, type } = answer;
+    return {
+      text: `Dispatch answered a body of ${body.byteLength} bytes that is not JSON (${type ?? "no Content-Type"})`,
+      body,
+      details: { ...details, ...defined("content_type", type), bytes: body.byteLength },
+    };
+  }
+  const { payload } = answer;
   return {
-    text: typeof answer === "string" ? answer : JSON.stringify(answer, null, 2),
-    details: { path, ...defined("method", method) },
+    text: typeof payload === "string" ? payload : JSON.stringify(payload, null, 2),
+    details,
   };
 }
 
@@ -272,41 +258,4 @@ export async function sendApiCall(
  */
 export async function apiCommand(context: SessionContext): Promise<DispatchToolResult> {
   return await sendApiCall(context.args, context.input.env ?? {}, context.newClient());
-}
-
-/** Whether the environment names no Dispatch credential: no bearer variable, and no broker and
- *  identity to trade. A broker setting that cannot be read names one, whose problem is said. */
-function namesNoCredential(env: DispatchEnvironment): boolean {
-  if (env.DISPATCH_TOKEN !== undefined || env.DISPATCH_TOKEN_FILE !== undefined) return false;
-  try {
-    return !brokerRouteConfigured(env).traded;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Dispatch as `dispatch api` reads it where no host is found (`commandHost`), as in a GitHub
- * Actions job: from the environment alone, reading no envoy.json, its broker trade naming the
- * session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION, else the session the job entry
- * fixes; or the usage error the command refuses with, each word of it the command's own.
- */
-export async function unhostedDispatch(
-  env: DispatchEnvironment
-): Promise<{ readonly config: ActiveDispatchConfig } | { readonly problem: string }> {
-  const resolution = await dispatchSettings(env, NO_FILE, {
-    // biome-ignore lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access on an index signature.
-    session: env["DISPATCH_SESSION_ID"],
-    tokenFiles: true,
-  });
-  if (resolution.enabled) return { config: resolution };
-  // The off texts of an unset Dispatch or credential name an envoy.json, which a command with no
-  // host does not read; any other says what was wrong with what is set, the token files' refusal
-  // among them, which names DISPATCH_URL where it is unset beside them.
-  return {
-    problem:
-      tokenFilesSet(env) === undefined && (env.DISPATCH_URL === undefined || namesNoCredential(env))
-        ? `dispatch api was not called: ${NO_DISPATCH}`
-        : `dispatch api was not called: dispatch config: ${resolution.error ?? resolution.notice}`,
-  };
 }

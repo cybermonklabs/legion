@@ -1,12 +1,19 @@
 // packages/envoy-client/src/dispatch-commands/host-session.ts
 //
 // The session a `dispatch` command acts as under the host that runs it, and the Dispatch it reads
-// there, which `dispatch-cli.ts` takes from here. `dispatch api` (`api.ts`) takes the session
-// variables alone, for the AskGate records it reads before a write. Neither file is imported
-// here, so neither import is a cycle.
+// there (`hostSession`, `hostedDispatch`), or, where no host runs `dispatch api`, the Dispatch it
+// reads from the environment alone (`unhostedDispatch`); `dispatch-cli.ts` takes each from here.
+// Neither `dispatch-cli.ts` nor `api.ts` is imported here, so neither import is a cycle.
 
-import type { ActiveDispatchConfig, DispatchEnvironment } from "../dispatch-config";
+import { brokerRouteConfigured } from "../broker-credential";
+import {
+  type ActiveDispatchConfig,
+  type DispatchEnvironment,
+  dispatchSettings,
+  tokenFilesSet,
+} from "../dispatch-config";
 import type { DispatchHost } from "../dispatch-cwd";
+import type { EnvoyConfig } from "../envoy-config";
 import {
   handedConfigFile,
   type SessionConfigFile,
@@ -16,20 +23,22 @@ import {
 
 const HOSTS = ["omp", "claude", "codex"] as const satisfies readonly DispatchHost[];
 
-/**
- * The variables a `dispatch` command reads a session's id from, in the order the refusal ledger
- * takes the first one set under any host but Codex (`runDispatchCli`): claude-envoy's QA override
- * and then Claude Code's own id (`claudeSessionId` in claude-envoy), the id an Oh My Pi plugin
- * sets or a person names, and Codex's thread id, which alone is read under Codex. `dispatch api`
- * reads the AskGate record of each one set before a write, so every session the ledger can be
- * written for is one whose gate it reads.
- */
-export const SESSION_VARIABLES = [
-  "ENVOY_SESSION_ID",
-  "CLAUDE_CODE_SESSION_ID",
-  "DISPATCH_SESSION_ID",
-  "CODEX_THREAD_ID",
-] as const;
+/** What `dispatch api` refuses with, where it has no host, when the environment names no
+ *  Dispatch or no credential for it. */
+const NO_DISPATCH =
+  "no Dispatch is set; set DISPATCH_URL, and a credential (DISPATCH_TOKEN, DISPATCH_TOKEN_FILE, DISPATCH_BROKER_TOKEN_FILE and DISPATCH_BROKER_DPOP_KEY_FILE, or the broker's AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY)";
+
+/** The configuration a command with no host reads: no envoy.json at all, so no file under HOME
+ *  speaks for a job that no session runs, and Dispatch is read from the environment alone. */
+const NO_FILE: EnvoyConfig = {
+  kind: "read",
+  path: "",
+  dispatch: {},
+  envoy: {},
+  checkout: null,
+  missing: null,
+  warnings: [],
+};
 
 /** The host a command runs under and the session it acts as there, with the envoy.json that
  *  host's plugin chose, or the usage error a command refuses the absence of either with. */
@@ -63,25 +72,23 @@ export function hostSession(
   }
   // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
   // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
-  // biome-ignore-start lint/complexity/useLiteralKeys: claude-envoy type-checks this source under noPropertyAccessFromIndexSignature, which refuses a dot on an index signature
   const [sessionId, sessionVariable] =
     host === "claude"
       ? [
-          env["ENVOY_SESSION_ID"] ?? env["CLAUDE_CODE_SESSION_ID"],
+          env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID,
           "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID",
         ]
       : host === "codex"
-        ? [env["CODEX_THREAD_ID"], "CODEX_THREAD_ID"]
-        : [env["DISPATCH_SESSION_ID"], "DISPATCH_SESSION_ID"];
+        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
+        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
   if (sessionId === undefined) {
     return {
       problem: `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
     };
   }
   const file =
-    (env["DISPATCH_HOST"] === undefined ? null : handedConfigFile(env)) ??
+    (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
     sessionConfigFile(host, env);
-  // biome-ignore-end lint/complexity/useLiteralKeys: see above
   return { host, sessionId, file };
 }
 
@@ -122,4 +129,40 @@ export async function hostedDispatch(
     };
   }
   return { config: resolution, warnings: lines };
+}
+
+/** Whether the environment names no Dispatch credential: no bearer variable, and no broker and
+ *  identity to trade. A broker setting that cannot be read names one, whose problem is said. */
+function namesNoCredential(env: DispatchEnvironment): boolean {
+  if (env.DISPATCH_TOKEN !== undefined || env.DISPATCH_TOKEN_FILE !== undefined) return false;
+  try {
+    return !brokerRouteConfigured(env).traded;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Dispatch as `dispatch api` reads it where no host is found (`commandHost`), as in a GitHub
+ * Actions job: from the environment alone, reading no envoy.json, its broker trade naming the
+ * session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION, else the session the job entry
+ * fixes; or the usage error the command refuses with, each word of it the command's own.
+ */
+export async function unhostedDispatch(
+  env: DispatchEnvironment
+): Promise<{ readonly config: ActiveDispatchConfig } | { readonly problem: string }> {
+  const resolution = await dispatchSettings(env, NO_FILE, {
+    session: env.DISPATCH_SESSION_ID,
+    tokenFiles: true,
+  });
+  if (resolution.enabled) return { config: resolution };
+  // The off texts of an unset Dispatch or credential name an envoy.json, which a command with no
+  // host does not read; any other says what was wrong with what is set, the token files' refusal
+  // among them, which names DISPATCH_URL where it is unset beside them.
+  return {
+    problem:
+      tokenFilesSet(env) === undefined && (env.DISPATCH_URL === undefined || namesNoCredential(env))
+        ? `dispatch api was not called: ${NO_DISPATCH}`
+        : `dispatch api was not called: dispatch config: ${resolution.error ?? resolution.notice}`,
+  };
 }

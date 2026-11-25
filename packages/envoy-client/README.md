@@ -923,7 +923,12 @@ Dispatch's own rule reads it) or not JSON, but for a bodiless 204 or 205: every 
 reads as JSON answers JSON (`WriteJSON`), so such a read is a `DispatchGatewayError` too, naming
 the body the same way, and a retry may succeed, since a proxy or a captive portal in the way can
 be got past. Before, its text was handed back as the route's answer, and `dispatch open-asks` read a
-portal's page as no asks at all.
+portal's page as no asks at all. Such a 2xx reaches that advice only for a read, a `PUT` or a
+`DELETE`: a keyed write's 2xx, a `POST`'s or a `PATCH`'s, is read by its own table
+(`write-outcome.ts`), which says the write may have landed.
+`readRoute` and `sendRoute`, which send the route `dispatch api`'s caller wrote, give a 2xx's
+body that is not JSON back as the bytes that came, with its Content-Type (`RouteAnswer`): a file
+version's bytes and a document version's Markdown download are such answers.
 
 `DispatchWriteUnsettledError` is deliberately not a `DispatchServiceError`, since a caller reads
 one as a refusal Dispatch decided: its message is the last answer or failure, the number of
@@ -1180,14 +1185,17 @@ presentation was dead (`stale(session, presented)`), presents the credential aga
 request one more time. The credential drops that dead token alone, from the client that presented
 it: a session the host moved to in between keeps its live token, and a token the client traded
 since is kept; the next presentation uses the token the client holds now, trading at the broker
-where it holds none. A write goes again under the same `Idempotency-Key`. A read does this once
-for each send, and a write once for the call: a second such answer is a refusal Dispatch's auth
-made before its keyed layer ran, so it is the write's refusal while nothing may have landed and
-the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`).
-`dispatch api`'s request, its GET or its write, is one send, which Dispatch's answer of no route
-does not repeat, and the command prints that refusal as it came. If the broker refuses the new
-trade, the call fails in the broker's words, unless an attempt of the write may have landed: then
-the write asks again on its pacing, and with no ask left it is `DispatchWriteUnsettledError`.
+where it holds none. A keyed write, a named command's (`#write`), goes again under the same
+`Idempotency-Key`. A read does this once for each send, and a keyed write once for the call: a
+second such answer is a refusal Dispatch's auth made before its keyed layer ran, so it is the
+write's refusal while nothing may have landed and the write is `DispatchWriteUnsettledError` once
+something may have (`write-outcome.ts`). If the broker refuses the new trade, the call fails in
+the broker's words, unless an attempt of a keyed write may have landed: then that write asks again
+on its pacing, and with no ask left it is `DispatchWriteUnsettledError`. `dispatch api`'s request,
+its GET or its write, goes through one `#send`: one resend after `401 BROKER_TOKEN_NOT_ACTIVE`,
+never on a pacing, and never `DispatchWriteUnsettledError`. Dispatch's answer of no route does not
+repeat it, and the command prints a refusal, the broker's refusal of the trade among them, as it
+came.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
@@ -1346,10 +1354,10 @@ whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set tha
 request of a route under `/api/v1` that no other command sends (`apiCommand`,
 `src/dispatch-commands/api.ts`), with the session's own credential as every command presents it
 (a set bearer, the token files' broker token, else a token traded at the secrets broker, with a
-new DPoP proof for the request), and prints Dispatch's JSON answer for `jq`. It is the contract's
-spec `dispatch_api`. With no `--method` it sends
-a GET (`DispatchClient.readRoute`); `--method` sends `POST`, `PUT`, `PATCH` or `DELETE` in its
-place (`DispatchClient.sendRoute`), and `GET` is no value of it. A write that a named command
+new DPoP proof for the request), and prints the answer's body: Dispatch's JSON for `jq`, or any
+other body of a 2xx as it came. It is the contract's spec `dispatch_api`. With no `--method` it
+sends a GET (`DispatchClient.readRoute`); `--method` sends `POST`, `PUT`, `PATCH` or `DELETE` in
+its place (`DispatchClient.sendRoute`), and `GET` is no value of it. A write that a named command
 makes goes through that command (`dispatch --help` lists them): `dispatch api` is for a route no
 command sends, and it is how a script or a job writes, since a broker token is bound to a key and
 no script can send it as a bearer. `--body-file <file>` sends the file's text, `--body-file -`
@@ -1364,13 +1372,18 @@ would send percent-encoded, and one with a `.` or `..` segment, plain or percent
 URL parser would resolve any of those out of `/api/v1`; each refusal names the path, so the
 credential goes to no other server and no other route. It sends the request once, and once more
 only after Dispatch answers that the token it presented is not live (Dispatch authenticated
-nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. It exits 0 on a 2xx
-answer, printing a bodiless 204 as empty text. A refusal is Dispatch's error with its code and,
-where Dispatch gives one, its hint
-(`NOT_FOUND: no route for GET /api/v1/x; GET /api/v1 lists every route`), exit 1; an answer
-that is not Dispatch's JSON, such as a proxy's page or a redirect, is named by its status, exit
-1 too. A usage error, such as a path outside `/api/v1` or a body with no method, exits 2. Under
-Claude Code, an answer longer than the output limit is written to a file the output names.
+nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. On a 2xx answer it
+prints the body as it came and exits 0: Dispatch's JSON for `jq`, a bodiless 204 as empty text,
+and any other body, such as a file version's bytes (`GET /api/v1/artifacts/{id}/versions/{number}`)
+or a document version's Markdown (`?download=true`), unchanged, with nothing added and nothing
+else on standard output; under a host, the session's ledger records such a body by its
+Content-Type and size, never its bytes. Any other answer exits 1 with its code: a refusal is
+Dispatch's error with its code and, where Dispatch gives one, its hint
+(`NOT_FOUND: no route for GET /api/v1/x; GET /api/v1 lists every route`), and an answer that is
+neither a 2xx nor Dispatch's JSON, such as a proxy's page or a redirect, is named by its status. A
+usage error, such as a path outside `/api/v1` or a body with no method, exits 2. Under Claude
+Code, a JSON answer longer than the output limit is written to a file the output names; a body
+that is not JSON is written whole.
 
 Under a host it acts as that host's session, as every command does, and refuses a missing
 session id with the usage error they give. Where no host is found (`commandHost`), as in a
@@ -1381,9 +1394,11 @@ environment alone and no envoy.json (`unhostedDispatch`): `DISPATCH_URL`, and `D
 Its trade names the session `DISPATCH_SESSION_ID` holds, else `AGENT_SECRETS_SESSION`'s, else no
 session, which the fixed session of the job's broker entry answers; with none, the broker refuses
 the trade and the command exits 1 naming the refusal. With no Dispatch or no credential set it
-exits 2, naming those variables. It keeps no session's state there: a refusal before a request
-goes to the ledger of the session the environment names, if any, and a request that was sent
-records nothing. For a write, the AskGate record of every session the environment names
+exits 2, naming those variables. It keeps no session's state there, since no session runs it:
+only a refusal made before a credential is resolved, a usage error or AskGate's refusal of a
+write, goes to the ledger of the session the environment names, if any, and a failure of the
+credential, the broker's refusal of the trade among them, or of the request records nothing. For
+a write, the AskGate record of every session the environment names
 (`ENVOY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `DISPATCH_SESSION_ID`, `CODEX_THREAD_ID`) is read,
 host or no host. Where any of them is on, or cannot be read, it sends only `GET`, and refuses
 every other method before any request with exit 1, naming the `dispatch` command that makes that

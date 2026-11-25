@@ -16,11 +16,11 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
-import { ApiGateRefusal, sendApiCall, unhostedDispatch } from "./dispatch-commands/api";
+import { ApiGateRefusal, sendApiCall } from "./dispatch-commands/api";
 import { defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
 import { parentStatusConflictLines } from "./dispatch-commands/failures";
-import { hostedDispatch, hostSession, SESSION_VARIABLES } from "./dispatch-commands/host-session";
+import { hostedDispatch, hostSession, unhostedDispatch } from "./dispatch-commands/host-session";
 import { printsJson } from "./dispatch-commands/issues";
 import { loginCommand } from "./dispatch-commands/login";
 import {
@@ -30,7 +30,11 @@ import {
   executeDispatchTool,
 } from "./dispatch-execute";
 import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
-import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
+import {
+  SESSION_VARIABLES,
+  sessionDirectory,
+  sessionStateRoot,
+} from "./dispatch-session-directory";
 import {
   appendResult,
   loadSessionMemory,
@@ -51,6 +55,10 @@ import { createEnvoyClient, EnvoyApiError } from "./transport";
 export interface DispatchCliIo {
   /** Where the text the model reads goes: results, refusals and notices alike. */
   stdout(text: string): void;
+  /** Where a body that is not text goes, byte for byte, and alone on standard output:
+   *  `dispatch api`'s answer to a 2xx that is not JSON (`DispatchToolResult.body`). Without it
+   *  the bytes go to `stdout` decoded as UTF-8, for a caller that reads text alone. */
+  stdoutBytes?(bytes: Uint8Array): void;
   /** Where a result's warnings go (`DispatchToolResult.warnings`), one line each, beside it. */
   stderr(text: string): void;
   /** A file's text; `-` is all of stdin. */
@@ -233,7 +241,21 @@ export async function runDispatchCli(
   rawEnv: Readonly<Record<string, string | undefined>>,
   io: DispatchCliIo
 ): Promise<number> {
-  const print = (text: string): void => io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+  // `dispatch api`'s lines from before its request (`note`), held until its answer says where they
+  // go: before text they are printed first, as every command prints them, and beside an answer
+  // written as bytes, which takes standard output alone, they go to standard error.
+  const held: string[] = [];
+  const print = (text: string): void => {
+    for (const line of held.splice(0)) io.stdout(`${line}\n`);
+    io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+  };
+  /** Writes `bytes` to standard output as they came (`DispatchCliIo.stdoutBytes`), and the held
+   *  lines, then `notes`, the CLI's own, to standard error. */
+  const writeBody = (bytes: Uint8Array, notes: readonly string[] = []): void => {
+    for (const line of [...held.splice(0), ...notes]) io.stderr(`${line}\n`);
+    if (io.stdoutBytes === undefined) io.stdout(new TextDecoder().decode(bytes));
+    else io.stdoutBytes(bytes);
+  };
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(rawEnv)) {
     if (value !== undefined && value !== "") env[name] = value;
@@ -321,9 +343,11 @@ export async function runDispatchCli(
   // `dispatch api` also runs where no host is found (`commandHost`), as in a GitHub Actions job,
   // like `dispatch login`: it reads Dispatch from the environment alone (`unhostedDispatch`),
   // keeps no session's state, and runs the call as the contract's command does (`sendApiCall`,
-  // dispatch-commands/api.ts) once the check every call has passed. Its refusals before a request
-  // is sent go to the ledger of the session the call knows, under its tool, an AskGate refusal
-  // with AskGate's mark; a request that was sent records nothing there, since no session runs it.
+  // dispatch-commands/api.ts) once the check every call has passed. No session runs it, so there
+  // is no session ledger: only the refusals made before a credential is resolved, its usage
+  // errors and AskGate's refusal of a write (with AskGate's mark), go to the ledger of the session
+  // the environment names, if any, under its tool; a failure of the credential, the broker's
+  // refusal of a trade among them, or of the request records nothing.
   if (parsed.tool === "dispatch_api" && ledgerHost() === undefined) {
     const { problems, args } = await checkDispatchCall({
       tool: parsed.tool,
@@ -344,7 +368,9 @@ export async function runDispatchCli(
     const { url, credential } = resolved.config;
     try {
       const client = new DispatchClient(url, credential, io.fetchImpl ?? fetch);
-      print((await sendApiCall(args, env, client)).text);
+      const result = await sendApiCall(args, env, client);
+      if (result.body === undefined) print(result.text);
+      else writeBody(result.body);
       return OK;
     } catch (error) {
       if (error instanceof ToolInputError) return refuse(error.message, USAGE, parsed.tool);
@@ -399,9 +425,14 @@ export async function runDispatchCli(
   // takes the token files (hostedDispatch).
   const resolved = await hostedDispatch(file, env, { cwd: io.cwd, session: sessionId });
   // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
-  // standard error, so its standard output is the object alone.
+  // standard error, so its standard output is the object alone. `dispatch api`'s are held until
+  // its answer is known (`held`).
   const wholeJson = printsJson(parsed.tool, parsed.args);
-  const note = (line: string): void => (wholeJson ? io.stderr(`${line}\n`) : print(line));
+  const note = (line: string): void => {
+    if (wholeJson) io.stderr(`${line}\n`);
+    else if (parsed.tool === "dispatch_api") held.push(line);
+    else print(line);
+  };
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
   for (const line of resolved.warnings) note(line);
   if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
@@ -578,6 +609,8 @@ export async function runDispatchCli(
   }
   const { tool, args } = parsed;
   let text: string;
+  // The body of an answer written as bytes (`DispatchToolResult.body`), which no line joins.
+  let body: Uint8Array | undefined;
   const pictures: string[] = [];
   const notes: string[] = [];
   const problems: string[] = [];
@@ -598,6 +631,7 @@ export async function runDispatchCli(
       subscriptions,
     });
     text = result.text;
+    body = result.body;
     for (const warning of result.warnings ?? []) {
       io.stderr(`${warning}\n`);
     }
@@ -658,6 +692,12 @@ export async function runDispatchCli(
     problems.push(messageFor(error));
   }
   const kept = [...notes, ...problems.map(stateWriteFailed)];
+  // An answer written as bytes takes standard output alone, as it came: nothing cuts it or moves
+  // it to a file, and the CLI's own lines go to standard error. Its ledger line holds its details.
+  if (body !== undefined) {
+    writeBody(body, kept);
+    return code;
+  }
   const writeFull = (full: string): string => {
     try {
       return writeLongOutput(dir, full);

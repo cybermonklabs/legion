@@ -907,6 +907,50 @@ describe("DispatchClient", () => {
     );
   });
 
+  // `dispatch api`'s routes: a 2xx whose body is not JSON is the route's own answer (a file
+  // version's bytes, a document's Markdown download), given back as the bytes that came with its
+  // Content-Type, where it names one, a typed JSON body that does not parse among them; a JSON
+  // 2xx is its payload, a bodiless 204 the empty text, and a non-2xx page still the gateway's
+  // error.
+  test("readRoute and sendRoute give a 2xx's body that is not JSON back as its bytes, and still refuse a page", async () => {
+    const png = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe);
+    const { fetchImpl } = fakeFetch([
+      new Response(png, { status: 200, headers: { "Content-Type": "image/png" } }),
+      new Response("accepted", { status: 201 }),
+      new Response('{"cut', { status: 200, headers: { "Content-Type": "application/json" } }),
+      jsonResponse({ id: 7 }),
+      new Response(null, { status: 204 }),
+      new Response("<html>502 Bad Gateway</html>", {
+        status: 502,
+        headers: { "Content-Type": "text/html" },
+      }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+    const path = "/api/v1/artifacts/a1/versions/1";
+
+    expect(await client.readRoute(path)).toEqual({ body: png, type: "image/png" });
+    const accepted = await client.sendRoute("POST", "/api/v1/accepted", "{}");
+    expect(accepted).toEqual({ body: new TextEncoder().encode("accepted"), type: undefined });
+    expect(await client.sendRoute("PATCH", path, "{}")).toEqual({
+      body: new TextEncoder().encode('{"cut'),
+      type: "application/json",
+    });
+    expect(await client.readRoute(path)).toEqual({ payload: { id: 7 } });
+    expect(await client.readRoute(path)).toEqual({ payload: "" });
+    const page = await client.readRoute(path).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (error: unknown) => error
+    );
+    expect(page).toBeInstanceOf(DispatchGatewayError);
+    expect(page).toEqual(expect.objectContaining({ status: 502 }));
+  });
+
   // The excerpt and the reason phrase are text a gateway chose, and a misconfigured one can echo
   // the request back, headers included. Two kinds of credential are redacted before either is
   // quoted: the client's own bearer wherever it appears (trimmed, as fetch sends it), and the
