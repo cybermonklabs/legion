@@ -7,7 +7,7 @@ in the workflow file, or, for a value the proof job's matrix carries, in the com
 
 ## The proof step's own limit
 
-`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and fourteen of the eighteen hosted scripts
+`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and fourteen of the nineteen hosted scripts
 source `scripts/e2e/lib/live-daemon-proof.sh`, whose `live_daemon_proof` installs nats-server with
 `go install` through `.github/scripts/ci-retry.sh` at the 180 s module bound,
 5 x 180 + 150 = 1050 s; `scripts/e2e/dispatch-session-settings.sh` retries the same install the
@@ -33,9 +33,9 @@ stage1-skeleton.sh and verification-results.sh.
   owner-steps-client.sh at 30 minutes, 1800 + 1050 = 2850 s -> 48 min, and
   phase-entry-converge.sh at 20 minutes, 1200 + 1050 = 2250 s -> 38 min.
 - Sourcing neither file, directly or through `lib/rig.sh`, through `lib/codex-host.sh`, through
-  `lib/model-endpoint.sh` or through the libraries those source: dispatch-claimant-delivery.sh,
-  1500 s -> 26 min; nats-callout-sessions.sh, 2100 s -> 36 min; and stage1-skeleton.sh and
-  verification-results.sh, 1200 s -> 21 min.
+  `lib/model-endpoint.sh` or through the libraries those source: dispatch-claimant-delivery.sh
+  and dispatch-broker.sh, 1500 s -> 26 min; nats-callout-sessions.sh, 2100 s -> 36 min; and
+  stage1-skeleton.sh and verification-results.sh, 1200 s -> 21 min.
 
 Those 1050 s are under each of the three retry figures a row's `timeout_minutes` carries, 3866,
 3416 and 1400 s, so they size no job limit, and every row's job limit stays above its step's: 90
@@ -47,7 +47,9 @@ Main's #4611 added owner-steps.sh and owner-steps-client.sh with their measured 
 no `run_timeout_minutes`, which the selector refuses; their rows now carry 1500 + 3866 = 5366 s ->
 90 min over 43 and 1800 + 3866 = 5666 s -> 95 min over 48 (dispatch://INFRA-1545, round 59), and
 main's #4930's experiment.sh row, added the same way, now carries 1500 + 3866 = 5366 s -> 90 min
-over 43 (dispatch://INFRA-1545).
+over 43 (dispatch://INFRA-1545), and main's #4392's dispatch-broker.sh row, added the same way
+with its `jj` false and its `bun` true, now carries setup-bun's 1500 + 3416 = 4916 s -> 82 min
+over 26 (dispatch://INFRA-1545, round 66).
 
 `.github/scripts/check-download-retry.sh` reads no script outside `.github/scripts/` and no number
 out of an expression (A CEILING WRITTEN AS AN EXPRESSION, under its rule 8), so it prices neither

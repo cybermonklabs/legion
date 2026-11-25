@@ -99,7 +99,8 @@
       "apt": ["postgresql-client"],
       "bun": true,
       "evidence_variable": "",
-      "timeout_minutes": 25,
+      "timeout_minutes": 82,
+      "run_timeout_minutes": 26,
       "why_hosted": "Run it from a checkout on a Linux host with go, bun, psql and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/dispatch-broker.sh; LEGION_TEST_PG_DSN must name a loopback host, which CI's service satisfies, and the script starts no container. Its default run, K2 and K4, takes a few minutes; LEGION_E2E_TOKEN_RENEWAL=1 runs K3 in about fifteen",
       "jj": false
     },
