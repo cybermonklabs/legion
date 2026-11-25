@@ -30,8 +30,10 @@ type Tmux struct {
 	// itself is refused when the runtime is built (tmux.New), and here a credential-shaped one and
 	// every one runtime.PaneVariableRefusal refuses — a variable that places the session a resume
 	// reads, one the runtime sets on a Claude Code pane or on a resumed Oh My Pi pane
-	// (OMP_SESSION_EXCLUSIVE), a launch secret's pointer, and a value that is a URL carrying a
-	// password: a secret reaches a pane as a file, never as a value on tmux's command line.
+	// (OMP_SESSION_EXCLUSIVE), a launch secret's pointer, the identities of the issue's roles that
+	// every workflow launch sets for the push step (LEGION_ROLE_IDENTITIES), and a value that is a
+	// URL carrying a password: a secret reaches a pane as a file, never as a value on tmux's
+	// command line.
 	PaneEnv map[string]string
 	// PiConfigFiles is `runtime.tmux.pi_config_files`: Oh My Pi settings overlays every pane names
 	// in PI_CONFIG_FILES, in file order and before the pane's own role overlays

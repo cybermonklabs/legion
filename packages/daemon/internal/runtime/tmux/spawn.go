@@ -285,8 +285,8 @@ type PaneInputs struct {
 // LEGION_GH_PATH, the real gh the `legion gh` wrapper first on the pane's PATH runs; under a
 // session database, Oh My Pi's two session variables, as a pod's role container is told them;
 // PI_SHELL_PREFIX, which keeps this daemon's launcher directory first in the agent's bash tool
-// (its legion, its gh and, where workerbin.Install writes one, its git); PI_CONFIG_FILES, the
-// operator's overlays, then the role's own, then the
+// (its legion, its gh and, where workerbin.Install writes each, its git and its jj);
+// PI_CONFIG_FILES, the operator's overlays, then the role's own, then the
 // overlays of each arm this pane's unit was drawn into, in the order the project's file declares
 // the experiments, and nothing of Legion's own, which names no
 // settings overlay at all — empty where none of the three names one), the
@@ -299,9 +299,9 @@ type PaneInputs struct {
 // issue it serves, then the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value, the session
-// database's URL included. No other tool path is told: a pane's jj is the first jj on its PATH,
-// the daemon's, and its git is the launcher directory's git wrapper where workerbin.Install
-// writes one, and the first git on that PATH otherwise.
+// database's URL included. No other tool path is told: a pane's jj and its git are the launcher
+// directory's jj and git wrappers where workerbin.Install writes each, and the first jj and the
+// first git on that PATH otherwise.
 //
 // A composed name is told once, which is why the operator's loop leaves it out: a second pair of
 // one name leaves the value the pane's process reads to the C library's lookup, which answers
