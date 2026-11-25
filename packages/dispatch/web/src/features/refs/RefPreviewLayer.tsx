@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useReducer, useState } from "react";
 import { ChunkBoundary } from "../shell/ChunkBoundary";
 import { chunk, chunkComponent } from "../shell/chunk-component";
 import { useContentDrawn } from "../shell/content-drawn";
-import { caretRefPreviewTrigger, hoverPreviewsOff, refPreviewTriggerOf } from "./ref-preview-card";
+import { caretRefPreviewTrigger, focusAsksForCard, pointerAsksForCard } from "./ref-preview-card";
 
 /**
  * Where the shell mounts the reference-preview layer, and where that layer's code is fetched:
@@ -53,14 +53,15 @@ const RefPreviewHost = chunkComponent(
 );
 
 /** What the boundary draws in place of a layer that has failed: nothing, and listeners that call
- *  `ask` when the reader asks for a card. Each one matches the card's own listener
- *  (`attachTriggers` in `RefPreview.tsx`) on the gesture and surface:
+ *  `ask` when the reader asks for a card. Each listener reads its gesture by the rule that the
+ *  card's own listener (`attachTriggers` in `RefPreview.tsx`) reads it by, from
+ *  `ref-preview-card.ts`:
  *  - a pointer that comes over a reference, but not a touch, not with a button down, and not on
- *    a surface that opens no card on hover;
- *  - a focus on a reference that `:focus-visible` says the keyboard made;
- *  - the caret entering a link of an editable document on a surface that opens no card on hover.
- *    A caret that moves inside the link asks for nothing, so the link the caret is in when this
- *    mounts asks only once the caret leaves it and comes back.
+ *    a surface that opens no card on hover (`pointerAsksForCard`);
+ *  - a focus on a reference that `:focus-visible` says the keyboard made (`focusAsksForCard`);
+ *  - the caret entering a link of an editable document on a surface that opens no card on hover
+ *    (`caretRefPreviewTrigger`). A caret that moves inside the link asks for nothing, so the link
+ *    the caret is in when this mounts asks only once the caret leaves it and comes back.
  *  A marked reference whose address the card cannot parse (`routeOf` in `RefPreview.tsx`) still
  *  asks and can spend a recovery reload without opening a card: telling those apart needs the
  *  reference parser in `features/refs/routes.ts`, which stays out of the entry, so only the
@@ -73,23 +74,14 @@ export function CardAsked({ ask }: { ask: () => void }): null {
     document.addEventListener(
       "pointerover",
       (event) => {
-        const reference = refPreviewTriggerOf(event.target);
-        if (
-          reference !== null &&
-          reference !== refPreviewTriggerOf(event.relatedTarget) &&
-          event.pointerType !== "touch" &&
-          event.buttons === 0 &&
-          !hoverPreviewsOff(reference)
-        ) {
-          ask();
-        }
+        if (pointerAsksForCard(event)) ask();
       },
       options
     );
     document.addEventListener(
       "focusin",
       (event) => {
-        if (refPreviewTriggerOf(event.target)?.matches(":focus-visible")) ask();
+        if (focusAsksForCard(event.target)) ask();
       },
       options
     );

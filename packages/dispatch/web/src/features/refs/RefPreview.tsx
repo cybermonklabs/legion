@@ -22,9 +22,11 @@ import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { EditedMark, PostPreview } from "./PostBody";
 import { type PostDeletion, postDeletion } from "./post-marks";
-import * as previewCard from "./ref-preview-card";
 import {
   caretRefPreviewTrigger,
+  focusAsksForCard,
+  hoverPreviewsOff,
+  pointerAsksForCard,
   REF_PREVIEW_CARD_ID,
   refPreviewCardContains,
   refPreviewTriggerOf,
@@ -228,14 +230,12 @@ function attachTriggers(): () => void {
       refPreview.leave();
     }
   };
-  /** Starts the hover on `trigger`: its card opens after the usual delay. A surface its reader
-   *  works from the keyboard opens no card for a resting pointer (the new issue page, R6), whether
-   *  the pointer arrives or the layer arrives under it; its references still open theirs on
-   *  keyboard focus, below. */
+  /** Starts the hover on `trigger`: its card opens after the usual delay. Each caller first finds
+   *  that a hover there asks for a card: a pointer that arrives (`pointerAsksForCard`), or the
+   *  layer that arrives under a resting pointer, below. A surface its reader works from the
+   *  keyboard opens no card for either (the new issue page, R6, `hoverPreviewsOff`); its
+   *  references still open theirs on keyboard focus. */
   const startHover = (trigger: HTMLElement) => {
-    if (previewCard.hoverPreviewsOff(trigger)) {
-      return;
-    }
     const route = routeOf(trigger);
     if (route !== undefined) {
       keptUnderAStillPointer = false;
@@ -253,16 +253,10 @@ function attachTriggers(): () => void {
       }
       return;
     }
-    // No card on touch (a tap follows the link), and none while a button is held (a
-    // drag-selection passing over a link is not a hover).
-    if (event.pointerType === "touch" || event.buttons !== 0) {
-      return;
-    }
-    const trigger = refPreviewTriggerOf(event.target);
-    if (trigger === null || trigger === refPreviewTriggerOf(event.relatedTarget)) {
-      return;
-    }
-    startHover(trigger);
+    // The rule of a pointer that asks for a card is the failed layer's rule too
+    // (`pointerAsksForCard` in `ref-preview-card.ts`, which `CardAsked` reads).
+    const trigger = pointerAsksForCard(event);
+    if (trigger !== null) startHover(trigger);
   };
   const onPointerOut = (event: PointerEvent) => {
     if (!inHoverZone(event.target) || inHoverZone(event.relatedTarget)) {
@@ -291,10 +285,10 @@ function attachTriggers(): () => void {
     refPreview.leave();
   };
   const onFocusIn = ({ target }: { target: EventTarget | null }) => {
-    const trigger = refPreviewTriggerOf(target);
-    // `:focus-visible` is the browser's own keyboard-versus-pointer verdict: a mouse click or a
-    // tap focuses a link without matching it, so only keyboard navigation opens the card.
-    if (trigger === null || !trigger.matches(":focus-visible")) {
+    // Only keyboard navigation opens the card, by the rule the failed layer reads too
+    // (`focusAsksForCard` in `ref-preview-card.ts`).
+    const trigger = focusAsksForCard(target);
+    if (trigger === null) {
       return;
     }
     const route = routeOf(trigger);
@@ -353,7 +347,8 @@ function attachTriggers(): () => void {
   // the reader holds the primary button down, which the browser marks with `:active` on what it
   // went down on: the reader's first press is one of the things that end the shell's hold, so the
   // layer can arrive in the middle of a drag that began on a link, and `onPointerOver` opens no
-  // card while a button is held.
+  // card while a button is held. And not on a surface that opens no card on hover
+  // (`hoverPreviewsOff`), which `pointerAsksForCard` refuses for a pointer that arrives too.
   onFocusIn({ target: document.activeElement });
   if (state === undefined) onSelectionChange();
   if (
@@ -364,7 +359,7 @@ function attachTriggers(): () => void {
     const trigger = refPreviewTriggerOf(
       [...document.querySelectorAll<HTMLElement>(":hover")].at(-1) ?? null
     );
-    if (trigger !== null) startHover(trigger);
+    if (trigger !== null && !hoverPreviewsOff(trigger)) startHover(trigger);
   }
   return () => {
     document.removeEventListener("pointermove", onPointerMove);
