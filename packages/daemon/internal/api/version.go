@@ -3738,7 +3738,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 291: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// 306: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
 // worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
@@ -3792,22 +3792,22 @@ package api
 // carry `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, keys of legion.yaml
 // that no reader types, which move no contract of their own (answers.go's typedSettings).
 // This daemon serves each of these down through the shaping 193 brought, to a caller whose header
-// states a contract below 291 or, stating none, whose pod's claims record one. The state is served
+// states a contract below 306 or, stating none, whose pod's claims record one. The state is served
 // without `unseenTaskValues` (the last row of shaping.go's stateNarrowings, withoutUnseenTaskValues,
 // which follows the pod's highest contract as every band does). `never_reconnected` is declared at
-// 291 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
+// 306 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
 // withoutNeverReconnected (a row of shaping.go's valueStrips, which follows the pod's lowest
 // contract) serves it as `never_registered` in `failure.cause` and `pendingCause`, since a plugin
-// from 75 up to 291 reads both through a strict enum and refuses the whole body for a word it does
+// from 75 up to 306 reads both through a strict enum and refuses the whole body for a word it does
 // not name; the word is rewritten rather than its key dropped, because a key gone would say the
 // claim's failure has no cause or that nothing failed its relaunching process, and
 // `never_registered` is the nearest cause such a reader knows. The registration's answer is served
 // without `task` and `finished` (shaping.go's withoutTaskReading, the registration's row of
 // shapeAnswer, which placedByPod places by the caller's pod). The task read's and the take's
-// answers are rows of answers.go's Answers from 291 (`task` and `take`), and `claims/task-seen`
+// answers are rows of answers.go's Answers from 306 (`task` and `take`), and `claims/task-seen`
 // answers the 204 every claim report answers (`no-content`); the take answer's `outcome` is the
 // discriminator of a union of literals and so no enumerated field. The three task routes' bodies
-// and the turn outcome's `task`, `providerError` and `held` are in the request records from 291
+// and the turn outcome's `task`, `providerError` and `held` are in the request records from 306
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). This change carried its own two
 // rows of the state's narrowing table before 193 moved that table into shaping.go, and keeps none
 // of its own now: the band and the value strip above are those two rows in 193's tables, so the
@@ -3951,9 +3951,12 @@ package api
 // (#5349, the entries above); this entry keeps the 274 it was given. The forward merge of
 // 2026-11-25 that brought in ac1c9a33 brought main's 275 (#4392, dispatch://INFRA-4425's entry
 // above), above 274, so this entry moved to 291, which a census of the number each open pull
-// request declares found no other change declaring.
+// request declares found no other change declaring. The ledger of daemon API contract numbers
+// (dispatch://INFRA-3118/artifact/open-items-md) had already reserved 291 for another branch,
+// which a census of open heads cannot see, so this entry moved to 306, the number that ledger
+// gives it.
 // Read the base's own number and every open pull request again at the next merge rather than from
 // this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 291
+const DaemonAPIVersion = 306

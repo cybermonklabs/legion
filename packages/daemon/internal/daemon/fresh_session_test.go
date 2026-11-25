@@ -311,7 +311,7 @@ func TestARefusal400HoldsTheIssueForItsArchitect(t *testing.T) {
 
 // A turn that ran no task of the daemon's — the phase reminder's, which the plugin starts itself
 // with pi.sendMessage — is judged from its producer's report alone. Here the report is a plugin's
-// from before the task's number (below daemon API contract 291): marked unprompted and carrying
+// from before the task's number (below daemon API contract 306): marked unprompted and carrying
 // the status the provider refused it with in `httpStatus` (supervise's turnOutcome,
 // unpromptedTurnEnded, dispatch://INFRA-4508's R4). Refused with a 400, it fails the claim at once
 // with cause provider_error, and the workflow holds the issue for its architect, as the take's

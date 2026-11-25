@@ -268,7 +268,7 @@ const backlogCutLine = "supervise: the shim's hello does not say its backlog is 
 // dropped its oldest frames while no daemon was connected, or its shim cannot say it dropped none,
 // and a trim of it can drop a whole turn, start and end. What the machine read off the frames it
 // saw then stops standing for the turns that ran. This is the one list of what the supervisor does
-// with such a hello (shimwire.Hello2.BacklogWhole and contract 291 in api's version.go point
+// with such a hello (shimwire.Hello2.BacklogWhole and contract 306 in api's version.go point
 // here):
 //
 //   - the count of the process's turns is lost (turnCount.lose), and the hello marks it as cut

@@ -2288,7 +2288,7 @@ Its project names no `production_check`, so the role its checks are handed to is
 Its instructions tell each look to ask for its next one an hour on, which falls at or past that bound and so names no look of its own:
 the first look and the bound's last are the only two, which is what the root's pod reads between them need.
 
-Since daemon API contract 291 a worker takes its task from a value the Envoy listener relays out of the task bucket `legion_tasks` on NATS, and this is the only `elsewhere` script that drives tasks through a production listener ([`.github/e2e-scripts.json`](../../.github/e2e-scripts.json)).
+Since daemon API contract 306 a worker takes its task from a value the Envoy listener relays out of the task bucket `legion_tasks` on NATS, and this is the only `elsewhere` script that drives tasks through a production listener ([`.github/e2e-scripts.json`](../../.github/e2e-scripts.json)).
 So a run of a branch at that contract passes only once production carries the bucket: its NATS grants (the envoy-infra release) and a listener image that runs the relay, the first two steps of dispatch://INFRA-3388.
 The run's daemon inherits the operator's environment, and it connects as a daemon's own NATS user only where that environment names one (`NATS_DAEMON_NKEY_SEED_FILE` or `NATS_DAEMON_NKEY_SEED`):
 on the agents' seed (`NATS_NKEY_SEED_FILE`) it refuses to boot, since that user holds no grant on the bucket, and with the grants but a listener older than the relay a worker reads its value only at its registration, right after its ready, at each regain of its role and at each new epoch of its relay.

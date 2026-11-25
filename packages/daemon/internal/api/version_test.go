@@ -117,7 +117,7 @@ func TestTheOwnerPlanContractIsTheContractThatAddedThePlan(t *testing.T) {
 // a merge that renumbers this change moves its entry, this constant and supervise's together, and
 // a later contract bump changes none of them.
 func TestTaskTakeContractIsTheContractThatIntroducedTheTake(t *testing.T) {
-	const introducedTheTake = 291
+	const introducedTheTake = 306
 	if supervise.TaskTakeContract != introducedTheTake {
 		t.Fatalf("supervise.TaskTakeContract = %d, want %d, the contract whose entry in version.go introduced the take",
 			supervise.TaskTakeContract, introducedTheTake)
