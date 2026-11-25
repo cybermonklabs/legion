@@ -266,6 +266,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_fireevent_reasons_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-fireevent-reasons.test.sh .github/scripts/check-fireevent-reasons.test.sh
 
+      - name: Test the whole-tree Biome check
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_biome_tree_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-biome-tree.test.sh .github/scripts/check-biome-tree.test.sh
+
       - name: Test the daemon API contract number check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_daemon_api_contract_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-daemon-api-contract.test.sh .github/scripts/check-daemon-api-contract.test.sh

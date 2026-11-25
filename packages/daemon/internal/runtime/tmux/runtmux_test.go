@@ -10,10 +10,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -29,7 +32,7 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipes(t *testing.T)
 		t.Run(name, func(t *testing.T) {
 			timeout := testwait.Remaining(t)
 			client := fakeTmuxClient(t, t.TempDir(), "echo answered\n"+heldChild(t)+"\nexit "+strconv.Itoa(exit))
-			r := &Runtime{tmuxPath: client, commandTimeout: timeout, environ: []string{"PATH=" + os.Getenv("PATH")}}
+			r := &Runtime{tmuxPath: client, commandTimeout: timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 
 			started := time.Now()
 			res, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
@@ -70,7 +73,7 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 		dir := t.TempDir()
 		leader := filepath.Join(dir, "leader")
 		client := fakeTmuxClient(t, dir, "echo $$ >'"+leader+"'\necho answered\n"+heldChild(t)+"\nexit 3")
-		r := &Runtime{tmuxPath: client, commandTimeout: timeout, environ: []string{"PATH=" + os.Getenv("PATH")}}
+		r := &Runtime{tmuxPath: client, commandTimeout: timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 		reaped := make(chan time.Time, 1)
 		go func() {
 			defer close(reaped)
@@ -111,23 +114,17 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 	}
 }
 
-// A client its timeout kills timed out, with that timeout, and is a result, not an error. A
-// message about it names the timeout and no exit: the -1 runTmux records is no status the client
-// chose, and a message that printed it read `new-session failed (exit -1): timed out after 1s`.
-// A client that exited keeps its exit and its stderr in both message forms.
-func TestRunTmuxReportsAClientItsTimeoutKilledAsTimedOut(t *testing.T) {
-	client := fakeTmuxClient(t, t.TempDir(), "exec sleep 30")
-	r := &Runtime{tmuxPath: client, commandTimeout: time.Second, environ: []string{"PATH=" + os.Getenv("PATH")}}
-
-	res, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
-
-	if err != nil || res.timedOut != time.Second || res.exitCode != -1 {
-		t.Errorf("runTmux = exit %d, timed out %s, error %v; want exit -1, timed out 1s, no error", res.exitCode, res.timedOut, err)
-	}
-	if got := "tmux new-session" + failed(res); got != "tmux new-session timed out after 1s" {
+// A message about a client its timeout killed names the timeout and no exit: the -1 runTmux
+// records is no status the client chose, and a message that printed it read `new-session failed
+// (exit -1): timed out after 1s`. A client that exited keeps its exit and its stderr in both
+// message forms. A live run that its timeout kills, and the result it answers, is the clock row's
+// (TestTheCommandTimeoutRunsOnTheConfiguredClockAndOnTheWallClockWhenThereIsNone).
+func TestAMessageAboutATimedOutClientNamesTheTimeoutAndNoExit(t *testing.T) {
+	timedOut := result{exitCode: -1, timedOut: time.Second}
+	if got := "tmux new-session" + failed(timedOut); got != "tmux new-session timed out after 1s" {
 		t.Errorf("failed = %q, want the timeout and no exit", got)
 	}
-	if got := "list-panes" + exited(res); got != "list-panes timed out after 1s" {
+	if got := "list-panes" + exited(timedOut); got != "list-panes timed out after 1s" {
 		t.Errorf("exited = %q, want the timeout and no exit", got)
 	}
 	answered := result{exitCode: 1, stderr: "no server running\n"}
@@ -139,12 +136,140 @@ func TestRunTmuxReportsAClientItsTimeoutKilledAsTimedOut(t *testing.T) {
 	}
 }
 
+// The clock a tmux client's timeout runs on is Options.Clock, and the wall clock where a
+// configuration names none, which is every daemon in production (config builds Options without
+// one). The row drives both: a runtime with a fake clock holds a client that never exits until
+// the row moves the fake past the client's deadline, which no span of the machine's own can
+// bring on, and a runtime New built with no clock ends the same client itself. Both answer
+// timedOut, as a result and not an error, and the one on the fake answers only after the move,
+// so a seam wired to the wall clock in both places would fail this row at its first wait.
+//
+// The fake half judges a run whose client was running when its deadline came: runTmux arms the
+// deadline before it starts the client, so the fake moves only once the client has written its
+// marker, and a move before the start, which would give a start error, cannot happen. The wall
+// half cannot order its timer after the start, so it judges each run by what the run answered:
+// timedOut is the wall clock ending a client it started, whether or not the client's shell got as
+// far as anything of its own, and a start error is a deadline that came before the client started,
+// which says nothing about who ends a running client, so that run is run again.
+func TestTheCommandTimeoutRunsOnTheConfiguredClockAndOnTheWallClockWhenThereIsNone(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	client := fakeTmuxClient(t, dir, "echo $$ >"+started+"; exec sleep 300")
+	argv := []string{"tmux", "-L", "legion-test", "list-panes"}
+	fake := clocktest.New(time.Now())
+	onFake := &Runtime{tmuxPath: client, commandTimeout: time.Minute, clock: fake, environ: []string{"PATH=" + os.Getenv("PATH")}}
+	ran := startRunTmux(t, onFake, argv)
+	awaitClientStarted(t, started, ran)
+	got := passDeadline(t, fake, fake.Now().Add(time.Minute), "the run on the fake clock", ran)
+	if got.err != nil || got.res.timedOut != time.Minute || got.res.exitCode != -1 {
+		t.Errorf("the run on the fake clock = exit %d, timed out %s, error %v; want exit -1, timed out 1m, no error", got.res.exitCode, got.res.timedOut, got.err)
+	}
+	if message := "list-panes" + exited(got.res); message != "list-panes timed out after 1m0s" {
+		t.Errorf("exited = %q for the run on the fake clock, want the timeout and no exit", message)
+	}
+
+	// No clock: New builds the runtime from Options with none, as config builds every daemon's,
+	// and the wall clock ends the client.
+	onWall := newFakeServerRuntime(t, staticCredential, nil).Runtime
+	if onWall.clock != clock.Real() {
+		t.Errorf("a runtime New built with no Options.Clock runs on %T, want clock.Real()", onWall.clock)
+	}
+	onWall.commandTimeout = 200 * time.Millisecond
+	onWall.tmuxPath, onWall.environ = fakeTmuxClient(t, t.TempDir(), "exec sleep 300"), []string{"PATH=" + os.Getenv("PATH")}
+	attempt := 0
+	got = testwait.Until(t, "a run with no clock whose client started before its 200ms deadline", func() (ranTmux, bool) {
+		attempt++
+		res, err := onWall.runTmux(testwait.Context(t), argv)
+		if err != nil && errors.Is(err, context.DeadlineExceeded) && res == (result{}) {
+			t.Logf("run %d with no clock: the 200ms deadline came before the client started (%v); running again", attempt, err)
+			return ranTmux{}, false
+		}
+		t.Logf("run %d with no clock: the client started and the run answered exit %d, timed out %s, error %v", attempt, res.exitCode, res.timedOut, err)
+		return ranTmux{res, err}, true
+	})
+	if got.err != nil || got.res.timedOut != 200*time.Millisecond || got.res.exitCode != -1 {
+		t.Errorf("the run with no clock = exit %d, timed out %s, error %v; want the wall clock's own timeout", got.res.exitCode, got.res.timedOut, got.err)
+	}
+}
+
+// ranTmux is what one runTmux answered.
+type ranTmux struct {
+	res result
+	err error
+}
+
+// startRunTmux runs r.runTmux(argv) on a goroutine of its own (startCall) and answers the channel
+// its one answer arrives on.
+func startRunTmux(t *testing.T, r *Runtime, argv []string) <-chan ranTmux {
+	t.Helper()
+	return startCall(t, func(ctx context.Context) ranTmux {
+		res, err := r.runTmux(ctx, argv)
+		return ranTmux{res, err}
+	})
+}
+
+// startCall runs call on a goroutine of its own and answers the channel its one answer arrives
+// on. The call is the row's to end on every exit: the row's cleanup cancels the call's context and
+// waits for it, so a row that fails before it moves a fake clock leaves no call waiting on a
+// clock nobody moves, and no client running.
+func startCall[T any](t *testing.T, call func(context.Context) T) <-chan T {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	answered, joined := make(chan T, 1), make(chan struct{})
+	go func() {
+		defer close(joined)
+		answered <- call(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-joined
+	})
+	return answered
+}
+
+// awaitClientStarted waits until a fake tmux client has written marker, the fact that it runs,
+// and fails t at once if the run answers first. runTmux arms its deadline before it starts the
+// client, so a row that moved a fake clock on the arm alone could end the run's context before
+// the client started, and the run would answer a start error, not a timeout.
+func awaitClientStarted(t *testing.T, marker string, ran <-chan ranTmux) {
+	t.Helper()
+	testwait.Eventually(t, "the tmux client running (it writes "+marker+")", func() bool {
+		select {
+		case got := <-ran:
+			t.Fatalf("the run answered %+v, %v before its client started", got.res, got.err)
+		default:
+		}
+		_, err := os.Stat(marker)
+		return err == nil
+	})
+}
+
+// passDeadline waits until deadline is armed on fake, and fails t at once if the call under test,
+// which what names, answers on returned first; then it moves fake to deadline and answers what the
+// call returns. The release, the resume and the command timeout rows each wait so for the one
+// deadline they are about.
+func passDeadline[T any](t *testing.T, fake *clocktest.Fake, deadline time.Time, what string, returned <-chan T) T {
+	t.Helper()
+	at := deadline.Format(time.RFC3339Nano)
+	testwait.Until(t, what+": its deadline at "+at+" armed on the fake clock", func() ([]time.Time, bool) {
+		select {
+		case got := <-returned:
+			t.Fatalf("%s answered %+v before its deadline at %s was armed and passed", what, got, at)
+		default:
+		}
+		armed := fake.Armed()
+		return armed, slices.Contains(armed, deadline)
+	})
+	fake.Set(deadline)
+	return testwait.Receive(t, what+" once the fake clock passed "+at, returned)
+}
+
 // A client a signal ended is a failed run, as a client that exited non-zero is, so every caller
 // reads it as main read its -1 exit; a message about it names the signal and keeps what the client
 // printed (failed, exited), where it said `failed (exit -1)`.
 func TestRunTmuxReadsAClientASignalEndedAsAFailedRunNamingTheSignal(t *testing.T) {
 	client := fakeTmuxClient(t, t.TempDir(), "echo 'no server running on /tmp/tmux-1000/legion-test' >&2; kill -KILL $$")
-	r := &Runtime{tmuxPath: client, commandTimeout: time.Minute, environ: []string{"PATH=" + os.Getenv("PATH")}}
+	r := &Runtime{tmuxPath: client, commandTimeout: time.Minute, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 
 	res, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
 
@@ -166,13 +291,54 @@ func TestAStopsWaitOutlivesAListingASignalEnded(t *testing.T) {
 	dir := t.TempDir()
 	seen := filepath.Join(dir, "seen")
 	client := fakeTmuxClient(t, dir, "if [ -e '"+seen+"' ]; then echo \"can't find pane: %1\" >&2; exit 1; fi\n: >'"+seen+"'; kill -KILL $$")
-	r := &Runtime{tmuxPath: client, socket: "legion-test", commandTimeout: time.Minute, environ: []string{"PATH=" + os.Getenv("PATH")}}
+	r := &Runtime{tmuxPath: client, socket: "legion-test", commandTimeout: time.Minute, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 	r.run = r.runTmux
 
 	v, err := r.awaitNotRunning(context.Background(), "%1", incarnation{pid: 4242, ticks: 1}, 10*time.Second)
 
 	if err != nil || v.reason != reasonPaneGone {
 		t.Errorf("awaitNotRunning = %+v, %v; want the pane gone and no error", v, err)
+	}
+}
+
+// A pane still tmux's fork when the command timeout runs out is given up on, with the error that
+// names the timeout, and the launch then kills the pane (killUnrecorded): awaitPaneCommand's bound
+// runs on the runtime's clock. The pane here is the server's copy for good, its stat reading the
+// server's comm as its parent's does. The bound is a hundred years, which no test binary's
+// -timeout reaches, -timeout 0 included, so only a move of the runtime's clock can end the wait:
+// the row moves the fake once the wait has read the pane several times, at the machine's pace with
+// the fake standing still, and a bound read from the wall clock would leave the wait reading until
+// the row gives up by name, or, under -timeout 0, for ever.
+func TestAPaneStillTheServersForkIsGivenUpOnWhenTheCommandTimeoutRunsOut(t *testing.T) {
+	const bound = 100 * 365 * 24 * time.Hour
+	fake := clocktest.New(time.Now())
+	var reads atomic.Int64
+	r := &Runtime{commandTimeout: bound, clock: fake, readProc: func(path string) ([]byte, error) {
+		reads.Add(1)
+		switch path {
+		case "/proc/4242/stat":
+			return []byte("4242 (tmux: server) S 100 4242 4242 0 -1"), nil
+		case "/proc/100/stat":
+			return []byte("100 (tmux: server) S 1 100 100 0 -1"), nil
+		}
+		return nil, fmt.Errorf("the row reads no %s", path)
+	}}
+	waited := startCall(t, func(ctx context.Context) error {
+		return r.awaitPaneCommand(ctx, paneReport{window: "@1", pane: "%1", pid: 4242})
+	})
+	// Each pass of the wait reads the pane's stat and its parent's.
+	testwait.Eventually(t, "the wait reading the pane five times while the fake clock stands still", func() bool {
+		select {
+		case err := <-waited:
+			t.Fatalf("awaitPaneCommand answered %v before the clock moved past its %s bound", err, bound)
+		default:
+		}
+		return reads.Load() >= 10
+	})
+	fake.Advance(bound + time.Nanosecond)
+	err := testwait.Receive(t, "awaitPaneCommand once the clock passed its "+bound.String()+" bound", waited)
+	if want := "pane %1 pid 4242 did not start its command within " + bound.String(); err == nil || err.Error() != want {
+		t.Errorf("awaitPaneCommand = %v, want %q", err, want)
 	}
 }
 
