@@ -127,6 +127,9 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
   // marked last in the list read them.
   const before = useRef<readonly string[]>([]);
+  // The mark the hand-off last landed on, by the id of its row, until the commit that takes the
+  // press's rows away has run (`finishLanding`). Null while no landing is owed one.
+  const landed = useRef<string | null>(null);
   // After every commit, so the commit that takes the row away keeps the reading before it.
   useLayoutEffect(() => {
     if (!list.shown) return;
@@ -134,6 +137,30 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     if (last === null) return;
     const order = list.order();
     if (order.includes(last)) before.current = order;
+  });
+  // The landing is read again once the press's rows have gone. A press's rows are drawn until its
+  // write's optimistic apply lands, and the bar stands over the list until the marks clear, so the
+  // landing was measured against a list and a box that the commit after it changes: the rows above
+  // the mark move up by the space they took, and the box's own sight grows by the room the bar
+  // leaves at its foot. In that commit the row the mark is in is drawn again, which an engine can
+  // answer by dropping the focus to the page's body. So in the first commit after a landing in
+  // which the list names no row as leaving, that landing is finished: the mark it chose takes the
+  // focus again where the focus fell to the body, and where the commit left that mark out of the
+  // reader's sight altogether the least scroll shows it whole (`landNearest`). A mark the commit
+  // leaves cut is already shown whole by the landing's own least scroll, and nothing here moves
+  // the view for it; a mark the reader has left for another control is theirs, and nothing here
+  // takes the focus back from it.
+  useLayoutEffect(() => {
+    const id = landed.current;
+    if (id === null) return;
+    if (list.order().some((row) => list.leaving?.(row) === true)) return;
+    landed.current = null;
+    const mark = list.control(id);
+    if (mark === null || !mark.isConnected) return;
+    const focused = document.activeElement;
+    const lost = focused === null || focused === document.body;
+    if (lost ? !focusNoScroll(mark) : focused !== mark) return;
+    if (!inSightNow(mark, new Map())) landNearest(mark, list.head?.() ?? null);
   });
   return () => {
     const last = list.lastMarked();
@@ -150,6 +177,7 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     const mark = id === null ? null : list.control(id);
     if (id !== null && mark !== null) {
       landMark(mark, landing.moves.get(id), head);
+      landed.current = id;
       return true;
     }
     if (listed) return false;
