@@ -465,10 +465,7 @@ func TestAnApprovedVersionThatDispatchCannotReadStopsNoOtherJudgment(t *testing.
 	if body := decodeBody[map[string]any](t, read); read.Code != http.StatusOK || !containsLine(unreadOf(t, body), line) || body["refuses_approval"] != false {
 		t.Errorf("the read route: status=%d body=%s, want 200 naming %q and refusing nothing", read.Code, read.Body.String(), line)
 	}
-	gate, err := FormGate("ACME-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	gate := tree.deps.SpecForm.carryBreaksForm
 	tx, err := tree.database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -526,10 +523,7 @@ func TestAVersionThatTheJudgmentNamesAndDispatchCannotReadIsRefused(t *testing.T
 	if body := decodeBody[map[string]any](t, read); read.Code != http.StatusOK || body["refuses_approval"] != true || !strings.Contains(read.Body.String(), `"rule":"unreadable"`) {
 		t.Errorf("the read route: status=%d body=%s, want 200, refuses_approval and the rule unreadable", read.Code, read.Body.String())
 	}
-	gate, err := FormGate("ACME-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	gate := tree.deps.SpecForm.carryBreaksForm
 	tx, err := tree.database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)

@@ -90,7 +90,7 @@ func newRepairFixtureWith(t *testing.T, settle time.Duration, tracer pgx.QueryTr
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs:        documents,
 		ServerURL:   "https://dispatch.example",
-		SpecRoots:   specRoots,
+		SpecForm:    specFormOn(t, specRoots, "https://dispatch.example", documents),
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

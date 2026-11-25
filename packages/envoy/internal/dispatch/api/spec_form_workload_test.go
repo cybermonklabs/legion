@@ -56,7 +56,7 @@ const levelTwoWorkGrowth = 6
 // refused, and the clean one opens.
 func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	served := &server{deps: tree.deps}
+	served := tree.deps.SpecForm
 	const scale = 4
 	sizes := []int{301, scale * 301}
 	for _, test := range []struct {
@@ -122,7 +122,7 @@ func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *test
 // judgment reads the name of each.
 func TestAJudgmentReadsTheApprovedDocumentsUnderItsRootInOneStatement(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	served := &server{deps: tree.deps}
+	served := tree.deps.SpecForm
 	approved := 0
 	approve := func(count int) {
 		for ; approved < count; approved++ {

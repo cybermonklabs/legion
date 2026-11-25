@@ -6090,7 +6090,8 @@ Each item below names a path with its method and identity, then its purpose.
     So Dispatch carries no approval to a version whose text breaks the form.
     It answers no request that names a document whose text breaks the form either.
     The person's own Approve then gets the refusal.
-    A document service that has no gate, such as the one that a backfill command builds, carries no approval.
+    `backfill-block-ids` and `backfill-anchor-blocks` read `DISPATCH_SPEC_ROOTS` and the server's address as the server does (`api.NewSpecForm`).
+    So a carry in a settlement that they run passes the same gate.
     An approval given outside a root was never judged, and it stays when its issue moves under the root.
 
 - `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)

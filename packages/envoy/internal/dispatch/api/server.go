@@ -98,10 +98,11 @@ type Deps struct {
 	// NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	// SpecRoots are the issue keys of the roots of The Spec (cmd/dispatch: DISPATCH_SPEC_ROOTS):
-	// the form gate (spec_form.go) judges the spec and the Verification document of each issue
-	// under one of them, and each one's terms.md. Empty names no root and covers no document.
-	SpecRoots []string
+	// SpecForm is the form of The Spec the API judges with (spec_form.go): the roots that
+	// DISPATCH_SPEC_ROOTS names, under which the form gate judges the spec and the Verification
+	// document of each issue, and each root's terms.md. The zero SpecForm names no root and covers
+	// no document.
+	SpecForm  SpecForm
 	ServerURL string
 	Docs      docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
@@ -244,9 +245,9 @@ type DepsInput struct {
 	// than one an issue may carry, or a session id that is no session id, refuses startup.
 	NewIssueLabel   string
 	NewIssueSession string
-	// SpecRoots is DISPATCH_SPEC_ROOTS as boot read it: issue keys separated by commas, parsed by
-	// parseSpecRoots into Deps.SpecRoots. A value that is no list of issue keys refuses startup.
-	SpecRoots string
+	// SpecForm is the form of The Spec the process built (NewSpecForm), which set the gate of Docs.
+	// Nil builds one that names no root, through NewSpecForm, on Docs.
+	SpecForm  *SpecForm
 	ServerURL string
 	EnvoyURL  string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
@@ -352,9 +353,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Docs == nil {
 		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
 	}
-	specRoots, err := parseSpecRoots(input.SpecRoots)
-	if err != nil {
-		return Deps{}, err
+	specForm := input.SpecForm
+	if specForm == nil {
+		built, err := NewSpecForm("", input.ServerURL, input.Docs)
+		if err != nil {
+			return Deps{}, err
+		}
+		specForm = &built
 	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
@@ -397,7 +402,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentTokens:            input.AgentTokens,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
-		SpecRoots:              specRoots,
+		SpecForm:               *specForm,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
@@ -429,8 +434,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		BuildCommit:            input.BuildCommit,
 		ParentStatusRule:       input.ParentStatusRule,
 	}
-	// Each carry of an approval that the document service writes asks the form gate first.
-	deps.Docs.SetFormGate((&server{deps: deps}).carryBreaksForm)
 	return deps, nil
 }
 

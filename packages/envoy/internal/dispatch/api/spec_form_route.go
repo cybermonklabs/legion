@@ -50,7 +50,7 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, err := s.specFormOf(r.Context(), pool, []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}, actRead)
+	result, err := s.deps.SpecForm.specFormOf(r.Context(), pool, []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}, actRead)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

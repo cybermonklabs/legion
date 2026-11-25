@@ -31,18 +31,37 @@ func TestParseSpecRoots(t *testing.T) {
 			t.Errorf("parseSpecRoots(%q) = %q, %v; want a refusal naming DISPATCH_SPEC_ROOTS", raw, got, err)
 		}
 	}
-	// The server reads it as it reads the other settings: NewDeps parses it, and refuses startup
-	// on a value that is no list of issue keys. NewDeps also asks for a document service: one over
-	// no store serves, as this test opens no document.
+	// The server reads it as it reads the other settings: main builds the form of The Spec from it
+	// (NewSpecForm), which refuses startup on a value that is no list of issue keys, and builds its
+	// API with that form. NewDeps with no form builds one that names no root. Each asks for a
+	// document service: one over no store serves, as this test opens no document.
 	documents := docs.New(docs.Deps{})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
-	if _, err := NewDeps(DepsInput{SpecRoots: "ACME-1,,ACME-2", Docs: documents}); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
-		t.Fatalf("NewDeps with an empty item = %v, want a refusal naming DISPATCH_SPEC_ROOTS", err)
+	if _, err := NewSpecForm("ACME-1,,ACME-2", "", documents); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
+		t.Fatalf("NewSpecForm with an empty item = %v, want a refusal naming DISPATCH_SPEC_ROOTS", err)
 	}
-	deps, err := NewDeps(DepsInput{SpecRoots: " ACME-1 , ACME-5", Docs: documents})
-	if err != nil || !reflect.DeepEqual(deps.SpecRoots, []string{"ACME-1", "ACME-5"}) {
-		t.Fatalf("NewDeps(%q).SpecRoots = %q, %v; want [ACME-1 ACME-5]", " ACME-1 , ACME-5", deps.SpecRoots, err)
+	form, err := NewSpecForm(" ACME-1 , ACME-5", "https://dispatch.example/", documents)
+	if err != nil || !reflect.DeepEqual(form, SpecForm{roots: []string{"ACME-1", "ACME-5"}, serverURL: "https://dispatch.example"}) {
+		t.Fatalf("NewSpecForm(%q) = %+v, %v; want the roots [ACME-1 ACME-5] and the address with no trailing slash", " ACME-1 , ACME-5", form, err)
 	}
+	deps, err := NewDeps(DepsInput{SpecForm: &form, Docs: documents})
+	if err != nil || !reflect.DeepEqual(deps.SpecForm, form) {
+		t.Fatalf("NewDeps with the form = %+v, %v; want that form", deps.SpecForm, err)
+	}
+	if deps, err := NewDeps(DepsInput{Docs: documents}); err != nil || len(deps.SpecForm.roots) != 0 {
+		t.Fatalf("NewDeps with no form = %+v, %v; want a form that names no root", deps.SpecForm, err)
+	}
+}
+
+// specFormOn is the form of The Spec that specRoots names, with its gate set on documents, as main
+// builds the server's (NewSpecForm).
+func specFormOn(t testing.TB, specRoots, serverURL string, documents docs.API) *SpecForm {
+	t.Helper()
+	form, err := NewSpecForm(specRoots, serverURL, documents)
+	if err != nil {
+		t.Fatalf("build the form of The Spec from %q: %v", specRoots, err)
+	}
+	return &form
 }
 
 // A refusal's body holds at most 500 findings and counts every one, and its error lists the first

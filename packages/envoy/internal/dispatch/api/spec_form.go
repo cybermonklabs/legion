@@ -20,18 +20,21 @@ import (
 
 // The form of The Spec (R49) as the server holds it. A setting names the roots of The Spec
 // (DISPATCH_SPEC_ROOTS); a document under one of them is covered, and this file is the one place
-// that judges its form. refuseSpecForm refuses, at its two call sites: the opening or hand-back of
-// an approval request (requestArtifactApproval), and an approval in a person's name
-// (approvalDocuments), which gives the documents that approval covers and judges each of them.
-// Every writer of an approval in a person's name asks approvalDocuments: her review on either
-// review route and her answer to an approval request (queueApprovalReviews), and the carry of an
-// approval to a new version (carryBreaksForm, docs.FormGate), which carries nothing over a break.
-// Two calls read findings and refuse nothing: the read route (getArtifactSpecForm) and the
-// restore of a reopen and of the repair pass (prepareRestoration), which judges a request at the
-// versions it names once the reopen ends and leaves a broken approval request resolved rather
-// than open it again (docs.WriteRestoredAsks, which only it calls, writes the others open). Every
-// route that opens an approval request or answers one reaches one of these calls;
-// TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.
+// that judges its form. A process builds its form once (NewSpecForm), which sets the gate of its
+// document service, and the API judges with that same form (Deps.SpecForm). refuseSpecForm
+// refuses, at its two call sites: the opening or hand-back of an approval request
+// (requestArtifactApproval), and an approval in a person's name (approvalDocuments), which gives
+// the documents that approval covers and judges each of them. Every writer of an approval in a
+// person's name asks approvalDocuments: her review on either review route and her answer to an
+// approval request (queueApprovalReviews), and the carry of an approval to a new version
+// (carryBreaksForm, docs.FormGate), which carries nothing over a break. Two calls read findings
+// and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen and of the
+// repair pass (prepareRestoration), which judges a request at the versions it names once the
+// reopen ends and leaves a broken approval request resolved rather than open it again
+// (docs.WriteRestoredAsks, which only it calls, writes the others open). Every route that opens
+// an approval request or answers one reaches one of these calls;
+// TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census, and to
+// NewSpecForm as the one setter of the gate.
 //
 // One way past the gate stays open, and it is known: an approval given before the setting named
 // the root, or while the issue stood outside it, never passed the gate, and a reparent out of a
@@ -60,6 +63,30 @@ const (
 // actRead is the read route's act: it judges every document it names, in scope or not, and
 // refuses nothing.
 const actRead specform.Act = "read"
+
+// SpecForm is the form of The Spec that a process judges with: the roots that DISPATCH_SPEC_ROOTS
+// names, and the server's address, which a judgment reads (contextFor). The zero SpecForm names
+// no root, so only the read route judges anything with it.
+type SpecForm struct {
+	roots     []string
+	serverURL string
+}
+
+// NewSpecForm builds the form of The Spec from specRoots, as DISPATCH_SPEC_ROOTS writes them, and
+// the server's address, and sets its gate on documents (carryBreaksForm): each carry of an
+// approval that service writes is then judged as the person's own Approve is. It is the one setter
+// of a document service's gate. The server builds its form once, before the boot's restoration
+// schedules a settlement, and builds its API with it; each backfill command builds one for the
+// service it writes through. A value that is no list of issue keys refuses startup.
+func NewSpecForm(specRoots, serverURL string, documents docs.API) (SpecForm, error) {
+	roots, err := parseSpecRoots(specRoots)
+	if err != nil {
+		return SpecForm{}, err
+	}
+	form := SpecForm{roots: roots, serverURL: strings.TrimSuffix(serverURL, "/")}
+	documents.SetFormGate(form.carryBreaksForm)
+	return form, nil
+}
 
 // parseSpecRoots reads DISPATCH_SPEC_ROOTS: issue keys separated by commas, each trimmed, a key
 // named twice once. A blank value names no root. An item that is no issue key, an empty one
@@ -98,8 +125,8 @@ func (s specScope) inScope() bool {
 // its issue's ancestors (refs.IssueAncestors, parent first) is its root. A root's own documents
 // other than its terms.md are not covered, nested in another root or not, and nor is any document
 // of an issue under a root other than its spec and its Verification document.
-func (s *server) specScopeOf(ctx context.Context, q queryer, artifact model.Artifact) (specScope, error) {
-	roots := s.deps.SpecRoots
+func (f SpecForm) specScopeOf(ctx context.Context, q queryer, artifact model.Artifact) (specScope, error) {
+	roots := f.roots
 	if len(roots) == 0 {
 		return specScope{scope: specScopeNoRoot}, nil
 	}
@@ -351,12 +378,12 @@ func (r *specFormRefusal) body() specFormError {
 // signed in (a piece of one is a name) and, under a root, the names of the components and
 // interfaces of the approved covered documents under it (approvedSpecTexts), which are nouns of
 // the system and no person.
-func (s *server) specFormOf(ctx context.Context, q queryer, documents []model.AskApprovalDocument, act specform.Act) (specFormResult, error) {
+func (f SpecForm) specFormOf(ctx context.Context, q queryer, documents []model.AskApprovalDocument, act specform.Act) (specFormResult, error) {
 	var result specFormResult
-	if len(s.deps.SpecRoots) == 0 && act != actRead {
+	if len(f.roots) == 0 && act != actRead {
 		return result, nil
 	}
-	judge := &specFormJudge{server: s, q: q, skip: map[string]bool{}, systemNames: map[string][]string{}, unread: map[string][]specFormUnread{}}
+	judge := &specFormJudge{form: f, q: q, skip: map[string]bool{}, systemNames: map[string][]string{}, unread: map[string][]specFormUnread{}}
 	for _, document := range documents {
 		judge.skip[document.ArtifactID] = true
 	}
@@ -365,7 +392,7 @@ func (s *server) specFormOf(ctx context.Context, q queryer, documents []model.As
 		if err != nil {
 			return specFormResult{}, err
 		}
-		scope, err := s.specScopeOf(ctx, q, artifact)
+		scope, err := f.specScopeOf(ctx, q, artifact)
 		if err != nil {
 			return specFormResult{}, err
 		}
@@ -383,8 +410,8 @@ func (s *server) specFormOf(ctx context.Context, q queryer, documents []model.As
 // refuseSpecForm judges documents (specFormOf) and answers the judgment, with a *specFormRefusal
 // of act when a text of a document in scope breaks the form. It has two call sites: the opening or
 // hand-back of an approval request, and an approval in a person's name (approvalDocuments).
-func (s *server) refuseSpecForm(ctx context.Context, tx pgx.Tx, documents []model.AskApprovalDocument, act specform.Act) (specFormResult, error) {
-	result, err := s.specFormOf(ctx, tx, documents, act)
+func (f SpecForm) refuseSpecForm(ctx context.Context, tx pgx.Tx, documents []model.AskApprovalDocument, act specform.Act) (specFormResult, error) {
+	result, err := f.specFormOf(ctx, tx, documents, act)
 	if err != nil {
 		return specFormResult{}, err
 	}
@@ -405,7 +432,7 @@ func (s *server) refuseSpecForm(ctx context.Context, tx pgx.Tx, documents []mode
 // review route and her answer to an approval request write a review of each document it returns
 // (queueApprovalReviews), and the carry of an approval in her name asks it before it answers the
 // request or writes its own review (carryBreaksForm).
-func (s *server) approvalDocuments(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument, state string) ([]model.AskApprovalDocument, error) {
+func (f SpecForm) approvalDocuments(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument, state string) ([]model.AskApprovalDocument, error) {
 	documents := []model.AskApprovalDocument{document}
 	if request != nil {
 		documents = make([]model.AskApprovalDocument, 0, len(request.Documents)+1)
@@ -421,7 +448,7 @@ func (s *server) approvalDocuments(ctx context.Context, tx pgx.Tx, request *mode
 		}
 	}
 	if state == "approved" {
-		if _, err := s.refuseSpecForm(ctx, tx, documents, specform.ActApproval); err != nil {
+		if _, err := f.refuseSpecForm(ctx, tx, documents, specform.ActApproval); err != nil {
 			return nil, err
 		}
 	}
@@ -431,9 +458,10 @@ func (s *server) approvalDocuments(ctx context.Context, tx pgx.Tx, request *mode
 // carryBreaksForm is the form gate of the carry of an approval (docs.FormGate): whether the
 // approval that the carry would write in the person's name - of document, at its version, which
 // answers request when one is open - is refused (approvalDocuments), as her own Approve of the
-// same request is. A document that no root covers reads nothing more.
-func (s *server) carryBreaksForm(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument) (bool, error) {
-	_, err := s.approvalDocuments(ctx, tx, request, document, "approved")
+// same request is. A document that no root covers reads nothing more. NewSpecForm sets it as the
+// gate of the process's document service.
+func (f SpecForm) carryBreaksForm(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument) (bool, error) {
+	_, err := f.approvalDocuments(ctx, tx, request, document, "approved")
 	var refusal *specFormRefusal
 	if errors.As(err, &refusal) {
 		return true, nil
@@ -441,22 +469,11 @@ func (s *server) carryBreaksForm(ctx context.Context, tx pgx.Tx, request *model.
 	return false, err
 }
 
-// FormGate is the gate of the carry (carryBreaksForm) for a document service that a process
-// builds before its API: the roots that specRoots names, as DISPATCH_SPEC_ROOTS writes them, and
-// the server's address. NewDeps sets the same gate on the service it is given.
-func FormGate(specRoots, serverURL string) (docs.FormGate, error) {
-	roots, err := parseSpecRoots(specRoots)
-	if err != nil {
-		return nil, err
-	}
-	return (&server{deps: Deps{SpecRoots: roots, ServerURL: strings.TrimSuffix(serverURL, "/")}}).carryBreaksForm, nil
-}
-
 // specFormJudge judges the documents of one specFormOf call, reading what every document shares
 // once.
 type specFormJudge struct {
-	server *server
-	q      queryer
+	form SpecForm
+	q    queryer
 	// skip is every document the call names: the version it names stands in for an approved one.
 	skip map[string]bool
 	// base is the context every document shares, read at the first judgment.
@@ -539,7 +556,7 @@ func (j *specFormJudge) contextFor(ctx context.Context, root *string) (specform.
 		j.base = &specform.Context{
 			IsProjectKey: func(key string) bool { return slices.Contains(projects, key) },
 			PersonNames:  people,
-			ServerURL:    j.server.deps.ServerURL,
+			ServerURL:    j.form.serverURL,
 		}
 	}
 	context := *j.base
@@ -548,7 +565,7 @@ func (j *specFormJudge) contextFor(ctx context.Context, root *string) (specform.
 	}
 	names, read := j.systemNames[*root]
 	if !read {
-		approved, err := j.server.approvedSpecTexts(ctx, j.q, *root, j.skip)
+		approved, err := j.form.approvedSpecTexts(ctx, j.q, *root, j.skip)
 		if err != nil {
 			return specform.Context{}, err
 		}
@@ -578,12 +595,12 @@ type approvedSpec struct {
 // the same for each person whose request or approval it judges, and its findings are kept as the
 // reason of a request that others read, so an issue reserved for its author, and what is below it,
 // gives no text to it.
-func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string, skip map[string]bool) (approvedSpec, error) {
+func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string, skip map[string]bool) (approvedSpec, error) {
 	issues, err := refs.IssueDescendants(ctx, q, everyReader, root)
 	if err != nil {
 		return approvedSpec{}, fmt.Errorf("read the issues under %s: %w", root, err)
 	}
-	for _, inner := range s.deps.SpecRoots {
+	for _, inner := range f.roots {
 		if inner == root || !slices.Contains(issues, inner) {
 			continue
 		}

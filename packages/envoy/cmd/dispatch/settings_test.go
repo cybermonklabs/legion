@@ -2248,11 +2248,23 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.SpecRoots != "" {
 				t.Errorf("unset: SpecRoots = %q, want no root named", boot.SpecRoots)
 			}
-			// Its reader: the API parses it as the router is built, so a value that is no issue key
-			// refuses startup there, and only once main hands it on.
-			_, err := appContextFor(t, resolveWith(t, map[string]string{"DISPATCH_SPEC_ROOTS": "acme-1"}), routes.AppContextOptions{Lifetime: t.Context()})
-			if err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
-				t.Errorf("DISPATCH_SPEC_ROOTS=acme-1: build the router = %v, want a refusal naming DISPATCH_SPEC_ROOTS", err)
+			// Its readers: main builds the form of The Spec from it (api.NewSpecForm) before the boot's
+			// restoration, and each backfill command builds one for the service it writes through
+			// (gatedDocumentService), so a value that is no issue key refuses each of them.
+			documents := docs.New(docs.Deps{Events: events.NewBroker()})
+			t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+			refused := map[string]string{"DISPATCH_SPEC_ROOTS": "acme-1"}
+			if _, err := api.NewSpecForm(resolveWith(t, refused).SpecRoots, "", documents); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
+				t.Errorf("DISPATCH_SPEC_ROOTS=acme-1: build the form of The Spec = %v, want a refusal naming DISPATCH_SPEC_ROOTS", err)
+			}
+			refused["DATABASE_URL"] = storetest.Open(t).Pool.Config().ConnString()
+			refused["XDG_CONFIG_HOME"] = t.TempDir()
+			for _, backfill := range []string{"backfill-block-ids", "backfill-anchor-blocks"} {
+				var stdout, stderr bytes.Buffer
+				if code := runSubcommand(context.Background(), []string{backfill}, envGetter(refused), &stdout, &stderr); code != 1 ||
+					!strings.Contains(stdout.String(), backfill+": invalid DISPATCH_SPEC_ROOTS") {
+					t.Errorf("%s with DISPATCH_SPEC_ROOTS=acme-1: exit %d, stdout %q, want exit 1 and a refusal naming DISPATCH_SPEC_ROOTS", backfill, code, stdout.String())
+				}
 			}
 		},
 		"DISPATCH_PARENT_STATUS_RULE": func(t *testing.T) {

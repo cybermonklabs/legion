@@ -179,6 +179,36 @@ var approvalCallers = map[string][]string{
 	"docs: gate":                {"writeCarriedReview"},
 }
 
+// formGateSetter is each place that sets the form gate of a document service (docs.API.SetFormGate),
+// as formGateSetters names it: NewSpecForm alone, which builds the form a process judges with and
+// sets the gate of its document service. The server's boot builds it once, and each backfill
+// command builds it for the service it writes through, so a carry of either is judged by the roots
+// the setting names. A second setter could set a gate of other roots, or leave a service with none.
+var formGateSetter = []string{"internal/dispatch/api/spec_form.go: NewSpecForm"}
+
+// formGateSetters names each use of a method named SetFormGate in sources, a call or a method
+// value, by its module-relative file and the function that holds it, sorted. A use outside every
+// function is named by its file alone.
+func formGateSetters(sources []moduleSource) []string {
+	var setters []string
+	for _, source := range sources {
+		for _, declared := range source.file.Decls {
+			holder := moduleRelative(source.path)
+			if function, ok := declared.(*ast.FuncDecl); ok {
+				holder += ": " + function.Name.Name
+			}
+			ast.Inspect(declared, func(node ast.Node) bool {
+				if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "SetFormGate" {
+					setters = append(setters, holder)
+				}
+				return true
+			})
+		}
+	}
+	slices.Sort(setters)
+	return setters
+}
+
 // approvalCallerProblems names each call of approvalCallers that the api and docs packages of
 // sources make from another function, or do not make from a function the census names.
 func approvalCallerProblems(sources []moduleSource) []string {
@@ -311,7 +341,8 @@ func plantedSource(t *testing.T, code string) moduleSource {
 // its call of the form gate; a person's review and the carry judge the documents of an approval by
 // one function (approvalDocuments). A scan that read nothing names fewer than six and fails; each
 // control plants one writer the census must name, or one the patterns must leave out, or a second
-// caller that the caller part must refuse, or a plan review's write that it must leave out.
+// caller that the caller part must refuse, or a plan review's write that it must leave out. The gate
+// a carry asks is set in one place too (formGateSetter); its control plants a second setter.
 func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 	sources := moduleSources(t)
 	if problems := approvalCallerProblems(sources); len(problems) > 0 {
@@ -319,6 +350,10 @@ func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 	}
 	if got := censusOf(t, sources); !reflect.DeepEqual(got, askOpeningWriterCensus) {
 		t.Fatalf("the writers that open an ask are\n%v\nthe census names\n%v\nA new writer of an open ask must judge the form (spec_form.go) and join the census.", got, askOpeningWriterCensus)
+	}
+	if got := formGateSetters(sources); !slices.Equal(got, formGateSetter) {
+		t.Fatalf("the form gate of a document service is set by\n\t%s\nthe census names\n\t%s\nBuild the form with api.NewSpecForm, which sets its gate.",
+			strings.Join(got, "\n\t"), strings.Join(formGateSetter, "\n\t"))
 	}
 
 	withPlanted := func(name string) map[string]string {
@@ -391,6 +426,20 @@ func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 		problems := approvalCallerProblems(append(slices.Clone(sources), moduleSource{path: planted, file: file, positions: positions}))
 		if len(problems) != 1 || !strings.Contains(problems[0], "plantedCarry") {
 			t.Fatalf("the caller part with an ungated carry planted = %q, want one problem naming plantedCarry", problems)
+		}
+	})
+	t.Run("control: a second setter of the form gate", func(t *testing.T) {
+		positions := token.NewFileSet()
+		const planted = "../../../cmd/dispatch/planted.go"
+		file, err := parser.ParseFile(positions, planted, "package main\n\n"+
+			"func plantedGate(documents *docs.Service, gate docs.FormGate) {\n\tdocuments.SetFormGate(gate)\n}\n", 0)
+		if err != nil {
+			t.Fatalf("parse the planted source: %v", err)
+		}
+		got := formGateSetters(append(slices.Clone(sources), moduleSource{path: planted, file: file, positions: positions}))
+		want := slices.Sorted(slices.Values(append(slices.Clone(formGateSetter), "cmd/dispatch/planted.go: plantedGate")))
+		if !slices.Equal(got, want) {
+			t.Fatalf("the setters with a second one planted = %q, want %q", got, want)
 		}
 	})
 }

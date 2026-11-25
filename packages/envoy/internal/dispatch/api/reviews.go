@@ -511,7 +511,7 @@ func (s *server) queueApprovalReviews(
 	reason *string,
 	askID *string,
 ) (*model.ArtifactReview, []*model.Event, error) {
-	documents, err := s.approvalDocuments(ctx, tx, request, document, state)
+	documents, err := s.deps.SpecForm.approvalDocuments(ctx, tx, request, document, state)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -716,7 +716,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if open != nil {
 		judged = renewedApprovalDocuments(open.Approval.Documents, documents)
 	}
-	form, err := s.refuseSpecForm(r.Context(), tx, judged, specform.ActRequest)
+	form, err := s.deps.SpecForm.refuseSpecForm(r.Context(), tx, judged, specform.ActRequest)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

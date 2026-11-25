@@ -155,17 +155,18 @@ const reopenReason = CarriedReviewReasonPrefix + "%d: this version's text is tha
 // would write in the person's name - of document, at its version, answering request, the approval
 // request open on it, or nil when none is - breaks the form. An approval that answers a request
 // covers each document the request names, so the gate judges each of them, as it judges the
-// person's own Approve of that request. The API package's gate is the one implementation
-// (api.FormGate): one function gives the documents an approval covers and judges each, and it
-// reads nothing more for a document that no root of The Spec covers. A carry writes no approval
-// in the person's name, and answers no open request with Approve, when the gate finds a break:
-// the person's own Approve then gets the gate's refusal.
+// person's own Approve of that request. The API package's form is the one implementation
+// (api.SpecForm, whose gate api.NewSpecForm sets): one function gives the documents an approval
+// covers and judges each, and it reads nothing more for a document that no root of The Spec
+// covers. A carry writes no approval in the person's name, and answers no open request with
+// Approve, when the gate finds a break: the person's own Approve then gets the gate's refusal.
 type FormGate func(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument) (bool, error)
 
 // SetFormGate is the gate each carry of this service's version writes asks before it writes an
-// approval (writeCarriedReview). A service built without one carries no approval at all: a
-// process that builds its document service with no API, such as a backfill command, writes
-// nothing in a person's name.
+// approval (writeCarriedReview). A service built without one carries no approval at all. Its one
+// caller is api.NewSpecForm: the server's boot sets the gate before its restoration settles a
+// document, and each backfill command sets it on the service it writes through, so each of their
+// settlements carries an approval through the same gate.
 func (s *Service) SetFormGate(gate FormGate) {
 	s.formGate.Store(&gate)
 }

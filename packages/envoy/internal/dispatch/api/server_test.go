@@ -389,7 +389,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		AgentTokens:      sharedAgentTokens(t, "agent-token"),
 		NewIssueLabel:    options.newIssueLabel,
 		NewIssueSession:  options.newIssueSession,
-		SpecRoots:        options.specRoots,
+		SpecForm:         specFormOn(t, options.specRoots, testServerURL, documentService),
 		ServerURL:        testServerURL,
 		Docs:             documentService,
 		Events:           broker,

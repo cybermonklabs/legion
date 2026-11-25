@@ -216,7 +216,7 @@ func (s *server) prepareRestoration(ctx context.Context, tx pgx.Tx, issueKey str
 	left := map[string]bool{}
 	opening := make([]model.Ask, 0, len(requests))
 	for _, ask := range requests {
-		form, err := s.specFormOf(ctx, tx, docs.FollowedDocuments(ask.Approval.Documents, versions), specform.ActRestore)
+		form, err := s.deps.SpecForm.specFormOf(ctx, tx, docs.FollowedDocuments(ask.Approval.Documents, versions), specform.ActRestore)
 		if err != nil {
 			return restoration{}, err
 		}
