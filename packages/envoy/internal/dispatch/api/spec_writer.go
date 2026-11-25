@@ -95,8 +95,8 @@ func (writer issueWriter) specWriter() specWriter {
 	}
 }
 
-// specWriteAct is what a checked write does. It words the refusal, and it decides whether the
-// session of the Legion daemon passes.
+// specWriteAct is what a checked write does. It words the refusal and the refusal's last sentence
+// (refusalEnding), and it decides whether the session of the Legion daemon passes.
 type specWriteAct int
 
 const (
@@ -125,6 +125,21 @@ const (
 // makes as it runs an issue.
 func (act specWriteAct) daemonPasses() bool {
 	return act == specWriteClose || act == specWriteReopen || act == specWriteOutOfLegion
+}
+
+// refusalEnding is the last sentence of the check's refusal of act, which the proof refusal does
+// not hold (specWriterRefusal.message). A suggestion or a comment cannot carry a move under a
+// parent (specWriteMove, specWriteMoveAway) or a write that takes the issue out of Legion
+// (specWriteOutOfLegion: a labels write that removes the label legion, the clear of the issue's
+// parent, or the unlink of a child by unlink_children), so their refusal sends the writer to a
+// writer the message names. The refusal of every other act asks for a suggestion or a comment.
+func (act specWriteAct) refusalEnding() string {
+	switch act {
+	case specWriteMove, specWriteMoveAway, specWriteOutOfLegion:
+		return "A suggestion or a comment cannot carry this write: ask one of the writers this message names, a person by `dispatch ask`."
+	default:
+		return "Propose the change with a suggestion or a comment."
+	}
 }
 
 // specWrite is one write the check judges.
@@ -329,8 +344,13 @@ func (refusal *specWriterRefusal) reason() string {
 
 // message is the one wording of the check's refusal, in plain short sentences: what the session
 // cannot do, on which issue and to which document, who can, the role the session holds on the
-// issue, and each architect session Dispatch records on the chain with its issue. The proof
-// refusal names the project and says that the request's credential does not prove the session.
+// issue, and each architect session Dispatch records on the chain with its issue. It ends with the
+// sentence of the write's act (specWriteAct.refusalEnding): the refusal of a move or of a write
+// that takes the issue out of Legion ends "A suggestion or a comment cannot carry this write: ask
+// one of the writers this message names, a person by `dispatch ask`.", and the refusal of a
+// document write, a create, a close and a reopen ends "Propose the change with a suggestion or a
+// comment.". The proof refusal names the project and says that the request's credential does not
+// prove the session, and ends with neither sentence.
 func (refusal *specWriterRefusal) message() string {
 	write, session, read := refusal.write, refusal.session, refusal.read
 	chain, document := write.chainIssue(), write.documentName()
@@ -391,7 +411,7 @@ func (refusal *specWriterRefusal) message() string {
 		}
 		fmt.Fprintf(&message, " Dispatch records these architects on %s and above it: %s.", chain, strings.Join(named, ", "))
 	}
-	message.WriteString(" Propose the change with a suggestion or a comment.")
+	message.WriteString(" " + write.act.refusalEnding())
 	return message.String()
 }
 
