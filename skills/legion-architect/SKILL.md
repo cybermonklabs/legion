@@ -7,7 +7,6 @@ description: "Use when you are a Legion root or child architect, before any life
 
 You own one issue and every issue under it while you hold your role.
 The daemon starts every worker and moves every phase; you write no code.
-Your role prompt holds the lifecycle rules, this skill the procedures.
 
 ## Every turn
 
