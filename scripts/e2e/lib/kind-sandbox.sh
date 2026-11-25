@@ -27,10 +27,14 @@
 # that digest, so a pod's start never waits on a registry.
 # kind_sandbox_internal_kubeconfig FILE writes the kubeconfig a container on the kind network reads,
 # whose server is the node's address on that network.
-# kind_sandbox_teardown STATUS EVIDENCE writes, when STATUS is not 0, what the cluster held (pods,
+# kind_sandbox_evidence STATUS EVIDENCE writes, when STATUS is not 0, what the cluster holds (pods,
 # Sandboxes, volume claims, events and the legion namespace's container logs) to
-# EVIDENCE/cluster-at-failure.txt, then deletes the cluster. It does nothing before
-# kind_sandbox_create has named a cluster, or once the cluster is gone.
+# EVIDENCE/cluster-at-failure.txt, once: a caller that must release something of the cluster before
+# its teardown (share-volumes-kind.sh's pods, which mount an NFS share) calls it first, so the
+# evidence is what the failure left.
+# kind_sandbox_teardown STATUS EVIDENCE writes that evidence where no earlier call wrote it, then
+# deletes the cluster. Each does nothing before kind_sandbox_create has named a cluster, or once
+# kind no longer lists it; a list kind could not give is said so and treated as a live cluster.
 #
 # LEGION_E2E_KIND names the kind binary when it is not on PATH.
 
@@ -39,6 +43,7 @@ kind_cluster=
 kind_context=
 kind_kubeconfig=
 kind_node=
+kind_evidence_written=
 kind_node_image=
 
 kind_busybox=ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
@@ -121,24 +126,59 @@ kind_sandbox_internal_kubeconfig() {
   "$kind_bin" get kubeconfig --internal --name "$kind_cluster" >"$1"
 }
 
-kind_sandbox_teardown() {
-  local status=$1 evidence=$2
-  [ -n "$kind_cluster" ] || return 0
-  # kind's whole list is read before it is matched: kind writes one line per cluster, so a
-  # `grep -qx` that matched before the last line leaves kind to die of SIGPIPE under pipefail, and
-  # a live cluster would be taken for one already gone and left behind.
+# kind_sandbox_live answers 0 where kind lists the cluster kind_sandbox_create named, 1 where it
+# does not (or no cluster was named), and 2, saying so on stderr, where kind's list could not be
+# read: a caller takes 2 as a cluster that may still run, never as one gone, so no failed lookup
+# skips the evidence or the delete. kind's whole list is read before it is matched: kind writes one
+# line per cluster, so a `grep -qx` that matched before the last line leaves kind to die of SIGPIPE
+# under pipefail, and a live cluster would be taken for one already gone.
+kind_sandbox_live() {
+  [ -n "$kind_cluster" ] || return 1
   local clusters
-  clusters=$("$kind_bin" get clusters 2>/dev/null) || return 0
-  grep -qx "$kind_cluster" <<<"$clusters" || return 0
-  if [ "$status" -ne 0 ]; then
-    {
-      kind_k get pods -A -o wide
-      kind_k -n legion get sandboxes,persistentvolumeclaims -o yaml
-      kind_k -n legion describe pods
-      kind_k -n legion get events --sort-by=.lastTimestamp
-      kind_k -n legion logs --all-containers --prefix --tail=200 -l legion.dev/project 2>&1
-    } >"$evidence/cluster-at-failure.txt" 2>&1 || true
-    echo "the cluster's pods, Sandboxes, volume claims, events and container logs at the failure: $evidence/cluster-at-failure.txt" >&2
+  if ! clusters=$("$kind_bin" get clusters 2>&1); then
+    echo "could not read kind's list of clusters, so $kind_cluster is taken as still running: $clusters" >&2
+    return 2
+  fi
+  grep -qx "$kind_cluster" <<<"$clusters" || return 1
+}
+
+# kind_sandbox_write_evidence EVIDENCE writes the cluster's evidence (kind_sandbox_evidence) with no
+# lookup of its own: its caller has decided the cluster may still run. The flag is set only once the
+# file is open, so a file that could not be written is said to be so and is written again by the
+# teardown's call.
+kind_sandbox_write_evidence() {
+  local file=$1/cluster-at-failure.txt
+  if ! : >"$file"; then
+    echo "could not write the cluster's evidence to $file" >&2
+    return 0
+  fi
+  {
+    kind_k get pods -A -o wide
+    kind_k -n legion get sandboxes,persistentvolumeclaims -o yaml
+    kind_k -n legion describe pods
+    kind_k -n legion get events --sort-by=.lastTimestamp
+    kind_k -n legion logs --all-containers --prefix --tail=200 -l legion.dev/project 2>&1
+  } >>"$file" 2>&1 || true
+  kind_evidence_written=1
+  echo "the cluster's pods, Sandboxes, volume claims, events and container logs at the failure: $file" >&2
+}
+
+kind_sandbox_evidence() {
+  local status=$1 evidence=$2 live=0
+  [ "$status" -ne 0 ] && [ -z "$kind_evidence_written" ] || return 0
+  kind_sandbox_live || live=$?
+  [ "$live" -ne 1 ] || return 0
+  kind_sandbox_write_evidence "$evidence"
+}
+
+# kind_sandbox_teardown makes one liveness decision and acts on it: the evidence, where the run
+# failed and no earlier kind_sandbox_evidence wrote it, then the delete.
+kind_sandbox_teardown() {
+  local status=$1 evidence=$2 live=0
+  kind_sandbox_live || live=$?
+  [ "$live" -ne 1 ] || return 0
+  if [ "$status" -ne 0 ] && [ -z "$kind_evidence_written" ]; then
+    kind_sandbox_write_evidence "$evidence"
   fi
   "$kind_bin" delete cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" >/dev/null 2>&1 ||
     echo "could not delete kind cluster $kind_cluster; delete it with: $kind_bin delete cluster --name $kind_cluster" >&2

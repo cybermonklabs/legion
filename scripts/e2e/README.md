@@ -4073,6 +4073,7 @@ The driver writes the providers Secret of all four files' projects, the three it
 The loader, the runtime, the image probe, Agent Sandbox's pod, gVisor, the node's NFS client and the NFS server are the real ones.
 `share_volumes_kind_test.go`, untagged, builds all four files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`.
 `SHARE_VOLUMES_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the four `legion.yaml` files and the missing-image copy of the `shares` one, the issue pod's manifest and each `probe-boot`'s output.
+On any exit the run writes the cluster's evidence if it failed, then deletes every pod of the `legion` namespace while the NFS server still runs, then the cluster: a pod whose hard NFS mount outlives its server keeps the node's container from exiting, and kind then leaves the cluster behind, which every failed run did while the pods were kept for the evidence.
 
 ## shared-clone-kind.sh
 
@@ -6936,7 +6937,7 @@ Each item below names a function, then what it does.
 
 - `run_status STATUS`
 
-  prints STATUS, or 1 for a status of 0 the run did not reach its end with, for a teardown that keeps evidence for a failure ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_teardown`, `share-volumes-kind.sh`'s `release_shares`), so a killed run keeps its evidence too
+  prints STATUS, or 1 for a status of 0 the run did not reach its end with, for a teardown that keeps evidence for a failure ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_evidence` and `kind_sandbox_teardown`), so a killed run keeps its evidence too
 
 - `run_verdict STATUS PASSED FAILED`
 
@@ -7913,10 +7914,18 @@ Each item below names a function, then what it does.
 
   writes the kubeconfig a container on the kind network reads, whose server is the node's address on that network
 
+- `kind_sandbox_evidence STATUS EVIDENCE`
+
+  when `STATUS` is not 0, writes the cluster's pods, the `legion` namespace's Sandboxes, volume claims, events and container logs to `EVIDENCE/cluster-at-failure.txt`, once.
+  A caller that must release something of the cluster before its teardown calls it first, so the evidence is what the failure left: `share-volumes-kind.sh` does, since it deletes its NFS-mounting pods before the cluster goes.
+  It does nothing before `kind_sandbox_create` named a cluster, or once kind no longer lists it.
+  It is marked written only once the file is open; a file it cannot write it says so of, and the teardown tries again
+
 - `kind_sandbox_teardown STATUS EVIDENCE`
 
-  when `STATUS` is not 0, writes the cluster's pods, the `legion` namespace's Sandboxes, volume claims, events and container logs to `EVIDENCE/cluster-at-failure.txt`; then deletes the cluster.
-  It does nothing before `kind_sandbox_create` named a cluster, or once the cluster is gone.
+  writes that evidence where no earlier `kind_sandbox_evidence` call did, then deletes the cluster, on one reading of kind's cluster list.
+  It does nothing before `kind_sandbox_create` named a cluster, or once kind no longer lists it.
+  A list kind cannot give it says so of and takes as a cluster that may still run, so a failed lookup skips neither the evidence nor the delete.
   kind's whole cluster list is read before the name is matched, for the reason the gvisor check's log is: kind writes a line per cluster, and a lookup that killed kind before its last line would leave the cluster running as one already gone
 
 ## lib/live-daemon-proof.sh
