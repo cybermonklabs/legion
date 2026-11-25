@@ -1,4 +1,5 @@
 import type { dispatchToolSpecs } from "@legion/contracts";
+import { apiCommand } from "./api";
 import {
   askCommand,
   editAskCommand,
@@ -122,5 +123,6 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_whoami: onSession(whoamiCommand),
   dispatch_limits: onSession(limitsCommand),
   dispatch_attribution: onSession(attributionCommand),
+  dispatch_api: onSession(apiCommand),
   dispatch_inbox: onSession(inboxCommand),
 };

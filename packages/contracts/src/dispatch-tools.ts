@@ -1047,6 +1047,37 @@ const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
  *  such an account, and a refusal here would leave it saved and never synced. */
 const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
 
+/** A route `dispatch api` reads: the API's root, which lists every route, or a route under it,
+ *  with a query or none. */
+const API_ROUTE_PATTERN = /^\/api\/v1(?=[/?]|$)/;
+
+const API_PATH_RULE =
+  "path is a route under /api/v1: it begins /api/v1 and names no scheme or host, every character is printable ASCII other than a space, a backslash and #, and no segment before the query is . or ..";
+
+/**
+ * Why `path` is no route `dispatch api` may read, naming the path, or undefined for one it may.
+ * Beginning `/api/v1` keeps the read on the client's own server and under the API. The rest keeps
+ * it there once a URL parser has read it: the parser drops a tab or a newline, reads `\` as `/`
+ * and resolves a `.` or `..` segment, spelled plainly or percent-encoded (`%2e`), and each of
+ * those could move the read outside `/api/v1`.
+ */
+function apiPathProblem(value: unknown): string | undefined {
+  const { path } = value as { readonly path?: unknown };
+  if (typeof path !== "string") return undefined;
+  const named = JSON.stringify(path);
+  if (!API_ROUTE_PATTERN.test(path)) {
+    return `path ${named} is no route under /api/v1: give the route alone, beginning /api/v1, with no scheme or host (dispatch api --path /api/v1 lists every route).`;
+  }
+  if (!/^[!-~]*$/.test(path) || /[\\#]/.test(path)) {
+    return `path ${named} holds a space, a backslash, a # or a character outside printable ASCII: percent-encode it.`;
+  }
+  const route = path.split("?", 1)[0] ?? "";
+  if (route.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment))) {
+    return `path ${named} holds a . or .. segment: name the route itself.`;
+  }
+  return undefined;
+}
+
 /** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
 export const ISSUE_STATUSES = [
   "triage",
@@ -2829,6 +2860,25 @@ export const dispatchToolSpecs = [
       "It prints the pull requests whose head is not read while a read of GitHub is owed: those GitHub did not answer and those GitHub refuses, each with the oldest time of its kind. " +
       "After a deploy, run it after each reconcile pass until the counts on its first three lines are 0.",
     arguments: () => ({}),
+    strict: true,
+  },
+  {
+    name: "dispatch_api",
+    example: { path: "/api/v1/issues/DSP-1/events?limit=200" },
+    description:
+      "Read one route of Dispatch's HTTP API that no other command reads, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends one GET of path: a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. It only reads: it takes no method and no body, and every write goes through the command named for it (dispatch --help lists them). When Dispatch refuses the read, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
+    arguments: (z) => ({
+      path: z
+        .string({ min: 1 })
+        .describe(
+          "The route to read, beginning /api/v1, with its query after ?, such as /api/v1/issues/ACME-12/events?limit=200. No scheme or host, and no . or .. segment."
+        ),
+    }),
+    validation: {
+      check: (value) => apiPathProblem(value) === undefined,
+      message: API_PATH_RULE,
+      refusal: (value) => apiPathProblem(value) ?? API_PATH_RULE,
+    },
     strict: true,
   },
   {

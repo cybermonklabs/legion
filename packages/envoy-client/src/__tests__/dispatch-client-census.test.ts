@@ -55,6 +55,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
   attribution: (client) => client.attribution(),
+  readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
   inbox: (client) => client.inbox("me"),
   myReplies: (client) => client.myReplies(),
   credentialPending: (client) => client.credentialPending(),
