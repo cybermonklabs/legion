@@ -73,6 +73,7 @@ func sentAgainAtLaunch2(t *testing.T) *pgxpool.Pool {
 // the ask once more, as a row sent at launch 2. A record that named launch 2 from the queue on
 // would skip launch 2 at the end, and no ready of launch 2 comes again.
 func TestAnAskRowEndedUndeliveredLeavesItsLaunchToBeToldAgain(t *testing.T) {
+	t.Parallel()
 	pool := sentAgainAtLaunch2(t)
 	askRowEnds(t, pool, readsAfter(3*time.Minute), false, 0, 2)
 	why := record.ConflictCheckNotGreen
@@ -90,6 +91,7 @@ func TestAnAskRowEndedUndeliveredLeavesItsLaunchToBeToldAgain(t *testing.T) {
 // names launch 2, and the end sends launch 2 nothing more. Recording nothing for it would send the
 // ask to launch 2 again at this end, and at the end of every such row after it.
 func TestASentAgainRowDeliveredWithNoHolderIsToldItsLaunch(t *testing.T) {
+	t.Parallel()
 	pool := sentAgainAtLaunch2(t)
 	askRowEnds(t, pool, readsAfter(3*time.Minute), true, 0, 2)
 	if got := toldWho(mergeForwardMessages(t, pool)); !reflect.DeepEqual(got, []string{"tester hold"}) {
@@ -105,6 +107,7 @@ func TestASentAgainRowDeliveredWithNoHolderIsToldItsLaunch(t *testing.T) {
 // row's delivery to launch 2 told launch 2 the old head's merge, not the new one's, so it records
 // nothing on the newer ask, and the end sends the newer ask to launch 2.
 func TestAnOlderAskRowDeliveredRecordsNothingOnANewerAsk(t *testing.T) {
+	t.Parallel()
 	pool := sentAgainAtLaunch2(t)
 	pr := recordedPR(t, pool, "LEGION-208")
 	newer := *pr.MergeForward
@@ -131,6 +134,7 @@ func TestAnOlderAskRowDeliveredRecordsNothingOnANewerAsk(t *testing.T) {
 // ask's row, so the end sends it nothing and the record keeps launch 2. An end that read the
 // newer ask as the row's own and took its launch back would send launch 2 the ask a second time.
 func TestAnOlderAskRowEndedUndeliveredLeavesANewerAskOfItsHeadAsItIs(t *testing.T) {
+	t.Parallel()
 	pool := sentAgainAtLaunch2(t)
 	pr := recordedPR(t, pool, "LEGION-208")
 	newer := *pr.MergeForward
@@ -152,6 +156,7 @@ func TestAnOlderAskRowEndedUndeliveredLeavesANewerAskOfItsHeadAsItIs(t *testing.
 // implementer is asked once more, with the tester held, and the ask reaches the launch through its
 // own row.
 func TestAnAskRowEndedOnAClosedPullRequestIsAskedAgainAfterTheReopen(t *testing.T) {
+	t.Parallel()
 	pool := sentAgainAtLaunch2(t)
 	closed := firstConflictRead.Add(4 * time.Minute)
 	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), closedAt(conflictHead, closed))

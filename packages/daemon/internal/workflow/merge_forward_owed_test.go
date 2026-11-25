@@ -26,6 +26,7 @@ import (
 // the implementer can still act on. The approval then starts the tester, which is held, as the
 // fence reads it.
 func TestATesterStartedAfterAMergeableReadIsHeldWhileTheAskIsOwed(t *testing.T) {
+	t.Parallel()
 	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), "implementer", "reviewer", "tester")
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main",
@@ -55,6 +56,7 @@ func TestATesterStartedAfterAMergeableReadIsHeldWhileTheAskIsOwed(t *testing.T) 
 // implementer is told once that the merge is no longer its work, its ask is delivered no more,
 // the planner is not held, and the fence tells no worker to wait.
 func TestAnAskOfImplementingThatNoPhaseAsksAgainIsWithdrawn(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Implementing, "in_progress", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleImplementer,
@@ -81,6 +83,7 @@ func TestAnAskOfImplementingThatNoPhaseAsksAgainIsWithdrawn(t *testing.T) {
 // nobody: the implementer is asked in testing, for R0's reason with no rules read at the move, and
 // the tester is held.
 func TestTheMergersMoveBackAsksTheRoleOfThePhaseItEnters(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleMerger,
@@ -131,6 +134,7 @@ func asksDelivered(t *testing.T, pool *pgxpool.Pool, launch uint64) {
 // implementer's launch 2, which no row reaches, asks it again, once, and the tester stays held; a
 // merge that lands then tells the tester the new head.
 func TestAnAskOwedToAFailedClaimIsSentAgainAtItsNextLaunch(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	asksDelivered(t, pool, 1)
@@ -179,6 +183,7 @@ func TestAnAskOwedToAFailedClaimIsSentAgainAtItsNextLaunch(t *testing.T) {
 // its claim fails, which holds the issue. The architect's retry starts the merger again and sends
 // nothing itself: the ready of the merger's launch 2, which no row reaches, asks it again, once.
 func TestAMergersAskIsSentAgainAtTheReadyOfItsRetriedLaunch(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	asksDelivered(t, pool, 1)
@@ -203,6 +208,7 @@ func TestAMergersAskIsSentAgainAtTheReadyOfItsRetriedLaunch(t *testing.T) {
 // a ready of an earlier launch, send nothing. The daemon applies one ready for each launch, so this
 // holds the row still queued for launch 2, which no second ready writes again.
 func TestAReadyOfALaunchTheAskWasSentAtSendsItNoMore(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	asksDelivered(t, pool, 1)
@@ -222,6 +228,7 @@ func TestAReadyOfALaunchTheAskWasSentAtSendsItNoMore(t *testing.T) {
 // row stays queued for the implementer, and its delivery reaches the next launch. So the ready of
 // the implementer's launch 2 writes no second row, and the record keeps no launch it was sent at.
 func TestAReadyWhileTheAsksRowIsQueuedWritesNoSecondAsk(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer})
@@ -240,6 +247,7 @@ func TestAReadyWhileTheAsksRowIsQueuedWritesNoSecondAsk(t *testing.T) {
 // owed to it: an ask that was withdrawn, and one that landed, are sent nothing at that ready. The
 // control's ask is owed, and is sent again.
 func TestAReadyAsksAgainOnlyWhileTheMergeIsOwed(t *testing.T) {
+	t.Parallel()
 	why := record.ConflictCheckNotGreen
 	rules := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
@@ -286,6 +294,7 @@ func TestAReadyAsksAgainOnlyWhileTheMergeIsOwed(t *testing.T) {
 // while the implementer's ask made in testing is owed: the planner is held, a merge that lands
 // tells it the new head, and its completion at the head the merge replaced is refused.
 func TestAPlannerBeforeTheImplementerIsToldAndFencedWhileTheMergeIsOwed(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleTester,
@@ -316,6 +325,7 @@ func TestAPlannerBeforeTheImplementerIsToldAndFencedWhileTheMergeIsOwed(t *testi
 // base forward onto that head, once, and holds it for no ask. A later read that finds the head
 // still conflicting asks nothing more: the merger owes the merge.
 func TestABranchBackAtTheHeadALandedMergeReplacedIsTheMergersToMergeForward(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, requiresCI)

@@ -14,6 +14,7 @@ import (
 // task has no step for. A line with no step before an acceptance, or with no acceptance, is an
 // error, so no answer names no move back.
 func TestMoveBackTargetsAreThePhasesOfTheStepsBeforeTheAcceptance(t *testing.T) {
+	t.Parallel()
 	line := func(steps ...phase.Phase) []phase.Phase { return append(steps, phase.Retro, phase.Merging) }
 	for _, tc := range []struct {
 		name string

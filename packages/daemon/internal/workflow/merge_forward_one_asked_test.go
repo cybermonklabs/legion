@@ -25,6 +25,7 @@ import (
 // in reviewing, which the implementer keeps into merging: the merger is held, the implementer is
 // told nothing more, and its ask is still delivered.
 func TestTheMergersAskEndsTheImplementersAskOfTheSameHead(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	left := func(t *testing.T, pool *pgxpool.Pool, role claim.Role) string {
 		t.Helper()

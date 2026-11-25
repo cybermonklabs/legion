@@ -72,6 +72,7 @@ var requiresCurrent = &record.BaseRules{Required: []string{"ci"}, Strict: true}
 // so it is held too. Once the merge lands it is told the new head, the reviewer is asked to read
 // the merge, and a completion of testing at the head the merge replaced is refused.
 func TestATesterStartedAfterTheReviewWhileTheMergeIsOpenIsHeld(t *testing.T) {
+	t.Parallel()
 	pool := plannedConflictIssue(t, phase.Reviewing, waitingOnTheMergeState(), "implementer", "reviewer", "tester")
 	approvesConflictHead(t, pool)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
@@ -109,6 +110,7 @@ func TestATesterStartedAfterTheReviewWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // writes no workspace. The owner's sign-off then starts the tester while that merge is open, so the
 // tester is held, and told the new head once the merge lands.
 func TestATesterStartedByTheSignOffWhileTheMergeIsOpenIsHeld(t *testing.T) {
+	t.Parallel()
 	pool := plannedConflictIssue(t, phase.Accepting, settledGreen("lint"), "implementer", "acceptance:owner", "tester")
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	engine := readsAfter(2 * time.Minute)
@@ -134,6 +136,7 @@ func TestATesterStartedByTheSignOffWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // held, it is told the new head once the merge lands, and its completion at the head the merge
 // replaced is refused as a tester's would be; its completion at the new head moves the issue on.
 func TestAPlannerAfterTheImplementerIsHeldAndFenced(t *testing.T) {
+	t.Parallel()
 	pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), "implementer", "planner", "tester")
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	completesImplementingAt(t, pool)
@@ -175,6 +178,7 @@ func TestAPlannerAfterTheImplementerIsHeldAndFenced(t *testing.T) {
 // the tester. A move back into planning, which on the default steps stands before the
 // implementer, starts the planner the same way.
 func TestADefaultStepThatStartsWhileTheMergeIsOpenIsHeld(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	why := record.ConflictCheckNotGreen
 
@@ -228,6 +232,7 @@ func TestADefaultStepThatStartsWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // testing and the tester is held; the tester's claim fails, which holds the issue; the retry, or
 // the restart, starts the tester again, and it is held again.
 func TestAWorkerStartedAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
+	t.Parallel()
 	why := record.ConflictCheckNotGreen
 	for _, tc := range []struct {
 		name  string
@@ -265,6 +270,7 @@ func TestAWorkerStartedAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // tester is held; the ready of the tester's launch 2, with no move and no retry, holds it again.
 // The asked implementer's own ready holds nobody, and a ready once the merge landed holds nobody.
 func TestAWorkerRelaunchedWhileTheMergeIsOpenIsHeldAtItsReady(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		landed bool
@@ -318,6 +324,7 @@ func testerHeldWhileTheImplementerMerges(t *testing.T) *pgxpool.Pool {
 // worker to go on in the workspace the merge writes. On the default steps, the implementer is
 // asked in testing and the tester is held; each send holds the tester once more.
 func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
+	t.Parallel()
 	why := record.ConflictCheckNotGreen
 	for _, tc := range []struct {
 		name string
@@ -365,6 +372,7 @@ func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // tester to wait for the open merge of main onto the head the pull request stands at (Wait),
 // rather than to work at that head now, which words of its own say apart.
 func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
+	t.Parallel()
 	pool := testerStartedWhileTheSecondMergeIsAsked(t)
 	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
 	fence, fenced := mergedForwardRefusal(issue, claim.RoleTester, phase.Testing, conflictHead, &pr)
@@ -425,6 +433,7 @@ func testerStartedWhileTheSecondMergeIsAsked(t *testing.T) *pgxpool.Pool {
 // the refusal that tells it to work at the head the pull request stands at rather than to wait for
 // a landed message that cannot come (mergedForwardFence.Wait).
 func TestARefusalOnAClosedPullRequestTellsNoWorkerToWait(t *testing.T) {
+	t.Parallel()
 	pool := testerStartedWhileTheSecondMergeIsAsked(t)
 	applyRefusingNothing(t, pool, readsAfter(8*time.Minute), closedAt(forwardHead, firstConflictRead.Add(8*time.Minute)))
 	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
@@ -450,6 +459,7 @@ func TestARefusalOnAClosedPullRequestTellsNoWorkerToWait(t *testing.T) {
 // Nothing else is sent, no move back is counted, and the landing in merging tells the merger and
 // asks the reviewer to read the merge.
 func TestTheDefaultStepsSendWhatTheySentWhenAReviewedHeadConflicts(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Reviewing, "needs_review", waitingOnTheMergeState())
 	approvesConflictHead(t, pool)
 	confirmsConflict(t, pool, requiresCurrent)
@@ -498,6 +508,7 @@ func TestTheDefaultStepsSendWhatTheySentWhenAReviewedHeadConflicts(t *testing.T)
 // written out. The planner is held and told wherever its step follows the implementer; every other
 // recipient, and how many messages each gets, is as before.
 func TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name  string
