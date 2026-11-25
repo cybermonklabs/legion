@@ -235,6 +235,7 @@ func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func
 // It also reads the durable's own outstanding count, 0: the redo was acknowledged, so nothing
 // waits out the five-minute ack wait in the next holder's four-slot window.
 func TestAHandlerThatFinishedDuringTheOutageIsRedoneByTheKeeperAndShowsOnce(t *testing.T) {
+	t.Parallel()
 	handlerFinishedDuringTheOutage(t, false)
 }
 
@@ -244,6 +245,7 @@ func TestAHandlerThatFinishedDuringTheOutageIsRedoneByTheKeeperAndShowsOnce(t *t
 // subscription is gone with the hold -- so both end in the keeper's redo, and in one row, one
 // event and one thing a person reads.
 func TestAHandlerThatFinishedWhenTheConnectionWasReplacedIsRedoneByTheKeeperAndShowsOnce(t *testing.T) {
+	t.Parallel()
 	handlerFinishedDuringTheOutage(t, true)
 }
 

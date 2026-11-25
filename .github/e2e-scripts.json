@@ -153,6 +153,16 @@
       "jj": true
     },
     {
+      "script": "experiment.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "evidence_variable": "EXPERIMENT_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/experiment.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch, the daemon and legion itself, and it reaches no outside service; a measured run took about 40 seconds with a warm Go build cache",
+      "jj": true
+    },
+    {
       "script": "stage1-skeleton.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],

@@ -1,8 +1,8 @@
 # An example of the operator's Oh My Pi settings, which pod.yml names in PI_CONFIG_FILES after
 # Legion's pod baseline. The operator copies it into their own directory with models.yml and
-# applies both with apply.sh. To change a role's model, where legion.yaml names none for it, edit
-# its line under modelRoles and run apply.sh again (README.md beside this file). A role of roles
-# that names a model runs on that model in legion.yaml, and no line under modelRoles applies to it.
+# applies both with apply.sh. To change the model of one of Oh My Pi's model roles, edit its line
+# under modelRoles and run apply.sh again (README.md beside this file). A role of roles that names
+# a model runs on that model in legion.yaml, in place of the default line.
 # modelRoles.default is the model of each role whose settings name no model, a resumed one
 # included: each such launch names --model @default, Oh My Pi's own name for that role, and a role
 # of roles that names a model is launched with --model and that model. A settings set without that key is

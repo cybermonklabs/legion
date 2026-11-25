@@ -8,6 +8,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 ## The task block
 
 You choose which steps each issue of your tree runs.
+An issue whose experiment's group runs the project's default steps is the exception ("What Legion refuses", below).
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -47,7 +48,7 @@ The table lists Legion's steps in the order of the default steps:
 | --- | --- | --- | --- |
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
 | `implementer` | implementation | `implementing` | Required: it also works the retro, and a failed step that names no earlier one returns to the first step of the type implementation before it, the implementer or a role of this deployment of that type where one stands before the implementer. |
-| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: your subagent then runs and records them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
+| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: you, or a subagent you dispatch, then run and record them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
 | `reviewer` | review | `reviewing` | No reviewer step, so no approval of the reviewer's: on a base whose rules require an approving review, the merger waits and tells you. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
@@ -68,6 +69,10 @@ A reason that ends `This release of Legion does not carry it out yet.` names a p
 Among them, a role of this deployment of the type implementation after the implementer's step: `task <id> names <role> at step <i>, a step of the type implementation after the step implementer at step <j>, and Legion's retro is done by the implementer in this release.`
 A step that names a role neither Legion nor this deployment defines is refused `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`, and no release takes it.
 
+An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
+Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
+`read_record` shows such an issue: one of its `assignments` has `plan` `default`.
+
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
 ## When to give it
@@ -77,6 +82,8 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
   the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
+  A project's experiment draws the child when the daemon records it.
+  If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 

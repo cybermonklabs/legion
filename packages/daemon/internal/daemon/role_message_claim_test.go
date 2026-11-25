@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -36,26 +35,11 @@ func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
 	named := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	later := mustClaimToken(t, "LEGION-208", claim.RoleReviewer)
 	putPhaseRow(t, pool, runner.records, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: later, StepTask: "t", StepPlace: 3, Entry: 4})
-	payload := map[string]any{}
-	encoded, err := json.Marshal(firedHook)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(encoded, &payload); err != nil {
-		t.Fatal(err)
-	}
-	delete(payload, "claim")
-	before, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload["claim"] = string(named)
-	naming, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
+	withClaim := firedHook
+	withClaim.Claim = named
 
-	row := record.OutboxRow{ID: 70, Issue: "LEGION-208", Kind: record.OutboxKindHookPrompt, NextAt: time.Now(), Payload: naming}
+	row := mustOutboxRow(t, "LEGION-208", withClaim, time.Now())
+	row.ID = 70
 	if err := runner.execute(ctx, row); err != nil {
 		t.Fatalf("the hook prompt naming %s: %v", named, err)
 	}
@@ -63,7 +47,8 @@ func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
 		t.Fatalf("the hook prompt naming %s was published as %+v, want once on its topic", named, published)
 	}
 
-	old := record.OutboxRow{ID: 71, Issue: "LEGION-208", Kind: record.OutboxKindHookPrompt, NextAt: time.Now(), Payload: before}
+	old := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
+	old.ID = 71
 	if err := runner.execute(ctx, old); err != nil {
 		t.Fatalf("the hook prompt of the release before: %v", err)
 	}

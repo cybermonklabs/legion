@@ -1,5 +1,7 @@
 package outbox
 
+//ci:reads packages/contracts/src/dispatch-api*.ts dispatchEventTypes globs ../../../../contracts/src/dispatch-api*.ts and reads each module the glob finds (the .test.ts files skips apart)
+
 import (
 	"encoding/json"
 	"fmt"

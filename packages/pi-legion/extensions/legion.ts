@@ -760,6 +760,9 @@ export default function legionExtension(pi: PiApi): void {
   pi.on("agent_start", async (_event, context) => {
     recreatedNotice = undefined;
     clearStartupTurn(context.sessionManager.getSessionId());
+    // Whether this run is a prompt of the daemon's is the turn-outcome report's to read
+    // (`src/turn-outcome.ts`, and its `input` handler below).
+    turnOutcomes.runStarted(context.sessionManager.getSessionId());
     // The operator moved on: a session change's re-claim outcome left in its widget comes down.
     controllerSession.handleAgentStart(context);
     // INFRA-1573: a turn of this session has started, whatever started it, so the claim boot
@@ -882,7 +885,14 @@ export default function legionExtension(pi: PiApi): void {
   // that says how a turn ended, so it is where the outcome is reported (`src/turn-outcome.ts`).
   // The host does not await this handler and nothing of the turn waits on the report, but the
   // report is awaited inside it all the same, so its failure is the handler's own promise rather
-  // than a floating one, and the reporter never rejects.
+  // than a floating one, and the reporter never rejects. What it reads of which runs a prompt of
+  // the daemon's started comes from that prompt's RPC `input`, below, and the next `agent_start`
+  // (the handler above), so that a turn no prompt ran is reported as one, for the daemon to judge
+  // from the report (dispatch://INFRA-4508's R4). The input handler changes nothing of the input.
+  pi.on("input", async (event, context) => {
+    turnOutcomes.inputArrived(context.sessionManager.getSessionId(), event);
+    return undefined;
+  });
   pi.on("agent_end", async (event, context) => {
     await turnOutcomes.report(context.sessionManager.getSessionId(), event);
   });

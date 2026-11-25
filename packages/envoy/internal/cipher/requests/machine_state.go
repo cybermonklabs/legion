@@ -132,7 +132,7 @@ func (notOwnerError) Is(target error) bool { return target == ErrNotYours }
 var refusals = []error{
 	ErrNotYours, ErrNotOwner, ErrNotApprover, ErrTerminal, ErrExpired, ErrNotExpired, ErrGrantNotLive, ErrGrantChainInvalid,
 	ErrSecretNotInStore, ErrMixedApprovers, ErrGrantRequiresLifetime, ErrMintFailed,
-	ErrRequestPending, ErrTargetRefused, ErrTargetRepositoriesRefused, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
+	ErrRequestPending, ErrTargetRefused, ErrTargetRepositoriesRefused, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape, ErrMintedOnly,
 }
 
 // IsRefusal reports whether err is one of this package's own refusals, as against a read that
@@ -363,6 +363,15 @@ type Machine struct {
 	// both, since a command that cannot reach the proxy or cannot trust it has nothing.
 	AirlockProxyURL      string
 	AirlockCACertificate string
+	// Minted are the capabilities the broker mints and holds behind rules entries of kind dpop,
+	// one per kind: a proxy connection presenting a kind's placeholder is that kind's grant
+	// (mintedConnection), and the proxy's read of its values is the token MintedTokens mints for
+	// it, bound to the pod key whose RFC 7638 thumbprint MintedKey is (mintedValues). Each pod
+	// mints its own token for a grant, with its own key, which nothing but that pod holds. With
+	// MintedTokens or MintedKey unset, every minted grant is answered ErrGrantNotLive.
+	Minted       []MintedKind
+	MintedTokens MintedTokens
+	MintedKey    string
 	// Judge, when set, is handed every request Create has just written pending, once that
 	// transaction has committed and the request's grant-log line is out: the broker's model
 	// judge, which may approve such a request in its approver's place (cmd/cipherd wires it to

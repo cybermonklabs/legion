@@ -32,10 +32,11 @@ import (
 // delivery callback and the comment's edit; an issue message and a reply to it; an ask, its edit,
 // its answer and its answer restored after its block left the document; a comment and an ask on a
 // project document; a comment longer than an event carries whole, then edited, and a message that
-// long. Three changes start none: an issue.updated that changes only the status, the comment's
-// resolve and a message with no issue, which the table leaves out. Between each two changes the
-// test keeps a database time at which nothing else is written, and every item's search column and
-// text as they stand then (keywordHistory.keep).
+// long; the issue message's edit, and the deletes of the first comment and of the issue message;
+// and a second message that long, then edited. Three changes start none: an issue.updated that
+// changes only the status, the comment's resolve and a message with no issue, which the table
+// leaves out. Between each two changes the test keeps a database time at which nothing else is
+// written, and every item's search column and text as they stand then (keywordHistory.keep).
 //
 // One more comment carries the reversed pair: transaction A begins, B edits the comment through
 // the API and commits, then A writes the comment's body and an event of its own and commits, so
@@ -45,11 +46,13 @@ import (
 // Then the fill writes the table (textversions.FillToHorizon), and at every kept time the relation
 // store.TextVersionsAt hands out gives each item that existed one version: its vector is the kept
 // column, its body the kept text and none of the text written after it, an issue's names the title
-// and the primary document version of that time, and its issue, project, event and seq are its
-// event's. Inside A's window the reversed pair's comment has A's version, and after A's commit too.
-// No version is the message with no issue's, the long comment's first version and the long
-// message's hold their whole bodies, read from the comment's first blocks and from the message's
-// row, and at the end every item's version is its last, equal to its present column.
+// and the primary document version of that time, its issue, project, event and seq are its
+// event's, and its deleted_at is its post's own, as the post stands at the end, at every time.
+// Inside A's window the reversed pair's comment has A's version, and after A's commit too. No
+// version is the message with no issue's; the long comment's first version and the long
+// messages' hold their whole bodies, read from the comment's body history, from the first
+// message's row and from the second's body history; a delete's version holds the empty body; and
+// at the end every item's version is its last, equal to its present column.
 func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 	t.Parallel()
 	live := true
@@ -192,6 +195,20 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 	longMessage := createIssueMessage(t, handler, issue.Key, map[string]any{"body": keywordLongBody("auditors")}, "alice")
 	history.keep("an issue message longer than an event carries whole")
 
+	// The issue message's edit, then the deletes of the first comment and of the issue message,
+	// each a version of the empty body; and a second issue message longer than an event carries
+	// whole, then edited, so its row no longer holds the body its event cut.
+	editIssueMessage(t, handler, message.ID, "Can the rotation wait until the freeze ends on Friday?", "alice")
+	history.keep("the issue message's edit")
+	deleteThreadComment(t, handler, comment.ID, "alice")
+	history.keep("the comment's delete")
+	deleteIssueMessage(t, handler, message.ID, "alice")
+	history.keep("the issue message's delete")
+	editedLongMessage := createIssueMessage(t, handler, issue.Key, map[string]any{"body": keywordLongBody("kestrels")}, "alice")
+	history.keep("a second issue message longer than an event carries whole")
+	editIssueMessage(t, handler, editedLongMessage.ID, "The kestrels moved to the spec.", "alice")
+	history.keep("the second long message's edit")
+
 	// The reversed pair.
 	pair := createThreadComment(t, handler, issue.Key, map[string]any{"body": "The canary takes the first region."}, "alice")
 	history.keep("the comment the reversed pair edits")
@@ -241,15 +258,32 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 		func(v keywordVersion) bool { return v.eventType == "comment.answered" }, "started by its comment.answered")
 	history.requireVersion("a reply to the issue message", keywordItem{"message", messageReply.ID},
 		func(v keywordVersion) bool { return v.eventType == "message.answered" }, "started by its message.answered")
-	// The long comment's first version and the long message's hold their whole bodies, which
-	// their events cut: the comment's read from the blocks of its first revision, since its row
-	// has been edited since, and the message's from its row. The edit's version reads the row.
+	// The long comment's first version and the long messages' hold their whole bodies, which
+	// their events cut: the comment's read from its body history, the body its edit replaced,
+	// since its row has been edited since; the first message's from its row; and the second
+	// message's from its body history, as its edit kept it. The comment's edit reads the row.
 	history.requireVersion("a comment longer than an event carries whole", keywordItem{"comment", longComment.ID},
-		func(v keywordVersion) bool { return v.truncated && v.bodyFrom == "blocks" }, "whole from its first blocks, its event's body cut")
+		func(v keywordVersion) bool { return v.truncated && v.bodyFrom == "history" }, "whole from its body history, its event's body cut")
 	history.requireVersion("the long comment's edit", keywordItem{"comment", longComment.ID},
 		func(v keywordVersion) bool { return v.truncated && v.bodyFrom == "row" }, "whole from its row, its event's body cut")
 	history.requireVersion("an issue message longer than an event carries whole", keywordItem{"message", longMessage.ID},
 		func(v keywordVersion) bool { return v.truncated && v.bodyFrom == "row" }, "whole from its row, its event's body cut")
+	history.requireVersion("a second issue message longer than an event carries whole", keywordItem{"message", editedLongMessage.ID},
+		func(v keywordVersion) bool { return v.truncated && v.bodyFrom == "history" }, "whole from its body history, its event's body cut")
+	// The edit of the issue message and the deletes start versions of their own: the deletes'
+	// of the empty body, from their events.
+	history.requireVersion("the issue message's edit", keywordItem{"message", message.ID},
+		func(v keywordVersion) bool { return v.eventType == "message.edited" }, "started by its message.edited")
+	history.requireVersion("the comment's delete", keywordItem{"comment", comment.ID},
+		func(v keywordVersion) bool {
+			return v.eventType == "comment.deleted" && v.body == "" && v.bodyFrom == "event"
+		},
+		"of the empty body, started by its comment.deleted")
+	history.requireVersion("the issue message's delete", keywordItem{"message", message.ID},
+		func(v keywordVersion) bool {
+			return v.eventType == "message.deleted" && v.body == "" && v.bodyFrom == "event"
+		},
+		"of the empty body, started by its message.deleted")
 	// The changes that change no text start no version.
 	if rows := textversionstest.RowsOf(t, database, unchanging...); rows != 0 {
 		t.Errorf("the status-only issue.updated and the comment.resolved (events %v) have %d rows, want none", unchanging, rows)

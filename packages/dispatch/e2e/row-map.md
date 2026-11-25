@@ -244,6 +244,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/email-links.e2e.ts` | asserts in the live editor before the past version |
 | `e2e/failed-room.e2e.ts` | a document room that fails and recovers |
 | `e2e/followers.e2e.ts` | follower and subscriber writes change what the server delivers |
+| `e2e/foot-sweep.e2e.ts` | the floats are a write Dispatch refuses and the builds every live process serves, and each page's scrollers reach the foot only with what the server holds: the review corpus, a margin of asks, a transcript the relay replays and a long Inbox document |
 | `e2e/gated-step-approvals.e2e.ts` | gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side |
 | `e2e/github-checks.e2e.ts` | the checks pill is the server's evaluation of fake GitHub runs |
 | `e2e/going-bar.e2e.ts` | every row types into the bar and reads what the index and the recent-items list answer, and one writes in the live document editor |
@@ -316,6 +317,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/nested-directive.e2e.ts` | its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other |
 | `e2e/offline-edits.e2e.ts` | document transport, IndexedDB recovery and read-only admissions |
 | `e2e/overlapping-marks.e2e.ts` | two readers' marks and the server's anchor refresh |
+| `e2e/parent-status-choice.e2e.ts` | each question is the server's dry run of a status change, which the row holds against its own call of that dry run, and each choice is read back from the issues the server wrote |
 | `e2e/parse-count.e2e.ts` | every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does |
 | `e2e/paste-recovery.e2e.ts` | pastes into the live document |
 | `e2e/phone-conversation.e2e.ts` | sends held, refused and retried, and read marks written from a thread |
@@ -329,6 +331,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/plain-http-proxy.e2e.ts` | counts the live socket upstream of a real proxy |
 | `e2e/polish.e2e.ts` | opens the margin ask composer on the live document |
 | `e2e/popover-escape.e2e.ts` | the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader |
+| `e2e/post-corrections.e2e.ts` | each mark is the server's record of an edit or a delete, written through the API and then read back on four pages |
 | `e2e/prefix-links.e2e.ts` | `sql`-forged id twins and the server's short-id resolution |
 | `e2e/priorities.e2e.ts` | every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event |
 | `e2e/progress.e2e.ts` | it asserts the progress the server computes over an issue's children before it opens a page |
@@ -357,6 +360,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/typed-block-content-rule.e2e.ts` | pastes into the live document editor |
 | `e2e/typed-blocks.e2e.ts` | asserts inside the live project-document editor |
 | `e2e/verification.e2e.ts` | opens the document's live room; where a result's commit stands is the server's comparison with the PR head |
+| `e2e/visual-guard.e2e.ts` | the writes the guard must stop go to the real API and the live document room, and a second page reads the server back |
 | `e2e/visual.e2e.ts` | it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects |
 | `e2e/workspace.e2e.ts` | it asserts the counts and the titles the server groups a workspace into |
 | `e2e/writer-spelling.e2e.ts` | asserts the readings inside the live document editor |

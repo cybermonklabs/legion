@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -180,6 +181,65 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	}
 }
 
+// A publication that changes nothing writes no row. recorded_at cannot show it, since no write of
+// the route sets it again, so the test reads each row's version: the transaction that wrote it
+// (xmin) and where it stands (ctid), which an update replaces and a write that leaves the row
+// does not. Control: a publication whose one change is that a claim now works the role's step
+// writes that holder's row, and leaves the row of the holder beside it.
+func TestAnUnchangedPublicationWritesNoRow(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	versions := func() map[string]string {
+		t.Helper()
+		rows, err := database.Pool.Query(context.Background(), `
+			select session, xmin::text || ' ' || ctid::text from issue_role_holders where issue_key = $1
+		`, issue)
+		if err != nil {
+			t.Fatalf("read the row versions of %s: %v", issue, err)
+		}
+		defer rows.Close()
+		read := map[string]string{}
+		for rows.Next() {
+			var session, version string
+			if err := rows.Scan(&session, &version); err != nil {
+				t.Fatalf("read a row version of %s: %v", issue, err)
+			}
+			read[session] = version
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the row versions of %s: %v", issue, err)
+		}
+		return read
+	}
+	set := []issueRoleHolder{{Role: "tester", Session: "ses-a"}, {Role: "implementer", Session: "ses-b", WorksStep: true}}
+	publishRoleHolders(t, handler, issue, set)
+	first := versions()
+	if len(first) != 2 {
+		t.Fatalf("the first publication stored the rows %v, want one of ses-a and one of ses-b", first)
+	}
+
+	publishRoleHolders(t, handler, issue, set)
+	if again := versions(); !maps.Equal(again, first) {
+		t.Fatalf("a publication of the same set wrote its rows again: their versions were %v, and are %v", first, again)
+	}
+
+	set[0].WorksStep = true
+	published := publishRoleHolders(t, handler, issue, set)
+	changed := versions()
+	if changed["ses-a"] == first["ses-a"] {
+		t.Fatalf("control: the publication in which ses-a's claim works the step left its row at version %s, want a new one", first["ses-a"])
+	}
+	if changed["ses-b"] != first["ses-b"] {
+		t.Fatalf("the publication that changed ses-a wrote the row of ses-b too: its version was %s, and is %s", first["ses-b"], changed["ses-b"])
+	}
+	for _, holder := range published.Holders {
+		if holder.Session == "ses-a" && !holder.WorksStep {
+			t.Fatalf("the publication answered %#v, want ses-a's claim working the step", published)
+		}
+	}
+}
+
 // Only the daemon's own session for the issue's project writes the set. A role session, the daemon
 // of another project and a person are each refused, and no row is written.
 func TestOnlyTheDaemonOfTheIssuesProjectNamesTheRoleHolders(t *testing.T) {
@@ -250,6 +310,37 @@ func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
 	unknown := putRoleHoldersAs(t, handler, "ACME-999", map[string]any{"holders": []issueRoleHolder{}, "actor": daemonSessionOf("ACME")})
 	if code, _ := refusalOf(t, unknown); unknown.Code != http.StatusNotFound || code != "ISSUE_NOT_FOUND" {
 		t.Fatalf("an unknown issue: status=%d body=%s, want 404 ISSUE_NOT_FOUND", unknown.Code, unknown.Body.String())
+	}
+}
+
+// A session holds one role of an issue, so a publication that names one session twice is refused
+// whole, whether the two entries name one role or two: two claims of one role name two sessions.
+// The refusal names the session, and nothing is stored. Without it the write meets the session key
+// twice in one statement, which the database refuses, and the route answers 500.
+func TestASessionNamedTwiceIsRefusedNamingTheSession(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	claimOf := func(agent string) string {
+		project, number, _ := strings.Cut(strings.ToLower(issue), "-")
+		return "legion-acme-" + project + "-" + number + "-" + agent
+	}
+	const twice = "ses-twice"
+	for name, holders := range map[string][]issueRoleHolder{
+		"for one role": {{Role: "tester", Session: twice}, {Role: "tester", Session: twice}},
+		"for one role by two claims": {
+			{Role: "tester", Session: twice, Claim: claimOf("tester")}, {Role: "tester", Session: twice, Claim: claimOf("implementer")},
+		},
+		"for two roles": {{Role: "tester", Session: twice}, {Role: "implementer", Session: twice}},
+	} {
+		response := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": holders, "actor": daemonSessionOf("ACME")})
+		code, message := refusalOf(t, response)
+		if response.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" || !strings.Contains(message, twice) {
+			t.Errorf("a session named twice %s: status=%d body=%s, want 400 INVALID_ROLE_HOLDER naming %s", name, response.Code, response.Body.String(), twice)
+		}
+	}
+	if count := countRoleHolders(t, database); count != 0 {
+		t.Fatalf("issue_role_holders holds %d rows after the refusals, want 0", count)
 	}
 }
 

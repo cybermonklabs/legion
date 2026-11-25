@@ -30,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
@@ -1232,12 +1233,38 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			_, url := testnats.Start(t)
 			_, pemText := githubapptest.Key(t)
 			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
-				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{}, refs.Renames{})
+				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, "", cireconcile.Interval, &registeredInstance{}, refs.Renames{})
 			if err != nil || reconciler == nil {
 				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
 			}
 			if reconciler.ReviewerAppID != "5341243" {
 				t.Errorf("the pass's ReviewerAppID = %q, want %q", reconciler.ReviewerAppID, "5341243")
+			}
+		},
+		"DISPATCH_VERDICT_APP_ID": func(t *testing.T) {
+			if boot := resolveWith(t, nil); boot.VerdictAppID != "" {
+				t.Errorf("unset: VerdictAppID = %q, want empty, which leaves no App's suites out", boot.VerdictAppID)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": "  "}); boot.VerdictAppID != "" {
+				t.Errorf("blank: VerdictAppID = %q, want empty", boot.VerdictAppID)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": " 5341240 "})
+			if boot.VerdictAppID != "5341240" {
+				t.Errorf("VerdictAppID = %q, want %q", boot.VerdictAppID, "5341240")
+			}
+			for _, value := range []string{"x", "0", "-1", "5341240x", "5 341 240"} {
+				refusedWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": value}, "DISPATCH_VERDICT_APP_ID")
+			}
+			// Its reader: the pass main starts, which leaves that App's suites out of the record.
+			_, url := testnats.Start(t)
+			_, pemText := githubapptest.Key(t)
+			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
+				&auth.AppConfig{ClientID: "Iv1.verdict", PEM: pemText}, "", "", boot.VerdictAppID, cireconcile.Interval, &registeredInstance{}, refs.Renames{})
+			if err != nil || reconciler == nil {
+				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
+			}
+			if reconciler.VerdictAppID != "5341240" {
+				t.Errorf("the pass's VerdictAppID = %q, want %q", reconciler.VerdictAppID, "5341240")
 			}
 		},
 		"DISPATCH_APP_SLUG": func(t *testing.T) {
@@ -2129,6 +2156,37 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.NewIssueSession != "" {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
+		},
+		"DISPATCH_PARENT_STATUS_RULE": func(t *testing.T) {
+			// Its reader: R25's fix at boot (api.RunParentStatusFixAtBoot), whose answer is the rule
+			// main builds the server with (TestTheServerAnswersOnlyAfterTheParentStatusFix boots the
+			// binary with it). Unset or off, the fix answers the rule off and reads nothing, so it is
+			// given no database.
+			for _, overrides := range []map[string]string{{}, {"DISPATCH_PARENT_STATUS_RULE": "off"}} {
+				boot := resolveWith(t, overrides)
+				if boot.ParentStatusRule {
+					t.Errorf("%v: ParentStatusRule true, want the rule off", overrides)
+				}
+				if rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{}, nil, boot.ParentStatusRule); err != nil || rule.On() {
+					t.Errorf("%v: the boot's fix answered the rule on=%t and %v, want the rule off and no error", overrides, rule.On(), err)
+				}
+			}
+			// On, the fix runs over the database, which holds no issue, and answers the rule on once
+			// its record is there.
+			boot := resolveWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "on"})
+			if !boot.ParentStatusRule {
+				t.Error("DISPATCH_PARENT_STATUS_RULE=on: ParentStatusRule false, want the rule on")
+			}
+			database := storetest.Open(t)
+			rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{Store: database}, storetest.Leases(t, database.Pool), boot.ParentStatusRule)
+			if err != nil || !rule.On() {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the boot's fix answered the rule on=%t and %v, want the rule on and no error", rule.On(), err)
+			}
+			var recorded bool
+			if err := database.Pool.QueryRow(t.Context(), `select exists (select 1 from parent_status_fix)`).Scan(&recorded); err != nil || !recorded {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the record of the fix is there=%t (%v), want it written", recorded, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "yes"}, `DISPATCH_PARENT_STATUS_RULE="yes"`)
 		},
 		"DISPATCH_TEST_EMBEDDER_OFF": func(t *testing.T) {
 			// Azure's own environment, the one shape that builds an embedder with no AWS SDK and

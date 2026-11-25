@@ -125,14 +125,45 @@ const (
 	MembershipHeld = "membership_held"
 )
 
+// AirlockRelease is how a command reaches the values the airlock holds back: the proxy it sends
+// their requests through, the certificate authority that proxy's certificates are signed by, the
+// password every connection to it opens with, and one entry per name held back. A release of
+// secrets answers it under "airlock" (POST /v1/grants/{id}/values).
+type AirlockRelease struct {
+	// The URL the command points HTTPS_PROXY at (BROKER_AIRLOCK_PROXY_URL).
+	ProxyURL string `json:"proxy_url"`
+	// The PEM certificate the command must trust to reach the proxy, which signs a certificate
+	// for each host it carries a request to.
+	CACertificate string `json:"ca_certificate"`
+	// The password every proxy connection authenticates with: one of this grant's own
+	// placeholders, the first (name, slot) pair in sorted order.
+	ProxyPassword string `json:"proxy_password"`
+	// Each name the airlock holds back, by the name the command knows it as.
+	Names map[string]AirlockName `json:"names"`
+}
+
+// AirlockName is one name the airlock holds back.
+type AirlockName struct {
+	// What the command's environment variable of that name holds: the released shape of the
+	// secret with a placeholder wherever its value would be.
+	Value string `json:"value"`
+	// Each slot of the secret and the placeholder standing for it, so a command that takes one
+	// value of the secret apart knows which placeholder is which.
+	Slots map[string]string `json:"slots"`
+	// The hosts the secret's airlock entry allows, which the command keeps off its NO_PROXY so
+	// their requests reach the proxy.
+	Hosts []string `json:"hosts"`
+}
+
 // The wire names of a token's project scope, which an introspection answer's ProjectScope carries
 // and the exchange writes onto the session it stores (internal/cipher/oauth, ClaimProjectScope).
 // They are short and fixed so a reader of either reads one word rather than the prose
 // exchange.ProjectScope.String prints for an operator.
 const (
-	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person and
-	// its Projects holds the entry's one project, or none for an account entry naming none (the
-	// shared public-session account's). It never holds two.
+	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person, or
+	// as the account itself for an account entry naming no person, and its Projects holds the
+	// entry's one project, or none for an account entry naming none (the shared public-session
+	// account's, and every account entry naming no person). It never holds two.
 	ProjectScopeNamed = "named"
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
 	// MaxProjects projects the trade asked for, each one its person could see at the trade.
@@ -143,6 +174,22 @@ const (
 	// this build accepts it only where it asks to (ciphertoken).
 	ProjectScopeNone = "none"
 )
+
+// AccountSubjectPrefix opens a Kubernetes service account's subject,
+// system:serviceaccount:<namespace>:<name>. It tells a Kubernetes subject from a Google account
+// address where a reader holds one string that may be either (exchange.Set.ProjectsForAccount);
+// whether a string is a whole subject is AccountSubject's to answer.
+const AccountSubjectPrefix = "system:serviceaccount:"
+
+// AccountSubject is a Kubernetes service account's whole subject, the one a pod's projected token
+// carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
+// subdomain. It is the one spelling of that grammar: the broker's configuration holds every
+// account its settings name to it (config), and the exchange every account entry and read entry
+// (exchange.NewSet), so it is also the service a ProjectScopeNamed token that names no person
+// carries: the one entry that mints that shape is an account entry naming no person, whose token
+// acts as the account (exchange.Set.Pod). A resource server reads a named token that names no
+// person and a service this does not match whole as no token the broker mints (ciphertoken).
+var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // MaxProjects is the most projects one token names.
 const MaxProjects = 16
@@ -217,10 +264,12 @@ type Introspection struct {
 	// Person is the person the session acts for.
 	Person string `json:"person,omitempty"`
 	// Service is the service a token that names no person was minted for: the fleet its machine
-	// belongs to, as BROKER_VM_SERVICES names it, or the service a read entry names
-	// (BROKER_EXCHANGE_READ_ACCOUNTS). A token names a person or a service and never both, so a
-	// reader that records who is answerable for a write reads Person, and one that decides what a
-	// machine may reach reads this.
+	// belongs to, as BROKER_VM_SERVICES names it, the service a read entry names
+	// (BROKER_EXCHANGE_READ_ACCOUNTS), or the account of a BROKER_EXCHANGE_ACCOUNTS entry naming
+	// no person (system:serviceaccount:<namespace>:<name>), which that token acts as. A token
+	// names a person or a service and never both, so a reader that records who is answerable for
+	// a write reads Person, or this where Person is empty, and one that decides what a machine may
+	// reach reads this.
 	Service string `json:"service,omitempty"`
 	// Machine is the machine a person signed in on acted through: the Google account of the
 	// actor token the exchange was made with, as BROKER_VM_SERVICES lists it. It is set only

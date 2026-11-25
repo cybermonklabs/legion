@@ -196,9 +196,9 @@ type trimmer struct {
 	// a freshly allocated copy of the struct.
 	trimming func() bool
 	// send writes one report on the pod's bound connection. An error holds the report, which
-	// the trimmer sends on the next attempt, as the launcher's bundleRestore holds its own: no
-	// connection is up, or the connection that is up answered the hello with no settings and so
-	// has no case for a report (manager.sendVolumeReport).
+	// the trimmer sends on the next attempt: no connection is up, or the connection that is up
+	// answered the hello with no settings and so has no case for a report
+	// (manager.sendVolumeReport).
 	send func(shimwire.LauncherVolumeReport) error
 	now  func() time.Time
 	// ticks is the interval clock; a test drives it. The runner takes the channel and a stop.

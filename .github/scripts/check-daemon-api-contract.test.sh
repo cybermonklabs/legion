@@ -635,9 +635,20 @@ echo "case: a python3 after the stub that starts the interpreter with a PATH of 
 resetting=$work/resetting-python
 mkdir -p "$resetting/probe"
 printf '%s' "$PATH" > "$resetting/path"
+# sh_word <text>: <text> as one word that any POSIX sh reads back whole, for every byte but NUL:
+# in single quotes, each ' in it written '\''. Each path goes into the stand-in so, as TMPDIR may
+# hold a space, a quote or a newline. Not bash's printf %q: for a word holding a newline it writes
+# $'…\n…', which the stand-in's /bin/sh (dash 0.5.12) reads as a $ and a backslash-n, so its cat
+# reads no file.
+sh_word() {
+  local escaped="'\\''"
+  printf "'%s'" "${1//\'/"$escaped"}"
+}
+quoted_path=$(sh_word "$resetting/path")
+quoted_python=$(sh_word "$python")
 cat > "$resetting/python3" <<EOF
 #!/bin/sh
-PATH=\$(cat '$resetting/path') exec '$python' "\$@"
+PATH=\$(cat $quoted_path) exec $quoted_python "\$@"
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$resetting/probe/gh"
 chmod +x "$resetting/python3" "$resetting/probe/gh"

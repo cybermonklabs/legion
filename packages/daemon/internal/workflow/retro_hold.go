@@ -189,7 +189,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	}
 	last := record.PhaseRowAt(rows, claim.Role(w.Steps[len(w.Steps)-1].Role), w.Task,
 		record.TaskPlace{Kind: record.PlaceStep, Position: len(w.Steps)}, w.Steps)
-	pr, err := e.store.PullRequest(ctx, tx, parent.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, parent.Key)
 	if err != nil {
 		return err
 	}

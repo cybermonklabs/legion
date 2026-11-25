@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The document service's own write transactions under storetest's xid rig (INFRA-636, plan test
@@ -41,7 +42,7 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -88,6 +89,8 @@ const rigInjectedGap = storetest.XidFaultGap
 // window keeps it. The test first holds that the work did take that long, so a machine that ran it
 // in no time cannot pass for one that kept it out of the gaps.
 func TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
+	// Not parallel: it measures a window's statement-free gaps in CPU time on this machine, which
+	// other tests' work on the same cores would stretch.
 	storetest.RequireXidGapJudgment(t)
 	_, database, tracer := xidService(t)
 	long := "SELECT 1 /* " + strings.Repeat("Rig Work ", 1<<19) + "*/"

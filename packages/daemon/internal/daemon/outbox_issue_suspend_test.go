@@ -202,8 +202,8 @@ func issueSandboxRuntime(t *testing.T, api *issueSandboxAPI, st sandbox.Store) *
 
 // sandboxTeardowns is the idle rig's runtime with the issue's two teardowns, the close's
 // (SuspendIssue) and the release's (ReleaseIssue), made by the real Sandbox runtime over the
-// test's API. What else a release asks of the runtime — the bundle, the role stops, and the pod
-// the idle pass reads — stays the rig's.
+// test's API. What else a release asks of the runtime — the workspace read, the role stops, and
+// the pod the idle pass reads — stays the rig's.
 type sandboxTeardowns struct {
 	*releaseRuntime
 	sandboxes *sandbox.Runtime

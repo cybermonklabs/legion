@@ -844,9 +844,9 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
-  // because an argument is missing exits 2: a script reading the code alone tells it from a write
-  // Dispatch refused (a near copy, an AskGate block), which exits 1.
+  // `skill://dispatch` says "Exit 2 is a usage error" and exit 1 any other failure, so a call
+  // Dispatch never saw because an argument is missing exits 2: a script reading the code alone
+  // tells it from a write Dispatch refused (a near copy, an AskGate block), which exits 1.
   test("a command missing a required argument is a usage error, exit 2", async () => {
     const { code, stdout } = await run(["issue", "--project", "DSP"], omp);
     expect(code).toBe(2);
@@ -1327,6 +1327,10 @@ describe("the dispatch CLI", () => {
           ["--ref", "dispatch://DSP-4/children", "--events", "5"],
           dropped("--events", "the issue's children"),
         ],
+        [
+          ["--ref", "dispatch://DSP-4/comments", "--events", "5"],
+          dropped("--events", "the issue's comments"),
+        ],
         [["--ref", `dispatch://DSP-4/ask/${id}`, "--events", "5"], dropped("--events", "an ask")],
         [
           ["--ref", `dispatch://CORE/artifact/runbook/ask/${id}`, "--events", "5"],
@@ -1696,8 +1700,9 @@ describe("the dispatch entry as its own process", () => {
   }
 
   // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
-  // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
-  // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  // is any other failure, a write Dispatch refused among them (`skill://dispatch`, "Exit 2 is a
+  // usage error"). The browser row this replaced asserted 1 until cybermonklabs/legion#2781 made
+  // the codes distinct.
   //
   // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
   // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
@@ -2288,6 +2293,57 @@ describe("the dispatch CLI's subscription note", () => {
         /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/issues\/DSP-1\/messages was made, but its answer was lost on the way back \(KEY_COMMITTED\), so this command cannot print what it made: read it back with `dispatch read`, or with the matching list for something it created\.$/
       ),
     ]);
+  });
+
+  // A replayed 2xx reading ANSWER_NOT_KEPT says Dispatch gives no copy of the first answer. The
+  // issue create wrote, so it is the create's landing, which exits 0 and says to read it back; the
+  // related-item check wrote nothing, so the command asks it under a second key, and when that is
+  // answered the same way it exits 1 saying the call wrote nothing and to run it again.
+  test("an answer Dispatch kept no copy of is a landing for a write, and for a call that writes nothing a line to run it again", async () => {
+    const notKept = (status: number) =>
+      Response.json(
+        { code: "ANSWER_NOT_KEPT", error: "Dispatch kept no copy of this answer" },
+        { status, headers: { "Idempotency-Replayed": "?1" } }
+      );
+    const checkKeys: (string | null)[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (request.method === "POST" && pathname === "/api/v1/issues") return notKept(201);
+      if (request.method === "POST" && pathname === "/api/v1/projects/DSP/related") {
+        checkKeys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER));
+        return notKept(200);
+      }
+      return fetch(request);
+    }) as typeof fetch;
+
+    const created = await run(
+      ["issue", "--project", "DSP", "--title", "Retry webhook deliveries"],
+      withListener,
+      "",
+      fetchImpl
+    );
+    expect(created.code).toBe(0);
+    expect(created.stdout.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/issues was made, but Dispatch gives no copy of its answer, which was too large to keep or holds a comment or a message that was deleted, or a document version name a delete replaced \(ANSWER_NOT_KEPT\), so this command cannot print what it made: read it back with `dispatch read`, or with the matching list for something it created\.$/
+      ),
+    ]);
+
+    const checked = await run(
+      ["related", "--project", "DSP", "--title", "Retry webhook deliveries"],
+      withListener,
+      "",
+      fetchImpl
+    );
+    expect(checked.code).toBe(1);
+    expect(checked.stdout.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/projects\/DSP\/related wrote nothing, and Dispatch kept no copy of its answer \(ANSWER_NOT_KEPT\), so this command has no answer to print: run it again, which asks under a new key\.$/
+      ),
+    ]);
+    expect(checkKeys).toHaveLength(2);
+    expect(new Set(checkKeys).size).toBe(2);
   });
 
   // `skill://dispatch` promises exit 1 for a refusal, and a create the near-copy gate stops made

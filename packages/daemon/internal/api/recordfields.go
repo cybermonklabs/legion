@@ -57,7 +57,7 @@ type RecordFieldDecision struct {
 // ClaimRecordFields is every field of `supervise.Claim`, in the order the record declares them.
 var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "Token", Column: ColumnAgents, Keys: []string{"token"},
-		Reason: "two claims of one issue can hold one role, so the issue and the role do not name a claim; both agent surfaces name each claim by its token (contract 222)"},
+		Reason: "two claims of one issue can hold one role, so the issue and the role do not name a claim; both agent surfaces name each claim by its token (contract 259)"},
 	{Field: "Project", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Tree", Column: ColumnOperator, Keys: []string{"tree"},
 		Reason: "the operator's listing names each claim's tree; an agent reads it as its issue's own `tree`"},
@@ -158,12 +158,16 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "when the agent last ended a turn, which says how long an idle seat has been told nothing"},
 	{Field: "LastDeathCause", Column: ColumnAgents, Keys: []string{"lastDeathCause"},
 		Reason: "why the claim's process was last found gone, which an architect deciding a retry from an escalation reads"},
+	{Field: "LastDeathAt", Column: ColumnAgents, Keys: []string{"lastDeathAt"},
+		Reason: "when the daemon recorded the death's cause beside it, which tells a death of an hour ago from one of days ago: the claim keeps the cause through every later ready, and its text says nothing of when"},
 	{Field: "LastStartFailure", Column: ColumnAgents, Keys: []string{"lastStartFailure"},
-		Reason: "why the last start produced no running agent, which is a different fault from a process that died and is read as one"},
+		Reason: "why the claim's last start produced no ready agent, dropped once an agent is ready, which is a different fault from a process that died and is read as one"},
+	{Field: "LastStartFailureAt", Column: ColumnAgents, Keys: []string{"lastStartFailureAt"},
+		Reason: "when the daemon recorded the start failure beside it, which says how long the claim has failed to start"},
 	{Field: "LastReady", Column: ColumnAgents, Keys: []string{"lastReady"},
-		Reason: "when the agent last said it could be prompted, which is what dates the two causes above"},
+		Reason: "when the agent last said it could be prompted, against which `lastDeathAt` says whether the running agent survived the death above"},
 	{Field: "TurnOutcomes", Column: ColumnWithheld,
-		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
+		Reason: "the window the run of refused turns is derived from, which the turn-outcome answer alone carries and which reaches no surface"},
 	{Field: "Abandoned", Column: ColumnWithheld,
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,
@@ -176,8 +180,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt and
-// TreeStalledToldAt, for the reason its own entry gives.
+// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt,
+// TreeStalledToldAt and MembersOwed, for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -200,6 +204,8 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "HandedOver", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "TakenBack", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DispatchStatus", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "Priority", Column: ColumnAgents, Keys: []string{"priority"},
+		Reason: "the issue's own Dispatch priority, null for none, which places it in the waiting line"},
 	{Field: "Repo", Column: ColumnAgents, Keys: []string{"repo"},
 		Reason: "the repository the issue's work is done in, which every role's own commands address"},
 	{Field: "DefaultBranch", Column: ColumnAgents, Keys: []string{"defaultBranch"},
@@ -220,6 +226,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
+	{Field: "MembersOwed", Column: ColumnWithheld,
+		Reason: "the mark that a re-admission still owes its tree's members their return, which the root's promotion or the pass that finds its tree running clears in the same transaction that brings them back: it is the daemon's own record of a return still to make, and a reader acts on what it causes, the members' starts and their places in `admission.waiting`"},
 	{Field: "StepRole", Column: ColumnAgents, Keys: []string{"stepRole"},
 		Reason: "the role that works an issue at step, or held from it, which the phase alone does not name"},
 }
@@ -245,4 +253,6 @@ var AssignmentRecordFields = []RecordFieldDecision{
 		Reason: "when the draw was made, absent where the row records none: it is how a reader tells a unit a hand-over settled at no arm from one that was drawn, and what the issue's `memoryDrawnAt` carries for the row named `memory`"},
 	{Field: "Carried", Column: ColumnWithheld,
 		Reason: "the record's mark of a row a hand-over wrote rather than a draw: what a reader of the state measures is the arm the unit ran under, and a carried row names that arm as a drawn one does"},
+	{Field: "Plan", Column: ColumnAgents, Keys: []string{"plan"},
+		Reason: "the group the arm set when the issue was drawn, which the issue runs on for its whole life: the workflow reads it at the issue's first step and at register_plan and stop_task, and the project's file can change an arm's plan or rename the arm after the draw, so a reader takes the group from the record and never from the settings; it is absent where the arm named none"},
 }

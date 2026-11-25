@@ -42,8 +42,14 @@ const (
 	OutboxKindRoleMessage      OutboxKind = "role_message"
 	OutboxKindHookPrompt       OutboxKind = "hook_prompt"
 	OutboxKindUpdateAsk        OutboxKind = "update_ask"
-	OutboxKindIssueBundle      OutboxKind = "issue_bundle"
-	OutboxKindIssueRelease     OutboxKind = "issue_release"
+	// OutboxKindIssueBundle is the kind of the idle release's workspace check
+	// (IssueWorkspaceCheck). The check replaced the release's save of a bundle, and its kind keeps
+	// the save's stored name, which this identifier spells: a row either release queued reads as
+	// the first act of a release, so a row an earlier daemon queued before an upgrade runs as this
+	// check, and a row this daemon queued before a rollback runs as that release's save, with no
+	// migration of the outbox's kind check and no row left that one release cannot run.
+	OutboxKindIssueBundle  OutboxKind = "issue_bundle"
+	OutboxKindIssueRelease OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
@@ -515,6 +521,20 @@ type Notice struct {
 	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
 	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
 	Volume *VolumeNearFull `json:"volume,omitempty"`
+	// Count is how many messages the intake gave up that an intake-gave-up notice counts, and
+	// GiveUps names the first of them, at most giveUpNoticeNames (Postgres.countIntakeGiveUp). Only
+	// that kind carries either: the controller reads the rest in the state.
+	Count   int            `json:"count,omitempty"`
+	GiveUps []NoticeGiveUp `json:"giveUps,omitempty"`
+}
+
+// NoticeGiveUp names one message the intake gave up, in an intake-gave-up notice: its record's id
+// in intake_failures, which a replay or a discard names, the consumer that delivered it and its
+// subject.
+type NoticeGiveUp struct {
+	ID       int64  `json:"id"`
+	Consumer string `json:"consumer"`
+	Subject  string `json:"subject"`
 }
 
 // ProjectPause is what the controller is told when the operator pauses or resumes its project
@@ -1004,6 +1024,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // issue is the project key, and its Pause names who acted, when, and why: the pause's reason, or
 // the pause the resume ended (ProjectPause). Each is queued in the pause's or the resume's own
 // transaction (store's Pause and Resume); the controller's own pause or resume tells it nothing.
+//
+// An intake-gave-up notice counts the messages the intake gave up while it waited for its
+// publish, and names the first giveUpNoticeNames of them by their records' ids (Count, GiveUps).
+// It carries no role, and its issue is the project key, as a tick's is. The give-up writes it,
+// and only while a controller is registered (Postgres.GiveUpIntakeMessage, countIntakeGiveUp):
+// the first give-up of a burst opens it, due giveUpNoticeDelay later, each later give-up joins it
+// while no publish has taken it, and one that finds it leased or given back to retry opens the
+// next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
+// and the controller replays or discards it (dispatch://INFRA-1575).
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"
@@ -1020,6 +1049,7 @@ const (
 	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
 	ProjectPausedNotice    NoticeKind = "project-paused"
 	ProjectResumedNotice   NoticeKind = "project-resumed"
+	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -1316,6 +1346,19 @@ type SuperviseRequest struct {
 	Linger uint64 `json:"linger,omitempty"`
 	// Reason is why a suspend stops the claim, for the line the suspended claim logs.
 	Reason string `json:"reason,omitempty"`
+	// TurnStart fences the `suspend` of a left pod's close on a turn: it is the newest turn start
+	// of the issue's claims in the view the pass queued the close from, as the close's workspace
+	// check carried it (IssueWorkspaceCheck.TurnStart), the zero moment where none had had a turn.
+	// The suspend of a claim whose last turn started after it finishes without acting (the daemon
+	// outbox's suspend), since that turn may have made work the check's read did not see, as a
+	// release's role stop is cancelled by a turn after its mark (issue_releases.turn_start). The
+	// claim stays live, the close's Sandbox suspension carries the same fence and finishes without
+	// acting too (IssueSuspend.TurnStart), and the next idle pass decides the close again. Every
+	// other request carries none: nil is no
+	// fence, and the zero moment is a fence that any turn passes. A release before this field
+	// refuses a row that carries it (DisallowUnknownFields), so a rollback waits for such rows to
+	// run (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+	TurnStart *time.Time `json:"turnStart,omitempty"`
 	// CheckLook is the look of the issue's production check a start starts, 0 for a phase start.
 	// A check start runs after the close, where the issue has no phase and its tree may linger, so
 	// the outbox fences it on the open check and its look (the row acts only while the check is
@@ -1351,14 +1394,20 @@ type SuperviseRequest struct {
 	WakeKind string `json:"wakeKind,omitempty"`
 	// RefusedPod marks a start a refused launch queued (workflow's queueRefusedStart): the uid of
 	// the issue pod whose refusal of the claim's launch queued it (supervise.Machine.RefusedPod).
-	// The end of a start row asks the workflow to read the claim's queued starts again while the
-	// claim's last launch stands refused (the daemon outbox's startRowEnded), and a start marked
-	// with the pod that still refuses the claim asks nothing: it was queued for that refusal, and a
-	// start queued for it again would end the same way. A start marked with a pod that no longer
-	// refuses the claim asks again, as an unmarked start does. Every other start carries none. The
-	// release before decodes strictly (DisallowUnknownFields), so the way back of
-	// 20261123203837_plan_step_agent deletes the key from each queued row before that release boots.
+	// The end of a start marked with the pod that still refuses the claim asks the workflow for no
+	// further start (the daemon outbox's startRowEnded, which says why). Every other start carries
+	// none. The release before decodes strictly (DisallowUnknownFields), so the way back of
+	// 20261124213820_plan_step_agent deletes the key from each queued row before that release boots.
 	RefusedPod string `json:"refusedPod,omitempty"`
+	// LeaveSession is the session a start's claim must not resume: the session the claim recorded
+	// when the step was written whose agent took a name a key's agent held in an earlier generation
+	// (PlanStep.LeaveSession), which every start of that agent carries. The claim leaves it where it
+	// still records it, so the agent starts in a session of its own, and a claim that runs it is
+	// suspended first (the daemon outbox's start, supervise's revive); a claim that records another
+	// session has left it already, and the start resumes that one. Every other start carries none.
+	// The release before decodes strictly, so the way back of 20261124213820_plan_step_agent deletes
+	// the key from each queued row before that release boots.
+	LeaveSession string `json:"leaveSession,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -1390,52 +1439,82 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 // fence a later re-admission or start. The issue keeps nothing: an ephemeral disk is its pod's own
 // and goes with the pod, and a kept volume goes with the Sandbox, so a later todo re-enters the
 // issue fresh on a Sandbox its next launch makes.
+//
+// TurnStart, on the suspension of a left pod's close that stops a role, is the turn start its
+// workspace check read, as each of that close's `suspend` rows carries it
+// (SuperviseRequest.TurnStart): the suspension finishes without acting where a claim of the issue
+// started a turn after it (store.IssueSuspension), as the stop of that claim's role did, so
+// nothing of the close outlives a stop its fence held and the next idle pass decides the close
+// again with a read of its own. Every other suspension carries none: nil is no fence, and the
+// zero moment is a fence that any turn passes. A release before this field refuses a row that
+// carries it (DisallowUnknownFields), so a rollback waits for such rows to run
+// (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
 type IssueSuspend struct {
-	Tree           string `json:"tree"`
-	Generation     uint64 `json:"generation"`
-	TreeGeneration uint64 `json:"treeGeneration"`
+	Tree           string     `json:"tree"`
+	Generation     uint64     `json:"generation"`
+	TreeGeneration uint64     `json:"treeGeneration"`
+	TurnStart      *time.Time `json:"turnStart,omitempty"`
 }
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 
-// IssueBundle is the first act of an idle pod's release: it asks the shim of the claim it names
-// (Claim), or, for a row the release before wrote, of the claim of the worker on Role's step — a
-// claim whose process is still running in the pod, because this row runs before the `release`
-// rows that stop them — for the git bundle of the unpushed work of the workspace every role of the
-// issue shares, and saves it in the daemon's own database (runtime.WorkspaceBundler). Only a shim
-// can build it: it runs the `jj` of the workspace it already works in, and it dies with its
-// claim's process, so the save has to happen while that process is there.
+// IssueWorkspaceCheck is the first act of an idle pod's release: it asks the shim of the claim it
+// names (Claim), or, for a row the release before wrote, of the claim of the worker on Role's
+// step — a claim whose process is still running in the pod, because this row runs before the
+// `release` rows that stop them — to read whether the workspace every role of the issue shares
+// holds work that no branch or tag on origin holds (runtime.WorkspaceWorkReader). Only a shim can
+// read it: it runs the `jj` of the workspace it already works in, and it dies with its claim's
+// process, so the read has to happen while that process is there. A read that finds work, or that
+// fails, declines the release: the pod stays with the work, and the claim is told once that the
+// release waits for its push (internal/daemon's checkIssueWorkspace). The daemon pushes nothing.
 //
-// It stops nothing, so a release cancelled here costs only the save, and it sits before the
+// It stops nothing, so a release cancelled here costs only the read, and it sits before the
 // release's boundary (the first `release` row), so a delivery queued while it runs, save a start
-// that waits for its pod, still cancels the whole release and takes the stored bundle with it
-// (outbox.cancelRelease).
-type IssueBundle struct {
+// that waits for its pod, still cancels the whole release (outbox.cancelRelease). The teardown
+// waits for it (store.IssueRelease).
+//
+// CloseRoles, where it names any role, makes the row the first act of another act: the close of a
+// pod whose issue left the workflow while its tree runs on (workflow.LeftPodClose), which marks no
+// release. Those are the live roles the close stops, as the pass that queued it saw them; the
+// stops themselves are decided again from a view read in the store's own transaction
+// (workflow.LeftPodCloseAfterCheck), so this list identifies the act and no reader takes a stop
+// from it. A clean read queues the close's stops and the Sandbox suspension itself
+// (internal/daemon's checkLeftPodWorkspace). A row with no CloseRoles is a release's.
+//
+// TurnStart, on a close's row, is the newest turn start of the issue's claims in the view the pass
+// queued the close from (pods.IdleView.NewestTurnStart), zero where none had had a turn: the close
+// stops no claim after a turn that started since, as a release's mark holds the same moment for its
+// own stops (issue_releases.turn_start). The check holds the close on a turn before its decision
+// (workflow.LeftPodCloseAfterCheck), and each `suspend` it queues carries the moment on
+// (SuperviseRequest.TurnStart), so a turn between the decision and the stop holds that stop. A
+// release's row leaves it zero, since its mark holds it.
+type IssueWorkspaceCheck struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
 	TreeGeneration uint64     `json:"treeGeneration"`
 	Role           claim.Role `json:"role"`
-	// Claim is the claim whose shim is asked, where the release names it. A row that names none
-	// asks the claim of the worker on Role's step (WorkerClaim), as a row the release before
-	// wrote does.
-	Claim claim.Token `json:"claim,omitempty"`
+	// Claim is the claim whose shim is asked. A row that names none asks the worker on Role's
+	// step (WorkerClaim), as a row the release before wrote does.
+	Claim      claim.Token  `json:"claim,omitempty"`
+	CloseRoles []claim.Role `json:"closeRoles,omitempty"`
+	TurnStart  time.Time    `json:"turnStart,omitzero"`
 }
 
-func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
+func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
-// IssueRelease is the last act of an idle pod's release, queued behind the save (IssueBundle) and
-// the `release` supervise rows, one for each live claim, that stopped the pod's processes: it asks
-// the
-// runtime's release (runtime.IssueReleaser), which suspends the issue's Sandbox and waits its pod
-// out, keeps a Sandbox that owns the issue's kept volume and deletes every other Sandbox with the
-// role Secrets it owns, and records the release with the size of the bundle the save stored.
-// Both workflow generations and this row's ID fence a start or a re-admission that came after, as
-// an IssueSuspend's do.
+// IssueRelease is the last act of an idle pod's release, queued behind the workspace check
+// (IssueWorkspaceCheck) and the `release` supervise rows, one for each live claim, that stopped
+// the pod's processes: it asks the runtime's release (runtime.IssueReleaser), which suspends the
+// issue's Sandbox and waits its pod out, keeps a Sandbox that owns the issue's kept volume and
+// deletes every other Sandbox with the role Secrets it owns, and records the release. Both
+// workflow generations and this row's ID fence a start or a re-admission that came after, as an
+// IssueSuspend's do.
 //
 // Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
-// task, and the next wake for one of the roles brings a new pod that restores the bundle before
-// any role starts. A new pod of a kept Sandbox mounts the volume the work was taken off, so it
-// restores nothing, and the daemon drops the bundle (runtime.HeldWorkspaceBundleDrop).
+// task, and the next wake for one of the roles brings a new pod, whose workspace provisioning makes
+// again from what was pushed to the issue's branch. The check took the pod only because the
+// workspace held nothing that was not pushed. A new pod of a kept Sandbox mounts the volume the
+// last pod used.
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
@@ -2219,7 +2298,7 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		}
 		payload = value
 	case OutboxKindIssueBundle:
-		value := IssueBundle{}
+		value := IssueWorkspaceCheck{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -2407,9 +2486,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
 		}
-	case IssueBundle:
+	case IssueWorkspaceCheck:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
-			return fmt.Errorf("a release's workspace save requires its tree, both workflow generations and the role of the claim whose shim is asked")
+			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace")
 		}
 		if err := namedClaim(value.Claim); err != nil {
 			return err
@@ -2456,6 +2535,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return err
 		}
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
+		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
 			return err
 		}
 		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
@@ -2507,6 +2589,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
 			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
+		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
+			return err
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -2572,6 +2657,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.RefusedPod != "" && value.Op != "start" {
 			return fmt.Errorf("a supervise %s names the refused pod %q; only a start a refused launch queued names one", value.Op, value.RefusedPod)
+		}
+		if value.LeaveSession != "" && value.Op != "start" {
+			return fmt.Errorf("a supervise %s names the session %q to leave; only a start names one", value.Op, value.LeaveSession)
+		}
+		if value.TurnStart != nil && value.Op != "suspend" {
+			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)
 		}
 	case RoleMessage:
 		if value.Role == "" {
@@ -2781,21 +2872,29 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // (workflow's taskStopped), whose notice names the architect that made the call (StoppedBy) and
 // reaches the issue's architect only when that is another claim (the daemon's deliverNotice);
 // or by a failed step that no step before it of the type implementation can take the work back
-// from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
-// architect, in its reason.
+// from (workflow's stopUnreturned); or by a step whose role the deployment no longer defines,
+// stopped at the daemon's boot or kept stopped at a person's todo (workflow's lostStop), whose
+// notice names that role. The task's owner reads which task, and which step, which architect or
+// which role, in its reason.
 //
 // `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its retro because it
 // passed its last step while issues beneath it are still in the workflow (workflow's
 // beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
 // retro starts when the last one leaves (workflow's releaseHeldParents).
 //
-// `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
-// (workflow's passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree
-// now (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
-// moves a member to another tree. The first step deletes its rows and tells the issue's architect
-// once, whatever number of versions it passed over; the reason names each version, its document
-// and its giver, and the plan the first step runs: an owner's, of the issue's generation or carried
-// to it, or the default steps.
+// `plan-not-taken` is a plan its issue's first step did not take, the first step telling the
+// issue's architect once, whatever number of versions it passed over, after it deleted their
+// rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
+// passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree now
+// (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
+// moves a member to another tree; the reason names each version, its document and its giver,
+// the plan the first step runs (an owner's, of the issue's generation or carried to it, or the
+// default steps), and that the architect may give the plan again with register_plan as its own.
+// Or a plan of an issue whose experiment's group takes no plan from its owner (workflow's
+// passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave is passed over, the
+// run takes the project's default steps, and the reason names each version and the group
+// (intake's GroupClause), and offers no register_plan, which that issue's owner is answered
+// PLAN_NOT_TAKEN for.
 //
 // `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
 // launcher, older than the release that added the kind, could not look the session up by its id,
@@ -2866,6 +2965,35 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 	return nil
 }
 
+// validateNoticeGiveUps holds a notice's count and named give-ups to the intake-gave-up notice,
+// which counts one give-up or more, names between one and min(Count, giveUpNoticeNames) of them,
+// each by its record's positive id, and carries no role, since it is the controller's alone.
+// Every other kind carries neither. Both arms of the switch above call it, as they call
+// validateNoticeFailure: a Notice can never be of this kind, so there it refuses any count.
+func validateNoticeGiveUps(kind NoticeKind, role claim.Role, count int, giveUps []NoticeGiveUp) error {
+	if kind != IntakeGaveUpNotice {
+		if count != 0 || len(giveUps) > 0 {
+			return fmt.Errorf("a %s notice carries a count or names give-ups; only an intake-gave-up notice does", kind)
+		}
+		return nil
+	}
+	if count < 1 {
+		return fmt.Errorf("an intake-gave-up notice counts one give-up or more, not %d", count)
+	}
+	if most := min(count, giveUpNoticeNames); len(giveUps) < 1 || len(giveUps) > most {
+		return fmt.Errorf("an intake-gave-up notice that counts %d names between 1 and %d of them, not %d", count, most, len(giveUps))
+	}
+	for _, giveUp := range giveUps {
+		if giveUp.ID <= 0 {
+			return fmt.Errorf("an intake-gave-up notice names each give-up by its positive record id, not %d", giveUp.ID)
+		}
+	}
+	if role != "" {
+		return fmt.Errorf("an intake-gave-up notice carries no role, not %q: it is the controller's alone", role)
+	}
+	return nil
+}
+
 // validateNoticeStopper holds the claim of the architect that stopped a task to the one notice
 // that carries it: the task-stopped notice of its owner's stop_task (workflow's taskStopped),
 // which the daemon's executor publishes only to an architect that is not that claim. Both arms
@@ -2883,7 +3011,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
 		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, PodWaitHeldNotice, MemoryGuardKillNotice,
-		ProjectPausedNotice, ProjectResumedNotice:
+		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
 		return true
 	default:
 		return false

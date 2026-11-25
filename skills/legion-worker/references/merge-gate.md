@@ -7,14 +7,14 @@ The merger's steps are all in its role prompt.
 ## The reviewer
 
 1. Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.
-2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result.
-   Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change.
+2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result: each runs as a job of its own.
+   Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change, or, for a merge of the base, the merge's resolution (`git show --remerge-diff <merge>`) and this change's own commits since that commit.
    The daemon writes your task's last two sentences, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, and any `Commit another agent's review read: <sha>.` before them; your role prompt says how to read them.
 3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript.
    Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict.
    When you can do neither, that half of the round has no review: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on until it answers.
 4. A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand.
-   Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code.
+   Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code, or no `Thermo` line on a docs-only pull request.
 
 ### What the base requires
 
@@ -79,12 +79,7 @@ Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WA
 
 ### A merge of the base is reviewed for what it changed
 
-After a forward merge, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since your last submitted review's footer `head`.
-This lists your session's reviews, oldest first; no line, or `no head` on the last one, means you read the whole diff:
-
-```bash
-gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
-```
+After a forward merge, read the merge and this change's own commits since your last submitted review's footer `head` (`skill://legion-worker/references/conflicts-and-rewrites.md#reading-a-merge-of-the-base`, which lists your reviews).
 
 ## The production check after the close
 

@@ -31,7 +31,9 @@ questions, approve the spec, and review the pull request. Everything happens in
    daemon, and the issue moves to `todo` itself. For a parked issue (`backlog` or `icebox`), set
    its status to **`todo`**, or approve its spec: your approval queues it the same way when the
    issue has no parent. An approval that Dispatch carries in your name from an earlier one does
-   not queue it.
+   not queue it. An approval that Legion applies after the issue's status changed again (it reached
+   Legion late, or the operator replayed it) does not queue the issue either: set its status to
+   `todo` instead.
 
 When a slot is free the daemon admits the issue and the status changes to `in_progress`; when
 every slot is taken, the issue waits in `todo` for a free slot, in the order the line gives it ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
@@ -177,7 +179,9 @@ makes them afresh.
 - **To run it again**, set it back to `todo` with the label on, or approve its spec: a person's
   approval of a parked labelled issue's spec is queued by the daemon when the issue has no
   parent, and the issue moves to `todo` itself; an approval that Dispatch carries in your name from
-  an earlier one does not queue it. The tree starts over as a new generation, from its architect.
+  an earlier one does not queue it. An approval that Legion applies after the issue's status
+  changed again (it reached Legion late, or the operator replayed it) does not queue the issue
+  either: set it to `todo`. The tree starts over as a new generation, from its architect.
 - **To close it without a change**, tell the architect at the design gate that no change is needed;
   it closes the issue with that reason. You can also close the issue yourself from the dashboard.
 

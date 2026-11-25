@@ -124,7 +124,7 @@ func TestTheExecFormReleasesAGitHubProfileNarrowedByItsTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "target-box-" + t.Name(), Thumbprint: thumbprint}, 10*time.Second)
+	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "target-box-" + t.Name(), Thumbprint: thumbprint}, untilGiveUp(t))
 	if err != nil || !enrolled.OK {
 		t.Fatalf("enroll-session-key: %+v %v", enrolled, err)
 	}

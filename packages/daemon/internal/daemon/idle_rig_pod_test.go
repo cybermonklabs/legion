@@ -242,16 +242,18 @@ func idleRigSessionFile(issue, role string) string {
 // fakeOmp. The role process the real launcher starts in a pod is `legion worker-shim … -- <omp
 // argv>`; this stand-in is that whole process, Oh My Pi included: it speaks the worker stream's
 // frames, registers with the daemon, reports ready, claims its role on the Envoy listener, and
-// records every message it is given.
-func idleRigLegionTool(t *testing.T, dir string) string {
+// records every message it is given. The script names the rig that process serves, rigURL, in
+// idleRigURLVariable itself, so the rig's own test process never sets it: each rig writes its own
+// stand-in (toolsDir), and the rigs run beside each other, which a t.Setenv refuses.
+func idleRigLegionTool(t *testing.T, dir, rigURL string) string {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "legion")
-	script := "#!/bin/sh\nexec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' " +
-		"-test.timeout=0 -test.count=1 \"$@\"\n"
+	script := "#!/bin/sh\n" + idleRigURLVariable + "=" + shellQuote(rigURL) + "\nexport " + idleRigURLVariable + "\n" +
+		"exec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' -test.timeout=0 -test.count=1 \"$@\"\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the rig's legion stand-in: %v", err)
 	}

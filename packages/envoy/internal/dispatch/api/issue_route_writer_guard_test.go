@@ -5,6 +5,8 @@
 
 package api
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, one_expression_guard_test.go:72,; TestOnlyTheIssuePatchWritesTheRoute also walks packages/envoy and reads every non-test file of it as text
+
 import (
 	"go/ast"
 	"go/parser"

@@ -55,15 +55,18 @@ A Kubernetes pod trades its own projected ServiceAccount token at the same excha
 access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
 pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
 and the one Dispatch project it may write, or no project for an entry that names none
-(`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
-service and a fixed session instead, and no person and no project: the token holds the OAuth scope
-`read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
-other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
-service refuses a connection that presents it as `not_a_session`
-([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
-`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
-source, each component, and every issue of the project, closed and iceboxed ones included. No
-setting holds a read entry to some projects.
+(`<service account>==<person>`), or neither a person nor a project for an entry that names
+neither (`<service account>==`): such a token acts as the account itself, names the account as its
+service, and Dispatch records its writes under that account. An entry that names a project names
+its person, so no token held to a project is personless. A read entry, of
+`BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a service and a fixed session instead, and no person and
+no project: the token holds the OAuth scope `read` alone. Dispatch serves such a token on the
+routes its read list names and refuses it on every other route with `403 READ_ONLY_TOKEN`; the
+Envoy listener refuses it with `401`, and the NATS auth service refuses a connection that presents
+it as `not_a_session` ([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole
+answer of `GET /api/v1/projects/{key}/architecture` for every project that has an architecture
+source: each source, each component, and every issue of the project, closed and iceboxed ones
+included. No setting holds a read entry to some projects.
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
@@ -1509,8 +1512,26 @@ authority to trust that proxy by, a proxy password, and, for each name, a placeh
 placeholder of each slot of the value, and the hosts the entry binds. A placeholder is
 `agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
-brokers; `envoy-broker profiles check <file> [--against <old file>]` says whether a broker would
-serve a file, and what that file adds and removes against the one in force.
+brokers; `envoy-broker profiles check <file> [--against <old file>] [--private-upstream '<host>=<url> ...']`
+says whether a broker would serve a file, and what that file adds and removes against the one in
+force.
+
+A proxy block may be of kind `dpop`: a capability the broker mints for a grant of its own and
+holds, from no stored secret. Such a profile is a name and its proxy block alone. Its grant is
+answered a placeholder that opens with `agent-secrets-placeholder-`, the kind's word and a hyphen;
+on the block's host the proxy takes a request only with that placeholder as its one
+`Authorization` header, `DPoP <placeholder>`, swaps in a token it mints for the grant bound to its
+pod's own key, adds a DPoP proof of that key, and sends the request without the command's
+forwarding headers. The placeholder opens no tunnel anywhere else. Every dpop block binds one exact
+host with an `allow` list none of whose entries is every path (`""` or `/`), in `Authorization` alone, and that host is a private destination's:
+`BROKER_PROXY_PRIVATE_UPSTREAM`, `<host>=<url>` entries, one per bound host, sends each host's allowed
+requests to its own address inside the broker's own cluster rather than wherever its name resolves. No block of another
+kind may bind it. A stored secret under a dpop block is never released (`403 MINTED_ONLY`).
+Each grant records a digest of its block and the destination, and a broker whose own digest differs
+serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds,
+and a stored secret of its name is not served through it, so nothing of it can be requested or
+approved; it is no refusal either, so it writes no refused line and counts in no unservable series. A grant of the capability is made by the broker
+itself, for a kind it names in code, and this release names none yet.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's

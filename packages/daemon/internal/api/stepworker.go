@@ -3,8 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net/http"
 
 	"github.com/jackc/pgx/v5"
 
@@ -41,19 +39,4 @@ func (s *server) worksStep(issue string, role claim.Role, token claim.Token) fun
 		now, err := s.workerToken(ctx, issue, role)
 		return now == token, err
 	}
-}
-
-// refuseMovedSpawn answers a spawn whose launch of token, the claim it read as the worker on
-// role's step of issue, found the step another claim's under the machine's lock
-// (supervise.ErrStepLeft): nothing was launched or sent, and the answer names the claim the record
-// names there now, read again here, so the operator can ask again of the step as it stands.
-func (s *server) refuseMovedSpawn(w http.ResponseWriter, r *http.Request, issue string, role claim.Role, token claim.Token) {
-	now, err := s.workerToken(r.Context(), issue, role)
-	if err != nil {
-		s.operatorFailure(w, r, "spawn", token, err)
-		return
-	}
-	s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
-		"spawn refused: the %s's step of %s moved from claim %s to claim %s under the request; nothing was launched or sent, so ask again",
-		role, issue, token, now))
 }

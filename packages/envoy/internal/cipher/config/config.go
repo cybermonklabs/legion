@@ -9,7 +9,9 @@
 package config
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -32,10 +34,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -310,6 +315,27 @@ type Config struct {
 	// pass silently. Outside a cluster (KUBERNETES_SERVICE_HOST empty or unset), and with no proxy
 	// block, it is optional.
 	AirlockClusterRanges []netip.Prefix
+	// BROKER_PROXY_PRIVATE_UPSTREAM: whitespace-separated <host>=<url> entries, such as
+	// dispatch.example-tailnet.ts.net=http://dispatch.dispatch.svc.cluster.local:8766, one per bound
+	// host: each host a proxy block of kind dpop binds, whose allowed requests the proxy sends to its
+	// own url, an address inside the broker's own cluster, in place of the host's own address. It is
+	// the one exception to the proxy's refusal of private addresses and of
+	// BROKER_AIRLOCK_CLUSTER_RANGES: the proxy dials a url's host only when every address it
+	// resolves to is one it refuses every other request - private, 100.64.0.0/10 or inside
+	// BROKER_AIRLOCK_CLUSTER_RANGES - and none is one netaddr.DestinationRefusal names, and a
+	// tunnel or a plain-HTTP request to those addresses stays refused. The request keeps the host
+	// as its Host header, and the DPoP proof of a dpop block still names https:// and the host.
+	// Unset, the proxy sends every bound host's request to that host's own address. The start is
+	// refused, naming the setting and the fault and quoting no part of a url a credential can sit
+	// in, for a host named twice, for the setting without BROKER_PROFILES_FILE, for a host that is
+	// not one lower-case host name, for a url that is not http or https, names no host or a port
+	// outside 1 to 65535, or carries a user, a path other than /, a query or a fragment, and for a
+	// url whose host every dial refuses - an address netaddr.DestinationRefusal names, localhost or
+	// a name under .localhost - unless BROKER_AIRLOCK_TEST_DIAL_ALLOW names that host and port;
+	// and, where the broker reads the profiles file (ProxyMintedRules), unless every destination's
+	// host is bound by a dpop block, every dpop block binds one destination's host alone, with a
+	// non-empty allow list, carried in Authorization alone, and no block of another kind binds it.
+	ProxyPrivateUpstreams []PrivateUpstream
 	// kubernetesServiceHost is KUBERNETES_SERVICE_HOST as Load read it, which Kubernetes sets in
 	// every container to the address of the cluster's kubernetes Service. It is no setting of the
 	// broker's, so the configuration reference leaves it out. RequireAirlock reads it once the boot
@@ -344,10 +370,17 @@ type Config struct {
 	// BROKER_AIRLOCK_TEST_RESOLVE: whitespace-separated <host>=<address> entries, each an IP
 	// address the airlock proxy reads that host as having and dials it at, in place of what
 	// the resolver answers. It is how a client that resolves a real name of its own - az, the
-	// AWS client - reaches a stand-in service through the proxy. A host named twice is
-	// refused. For the broker's local stack alone: a production start, which is one with
-	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// AWS client - reaches a stand-in service through the proxy. An entry may name a port
+	// beside the address, <host>=<address>:<port> ([<address>]:<port> for IPv6), which the
+	// proxy dials in place of the port the CONNECT named (ProxyTestDialPorts), so a stand-in
+	// on loopback needs no privileged port 443. A host named twice is refused, and so is an
+	// address given two ports. For the broker's local stack alone: a production start, which is
+	// one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestResolve map[string]netip.Addr
+	// ProxyTestDialPorts is the port each address of BROKER_AIRLOCK_TEST_RESOLVE whose entry
+	// named one is dialled at, whatever port the CONNECT named; an address whose entry named no
+	// port is not in it.
+	ProxyTestDialPorts map[netip.Addr]uint16
 	// BROKER_AIRLOCK_TEST_KEEP_VALUES: with it true, the airlock proxy keeps a grant's values
 	// across the reread of one of its names and past the five-minute margin before a minted
 	// token's expiry, rather than reading and minting again. It is the negative control of the
@@ -657,17 +690,18 @@ type Config struct {
 	// own workers, with that service's secrets. It refuses a mapped account whose login service a
 	// BROKER_VM_SERVICES entry names, because the broker registers the services of BROKER_SERVICES
 	// and BROKER_VM_SERVICES alike as owners a secret may name. It refuses a mapped account that a
-	// BROKER_EXCHANGE_ACCOUNTS entry maps to another person. It refuses a mapped account that a
-	// BROKER_POD_REGISTRARS entry names as its registrar, because the person's pod would then
-	// choose the session names other pods exchange under. It refuses a mapped account that a
-	// BROKER_EXCHANGE_READ_ACCOUNTS entry names, because the exchange would mint the person's pod a
-	// token that names a service and no person. It refuses a mapped account that a
-	// BROKER_API_ACCOUNTS entry names, because that caller's routes relay decisions in the name the
-	// caller gives. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because
-	// the NATS auth service would then answer a connection of the person's pod with a service's
-	// NATS grant. It refuses a mapped account that either side of a BROKER_SESSION_ACCOUNT_PAIRS
-	// pair names, because a pair lets the session names the token exchange binds for the account
-	// and for the other account cross. Unset, the setting maps no account.
+	// BROKER_EXCHANGE_ACCOUNTS entry maps to another person or lists with no person. It refuses a
+	// mapped account that a BROKER_POD_REGISTRARS entry names as its registrar, because the
+	// person's pod would then choose the session names other pods exchange under. It refuses a
+	// mapped account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names, because the exchange would
+	// mint the person's pod a token that names a service and no person. It refuses a mapped
+	// account that a BROKER_API_ACCOUNTS entry names, because that caller's routes relay decisions
+	// in the name the caller gives. It refuses a mapped account that a BROKER_NATS_SERVICES entry
+	// names, because the NATS auth service would then answer a connection of the person's pod
+	// with a service's NATS grant. It refuses a mapped account that either side of a
+	// BROKER_SESSION_ACCOUNT_PAIRS pair names, because a pair lets the session names the token
+	// exchange binds for the account and for the other account cross. Unset, the setting maps no
+	// account.
 	PodOperators map[string]string
 	// BROKER_SESSION_ACCOUNT_PAIRS: pairs of Kubernetes service accounts that take each other's
 	// session names, whitespace-separated <account>=<account> entries, each account
@@ -780,11 +814,15 @@ type Config struct {
 	// refuses the start over when it is not one, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>): the shared
-	// public-session account's, whose tokens act for that person and name no project. The
-	// session is everything after the third "=", so it alone may carry one. A
-	// namespace's default account is refused, as is an account listed twice. Needs
-	// BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present.
-	// Unset, no account exchanges.
+	// public-session account's, whose tokens act for that person and name no project. An entry
+	// may name neither a project nor a person (<service account>==): a job's own account, whose
+	// tokens name no person and no project and act as the account itself, which Dispatch records
+	// their writes under. An entry naming a project and no person is refused: an entry that names
+	// a project names its person, so no token held to a project is personless. The session is
+	// everything after the third "=", so it alone may carry one. A namespace's default account is
+	// refused, as is an account listed twice. Needs BROKER_K8S_OIDC_ISSUER and
+	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older than
+	// the entry naming no person refuses to start on one. Unset, no account exchanges.
 	ExchangeAccounts []exchange.AccountEntry
 	// BROKER_EXCHANGE_READ_ACCOUNTS: the Kubernetes service accounts whose pods exchange their
 	// projected token for one that only reads, whitespace-separated
@@ -1084,11 +1122,6 @@ func (n NATSCallout) Enabled() bool { return len(n.URLs) > 0 }
 // noSharedEnvoyBearer is why BROKER_ENVOY_TOKEN and BROKER_ENVOY_TOKEN_FILE are gone.
 const noSharedEnvoyBearer = "set BROKER_ENVOY_ACCOUNT_TOKEN_FILE to the broker's own projected ServiceAccount token instead: the listener admits the account it names, and a bearer the broker shared with every other caller of the listener is no longer read"
 
-// serviceAccountPattern is a Kubernetes service account's subject, the one a pod's projected token
-// carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
-// subdomain.
-var serviceAccountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
-
 // defaultServiceAccount is the account name Kubernetes gives every namespace and runs every pod
 // whose spec names no account as.
 const defaultServiceAccount = "default"
@@ -1110,7 +1143,7 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 	seen := map[string]string{}
 	for _, text := range strings.Fields(value) {
 		service, subject, ok := strings.Cut(text, "=")
-		if !ok || !record.ValidService(service) || service == policy.OwnerShared || !serviceAccountPattern.MatchString(subject) {
+		if !ok || !record.ValidService(service) || service == policy.OwnerShared || !oauthwire.AccountSubject.MatchString(subject) {
 			return nil, fmt.Errorf("%s must be <service>=system:serviceaccount:<namespace>:<name> entries, each service lowercase letters, digits and hyphens, at most 64, not %s, got %q", setting, policy.OwnerShared, text)
 		}
 		if isDefaultServiceAccount(subject) {
@@ -1172,7 +1205,7 @@ func bindOnce(seen map[string]string, setting, account, service string) error {
 // parsePodRegistrars reads setting's whitespace-separated <registrar account>=<pod account>
 // entries, BROKER_POD_REGISTRARS, as the set of pairs the registration route admits. Both
 // accounts are ServiceAccount subjects held to the rule BROKER_SERVICE_LOGINS holds its accounts
-// to (serviceAccountPattern, isDefaultServiceAccount): the registrar is a login account and the
+// to (oauthwire.AccountSubject, isDefaultServiceAccount): the registrar is a login account and the
 // pod account the subject of a pod's projected token. It refuses, naming setting and the entry:
 // one without exactly one "=", an account of any other form (a google: one included), a
 // namespace's default account, and a pair given twice. A registrar with several pod accounts, a
@@ -1182,7 +1215,7 @@ func parsePodRegistrars(setting, value string) (api.PodRegistrars, error) {
 	var registrars api.PodRegistrars
 	for _, text := range strings.Fields(value) {
 		registrar, pod, _ := strings.Cut(text, "=")
-		if strings.Count(text, "=") != 1 || !serviceAccountPattern.MatchString(registrar) || !serviceAccountPattern.MatchString(pod) {
+		if strings.Count(text, "=") != 1 || !oauthwire.AccountSubject.MatchString(registrar) || !oauthwire.AccountSubject.MatchString(pod) {
 			return nil, fmt.Errorf("%s must be <registrar account>=<pod account> entries, each account system:serviceaccount:<namespace>:<name>, got %q", setting, text)
 		}
 		if isDefaultServiceAccount(registrar) || isDefaultServiceAccount(pod) {
@@ -1415,7 +1448,7 @@ func ParseAccount(setting, text, account string) (Account, error) {
 			return Account{}, err
 		}
 		return Account{Address: address, Google: true}, nil
-	case !serviceAccountPattern.MatchString(account):
+	case !oauthwire.AccountSubject.MatchString(account):
 		return Account{}, ErrAccountForm
 	case isDefaultServiceAccount(account):
 		return Account{}, defaultServiceAccountRefusal(setting, text)
@@ -1531,7 +1564,7 @@ func exchangeFields(text string, want int) ([]string, bool) {
 // to a VM's.
 func podAccountRefusal(setting, text, account string) error {
 	switch {
-	case !serviceAccountPattern.MatchString(account):
+	case !oauthwire.AccountSubject.MatchString(account):
 		return fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
 	case isDefaultServiceAccount(account):
 		return fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)
@@ -1601,16 +1634,17 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // account whose login service a BROKER_VM_SERVICES entry names, because cmd/cipherd's serviceNames
 // gives the policy loader the services of BROKER_SERVICES and BROKER_VM_SERVICES alike. It refuses
 // a mapped account that a BROKER_EXCHANGE_ACCOUNTS entry maps to another person, after it writes
-// both people in record.CanonicalLogin's form. It refuses a mapped account that a
-// BROKER_POD_REGISTRARS entry names as its registrar (cfg.PodRegistrars), because a registrar
-// chooses the session names that the pods it registers exchange under, and each name stays bound to
-// the registrar's account for good (oauthstore.Store.RegisterPodSession), so the person's pod would
-// choose the session names other pods exchange under. The registration routes refuse a mapped
-// account already (api's serviceCaller, 403 PERSON_ACCOUNT), so such an entry could register
-// nothing. A mapped account on the pod side of an entry is not refused: a registration of its pod
-// is admitted only under a BROKER_EXCHANGE_ACCOUNTS entry that fixes no session (the pod-session
-// policy's 409 SESSION_FIXED), and every BROKER_EXCHANGE_ACCOUNTS entry for the account names the
-// same person (the refusal above), so the pod acts for that person alone. It refuses a mapped
+// both people in record.CanonicalLogin's form, or lists with no person, whose tokens act as the
+// account itself. It refuses a mapped account that a BROKER_POD_REGISTRARS entry names as its
+// registrar (cfg.PodRegistrars), because a registrar chooses the session names that the pods it
+// registers exchange under, and each name stays bound to the registrar's account for good
+// (oauthstore.Store.RegisterPodSession), so the person's pod would choose the session names other
+// pods exchange under. The registration routes refuse a mapped account already (api's
+// serviceCaller, 403 PERSON_ACCOUNT), so such an entry could register nothing. A mapped account on
+// the pod side of an entry is not refused: a registration of its pod is admitted only under a
+// BROKER_EXCHANGE_ACCOUNTS entry that fixes no session (the pod-session policy's 409
+// SESSION_FIXED), and every BROKER_EXCHANGE_ACCOUNTS entry for the account names the same person
+// (the refusal above), so the pod acts for that person alone. It refuses a mapped
 // account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names (cfg.ExchangeReadAccounts), because the
 // exchange would then mint the person's pod a read-only token that names that entry's service and
 // no person. It refuses a mapped account that a BROKER_API_ACCOUNTS entry names (cfg.APIAccounts),
@@ -1684,6 +1718,9 @@ func mappedAccountRefusal(cfg *Config) error {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_VM_SERVICES names its login service %q (BROKER_SERVICE_LOGINS); the broker registers that setting's services as owners a secret may name, as it does BROKER_SERVICES', and a person's login service must grant nothing by itself, so log the account in under a service BROKER_VM_SERVICES does not name", setting, account, person, login)
 		}
 		if other, exchanges := exchangePeople[account]; exchanges && record.CanonicalLogin(other) != record.CanonicalLogin(person) {
+			if other == "" {
+				return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_ACCOUNTS lists it with no person, so its tokens act as the account itself; one account acts for one person or for none, so name the person in BROKER_EXCHANGE_ACCOUNTS or take the account out of one of them", setting, account, person)
+			}
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_ACCOUNTS maps it to %s; one account acts for one person, so map it to the same person in both settings or take it out of one of them", setting, account, person, other)
 		}
 		if pod, registers := registrarPods[account]; registers {
@@ -1708,18 +1745,24 @@ func mappedAccountRefusal(cfg *Config) error {
 // parseExchangeAccounts reads setting's whitespace-separated
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
 // lists, in order. The project may be empty (<service account>==<person>), which is the shared
-// public-session account's entry: its named tokens act for the person and name no project. It
-// refuses, naming the entry: one not of that form or with a blank account or person; an account
-// that is not system:serviceaccount:<namespace>:<name>, or a namespace's default account
-// (podAccountRefusal); and an account listed twice, since one account writes as one identity.
-// exchange.NewSet is the second gate, and the session name's own form is its to refuse.
+// public-session account's entry: its named tokens act for the person and name no project. The
+// person may be empty with it (<service account>==), a job's own account, whose tokens act as the
+// account itself. It refuses, naming the entry: one not of that form, with a blank account, or
+// naming a project and no person, since an entry that names a project names its person, so no
+// token held to a project is personless; an account that is not
+// system:serviceaccount:<namespace>:<name>, or a namespace's default account (podAccountRefusal);
+// and an account listed twice, since one account writes as one identity. exchange.NewSet is the
+// second gate, and the session name's own form is its to refuse.
 func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, error) {
 	var entries []exchange.AccountEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
 		fields, ok := exchangeFields(text, 4)
-		if !ok || fields[0] == "" || fields[2] == "" {
-			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the project empty for an entry naming none and the session everything after the third =, got %q", setting, text)
+		if !ok || fields[0] == "" {
+			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the project empty for an entry naming none, the person empty only beside it, and the session everything after the third =, got %q", setting, text)
+		}
+		if fields[1] != "" && fields[2] == "" {
+			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no token held to a project is personless", setting, text)
 		}
 		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
 			return nil, err
@@ -1822,30 +1865,52 @@ func parseAirlockTestDialAllow(value string) ([]string, error) {
 }
 
 // parseAirlockTestResolve reads BROKER_AIRLOCK_TEST_RESOLVE's whitespace-separated
-// <host>=<address> entries. It refuses, naming the entry: one not of that form, one whose
-// address is no IP address, and a host named twice, since a host has one address here and the
-// second would silently replace the first.
-func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
+// <host>=<address> and <host>=<address>:<port> entries, and answers each host's address and each
+// address's port where its entry named one. It refuses, naming the entry: one not of that form,
+// one whose address is no IP address, one whose port is 0, and a host named twice, since a host
+// has one address here and the second would silently replace the first; and, naming the address,
+// an address given two ports, since the dial to it could not tell which one it means.
+func parseAirlockTestResolve(value string) (map[string]netip.Addr, map[netip.Addr]uint16, error) {
 	const setting = "BROKER_AIRLOCK_TEST_RESOLVE"
 	var hosts map[string]netip.Addr
+	var ports map[netip.Addr]uint16
 	for _, text := range strings.Fields(value) {
 		host, address, ok := strings.Cut(text, "=")
 		if !ok || host == "" {
-			return nil, fmt.Errorf("%s must be <host>=<address> entries, got %q", setting, text)
+			return nil, nil, fmt.Errorf("%s must be <host>=<address> entries, got %q", setting, text)
 		}
+		var port uint16
 		addr, err := netip.ParseAddr(address)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %q names no IP address", setting, text)
+			withPort, portErr := netip.ParseAddrPort(address)
+			if portErr != nil {
+				return nil, nil, fmt.Errorf("%s: %q names no IP address", setting, text)
+			}
+			if withPort.Port() == 0 {
+				return nil, nil, fmt.Errorf("%s: %q names the port 0, which nothing listens on", setting, text)
+			}
+			addr, port = withPort.Addr(), withPort.Port()
 		}
 		if _, twice := hosts[host]; twice {
-			return nil, fmt.Errorf("%s names the host %s twice; a host resolves to one address here, so name it once", setting, host)
+			return nil, nil, fmt.Errorf("%s names the host %s twice; a host resolves to one address here, so name it once", setting, host)
 		}
 		if hosts == nil {
 			hosts = map[string]netip.Addr{}
 		}
-		hosts[host] = netaddr.Canonical(addr)
+		addr = netaddr.Canonical(addr)
+		hosts[host] = addr
+		if port == 0 {
+			continue
+		}
+		if other, named := ports[addr]; named && other != port {
+			return nil, nil, fmt.Errorf("%s gives the address %s the ports %d and %d; a dial to it could not tell which one it means", setting, addr, other, port)
+		}
+		if ports == nil {
+			ports = map[netip.Addr]uint16{}
+		}
+		ports[addr] = port
 	}
-	return hosts, nil
+	return hosts, ports, nil
 }
 
 // parseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES' comma-separated CIDR prefixes, in
@@ -1941,6 +2006,225 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 	}
 	return fmt.Errorf("KUBERNETES_SERVICE_HOST %s is inside no range BROKER_AIRLOCK_CLUSTER_RANGES names (%s): the setting misses the cluster's Service range, and the airlock proxy would dial the cluster's ClusterIPs",
 		host, strings.Join(named, ", "))
+}
+
+// PrivateUpstream is one entry of BROKER_PROXY_PRIVATE_UPSTREAM: Host, the bound host whose
+// allowed requests go to the destination, and URL, the scheme and host (with its port) they go to.
+type PrivateUpstream struct {
+	Host string
+	URL  *url.URL
+}
+
+// privateUpstreamSetting is BROKER_PROXY_PRIVATE_UPSTREAM, which its checks name.
+const privateUpstreamSetting = "BROKER_PROXY_PRIVATE_UPSTREAM"
+
+// ParsePrivateUpstreams reads BROKER_PROXY_PRIVATE_UPSTREAM's whitespace-separated <host>=<url>
+// entries, in the order written, one private destination per bound host; a blank value is none.
+// Load reads the setting with it, and `profiles check --private-upstream` reads its flag with it,
+// so the two read one form. It refuses, naming the setting and the fault: a host named twice,
+// since each bound host has one destination; an entry with no host before its first = or no URL
+// after it; a host rulehost.Refusal refuses, a "*." pattern or a capital letter, since the proxy
+// compares the host as written with one lower-cased CONNECT host; and a URL that does not parse,
+// carries a user, is not http or https, names no host, names a port outside 1 to 65535, or has a
+// path other than /, a query or a fragment, since the proxy sends each request's own path and
+// query to the URL's scheme, host and port alone. No refusal quotes a part of the URL a credential
+// can sit in - its user, its path, its query or its fragment - or the URL whole: a refusal names
+// the URL's scheme at most, and the start writes it to the broker's log.
+func ParsePrivateUpstreams(value string) ([]PrivateUpstream, error) {
+	var upstreams []PrivateUpstream
+	for _, entry := range strings.Fields(value) {
+		upstream, err := parsePrivateUpstream(entry)
+		if err != nil {
+			return nil, err
+		}
+		for _, earlier := range upstreams {
+			if earlier.Host == upstream.Host {
+				return nil, fmt.Errorf("%s names the host %s twice; each bound host has one private destination", privateUpstreamSetting, upstream.Host)
+			}
+		}
+		upstreams = append(upstreams, upstream)
+	}
+	return upstreams, nil
+}
+
+// parsePrivateUpstream reads one entry of BROKER_PROXY_PRIVATE_UPSTREAM (ParsePrivateUpstreams).
+func parsePrivateUpstream(entry string) (PrivateUpstream, error) {
+	const setting = privateUpstreamSetting
+	host, raw, _ := strings.Cut(entry, "=")
+	if host == "" || raw == "" {
+		return PrivateUpstream{}, fmt.Errorf("%s must be <host>=<url> entries, each with a host before its first = and a URL after it", setting)
+	}
+	if why := rulehost.Refusal(host); why != "" {
+		return PrivateUpstream{}, fmt.Errorf("%s must name a host an airlock proxy block can bind before its =, got %q, which %s", setting, host, why)
+	}
+	if strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
+		return PrivateUpstream{}, fmt.Errorf("%s must name its host in lower case, with no \"*.\", since the proxy compares it as written with one lower-cased host, got %q", setting, host)
+	}
+	destination, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = does not parse", setting)
+	case destination.User != nil:
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = carries a user, which the proxy would never send; write the URL as a scheme and a host alone", setting)
+	case destination.Scheme != "http" && destination.Scheme != "https":
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = has the scheme %q, and it must be http or https", setting, destination.Scheme)
+	case destination.Hostname() == "":
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = names no host", setting)
+	case destination.Port() != "" && !portInRange(destination.Port()):
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = names a port outside 1 to 65535, which no dial reaches", setting)
+	case destination.Path != "" && destination.Path != "/":
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = has a path; the proxy sends each request's own path, so the URL names none but /", setting)
+	case destination.RawQuery != "" || destination.ForceQuery:
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = has a query; the proxy sends each request's own query, so the URL names none", setting)
+	case destination.Fragment != "" || strings.Contains(raw, "#"):
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = has a fragment, which no request carries; write the URL as a scheme and a host alone", setting)
+	}
+	return PrivateUpstream{Host: host, URL: destination}, nil
+}
+
+// portInRange reports whether port, a URL's port as url.URL.Port answers it (decimal digits),
+// names a port from 1 to 65535.
+func portInRange(port string) bool {
+	number, err := strconv.ParseUint(port, 10, 16)
+	return err == nil && number != 0
+}
+
+// PrivateUpstreamDialable refuses, naming the setting, a private destination every dial of the
+// proxy refuses (proxy.Server.upstreamAddresses), so the broker does not start with a destination
+// no request can reach: a URL whose host is an address netaddr.DestinationRefusal names
+// (loopback, link-local, unspecified, multicast, a cloud metadata server's), or localhost or a name
+// under .localhost, which resolve to loopback alone (RFC 6761, section 6.3). The one exception is
+// the proxy's own: BROKER_AIRLOCK_TEST_DIAL_ALLOW naming the URL's host and port, the local stack's
+// way to reach a stand-in on loopback, which a production start refuses. A name that resolves
+// elsewhere is the dial's to check, since it can resolve differently at each dial. Load runs it
+// with the broker's dial allow, and `profiles check --private-upstream` with none.
+func PrivateUpstreamDialable(upstream PrivateUpstream, dialAllow []string) error {
+	if upstream.URL == nil {
+		return nil
+	}
+	host, port := upstream.URL.Hostname(), upstream.URL.Port()
+	if port == "" {
+		port = "80"
+		if upstream.URL.Scheme == "https" {
+			port = "443"
+		}
+	}
+	if slices.Contains(dialAllow, net.JoinHostPort(host, port)) {
+		return nil
+	}
+	if name := strings.ToLower(host); name == "localhost" || strings.HasSuffix(name, ".localhost") {
+		return fmt.Errorf("%s: the URL after its = names the host %s, which resolves to loopback, an address the airlock never dials", privateUpstreamSetting, host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if why := netaddr.DestinationRefusal(addr); why != "" {
+			return fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, netaddr.Canonical(addr), why)
+		}
+	}
+	return nil
+}
+
+// profilesFileSetting is BROKER_PROFILES_FILE, which the dpop block checks name as the file the
+// proxy blocks come from.
+const profilesFileSetting = "BROKER_PROFILES_FILE"
+
+// MintedEntryRules is every rule of the proxy blocks of kind dpop that the profiles file alone
+// decides, over its proxy blocks (policy.Profiles.ProxyRules). Each such block is a capability the
+// broker mints and holds (requests.MintedKind), whose token goes to every host the block binds,
+// with a DPoP proof of the broker's own key. So each binds one exact host and no "*." name, has a
+// non-empty allow list, the one list that holds every request of its grant, none of whose entries
+// names the path prefix "" or "/", which is every path; is carried in the Authorization header
+// alone (a block naming no headers carries the default, Authorization); and
+// no block of another kind binds its host (proxyrules.HostBound, so a "*." block over it counts),
+// so that every request that reaches that host through the proxy is a minted grant's, held to its
+// allow list. Two dpop blocks may share one host, each its own capability. The boot runs it through
+// ProxyMintedRules, and `profiles check` runs it whatever its arguments.
+func MintedEntryRules(rules proxyrules.Rules) error {
+	for _, entry := range rules.Secrets {
+		if entry.Kind != proxyrules.KindDPoP {
+			continue
+		}
+		switch {
+		case len(entry.Hosts) != 1 || strings.HasPrefix(entry.Hosts[0], "*."):
+			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, proxyrules.KindDPoP, entry.Hosts)
+		case len(entry.Allow) == 0:
+			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, proxyrules.KindDPoP)
+		}
+		for _, allow := range entry.Allow {
+			if allow.PathPrefix == "" || allow.PathPrefix == "/" {
+				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, proxyrules.KindDPoP, allow.Method, allow.PathPrefix)
+			}
+		}
+		if headers := entry.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
+			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, proxyrules.KindDPoP, headers)
+		}
+		host := fold.ASCII(entry.Hosts[0])
+		for _, other := range rules.Secrets {
+			if other.Kind != proxyrules.KindDPoP && proxyrules.HostBound(other.Hosts, host) {
+				return fmt.Errorf("the profile %s of %s binds %s, the host of the profile %s of kind %s: no block of another kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", other.Name, profilesFileSetting, host, entry.Name, proxyrules.KindDPoP)
+			}
+		}
+	}
+	return nil
+}
+
+// ProxyMintedRules is the start check of the proxy blocks of kind dpop: MintedEntryRules, then
+// the private destinations' part (BROKER_PROXY_PRIVATE_UPSTREAM). cmd/cipherd runs it on every
+// broker with a profiles file, whatever capabilities it grants itself: every broker with an
+// airlock port serves every minted grant of the database it shares and mints that grant's token,
+// so a pod that grants none still sends a token, and a DPoP proof of its own key, to every host a
+// dpop block binds.
+//
+// A dpop block is held to the one place its service is named. No broker setting names a service's
+// public URL; a private destination names the service's address inside the cluster, and the proxy
+// sends every allowed request of that destination's host there and nowhere a name resolves to. So
+// every dpop block binds one destination's host, dpop blocks need a destination, and each
+// destination needs a dpop block that binds its host, since it takes such blocks' allowed requests
+// alone. With no destination and no dpop block, any rules pass. The refusal names the setting or
+// the profile and what is wrong. The caller reads the profiles file; Load reads none.
+func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error {
+	if err := MintedEntryRules(rules); err != nil {
+		return err
+	}
+	bound := map[string]bool{}
+	for _, upstream := range upstreams {
+		bound[upstream.Host] = false
+	}
+	for _, entry := range rules.Secrets {
+		if entry.Kind != proxyrules.KindDPoP {
+			continue
+		}
+		host := fold.ASCII(entry.Hosts[0])
+		if _, named := bound[host]; !named {
+			if len(upstreams) == 0 {
+				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.KindDPoP, host, privateUpstreamSetting)
+			}
+			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.KindDPoP, host, privateUpstreamSetting)
+		}
+		bound[host] = true
+	}
+	for _, upstream := range upstreams {
+		if !bound[upstream.Host] {
+			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, proxyrules.KindDPoP)
+		}
+	}
+	return nil
+}
+
+// MintedEntryDigest is the digest a minted grant records of the entry it was made under and that a
+// broker compares with its own before it mints the grant's token (requests.MintedKind.EntryDigest):
+// the SHA-256, in hex, of the dpop block's own digest (policy.Profiles.Digest), a newline, and the
+// scheme and host of the private destination of the block's host as one URL prefix. It is in it because the
+// token goes to the destination's address, not the bound host's, so a broker on the same database
+// with the same block and another destination serves none of the grant. The URL holds no
+// credential (ParsePrivateUpstreams refuses a user, a path, a query and a fragment), and only the
+// hash is stored. It is "" for a block the profiles hold no digest of, or with no destination: a
+// broker whose kind has no digest serves no grant of it.
+func MintedEntryDigest(profileDigest string, upstream PrivateUpstream) string {
+	if profileDigest == "" || upstream.URL == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(profileDigest + "\n" + upstream.URL.Scheme + "://" + upstream.URL.Host))
+	return hex.EncodeToString(sum[:])
 }
 
 // parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
@@ -2174,7 +2458,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.AirlockTestDialAllow, testSwitchErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestResolve, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
+	if cfg.AirlockTestResolve, cfg.ProxyTestDialPorts, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestKeepValues, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
@@ -2244,6 +2528,21 @@ func Load(getenv func(string) string) (Config, error) {
 	// could not act on is a mistake in the deployment whether or not its airlock is on today.
 	if cfg.AirlockClusterRanges, err = parseAirlockClusterRanges(getenv("BROKER_AIRLOCK_CLUSTER_RANGES")); err != nil {
 		return Config{}, err
+	}
+	// The private destination, read and held to its form here; the dpop blocks that bind its
+	// host are checked where the profiles file is read (ProxyMintedRules), since Load reads no
+	// file. Without a profiles file no proxy block binds the host, so the setting would send
+	// nothing anywhere.
+	if cfg.ProxyPrivateUpstreams, err = ParsePrivateUpstreams(getenv(privateUpstreamSetting)); err != nil {
+		return Config{}, err
+	}
+	for _, upstream := range cfg.ProxyPrivateUpstreams {
+		if err = PrivateUpstreamDialable(upstream, cfg.AirlockTestDialAllow); err != nil {
+			return Config{}, err
+		}
+	}
+	if len(cfg.ProxyPrivateUpstreams) > 0 && cfg.ProfilesFile == "" {
+		return Config{}, fmt.Errorf("%s needs BROKER_PROFILES_FILE: a private destination takes the allowed requests of the dpop blocks that bind its host, and with no profiles file no proxy block binds it", privateUpstreamSetting)
 	}
 	// Whether the proxy's settings are required is up to the profiles file's contents, which Load
 	// does not read: RequireAirlock is that check, which the boot makes once it has read the file.

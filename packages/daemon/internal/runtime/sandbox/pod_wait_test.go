@@ -197,3 +197,25 @@ func TestTheRefreshOfAPodBuiltBeforeARoleReadsNoSecretOfThatRole(t *testing.T) {
 		t.Errorf("the refresh read %s, want no read of a Secret of a role the pod was built without", checker)
 	}
 }
+
+// A pod the Agent Sandbox controller recreated from a template built before a role of the
+// deployment is bound at its launchers' hello as any recreated pod is: the binding writes the
+// Secret of each role the pod was built with (templateRoles) and asks for none of the role it was
+// built without, whose Secret no launch wrote, so the hello is accepted and the next launch keeps
+// the pod. The control is the binding that asked for every role of the runtime now, the checker's
+// among them, which failed on that Secret at every hello.
+func TestAPodRecreatedFromATemplateBuiltBeforeARoleIsBoundAtItsLaunchersHello(t *testing.T) {
+	g := newRig(t, nil)
+	first := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	secondRuntime(t, g, withChecker)()
+	name := first.Sandbox.Name
+	recreated := g.recreatePod(name, first.Sandbox.PodUID)
+
+	if handler, _, reason := g.r.LauncherResolver()(rigLauncherHello(g, name, recreated, claim.RoleTester)); handler == nil {
+		t.Fatalf("the tester launcher of the recreated pod %s was refused: %s", recreated, reason)
+	}
+	wantBound(t, g, name, recreated, claim.Roles...)
+	if checker := roleSecretName(name, "checker"); g.secret(checker) != nil {
+		t.Errorf("the binding wrote %s, a Secret of a role the pod was built without", checker)
+	}
+}

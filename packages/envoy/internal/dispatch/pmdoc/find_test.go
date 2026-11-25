@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/reearth/ygo/crdt"
 )
@@ -206,6 +207,94 @@ func TestFindQuoteHeadingMarkerToleratesInlineMarkdownAndWhitespace(t *testing.T
 			t.Fatalf("FindQuote(%q) = %+v, want the heading text range inside %+v", quote, got, heading)
 		}
 	}
+}
+
+// A heading quote matches each heading, at any level, whose whole text is its title, so a title
+// that is only part of a longer heading matches nothing there, and two headings of one title are
+// still ambiguous. The range is the title's text inside the heading, without the whitespace at the
+// heading's edges.
+func TestFindQuoteHeadingMarkerMatchesWholeTitlesOnly(t *testing.T) {
+	backLinks := "# Back-links in issue specs\n\nA spec links back to its issue.\n\n## Back-link\n\nEach issue lists its specs.\n"
+	heading := func(level int, value string) *Node {
+		return &Node{Type: "heading", Attrs: Attrs{"level": level}, Children: []*Node{{Type: "text", Text: value}}}
+	}
+	for _, test := range []struct {
+		name, markdown string
+		// doc is the document when no markdown writes it.
+		doc   *Node
+		quote string
+		// heading is the zero-based index, among the document's headings, of the one heading the
+		// quote matches, or -1 for none. matches is how many headings it matches when that is more
+		// than one: they are the document's first headings, in order.
+		heading, matches int
+	}{
+		{name: "the whole title of the shorter heading", markdown: backLinks, quote: "## Back-link", heading: 1},
+		{name: "the whole title under a marker of another level", markdown: backLinks, quote: "# Back-link", heading: 1},
+		{name: "the start of the longer heading's title", markdown: backLinks, quote: "# Back-links", heading: -1},
+		{name: "the end of the longer heading's title", markdown: backLinks, quote: "# issue specs", heading: -1},
+		{name: "a paragraph's text", markdown: backLinks, quote: "## Each issue lists its specs.", heading: -1},
+		{name: "two headings of one title at one level", markdown: "## Back-link\n\nText.\n\n## Back-link\n", quote: "## Back-link", matches: 2},
+		{name: "two headings of one title at two levels", markdown: "# Back-link\n\nText.\n\n## Back-link\n", quote: "## Back-link", matches: 2},
+		{
+			name:     "a whole title matched with its whitespace normalized beside part of a title matched exactly",
+			markdown: "# Design notes here\n\n## Design  notes\n", quote: "## Design notes", heading: 1,
+		},
+		{
+			name:  "a title between whitespace at the heading's edges",
+			doc:   &Node{Type: "doc", Children: []*Node{heading(2, "Back-link list"), heading(2, " Back-link ")}},
+			quote: "## Back-link", heading: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			doc := test.doc
+			if doc == nil {
+				var err error
+				if doc, err = Parse(test.markdown); err != nil {
+					t.Fatal(err)
+				}
+			}
+			titles := headingTitles(doc)
+			got, err := FindQuote(doc, test.quote, nil, nil)
+			switch {
+			case test.matches > 0:
+				var ambiguous *ErrTargetAmbiguous
+				if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != test.matches {
+					t.Fatalf("FindQuote(%q) = %v, %v; want %d headings", test.quote, got, err, test.matches)
+				}
+				for index, candidate := range ambiguous.Candidates {
+					if candidate.Range != titles[index] {
+						t.Fatalf("candidate %d = %v, want heading %d's title %v", index, candidate.Range, index, titles[index])
+					}
+				}
+			case test.heading < 0:
+				if !errors.Is(err, ErrTargetNotFound) {
+					t.Fatalf("FindQuote(%q) = %v, %v; want ErrTargetNotFound", test.quote, got, err)
+				}
+			default:
+				if err != nil || got != titles[test.heading] {
+					t.Fatalf("FindQuote(%q) = %v, %v; want heading %d's title %v", test.quote, got, err, test.heading, titles[test.heading])
+				}
+			}
+		})
+	}
+}
+
+// headingTitles is the range of each top-level heading's text in doc, in document order, without
+// the whitespace at its edges. Each heading holds text alone.
+func headingTitles(doc *Node) []Range {
+	var titles []Range
+	pos := 0
+	for _, child := range doc.Children {
+		end := pos + nodeSize(child)
+		if child.Type == "heading" {
+			text := TextContent(child)
+			leading := len16(text) - len16(strings.TrimLeftFunc(text, unicode.IsSpace))
+			trailing := len16(text) - len16(strings.TrimRightFunc(text, unicode.IsSpace))
+			titles = append(titles, Range{From: pos + 1 + leading, To: end - 1 - trailing})
+		}
+		pos = end
+	}
+	return titles
 }
 
 func TestFindHeadingMatchesTitleAcrossLevels(t *testing.T) {

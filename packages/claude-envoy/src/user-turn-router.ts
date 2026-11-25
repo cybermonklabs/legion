@@ -18,7 +18,12 @@
 // the body Dispatch answers with, never the frame's own text.
 import { comparableLines } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import {
+  type DispatchClient,
+  DispatchServiceError,
+  DispatchWriteLandedError,
+  DispatchWriteUnsettledError,
+} from "@legion/envoy-client/dispatch-http"
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures"
 import { messageFor } from "@legion/envoy-client/errors"
 import { type AcceptedUserTurnDelivery, acceptUserTurn } from "@legion/pi-shared/accept-user-turn"
@@ -89,6 +94,89 @@ export function modelPicked(model: string): string {
 /** What a person is told once their thinking pick is in force. */
 export function thinkingPicked(effort: ModEffort): string {
   return `The session's thinking level is now ${effort}.`
+}
+
+/** What stderr says of an accept of message `messageId` Dispatch recorded and gave no copy of its
+ *  answer for (`DispatchWriteLandedError`): the attempt is spent as this session's, and the
+ *  stored body a turn is made of is not in hand. Every host of this package says it in these
+ *  words (`./codex/codex-user-turns`). */
+export function acceptLanded(messageId: string, error: DispatchWriteLandedError): string {
+  return `Dispatch recorded this session's accept of message ${messageId} and gave no copy of its answer (${error.message}), so no turn follows; it arrives as a card`
+}
+
+/** Whether a post that ended in `error` may or may not have been posted: it ended with no
+ *  definitive answer while an attempt of it may have reached Dispatch
+ *  (`DispatchWriteUnsettledError`: an earlier attempt got a 5xx or failed in transport, or the last
+ *  was cut off for silence or by the deadline), or on a 5xx (a `DispatchServiceError` of 500 or
+ *  more, a gateway's included), which can follow a write Dispatch committed. Dispatch's own 4xx,
+ *  and an error raised before anything was sent, say it was not posted. */
+function mayHaveBeenPosted(error: unknown): boolean {
+  return (
+    error instanceof DispatchWriteUnsettledError ||
+    (error instanceof DispatchServiceError && error.status >= 500)
+  )
+}
+
+/** What stderr says of a reply to message `messageId` whose post ended in `error`. One Dispatch
+ *  made and gave no copy of its answer for (`DispatchWriteLandedError`) is posted, and the
+ *  error's message says what was made; one that may have landed (`mayHaveBeenPosted`: a
+ *  `DispatchWriteUnsettledError`, or a 5xx) may or may not have been posted, and the line says
+ *  so; any other was not posted, whether Dispatch refused it (a `DispatchServiceError` under 500,
+ *  such as a 409) or it never reached Dispatch, and the error's message says which. Every host of
+ *  this package says it in these words (`./codex/codex-user-turns`). */
+export function replyWarning(messageId: string, error: unknown): string {
+  if (error instanceof DispatchWriteLandedError) {
+    return `a reply to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+  }
+  if (mayHaveBeenPosted(error)) {
+    return `a reply to message ${messageId} may or may not have been posted — ${messageFor(error)}`
+  }
+  return `a reply to message ${messageId} was not posted — ${messageFor(error)}`
+}
+
+/** What stderr says of a BTW answer to message `messageId` whose post ended in `error`. One
+ *  Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`) answered the
+ *  attempt, so no error reply follows it; one that may have landed (`mayHaveBeenPosted`: a
+ *  `DispatchWriteUnsettledError`, or a 5xx) may or may not have been posted, and the line says
+ *  so; any other was not posted, whether Dispatch refused it or it never reached Dispatch, and
+ *  the error's message says which. */
+export function btwAnswerWarning(messageId: string, error: unknown): string {
+  if (error instanceof DispatchWriteLandedError) {
+    return `a BTW answer to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+  }
+  if (mayHaveBeenPosted(error)) {
+    return `a BTW answer to message ${messageId} may or may not have been posted — ${messageFor(error)}`
+  }
+  return `a BTW answer to message ${messageId} was not posted — ${messageFor(error)}`
+}
+
+/** Answers a BTW on Dispatch with what `ask` makes of its body, and returns without waiting for
+ *  it, so the frame is answered at once. A question `ask` could not answer, and an answer whose
+ *  post Dispatch refused or that never reached it, is answered with the error that stopped it,
+ *  and that error reply is all that is said of it. A reply Dispatch made and gave no copy of its
+ *  answer for (`DispatchWriteLandedError`) answered the attempt, so no error reply follows it.
+ *  Stderr gets a line (`btwAnswerWarning`) only where the last post made for the BTW ended in an
+ *  error: that landed reply, or an error reply that failed too. Every host of this package
+ *  answers a BTW through it (`./codex/codex-user-turns`). */
+export function answerBtw(
+  delivery: DispatchDelivery,
+  ask: (question: string) => Promise<string>,
+  reply: (
+    delivery: DispatchDelivery,
+    result: { readonly body?: string; readonly error?: string },
+  ) => Promise<void>,
+  warn: (text: string) => void,
+): void {
+  void (async () => {
+    try {
+      await reply(delivery, { body: await ask(delivery.body) })
+    } catch (error) {
+      if (error instanceof DispatchWriteLandedError) throw error
+      await reply(delivery, { error: messageFor(error) })
+    }
+  })().catch((error: unknown) => {
+    warn(btwAnswerWarning(delivery.id, error))
+  })
 }
 
 /** A message whose row of the conversation has not arrived yet: the person's own words, which
@@ -250,6 +338,10 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
           )
           return
         }
+        if (refusal.reason === "landed") {
+          warn(acceptLanded(delivery.id, refusal.error))
+          return
+        }
         warn(
           `Dispatch did not accept message ${delivery.id} as this session's turn (${messageFor(refusal.error)}); it arrives as a card`,
         )
@@ -327,11 +419,16 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
     await reply(delivery, { ...result, followUp })
   }
 
-  /** Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch. */
+  /** Posts one reply to a delivery, naming on stderr a reply that was not posted, which Dispatch
+   *  refused or never received; one that may or may not have been posted, which ended with no
+   *  definitive answer after an attempt may have reached Dispatch (`DispatchWriteUnsettledError`)
+   *  or on a 5xx; and one Dispatch made and gave no copy of its answer for
+   *  (`DispatchWriteLandedError`), which is posted: the error's message says what was made
+   *  (`replyWarning`). */
   const answer = async (delivery: DispatchDelivery, body: string | undefined): Promise<void> => {
     if (body === undefined) return
     await post(delivery, { body }).catch((error: unknown) => {
-      warn(`a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`)
+      warn(replyWarning(delivery.id, error))
     })
   }
 
@@ -420,21 +517,19 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
    *  answer never asks for a follow-up: a BTW is answered one time, and the rule that a frame
    *  this session is handed twice posts no second answer is what Dispatch leans on for it
    *  (`replyAfterAnswer`, `packages/envoy/internal/dispatch/api/message_delivery.go`), since
-   *  nothing here guards a redelivered BTW and the fork would answer it afresh. */
+   *  nothing here guards a redelivered BTW and the fork would answer it afresh. A session with
+   *  no link to Claude Code cannot ask the model, which is the error its BTW is answered with
+   *  (`answerBtw`). */
   const runBtw = (delivery: DispatchDelivery): void => {
-    void (async () => {
-      if (!session.connected()) {
-        await reply(delivery, { error: "this session has no link to Claude Code" })
-        return
-      }
-      try {
-        await reply(delivery, { body: await session.fork(delivery.body) })
-      } catch (error) {
-        await reply(delivery, { error: messageFor(error) })
-      }
-    })().catch((error: unknown) => {
-      warn(`a BTW answer did not reach Dispatch — ${messageFor(error)}`)
-    })
+    answerBtw(
+      delivery,
+      async (question) => {
+        if (!session.connected()) throw new Error("this session has no link to Claude Code")
+        return session.fork(question)
+      },
+      reply,
+      warn,
+    )
   }
 
   return {

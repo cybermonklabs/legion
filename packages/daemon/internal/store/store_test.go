@@ -1102,11 +1102,13 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // database main migrated applies a version left out of the list before the list's own rewrites of
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
+// claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
+// claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does a migration that changes a table a version of the list creates, as
-// 20261123203837 adds a column to 20261117034837's plan_steps and 20261124044450 writes the key
-// of phases over the two columns 20261117034837 adds: left out, it is applied as main's, before
+// 20261124213820 adds a column to 20261117034837's plan_steps, and 20261125001300 writes the key
+// of phases over the two columns 20261117034837 adds: left out, they are applied as main's, before
 // that table or those columns exist; and one that replaces an index a version of the list creates,
+<<<<<<< HEAD
 // as 20261123203838 replaces 20261105183200's pod_resumes_one_open_per_role, and as 20261123203842
 // reads pod_resumes.claim and closed_at, which 20261123203838 and 20261105183200 add. It also reads
 // pod_wake_backstops.claim, which 20261123203839 adds; that version is not in the list, but a
@@ -1118,6 +1120,13 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // too, and main's 20261111090000, 20261111091500 and 20261116144907 write none. The cache
 // trimmer's two, 20261111090000 and 20261111091500, read no column a version of the list adds
 // either, so neither is in the list. Any other version left out makes the cases below weaker,
+=======
+// as 20261124213821 replaces 20261105183200's pod_resumes_one_open_per_role. 20261119203047 is the
+// last migration that writes outbox_kind_check: it stands above main's 20261119003157, which
+// writes it too, and main's 20261111090000, 20261111091500 and 20261116144907 write none. The
+// cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of the list
+// adds either, so neither is in the list. Any other version left out makes the cases below weaker,
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 // never red, which is why the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
@@ -1128,8 +1137,12 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
+<<<<<<< HEAD
 	20261123203837: true, 20261123203838: true, 20261123203842: true, 20261124044450: true,
 	20261124172711: true,
+=======
+	20261123212127: true, 20261124213820: true, 20261124213821: true, 20261125001300: true,
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 }
 
 const idleRelease = 20261101222956

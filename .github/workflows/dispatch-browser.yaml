@@ -445,11 +445,11 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
-  # 240 + 333 + 120 = 693 s -> 12 min; 12 + 4 = 16 min with the reverse-order step.
+  # 240 + 333 + 120 = 693 s -> 12 min.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -498,24 +498,10 @@ jobs:
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
-        id: visual-normal
         # 183 x 1.15 = 211 s -> 4 min.
         timeout-minutes: 4
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-visual-suite.sh" "${{ steps.connections.outputs.connections }}"
-        working-directory: packages/dispatch
-      - name: Browser-test dispatch dashboard against its baselines, rows in reverse order
-        # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-runs-its-rows-again-in-reverse-order
-        if: ${{ !cancelled() && steps.visual-normal.outcome != 'skipped' }}
-        timeout-minutes: 4
-        run: |
-          # Exported on the command line, as the first step's script exports them, for the reason
-          # .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets gives.
-          export TMPDIR="$RUNNER_TEMP"
-          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          export DISPATCH_E2E_VISUAL_ORDER=reverse
-          e2e/visual-run.sh --output=e2e/test-results-reverse
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-visual-jobs-upload-is-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -525,7 +511,6 @@ jobs:
           # why: .github/ci-notes/dispatch-browser.md#why-the-visual-upload-keeps-a-pattern-that-matches-no-file
           path: |
             packages/dispatch/e2e/test-results
-            packages/dispatch/e2e/test-results-reverse
             packages/dispatch/e2e/__screenshots__
             ${{ runner.temp }}/dispatch-e2e-run-*/worker-*/log/*.log
           if-no-files-found: ignore

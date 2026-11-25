@@ -77,12 +77,18 @@ const (
 	queryCanceled   = "57014"
 )
 
-// CensusOptions are the census's bounds. A zero field takes its package constant
-// (CensusTableLimit, CensusLongTransaction, CensusStatementTimeout); tests set smaller ones.
+// CensusOptions are the census's bounds and the triggers it has reviewed. A zero TableLimit,
+// LongTransaction or StatementTimeout takes its package constant (CensusTableLimit,
+// CensusLongTransaction, CensusStatementTimeout), and tests set smaller ones; a nil
+// reviewedTriggers takes the package's list, and a test can give a longer one.
 type CensusOptions struct {
 	TableLimit       int64
 	LongTransaction  time.Duration
 	StatementTimeout time.Duration
+	// reviewedTriggers are the enabled triggers boundedWrites admits a table above the limit
+	// beside; nil takes the package's reviewedTriggers. A test that reviews its own fixture's
+	// trigger gives it here, so the review holds for that test's census alone.
+	reviewedTriggers []reviewedTrigger
 }
 
 // TableCensus is one table a pending migration touches.
@@ -232,6 +238,9 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	if options.StatementTimeout == 0 {
 		options.StatementTimeout = CensusStatementTimeout
 	}
+	if options.reviewedTriggers == nil {
+		options.reviewedTriggers = reviewedTriggers
+	}
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("census: begin read-only transaction: %w", err)
@@ -353,7 +362,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		// migration or of an earlier pending one, can change the table before the writes run, or
 		// where a statement of the migration can make its names resolve to another table than the
 		// one the census read.
-		writes := &writeReading{c: &classifier{ctx: ctx, census: tx, catalog: catalog}, statements: classified.statements, changedBy: changedBy}
+		writes := &writeReading{c: &classifier{ctx: ctx, census: tx, catalog: catalog}, statements: classified.statements, changedBy: changedBy, reviewed: options.reviewedTriggers}
 		switch {
 		case classified.statements == nil:
 		case classified.laterExemptionsOff.does != "":

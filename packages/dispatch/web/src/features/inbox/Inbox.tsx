@@ -94,7 +94,7 @@ import {
   sectionTitles,
 } from "./sections";
 import { ThreadRowCard } from "./ThreadRowCard";
-import { ThreadTitle } from "./ThreadTitle";
+import { ThreadTitle, useThreadLine } from "./ThreadTitle";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 import { useInboxSelection } from "./useInboxSelection";
 import { useInboxThreadRows } from "./useInboxThreadRows";
@@ -375,17 +375,11 @@ function ThreadShortRow({
   thread,
 }: InboxRowProps & ShortRowProps & { thread: MyReplyRow }): ReactNode {
   const reference = threadReferenceRoute(thread);
+  const line = useThreadLine(thread);
   return (
     <ShortRowFrame
       age={<Timestamp at={rowLastActivityAt(row)} />}
-      check={
-        <MarkCheckbox
-          id={rowId(row)}
-          marked={marked}
-          name={questionLine(thread.subject)}
-          onMark={onMark}
-        />
-      }
+      check={<MarkCheckbox id={rowId(row)} marked={marked} name={line} onMark={onMark} />}
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
@@ -507,6 +501,7 @@ function ThreadCardRow({
   section,
   thread,
 }: InboxRowProps & { thread: MyReplyRow }): ReactNode {
+  const line = useThreadLine(thread);
   return (
     <InboxRowShell
       group={groupKey}
@@ -518,12 +513,7 @@ function ThreadCardRow({
     >
       {/* The mark sits where a question card's does, on a line of its own above the card. */}
       <div className="mb-1.5 flex items-center gap-2">
-        <MarkCheckbox
-          id={rowId(row)}
-          marked={marked}
-          name={questionLine(thread.subject)}
-          onMark={onMark}
-        />
+        <MarkCheckbox id={rowId(row)} marked={marked} name={line} onMark={onMark} />
       </div>
       <ThreadRowCard thread={thread} />
     </InboxRowShell>

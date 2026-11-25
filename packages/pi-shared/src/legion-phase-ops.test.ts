@@ -577,14 +577,14 @@ test("the description tells the tester its fail may name the step its task retur
   }
 });
 
-/** The claim of a role of the deployment, `checker`, on LEGION-208 (contract 221). */
+/** The claim of a role of the deployment, `checker`, on LEGION-208 (contract 258). */
 const checker: ClaimCapability = {
   ...implementer,
   role: "checker",
   claimToken: "legion-legion-legion-208-checker",
 };
 
-// Contract 221: a role of the deployment ends its step with its verdict and the commit its
+// Contract 258: a role of the deployment ends its step with its verdict and the commit its
 // workspace stands on, `@-`; it writes no handoff record, so none is looked up in Dispatch.
 test("a deployment role's completion sends its verdict and the commit it stands on, and no handoff record", async () => {
   const standing = "c".repeat(40);
@@ -621,7 +621,7 @@ test("a deployment role's completion sends its verdict and the commit it stands 
   });
 });
 
-// Contract 221: a move back may name the step it returns to, `return_to`, which goes on the wire
+// Contract 258: a move back may name the step it returns to, `return_to`, which goes on the wire
 // as the daemon's `returnTo`, as a failed completion's does; a move that names none sends none.
 test("request_backward_move sends return_to as returnTo", async () => {
   const { ops, routes, posted } = runtime(checker, stateAtPhase("step"));

@@ -254,7 +254,7 @@ export interface AsyncJobDelivery {
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
- * build (18.18.6-sami.20261122-091943, `.omp-pin`) answers undefined only before its runner is
+ * build (18.18.6-sami.20261123-024918, `.omp-pin`) answers undefined only before its runner is
  * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
  * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that
@@ -333,6 +333,13 @@ export interface AgentEndMessage {
    * `packages/ai/src/types.ts:1492-1500` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
+  /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
+   * one (`AssistantMessage.errorStatus`, `packages/ai/src/types.ts:1517-1518` of
+   * cybermonklabs/oh-my-pi at the pinned tag `v18.18.6-sami.20261122-091943`). The host copies this
+   * field into its `prompt_result`'s `httpStatus`
+   * (`packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:230` at that tag), and the
+   * turn-outcome report carries it as its own `httpStatus` (`packages/pi-legion/src/turn-outcome.ts`). */
+  readonly errorStatus?: number;
 }
 
 /**

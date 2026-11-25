@@ -352,8 +352,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 				}
 				return true, nil, fmt.Errorf("the client gave up waiting for the answer: %w", context.DeadlineExceeded)
 			})
-			spec.Generation++
-			spec.BootToken = fmt.Sprintf("boot-%s-g%d", spec.Claim, spec.Generation)
+			spec = nextGeneration(spec, spec.Generation+1)
 			launching, cancel := context.WithTimeout(g.ctx, 10*time.Second)
 			err := failedLaunchOn(t, g, launching, spec)
 			cancel()
