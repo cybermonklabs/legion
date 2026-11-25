@@ -34,6 +34,7 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   badgeMed,
   borderDefault,
@@ -73,7 +74,6 @@ import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
 import { postDeletion } from "../refs/post-marks";
 import { ReferencePicker } from "../refs/ReferencePicker";
 import { composerReferences } from "../refs/routes";
-import { inputMethodKey } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import {

@@ -232,8 +232,8 @@ before the next fill they find the entry of the Go before, whose modules still s
 here saves it.
 
 It restored go-envoy-test until dispatch://INFRA-1109 measured what that bought. ci-caches.yaml's
-envoy job fills go-envoy-test with `go test -c -o /dev/null ./...` over the whole envoy module on
-the runner's default CGO_ENABLED=1, since the runner has gcc, and the build step pins
+envoy-test job fills go-envoy-test with `go test -c -o /dev/null ./...` over the whole envoy
+module on the runner's default CGO_ENABLED=1, since the runner has gcc, and the build step pins
 CGO_ENABLED=0 (the next section says why). Go's build cache keys every object on the build's
 configuration, cgo included, and net, os/user and runtime/cgo differ with it, as does every
 package above them, so that entry held the step's modules and almost none of its objects, and
@@ -286,7 +286,7 @@ It keys on packages/envoy/go.mod's Go, which that job sets up, and it builds wha
 builds, as that job builds it. That job's build step pins CGO_ENABLED=0 on its two `go build`s,
 and Go's build cache keys every object on the build's configuration, cgo included: net,
 os/user and runtime/cgo differ with it, and so does every package above them. So the
-go-envoy-test entry that job restored before, which the envoy job above fills on the runner's
+go-envoy-test entry that job restored before, which the envoy-test job above fills on the runner's
 default CGO_ENABLED=1 (the runner has gcc), held its modules and almost none of its objects.
 Measured in cluster Jobs on 4 CPUs with golang:1.27.3, that step's builds at b1634bff of #3513
 took 95 s after a cgo-on build of the same commands at main's 278138ea, the commit main's
@@ -296,10 +296,10 @@ made with CGO_ENABLED=0 (Job infra-1109-gobuild-894l9);
 the rest of the readings. The fill also runs that job's connections step's `go run`, with
 CGO_ENABLED=0 as that step runs it, so that step reuses the build step's objects.
 
-A job of its own on ubuntu-24.04, the binaries job's runner, and not a step of the envoy job's
-x86_64 leg: a save takes the machine's whole module cache and build cache, so in that leg, in
-whichever order the three builds ran, one entry would carry another family's objects that its
-readers cannot use - go-envoy's or go-envoy-test's cgo-on objects in this entry, or this
+A job of its own on ubuntu-24.04, the binaries job's runner, and not a step of the x86_64 leg of
+the envoy or envoy-test job: a save takes the machine's whole module cache and build cache, so in
+such a leg, in whichever order the two builds ran, one entry would carry another family's objects
+that its readers cannot use - go-envoy's or go-envoy-test's cgo-on objects in this entry, or this
 build's cgo-off objects in theirs - and which it carried would turn on which keys that run
 missed. Here the entry holds this build alone. Each push fills it again from its newest entry
 (the header says why).

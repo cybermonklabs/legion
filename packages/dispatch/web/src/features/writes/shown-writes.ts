@@ -9,9 +9,15 @@ import type { Write } from "./write-store";
 // the readings another surface shares: the issue header's writes discard a pick that is still
 // waiting to send (`waitingToSend`, `features/issue/useIssueFieldWrite.ts`).
 
-/** The writes the indicator shows: every one shown there that Dispatch has not yet made. */
+/** The writes the indicator shows: every one shown there that Dispatch has not yet made, but for
+ *  a refusal a surface mounted now settles with the reader (`claimed`), which is that surface's. */
 export function indicatorWrites(rows: readonly Write[]): readonly Write[] {
-  return rows.filter((row) => row.presentation === "indicator" && row.status !== "made");
+  return rows.filter(
+    (row) =>
+      row.presentation === "indicator" &&
+      row.status !== "made" &&
+      !(row.status === "refused" && row.claimed)
+  );
 }
 
 /** The writes a signed-out page still keeps for their person: every one they can see that

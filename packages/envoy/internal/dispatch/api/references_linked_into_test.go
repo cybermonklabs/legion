@@ -35,24 +35,27 @@ const (
 // The seed stands for production, where 17 issues never got a 200 from the route and 57 of its 65
 // statement timeouts were in its in statement (refs' linksInQuery). The issue holds its spec and
 // 40 documents of 50 blocks, so its own targets are 2,042 - the issue, its 41 documents and their
-// 2,000 blocks - one more than the 2,041 of the issue measured on a copy of a dispatch:local
-// database seeded at production's size (block_refs 876,018 rows). There the in statement read
-// 5,000 links into it in 3.44-3.48 s while it left the issue's own targets out by a test against
-// an array, and in 0.27-0.36 s by the anti-join it reads now (refs' oneRowPerNode). Here 500
-// documents of 20 blocks link into the issue's documents, each block mentioning one of their 2,000
-// blocks: 10,000 links, 5 into each block. The server's sessions run with JIT off, as production's
-// Cloud SQL runs every statement: it does not support PostgreSQL's LLVM JIT.
+// 2,000 blocks - about the size of the issue measured on a copy seeded at production's size; refs'
+// oneRowPerNode's comment gives the read's times there and on this seed. Here 500 documents of 20
+// blocks link into the issue's documents, each block mentioning one of their 2,000 blocks: 10,000
+// links, 5 into each block. The server's sessions run with JIT off, as production's Cloud SQL runs
+// every statement: it does not support PostgreSQL's LLVM JIT.
 //
 // seedLinkedInto writes the seed. One document of each side is written through the API, and the
 // rest are copies of its rows written in SQL (seedDocumentCopies), so the rows the read reads are
 // as the server's own writes make them. The database is then vacuumed and analyzed, as
 // dispatch-seed leaves the database it seeds.
 //
-// Negative control: with oneRowPerNode's exclusion written back as the array, `where not
-// (row(f.node_kind, f.node_id) = any(array(select row(t.kind, t.id) from targets t)))` in the in
-// statement and its `own` counterpart in the out statement, the read answers 503
-// REFERENCES_TIMEOUT and the test fails at its status.
+// Negative control: with the array put back in oneRowPerNode,
+// `not (row(f.node_kind, f.node_id) = any(array(...)))` over `select row(o.kind, o.id) from own o`
+// in the out statement and `select row(t.kind, t.id) from targets t` in the in statement, the read
+// answers 503 REFERENCES_TIMEOUT on a slow machine, where the test fails at its status, and 200 on
+// a fast one, where it passes.
+// TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin is the control that fails on
+// every machine: it holds the in statement's plan to the anti-join.
 func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing.T) {
+	// Not parallel: it holds the read to a wall-clock budget, the route's 2 s
+	// (referencesClosureBound), which the package's parallel tests would share the machine with.
 	seed := seedLinkedInto(t)
 
 	started := time.Now()
@@ -109,17 +112,10 @@ type linkedIntoSeed struct {
 func seedLinkedInto(t *testing.T) linkedIntoSeed {
 	t.Helper()
 	ctx := context.Background()
-	// JIT is off for the test database, and the pool the server reads through opens its first
-	// session after that, so every session of the server reads it.
 	database := storetest.Open(t)
-	var name string
-	if err := database.Pool.QueryRow(ctx, `select current_database()`).Scan(&name); err != nil {
-		t.Fatalf("read the test database's name: %v", err)
-	}
-	if _, err := database.Pool.Exec(ctx, `alter database `+pgx.Identifier{name}.Sanitize()+` set jit = off`); err != nil {
-		t.Fatalf("turn JIT off for the test database: %v", err)
-	}
-	served := storetest.Reopened(t, database, func(*pgxpool.Config) {})
+	served := storetest.Reopened(t, database, func(config *pgxpool.Config) {
+		config.ConnConfig.RuntimeParams["jit"] = "off"
+	})
 	handler, _, _, registered := newRegisteredTestServer(t, testServerOptions{store: served})
 	var jit string
 	if err := served.Pool.QueryRow(ctx, `select current_setting('jit')`).Scan(&jit); err != nil || jit != "off" {

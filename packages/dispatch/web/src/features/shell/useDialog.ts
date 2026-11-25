@@ -8,13 +8,8 @@ import {
 } from "react";
 import { NavigationType, useLocation, useNavigationType } from "react-router-dom";
 
-import {
-  DIALOG_SCOPE,
-  inputMethodKey,
-  isEditableTarget,
-  useKeymap,
-  useKeymapScope,
-} from "./keymap";
+import { inputMethodKey } from "../../lib/input-method-key";
+import { DIALOG_SCOPE, isEditableTarget, useKeymap, useKeymapScope } from "./keymap";
 
 /** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. */
 export const COMPACT_VIEWPORT_QUERY = "(max-width: 1279px)";

@@ -20,7 +20,7 @@ import {
 import { PendingWritesIndicator } from "./PendingWritesIndicator";
 import { PendingWritesHost } from "./write-hosts";
 import { KEPT_SEND_RESUME_MS } from "./write-storage";
-import { plainWrite, type Writes, writesOf } from "./write-store";
+import { defineWriteKind, plainWrite, type Writes, writesOf } from "./write-store";
 
 /** One write the indicator shows, labelled `label`, its attempt `write`, which makes a request of
  *  `method`. */
@@ -778,6 +778,206 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
   } finally {
     unmount();
     realClock();
+  }
+});
+
+/** A write that carries the reader's own text, which the line offers to copy when a conflict
+ *  refuses it: a priority's title, as far as the line is concerned. */
+const draftedWrite = defineWriteKind<{ readonly text: string }>({
+  draft: (write) => write.detail.text,
+  kept: (value): value is { readonly text: string } =>
+    typeof value === "object" && value !== null && typeof Reflect.get(value, "text") === "string",
+  name: "test-line-draft",
+});
+
+/** Has `writes` take up a write a reload kept refused by Dispatch's `status` and `code`, as the
+ *  app does once signed in: the write is of `kind`, with `detail` its record. */
+function resumedRefusal(
+  writes: Writes,
+  write: { kind: string; detail: unknown; label: string },
+  refusal: { status: number; code: string; message: string }
+): void {
+  const key = keyMinted(Date.now());
+  sessionStorage.setItem(
+    `dispatch.write:${key}`,
+    JSON.stringify({
+      ...write,
+      carried: "PATCH",
+      key,
+      login: "alice",
+      presentation: "indicator",
+      pressedAt: Date.now(),
+      request: { body: { advances: [], advances_revision: 41 }, method: "PATCH", path: "/x" },
+      sent: true,
+      state: { refusal: { ...refusal, kind: "api" }, status: "refused" },
+      target: null,
+      version: 1,
+    })
+  );
+  act(() => writes.resume("alice"));
+}
+
+// A refusal only the reader can settle - another person changed what the write goes over - is
+// refused the same way however often its body is sent: the line says so in its own words and
+// offers no Retry, only the reader's own text, drawn as written, to copy, and Discard.
+test("a conflict reads why, offers the reader's text to copy and Discard, and no Retry", async () => {
+  const user = userEvent.setup();
+  const writeText = jest.fn(async (_text: string) => undefined);
+  const clipboard = navigator.clipboard;
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  const { client, unmount } = mountIndicator();
+  const writes = writesOf(client);
+  const text = "My title,\n  on two lines";
+  try {
+    act(() => {
+      void writes
+        .run({
+          detail: { text },
+          kind: draftedWrite,
+          label: "Rename the priority “P1”",
+          method: "PATCH",
+          presentation: "indicator",
+          write: () =>
+            Promise.reject(
+              new ApiError(409, { code: "PRIORITY_CHANGED", error: "the title was written" })
+            ),
+        })
+        .catch(() => undefined);
+    });
+    await settle();
+    const indicator = await screen.findByTestId("pending-writes");
+    expect(
+      within(indicator).getByText(
+        "Not saved because another person changed it: Rename the priority “P1”"
+      )
+    ).toBeTruthy();
+    expect(within(indicator).queryByText(/^Not saved:/)).toBeNull();
+    expect(within(indicator).getByRole("note", { name: "Your text:" }).textContent).toBe(text);
+    expect(within(indicator).queryByRole("button", { name: "Retry" })).toBeNull();
+
+    await user.click(within(indicator).getByRole("button", { name: "Copy your text" }));
+    expect(writeText).toHaveBeenCalledWith(text);
+    expect(await within(indicator).findByRole("button", { name: "Copied" })).toBeTruthy();
+
+    await user.click(within(indicator).getByRole("button", { name: "Discard" }));
+    await settle();
+    expect(screen.queryByTestId("pending-writes")).toBeNull();
+  } finally {
+    unmount();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+  }
+});
+
+// A conflict a page mounted now settles with the reader is that page's: the line draws nothing
+// of it while the page holds it, and draws it again, with the reader's text to copy and no
+// Retry, once the page has gone and handed it back.
+test("a conflict a page holds is not on the line, and is again once the page hands it back", async () => {
+  const { client, unmount } = mountIndicator();
+  const writes = writesOf(client);
+  try {
+    resumedRefusal(
+      writes,
+      { detail: { text: "My title" }, kind: draftedWrite.name, label: "Rename the priority “P1”" },
+      { code: "PRIORITY_CHANGED", message: "the title was written", status: 409 }
+    );
+    await settle();
+    const id = writes.rows()[0]?.id ?? 0;
+    expect(await screen.findByTestId("pending-writes")).toBeTruthy();
+    act(() => {
+      expect(writes.claim(id)).toBe(true);
+    });
+    expect(screen.queryByTestId("pending-writes")).toBeNull();
+    expect(writes.rows()).toMatchObject([{ claimed: true, status: "refused" }]);
+
+    act(() => writes.unclaim(id));
+    const indicator = await screen.findByTestId("pending-writes");
+    expect(
+      within(indicator).getByText(
+        "Not saved because another person changed it: Rename the priority “P1”"
+      )
+    ).toBeTruthy();
+    expect(within(indicator).getByRole("note", { name: "Your text:" }).textContent).toBe(
+      "My title"
+    );
+    expect(within(indicator).queryByRole("button", { name: "Retry" })).toBeNull();
+  } finally {
+    unmount();
+  }
+});
+
+// The issue page's Advances picker shows its refusal itself, but a write a reload took up is
+// the line's: refused 409 ADVANCES_REVISION, it says another person changed it, with no Retry
+// that would send the stale revision again, and no text to copy, since it carried none.
+test("a resumed Advances refusal reads as a conflict, with no Retry and nothing to copy", async () => {
+  const { client, unmount } = mountIndicator();
+  const writes = writesOf(client);
+  try {
+    resumedRefusal(
+      writes,
+      { detail: null, kind: plainWrite.name, label: "Advances of CORE-9" },
+      { code: "ADVANCES_REVISION", message: "advances revision 41 is stale", status: 409 }
+    );
+    await settle();
+    const indicator = await screen.findByTestId("pending-writes");
+    expect(
+      within(indicator).getByText("Not saved because another person changed it: Advances of CORE-9")
+    ).toBeTruthy();
+    expect(within(indicator).queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(within(indicator).queryByRole("button", { name: "Copy your text" })).toBeNull();
+    expect(within(indicator).getByRole("button", { name: "Discard" })).toBeTruthy();
+  } finally {
+    unmount();
+  }
+});
+
+// A new priority whose id one already carries is refused the same way for the same title: the
+// line says why, and offers the title to copy rather than a Retry.
+test("a new priority whose id is taken reads why, with its title to copy and no Retry", async () => {
+  const { client, unmount } = mountIndicator();
+  const writes = writesOf(client);
+  try {
+    resumedRefusal(
+      writes,
+      { detail: { text: "Evals now" }, kind: draftedWrite.name, label: "New priority “Evals now”" },
+      { code: "PRIORITY_EXISTS", message: "a priority evals-now is written", status: 409 }
+    );
+    await settle();
+    const indicator = await screen.findByTestId("pending-writes");
+    expect(
+      within(indicator).getByText(
+        "Not saved because a priority with that id already exists: New priority “Evals now”"
+      )
+    ).toBeTruthy();
+    expect(within(indicator).getByRole("note", { name: "Your text:" }).textContent).toBe(
+      "Evals now"
+    );
+    expect(within(indicator).queryByRole("button", { name: "Retry" })).toBeNull();
+  } finally {
+    unmount();
+  }
+});
+
+// Any other refusal of a write carrying the reader's text reads as every refusal does, with
+// Retry and Discard: a 500 says nothing of what the write goes over.
+test("a 500 refusal still reads Not saved with its reason, Retry and Discard", async () => {
+  const { client, unmount } = mountIndicator();
+  const writes = writesOf(client);
+  try {
+    resumedRefusal(
+      writes,
+      { detail: { text: "Mine" }, kind: draftedWrite.name, label: "Rename the priority “P1”" },
+      { code: "INTERNAL", message: "the server failed", status: 500 }
+    );
+    await settle();
+    const indicator = await screen.findByTestId("pending-writes");
+    expect(
+      within(indicator).getByText("Not saved: Rename the priority “P1” — the server failed")
+    ).toBeTruthy();
+    expect(within(indicator).getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(within(indicator).getByRole("button", { name: "Discard" })).toBeTruthy();
+    expect(within(indicator).queryByRole("button", { name: "Copy your text" })).toBeNull();
+  } finally {
+    unmount();
   }
 });
 

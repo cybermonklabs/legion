@@ -1,6 +1,14 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import type { Column, Table } from "@tanstack/react-table";
-import { type ReactNode, type RefObject, useCallback, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { flushSync } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { AnchoredPanel } from "../../components/AnchoredPanel";
@@ -19,6 +27,7 @@ import {
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
+  toolbarControlHeight,
 } from "../../theme/classes";
 import { useMediaQuery } from "../shell/useDialog";
 import { issueStatuses, statusLabel } from "./board-model";
@@ -129,6 +138,9 @@ export function ColumnFilter<TData>({
   );
 }
 
+/** How a popover's button is drawn where its host names no look of its own. */
+const POPOVER_TRIGGER = `rounded-md border px-2 py-1 text-xs font-normal whitespace-nowrap ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas}`;
+
 /** A button and the panel it opens: the table's own popovers, on the shared `AnchoredPanel`. */
 export function Popover({
   label,
@@ -168,10 +180,7 @@ export function Popover({
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={title}
-        className={
-          labelClassName ??
-          `rounded-md border px-2 py-1 text-xs font-normal whitespace-nowrap ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas}`
-        }
+        className={labelClassName ?? POPOVER_TRIGGER}
         onClick={() => setOpen(!open)}
         ref={trigger}
         title={title}
@@ -196,10 +205,15 @@ export function Popover({
 }
 
 /** The column control of a table of any row type: this table's rows are issues, and the
- *  priorities pages hold priorities and fault rows (`priorities/priority-table-controls.tsx`). */
+ *  priorities pages hold priorities and fault rows (`priorities/priority-table-controls.tsx`).
+ *  It stands in a toolbar, so from 1280 px up it is as tall as the controls beside it. */
 export function ColumnsMenu<Row>({ columns }: { columns: Column<Row, unknown>[] }): ReactNode {
   return (
-    <Popover align="right" label="Columns">
+    <Popover
+      align="right"
+      label="Columns"
+      labelClassName={`${POPOVER_TRIGGER} ${toolbarControlHeight}`}
+    >
       {() =>
         columns
           .filter((column) => column.getCanHide())
@@ -243,14 +257,39 @@ export function Action({
   );
 }
 
+/** The type of a status segment, with its name or with its count alone. */
+const SEGMENT_TYPE = "text-xs font-medium whitespace-nowrap";
+
+/** What sets a status segment's width with its name, which the bar's hidden copy of its segments
+ *  draws them with too (`IssueTableStatus`), so the copy is as wide as the segments it stands
+ *  for. */
+const SEGMENT = `px-3 ${SEGMENT_TYPE}`;
+
+/** The padding and type of a segment that draws its count alone (`IssueTableStatus`'s
+ *  `legend`): on a phone the padding its count needs, and from `md` up a named segment's. */
+const COUNT_SEGMENT = `px-2 ${SEGMENT_TYPE} md:px-3`;
+
+/** How narrow a segment that draws its count alone may be: 24 px, WCAG 2.5.8's least target
+ *  width, in place of the 44 px floor `styles.css` gives every button below 1280 px, so the eight
+ *  segments of a priority's work fit its 316 px bar at 390 px and none scrolls past its edge. Its
+ *  height keeps that floor. Set as an inline style, since the floor stands in no cascade layer
+ *  and outranks every utility class; from `md` up each count with its padding is wider anyway. */
+const COUNT_SEGMENT_MIN = 24;
+
 export function IssueTableStatus({
   table,
   items,
   epics,
+  legend = false,
 }: {
   table: Table<Item>;
   items: readonly Item[];
   epics: readonly IssueSummary[];
+  /** Whether the bar draws each segment's count alone where the segments with their names are
+   *  wider than it, and the names in a legend under it (`IssuesTable`'s `statusLegend`). Unset,
+   *  each segment draws its name and its count, and the bar scrolls sideways where they are
+   *  wider than it, as a project's does on a phone. */
+  legend?: boolean;
 }): ReactNode {
   const statusColumn = table.getColumn("status");
   const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
@@ -262,6 +301,29 @@ export function IssueTableStatus({
     if (item.queue !== undefined) queuedCount += 1;
     if ((runningIssueStatuses as readonly string[]).includes(item.issue.status)) runningCount += 1;
   }
+  const shown = issueStatuses.filter((status) => (statusCounts.get(status) ?? 0) > 0);
+  const barRef = useRef<HTMLFieldSetElement>(null);
+  const namesRef = useRef<HTMLDivElement>(null);
+  const [namesOverflow, setNamesOverflow] = useState(false);
+  // Whether the segments with their names are wider than the bar, read off a copy of them that
+  // is never drawn rather than off the bar itself: the copy is the same whichever way the bar
+  // draws its segments, so what the switch does to the bar cannot switch it back. Read before
+  // the first paint, and again in the frame the bar's width or the copy's (a count that
+  // changed) does, before that frame is painted.
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    const names = namesRef.current;
+    if (!legend || bar === null || names === null) return;
+    const measure = () =>
+      setNamesOverflow(names.getBoundingClientRect().width > bar.getBoundingClientRect().width);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const sizes = new ResizeObserver(() => flushSync(measure));
+    sizes.observe(bar);
+    sizes.observe(names);
+    return () => sizes.disconnect();
+  }, [legend]);
+  const countsOnly = legend && namesOverflow;
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
       <div
@@ -279,17 +341,34 @@ export function IssueTableStatus({
           {epics.length === 1 ? "epic" : "epics"}
         </span>
       </div>
+      {legend ? (
+        // The copy the bar is measured against: the segments with their names, each at its
+        // natural width, in a strip that takes no height and clips them, so nothing of it is
+        // drawn and the page grows no wider. It stands before the bar, so nothing a reader
+        // reads under the bar holds it.
+        <div aria-hidden className="h-0 overflow-hidden">
+          <div className="invisible flex w-max" ref={namesRef}>
+            {shown.map((status) => (
+              <span className={SEGMENT} key={status}>
+                {statusLabel(status)} {statusCounts.get(status)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <fieldset
         aria-label="Issues by status"
         className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
+        ref={barRef}
       >
-        {issueStatuses.map((status) => {
+        {shown.map((status) => {
           const count = statusCounts.get(status) ?? 0;
-          if (count === 0) return null;
           const on = statusPicks.length === 0 || statusPicks.includes(status);
           return (
             <button
-              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
+              // A count alone is named by its status, as its segment is with the name drawn.
+              aria-label={countsOnly ? `${statusLabel(status)} ${count}` : undefined}
+              className={`min-h-11 shrink-0 py-2 text-left md:min-h-7 md:py-1 ${countsOnly ? COUNT_SEGMENT : SEGMENT} ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
               key={status}
               onClick={() =>
                 statusColumn?.setFilterValue(
@@ -298,15 +377,41 @@ export function IssueTableStatus({
               }
               title={`${statusLabel(status)}: ${count}`}
               // Each status takes width in proportion to its count, so the bar spans the box
-              // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead.
-              style={{ flexGrow: count }}
+              // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead,
+              // unless the table draws the counts alone with their names in a legend (`legend`),
+              // each segment as narrow as its count and 24 px (`COUNT_SEGMENT_MIN`).
+              style={{ flexGrow: count, minWidth: countsOnly ? COUNT_SEGMENT_MIN : undefined }}
               type="button"
             >
-              {statusLabel(status)} {count}
+              {countsOnly ? (
+                count
+              ) : (
+                <>
+                  {statusLabel(status)} {count}
+                </>
+              )}
             </button>
           );
         })}
       </fieldset>
+      {countsOnly ? (
+        // The names the segments no longer draw, in the bar's order, each beside a swatch of its
+        // status's colour, wrapping onto as many lines as the box needs. Each segment keeps its
+        // name as its accessible name and its tooltip, so the legend is for the eye alone.
+        <ul
+          aria-hidden
+          className={`mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs ${textSecondaryOnCanvas}`}
+        >
+          {shown.map((status) => (
+            <li className="flex items-center gap-1.5" key={status}>
+              <span
+                className={`size-3 shrink-0 rounded-sm border ${borderDefault} ${issueStatusScale[status]}`}
+              />
+              {statusLabel(status)}
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }
@@ -327,10 +432,16 @@ export function IssueTableToolbar({
   const setExpanded = table.setExpanded;
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2">
+      {/* The toolbar is one row where the search box, its whole placeholder (about 406 px) and
+          the five controls after it (about 557 px with their gaps) fit; in a narrower box, as
+          beside a priority's margin, the search box takes a row of its own and the controls the
+          row under it, rather than cut the placeholder and leave the last control alone. From
+          1280 px up every control stands at one height (`toolbarControlHeight`); below it each
+          takes the 44 px floor `styles.css` gives a control. */}
+      <div className="@container flex flex-wrap items-center gap-2">
         <input
           aria-label="Search issues"
-          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 @max-[61rem]:basis-full ${toolbarControlHeight} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
           onChange={(event) => {
             setSearch(event.target.value);
           }}
@@ -342,7 +453,7 @@ export function IssueTableToolbar({
         <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
           Group by
           <select
-            className={`rounded-lg border px-2 py-1.5 ${borderDefault} ${surfaceBg}`}
+            className={`rounded-lg border px-2 py-1.5 ${toolbarControlHeight} ${borderDefault} ${surfaceBg}`}
             onChange={(event) => {
               setGrouping(event.target.value ? [event.target.value] : []);
               setExpanded(true);
@@ -361,10 +472,10 @@ export function IssueTableToolbar({
           </select>
         </label>
         <ColumnsMenu columns={table.getAllLeafColumns()} />
-        <IssueFlagChips />
+        <IssueFlagChips inToolbar />
         {filters.length > 0 || search !== "" || flags.needsYou || flags.unread ? (
           <button
-            className={`rounded-lg border px-2 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
+            className={`rounded-lg border px-2 py-1.5 text-sm ${toolbarControlHeight} ${borderDefault} ${surfaceMutedHoverBg}`}
             onClick={() =>
               setParams(
                 (current) => {

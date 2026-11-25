@@ -8,12 +8,13 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
+import { inputMethodKey } from "../../lib/input-method-key";
 import { inputClasses, surfaceBg } from "../../theme/classes";
 import { ChunkBoundary } from "./ChunkBoundary";
 import type { Chunk } from "./chunk-component";
 import { importWhenOnline, prefetchChunk, renderChunk } from "./chunk-loads";
 import { ERROR_ACTION_CLASS, ErrorView } from "./ErrorBoundary";
-import { DIALOG_SCOPE, inputMethodKey, useKeymapScope } from "./keymap";
+import { DIALOG_SCOPE, useKeymapScope } from "./keymap";
 import { useCloseOnNavigation, useDialog } from "./useDialog";
 
 /** What a surface drawn through `askedSurface` takes, beside its own props. */

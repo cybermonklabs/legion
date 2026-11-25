@@ -2,7 +2,8 @@
 
 The derivations and the history behind `.github/workflows/ci-caches.yaml`, the workflow that fills
 the Actions caches ci.yaml's jobs restore. Each `# why:` line links to the notes for its step or
-job, here or in the notes for the workflow that restores the cache.
+job, here or in the notes for the workflow that restores the cache. A restore step's other
+`# why:` line names the rule every restore follows, in `.github/ci-notes/ci.md`.
 
 ## The seven Go families, their keys and the runners each is filled on
 
@@ -48,27 +49,21 @@ go-dispatch-browser was filled that way longer, and
 [its fill's notes](dispatch-browser.md#the-fill-of-go-dispatch-browser-in-ci-cachesyaml) hold
 its own readings.
 
-The refill-superseded job keeps one entry per family, runner, Go version and ref: the one the
-fill just saved. It deletes the family's other entries of that runner and Go, those whose key is
-the readers' key followed by `-` and any entry under the readers' bare key, which would otherwise
-win every reader's restore as an exact match. An entry of another runner or another Go stays. It
-deletes nothing until it finds the new key in that ref's list, so a save that did not land leaves
-the old entries in place. Without this cleanup the entries would pile up: each fill saves a new
-one, GitHub drops an entry only after seven days unread, and over the repository's cache limit
-it evicts the least recently used entries, which can be another family's live one.
-A job downloading a deleted entry gets a cache miss. actions/cache/restore warns and the job
-goes on, compiling what the entry would have given it, so it is slower, not failed.
+The refill-superseded job then deletes the entries each new one replaced, so each family keeps
+one entry per runner and Go
+([its notes](#what-the-refill-superseded-job-deletes-and-why-it-is-a-job-of-its-own)).
 
 ## Why each fill keeps only what its own build used
 
 Each fill keeps in the build cache only what its own build used: a step before the build marks
 every restored entry unused, the build marks what it reads or writes, and a step after it deletes
 the rest (.github/scripts/go-cache-working-set.sh), each with the GOCACHE the build uses, which
-for go-envoy-darwin-vet is the vet's own directory. The envoy job fills go-envoy-test on top of
-go-envoy, so go-envoy-test's pair also keeps the entries go-envoy's build used, and that entry
-holds both builds. Without that, an entry grew with each fill: a build adds the objects of every
-package that changed and nothing takes the replaced ones out, since Go's own trim deletes only
-what no build has used for five days and every fill was within that.
+for go-envoy-darwin-vet is the vet's own directory. The envoy-test job builds the listener and
+natsd as the envoy job does before its test build, so go-envoy-test's pair keeps the entries both
+builds used, and that entry holds both builds. Without that, an entry grew with each fill: a
+build adds the objects of every package that changed and nothing takes the replaced ones out,
+since Go's own trim deletes only what no build has used for five days and every fill was within
+that.
 go-envoy-test grew from 690 MB on 2026-11-22 to 2,039 MB by 19:18Z on 2026-11-23, and its restore
 in the binaries job of main's dispatch-browser.yaml, which restored go-envoy-test, from 15.5 s to
 59 s at the median. The module cache keeps every module version it has downloaded (Go removes
@@ -110,3 +105,30 @@ and alone jobs run in the image this repository builds, which carries the browse
 packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
 restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone with
 them.
+
+## What the refill-superseded job deletes, and why it is a job of its own
+
+The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-dispatch-browser and
+go-envoy-darwin-vet that the fills replaced, deleted once each fill has saved its new one. Each
+fill saves a new entry, over a gigabyte for most families, so without this the entries would
+pile up: GitHub drops an entry only after seven days unread, and over the repository's cache
+limit it evicts the least recently used entries, which can be another family's live one. For
+each family and architecture this keeps one
+entry of this ref, the one the fill just saved, and deletes every other one of that family, runner
+and Go: those whose key is the readers' key followed by `-`, and the one under the readers' key
+itself, which the fills saved before they named the commit and which would otherwise win every
+reader's restore as an exact match. The family then holds what it held before this change, one
+entry per runner, in a repository near its cache limit. A job that is downloading a deleted entry
+at that moment gets a cache miss: actions/cache/restore warns and the job goes on, compiling what
+the entry would have given it, slower but not failed. An entry of another runner or another Go is
+no such entry and stays. None is deleted unless the new key is among this ref's entries, so a save
+that did not land leaves the old entries in place.
+
+A job of its own, so the token that may delete caches is in no job that builds code. A cache key is
+text any build that saves on this ref chose, so the step never splits or prints one raw: the list
+stays JSON, jq selects the numeric ids to delete, and each id is checked to be a number before
+`gh cache delete` gets it. One leg per family and architecture, each keeping the key that fill's
+leg saved, under the output name the fill gives it; a leg whose fill saved nothing (it failed
+before its save) skips its steps, and the job runs when any fill failed, so one failed fill does
+not stop the others' deletes. Every leg runs on ubuntu-24.04-arm: gh and jq need nothing of an x64
+machine.

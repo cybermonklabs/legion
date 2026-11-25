@@ -1,6 +1,7 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-api-constants";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   bgTransparent,
   borderStrongHover,
@@ -9,7 +10,6 @@ import {
   pageInkText,
 } from "../../theme/classes";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
-import { inputMethodKey } from "../shell/keymap";
 import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";
 

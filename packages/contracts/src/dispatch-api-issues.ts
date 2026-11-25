@@ -190,8 +190,8 @@ export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>
 export const issueEventChangesFields = {
   /** Each field whose value the write moved, of `title`, `status`, `closed_at` (for a close or a
    *  reopen), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`,
-   *  `blocked_by` and `external_links`; for `issue.created`, every field the new issue holds a
-   *  value in. */
+   *  `advances`, `blocked_by` and `external_links`; for `issue.created`, every field the new
+   *  issue holds a value in. */
   changed: z.array(z.string()).optional(),
   /** The issue's parent chain after the write, parent first up to the root; `[]` for a root. */
   ancestors: z.array(z.string()).optional(),

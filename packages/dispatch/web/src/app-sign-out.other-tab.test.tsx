@@ -2,9 +2,10 @@ import { expect, jest, test } from "bun:test";
 import { act, screen, waitFor } from "@testing-library/react";
 
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
+import { keptWrites } from "./__tests__/kept-sends-harness";
 import { wholeText } from "./__tests__/whole-text";
 import { ApiError } from "./api/client";
-import { aliceWrite, keptWrites, otherTab, renderApp } from "./app-sign-out-fixture";
+import { aliceWrite, otherTab, renderApp } from "./app-sign-out-fixture";
 import { SIGN_OUT_SETTLE_MS } from "./features/shell/sign-in-channel";
 import { writesOf } from "./features/writes/write-store";
 // The Inbox the app draws at `/` is a chunk of its own (`features/inbox/InboxHost.tsx`), and the

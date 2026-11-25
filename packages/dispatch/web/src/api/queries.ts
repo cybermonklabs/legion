@@ -651,11 +651,13 @@ function boardMovesSettled(context: QueryFunctionContext, project: string): Prom
   return settled.promise;
 }
 
-/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, in the
- *  statuses it names, with their move into backlog or icebox where it asks for that. `open`
- *  leaves the closed issues out, as the project listing's own flag does. */
+/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, only
+ *  those whose own row names it where it asks for that (`own`), in the statuses it names, with
+ *  their move into backlog or icebox where it asks for that. `open` leaves the closed issues
+ *  out, as the project listing's own flag does. */
 export const advancesIssuesParams = (listing: AdvancesListing, open = false) => ({
   advances: [listing.advances],
+  ...(listing.own ? { own: true } : {}),
   ...(listing.statuses === undefined ? {} : { status: [...listing.statuses] }),
   ...(listing.moved ? { moved: true } : {}),
   ...(open ? { open: true } : {}),
@@ -676,6 +678,7 @@ export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
       "issues",
       "advances",
       listing.advances,
+      ...(listing.own ? ["own"] : []),
       ...(listing.statuses === undefined ? [] : ["status", ...listing.statuses]),
       ...(listing.moved ? ["moved"] : []),
       ...(open ? ["open"] : []),
