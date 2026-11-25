@@ -389,7 +389,7 @@ func (d *driver) endPiece(p *piece) error {
 
 // childrenToEnter is the latest moment the replay placed, and has not yet applied, a recorded event
 // that brings a child under key into the workflow, made before by, key's recorded move to done:
-// the child's filing under key (filesChildUnder), or its own move to todo from a status out of the
+// the child's filing under key (filedUnder), or its own move to todo from a status out of the
 // workflow, as the architect's release writes it; zero for none. Such an event placed for a later
 // moment holds key's own move to done to it (endPiece), and an event the replay never placed holds
 // nothing.
@@ -409,7 +409,7 @@ func (d *driver) childrenToEnter(key string, by time.Time) time.Time {
 // entersChildUnder says whether event brings a child under key into the workflow: its filing under
 // key, or a move of an issue whose parent is key to todo from a status out of the workflow.
 func (d *driver) entersChildUnder(event *scriptEvent, key string) bool {
-	if filesChildUnder(event, key) {
+	if filedUnder(event) == key {
 		return true
 	}
 	shown := event.parsed.Issue

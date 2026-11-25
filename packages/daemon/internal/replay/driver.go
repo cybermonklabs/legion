@@ -194,7 +194,7 @@ type driver struct {
 	childWait map[string]time.Time
 	placed    map[int]time.Time
 	// anchored is the events whose place waits for the replay's start of the wait they ended,
-	// starting, by issue, the filings whose place waits for the replay's first start of that issue
+	// starting, by issue, the events whose place waits for the replay's first start of that issue
 	// (anchorStart, placeStarted), and reopens, by issue, each reopen of the daemon's own session
 	// that waits for the replay's issue to leave the workflow (defersReopen).
 	anchored []int
@@ -309,8 +309,9 @@ type Divergence struct {
 	// already past the event's sequence.
 	Fenced int `json:"fenced"`
 	// Unanchored is how many recorded events never took a place, their anchor never reached in
-	// the replay before the window's end: the start of the wait they ended, or the first start of
-	// the issue an architect's filing under it waits for (anchorStart).
+	// the replay before the window's end: the start of the wait they ended, the first start of the
+	// issue a filing under it or its own architect's act on it waits for (anchorStart), or the
+	// filing of their issue, which no event of the issue comes before (awaitsFiling).
 	Unanchored int `json:"unanchored"`
 	// Finished is how many outbox rows the stub finished without acting, by the assumption each
 	// rests on.
@@ -599,6 +600,7 @@ func (d *driver) observe() error {
 			if err := d.cancelWork(key); err != nil {
 				return err
 			}
+			d.placeUnstarted(key)
 			d.placeReopens(key)
 			delete(d.waiting, key)
 			tree := line.str("tree")
@@ -911,6 +913,9 @@ func (d *driver) run() error {
 	for _, waiting := range d.starting {
 		unplaced(waiting)
 	}
+	for i := range d.script.events {
+		unplaced(d.script.events[i].awaiting)
+	}
 	return d.settle()
 }
 
@@ -1065,12 +1070,13 @@ func (d *driver) arrivalBefore(key string) time.Time {
 
 // placeByAnchor places the recorded event events[i] by its anchor, as no piece of work places it:
 // at its recorded time, from its question (Branch.Answer), from the replay's start of the wait it
-// ended (Branch.Timing), as the branch asks, or from the replay's first start of the issue it files
-// a child under (anchorStart); and never before the clock's instant, which an event whose piece the
-// replay does not run can stand past by then (placeUnrun). A person's answer under answer offset
-// waits for its question to place it, a write of the daemon's own session that follows a child's
-// filing waits for that filing (anchorFollow, placeFollowers), and a filing whose issue the replay
-// has not started in its run waits for that start (placeStarted).
+// ended (Branch.Timing), as the branch asks, or from the replay's first start of the issue it
+// depends on (anchorStart): the issue it files a child under, or the issue its own architect acts
+// on; and never before the clock's instant, which an event whose piece the replay does not run can
+// stand past by then (placeUnrun). A person's answer under answer offset waits for its question to
+// place it, an event that follows another, a child's filing among them, waits for it (anchorFollow,
+// placeFollowers), and an event whose issue the replay has not started in its run waits for that
+// start (placeStarted), or for the issue's leave where it leaves unstarted (placeUnstarted).
 func (d *driver) placeByAnchor(i int) {
 	event := &d.script.events[i]
 	at := maxTime(d.clock.Instant(), event.at)
@@ -1092,7 +1098,7 @@ func (d *driver) placeByAnchor(i int) {
 	}
 }
 
-// placeStarted places each filing that waited for key's first start in the replay (anchorStart),
+// placeStarted places each event that waited for key's first start in the replay (anchorStart),
 // key having just taken its first slot of its run: each at its recorded offset from the record's
 // first start of the issue, from this moment, or at its recorded time where that is later.
 func (d *driver) placeStarted(key string) {
@@ -1102,6 +1108,20 @@ func (d *driver) placeStarted(key string) {
 	for _, i := range waiting {
 		event := &d.script.events[i]
 		d.placeEvent(i, maxTime(event.at, now.Add(event.offset)))
+	}
+}
+
+// placeUnstarted places each event that waited for key's first start in the replay (anchorStart),
+// key having just left the workflow before it took that start: each at its recorded time, or at
+// once where that has passed, as an event of work the leave leaves unrun enters (cancelWork). So a
+// child the record filed under an issue that the replay ends before it starts it is still filed,
+// once.
+func (d *driver) placeUnstarted(key string) {
+	waiting := d.starting[key]
+	delete(d.starting, key)
+	now := d.clock.Instant()
+	for _, i := range waiting {
+		d.placeEvent(i, maxTime(now, d.script.events[i].at))
 	}
 }
 
@@ -1115,11 +1135,13 @@ func (d *driver) placeEvent(i int, at time.Time) {
 // ordered among the items of its instant by rec, its moment in the record, and the act of p's work
 // it is, nil for an event no piece places. A piece's event is ordered by the act's moment in the
 // record of p's work: the event's own, or, for an event another piece's work took over
-// (giveEvents), its moment in that work. A person's answer to it and each write of the daemon's
-// own session that follows it are placed once it is applied (placeAnswers, placeFollowers). An
-// event the replay has placed already is not queued again, but for a reopen of the daemon's own
-// session that waits for the replay's issue to leave the workflow (defersReopen), which is queued
-// again at that leave (placeReopens).
+// (giveEvents), its moment in that work. A person's answer to it, each event that follows it
+// (anchorFollow) and, for an issue's filing, each event of the issue held back for it are placed
+// once it is applied (placeAnswers, placeFollowers, placeFiled). An event the replay has placed
+// already is not queued again, but for a reopen of the daemon's own session that waits for the
+// replay's issue to leave the workflow (defersReopen), which is queued again at that leave
+// (placeReopens), and an event held back for its issue's filing (awaitsFiling), which is queued
+// again once that filing is applied.
 func (d *driver) queueEvent(i int, at, rec time.Time, p *piece) {
 	if _, placed := d.placed[i]; placed {
 		return
@@ -1138,6 +1160,7 @@ func (d *driver) queueEvent(i int, at, rec time.Time, p *piece) {
 			event.dispatched = true
 			d.placeAnswers(event)
 			d.placeFollowers(event)
+			d.placeFiled(event)
 			return nil
 		},
 		run: func() error { return d.applyEvent(i, applied) }})
@@ -1159,18 +1182,31 @@ func (d *driver) placeAnswers(event *scriptEvent) {
 	}
 }
 
-// placeFollowers places each write of the daemon's own session that follows event in the record
-// (anchorFollow), event just applied to the replay's copy of Dispatch: at its recorded offset from
-// this moment, or at its recorded time where that is later. So an architect's release or park of a
-// child, which Dispatch records under the daemon's session, comes after the architect's filing of
-// the child, wherever the replay placed the filing, as in the record (keepsDaemonEvent judges it
-// against that filing), and never before its recorded time, which a filing the replay placed early
-// leaves it at.
+// placeFollowers places each event that follows event in the record (anchorFollow), event just
+// applied to the replay's copy of Dispatch: at its recorded offset from this moment, or at its
+// recorded time where that is later. So an architect's later act on a child it filed, and its
+// release or park of the child, which Dispatch records under the daemon's session, come after the
+// architect's filing of the child, wherever the replay placed the filing, as in the record
+// (keepsDaemonEvent judges the daemon's write against that filing), and never before their recorded
+// times, which a filing the replay placed early leaves them at.
 func (d *driver) placeFollowers(event *scriptEvent) {
 	now := d.clock.Instant()
 	for _, i := range event.followers {
 		follower := &d.script.events[i]
 		d.placeEvent(i, maxTime(follower.at, now.Add(follower.offset)))
+	}
+}
+
+// placeFiled places each event of event's issue the replay held back for event, the issue's filing,
+// just applied to its copy of Dispatch (awaitsFiling): at its recorded offset from the filing, from
+// this moment, or at its recorded time where that is later.
+func (d *driver) placeFiled(event *scriptEvent) {
+	now := d.clock.Instant()
+	held := event.awaiting
+	event.awaiting = nil
+	for _, i := range held {
+		waited := &d.script.events[i]
+		d.placeEvent(i, maxTime(waited.at, now.Add(waited.at.Sub(event.at))))
 	}
 }
 
@@ -1267,11 +1303,15 @@ func (d *driver) waitStart(wait waitAnchor) (time.Time, bool) {
 // project's daemon on an issue of that project, which the replay makes again from its own outbox,
 // and which the shadow does not apply. Another project's daemon is another daemon the replay does
 // not run: its writes on its own issues, an outside blocker's close among them, are applied as
-// recorded, as a person's are. A reopen of the daemon's own session that waits for the replay's
-// issue to leave the workflow (defersReopen) is not applied: it answers deferred, and waits to be
-// queued again.
+// recorded, as a person's are. An event of an issue whose filing the replay has not applied yet
+// (awaitsFiling), and a reopen of the daemon's own session that waits for the replay's issue to
+// leave the workflow (defersReopen), are not applied: each answers deferred, and waits to be queued
+// again.
 func (d *driver) dispatchEvent(i int) (applied []byte, deferred bool, err error) {
 	event := &d.script.events[i]
+	if d.awaitsFiling(i) {
+		return nil, true, nil
+	}
 	if event.env.project == d.window.Project && daemonWrote(event.env.actor, event.env.key) {
 		if !d.keepsDaemonEvent(event) {
 			return nil, false, nil
@@ -1285,6 +1325,33 @@ func (d *driver) dispatchEvent(i int) (applied []byte, deferred bool, err error)
 	}
 	applied, err = d.shadow.apply(event.env, d.recordedBefore(event), i, d.clock.Instant())
 	return applied, false, err
+}
+
+// awaitsFiling says whether events[i] waits for its issue's filing (scriptEvent.filing), which the
+// replay has not applied yet, and holds it back where it does: no recorded event of an issue applies
+// before the issue's filing in the replay, whoever made it and however the replay placed it (spec
+// R2: a child's filing enters at its recorded offset from the start of the issue it is filed under,
+// and the child's own course follows its filing). The event is taken out of its place and kept with
+// the filing, which places it once applied, at its recorded offset from the filing and never before
+// its recorded time (placeFiled). Applied first, an issue event would give the copy of Dispatch the
+// issue's whole payload as that event shows it, marking every field as set by it, and the filing
+// applied after it would set none of them (shadow.take): the child would stand at that event's
+// status, a status of its later work, and never at the todo the architect's release writes, which
+// the daemon takes into its workflow.
+func (d *driver) awaitsFiling(i int) bool {
+	event := &d.script.events[i]
+	if event.filing < 0 {
+		return false
+	}
+	filing := &d.script.events[event.filing]
+	if filing.dispatched {
+		return false
+	}
+	delete(d.placed, i)
+	if !slices.Contains(filing.awaiting, i) {
+		filing.awaiting = append(filing.awaiting, i)
+	}
+	return true
 }
 
 // recordedBefore is the payload of event's issue's recorded issue event before it in the record's

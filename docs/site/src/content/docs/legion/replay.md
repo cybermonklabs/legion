@@ -484,23 +484,32 @@ An architect's `release_children` of a root that has left the workflow first ado
 The release's todo then runs the root again at the next generation, so the replay makes the root's recorded moves at that generation, as the record's daemon made them.
 An event that a worker's session wrote inside a work segment of that worker's role on that worker's issue enters at its offset in that segment, so it moves with that work.
 So does the filing of a child under that issue, because a child's filing moves with the start that the child is filed after.
-An event that the worker wrote on another issue is part of no segment: an edit of that issue, a link that the worker adds to it or takes off, or a child that the worker moves out.
+The filing of a child under an issue that no work segment holds enters at its recorded offset from the replay's first start of that issue in its run, or at its recorded time where that is later, whoever filed it: the issue's own architect, the architect of its tree's root, or a person.
+So does an act of an issue's own architect on that issue that no work segment holds, such as a link that the architect sets on it, unless the act answers a question or ends a wait, which keep those anchors.
+Each of these moves only where the record shows the issue started in its run and not yet out of the workflow at that moment.
+A child's open status and a link hold the issue's first start, so either one applied before the replay starts the issue would hold a start that the record made before it.
+Where the replay's issue leaves the workflow before it takes that start, such an event enters when the issue leaves, or at its recorded time where that is later.
+An architect's act on a child that it filed, such as an edit of the child's title or a link on the child, enters after the filing, at its recorded offset from it, and never before its recorded time.
+An event that the worker wrote on another issue is otherwise part of no segment: an edit of that issue, a link that the worker adds to it or takes off, or a child that the worker moves out.
 Such an event keeps its recorded time, because the replay moves a worker's work and not the issues that the work changed.
 A write of the daemon's session that follows the filing of a child, such as the architect's release or park of that child, enters after the filing, at its recorded offset from it, and never before its recorded time.
 So the architect's writes on a child and the writes that its calls make under the daemon's session keep the order that the record shows.
 The record names that session by an id under the title `Legion <role> · <KEY>`, which names the role and the issue of the claim that the session runs.
 Where a window's events name a worker's session by its claim token instead, the replay reads the claim from that token.
-A worker's event outside every work segment of its role is part of no segment, so it enters as an event that no worker wrote enters: at its recorded time, or at its offset from the replay's start of the wait that it ended.
-A root's architect writes such events between the phases of its root, for example when it files a child while its root is in implementing.
+Any other worker's event outside every work segment of its role is part of no segment, so it enters as an event that no worker wrote enters: at its recorded time, or at its offset from the replay's start of the wait that it ended.
+A root's architect writes such events between the phases of its root, for example when it edits another tree's issue while its root is in implementing.
 Where the replay does not run the segment of an event, because it passes over that segment or ends its work before the event, the event enters in the same way, at once where its recorded time has passed.
 Where the worker's issue leaves the workflow before a segment of its current run opens, each event of that segment enters in the same way when the issue leaves, so a recorded child is filed under every rule.
 A segment of a later run of the issue waits for the replay to enter that run.
 Where `answer` is `offset`, a person's answer to a worker's question enters at its offset from the moment that the question entered the replay, wherever the question entered, so no answer comes before its question.
 Where a drawn conflict loop takes the place of the issue's own recorded loop, each event of the issue's own loop enters at its offset in the drawn loop's segment of the same role and phase, or at the end of that segment where the segment is shorter, and an event of a role and phase that the drawn loop does not hold enters as an event that no worker wrote.
 So the replay enters each recorded event once.
+No recorded event of an issue enters before the issue's filing, whoever made it and wherever the replay placed it.
+An event that would enter first waits for the filing, and then enters at its recorded offset from the filing, or at its recorded time where that is later.
+Applied before the filing, an edit of the child would give the replay's copy of Dispatch the whole child as the edit shows it, at a status of the child's later work, and neither the filing nor the architect's release would change that status, so the replay's daemon would never take the child into its workflow.
 Each recorded event of an issue changes the replay's copy of Dispatch only in the fields in which it differs from the issue's event before it in the record.
 Where the replay applies an event late, the event does not change a field that an event after it in the record set first.
-So an architect's filing of a child that enters after the daemon's later todo of that child leaves the child in todo, as the record does.
+So an architect's edit of its own issue that enters after a person's later edit of the same field leaves the person's value, as the record does.
 After each fact, a worker stub runs the outbox rows that the daemon's lanes would take.
 An operator's retry of a phase's worker with a fresh session, which `legion claims retry --fresh-session` makes of a suspended claim, shows in the record as a launch of the claim and, at the same moment, a held phase released by the operator's retry where no hold stands.
 The release `legion-v20.42.5` launched the claim outside the start fence of the outbox and then restarted the phase, and the fence held the start of that restart, for example while the tree's design gate stood closed.
@@ -2322,8 +2331,10 @@ Doubtful, because a planner files children after its parent starts.
 Children filed at their recorded times favour a rule that starts parents later.
 The tool moves the filing of a child with its parent's start.
 A filing that falls in the parent's work moves with that work.
-An architect's filing of a child under its own issue that falls in no work of the issue, made after the issue's first start in the record, enters at its recorded offset from the replay's first start of the issue, or at its recorded time where that is later, because the child's open status holds the issue's first start.
-It never loses a recorded child: where the replay passes over, drops or never opens the work that a child is filed in before the parent leaves the workflow, the filing enters at its recorded time, or then where that time has passed.
+A filing that falls in no work of the parent, made while the record shows the parent started in its run, enters at its recorded offset from the replay's first start of the parent, or at its recorded time where that is later, whoever filed it, because the child's open status holds the parent's first start.
+An act of an issue's own architect on the issue that falls in no work of the issue, such as a link that it sets there, moves with the issue's first start in the same way.
+An architect's act on a child that it filed follows the filing, at its recorded offset from it, and no recorded event of a child enters before the child's filing.
+It never loses a recorded child: where the replay passes over, drops or never opens the work that a child is filed in before the parent leaves the workflow, or the parent leaves before its first start, the filing enters at its recorded time, or then where that time has passed.
 An act of work that runs later in the replay than in the record can fall past the end of the run-out, and then it does not enter.
 In window one, an architect filed a child 53 hours into a piece of its work in accepting that the record shows still open at the end of the inputs, and a seed that brings that piece more than about 42 hours late files no such child.
 A worker's other events on another issue keep their recorded times: an edit of that issue, a link that the worker adds to it or takes off, and a child that the worker moves out.
@@ -2332,6 +2343,7 @@ A worker's other events on another issue keep their recorded times: an edit of t
 Dispatch's events give each child's filing, and the phase lines give its parent's start.
 The fixture window `child-filed-after-parent-start` replays one under `main` and `keep-past-review`.
 The tests of the built windows replay a filing in work that runs late, a filing in work that never opens before its issue leaves, an architect's filing under its own issue that its issue's late start moves, and a link that an architect adds to another issue in work that the replay opens early.
+They also replay a filing under a member of a tree, by the tree root's architect and by a person, that the member's late start moves, an architect's link on its own issue that the issue's late start moves, an architect's edit of a child that it filed, which follows the filing, and another issue's architect's edit of a child, which waits for the child's filing.
 In window one, 189 architect filings of a child under the architect's own issue fall in no work of the issue, and 252 fall in its work.
 
 **If it is wrong.**

@@ -2142,16 +2142,16 @@ func TestADrawnConflictEntersAtTheBootInsideItsStretch(t *testing.T) {
 	}
 }
 
-// A recorded issue event changes the replay's copy of Dispatch by what it changed in the record,
-// read against the issue's event before it in the record's order, and takes back no change that an
-// event after it in the record made and the copy applied first (shadow.take). The test replays
-// lateRootWindow under keep-past-review, in which ACME-2's architect files ACME-3 in triage at 10:10,
-// inside its turn, and edits ACME-3's title at 10:20, the daemon's session writes ACME-3 todo at
-// 10:25 (the release the architect's API makes), and ACME-2 waits for its child from 10:30, where
-// ACME-3 starts. ACME-2 is promoted an hour late, so its filing of ACME-3, an act of its work, enters
-// at 11:10, after the edit and the todo, which keep their recorded times: ACME-3 stays todo and starts
-// at 11:30. It fails where the late filing is read against the last event the copy applied, the todo,
-// for which its triage stands over the todo, ACME-3 leaves the workflow at 11:10 and never starts.
+// A filing the replay applies late takes back no change of the child's later events: none of them
+// enters before it (driver.awaitsFiling), an architect's edit of a child it filed follows the
+// filing, and a write of the daemon's session follows that edit (anchorFollow), each at its recorded
+// offset. The test replays lateRootWindow under keep-past-review, in which ACME-2's architect files
+// ACME-3 in triage at 10:10, inside its turn, and edits ACME-3's title at 10:20, the daemon's session
+// writes ACME-3 todo at 10:25 (the release the architect's API makes), and ACME-2 waits for its child
+// from 10:30, where ACME-3 starts. ACME-2 is promoted an hour late, so its filing of ACME-3, an act of
+// its work, enters at 11:10, the edit at 11:20 and the todo at 11:25: ACME-3 stands todo and starts
+// at 11:30. It fails where the filing's triage stands over the todo, for which ACME-3 leaves the
+// workflow and never starts.
 func TestALateFilingTakesBackNoLaterChange(t *testing.T) {
 	log, _ := replayCopied(t, lateRootWindow(t, func(b *windowBuilder) {
 		headerChild(b, clock(10, 10), "triage")

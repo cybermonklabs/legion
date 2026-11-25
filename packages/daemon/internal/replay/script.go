@@ -241,21 +241,26 @@ const (
 	// anchorWait places it at its offset from the replay's start of the wait it ended in the
 	// record (Branch.Timing).
 	anchorWait
-	// anchorFollow places a write of the daemon's own session at its offset from the event before
-	// it on its issue (scriptEvent.prev) once that is applied, or at its recorded time where that
-	// comes later, where that event is the issue's filing as a child, an act of a piece of its
-	// parent's work that moves with that piece or a filing its parent's start places (anchorStart),
-	// or itself follows one: an architect's own write on a child and its API's write on the child
-	// that Dispatch records under the daemon's session, a release or a park, keep the order the
-	// record shows them in (driver.placeFollowers).
+	// anchorFollow places an event at its offset from another event the replay applies first
+	// (scriptEvent.on), once that is applied, or at its recorded time where that comes later
+	// (driver.placeFollowers). An architect's act on a child it filed follows that filing, so the
+	// child's course follows its filing wherever the replay places it (spec R2). A write of the
+	// daemon's own session follows the event before it on its issue (scriptEvent.prev), where that
+	// event is the issue's filing as a child, an act of a piece of its parent's work that moves with
+	// that piece, an event an issue's start places (anchorStart), or itself follows one: an
+	// architect's own write on a child and its API's write on the child that Dispatch records under
+	// the daemon's session, a release or a park, keep the order the record shows them in.
 	anchorFollow
-	// anchorStart places an architect's filing of a child under its own issue that no piece of the
-	// issue's work places (filesChildUnder), made after the issue's first start in its run in the
-	// record (runStartAt), at its offset from that start, from the replay's first start of the issue
-	// in its run, or at its recorded time where that is later (driver.placeStarted): the child's
-	// open status holds the issue's first start (record's children wait), so a filing placed before
-	// the replay starts the issue would hold a start the record made before it (spec R2: a fact that
-	// depends on a start moves with that start).
+	// anchorStart places an event that depends on an issue's first start in its run, where no piece
+	// of work places it, at its offset from the record's first start of that issue (runStartAt), from
+	// the replay's first start of the issue in its run, or at its recorded time where that is later
+	// (driver.placeStarted): the filing of a child under the issue, whoever files it (filedUnder),
+	// and an act of the issue's own architect on it, each made while the record shows the issue in
+	// flight in that run (spec R2: a child's filing enters at its recorded offset from the start of
+	// the issue it is filed under, and a fact that depends on a start moves with that start). A
+	// child's open status holds the issue's first start (the record's children wait), and so does a
+	// link the architect sets on the issue, so either applied before the replay starts the issue
+	// would hold a start the record made before it.
 	anchorStart
 )
 
@@ -277,10 +282,17 @@ type scriptEvent struct {
 	offset  time.Duration
 	wait    waitAnchor
 	startOf string
-	// dependents is every person's answer placed from this one, and followers every write of the
-	// daemon's own session placed from it (anchorFollow).
+	// dependents is every person's answer placed from this one, and followers every event placed
+	// from it (anchorFollow).
 	dependents []int
 	followers  []int
+	// filing is the filing of the event's issue (its issue.created) where the window holds it from
+	// its start on and the record shows it before this event, -1 for none and for the filing itself:
+	// the replay applies no event of an issue before the issue's filing (driver.awaitsFiling).
+	// awaiting is, for a filing, each event of its issue the replay held back for it, which it
+	// places once it is applied (driver.placeFiled).
+	filing   int
+	awaiting []int
 	// prev is the issue event before this one on its issue, in the record's order, -1 for none or
 	// for an event that is no issue event: what a write of the daemon's own session is judged
 	// against (driver.keepsDaemonEvent), and what an issue event's change is read against
@@ -633,24 +645,30 @@ func closedByArchitect(iss *IssueTrace, leave Leave) bool {
 // placeEvents reads every recorded event of the window at or after its start, from events, the
 // window's events in the trace's order (readTrace): by time, then by id. It says how a replay
 // places each, and answers each issue's issue events, by their index, in that order, each issue
-// event naming the one before it on its issue (scriptEvent.prev). A worker's event — one whose
-// actor is a session the record shows running a claim of an issue, by the session's title or by
-// the claim token its id is (actorClaimOf) — on that claim's issue, or the filing of a child under
-// it, that falls in a piece of that claim's role's work (workPiece) is an act of that piece, placed
-// at its offset in it where the replay runs the piece (spec R2, assumption 17: a child's filing
-// moves with the start it is filed after). A worker's event on another issue — an edit of it, a
-// link it adds or takes off, a child it moves out, a filing into another tree — is no act of its
-// piece and keeps its recorded time, as a version of a root's design does where the replay opens
-// the root's work early (keepDesignTimes): the replay moves a piece of work, not the issues the
-// worker touched, whose own course the record's times hold. An architect's filing of a child under
-// its own issue that no piece places, made after the issue's first start in the record, is placed
-// from the replay's start of the issue (anchorStart). Every other event is placed by its anchor,
-// and so is a worker's event whose piece the replay does not run (placeUnrun, cancelWork): a
-// person's answer from its question (Branch.Answer); an event that ended a wait in the record from
-// the replay's start of that wait (Branch.Timing); a write of the daemon's own session, the window's
-// project's, that follows the filing of its issue as a child, or follows such a write, from the
-// event before it (anchorFollow); every other at its recorded time. Another project's daemon is
-// another daemon, whose writes on its own issues are placed as any other event is.
+// event naming the one before it on its issue (scriptEvent.prev), and each event of an issue the
+// window files naming that filing (scriptEvent.filing), before which the replay applies no event
+// of the issue (driver.awaitsFiling). A worker's event — one whose actor is a session the record
+// shows running a claim of an issue, by the session's title or by the claim token its id is
+// (actorClaimOf) — on that claim's issue, or the filing of a child under it, that falls in a piece
+// of that claim's role's work (workPiece) is an act of that piece, placed at its offset in it where
+// the replay runs the piece (spec R2, assumption 17: a child's filing moves with the start it is
+// filed after). An event no piece places that depends on an issue's first start in its run, made
+// while the record shows that issue in flight in it, is placed from the replay's start of the issue
+// (anchorStart): the filing of a child under any issue, whoever files it (spec R2: a child's filing
+// enters at its recorded offset from the start of the issue it is filed under), and an act of an
+// issue's own architect on its issue that answers no question and ended no wait, which keep those
+// anchors. An architect's act on a child it filed is placed from that filing (anchorFollow), so the
+// child's course follows its filing. A worker's other event on another issue — an edit of it, a
+// link it adds or takes off, a child it moves out — is no act of its piece and keeps its recorded
+// time, as a version of a root's design does where the replay opens the root's work early
+// (keepDesignTimes): the replay moves a piece of work, not the issues the worker touched, whose own
+// course the record's times hold. Every other event is placed by its anchor, and so is a worker's
+// event whose piece the replay does not run (placeUnrun, cancelWork): a person's answer from its
+// question (Branch.Answer); an event that ended a wait in the record from the replay's start of that
+// wait (Branch.Timing); a write of the daemon's own session, the window's project's, that follows
+// the filing of its issue as a child, or follows such a write, from the event before it
+// (anchorFollow); every other at its recorded time. Another project's daemon is another daemon,
+// whose writes on its own issues are placed as any other event is.
 func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, error) {
 	s.events = make([]scriptEvent, 0, len(events))
 	for _, read := range events {
@@ -658,16 +676,27 @@ func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, err
 		if err != nil {
 			return nil, err
 		}
-		s.events = append(s.events, scriptEvent{parsed: read.event, env: env, at: read.event.At, order: int(read.event.ID), on: -1, prev: -1})
+		s.events = append(s.events, scriptEvent{parsed: read.event, env: env, at: read.event.At, order: int(read.event.ID), on: -1, prev: -1,
+			filing: -1})
 	}
 	issueEvents := map[string][]int{}
+	filings := map[string]int{}
 	for i := range s.events {
-		if s.events[i].parsed.Issue != nil {
-			key := s.events[i].env.key
+		event := &s.events[i]
+		if event.parsed.Issue != nil {
+			key := event.env.key
 			if own := issueEvents[key]; len(own) > 0 {
-				s.events[i].prev = own[len(own)-1]
+				event.prev = own[len(own)-1]
 			}
 			issueEvents[key] = append(issueEvents[key], i)
+		}
+		if event.at.Before(t.From) {
+			continue
+		}
+		if filing, filed := filings[event.env.key]; filed {
+			event.filing = filing
+		} else if event.env.kind == "issue.created" {
+			filings[event.env.key] = i
 		}
 	}
 	ended := s.waitEnders(t, issueEvents)
@@ -677,38 +706,72 @@ func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, err
 		if event.at.Before(t.From) {
 			continue
 		}
-		if ran, ok := actorClaimOf(event.parsed); ok && movesWithWork(event, ran) {
+		ran, worked := actorClaimOf(event.parsed)
+		if worked && movesWithWork(event, ran) {
 			if p := s.workPiece(ran, event.at); p != nil {
 				event.piece = p
 				p.acts = append(p.acts, act{kind: actEvent, offset: event.at.Sub(p.start), rec: event.at, event: i})
-			} else if start, started := runStartAt(t.Issues[ran.Issue], event.at); started && ran.Role == claim.RoleArchitect &&
-				filesChildUnder(event, ran.Issue) {
-				event.anchor, event.startOf, event.offset = anchorStart, ran.Issue, event.at.Sub(start)
+			}
+		}
+		question, answers := questions[i]
+		answers = answers && event.piece == nil && !s.events[question].at.Before(t.From)
+		wait, endsWait := ended[i]
+		if key := startDependedOn(event, ran, worked); event.piece == nil && key != "" && !answers && !endsWait {
+			if start, started := s.runStartAt(t, key, event.at); started {
+				event.anchor, event.startOf, event.offset = anchorStart, key, event.at.Sub(start)
 				continue
 			}
 		}
-		if question, ok := questions[i]; ok && event.piece == nil && !s.events[question].at.Before(t.From) {
+		if answers {
 			event.anchor, event.on, event.offset = anchorEvent, question, event.at.Sub(s.events[question].at)
 			s.events[question].dependents = append(s.events[question].dependents, i)
 			continue
 		}
-		if wait, ok := ended[i]; ok && !wait.start.Before(t.From) {
+		if endsWait && !wait.start.Before(t.From) {
 			event.anchor, event.wait, event.offset = anchorWait, wait, event.at.Sub(wait.start)
 		}
 	}
 	for i := range s.events {
 		event := &s.events[i]
-		if event.at.Before(t.From) || event.prev < 0 || event.anchor != anchorTime || event.env.project != t.Project ||
-			!daemonWrote(event.env.actor, event.env.key) {
+		if event.at.Before(t.From) || event.anchor != anchorTime || event.piece != nil {
+			continue
+		}
+		if s.actsOnChildItFiled(event) {
+			s.follow(i, event.filing)
+			continue
+		}
+		if event.prev < 0 || event.env.project != t.Project || !daemonWrote(event.env.actor, event.env.key) {
 			continue
 		}
 		if before := &s.events[event.prev]; before.piece != nil && before.piece.issue != event.env.key || before.anchor == anchorFollow ||
 			before.anchor == anchorStart {
-			event.anchor, event.on, event.offset = anchorFollow, event.prev, event.at.Sub(before.at)
-			before.followers = append(before.followers, i)
+			s.follow(i, event.prev)
 		}
 	}
 	return issueEvents, nil
+}
+
+// follow places events[i] from events[on] (anchorFollow): at its recorded offset from it, once the
+// replay applies it.
+func (s *script) follow(i, on int) {
+	event := &s.events[i]
+	event.anchor, event.on, event.offset = anchorFollow, on, event.at.Sub(s.events[on].at)
+	s.events[on].followers = append(s.events[on].followers, i)
+}
+
+// actsOnChildItFiled says whether event is an architect's act on a child it filed: its actor's
+// session runs the claim of an architect of another issue (actorClaimOf), the claim whose session
+// filed event's issue in the window (scriptEvent.filing).
+func (s *script) actsOnChildItFiled(event *scriptEvent) bool {
+	if event.filing < 0 {
+		return false
+	}
+	ran, worked := actorClaimOf(event.parsed)
+	if !worked || ran.Role != claim.RoleArchitect || ran.Issue == event.env.key {
+		return false
+	}
+	filer, filed := actorClaimOf(s.events[event.filing].parsed)
+	return filed && filer == ran
 }
 
 // movesWithWork says whether event, made by the worker of ran, moves with the work it falls in
@@ -721,23 +784,42 @@ func movesWithWork(event *scriptEvent, ran SessionClaim) bool {
 	return event.parsed.Type == "issue.created" && event.parsed.Issue != nil && event.parsed.Issue.Parent == ran.Issue
 }
 
-// filesChildUnder says whether event files a child under key: the child's issue.created naming key
-// its parent, or a child.added on key.
-func filesChildUnder(event *scriptEvent, key string) bool {
-	switch event.env.kind {
-	case "issue.created":
-		return event.parsed.Issue != nil && event.parsed.Issue.Parent == key
-	case "child.added":
-		return event.env.key == key
+// startDependedOn is the issue whose first start event depends on where no piece places it
+// (anchorStart): the issue it files a child under, whoever files it (filedUnder), or the issue of
+// the architect whose act on that issue it is (ran, where worked says its actor runs a claim); ""
+// for every other event.
+func startDependedOn(event *scriptEvent, ran SessionClaim, worked bool) string {
+	if parent := filedUnder(event); parent != "" {
+		return parent
 	}
-	return false
+	if worked && ran.Role == claim.RoleArchitect && event.env.key == ran.Issue {
+		return ran.Issue
+	}
+	return ""
 }
 
-// runStartAt is when iss took its first slot in the run it stands in at at, the run of its entry at
-// at, where the record shows that slot at or before at: the first slot that begins at or after that
-// entry or had not ended by it; false where iss is nil or the record shows no such slot.
-func runStartAt(iss *IssueTrace, at time.Time) (time.Time, bool) {
-	if iss == nil {
+// filedUnder is the issue event files a child under: the parent the child's issue.created names, or
+// the issue a child.added is on; "" for an event that files no child.
+func filedUnder(event *scriptEvent) string {
+	switch event.env.kind {
+	case "issue.created":
+		if event.parsed.Issue != nil {
+			return event.parsed.Issue.Parent
+		}
+	case "child.added":
+		return event.env.key
+	}
+	return ""
+}
+
+// runStartAt is when key took its first slot in the run it stands in at at, the run of its entry at
+// at, where the record shows key in flight at at (IssueTrace.inFlight), its run started and not yet
+// ended: the first slot that begins at or after that entry or had not ended by it. False where the
+// record shows key out of flight at at, unstarted in its run or out of the workflow since the run's
+// end, where no fact at at depends on that run's start.
+func (s *script) runStartAt(t Trace, key string, at time.Time) (time.Time, bool) {
+	iss := t.Issues[key]
+	if iss == nil || !withinStretches(s.flight[key], at) {
 		return time.Time{}, false
 	}
 	entry := iss.entryAt(at)

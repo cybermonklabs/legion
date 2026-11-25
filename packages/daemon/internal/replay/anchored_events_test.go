@@ -336,6 +336,264 @@ func TestAnArchitectsFilingUnderItsIssueMovesWithTheIssuesStart(t *testing.T) {
 	}
 }
 
+// lateChildRecord is a window from 09:00 to 16:00 recorded under main with a cap of 2, its inputs
+// reaching back to the daemon's boot at 06:00, in which a child's first start comes two hours late
+// in a replay under keep-past-review. ACME-1, a root promoted at 06:05, implements from 07:00 to the
+// window's end, holding a slot. ACME-2, a root promoted at 06:30, holds the other slot to its
+// review's approval at 10:00, and merges at 12:00. ACME-3, which a person files todo under ACME-1 at
+// 09:30, takes that slot at 10:00, its first start, and its planner works from then on. Under
+// keep-past-review ACME-2 keeps its slot past its review to its merge, so ACME-3 can take its first
+// start only at noon. tail writes what the record shows next.
+func lateChildRecord(t *testing.T, tail func(b *windowBuilder)) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(16, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(2)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a1", clock(6, 5), clock(6, 20), moveAt(7, 0, phase.Implementing, workflow.TriggerPlannerCompleted))
+	rootThrough(b, "ACME-2", "a2", clock(6, 30), clock(6, 45), moveAt(7, 15, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 45, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 15, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 0, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 20, phase.Retro, workflow.TriggerSignOff),
+		moveAt(10, 40, phase.Merging, workflow.TriggerRetroCompleted), moveAt(12, 0, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(12, 0), "ACME-2", record.DoneStatus)
+	b.file(clock(9, 30), "ACME-3", filing{Title: "Make the shelf map", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a3"})
+	b.childStarts(clock(10, 0), "ACME-3")
+	tail(b)
+	return b.build()
+}
+
+// architectOf is the session that runs key's architect, as Dispatch records it: by an id of its
+// own, under the title `Legion architect · <KEY>`.
+func architectOf(key string) eventActor {
+	ids := map[string]string{"ACME-1": "00000000-0000-4000-8000-0000000000c1", "ACME-2": "00000000-0000-4000-8000-0000000000c2",
+		"ACME-3": "00000000-0000-4000-8000-0000000000c3"}
+	return recordedSession(key, claim.RoleArchitect, ids[key])
+}
+
+// shelfLabels is the filing of ACME-4 under ACME-3 in triage at at, by the actor by.
+func shelfLabels(b *windowBuilder, at time.Time, by eventActor) {
+	b.t.Helper()
+	b.filedBy(at, "ACME-4", filing{Title: "Label the shelves", Parent: "ACME-3", Tree: "ACME-1", Status: "triage", Rank: "a4"}, by)
+}
+
+// retitled is the actor by editing key's title at at.
+func retitled(b *windowBuilder, at time.Time, key string, by eventActor) {
+	b.t.Helper()
+	b.changed(at, key, by, func(issue *builtIssue) { issue.Title += ", by aisle" })
+}
+
+// appliedBy is each moment the replay applied an event of kind on key that actor made to its copy of
+// Dispatch (shadow), the copy the run handed its atStart.
+func appliedBy(t *testing.T, copied *shadow, key, kind string, actor eventActor) []time.Time {
+	t.Helper()
+	if copied == nil {
+		t.Fatal("the run never handed the test its copy of Dispatch at the window's start")
+	}
+	iss := copied.issues[key]
+	if iss == nil {
+		return nil
+	}
+	var applied []time.Time
+	for i, raw := range iss.log[iss.seeded:] {
+		var event struct {
+			Type      string     `json:"type"`
+			CreatedAt time.Time  `json:"created_at"`
+			Actor     eventActor `json:"actor"`
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatalf("read event %d of %s in the copy of Dispatch: %v", i+1, key, err)
+		}
+		if event.Type == kind && event.Actor.ID == actor.ID {
+			applied = append(applied, event.CreatedAt)
+		}
+	}
+	return applied
+}
+
+// replayRecording replays window under keep-past-review on the main branch at seed 1 and f 1, and
+// answers the replay's log, its copy of Dispatch, and the first moment its daemon recorded key,
+// zero where it never did.
+func replayRecording(t *testing.T, window Window, key string) ([]replayLine, *shadow, time.Time) {
+	t.Helper()
+	var copied *shadow
+	var entered time.Time
+	out := t.TempDir()
+	cfg := RunConfig{Window: window, Rule: replayedRule(t, "keep-past-review"), Branch: MainBranch, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: out}
+	cfg.atStart = func(s *shadow) { copied = s }
+	cfg.atSettled = func(ctx context.Context, st *store.Store, at time.Time) error {
+		if !entered.IsZero() {
+			return nil
+		}
+		var recorded int
+		if err := st.Pool().QueryRow(ctx, `select count(*) from issues where key = $1`, key).Scan(&recorded); err != nil {
+			return err
+		}
+		if recorded > 0 {
+			entered = at
+		}
+		return nil
+	}
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("replay the window under keep-past-review: %v", err)
+	}
+	return replayLog(t, out), copied, entered
+}
+
+// An architect's act on a child it filed follows that filing, at its recorded offset from it, and
+// never before its recorded time (spec R2: the child's filing moves with the start it depends on,
+// and the child's own course follows the filing). The test replays lateChildRecord under
+// keep-past-review, in which ACME-3's architect files ACME-4 under ACME-3 in triage at 10:20, the
+// architect's release writes ACME-4 todo under the daemon's session at 10:21, and the architect edits
+// ACME-4's title. ACME-3 takes its first start at noon, so the filing enters at 12:20 and the release
+// at 12:21, where the replay's daemon first records ACME-4. In the first case the edit, made at
+// 10:30, enters at 12:30; in the second, made at 12:40, 2 hours 20 minutes after the filing, it
+// enters at 14:40. The shape is a validation round's: a parent's architect edited a child it had
+// filed while the replay had not yet started the parent, and the edit, at its recorded time, came
+// before the filing. The first case fails where the edit keeps its recorded time: it gives the copy
+// of Dispatch ACME-4 todo under ACME-3 at 10:30, the daemon records the child then, ACME-3 waits for
+// it and never starts, and the filing that waits for ACME-3's start never enters. The second fails
+// where the edit enters at its recorded time, 12:40, or where it only waits for the filing.
+func TestAnArchitectsActOnAChildItFiledFollowsTheFiling(t *testing.T) {
+	for _, c := range []struct {
+		name           string
+		edited, enters time.Time
+	}{
+		{name: "the filing moves past the act", edited: clock(10, 30), enters: clock(12, 30)},
+		{name: "the act keeps its offset from the filing", edited: clock(12, 40), enters: clock(14, 40)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			window := lateChildRecord(t, func(b *windowBuilder) {
+				shelfLabels(b, clock(10, 20), architectOf("ACME-3"))
+				b.daemonWrites(clock(10, 21), "ACME-4", "todo")
+				retitled(b, c.edited, "ACME-4", architectOf("ACME-3"))
+			})
+			log, copied, entered := replayRecording(t, window, "ACME-4")
+			if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+				t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
+			}
+			if filed, want := eventsApplied(t, copied, "ACME-4", "issue.created"), []time.Time{clock(12, 20)}; !slices.EqualFunc(filed, want, time.Time.Equal) {
+				t.Errorf("ACME-4 was filed at %s, want at %s, 20 minutes after ACME-3's start", describeTimes(filed), describeTimes(want))
+			}
+			edited := appliedBy(t, copied, "ACME-4", "issue.updated", architectOf("ACME-3"))
+			if want := []time.Time{c.enters}; !slices.EqualFunc(edited, want, time.Time.Equal) {
+				t.Errorf("the architect's edit of ACME-4 entered at %s, want at %s, at its recorded offset from the filing", describeTimes(edited),
+					describeTimes(want))
+			}
+			if !entered.Equal(clock(12, 21)) {
+				t.Errorf("the replay's daemon first recorded ACME-4 at %s, want at 12:21, its release after its filing", stamp(entered))
+			}
+		})
+	}
+}
+
+// An act of an issue's own architect on the issue, made after its first start in the record where no
+// work segment of the architect's places it, enters at its recorded offset from the replay's first
+// start of the issue, or at its recorded time where that is later (spec R2: a fact that depends on a
+// start moves with that start). The test replays lateChildRecord under keep-past-review, in which a
+// person files ACME-5 in backlog at 09:15 and ACME-3's architect sets ACME-3 blocked by ACME-5 at
+// 10:20, twenty minutes after ACME-3's first start, while only ACME-3's planner has work. It first
+// reads the window's script and finds no piece of the architect's work at 10:20 (script.workPiece):
+// the act falls outside every piece of its role. ACME-3 then takes its first start at noon, and the
+// link enters at 12:20. The shape is a validation round's: an issue's own architect set a blocker on
+// it at its recorded time, before the replay started the issue, and the issue got no slot in the
+// window. It fails where the link keeps its recorded time, for which ACME-3 stands blocked by an
+// unfinished issue from 10:20 and never starts.
+func TestAnArchitectsActOnItsOwnUnstartedIssueMovesWithItsStart(t *testing.T) {
+	window := lateChildRecord(t, func(b *windowBuilder) {
+		b.file(clock(9, 15), "ACME-5", filing{Title: "Agree the shelf names with the warehouse", Status: "backlog", Rank: "c5"})
+		b.changed(clock(10, 20), "ACME-3", architectOf("ACME-3"), func(issue *builtIssue) { issue.BlockedBy = []string{"ACME-5"} })
+	})
+	in, err := newWindowInputs(window)
+	if err != nil {
+		t.Fatalf("build the window's trace: %v", err)
+	}
+	s, err := buildScript(in.trace, in.events, in.lines)
+	if err != nil {
+		t.Fatalf("read the window's script: %v", err)
+	}
+	if p := s.workPiece(SessionClaim{Issue: "ACME-3", Role: claim.RoleArchitect}, clock(10, 20)); p != nil {
+		t.Errorf("ACME-3's architect acts at 10:20 inside its piece %d in %s, want outside every piece of its role", p.index, p.phase)
+	}
+	log, copied := replayCopied(t, window, "keep-past-review")
+	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+		t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
+	}
+	linked := appliedBy(t, copied, "ACME-3", "issue.updated", architectOf("ACME-3"))
+	if want := []time.Time{clock(12, 20)}; !slices.EqualFunc(linked, want, time.Time.Equal) {
+		t.Errorf("the architect's link on ACME-3 entered at %s, want at %s, 20 minutes after ACME-3's start", describeTimes(linked),
+			describeTimes(want))
+	}
+}
+
+// A child's filing under an issue that no work segment places, made after the issue's first start in
+// the record, enters at its recorded offset from the replay's first start of the issue, or at its
+// recorded time where that is later, whoever filed it (spec R2: a child's filing enters at its
+// recorded offset from the start of the issue it is filed under). The test replays lateChildRecord
+// under keep-past-review, in which ACME-4 is filed in triage under ACME-3, a member of ACME-1's tree,
+// at 10:20: by the tree root's architect, and by a person. ACME-3 takes its first start at noon, and
+// ACME-4 is filed at 12:20. The shape is a validation round's: a tree root's architect filed a child
+// under a member of its tree that the replay had not yet started, and the member waited for its
+// children from that moment and started more than a day late. It fails where the filing keeps its
+// recorded time, for which ACME-4 is filed at 10:20, while ACME-3 waits for its slot, and holds
+// ACME-3's start to the window's end.
+func TestAFilingUnderAnIssueMovesWithItsStartWhoeverFiledIt(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		by   eventActor
+	}{
+		{name: "the tree root's architect", by: architectOf("ACME-1")},
+		{name: "a person", by: builtPerson},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			log, copied := replayCopied(t, lateChildRecord(t, func(b *windowBuilder) { shelfLabels(b, clock(10, 20), c.by) }), "keep-past-review")
+			if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+				t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
+			}
+			if filed, want := eventsApplied(t, copied, "ACME-4", "issue.created"), []time.Time{clock(12, 20)}; !slices.EqualFunc(filed, want, time.Time.Equal) {
+				t.Errorf("ACME-4 was filed at %s, want at %s, 20 minutes after ACME-3's start", describeTimes(filed), describeTimes(want))
+			}
+		})
+	}
+}
+
+// No recorded event of an issue enters a replay before the issue's filing, whoever made it and
+// however it is placed: an event that would enter first waits for the filing, and enters at its
+// recorded offset from it, or at its recorded time where that is later (driver.awaitsFiling). The
+// test replays lateChildRecord under keep-past-review, in which ACME-3's architect files ACME-4 under
+// ACME-3 in triage at 10:20, the architect's release writes ACME-4 todo under the daemon's session
+// at 10:21, and at 10:30 the architect of another issue, ACME-2, edits ACME-4's title. ACME-3 takes
+// its first start at noon, so the filing enters at 12:20 and the release at 12:21, where the
+// replay's daemon first records ACME-4, and the edit, held back for the filing, at 12:30. The shape
+// is a validation round's: a root's architect filed children in the root's accepting work, which
+// the replay ran hours late, and each child's later edit, at its recorded time, came before its
+// filing; the copy of Dispatch took the child whole from the edit, at a status of its later work, the
+// filing and the release changed none of it, and the replay never filed the child into its workflow.
+// It fails where the edit keeps its recorded time: it gives the copy of Dispatch ACME-4 todo under
+// ACME-3 at 10:30, the daemon records the child then, ACME-3 waits for it and never starts, and the
+// filing that waits for ACME-3's start never enters.
+func TestNoEventOfAnIssueEntersBeforeItsFiling(t *testing.T) {
+	window := lateChildRecord(t, func(b *windowBuilder) {
+		shelfLabels(b, clock(10, 20), architectOf("ACME-3"))
+		b.daemonWrites(clock(10, 21), "ACME-4", "todo")
+		retitled(b, clock(10, 30), "ACME-4", architectOf("ACME-2"))
+	})
+	log, copied, entered := replayRecording(t, window, "ACME-4")
+	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+		t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
+	}
+	if filed, want := eventsApplied(t, copied, "ACME-4", "issue.created"), []time.Time{clock(12, 20)}; !slices.EqualFunc(filed, want, time.Time.Equal) {
+		t.Errorf("ACME-4 was filed at %s, want at %s, 20 minutes after ACME-3's start", describeTimes(filed), describeTimes(want))
+	}
+	edited := appliedBy(t, copied, "ACME-4", "issue.updated", architectOf("ACME-2"))
+	if want := []time.Time{clock(12, 30)}; !slices.EqualFunc(edited, want, time.Time.Equal) {
+		t.Errorf("ACME-2's architect's edit of ACME-4 entered at %s, want at %s, 10 minutes after the filing", describeTimes(edited),
+			describeTimes(want))
+	}
+	if !entered.Equal(clock(12, 21)) {
+		t.Errorf("the replay's daemon first recorded ACME-4 at %s, want at 12:21, its release after its filing", stamp(entered))
+	}
+}
+
 // skippedLoopChildWindow is a window from 09:00 to 14:00 recorded under legion-v20.42.5, its inputs
 // reaching back to the daemon's boot at 06:00. ACME-1, a root promoted at 06:05, moves into testing
 // at 08:00 and into accepting at 08:20, and a conflict moves it back to implementing at 09:10; it is
