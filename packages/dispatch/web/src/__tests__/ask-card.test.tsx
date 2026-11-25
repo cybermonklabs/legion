@@ -1639,8 +1639,9 @@ test("a new version of the second document of a request hides the request's form
   }
 });
 
-// Another request of the same document at the same version, here an earlier one that is answered,
-// is not the request that Dispatch refused, so its card shows no refusal.
+// Another request of the same document at the same version, such as one that the author opens
+// again after a request for changes with no new version, is not the request that Dispatch refused,
+// so its card shows no refusal.
 test("a card of another request of the same document and version shows no form refusal", async () => {
   const user = userEvent.setup();
   const approval = {
@@ -1655,16 +1656,12 @@ test("a card of another request of the same document and version shows no form r
     kind: "approval",
     options: [{ label: "Approve" }, { label: "Request changes" }],
   });
-  const earlier = answered(
-    ask({
-      approval,
-      id: "ask-0",
-      kind: "approval",
-      options: [{ label: "Approve" }, { label: "Request changes" }],
-    }),
-    ["Request changes"],
-    "Fix the first statement."
-  );
+  const other = ask({
+    approval,
+    id: "ask-0",
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
   const { view } = renderCard(
     <>
       <AskCard
@@ -1675,7 +1672,7 @@ test("a card of another request of the same document and version shows no form r
         getAskThread={emptyThread(open)}
         variant="compact"
       />
-      <AskCard ask={earlier} getAskThread={emptyThread(earlier)} variant="full" />
+      <AskCard ask={other} getAskThread={emptyThread(other)} variant="compact" />
     </>
   );
 
