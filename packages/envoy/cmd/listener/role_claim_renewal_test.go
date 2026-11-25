@@ -209,8 +209,11 @@ func largestProductionShape(role string) []string {
 // What the clock guarded here is topic work that spends the budget. Reducing the topics to the
 // consumer's filters did that in production (INFRA-1555): every registration was answered 200,
 // its renewal's claim read ran out of time, and the claim was never renewed while its holder kept
-// registering. TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair holds that
-// reduction to a count.
+// registering. Two counts hold that reduction, one for each half of INFRA-1555:
+// TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair holds its allocations, which
+// see a split of both subjects of every pair, and internal/bus's
+// TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce holds the pairs it weighs, which
+// see a scan started again after each drop.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
 	t.Parallel()
 	const role = "legion-controller"
@@ -289,11 +292,12 @@ const reduceAllocsPerSubject = 4
 // allocations over largestProductionShape and holds them to reduceAllocsPerSubject a topic: one
 // shape and one ceiling, which the INFRA-1555 reduction exceeds 7,590 times over.
 //
-// The verdict is a count and not a clock, so it is not the machine's. A count does not see work
-// that allocates nothing. It does not see a scan of the pre-split tokens started again after each
-// drop, which was the other half of INFRA-1555. It does not see topic work outside this reduction,
-// or the bus's own cost for a large registration. TestReduceFilterSubjects (internal/bus) holds
-// the result of the scan that goes on after a drop, not its cost.
+// The verdict is a count and not a clock, so it is not the machine's. A count of allocations does
+// not see work that allocates nothing: a scan of the pre-split tokens started again after each
+// drop, which was the other half of INFRA-1555, is internal/bus's
+// TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce's to see, by the pairs it
+// weighs. Neither count sees topic work outside this reduction, or the bus's own cost for a large
+// registration.
 //
 // testing.AllocsPerRun counts every allocation of the process while it measures, and this
 // package's other tests leave servers and watchers running that allocate meanwhile. So the case
