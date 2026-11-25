@@ -284,16 +284,22 @@
  *   session's own recorded prompt's, or, for a session that records only its prompt's digest, that
  *   of the subagent the measure uses, which the build reads from the store (subagents.sql) before
  *   it builds the profile. The pool is installed where that listing names at least one of the
- *   skills it holds at the session's start, and left out where the listing names none of them. A
- *   pool the listing names in part is installed whole: the evidence gives how many of its skills
- *   the listing names and how many it does not, and the listing measure counts those it does not
- *   as added names. The measure marks each name of a pool installed so (`fromRecorded`). This is
- *   an inference from the listing: dev-box sessions that ran one Oh My Pi build list these pools
- *   in some sessions and not in others, and no file records why. A session with no listing (no
- *   recorded prompt, and no subagent the measure can use) has its pools decided by the Oh My Pi
- *   build its dev box pinned at its start (POOL_VERSION_RULE): the version the configuration's
- *   `ompPin` names (a TOML file of the dev box's repository and the keys to the version in it, read
- *   at the repository's last commit at or before the session's start), set against `ompPin`'s
+ *   skills it holds at the session's start that no installed unit outside the pools also ships;
+ *   a name such a unit ships is no evidence for the pool, since the session lists it whether or
+ *   not the pool is there, and the evidence names those names. The pool is left out where the
+ *   listing names no such skill. A pool that a `[Skill file: …]` read of the session places is
+ *   installed whatever the listing names: that read shows Oh My Pi loaded it, which is direct
+ *   proof and no inference from the listing. A pool the listing names in part is installed whole:
+ *   the evidence gives how many of its skills the listing names and how many it does not, and the
+ *   listing measure counts those it does not as added names. The measure marks each name of a
+ *   pool installed on the listing (`fromRecorded`), and no name of a pool installed on a read
+ *   alone. The listing's decision is an inference: dev-box sessions that ran one Oh My Pi build
+ *   list these pools in some sessions and not in others, and no file records why. A session with
+ *   no listing (no recorded prompt, and no subagent the measure can use) has its pools decided by
+ *   the Oh My Pi build its dev box pinned at its start (POOL_VERSION_RULE): the version the
+ *   configuration's `ompPin` names (a TOML file of the dev box's repository and the keys to the
+ *   version in it, read at the repository's last commit at or before the session's start), set
+ *   against `ompPin`'s
  *   `firstPoolVersion`, the first build that loads such pools on a fresh start. Before that
  *   version, the profile installs no pool but one that a `[Skill file: …]` read of the session
  *   places, which shows Oh My Pi loaded it; at or after it, every pool. The Oh My Pi version the
@@ -3180,7 +3186,7 @@ const IGNORED_RULE =
 /** Which pools an extension's resources_discover gives a profile installs, where the session
  *  records a listing. */
 const POOL_LISTING_RULE =
-  "Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover (a pool of the dev box's skills-sources.json) only where it loaded that extension's pools and the pool's clone was there then: a top-level session as it starts and on each reload that rebuilds its prompt, a subagent as it starts, merging what it gets into the snapshot its parent gave it (session/session-tools.ts, lines 2321-2337, 2466-2506 and 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420); dev-box sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and no file records why, nor which clones the host had then. So where the session records a listing (its own recorded prompt's, or that of the subagent its listing measure uses), that listing decides each pool, an inference from the listing: the profile installs a pool where the listing names at least one of the skills the pool holds at the session's start, and leaves it out where the listing names none; a pool the listing names in part is installed whole, and the listing measure counts its unnamed skills as added names. The measure marks each name of a pool installed so (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against";
+  "Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover (a pool of the dev box's skills-sources.json) only where it loaded that extension's pools and the pool's clone was there then: a top-level session as it starts and on each reload that rebuilds its prompt, a subagent as it starts, merging what it gets into the snapshot its parent gave it (session/session-tools.ts, lines 2321-2337, 2466-2506 and 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420); dev-box sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and no file records why, nor which clones the host had then. So where the session records a listing (its own recorded prompt's, or that of the subagent its listing measure uses), that listing decides each pool, an inference from the listing: the profile installs a pool where the listing names at least one of the skills the pool holds at the session's start that no installed unit outside the pools also ships (a name such a unit ships is no evidence for the pool, since the session lists it whether or not the pool is there), and leaves it out where the listing names no such skill; a pool the listing names in part is installed whole, and the listing measure counts its unnamed skills as added names. A pool that a [Skill file: …] read of the session places is installed whatever the listing names, since that read shows Oh My Pi loaded it, which is direct proof and no inference from the listing. The measure marks each name of a pool installed on the listing (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against; it marks no name of a pool installed on a read alone";
 /** Which pools a profile installs where the session records no listing. */
 const POOL_VERSION_RULE =
   "where the session records no listing and no subagent's listing measures it, the Oh My Pi build its dev box ran decides the pools: the version the dev box's own repository pins (the configuration's ompPin: a TOML file of that repository and the keys to the version in it), read at its last commit at or before the session's start, set against ompPin's firstPoolVersion, the first build that loads an extension's resources_discover pools on a fresh start (an earlier build deferred an extension whose only registration is resources_discover, so a fresh session listed none of its pools); a pin before that version installs no pool but one a [Skill file: …] read of the session places, which shows Oh My Pi loaded it, and a pin at or after it installs each pool, both inferences from the pinned build. The Oh My Pi version the session's file records (the runtime.version of its first model_change line; a fork's build gives its release alone) is set beside the pin as a cross-check and decides nothing. With no ompPin, or no version the file holds at those keys, each pool is installed as the dev box's installers install it";
@@ -3607,9 +3613,9 @@ export const ListingMeasure = z.strictObject({
     })
     .nullable(),
   why: z.string(),
-  /** The listed names of each pool the profile installed because the recorded listing names one of
-   *  its skills (POOL_LISTING_RULE): the measure cannot see a miss of them. Absent where none is,
-   *  and in a measure written before the mark. */
+  /** The listed names of each pool the profile installed because the recorded listing names a
+   *  skill of it that no installed unit outside the pools ships (POOL_LISTING_RULE): the measure
+   *  cannot see a miss of them. Absent where none is, and in a measure written before the mark. */
   fromRecorded: z.array(z.string()).optional(),
 });
 export type ListingMeasure = z.infer<typeof ListingMeasure>;
@@ -4500,8 +4506,9 @@ interface ProfileResult {
    *  under when its text there differs (NAMESPACE_RULE): the profile reads each repository at one
    *  commit, so it holds the copy once. */
   readonly again: readonly InstallPath[];
-  /** The listed names of each pool the profile installs because the recorded listing names one of
-   *  its skills (POOL_LISTING_RULE), sorted; empty where no listing decided a pool. */
+  /** The listed names of each pool the profile installs because the recorded listing names a skill
+   *  of it that no installed unit outside the pools ships (POOL_LISTING_RULE), sorted; empty where
+   *  no listing decided a pool. */
   readonly fromRecorded: readonly string[];
 }
 
@@ -5320,6 +5327,18 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         row.manifestPath === via.manifest &&
         shipsMember(row)
     );
+  /** What the profile installs of a unit that ships at the session's start: `shipsAtStart`'s rows,
+   *  narrowed to those its pinned npm version ships (`version`, NPM_PIN_RULE) where it has one. */
+  const installedFrom = (via: Via, version: PinnedVersion | undefined) => {
+    const rows = shipsAtStart(via);
+    if (version === undefined) return rows;
+    return (
+      version.rows ??
+      (version.names === undefined
+        ? []
+        : rows.filter((row) => version.names?.has(row.skill) === true))
+    );
+  };
   // A read whose skill no unit ships at the session's start, though the repository its unit comes
   // from was read at that commit: the copies output names the unit as the manifests name it at
   // the later commit it read, and a marketplace or a plugin renamed since leaves that unit empty
@@ -5455,6 +5474,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // session has one (POOL_LISTING_RULE), else by the Oh My Pi build its dev box pinned at its start
   // (POOL_VERSION_RULE), and kept as it came where neither decides or the caller asks for every
   // pool (`poolsUndecided`). The names of a pool the listing decides are marked as taken from it.
+  // A name an installed unit outside the pools also ships is no evidence for a pool (the session
+  // lists it with or without the pool): a pool needs a named skill that no such unit ships, or a
+  // `[Skill file: …]` read of the session that shows Oh My Pi loaded it.
   const fromListing = new Set<string>();
   const pools =
     input.poolsUndecided === true
@@ -5465,23 +5487,47 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   if (listing !== undefined) {
     const inference =
       "this is an inference from the listing, since no file records why some sessions of one Oh My Pi build list such a pool and others do not";
+    const nonPoolNames = new Set<string>();
+    for (const { via } of units.values()) {
+      if (via.unit.startsWith("pool:")) continue;
+      for (const row of installedFrom(via, versions.get(via.unit))) nonPoolNames.add(row.skill);
+    }
+    for (const copy of alone.values()) {
+      const found = held.get(copy.repo)?.copies.find((each) => each.path === copy.path);
+      if (found !== undefined) nonPoolNames.add(found.name);
+    }
     for (const [key, { via, why }] of pools) {
       const skills = [...new Set(shipsAtStart(via).map((row) => row.skill))];
       const named = skills.filter((name) => listing.names.includes(name));
       const unnamed = skills.filter((name) => !named.includes(name));
+      const unique = named.filter((name) => !nonPoolNames.has(name));
+      const shared = named.filter((name) => nonPoolNames.has(name));
       const counted = `${listing.from} names ${named.length === 0 ? "none" : named.length} of the ${skills.length} skills it holds at the session's start`;
-      if (named.length === 0) {
-        units.delete(key);
-        evidence.push({
-          item: `left out: the pool ${key}`,
-          source: `${why}; ${counted} (${skills.join(", ") || "none"}), so it is not installed; ${inference}: ${POOL_LISTING_RULE}`,
+      const split = `named: ${named.join(", ") || "none"}; unnamed: ${unnamed.join(", ") || "none"}`;
+      const sharedNote =
+        shared.length === 0
+          ? ""
+          : `; named skills that an installed unit outside the pools also ships give no evidence for this pool (${shared.join(", ")})`;
+      if (unique.length > 0) {
+        fromListing.add(key);
+        units.set(key, {
+          via,
+          why: `${why}; ${counted} (${split})${sharedNote}, so it is installed${shared.length === 0 ? "" : ` on ${unique.join(", ")}`}; ${inference}${unnamed.length === 0 ? "" : ", and the listing measure counts its unnamed skills as added names"}: ${POOL_LISTING_RULE}`,
         });
         continue;
       }
-      fromListing.add(key);
+      const read = shownBy.get(key);
+      if (read === undefined) {
+        units.delete(key);
+        evidence.push({
+          item: `left out: the pool ${key}`,
+          source: `${why}; ${counted} (${skills.join(", ") || "none"})${sharedNote}, so it is not installed; ${inference}: ${POOL_LISTING_RULE}`,
+        });
+        continue;
+      }
       units.set(key, {
         via,
-        why: `${why}; ${counted} (named: ${named.join(", ")}; unnamed: ${unnamed.join(", ") || "none"}), so it is installed; ${inference}${unnamed.length === 0 ? "" : ", and the listing measure counts its unnamed skills as added names"}: ${POOL_LISTING_RULE}`,
+        why: `${why}; ${counted} (${split})${sharedNote}; message ${read.index} reads [Skill file: ${read.header}] of it, so Oh My Pi loaded it, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: ${POOL_LISTING_RULE}`,
       });
     }
   } else if (home !== undefined && ompPin !== undefined && pools.length > 0) {
@@ -5549,15 +5595,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         ? `${image.repo} at ${image.sha} (the worker image's commit)`
         : atCommit(via.repository);
     const version = id.startsWith("package:") ? versions.get(id) : undefined;
-    let members = shipsAtStart(via);
-    if (version !== undefined) {
-      evidence.push({ item: `version of ${key}`, source: version.why });
-      members =
-        version.rows ??
-        (version.names === undefined
-          ? []
-          : members.filter((row) => version.names?.has(row.skill) === true));
-    }
+    const members = installedFrom(via, version);
+    if (version !== undefined) evidence.push({ item: `version of ${key}`, source: version.why });
     const later = listed(via);
     evidence.push({ item: `unit ${key}`, source: why });
     if (members.length === 0) {

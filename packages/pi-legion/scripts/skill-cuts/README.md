@@ -1028,20 +1028,26 @@ alone, which a profile does not tell apart.
 A pool that an extension gives through `resources_discover` (a pool of the dev box's
 `skills-sources.json`, its unit named `pool:<root>`) is decided per session, whether the session's
 read or the dev box's installers brought it in. Dev-box sessions that ran the same Oh My Pi build
-list these pools in some sessions and not in others, and no file records why. So where the session
-records a listing, that listing decides each pool: the session's own recorded prompt (a
-subagent's), or, for a session that records only its prompt's digest, the listing of the subagent
-its listing measure uses (below), which the build reads from the store before it builds the
-profile. The profile installs a pool where that listing names at least one of the skills the pool
-holds at the session's start, and leaves it out where the listing names none of them. A pool the
-listing names only in part is installed whole: the unit's evidence says how many of its skills the
-listing names and how many it does not (`named: …; unnamed: …`), and the listing measure counts the
-unnamed ones as added names, as it counts any other. The measure marks each name of a pool
-installed this way (`fromRecorded`, below). The evidence says this is an inference from the
-listing and that no file records why the sessions differ. A session that records no listing, and
-has no subagent the measure can use, has its pools decided by the Oh My Pi build its dev box
-pinned at its start. The configuration's optional `ompPin` names where the dev box's own repository
-pins that build: `file`, a TOML file of the repository (such as `mise.toml`); `key`, the keys that
+list these pools in some sessions and not in others, and no file records why. The builder uses
+the listing in the session's recorded prompt, or the measured subagent's listing if the session
+records only its prompt's digest.
+
+With a recorded listing, the profile installs a pool if the listing names a skill that the pool
+ships at the session's start and no installed unit outside the pools ships. The evidence records
+how many of the pool's skills the listing names and how many it does not (`named: …; unnamed: …`).
+It also names any shared skills: those names do not tell the builder which unit supplied them.
+The builder installs the whole pool and marks its listed names `fromRecorded`. The listing
+measure counts the names that the profile lists but the recording does not as added names.
+
+A `[Skill file: …]` read in the session's own messages also keeps the pool. If only the read
+justifies keeping it, the evidence quotes `message N reads [Skill file: …]` as direct proof that
+Oh My Pi loaded the pool. The measure does not mark its names `fromRecorded` in that case. If
+neither the listing nor a read supports installing the pool, the builder leaves it out. Its
+`left out: the pool …` evidence names any shared skills and says why those names do not count.
+
+Without a recorded listing from the session or a subagent, the builder uses the Oh My Pi build
+that the dev box pinned at the session's start. The optional `ompPin` configuration gives
+that pin's location: `file`, a TOML file of the repository (such as `mise.toml`); `key`, the keys that
 lead to the version in it (such as `["tools", "<tool>"]`); and `firstPoolVersion`, the first build
 that loads such pools on a fresh start. The file is read at the repository's last commit at or
 before the session's start. A pin before `firstPoolVersion` installs no pool, except one that a
@@ -1364,9 +1370,10 @@ name a model's hint for the skill or a preview of its description (system-prompt
 summaries of `build-cases`, `build-cases --reprofile`, `build-tasks --profiles-out` and
 `build-tasks --reprofile` count the measures of each kind and sum the missing and added names
 (`listing`); a task that keeps its old profile is `not measurable`, with why. A measure whose
-profile installed a pool because the recorded listing names one of its skills (above) lists that
-pool's names as `fromRecorded`: the measure cannot see a miss of them, since the same listing
-decided them. The summaries count such measures
+profile installed a pool because the recorded listing names a skill of it that no installed unit
+outside the pools ships (above) lists that pool's names as `fromRecorded`. The measure cannot see a
+miss of those names because the same listing decided which pool to install. The summaries count
+such measures
 (`listing.fromRecorded`), and so do `behaviour report`'s verdict line and `load`'s summary and
 listing line. The measure drops nothing here: `behaviour` and `load` apply the listing rule to
 its `missing` names for every case and task, and to its `added` names only for a measure of kind

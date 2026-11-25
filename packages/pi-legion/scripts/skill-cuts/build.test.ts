@@ -6330,16 +6330,23 @@ test("a subagent whose dev box's skills-sources.json names a pool at its start a
 // box's resources_discover pools in some sessions and not in others, and no file records why. So
 // a session that records its listing (its own recorded prompt's, or the subagent's its listing
 // measure uses) gets each pool from that listing, a pool its root's build has too; one that
-// records none gets them by the Oh My Pi build its dev box pins at its start.
+// records none gets them by the Oh My Pi build its dev box pins at its start. Its narrowing of
+// the same day: a name that an installed unit outside the pools also ships is no evidence for a
+// pool, since the session lists it whether or not the pool is there; only a name no such unit
+// ships, or a [Skill file: …] read of the pool, installs it.
 
 /** The root of the listed-pool subagents, which the store does not hold: each repository of their
  *  profiles is read at their start, when acme/dots's skills-sources.json names the pool
- *  vendor/acme-pack (pack-one and pack-two at PACK_PIN), as at its root's build. */
+ *  vendor/acme-pack (pack-one and pack-two at PACK_PIN), as at its root's build, and its plugin
+ *  list installs acme/powers, whose own pack-two (of other text) the pool's shares a name with. */
 const UNHELD_ROOT = `${DEV_SESSIONS}/2026-11-19T00-00-00-000Z_0a1b2c3d-0000-4000-8000-0000000000b2`;
-/** Each listed-pool subagent, and the pool skills its recorded listing names. */
+/** Each listed-pool subagent, and the pool skills its recorded listing names. pool-read also
+ *  reads pack-one of the pool as a `[Skill file: …]`. */
 const POOL_LISTINGS: Record<string, readonly string[]> = {
   "pool-all": ["pack-one", "pack-two"],
-  "pool-some": ["pack-two"],
+  "pool-part": ["pack-one"],
+  "pool-shared": ["pack-two"],
+  "pool-read": ["pack-two"],
   "pool-none": [],
 };
 /** The pool's unit, as the evidence names it. */
@@ -6347,8 +6354,12 @@ const POOL_KEY = "pool:vendor/acme-pack (acme/dots:skills-sources.json)";
 /** The words of the pool's evidence that say the decision is an inference. */
 const POOL_INFERENCE =
   "this is an inference from the listing, since no file records why some sessions of one Oh My Pi build list such a pool and others do not";
+/** The words of the pool's evidence that say a named skill is no evidence for the pool, followed
+ *  by the names of those skills. */
+const SHARED_NOTE =
+  "named skills that an installed unit outside the pools also ships give no evidence for this pool";
 
-/** The case of the listed-pool subagent `name` (POOL_LISTINGS), the three built once with acme/dots
+/** The case of the listed-pool subagent `name` (POOL_LISTINGS), all built once with acme/dots
  *  as the dev box's repository: its pool skills (name and commit), its evidence by item and its
  *  listing measure. */
 async function listedPool(name: string) {
@@ -6360,6 +6371,9 @@ async function listedPool(name: string) {
         const lines = f1Lines();
         setText(lines, 5, () => `Step 3 (case ${each}).`);
         SESSIONS.subagent?.change?.(lines);
+        if (each === "pool-read") {
+          readFirst("9ac0000", "skill://pack-one", PACK_ONE, "# pack-one\n")(lines);
+        }
         const init = lines.find((line) => line.type === "session_init");
         if (init !== undefined) {
           const listed = names.map((skill) => `- ${skill}: Use for the ${skill} steps.\n`).join("");
@@ -6407,12 +6421,13 @@ async function listedPool(name: string) {
 }
 
 // Catches: a pool the dev box's installers install at the root's build installed for a subagent
-// whatever its recorded listing names, with no mark that the listing decided its names.
-test("a dev-box subagent whose recorded listing names every skill of a pool its root's build has gets the pool, its names marked fromRecorded, and the evidence counts each named", async () => {
+// whatever its recorded listing names, with no mark that the listing decided its names, or one of
+// its named skills that an installed package also ships counted as evidence for the pool.
+test("a dev-box subagent whose recorded listing names every skill of a pool its root's build has gets the pool, its names marked fromRecorded, and the evidence counts each named and says which an installed package also ships", async () => {
   const { pool, evidence, measure } = await listedPool("pool-all");
   expect(pool).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
   expect(evidence[`unit ${POOL_KEY}`]).toContain(
-    `the session's recorded listing names 2 of the 2 skills it holds at the session's start (named: pack-one, pack-two; unnamed: none), so it is installed; ${POOL_INFERENCE}: `
+    `the session's recorded listing names 2 of the 2 skills it holds at the session's start (named: pack-one, pack-two; unnamed: none); ${SHARED_NOTE} (pack-two), so it is installed on pack-one; ${POOL_INFERENCE}: `
   );
   expect(measure.kind).toBe("session listing");
   expect(measure.fromRecorded).toEqual(["pack-one", "pack-two"]);
@@ -6422,14 +6437,50 @@ test("a dev-box subagent whose recorded listing names every skill of a pool its 
 // Catches: a pool whose skills the recorded listing names in part installed with no record of how
 // many it names, or left out, or its unnamed skills kept out of the measure's added names.
 test("a dev-box subagent whose recorded listing names some skills of a pool gets the whole pool, the evidence counts its named and unnamed skills, and the unnamed are the measure's added names", async () => {
-  const { pool, evidence, measure } = await listedPool("pool-some");
+  const { pool, evidence, measure } = await listedPool("pool-part");
   expect(pool).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
   expect(evidence[`unit ${POOL_KEY}`]).toContain(
-    `the session's recorded listing names 1 of the 2 skills it holds at the session's start (named: pack-two; unnamed: pack-one), so it is installed; ${POOL_INFERENCE}, and the listing measure counts its unnamed skills as added names: `
+    `the session's recorded listing names 1 of the 2 skills it holds at the session's start (named: pack-one; unnamed: pack-two), so it is installed; ${POOL_INFERENCE}, and the listing measure counts its unnamed skills as added names: `
   );
-  expect(measure.added).toContain("pack-one");
-  expect(measure.added).not.toContain("pack-two");
+  expect(measure.added).toContain("pack-two");
+  expect(measure.added).not.toContain("pack-one");
   expect(measure.fromRecorded).toEqual(["pack-one", "pack-two"]);
+}, 120_000);
+
+// Catches: a pool installed because the recorded listing names a skill of it that an installed
+// package ships too, which the session lists whether or not the pool is there.
+test("a dev-box subagent whose recorded listing names one skill of a pool, which an installed package also ships, and no other, gets none of the pool, and the evidence names the shared skill", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-shared");
+  expect(pool).toEqual([]);
+  expect(evidence[`unit ${POOL_KEY}`]).toBeUndefined();
+  expect(evidence[`left out: the pool ${POOL_KEY}`]).toContain(
+    `the session's recorded listing names 1 of the 2 skills it holds at the session's start (pack-one, pack-two); ${SHARED_NOTE} (pack-two), so it is not installed; ${POOL_INFERENCE}: `
+  );
+  // The pool's other skill is not in the profile; pack-two is, as the package's copy.
+  expect(measure.added).not.toContain("pack-one");
+  expect(measure.added).not.toContain("pack-two");
+  expect(measure.missing).not.toContain("pack-two");
+  expect(measure.fromRecorded).toBeUndefined();
+}, 120_000);
+
+// Catches: a pool whose skill the session read as a `[Skill file: …]` left out because the
+// listing names only a skill an installed package ships too, or marked as taken from the listing.
+test("a dev-box subagent that reads a skill of a pool as a [Skill file] keeps the pool though its recorded listing names only a skill an installed package also ships, citing the read and not marking its names fromRecorded", async () => {
+  const { pool, evidence, measure } = await listedPool("pool-read");
+  expect(pool).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
+  const unit = evidence[`unit ${POOL_KEY}`] ?? "";
+  expect(unit).toContain(
+    `the session's recorded listing names 1 of the 2 skills it holds at the session's start (named: pack-two; unnamed: pack-one); ${SHARED_NOTE} (pack-two); `
+  );
+  expect(unit).toMatch(
+    new RegExp(
+      `; message \\d+ reads \\[Skill file: ${PACK_ONE.replaceAll(".", "\\.")}\\] of it, so Oh My Pi loaded it, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: `
+    )
+  );
+  expect(evidence[`left out: the pool ${POOL_KEY}`]).toBeUndefined();
+  expect(measure.fromRecorded).toBeUndefined();
+  // The listing names pack-two alone: the pool's pack-one is a name the profile adds.
+  expect(measure.added).toContain("pack-one");
 }, 120_000);
 
 // Catches: a pool the dev box's installers install at the root's build installed for a subagent
