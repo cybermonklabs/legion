@@ -2857,6 +2857,14 @@ The `role` check names the six Legion roles, and a row goes with its issue.
 A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
 A new table: the foreign key holds `issues` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so an issue write waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261125002856_issue_role_holders_daemon_proven` adds `issue_role_holders.daemon_proven`, `boolean not null default false`: whether the credential that wrote a pair proved the session `legion-daemon:<project>` of the issue's project and held `legion-status`, which only the daemon's own broker token does.
+`PUT /api/v1/issues/{key}/role-holders` writes it on each pair that a publication stores, a pair that it keeps unchanged included, with `DISPATCH_LEGION_STATUS_SCOPE` on or off (Routes below).
+A row stored before the migration reads unmarked (`false`), and the next publication of its issue from the daemon's own token marks it.
+With `DISPATCH_LEGION_STATUS_SCOPE` on, R26 lets the write of a Legion issue's status by the architect that owns the issue through only where a marked pair names that architect.
+The constant default rewrites no row, so the ALTER holds `issue_role_holders` `ACCESS EXCLUSIVE` for the catalog write alone.
+The previous release neither reads nor writes the column: a pair that its publication inserts takes the default, unmarked.
+The migration's census answers `0`.
+
 Migration `20261120131444_parent_status_fix` creates `parent_status_fix`, the record that the one-time parent status fix ran on this database (Running more than one process, above).
 It holds one row at most: `id` is always true, which its primary key and its check hold it to.
 `ran_at` is when the fix wrote the row, by the database's clock.
@@ -5607,7 +5615,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   The phase's newest handoff with its body, byte for byte as written; `404 HANDOFF_NOT_FOUND` when it has none.
 
-- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; the actor must be the Legion daemon's session)
+- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only the Legion daemon's own broker token; with it off, the actor must be the Legion daemon's session)
 
   Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
   The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`.
@@ -5615,11 +5623,17 @@ Each item below names a path with its method and identity, then its purpose.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
   A pair that did not change keeps its `recorded_at`.
-  The actor must be the session `legion-daemon:<project>`, the key up to its first `-`, which is the session that the daemon of the issue's project writes as.
-  Any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
-  Before the airlock, Dispatch takes the session that a bearer caller names as the caller names it.
+  The session `legion-daemon:<project>`, the key up to its first `-`, is the session that the daemon of the issue's project writes as.
+  With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that proves the session `legion-daemon:<project>` and holds `legion-status` publishes: the daemon's own broker token.
+  Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, and nothing is stored.
+  The deployment's shared token is refused even when its `actor` names the daemon's session, because a bearer that proves no session of its own can name any session in its body.
+  With the setting off, the actor must be the session `legion-daemon:<project>`, and any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
+  Then Dispatch takes the session that a bearer caller names as the caller names it.
   So any caller whose Dispatch credential proves no session of its own can name the daemon's session and write the set: the deployment's shared token, and a person's own agent token whatever its scopes.
-  The airlock closes that case.
+  Each stored pair carries a mark that says whether the daemon's own token wrote it (`issue_role_holders.daemon_proven`, Database migrations above), with the setting on or off.
+  Each write sets the mark of each pair that it stores, a pair that it keeps unchanged included.
+  Only a marked pair names an architect whose write of a Legion issue's status R26 lets through.
+  The answer does not carry the mark.
   A body without `holders`, a role that is not one of the six, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue, appends no issue event and notifies nobody.
