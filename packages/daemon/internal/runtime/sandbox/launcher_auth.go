@@ -384,7 +384,7 @@ func (r *Runtime) bindCurrentPod(name string, sandboxUID, podUID types.UID, role
 		return errTokenNotCurrent
 	}
 	var unbound []claim.Role
-	for _, each := range kind.roles() {
+	for _, each := range kind.roles(r) {
 		if credential, held := r.launcherAuth.lookup(roleSecretName(name, each), sandboxUID); !held || credential.podUID != string(podUID) {
 			unbound = append(unbound, each)
 		}

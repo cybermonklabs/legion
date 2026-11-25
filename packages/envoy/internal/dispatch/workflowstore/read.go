@@ -65,7 +65,7 @@ func IssueSteps(ctx context.Context, q Queryer, issue string) ([]StepRead, error
 }
 
 // NewestPlan answers the plan of one issue's newest run: the plan node of the issue of the highest
-// generation, as ProjectPlans picks it (madePlan.newerThan), nil where the issue has none. It reads
+// generation, as ProjectPlans picks it (MadePlan.newerThan), nil where the issue has none. It reads
 // the `part_of` tuples into the issue as IssueSteps does, so it costs the issue's own plans alone.
 func NewestPlan(ctx context.Context, q Queryer, issue string) (*Plan, error) {
 	rows, err := q.Query(ctx, `
@@ -79,7 +79,7 @@ func NewestPlan(ctx context.Context, q Queryer, issue string) (*Plan, error) {
 		return nil, fmt.Errorf("read the plan of %s: %w", issue, err)
 	}
 	defer rows.Close()
-	var newest *madePlan
+	var newest *MadePlan
 	for rows.Next() {
 		var id string
 		var attributes []byte
@@ -91,7 +91,7 @@ func NewestPlan(ctx context.Context, q Queryer, issue string) (*Plan, error) {
 		if err != nil {
 			return nil, err
 		}
-		if candidate := (madePlan{plan: plan, made: made}); candidate.newerThan(newest) {
+		if candidate := (MadePlan{Plan: plan, Made: made}); candidate.newerThan(newest) {
 			newest = &candidate
 		}
 	}
@@ -101,7 +101,7 @@ func NewestPlan(ctx context.Context, q Queryer, issue string) (*Plan, error) {
 	if newest == nil {
 		return nil, nil
 	}
-	return &newest.plan, nil
+	return &newest.Plan, nil
 }
 
 // compareRuns is the order the runs of an issue happened in: by generation, then by start, a run

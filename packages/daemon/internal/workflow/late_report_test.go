@@ -321,7 +321,7 @@ func TestALateReportOfTheRetroOrTheMergeAfterAStopIsNotCurrent(t *testing.T) {
 			apply := applyFacts(t, pool, engine)
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer")
-			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 			implementer := seedPhaseWorker(t, pool, root.Key, claim.RoleImplementer, "")
 			if result := apply("implemented", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer, Claim: implementer,
 				Summary: "implemented", Commit: head, HandoffRecord: "implement-1", HandoffVersion: 1}); result.Refusal != nil {

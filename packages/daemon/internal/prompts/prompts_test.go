@@ -960,6 +960,7 @@ func TestASubOwnersPromptIsAnOwnersPart(t *testing.T) {
 		}
 	}
 }
+
 // Every part of both trees holds the production check's rule clause by clause, not only the parts
 // Compose joins for the tester and the implementer. A sentence left in a part that neither role
 // composes still reaches whichever role does compose it, and a part Compose joins for nobody today
