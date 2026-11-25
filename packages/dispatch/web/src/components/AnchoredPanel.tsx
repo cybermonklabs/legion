@@ -339,10 +339,11 @@ export function AnchoredPanel({
     // pointer's up makes included - still shows its control whole, since the reader cannot see
     // where it went. A press is the one `hearPresses` reads
     // (`features/issue-page/focus-keeper.ts`), from its `pointerdown` in the panel: it ends at the
-    // `pointerup` once the press has moved the focus, else at its click, before the click's own
-    // handlers, so a touch, which focuses its control at the `mousedown` the browser makes after
-    // the finger has gone up, is still down then; and a press that sends no release ends at its
-    // `pointercancel`, its `dragend`, its `contextmenu` or the blur of the page's window.
+    // `pointerup` once the press has moved the focus, or where it is of a button other than the
+    // primary one, which sends no click; else at its click, before the click's own handlers, so a
+    // touch, which focuses its control at the `mousedown` the browser makes after the finger has
+    // gone up, is still down then; and a press that sends no release ends at its `pointercancel`,
+    // its `dragend`, its `contextmenu` or the blur of the page's window.
     let pressing = false;
     const followFocus = (event: FocusEvent) => {
       const target = event.target;

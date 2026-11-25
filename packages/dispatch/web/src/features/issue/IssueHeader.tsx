@@ -249,8 +249,8 @@ export function IssueHeader({
   const requestStatus = (status: string) => {
     statusMove.move(status, () => drafts.requestStatusSubmit(status));
   };
-  // A status write is out, or the rule's question is checking or asking about one: no second
-  // status write can start.
+  // A write of the header's fields is out - its status, title, route or parent - or the rule's
+  // question is checking or asking about a status: no second status write can start.
   const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
@@ -261,9 +261,9 @@ export function IssueHeader({
       keys: [],
       label: "Close issue",
       run: () => requestStatus("done"),
-      // The button is held (`heldPress`) while a status write or the rule's question is out, and
-      // `isClosed` decides whether it is rendered at all; a row offered while a status write is in
-      // flight would submit a second one.
+      // The button is held (`heldPress`) while a write of the header's fields or the rule's
+      // question is out (`statusBusy`), and `isClosed` decides whether it is rendered at all; a
+      // row offered while a status write is in flight would submit a second one.
       when: () => !isClosed && !statusBusy,
     },
     {
@@ -460,8 +460,9 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            // Held, not disabled, while a status write or the rule's question is out: the pressed
-            // Reopen keeps the keyboard focus, and a second press sends nothing.
+            // Held, not disabled, while a write of the header's fields or the rule's question is
+            // out (`statusBusy`): the pressed Reopen keeps the keyboard focus, and a second press
+            // sends nothing.
             {...heldPress(statusBusy, () => requestStatus("backlog"))}
             title="Reopen into Backlog"
             type="button"
@@ -665,8 +666,9 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              // Held, not disabled, while a status write or the rule's question is out: the
-              // pressed Close keeps the keyboard focus, and a second press sends nothing.
+              // Held, not disabled, while a write of the header's fields or the rule's question is
+              // out (`statusBusy`): the pressed Close keeps the keyboard focus, and a second press
+              // sends nothing.
               {...heldPress(statusBusy, () => requestStatus("done"))}
               type="button"
             >
