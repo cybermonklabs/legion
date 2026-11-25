@@ -317,16 +317,16 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
   // by a word names its party, a worded link and a picture name their targets, and a pair of
   // parentheses the address balances stays in it.
   { body: "[@Bob](dispatch://agent/abc)hello", refs: ["dispatch://agent/abc"] },
-  { body: "[w](dispatch://ACME-1)word", refs: ["dispatch://ACME-1"] },
+  { body: "[w](dispatch://CORE-24)word", refs: ["dispatch://CORE-24"] },
   {
-    body: "![shot](dispatch://ACME-1/artifact/shot-png)word",
-    refs: ["dispatch://ACME-1/artifact/shot-png"],
+    body: "![shot](dispatch://LEGION-1/artifact/shot-png)word",
+    refs: ["dispatch://LEGION-1/artifact/shot-png"],
   },
   { body: "[w](dispatch://agent/a(b)c)tail", refs: ["dispatch://agent/a(b)c"] },
   // A bare address keeps its own reading: a `)` it ends in that opens nowhere in it is dropped,
   // and one a word follows is part of the address, which then names nothing.
-  { body: "(see dispatch://ACME-1)", refs: ["dispatch://ACME-1"] },
-  { body: "dispatch://ACME-1)word", refs: [] },
+  { body: "(see dispatch://CORE-1)", refs: ["dispatch://CORE-1"] },
+  { body: "dispatch://CORE-1)word", refs: [] },
   // A block of a document: its id is read with any percent-encoding and written as
   // `encodeBlockId` writes it.
   {

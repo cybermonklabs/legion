@@ -398,15 +398,15 @@
     ]
   },
   {
-    "body": "[w](dispatch://ACME-1)word",
+    "body": "[w](dispatch://CORE-24)word",
     "refs": [
-      "dispatch://ACME-1"
+      "dispatch://CORE-24"
     ]
   },
   {
-    "body": "![shot](dispatch://ACME-1/artifact/shot-png)word",
+    "body": "![shot](dispatch://LEGION-1/artifact/shot-png)word",
     "refs": [
-      "dispatch://ACME-1/artifact/shot-png"
+      "dispatch://LEGION-1/artifact/shot-png"
     ]
   },
   {
@@ -416,13 +416,13 @@
     ]
   },
   {
-    "body": "(see dispatch://ACME-1)",
+    "body": "(see dispatch://CORE-1)",
     "refs": [
-      "dispatch://ACME-1"
+      "dispatch://CORE-1"
     ]
   },
   {
-    "body": "dispatch://ACME-1)word",
+    "body": "dispatch://CORE-1)word",
     "refs": []
   },
   {
