@@ -201,8 +201,9 @@ type Engine struct {
 	// names the owed merge in the fix's task but takes no ownership of it, so its messages, its
 	// landing and its completion fence are a merge no fix took (takeOwedMerge); noAskAtWay reads
 	// no conflict again at the way after a fix, and askAtWayWithNoRules asks it there at once,
-	// with no rules read (mergeForwardAfterFix). Only a test sets any of them, as the control of
-	// the rule it takes out.
+	// with no rules read (mergeForwardAfterFix). wayFromRecordedHead moves the step the way after a
+	// fix starts to the head the record holds, not to the fix's own end (afterFix). Only a test sets
+	// any of them, as the control of the rule it takes out.
 	noFixRule                  bool
 	everyRoleToldCI            bool
 	fixStartInLine             bool
@@ -216,6 +217,7 @@ type Engine struct {
 	ordinaryMergeAfterTakeover bool
 	noAskAtWay                 bool
 	askAtWayWithNoRules        bool
+	wayFromRecordedHead        bool
 }
 
 // WithoutEndHold sets the seam noEndHold on e: no task's end is held for its CI (retroHold). Only
