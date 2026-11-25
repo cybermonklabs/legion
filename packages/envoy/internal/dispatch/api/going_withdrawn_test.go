@@ -507,8 +507,8 @@ func TestTheGraphReadOfAWithdrawnRunWhoseRowsAnOlderBuildDeletedQuotesNoDeletedP
 	if posts != 0 || state == graphstore.StateGone {
 		t.Fatalf("after the delete of its row run %s holds %d going_request_posts rows and its node is %s, want none and a node not yet gone, as the release before leaves it", run.ID, posts, state)
 	}
-	if stream := rig.stream(t, run.ID, "alice", ""); stream.Code != http.StatusNotFound {
-		t.Fatalf("after the delete of its row the stream of run %s answers %d %s, want 404", run.ID, stream.Code, stream.Body.String())
+	if stream := rig.stream(t, run.ID, "alice", ""); stream.Code != http.StatusNotFound || decodeBody[refusalAnswer](t, stream).Code != codeGoingRequestNotFound {
+		t.Fatalf("after the delete of its row the stream of run %s answers %d %s, want 404 %s", run.ID, stream.Code, stream.Body.String(), codeGoingRequestNotFound)
 	}
 
 	address := "dispatch://" + graphstore.KindInteraction + "/" + run.ID
