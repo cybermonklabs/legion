@@ -318,7 +318,7 @@ func TestAdmissionCapRoutes(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !strings.Contains(string(body), `"capChanges":[]`) {
-			t.Fatalf("a fresh admission at contract %d = %s, want `\"capChanges\":[]`", admissionCapContract, body)
+			t.Fatalf("a fresh admission at contract %d = %s, want `\"capChanges\":[]`", entryNumber(admissionCapContract), body)
 		}
 		older, _ := withoutAdmissionCap(State{Admission: fresh})
 		body, err = json.Marshal(older.Admission)
@@ -326,7 +326,7 @@ func TestAdmissionCapRoutes(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(body), `"capChanges"`) {
-			t.Fatalf("the admission served below contract %d = %s, want no `capChanges`", admissionCapContract, body)
+			t.Fatalf("the admission served below contract %d = %s, want no `capChanges`", entryNumber(admissionCapContract), body)
 		}
 	})
 
