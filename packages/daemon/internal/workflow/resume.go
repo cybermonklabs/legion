@@ -203,7 +203,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if err != nil {
 			return phaseOwners{}, err
 		}
-		run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
+		run, err := e.store.RoleRun(ctx, tx, token, issue, role)
 		if err != nil {
 			return phaseOwners{}, err
 		}

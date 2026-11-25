@@ -92,7 +92,7 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, nil
 	}
-	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
+	run, err := e.store.RoleRun(ctx, tx, token, *issue, role)
 	if err != nil {
 		return nil, err
 	}

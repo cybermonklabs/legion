@@ -66,7 +66,7 @@ func slotsOf(keys ...string) []record.Slot {
 	return slots
 }
 
-func (s *strandedStore) RoleRun(_ context.Context, _ pgx.Tx, token claim.Token, _ string, _ claim.Role, _ uint64) (record.RoleRun, error) {
+func (s *strandedStore) RoleRun(_ context.Context, _ pgx.Tx, token claim.Token, _ record.Issue, _ claim.Role) (record.RoleRun, error) {
 	s.roleRunCalls++
 	return s.roleRun(token), nil
 }
@@ -75,7 +75,7 @@ func (s *strandedStore) RoleRuns(_ context.Context, _ pgx.Tx, keys []record.Role
 	s.roleRunsCalls++
 	runs := make(map[claim.Token]record.RoleRun, len(keys))
 	for _, key := range keys {
-		runs[key.Token] = s.roleRun(key.Token)
+		runs[key.Token()] = s.roleRun(key.Token())
 	}
 	return runs, nil
 }

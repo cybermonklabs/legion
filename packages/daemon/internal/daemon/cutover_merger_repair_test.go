@@ -790,7 +790,7 @@ func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 		ResumeTask: true, RuleResume: true}, time.Now()); err != nil {
 		t.Fatalf("owe the control issue's merger a start: %v", err)
 	}
-	run, err := r.records.RoleRun(ctx, tx, r.token(t, control.Key, claim.RoleMerger), control.Key, claim.RoleMerger, control.Generation)
+	run, err := r.records.RoleRun(ctx, tx, r.token(t, control.Key, claim.RoleMerger), control, claim.RoleMerger)
 	if err != nil {
 		t.Fatalf("read the control issue's queued start: %v", err)
 	}
