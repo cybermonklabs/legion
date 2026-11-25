@@ -168,11 +168,17 @@ func projectsWordsOf(base cipheraddr.Address, projects []redact.RemoteText) stri
 	if len(projects) == 0 {
 		return "-"
 	}
-	shown := make([]string, len(projects))
-	for i, project := range projects {
-		shown[i] = base.WordsOf(project)
+	return oauthwire.JoinProjects(wordsOfEach(base, projects))
+}
+
+// wordsOfEach is each of fields as base lets the broker's words print
+// (cipheraddr.Address.WordsOf), in order, for a line that names several of one answer's fields.
+func wordsOfEach(base cipheraddr.Address, fields []redact.RemoteText) []string {
+	shown := make([]string, len(fields))
+	for i, field := range fields {
+		shown[i] = base.WordsOf(field)
 	}
-	return oauthwire.JoinProjects(shown)
+	return shown
 }
 
 // plainAddress reports whether base, as written, has no user info, no query, no fragment and no
