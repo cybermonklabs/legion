@@ -584,6 +584,9 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 		after, _ := githubrest.RetryAfter(err)
 		w.log.Warn("github: read the merge state of the open pull requests on a base whose reads were asked for; their records stand as they were, and they are read again",
 			"repo", repo.String(), "base", base, "asked", numbers, "timedOut", got.timedOut, "retryAfter", after, "error", err)
+		for _, r := range part {
+			w.readFailed(ctx, r.pr)
+		}
 		return chunkOutcome{failed: true, timedOut: got.timedOut, after: after}
 	}
 	w.log.Info("github: read the merge state of pull requests on a base by number", "repo", repo.String(), "base", base,
@@ -596,6 +599,7 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 		if !ok {
 			w.log.Warn("github: GitHub answered nothing for a pull request owed a merge-state read; it is read again",
 				"issue", r.issue, "repo", repo.String(), "pullRequest", r.pr.Number, "error", got.unanswered[r.pr.Number])
+			w.readFailed(ctx, r.pr)
 			w.missed(key, r.issue, r.owed, 0, r.owed.alone)
 			continue
 		}

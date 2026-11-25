@@ -79,11 +79,36 @@ func batchNode(number int, head, mergeable, state string) map[string]any {
 }
 
 // rollupOf is the `commits(last: 1)` of a pull request whose head commit is head and whose
-// `statusCheckRollup` state is state, or null when state is "".
+// `statusCheckRollup` state is state, or null when state is "", with the counts GitHub gives such
+// a rollup: one check run in state, IN_PROGRESS for a PENDING rollup, and no commit status.
 func rollupOf(head, state string) map[string]any {
+	if state == "" {
+		return rollupCounted(head, "", nil, nil)
+	}
+	run := state
+	if state == "PENDING" {
+		run = "IN_PROGRESS"
+	}
+	return rollupCounted(head, state, map[string]int{run: 1}, nil)
+}
+
+// rollupCounted is the `commits(last: 1)` of a pull request whose head commit is head, whose
+// rollup state is state, null when state is "", and whose check runs and commit statuses GitHub
+// counts by state as runs and statuses say, every other state counted 0, as GitHub lists each.
+func rollupCounted(head, state string, runs, statuses map[string]int) map[string]any {
 	var rollup any
 	if state != "" {
-		rollup = map[string]any{"state": state}
+		counted := func(states []string, by map[string]int) []any {
+			out := make([]any, 0, len(states))
+			for _, s := range states {
+				out = append(out, map[string]any{"state": s, "count": by[s]})
+			}
+			return out
+		}
+		rollup = map[string]any{"state": state, "contexts": map[string]any{
+			"checkRunCountsByState": counted([]string{"ACTION_REQUIRED", "CANCELLED", "COMPLETED", "FAILURE", "IN_PROGRESS", "NEUTRAL",
+				"PENDING", "QUEUED", "SKIPPED", "STALE", "STARTUP_FAILURE", "SUCCESS", "TIMED_OUT", "WAITING"}, runs),
+			"statusContextCountsByState": counted([]string{"EXPECTED", "ERROR", "FAILURE", "PENDING", "SUCCESS"}, statuses)}}
 	}
 	return map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"oid": head, "statusCheckRollup": rollup}}}}
 }

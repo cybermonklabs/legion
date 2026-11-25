@@ -289,12 +289,26 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	if !fact.ReadAt.IsZero() {
 		stateReadAt = fact.ReadAt
 	}
+	// A read of a `blocked` head with `mergeable` null counts on from the last read only when that
+	// read answered the same of the same head (record.PullRequest.NullMergeableReads); any other
+	// answer starts the count again at zero. The count, the rollup and the null reads speak of the
+	// head the fact answered for (EvidenceHead), which the record stands at here.
+	nulls, since := 0, time.Time{}
+	if fact.MergeState == record.MergeStateBlocked && fact.Mergeable == record.MergeabilityUnknown {
+		nulls, since = 1, readAt
+		if pr.EvidenceHead == fact.HeadSHA && pr.NullMergeableReads > 0 && pr.MergeState == record.MergeStateBlocked &&
+			pr.Mergeability == record.MergeabilityUnknown {
+			nulls, since = pr.NullMergeableReads+1, pr.NullMergeableSince
+		}
+	}
 	// The last clause is the confirming read's: it answers what is already recorded, and the time
 	// it was read is the whole of what it has to say.
 	if pr.Mergeability != fact.Mergeable || pr.MergeState != fact.MergeState || !classify.SameCount(pr.ReviewsRequested, fact.ReviewsRequested) ||
-		pr.HeadChecks != fact.HeadChecks || pr.Base != base || pr.BaseMoved != "" || pr.ConflictingHead != conflicting ||
+		pr.HeadChecks != fact.HeadChecks || pr.NullMergeableReads != nulls || !pr.NullMergeableSince.Equal(since) ||
+		pr.EvidenceHead != fact.HeadSHA || pr.Base != base || pr.BaseMoved != "" || pr.ConflictingHead != conflicting ||
 		pr.ConflictRead != first || !stateReadAt.Equal(pr.StateReadAt) {
 		pr.Mergeability, pr.MergeState, pr.ReviewsRequested, pr.HeadChecks = fact.Mergeable, fact.MergeState, fact.ReviewsRequested, fact.HeadChecks
+		pr.NullMergeableReads, pr.NullMergeableSince, pr.EvidenceHead = nulls, since, fact.HeadSHA
 		pr.Base, pr.BaseMoved, pr.ConflictingHead, pr.ConflictRead, pr.StateReadAt = base, "", conflicting, first, stateReadAt
 		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
@@ -1030,13 +1044,32 @@ func (e *Engine) reviewHead(review intake.PullRequestReview) string {
 // (prompts/go/architect-common.md) reads a notice the reviewer's completion or answer wrote after
 // the architect asked as the reviewer answering, and every other as news about the round.
 const (
-	byCompletion  = "the reviewer's completion"
-	byAnswer      = "the reviewer's review"
-	byOtherReview = "a review that is not the reviewer's answer"
-	byPush        = "a push"
-	byMergeState  = "GitHub's merge state for the head"
-	byMerge       = "the pull request's merge"
+	byCompletion       = "the reviewer's completion"
+	byAnswer           = "the reviewer's review"
+	byOtherReview      = "a review that is not the reviewer's answer"
+	byPush             = "a push"
+	byMergeState       = "GitHub's merge state for the head"
+	byMerge            = "the pull request's merge"
+	byMergeStateUnread = "a read of GitHub's merge state for the head that failed"
 )
+
+// mergeStateUnread asks the review round of the pull request fact names again after a read of its
+// merge state failed (intake.PullRequestMergeStateUnread), at the head the read was of. It records
+// nothing - the failed read answered nothing - and the round, judged at the engine's clock, tells
+// the architect of a `blocked` head whose `mergeable` null has stood since its first read for
+// classify.NullMergeableTellAfter, whatever the count of reads (classify.MergeOutcomeOf). A pull
+// request that is not open, or stands at another head, is not the one the read was of.
+func (e *Engine) mergeStateUnread(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMergeStateUnread) (intake.Result, error) {
+	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+	if err != nil || pr == nil || pr.State != record.PullRequestOpen || pr.HeadSHA != fact.HeadSHA {
+		return intake.Result{}, err
+	}
+	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, *pr, byMergeStateUnread)
+}
 
 // roundOutcome is what a review round comes to after a fact (reviewRound).
 type roundOutcome int
@@ -1116,10 +1149,11 @@ func (r round) stuckAs(other round) bool {
 
 // stuckMergeStateReason is what the architect and the reviewer are told of an approval standing
 // on a head whose merge state the round waits on and is told of (classify.MergeWaitsTold,
-// reviewRound): the head, the pull request, the state in GitHub's own spelling, the review requests
-// GitHub holds open on a `blocked` head, every check run GitHub reported on that head with the
-// conclusion it came to, and every
-// commit status the record keeps for that head with its state (headChecks), which is the whole of
+// reviewRound): the head, the pull request, the state in GitHub's own spelling, what holds a
+// `blocked` head - GitHub answering `mergeable` null for it read after read, or the review
+// requests it holds open - every check run GitHub reported on that head with the conclusion it
+// came to, and every commit status the record keeps for that head with its state (headChecks),
+// which is the whole of
 // what the daemon knows of the head's own CI. There is always a run to name: the only caller
 // builds this reason for a round it has already reported a head for, which it does only once
 // GitHub has reported a check run on that head itself and every one of them has concluded
@@ -1137,7 +1171,12 @@ func (r round) stuckAs(other round) bool {
 // review a third.
 func stuckMergeStateReason(pr record.PullRequest) string {
 	held := ""
-	if pr.MergeState == record.MergeStateBlocked && pr.ReviewsRequested != nil && *pr.ReviewsRequested > 0 {
+	switch {
+	case pr.MergeState != record.MergeStateBlocked:
+	case pr.Mergeability != record.MergeabilityMergeable:
+		held = fmt.Sprintf(" GitHub has answered `mergeable` null for it on %d read(s) in a row since %s, and has not computed whether it merges cleanly into its base; the daemon reads it again.",
+			pr.NullMergeableReads, pr.NullMergeableSince.UTC().Format(time.RFC3339))
+	case pr.ReviewsRequested != nil && *pr.ReviewsRequested > 0:
 		held = fmt.Sprintf(" GitHub holds %d review request(s) open on the pull request: a review it asked a person, a team or a code owner for and that is not given yet.", *pr.ReviewsRequested)
 	}
 	return fmt.Sprintf("the reviewer approved head %s on pull request #%d, and GitHub reports that head %s rather than one it would merge.%s %s. The issue waits in reviewing until GitHub reports that head clean, unstable or has_hooks, or blocked with the head MERGEABLE, no check or status of it running, every check run it reported there concluded and no review request open",
@@ -1228,7 +1267,7 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 		// settlement that ends the last check is itself a fact that asks for a read. Which approval
 		// waits is the rule the state build reads too, so the view carries a mergeWait for exactly
 		// this round.
-		if classify.MergeOutcomeOf(*pr) == classify.MergeWaitsQuietly {
+		if classify.MergeOutcomeOf(*pr, e.now()) == classify.MergeWaitsQuietly {
 			return round{waitsOnMergeState: true}
 		}
 		return round{outcome: roundStuck, cause: stuckMergeState, head: pr.HeadSHA, state: pr.MergeState,

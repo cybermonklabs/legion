@@ -369,11 +369,14 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		ReviewSeen:   ReviewOrder{ID: 4411, SubmittedAt: updatedAt.Add(-2 * time.Hour)},
 		Mergeability: MergeabilityMergeable,
 		MergeState:   MergeStateClean,
-		// The review requests GitHub holds open and the head's rollup, read back as written beside
-		// the merge state.
-		ReviewsRequested: new(2),
-		HeadChecks:       HeadChecksRunning,
-		ConflictingHead:  "a0b1c2",
+		// The review requests GitHub holds open, the head's rollup, the null reads of `mergeable`
+		// and the head they were read at, read back as written beside the merge state.
+		ReviewsRequested:   new(2),
+		HeadChecks:         HeadChecksRunning,
+		NullMergeableReads: 2,
+		NullMergeableSince: updatedAt.Add(-3 * time.Minute),
+		EvidenceHead:       "b1c2d3",
+		ConflictingHead:    "a0b1c2",
 		// The first conflicting read still waiting for its second and the ask to merge forward,
 		// each a jsonb column of its own, read back with every field and time as written, the
 		// merge forwards that landed before the ask among them.
@@ -879,6 +882,8 @@ func samePullRequest(got, want PullRequest) bool {
 		got.State == want.State &&
 		got.Mergeability == want.Mergeability && got.MergeState == want.MergeState &&
 		reflect.DeepEqual(got.ReviewsRequested, want.ReviewsRequested) && got.HeadChecks == want.HeadChecks &&
+		got.NullMergeableReads == want.NullMergeableReads && got.NullMergeableSince.Equal(want.NullMergeableSince) &&
+		got.EvidenceHead == want.EvidenceHead &&
 		got.ConflictingHead == want.ConflictingHead &&
 		got.StateReadAt.Equal(want.StateReadAt) &&
 		reflect.DeepEqual(got.ConflictRead, want.ConflictRead) && reflect.DeepEqual(got.MergeForward, want.MergeForward) &&
@@ -2369,7 +2374,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "members_owed", "priority"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
-		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
+		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_head", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
 		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key"},

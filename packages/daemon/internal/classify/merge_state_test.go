@@ -37,19 +37,21 @@ func TestEveryMoveTakesTheMergeVerdictAndNoMoveKeepsIt(t *testing.T) {
 			two := 2
 			pr := record.PullRequest{HeadSHA: "h2", Failing: []string{},
 				Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean, StateReadAt: read,
-				ReviewsRequested: &two, HeadChecks: record.HeadChecksConcluded}
+				ReviewsRequested: &two, HeadChecks: record.HeadChecksConcluded, EvidenceHead: "h2",
+				NullMergeableReads: 1, NullMergeableSince: read}
 			for _, fact := range tc.facts {
 				pr = stored(t, fact.apply(pr))
 			}
-			wantMergeable, wantRead, wantCount, wantChecks := record.MergeabilityMergeable, read, &two, record.HeadChecksConcluded
+			wantMergeable, wantRead, wantCount, wantChecks, wantEvidence, wantNulls := record.MergeabilityMergeable, read, &two, record.HeadChecksConcluded, "h2", 1
 			if tc.state == record.MergeStateUnread {
-				wantMergeable, wantRead, wantCount, wantChecks = "", time.Time{}, nil, record.HeadChecksUnread
+				wantMergeable, wantRead, wantCount, wantChecks, wantEvidence, wantNulls = "", time.Time{}, nil, record.HeadChecksUnread, "", 0
 			}
 			if pr.MergeState != tc.state || pr.Mergeability != wantMergeable || !pr.StateReadAt.Equal(wantRead) ||
-				!SameCount(pr.ReviewsRequested, wantCount) || pr.HeadChecks != wantChecks {
-				t.Fatalf("after %v the verdict is %q/%q read at %v with %v review requests and checks %q, want %q/%q read at %v with %v and %q",
-					tc.facts, pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ReviewsRequested, pr.HeadChecks,
-					wantMergeable, tc.state, wantRead, wantCount, wantChecks)
+				!SameCount(pr.ReviewsRequested, wantCount) || pr.HeadChecks != wantChecks || pr.EvidenceHead != wantEvidence ||
+				pr.NullMergeableReads != wantNulls || pr.NullMergeableSince.Equal(read) != (wantNulls == 1) {
+				t.Fatalf("after %v the verdict is %q/%q read at %v with %v review requests, checks %q, %d null reads since %v, of %q; want %q/%q read at %v with %v, %q, %d, of %q",
+					tc.facts, pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ReviewsRequested, pr.HeadChecks, pr.NullMergeableReads,
+					pr.NullMergeableSince, pr.EvidenceHead, wantMergeable, tc.state, wantRead, wantCount, wantChecks, wantNulls, wantEvidence)
 			}
 		})
 	}
@@ -97,20 +99,24 @@ func TestAnAnchoredVerdictComesBackWithItsCountAndRollup(t *testing.T) {
 	anchored := time.Date(2026, 11, 12, 7, 0, 0, 0, time.UTC)
 	three := 3
 	pr := record.PullRequest{HeadSHA: "h2", Failing: []string{},
-		Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked, StateReadAt: anchored,
-		ReviewsRequested: &three, HeadChecks: record.HeadChecksRunning}
+		Mergeability: record.MergeabilityUnknown, MergeState: record.MergeStateBlocked, StateReadAt: anchored,
+		ReviewsRequested: &three, HeadChecks: record.HeadChecksRunning, EvidenceHead: "h2", NullMergeableReads: 2, NullMergeableSince: anchored}
 	pr = stored(t, arrivesFrom("h2", "h3").apply(pr))
-	if pr.Run == nil || pr.ReviewsRequested != nil || pr.HeadChecks != record.HeadChecksUnread {
-		t.Fatalf("after the head arrived before its push the record holds %v review requests and checks %q with the run open %v, want none read and the run open",
-			pr.ReviewsRequested, pr.HeadChecks, pr.Run != nil)
+	if pr.Run == nil || pr.ReviewsRequested != nil || pr.HeadChecks != record.HeadChecksUnread || pr.EvidenceHead != "" || pr.NullMergeableReads != 0 {
+		t.Fatalf("after the head arrived before its push the record holds %v review requests, checks %q, %d null reads of %q with the run open %v, want none read and the run open",
+			pr.ReviewsRequested, pr.HeadChecks, pr.NullMergeableReads, pr.EvidenceHead, pr.Run != nil)
 	}
-	if !SameCount(pr.Run.Anchor.ReviewsRequested, &three) || pr.Run.Anchor.HeadChecks != record.HeadChecksRunning {
-		t.Fatalf("the run's anchor holds %v review requests and checks %q, want h2's 3 and running", pr.Run.Anchor.ReviewsRequested, pr.Run.Anchor.HeadChecks)
+	anchor := pr.Run.Anchor
+	if !SameCount(anchor.ReviewsRequested, &three) || anchor.HeadChecks != record.HeadChecksRunning || anchor.EvidenceHead != "h2" ||
+		anchor.NullMergeableReads != 2 || !anchor.NullMergeableSince.Equal(anchored) {
+		t.Fatalf("the run's anchor holds %v review requests, checks %q, %d null reads since %v of %q, want h2's 3, running, 2 since %v",
+			anchor.ReviewsRequested, anchor.HeadChecks, anchor.NullMergeableReads, anchor.NullMergeableSince, anchor.EvidenceHead, anchored)
 	}
-	back := withJudgement(pr, pr.Run.Anchor)
-	if back.MergeState != record.MergeStateBlocked || !SameCount(back.ReviewsRequested, &three) || back.HeadChecks != record.HeadChecksRunning {
-		t.Fatalf("the replay gave back %q with %v review requests and checks %q, want the anchor's blocked with 3 and running",
-			back.MergeState, back.ReviewsRequested, back.HeadChecks)
+	back := withJudgement(pr, anchor)
+	if back.MergeState != record.MergeStateBlocked || !SameCount(back.ReviewsRequested, &three) || back.HeadChecks != record.HeadChecksRunning ||
+		back.EvidenceHead != "h2" || back.NullMergeableReads != 2 || !back.NullMergeableSince.Equal(anchored) {
+		t.Fatalf("the replay gave back %q with %v review requests, checks %q, %d null reads of %q, want the anchor's whole answer",
+			back.MergeState, back.ReviewsRequested, back.HeadChecks, back.NullMergeableReads, back.EvidenceHead)
 	}
 	// A record holding a read of its own keeps it, the count and rollup with it.
 	none := 0

@@ -2,6 +2,7 @@ package classify
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -32,7 +33,7 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 	none := 0
 	pullRequest := func(state record.MergeState) *record.PullRequest {
 		return &record.PullRequest{Issue: issue, Number: 42, HeadSHA: head, State: record.PullRequestOpen, MergeState: state,
-			Mergeability: record.MergeabilityMergeable, ReviewsRequested: &none, HeadChecks: record.HeadChecksConcluded,
+			Mergeability: record.MergeabilityMergeable, ReviewsRequested: &none, HeadChecks: record.HeadChecksConcluded, EvidenceHead: head,
 			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 2, Head: head, Conclusion: record.RunSucceeded}}}
 	}
 	with := func(state record.MergeState, change func(*record.PullRequest)) *record.PullRequest {
@@ -102,35 +103,56 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 // MergeOutcomeOf tells the round that waits quietly from the one whose architect and reviewer are
 // told: a head with no answer the round can decide on, or a check of it still running, waits
 // quietly, for the read or the settlement that is on its way; a head whose own checks are over and
-// that only a push, a person or GitHub's own computation will clear is told of.
+// that only a push, a person or GitHub's own computation will clear is told of. A `blocked` head
+// is judged on the evidence a read of that very head wrote, so evidence of another head - a
+// rollback's leftover - is no evidence. GitHub's `mergeable` null is told from the second null
+// read in a row, or once the first is NullMergeableTellAfter old at the moment of the fact.
 func TestAMergeOutcomeTellsOnlyWhatNothingOnItsWayWillClear(t *testing.T) {
 	const head = "h2"
 	none, one := 0, 1
+	read := time.Date(2026, 11, 24, 23, 0, 0, 0, time.UTC)
 	base := func(change func(*record.PullRequest)) record.PullRequest {
 		pr := record.PullRequest{HeadSHA: head, State: record.PullRequestOpen, MergeState: record.MergeStateBlocked,
-			Mergeability: record.MergeabilityMergeable, ReviewsRequested: &none, HeadChecks: record.HeadChecksConcluded,
-			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 2, Head: head, Conclusion: record.RunSucceeded}}}
+			Mergeability: record.MergeabilityMergeable, ReviewsRequested: &none, HeadChecks: record.HeadChecksConcluded, EvidenceHead: head,
+			StateReadAt: read, CheckRuns: []record.AttemptRun{{Name: "unit", ID: 2, Head: head, Conclusion: record.RunSucceeded}}}
 		change(&pr)
 		return pr
+	}
+	null := func(reads int) func(*record.PullRequest) {
+		return func(pr *record.PullRequest) {
+			pr.Mergeability, pr.HeadChecks, pr.NullMergeableReads, pr.NullMergeableSince = record.MergeabilityUnknown, record.HeadChecksUnread, reads, read
+		}
 	}
 	for _, tc := range []struct {
 		name string
 		pr   record.PullRequest
+		at   time.Time
 		want MergeOutcome
 	}{
-		{"blocked, MERGEABLE, nothing running, no review asked for", base(func(*record.PullRequest) {}), MergeEndsRound},
-		{"clean", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateClean }), MergeEndsRound},
-		{"unknown", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateUnknown }), MergeWaitsQuietly},
-		{"blocked with a check of the head running", base(func(pr *record.PullRequest) { pr.HeadChecks = record.HeadChecksRunning }), MergeWaitsQuietly},
-		{"blocked with no rollup read", base(func(pr *record.PullRequest) { pr.HeadChecks = record.HeadChecksUnread }), MergeWaitsQuietly},
-		{"blocked with no count read", base(func(pr *record.PullRequest) { pr.ReviewsRequested = nil }), MergeWaitsQuietly},
-		{"blocked with no settlement of the head", base(func(pr *record.PullRequest) { pr.CheckRuns = nil }), MergeWaitsQuietly},
-		{"blocked with mergeability not computed", base(func(pr *record.PullRequest) { pr.Mergeability = record.MergeabilityUnknown }), MergeWaitsQuietly},
-		{"blocked with a review request open", base(func(pr *record.PullRequest) { pr.ReviewsRequested = &one }), MergeWaitsTold},
-		{"behind", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateBehind }), MergeWaitsTold},
-		{"draft", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateDraft }), MergeWaitsTold},
+		{"blocked, MERGEABLE, nothing running, no review asked for", base(func(*record.PullRequest) {}), read, MergeEndsRound},
+		{"clean", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateClean }), read, MergeEndsRound},
+		{"unknown", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateUnknown }), read, MergeWaitsQuietly},
+		{"blocked with a check of the head running", base(func(pr *record.PullRequest) { pr.HeadChecks = record.HeadChecksRunning }), read, MergeWaitsQuietly},
+		{"blocked with no rollup read", base(func(pr *record.PullRequest) { pr.HeadChecks = record.HeadChecksUnread }), read, MergeWaitsQuietly},
+		{"blocked with no count read", base(func(pr *record.PullRequest) { pr.ReviewsRequested = nil }), read, MergeWaitsQuietly},
+		{"blocked with no settlement of the head", base(func(pr *record.PullRequest) { pr.CheckRuns = nil }), read, MergeWaitsQuietly},
+		// Evidence a release before 20261124130001 left beside a new head: none open and nothing
+		// running, of the head before. It is read as unread.
+		{"blocked with the evidence of another head", base(func(pr *record.PullRequest) { pr.EvidenceHead = "h1" }), read, MergeWaitsQuietly},
+		{"blocked with a review request open of another head", base(func(pr *record.PullRequest) {
+			pr.ReviewsRequested, pr.EvidenceHead = &one, "h1"
+		}), read, MergeWaitsQuietly},
+		{"blocked with a first null read", base(null(1)), read.Add(time.Minute), MergeWaitsQuietly},
+		{"blocked with a second null read in a row", base(null(2)), read.Add(time.Minute), MergeWaitsTold},
+		{"blocked with a first null read the bound old", base(null(1)), read.Add(NullMergeableTellAfter), MergeWaitsTold},
+		{"blocked with a first null read just inside the bound", base(null(1)), read.Add(NullMergeableTellAfter - time.Second), MergeWaitsQuietly},
+		{"blocked with mergeability not read", base(func(pr *record.PullRequest) { pr.Mergeability = "" }), read.Add(time.Hour), MergeWaitsQuietly},
+		{"blocked with null reads of another head", base(func(pr *record.PullRequest) { null(3)(pr); pr.EvidenceHead = "h1" }), read.Add(time.Hour), MergeWaitsQuietly},
+		{"blocked with a review request open", base(func(pr *record.PullRequest) { pr.ReviewsRequested = &one }), read, MergeWaitsTold},
+		{"behind", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateBehind }), read, MergeWaitsTold},
+		{"draft", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateDraft }), read, MergeWaitsTold},
 	} {
-		if got := MergeOutcomeOf(tc.pr); got != tc.want {
+		if got := MergeOutcomeOf(tc.pr, tc.at); got != tc.want {
 			t.Errorf("%s: MergeOutcomeOf = %d, want %d", tc.name, got, tc.want)
 		}
 	}

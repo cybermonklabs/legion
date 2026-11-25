@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -40,15 +43,18 @@ func TestAReadOfOnePullRequestCountsItsOpenReviewRequests(t *testing.T) {
 }
 
 // A base's batch reads the count as `reviewRequests { totalCount }` and the head's rollup as the
-// last commit's `statusCheckRollup` in its one query. The rollup speaks of the head only when the
-// last commit is the head the answer names; a null rollup is a commit with no check and no status,
-// so nothing of it runs; PENDING is a check or a status still running; and any word GitHub's
-// schema does not have reads as no rollup.
+// last commit's `statusCheckRollup`, its check runs and commit statuses counted by state, in its
+// one query. The rollup speaks of the head only when the last commit is the head the answer
+// names; a null rollup is a commit with no check and no status, so nothing of it runs; and the
+// counts decide, never the rollup's own state: GitHub answers FAILURE as soon as one context fails
+// while others still run (cybermonklabs/legion#4432: BLOCKED, MERGEABLE, rollup FAILURE, one
+// check run IN_PROGRESS). A status GitHub counts EXPECTED, required and never reported, is not
+// running. A rollup with no counts reads as no rollup.
 func TestABatchAnswerReadsTheHeadsRollupOnlyForTheHeadItNames(t *testing.T) {
-	node := func(head, commit, rollup string) graphQLPull {
+	node := func(head string, commits map[string]any) graphQLPull {
 		var pull graphQLPull
 		body := batchNode(86, head, "MERGEABLE", "BLOCKED")
-		body["commits"] = rollupOf(commit, rollup)
+		body["commits"] = commits
 		raw, err := json.Marshal(body)
 		if err != nil {
 			t.Fatal(err)
@@ -63,20 +69,25 @@ func TestABatchAnswerReadsTheHeadsRollupOnlyForTheHeadItNames(t *testing.T) {
 		pull   graphQLPull
 		checks record.HeadChecks
 	}{
-		{"success", node("h2", "h2", "SUCCESS"), record.HeadChecksConcluded},
-		{"failure", node("h2", "h2", "FAILURE"), record.HeadChecksConcluded},
-		{"a required status nobody reported", node("h2", "h2", "EXPECTED"), record.HeadChecksConcluded},
-		{"no check and no status", node("h2", "h2", ""), record.HeadChecksConcluded},
-		{"a check still running", node("h2", "h2", "PENDING"), record.HeadChecksRunning},
-		{"a word the schema does not have", node("h2", "h2", "LATER"), record.HeadChecksUnread},
-		{"the rollup of another commit", node("h2", "h1", "SUCCESS"), record.HeadChecksUnread},
-		{"no commit at all", func() graphQLPull { p := node("h2", "h2", "SUCCESS"); p.Commits.Nodes = nil; return p }(), record.HeadChecksUnread},
+		{"every check run succeeded", node("h2", rollupOf("h2", "SUCCESS")), record.HeadChecksConcluded},
+		{"a check run failed and none runs", node("h2", rollupCounted("h2", "FAILURE", map[string]int{"FAILURE": 3, "SUCCESS": 65, "SKIPPED": 18}, nil)), record.HeadChecksConcluded},
+		{"a check run failed while another runs (#4432)", node("h2", rollupCounted("h2", "FAILURE",
+			map[string]int{"FAILURE": 3, "SUCCESS": 65, "SKIPPED": 18, "IN_PROGRESS": 1}, nil)), record.HeadChecksRunning},
+		{"a check run queued", node("h2", rollupCounted("h2", "PENDING", map[string]int{"QUEUED": 1, "SUCCESS": 4}, nil)), record.HeadChecksRunning},
+		{"a check run waiting on an environment", node("h2", rollupCounted("h2", "PENDING", map[string]int{"WAITING": 1}, nil)), record.HeadChecksRunning},
+		{"a commit status pending", node("h2", rollupCounted("h2", "PENDING", map[string]int{"SUCCESS": 2}, map[string]int{"PENDING": 1})), record.HeadChecksRunning},
+		{"a required status nobody reported", node("h2", rollupCounted("h2", "FAILURE", map[string]int{"SUCCESS": 2}, map[string]int{"EXPECTED": 1})), record.HeadChecksConcluded},
+		{"no check and no status", node("h2", rollupOf("h2", "")), record.HeadChecksConcluded},
+		{"a rollup with no counts", node("h2", map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"oid": "h2",
+			"statusCheckRollup": map[string]any{"state": "SUCCESS"}}}}}), record.HeadChecksUnread},
+		{"the rollup of another commit", node("h2", rollupOf("h1", "SUCCESS")), record.HeadChecksUnread},
+		{"no commit at all", node("h2", map[string]any{"nodes": []any{}}), record.HeadChecksUnread},
 	} {
 		if got := tc.pull.githubPullRequest().batch.checks; got != tc.checks {
 			t.Errorf("%s: the rollup reads %q, want %q", tc.name, got, tc.checks)
 		}
 	}
-	nullCount := node("h2", "h2", "SUCCESS")
+	nullCount := node("h2", rollupOf("h2", "SUCCESS"))
 	nullCount.ReviewRequests = nil
 	if got := nullCount.githubPullRequest().reviewsRequested(); got != nil {
 		t.Errorf("a null reviewRequests counts %d, want no count", *got)
@@ -87,8 +98,11 @@ func TestABatchAnswerReadsTheHeadsRollupOnlyForTheHeadItNames(t *testing.T) {
 // `blocked` head's round decides on what GitHub answered, never on a zero it did not.
 func TestABasePushRecordsTheReviewRequestsAndRollupGitHubAnswered(t *testing.T) {
 	t.Parallel()
-	if query := chunkQuery([]int{86}); !strings.Contains(query, "reviewRequests { totalCount }") || !strings.Contains(query, "statusCheckRollup { state }") {
-		t.Fatalf("the batch query asks %q, want each pull request's reviewRequests { totalCount } and its head's statusCheckRollup { state }", query)
+	query := chunkQuery([]int{86})
+	for _, field := range []string{"reviewRequests { totalCount }", "checkRunCountsByState { state count }", "statusContextCountsByState { state count }"} {
+		if !strings.Contains(query, field) {
+			t.Fatalf("the batch query asks %q, want each pull request's %s", query, field)
+		}
 	}
 	pool := isolatedOutboxPool(t)
 	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
@@ -104,8 +118,9 @@ func TestABasePushRecordsTheReviewRequestsAndRollupGitHubAnswered(t *testing.T) 
 		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked && rig.ended()
 	})
 	pr := recordedPull(t, pool, "CAPTURE-1")
-	if pr.ReviewsRequested == nil || *pr.ReviewsRequested != 2 || pr.HeadChecks != record.HeadChecksRunning {
-		t.Fatalf("the record holds %v review requests and checks %q for 86, want the 2 and the running rollup GitHub answered", pr.ReviewsRequested, pr.HeadChecks)
+	if pr.ReviewsRequested == nil || *pr.ReviewsRequested != 2 || pr.HeadChecks != record.HeadChecksRunning || pr.EvidenceHead != "head-86" {
+		t.Fatalf("the record holds %v review requests and checks %q read at %q for 86, want the 2 and the running rollup GitHub answered, of head-86",
+			pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceHead)
 	}
 }
 
@@ -150,19 +165,26 @@ func TestAFieldErrorLeavesTheCountAndRollupUnread(t *testing.T) {
 }
 
 // A REST read answers no rollup of the head, so a read GitHub answers `blocked` and MERGEABLE asks
-// GitHub's GraphQL API for it before the answer is applied (readHeadChecks); a GraphQL answer about
-// another head, or none, is no rollup, which the readers read again for.
+// GitHub's GraphQL API for it before the answer is applied (readHeadChecks), and takes the count of
+// review requests from that same answer, so the count and the rollup are one response's: a review
+// requested between the REST read and the query is in both or in neither. A GraphQL answer about
+// another head, or none, is no rollup and no count, which the readers read again for.
 func TestAReadOfABlockedHeadAsksForItsRollup(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name   string
-		rollup string
-		head   string
-		want   record.HeadChecks
+		name      string
+		rollup    string
+		head      string
+		requested int
+		want      record.HeadChecks
+		count     *int
 	}{
-		{"a check still running", "PENDING", "code", record.HeadChecksRunning},
-		{"every check done", "SUCCESS", "code", record.HeadChecksConcluded},
-		{"an answer about another head", "SUCCESS", "older", record.HeadChecksUnread},
+		{"a check still running", "PENDING", "code", 0, record.HeadChecksRunning, new(0)},
+		{"every check done", "SUCCESS", "code", 0, record.HeadChecksConcluded, new(0)},
+		// The REST answer lists no request, and a review requested before the query is in its
+		// answer: the record takes the query's count beside the query's rollup.
+		{"a review requested between the two calls", "SUCCESS", "code", 1, record.HeadChecksConcluded, new(1)},
+		{"an answer about another head", "SUCCESS", "older", 0, record.HeadChecksUnread, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -171,6 +193,7 @@ func TestAReadOfABlockedHeadAsksForItsRollup(t *testing.T) {
 			api := pullStandInWith(t, rest, func(asked []int) string {
 				node := batchNode(86, tc.head, "MERGEABLE", "BLOCKED")
 				node["commits"] = rollupOf(tc.head, tc.rollup)
+				node["reviewRequests"] = map[string]any{"totalCount": tc.requested}
 				return batchAnswer(t, asked, node)
 			})
 			w := readRuntime(pool, api.URL, quietLogger())
@@ -178,13 +201,126 @@ func TestAReadOfABlockedHeadAsksForItsRollup(t *testing.T) {
 			if err != nil || state != record.MergeStateBlocked {
 				t.Fatalf("the read answered %s, %v; want blocked", state, err)
 			}
-			if pr := recordedPull(t, pool, "CAPTURE-1"); pr.HeadChecks != tc.want {
-				t.Fatalf("the record holds checks %q, want %q", pr.HeadChecks, tc.want)
+			pr := recordedPull(t, pool, "CAPTURE-1")
+			if pr.HeadChecks != tc.want || !reflect.DeepEqual(pr.ReviewsRequested, tc.count) {
+				t.Fatalf("the record holds checks %q and %v review requests, want %q and %v", pr.HeadChecks, pr.ReviewsRequested, tc.want, tc.count)
 			}
 			if wantIncomplete := tc.want == record.HeadChecksUnread; incomplete != wantIncomplete {
 				t.Fatalf("the read is incomplete = %t, want %t", incomplete, wantIncomplete)
 			}
 		})
+	}
+}
+
+// The shape cybermonklabs/legion#4432 was read in: GitHub answers the head BLOCKED and MERGEABLE
+// with its rollup FAILURE, three check runs failed and one still IN_PROGRESS, no review asked for,
+// and the head's own settlement concluded. The round waits in reviewing, and nobody is told: a
+// check of the head runs. The control is the same head once that run concludes - the rollup still
+// FAILURE, nothing running - and the next read ends the round, which moves the issue to accepting.
+func TestAFailedRollupBesideARunningCheckKeepsTheRoundUntilTheRunConcludes(t *testing.T) {
+	t.Parallel()
+	var running atomic.Bool
+	running.Store(true)
+	pool := isolatedOutboxPool(t)
+	approvedCapture(t, pool)
+	rest := `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"blocked","requested_reviewers":[],"requested_teams":[]}`
+	api := pullStandInWith(t, rest, func(asked []int) string {
+		runs := map[string]int{"FAILURE": 3, "SUCCESS": 65, "SKIPPED": 18}
+		if running.Load() {
+			runs["IN_PROGRESS"] = 1
+		}
+		node := batchNode(86, "code", "MERGEABLE", "BLOCKED")
+		node["commits"] = rollupCounted("code", "FAILURE", runs, nil)
+		return batchAnswer(t, asked, node)
+	})
+	w := readRuntime(pool, api.URL, quietLogger())
+	w.mergeStateRetry = readRigWait
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.readMergeStates(ctx)
+	applyFact(t, pool, "github", "checks-on-code", settledChecksOnCode(), w.handlers...)
+	testwait.Eventually(t, "the read of the running head to be recorded", func() bool {
+		pr := recordedPull(t, pool, "CAPTURE-1")
+		running, waiting := ladders(w)
+		return pr.MergeState == record.MergeStateBlocked && pr.HeadChecks == record.HeadChecksRunning && running == 0 && waiting == 0
+	})
+	if got, _ := capturePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("with a check of the head IN_PROGRESS beside a FAILURE rollup the issue is in %s, want reviewing", got)
+	}
+	if told := noticeReasons(t, pool, "review-stuck"); len(told) != 0 {
+		t.Fatalf("review-stuck notices %q, want none while a check of the head runs", told)
+	}
+	// Control: the run concludes, and its settlement asks for a read that finds nothing running.
+	running.Store(false)
+	later := settledChecksOnCode()
+	later.Generation, later.Snapshot = 2, "settled-later"
+	later.CheckRuns = []record.AttemptRun{{Name: "pr-checks-result", ID: 4}}
+	applyFact(t, pool, "github", "checks-on-code-concluded", later, w.handlers...)
+	testwait.Eventually(t, "the round to end once nothing of the head runs", func() bool {
+		got, _ := capturePhase(t, pool)
+		return got == phase.Accepting
+	})
+	if pr := recordedPull(t, pool, "CAPTURE-1"); pr.HeadChecks != record.HeadChecksConcluded || pr.MergeState != record.MergeStateBlocked {
+		t.Fatalf("the record holds %s with checks %q, want the same blocked with nothing running", pr.MergeState, pr.HeadChecks)
+	}
+}
+
+// GitHub answers a `blocked` head `mergeable` null while it computes whether the head merges, and
+// may go on doing so. Nothing here injects a read: the settlement asks for one, the ladder reads
+// the head again because a null is no answer the round can decide on (classify.
+// MergeAnswerIncomplete), and the second null read in a row tells the architect, once, naming the
+// reads. The round stays in reviewing.
+func TestAMergeabilityGitHubNeverComputesIsToldOnItsSecondRead(t *testing.T) {
+	t.Parallel()
+	nullPull := pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":null,"mergeable_state":"blocked","requested_reviewers":[],"requested_teams":[]}`}
+	rig := newReadRig(t, approvedCapture, func(int32) pullAnswer { return nullPull })
+	rig.start(t)
+	testwait.Eventually(t, "the review-stuck notice of the null mergeability", func() bool {
+		return len(noticeReasons(t, rig.pool, "review-stuck")) > 0
+	})
+	told := noticeReasons(t, rig.pool, "review-stuck")
+	if len(told) != 1 || !strings.Contains(told[0], "GitHub has answered `mergeable` null for it on 2 read(s) in a row") {
+		t.Fatalf("review-stuck notices %q, want one naming two null reads in a row", told)
+	}
+	if got, _ := capturePhase(t, rig.pool); got != phase.Reviewing {
+		t.Fatalf("the issue is in %s, want reviewing: GitHub has not said the head merges", got)
+	}
+	testwait.Eventually(t, "the ladder to read the head past its second read", func() bool { return rig.reads.Load() > 2 })
+	if again := noticeReasons(t, rig.pool, "review-stuck"); len(again) != 1 {
+		t.Fatalf("review-stuck notices %q after more null reads, want the one", again)
+	}
+}
+
+// A climb whose first read GitHub refuses - 403 once the REST budget is spent - hands the head to
+// its base's reads when no base holds the issue yet, so the head is read again although no event
+// is coming: the base's read answers clean, and the round ends. Before, such a climb answered
+// nothing and the head stood unread until its next event (dispatch://INFRA-4192 review
+// 6049029052).
+func TestAClimbWhoseFirstReadFailsHandsTheHeadToItsBase(t *testing.T) {
+	t.Parallel()
+	// The pull request's opened event records its base (workflow's pullRequestOpened), so the
+	// record names main before any read of GitHub has answered.
+	onMain := func(t *testing.T, pool *store.Pool) {
+		t.Helper()
+		approvedCapture(t, pool)
+		if _, err := pool.Exec(context.Background(), "update pull_requests set base = 'main' where issue = 'CAPTURE-1'"); err != nil {
+			t.Fatalf("record the base: %v", err)
+		}
+	}
+	rig := newReadRig(t, onMain, func(int32) pullAnswer { return cleanPull })
+	rig.refuseREST.Store(true)
+	rig.start(t)
+	testwait.Eventually(t, "the base's read to end the round", func() bool {
+		got, _ := capturePhase(t, rig.pool)
+		return got == phase.Accepting
+	})
+	const climbRead = "read GitHub's merge state for an issue whose read was asked for"
+	refused := loggedLines(t, rig.logs.String(), climbRead)
+	if len(refused) != 1 || refused[0]["read"] != float64(1) || refused[0]["handedToBase"] != true {
+		t.Fatalf("the climb logged %v failed reads, want its first read refused and the head handed to its base", refused)
+	}
+	if follows := rig.follows(t); len(follows) == 0 || follows[0]["answered"] != string(record.MergeStateClean) {
+		t.Fatalf("the base's reads logged %v, want a read of the handed head answering clean", follows)
 	}
 }
 

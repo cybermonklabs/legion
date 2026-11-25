@@ -4,20 +4,24 @@ body: |-
   merge state is its answer to the reader, not its verdict on the merge: a token without the
   workflows permission reads `blocked` for every pull request that changes `.github/workflows/`, and
   another pull request's check suite on the same commit can hold a required check `expected` that
-  passed on this one. The round now ends on `blocked` once the head is MERGEABLE, the same read's
-  rollup of the head's checks says nothing of it is running, every check run GitHub reported on it
-  has concluded, and GitHub holds no review request open on the pull request; the merger's merge is
-  then what GitHub answers, accepted or refused with its reason, and the merger's instructions name
-  the `Required status check "<name>" is expected` refusal and its two remedies. A `blocked` head
-  with a review request open waits, and the architect and the reviewer are told once, with the
-  count of open requests; one whose mergeability GitHub has not computed, a check of which runs, or
-  whose count or rollup no read has given, waits quietly while the daemon reads it again. Both
-  reads of a pull request record the count and the rollup beside the merge state: the REST read
-  from `requested_reviewers` and `requested_teams`, and from GitHub's GraphQL rollup for a `blocked`
-  head, and a base's GraphQL batch in its one query (migration 20261124130001, which leaves
-  `pull_requests.reviews_requested` null and `pull_requests.head_checks` empty on every existing
-  row). A review request opened or withdrawn asks for a read, and so does a CI settlement that
-  concludes the head's last check under a recorded `blocked`.
+  passed on this one. The round now ends on `blocked` once the head is MERGEABLE, no check run or
+  commit status of it is running in GitHub's counts of the head's rollup by state (the rollup's own
+  state reads FAILURE as soon as one check fails while others still run), every check run GitHub
+  reported on it has concluded, and GitHub holds no review request open on the pull request; the
+  merger's merge is then what GitHub answers, accepted or refused with its reason, and the merger's
+  instructions name the `Required status check "<name>" is expected` refusal and its two remedies.
+  A required status nobody reported (EXPECTED) is not counted as running, since nothing is under
+  way to report it. A `blocked` head with a review request open waits, and the architect and the
+  reviewer are told once, with the count; one whose `mergeable` GitHub answers null waits quietly on
+  the first such read and is told from the second read in a row, or thirty minutes after the first,
+  whichever comes first; one a check of which runs, or whose count or rollup no read has given,
+  waits quietly while the daemon reads it again. The count and the rollup come from one GraphQL
+  answer (a base's batch, or the query a REST read of a `blocked`, MERGEABLE head asks), and the
+  record keeps the head they were read at and reads them as unread at any other (migration
+  20261124130001, which adds five columns of `pull_requests`, all unread on every existing row). A
+  review request opened or withdrawn asks for a read, so does a CI settlement that concludes the
+  head's last check under a recorded `blocked`, and a climb whose first read fails hands the head
+  to its base's reads when no base holds it yet.
 time: 2026-11-24T14:01:52.986536229Z
 custom:
     Issue: INFRA-4192

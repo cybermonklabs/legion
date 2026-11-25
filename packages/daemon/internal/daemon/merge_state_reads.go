@@ -235,8 +235,11 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // base's reads as after the last read, and they read it until GitHub answers it a state, as they
 // keep a pull request whose read fails owed (readBase): a failed read says nothing of the head, and
 // GitHub has already answered that it is still computing it (dispatch://INFRA-4374 R4). A read
-// that fails before any `unknown` answers nil, as the climb has read nothing: an issue no base
-// followed is read again at its next event, its next handoff and the daemon's next start. A read
+// that fails before any `unknown` answers the pull request the record holds, on its own base,
+// when no base's reads hold the issue yet, so those reads read it until GitHub answers: a round
+// that waits quietly on the head has no event coming that would read it again. Where a base's
+// reads already hold the issue it answers nil, and they read it on their own ladder. A read that
+// fails on the record's read answers nil, as there is no pull request to hand. A read
 // GitHub answered whose answer the record did not take (errUnapplied: the database failed the
 // write) ends the climb and answers that read's pull request, whatever GitHub answered, so its
 // base's reads read it again on its ladder: the record still holds what it held before, and
@@ -264,9 +267,20 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *re
 					"issue", issue, "head", pr.HeadSHA, "read", read, "answered", string(state), "error", err)
 				return pr
 			}
+			// A read that fails before any `unknown` hands the record's pull request to its base's
+			// reads when no base holds the issue yet: nothing else would read the head until its
+			// next event, and a round that waits quietly on it has none coming (dispatch://INFRA-4192
+			// review 6049029052). A base that already holds it reads it on its own ladder.
+			handed := unknown
+			if handed == nil && key == "" {
+				handed = pr
+			}
 			w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record stands as it was until the next read",
-				"issue", issue, "read", read, "handedToBase", unknown != nil, "error", err)
-			return unknown
+				"issue", issue, "read", read, "handedToBase", handed != nil, "error", err)
+			if pr != nil {
+				w.readFailed(ctx, *pr)
+			}
+			return handed
 		}
 		if read == 1 {
 			w.leaveBase(key, issue, asked)
@@ -365,7 +379,10 @@ func (w *workflowRuntime) readMergeState(ctx context.Context, issue string) (rec
 	answeredAt := time.Now().UTC()
 	cancel()
 	if err != nil {
-		return record.MergeStateUnread, false, nil, fmt.Errorf("read pull request %s#%d and its merge state: %w", recorded.Repo, recorded.Number, err)
+		// The pull request the record holds, on its own base, so a climb whose first read fails can
+		// hand the head to its base's reads (climbMergeState).
+		pr := followed(*recorded, githubPullRequest{})
+		return record.MergeStateUnread, false, &pr, fmt.Errorf("read pull request %s#%d and its merge state: %w", recorded.Repo, recorded.Number, err)
 	}
 	pr := followed(*recorded, pull)
 	fact, err := w.applyMergeability(ctx, github, *recorded, pull, answeredAt, w.mergeabilityEventID(*recorded, answeredAt))

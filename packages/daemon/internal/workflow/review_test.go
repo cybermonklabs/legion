@@ -624,9 +624,11 @@ func TestAConfirmingReadStampsWhenItWasMadeAndAFactWithNoReadTimeStampsNothing(t
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedMergeStateRound(t, pool, record.MergeStateBlocked)
+			// The record a read of headOne wrote, its evidence of that head among it, so a read that
+			// confirms it answers exactly what is recorded.
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
 				Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: headOne, Failing: []string{}, Cancelled: []string{},
-				Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked, StateReadAt: recordedAt,
+				Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked, StateReadAt: recordedAt, EvidenceHead: headOne,
 				CheckedHead: headOne, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: headOne, Conclusion: record.RunSucceeded}}})
 			before := recordedPR(t, pool, "LEGION-208")
 

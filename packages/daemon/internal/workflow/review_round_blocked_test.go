@@ -254,37 +254,81 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 	})
 
 	// GitHub answers `blocked` with `mergeable` null while a background job computes whether the
-	// head merges cleanly, routinely on the first read after a push. The round does not end on it
-	// and tells nobody: the readers read such an answer again (classify.MergeAnswerIncomplete), and
-	// the read that finds the head MERGEABLE ends the round.
+	// head merges cleanly, routinely on the first read after a push. The first such read tells
+	// nobody; the second in a row at the same head tells the architect and the reviewer once,
+	// naming the reads; and the read that finds the head MERGEABLE ends the round.
 	t.Run("GitHub answers blocked before it computed whether the head merges", func(t *testing.T) {
 		pool, github := rig(t, record.MergeStateBlocked)
 		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
 		github.apply("approve", approve)
-		waits(t, pool, "GitHub has not said the head merges")
+		waits(t, pool, "GitHub has not said the head merges, on a first read")
+		github.read()
+		if got := issuePhase(t, pool); got != phase.Reviewing {
+			t.Fatalf("LEGION-208 is in %s, want reviewing: GitHub still has not said the head merges", got)
+		}
+		told := reviewStuckNotices(t, pool)
+		if len(told) != 1 || !strings.Contains(told[0].Reason, "GitHub has answered `mergeable` null for it on 2 read(s) in a row") {
+			t.Fatalf("review-stuck notices %+v, want one naming two null reads in a row", told)
+		}
+		github.read()
+		if again := reviewStuckNotices(t, pool); len(again) != 1 {
+			t.Fatalf("after a third null read the notices are %+v, want the one", again)
+		}
 		github.mergeable, github.checks = record.MergeabilityMergeable, record.HeadChecksConcluded
 		github.read()
-		standsUntold(t, pool, phase.Accepting, "the read found the head MERGEABLE")
+		if got := issuePhase(t, pool); got != phase.Accepting {
+			t.Fatalf("LEGION-208 is in %s, want accepting: the read found the head MERGEABLE", got)
+		}
+	})
+
+	// The bound is time, not a count: a first null read whose next reads all fail is told once
+	// classify.NullMergeableTellAfter has passed since it, by the fact the reader applies after a
+	// failed read (intake.PullRequestMergeStateUnread), and not a second before.
+	t.Run("a null mergeable whose next reads fail is told at the time bound", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateBlocked)
+		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
+		github.apply("approve", approve)
+		first := github.at
+		unread := intake.PullRequestMergeStateUnread{Repo: "sjawhar/legion", Number: 42, HeadSHA: headOne}
+		clockReads(github.engine, first.Add(classify.NullMergeableTellAfter-time.Second))
+		github.apply("unread-inside", unread)
+		waits(t, pool, "a failed read inside the bound tells nobody")
+		clockReads(github.engine, first.Add(classify.NullMergeableTellAfter))
+		github.apply("unread-at-bound", unread)
+		told := reviewStuckNotices(t, pool)
+		if len(told) != 1 || !strings.Contains(told[0].Reason, "GitHub has answered `mergeable` null for it on 1 read(s) in a row since") {
+			t.Fatalf("review-stuck notices %+v, want one naming the one null read the bound has outlived", told)
+		}
+		if got := issuePhase(t, pool); got != phase.Reviewing {
+			t.Fatalf("LEGION-208 is in %s, want reviewing", got)
+		}
 	})
 
 	// A row an earlier release wrote holds `blocked` and MERGEABLE beside no count of review
-	// requests and no rollup (migration 20261124130001). The approval does not end the round on
-	// it: the round waits quietly for the read the approval asks, which writes both.
-	t.Run("a row recorded blocked before the count and the rollup were read", func(t *testing.T) {
-		pool := migratedPool(t)
-		seedMergeStateRound(t, pool, record.MergeStateBlocked)
-		if _, err := pool.Exec(t.Context(), "update pull_requests set reviews_requested = null, head_checks = '' where issue = 'LEGION-208'"); err != nil {
-			t.Fatalf("leave the row as an earlier release wrote it: %v", err)
-		}
-		engine := testEngine(config.DesignGateRootIssues, nil)
-		github := newGitHubFake(t, pool, engine, record.MergeStateBlocked)
-		if result := applyFacts(t, pool, engine)("approve", approve); result.Refusal != nil {
-			t.Fatalf("the approval was refused: %+v", result.Refusal)
-		}
-		waits(t, pool, "no read has counted the review requests or read the rollup")
-		github.serve()
-		standsUntold(t, pool, phase.Accepting, "the read wrote a count of none and a rollup with nothing running")
-	})
+	// requests and no rollup (migration 20261124130001), and a row a rollback left holds the count
+	// and rollup of the head before beside this head's state. The approval ends the round on
+	// neither: the round waits quietly for the read the approval asks, which writes both of this
+	// head.
+	for _, tc := range []struct{ name, set string }{
+		{"a row recorded blocked before the count and the rollup were read", "reviews_requested = null, head_checks = '', evidence_head = ''"},
+		{"a row whose count and rollup are the head before's", "reviews_requested = 0, head_checks = 'concluded', evidence_head = '" + headEarlier + "'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedMergeStateRound(t, pool, record.MergeStateBlocked)
+			if _, err := pool.Exec(t.Context(), "update pull_requests set "+tc.set+" where issue = 'LEGION-208'"); err != nil {
+				t.Fatalf("leave the row as an earlier release wrote it: %v", err)
+			}
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			github := newGitHubFake(t, pool, engine, record.MergeStateBlocked)
+			if result := applyFacts(t, pool, engine)("approve", approve); result.Refusal != nil {
+				t.Fatalf("the approval was refused: %+v", result.Refusal)
+			}
+			waits(t, pool, "no read of this head has counted the review requests or read the rollup")
+			github.serve()
+			standsUntold(t, pool, phase.Accepting, "the read of this head wrote a count of none and a rollup with nothing running")
+		})
+	}
 
 	// GitHub sends `review_request_removed` when a requested review is withdrawn, and no other
 	// event says so. The fact asks a read, which counts the requests again, and the read that finds

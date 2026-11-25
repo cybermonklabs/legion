@@ -991,26 +991,41 @@ type PullRequest struct {
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
 	MergeState MergeState
 	// ReviewsRequested is how many review requests GitHub holds open on the pull request, people,
-	// Apps and teams alike, as the read that recorded MergeState found them: a REST read of one
-	// pull request counts its `requested_reviewers` and `requested_teams`, and a base's GraphQL
-	// batch reads `reviewRequests { totalCount }`. Nil means no read has counted them for this head:
-	// a row written before migration 20261124130001, a head no read has answered for, or a GraphQL
-	// answer that left the count null or named it in an error. It is cleared and carried with
-	// MergeState. A review GitHub asked for and that is not given yet is the one cause of a
-	// `blocked` head the daemon can read without a ruleset (classify.MergeAnswerOf). GitHub does
-	// not ask again after it dismisses an approval, so 0 does not say that no review is required;
-	// the merger's enqueue names any review still required.
+	// Apps and teams alike, as the read that recorded MergeState found them: a base's GraphQL batch
+	// and a REST read of a `blocked`, MERGEABLE head read `reviewRequests { totalCount }` in the one
+	// GraphQL answer that also gives HeadChecks, and any other REST read counts its
+	// `requested_reviewers` and `requested_teams`. Nil means no read has counted them for this
+	// head: a row written before migration 20261124130001, a head no read has answered for, or a
+	// GraphQL answer that left the count null or named it in an error. It speaks of EvidenceHead
+	// alone. A review GitHub asked for and that is not given yet is the one cause of a `blocked`
+	// head the daemon can read without a ruleset (classify.MergeOutcomeOf). GitHub does not ask
+	// again after it dismisses an approval, so 0 does not say that no review is required; the
+	// merger's merge names any review still required.
 	ReviewsRequested *int
 	// HeadChecks is whether a check or a commit status of this head was still running when the
-	// read that recorded MergeState was made: GitHub's `statusCheckRollup` of the head commit, which
-	// that read carries (a base's GraphQL batch asks for it beside the merge state, and a REST read
-	// that answers `blocked` asks GitHub's GraphQL API for it). It is current evidence, where the
-	// head's settlement (ChecksConcludedOnHead) is only the last one the daemon applied: a check
-	// re-run on the same head, a workflow queued before it makes a run and a commit status set back
-	// to pending leave that settlement standing while GitHub holds the head `blocked`. The unread
-	// value is a row written before migration 20261124130001, or a read that gave no rollup for
-	// this head. It is cleared and carried with MergeState.
+	// read that recorded MergeState was made: GitHub's `statusCheckRollup` of the head commit,
+	// counted by state, which that read carries (a base's GraphQL batch asks for it beside the
+	// merge state, and a REST read that answers `blocked` and MERGEABLE asks GitHub's GraphQL API
+	// for it). It is current evidence, where the head's settlement (ChecksConcludedOnHead) is only
+	// the last one the daemon applied: a check re-run on the same head, a workflow queued before it
+	// makes a run and a commit status set back to pending leave that settlement standing while
+	// GitHub holds the head `blocked`. The unread value is a row written before migration
+	// 20261124130001, or a read that gave no rollup for this head. It speaks of EvidenceHead alone.
 	HeadChecks HeadChecks
+	// NullMergeableReads is how many reads of EvidenceHead in a row GitHub answered `blocked` with
+	// `mergeable` null, the answer it gives while it computes whether the head merges, and
+	// NullMergeableSince is when the first of them was read (its StateReadAt). The round waits
+	// quietly on the first such read, which is routine after a push, and tells the architect once
+	// a second has answered the same or the first is classify.NullMergeableTellAfter old, whichever
+	// comes first (classify.MergeOutcomeOf). Any other answer sets both back to zero.
+	NullMergeableReads int
+	NullMergeableSince time.Time
+	// EvidenceHead is the head the read that wrote ReviewsRequested, HeadChecks and the null reads
+	// was made of. They speak of that head alone, and classify reads them as unread while HeadSHA
+	// is any other (classify.MergeOutcomeOf): a release before migration 20261124130001 writes a
+	// new head and its merge state and leaves them where they stood, so after a rollback and a
+	// roll-forward they can be another head's. Empty means no read wrote them.
+	EvidenceHead string
 	// StateReadAt is the moment the daemon last got GitHub's answer about the merge state of the
 	// head this record stands at, taken from the reader's own clock when that answer was in hand.
 	// This is the one full account of the stamp; every other comment that needs part of it points
@@ -1318,10 +1333,14 @@ type Judgement struct {
 	Moves        []Move         `json:"moves,omitempty"`
 	Mergeability Mergeability   `json:"mergeability,omitempty"`
 	MergeState   MergeState     `json:"mergeState,omitempty"`
-	// omitempty, so a run anchored before either field reads as it did, and a nil count, no read
-	// of it, stays nil (PullRequest.ReviewsRequested and HeadChecks).
-	ReviewsRequested *int       `json:"reviewsRequested,omitempty"`
-	HeadChecks       HeadChecks `json:"headChecks,omitempty"`
+	// omitempty and omitzero, so a run anchored before any of these fields reads as it did, and a
+	// nil count, no read of it, stays nil (PullRequest.ReviewsRequested, HeadChecks, the null reads
+	// and EvidenceHead).
+	ReviewsRequested   *int       `json:"reviewsRequested,omitempty"`
+	HeadChecks         HeadChecks `json:"headChecks,omitempty"`
+	NullMergeableReads int        `json:"nullMergeableReads,omitempty"`
+	NullMergeableSince time.Time  `json:"nullMergeableSince,omitzero"`
+	EvidenceHead       string     `json:"evidenceHead,omitempty"`
 	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON. A run
 	// anchored before any read answered carries none, and so does one anchored before migration
 	// 20261112070503 (PullRequest.StateReadAt says what that means).
@@ -1480,15 +1499,18 @@ func (m MergeState) Mergeable() bool {
 }
 
 // HeadChecks is what the read that recorded a pull request's merge state found of its head's
-// checks and commit statuses, from GitHub's `statusCheckRollup` of the head commit
-// (PullRequest.HeadChecks): whether any of them was still running then. Unlike the head's
+// checks and commit statuses, from GitHub's `statusCheckRollup` of the head commit counted by
+// state (PullRequest.HeadChecks): whether any of them was still running then. Unlike the head's
 // settlement, which is the last one the daemon applied, it is GitHub's answer at the moment of the
 // read. "" (the zero value) means no read gave it for the head the record stands at.
 type HeadChecks string
 
-// The three values of HeadChecks: unread; running, a check or a status of the head still pending
-// when GitHub answered (the rollup's PENDING); and concluded, none pending (the rollup's SUCCESS,
-// FAILURE, ERROR or EXPECTED, or no rollup on a commit with no check or status at all).
+// The three values of HeadChecks: unread; running, a check run of the head QUEUED, IN_PROGRESS,
+// PENDING or WAITING, or a commit status PENDING, when GitHub answered; and concluded, none of
+// them, or no rollup on a commit with no check or status at all. The rollup's own state is not
+// enough: GitHub answers FAILURE as soon as one context fails, while others still run. A status
+// GitHub counts EXPECTED, required and never reported, is not running: nothing is under way to
+// report it, and the merger's merge names it.
 const (
 	HeadChecksUnread    HeadChecks = ""
 	HeadChecksRunning   HeadChecks = "running"

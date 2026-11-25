@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // 20261124130001 records, beside a pull request's merge state, how many review requests GitHub
@@ -31,25 +32,29 @@ func TestAPullRequestRecordedBefore20261124130001HoldsNoCountAndNoRollup(t *test
 		t.Fatalf("migrate: %v", err)
 	}
 	var requested *int
-	var checks, state string
+	var checks, state, evidence string
+	var nulls int
+	var since time.Time
 	if err := store.Pool().QueryRow(ctx,
-		`select reviews_requested, head_checks, merge_state from pull_requests where issue = 'LEGION-208'`).Scan(&requested, &checks, &state); err != nil {
+		`select reviews_requested, head_checks, null_mergeable_reads, null_mergeable_since, evidence_head, merge_state
+		 from pull_requests where issue = 'LEGION-208'`).Scan(&requested, &checks, &nulls, &since, &evidence, &state); err != nil {
 		t.Fatalf("read the pull request after 20261124130001: %v", err)
 	}
-	if requested != nil || checks != "" || state != "blocked" {
-		t.Fatalf("after 20261124130001 the row holds %v review requests, rollup %q and merge state %q, want no count and no rollup beside the blocked it held",
-			requested, checks, state)
+	if requested != nil || checks != "" || nulls != 0 || !since.Equal(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)) || evidence != "" || state != "blocked" {
+		t.Fatalf("after 20261124130001 the row holds %v review requests, rollup %q, %d null reads since %v of %q and merge state %q, want nothing read beside the blocked it held",
+			requested, checks, nulls, since, evidence, state)
 	}
 	for _, statement := range []string{
 		`update pull_requests set reviews_requested = -1 where issue = 'LEGION-208'`,
 		`update pull_requests set head_checks = 'pending' where issue = 'LEGION-208'`,
+		`update pull_requests set null_mergeable_reads = -1 where issue = 'LEGION-208'`,
 	} {
 		if _, err := store.Pool().Exec(ctx, statement); err == nil {
 			t.Fatalf("%s was taken, want the column's check to refuse it", statement)
 		}
 	}
-	if _, err := store.Pool().Exec(ctx,
-		`update pull_requests set reviews_requested = 2, head_checks = 'running' where issue = 'LEGION-208'`); err != nil {
-		t.Fatalf("a read's count and rollup were refused: %v", err)
+	if _, err := store.Pool().Exec(ctx, `update pull_requests set reviews_requested = 2, head_checks = 'running',
+		null_mergeable_reads = 1, null_mergeable_since = now(), evidence_head = 'h4' where issue = 'LEGION-208'`); err != nil {
+		t.Fatalf("a read's count, rollup and null reads were refused: %v", err)
 	}
 }

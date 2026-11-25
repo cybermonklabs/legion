@@ -890,6 +890,20 @@ type PullRequestMergeability struct {
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
 
+// PullRequestMergeStateUnread is the daemon's own fact that a read of GitHub's merge state for the
+// pull request at head HeadSHA failed - GitHub refused it, timed out or answered nothing - while
+// the record holds a `blocked` answer of that head with `mergeable` null. It carries no answer:
+// it asks the review round again at the moment it is applied (workflow's mergeStateUnread), since
+// a persistent null is told once classify.NullMergeableTellAfter has passed since its first read,
+// whatever the count of reads, and when every read fails no answer comes to ask the round.
+type PullRequestMergeStateUnread struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestMergeStateUnread) namedIssue() (string, bool) { return "", false }
+
 // PullRequestReviewRequests is GitHub's pull_request action `review_requested` or
 // `review_request_removed`: the review requests GitHub holds open on the pull request changed, at
 // head HeadSHA. It carries no count: the read it asks for counts them (workflow's askMergeState),

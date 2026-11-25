@@ -145,7 +145,9 @@ func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []rec
 	// it was read goes with it, since it is then the time of a read about the head the record has
 	// left, and a stamp kept over a move would say this head had been read when it never was.
 	if headSHA != pr.HeadSHA {
-		pr.Mergeability, pr.MergeState, pr.ReviewsRequested, pr.HeadChecks, pr.StateReadAt = "", record.MergeStateUnread, nil, record.HeadChecksUnread, time.Time{}
+		pr.Mergeability, pr.MergeState, pr.StateReadAt = "", record.MergeStateUnread, time.Time{}
+		pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceHead = nil, record.HeadChecksUnread, ""
+		pr.NullMergeableReads, pr.NullMergeableSince = 0, time.Time{}
 	}
 	if !read.waits {
 		// An arrival that waits is judged for now by pushes that may not be its own (provisional),
@@ -1274,7 +1276,7 @@ func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *re
 		return false
 	}
 	return pr.State == record.PullRequestOpen && reviewer.Decision.State == "approved" &&
-		ApprovalStands(*pr, reviewer.Decision.Head) && MergeOutcomeOf(*pr) != MergeEndsRound && !ConflictRound(*pr)
+		ApprovalStands(*pr, reviewer.Decision.Head) && MergeOutcomeOf(*pr, pr.StateReadAt) != MergeEndsRound && !ConflictRound(*pr)
 }
 
 // MergeOutcome is what the merge state the record holds for a pull request's head comes to for
@@ -1295,24 +1297,37 @@ const (
 	MergeWaitsTold
 )
 
+// NullMergeableTellAfter is how long a `blocked` head may stand with GitHub answering `mergeable`
+// null before the architect and the reviewer are told, whatever the count of reads that answered
+// so: thirty minutes from the first such read. GitHub computes mergeability in a background job
+// that answers within a minute or two of a push; the base's follow reads read such a head again
+// at most ten minutes apart, so three of them fit in the bound, and a null that outlives it is no
+// computation still under way. The bound is wall-clock time, not a count, so reads that come far
+// apart - a REST budget spent, a restart - cannot stretch the silence (MergeOutcomeOf).
+const NullMergeableTellAfter = 30 * time.Minute
+
 // MergeOutcomeOf is the one rule of what the merge state the record holds for pr's head comes to
-// for an approved round: RoundWaitsOnMergeState, which the engine and the state build read, and
-// workflow's reviewRound, which tells the waiting round from the stuck one, both read it.
+// for an approved round, at the moment at of the fact that asks: RoundWaitsOnMergeState, which
+// the engine and the state build read, and workflow's reviewRound, which tells the waiting round
+// from the stuck one, both read it. at decides nothing but the null-mergeable bound below.
 //
 //   - A state GitHub would merge from (record.MergeState.Mergeable) ends the round.
 //   - No state read, `unknown`, a first conflicting read waiting for its second
 //     (FirstConflictReadWaits), and a head with no concluded check run of its own
 //     (ChecksConcludedOnHead) wait quietly.
-//   - `blocked` waits quietly while the read's rollup says a check or a status of the head is
-//     still running (record.HeadChecksRunning), while GitHub has not computed whether the head
-//     merges cleanly (mergeability not MERGEABLE: GitHub answers `mergeable` null while a
-//     background job computes it, routinely on the first read after a push), and while no read
-//     has given the rollup or the count of open review requests (record.HeadChecksUnread, a nil
-//     ReviewsRequested). The readers read each such answer again (MergeAnswerIncomplete): a climb
-//     of reads, then the base's follow reads, up to ten minutes apart, for as long as the head
-//     stands, so the round never waits with no read on its way. It waits and is told while
-//     GitHub holds a review request open. Otherwise - MERGEABLE, no check of the head running,
-//     every check run of the head concluded, no review asked for - it ends the round.
+//   - `blocked` is decided on the evidence a read of the head the record stands at wrote
+//     (record.PullRequest.EvidenceHead): the count of review requests, the rollup and the null
+//     reads of another head read as unread. It waits quietly while the rollup says a check or a
+//     status of the head is still running (record.HeadChecksRunning), and while no read has
+//     given the rollup or the count (record.HeadChecksUnread, a nil ReviewsRequested). While
+//     GitHub has not computed whether the head merges (`mergeable` null, which it answers while
+//     a background job computes it, routinely on the first read after a push), it waits quietly
+//     on the first such read and is told from the second read in a row that answers the same, or
+//     once the first is NullMergeableTellAfter old at at, whichever comes first. The readers read
+//     each of these answers again (MergeAnswerIncomplete): a climb of reads, then the base's
+//     follow reads, up to ten minutes apart, for as long as the head stands. It waits and is told
+//     while GitHub holds a review request open. Otherwise - MERGEABLE, no check of the head
+//     running, every check run of the head concluded, no review asked for - it ends the round.
 //   - Every other state GitHub would not merge from - `behind`, `draft`, a `dirty` no second read
 //     confirmed - waits and is told.
 //
@@ -1323,13 +1338,15 @@ const (
 // hold a required check `expected` that passed on this one, and the daemon reads no ruleset, so it
 // cannot tell such a hold from a required check or review that holds the head
 // (dispatch://INFRA-4192/comment/1c89885e-5e89-42f7-8122-9cdc697d0ccd). A round that waited for
-// `clean` on such a head would wait for good. The merger's enqueue is the call GitHub answers about
+// `clean` on such a head would wait for good. The merger's merge is the call GitHub answers about
 // the merge itself, accepted or refused with its reason, and the merger answers that refusal (step
 // 6 of prompts/roles/merger.md). The holds the daemon can read - a check of the head running, a
 // review asked for - keep the round here, since the merger would meet them as a refusal already
-// known. A confirmed conflict is no outcome of this rule: RoundWaitsOnMergeState ends that round
-// whatever the merge state (ConflictRound).
-func MergeOutcomeOf(pr record.PullRequest) MergeOutcome {
+// known. A required check nobody has reported (EXPECTED) is no check running: nothing is under way
+// to report it, so waiting on it waits for good, and it is the merger's refusal to name. A
+// confirmed conflict is no outcome of this rule: RoundWaitsOnMergeState ends that round whatever
+// the merge state (ConflictRound).
+func MergeOutcomeOf(pr record.PullRequest, at time.Time) MergeOutcome {
 	switch {
 	case pr.MergeState.Mergeable():
 		return MergeEndsRound
@@ -1338,10 +1355,22 @@ func MergeOutcomeOf(pr record.PullRequest) MergeOutcome {
 		return MergeWaitsQuietly
 	case pr.MergeState != record.MergeStateBlocked:
 		return MergeWaitsTold
-	case pr.HeadChecks == record.HeadChecksRunning, pr.Mergeability != record.MergeabilityMergeable,
-		pr.HeadChecks == record.HeadChecksUnread, pr.ReviewsRequested == nil:
+	}
+	reviews, checks, nulls, since := pr.ReviewsRequested, pr.HeadChecks, pr.NullMergeableReads, pr.NullMergeableSince
+	if pr.EvidenceHead != pr.HeadSHA {
+		reviews, checks, nulls, since = nil, record.HeadChecksUnread, 0, time.Time{}
+	}
+	switch {
+	case checks == record.HeadChecksRunning:
 		return MergeWaitsQuietly
-	case *pr.ReviewsRequested > 0:
+	case pr.Mergeability != record.MergeabilityMergeable:
+		if nulls >= 2 || nulls >= 1 && !since.IsZero() && at.Sub(since) >= NullMergeableTellAfter {
+			return MergeWaitsTold
+		}
+		return MergeWaitsQuietly
+	case checks == record.HeadChecksUnread, reviews == nil:
+		return MergeWaitsQuietly
+	case *reviews > 0:
 		return MergeWaitsTold
 	}
 	return MergeEndsRound
