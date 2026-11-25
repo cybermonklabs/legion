@@ -339,8 +339,11 @@
  *   GitHub's build provenance of the image's digest names; else the one the labels of the image's
  *   own OCI config name (`org.opencontainers.image.revision`, else the release tag of
  *   `org.opencontainers.image.version`); else, for an image the configuration's
- *   `deploymentImages` names (one the deployment builds on a worker image), the commit of the
- *   base its Dockerfile at the image's revision names, once the base's `rootfs.diff_ids` are the
+ *   `deploymentImages` names (one the deployment builds on a worker image), what its Dockerfile
+ *   at the image's revision decides: the commit of the stage its final stage copies the worker's
+ *   packages from, once the image's own `org.opencontainers.image.version` label names that
+ *   commit, since a COPY writes the copied files over whatever the base holds there; or, where it
+ *   copies none of them, that of the base it names, once the base's `rootfs.diff_ids` are the
  *   first of the image's; else the one the pin history names (the comment lines right above the
  *   image's line); else the image's commit is not known, and the case or task is not measurable
  *   and is left out, since the repository's default branch would be a guess. The
@@ -824,6 +827,9 @@ import { EvidenceItem, messageLoad, type RecordedListing, Task } from "./load";
 import { mib, procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
 import {
   builtOn,
+  type DockerfileStage,
+  dockerfileStages,
+  type FinalStep,
   finalStage,
   type ImageConfig,
   type PodImage,
@@ -3559,7 +3565,7 @@ function legionCatalog(
 }
 
 /** Which commit of its repository a Legion pod's worker image carries. */
-const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the image itself decides, by the labels of its OCI config (read from the registry by digest, the config blob alone and no layer: org.opencontainers.image.revision, a commit of the repository, else org.opencontainers.image.version, mapped to the release tag v<version> or <name>-v<version> that the repository has); failing that, for an image of a repository that the configuration's deploymentImages names (an image the deployment builds on a worker image), the base it was built on decides: its OCI config's org.opencontainers.image.source label names the deployment and its org.opencontainers.image.revision label a commit of the deployment at or before its read, the Dockerfile the entry names at that commit builds its final stage on a digest-pinned base, and that base's rootfs.diff_ids are the first of the image's (a Dockerfile's ARG default is no proof of the base, since a build can pass another; the diff ids are the digests of the layers uncompressed, and the manifests' layer digests are not compared, since they differ where the build compressed a base layer again); the image's commit is then the base's, by the build provenance of its digest, else by its labels, and where any of these steps fails the image's commit is not known; for any other image, failing the labels, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the image's commit is not known, the repository's default branch is a guess that no profile is built on, and the case or task is not measurable`;
+const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the image itself decides, by the labels of its OCI config (read from the registry by digest, the config blob alone and no layer: org.opencontainers.image.revision, a commit of the repository, else org.opencontainers.image.version, mapped to the release tag v<version> or <name>-v<version> that the repository has); failing that, for an image of a repository that the configuration's deploymentImages names (an image the deployment builds on a worker image), the Dockerfile it was built from decides: its OCI config's org.opencontainers.image.source label names the deployment and its org.opencontainers.image.revision label a commit of the deployment at or before its read, at which the Dockerfile the entry names is read; a COPY writes the copied files over whatever the final stage's base holds at those paths, so where the final stage copies any ${IMAGE_ROOT}<package> of those prefix-table.tsv rows (a COPY or ADD line whose destination is the package, a path in it or a directory above it), the stage it copies them from decides and the base is not read: the final stage copies each such package from that one stage alone (every COPY --from=<stage> <src>... <dest> line that writes into it names that stage, and no ADD, which adds from the build context or a URL, writes into it), no later step of the final stage writes into a copied package (a COPY or ADD into it is one of those copies, and no RUN after the package's last COPY names a path that is the package, a path in it or a directory above it other than /), the stage is FROM a digest-pinned image (or the default of the ARG it names), and that image's commit, by the build provenance of its digest, else by its labels, is the image's only where the image's own org.opencontainers.image.version label names it: <version>, whose release tag <name>-v<version> of the repository's own name (legion-v<version> for a repository named legion), or v<version> or <name>-v<version> of the image's name as the labels read it, is at that commit, or sha-<hex>, whose hex starts that commit; the COPY is confirmed by that label, not by layer content, since a build can pass the stage another image than its ARG default, and a label that is absent, names no commit or names another commit leaves the image's commit not known, as a package copied from elsewhere, added by ADD, not copied, or written into by a later step does; where the final stage copies none of those packages, by COPY or ADD, the base it was built on decides: the Dockerfile builds its final stage on a digest-pinned base, and that base's rootfs.diff_ids are the first of the image's (a Dockerfile's ARG default is no proof of the base, since a build can pass another; the diff ids are the digests of the layers uncompressed, and the manifests' layer digests are not compared, since they differ where the build compressed a base layer again); the image's commit is then the base's, by the build provenance of its digest, else by its labels; where any of these steps fails the image's commit is not known; for any other image, failing the labels, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the image's commit is not known, the repository's default branch is a guess that no profile is built on, and the case or task is not measurable`;
 
 /** At which commit of the worker image's repository a Legion pod's daemon composed its role
  *  prompt (context.ts reads the item DAEMON_IMAGE_ITEM that names it). */
@@ -3634,6 +3640,41 @@ const OCI_REVISION = "org.opencontainers.image.revision";
 const OCI_VERSION = "org.opencontainers.image.version";
 const OCI_SOURCE = "org.opencontainers.image.source";
 
+/** The release tags a version label `version` of the image `image` names, in the order they are
+ *  tried: `v<version>`, then `<name>-v<version>` for the first words of the image's name, the
+ *  longest first. */
+function releaseTags(image: string, version: string): string[] {
+  const words = (
+    image
+      .replace(/@.*$/, "")
+      .replace(/:[^/]*$/, "")
+      .split("/")
+      .pop() ?? ""
+  ).split("-");
+  return [
+    ...new Set([
+      `v${version}`,
+      ...words.map((_, at) => `${words.slice(0, words.length - at).join("-")}-v${version}`),
+    ]),
+  ];
+}
+
+/** The commit of `repo` that `ref` (a commit or a tag) names at or before `at`, or undefined when
+ *  it names none there then; a read that failed for a transient reason throws. */
+async function refCommit(
+  github: GithubReads,
+  repo: string,
+  ref: string,
+  at: string
+): Promise<string | undefined> {
+  try {
+    return await github.commitAt(repo, ref, at);
+  } catch (error) {
+    if (transientFailure(error)) throw error;
+    return undefined;
+  }
+}
+
 /**
  * The commit of `imageRepo` that the OCI config of the image `image` (a digest-pinned reference;
  * `GithubReads.imageConfig` reads its manifest and config blob from the registry, a public GHCR
@@ -3661,18 +3702,8 @@ async function labelCommit(
   const found = `the OCI config of ${image}, read from its registry by digest,`;
   const revision = config.labels[OCI_REVISION];
   const version = config.labels[OCI_VERSION];
-  /** The commit of `imageRepo` that `ref` (a commit or a tag) names, or undefined when it names
-   *  none there at or before `when.at`. */
-  const resolve = async (ref: string) => {
-    try {
-      return await github.commitAt(imageRepo, ref, when.at);
-    } catch (error) {
-      if (transientFailure(error)) throw error;
-      return undefined;
-    }
-  };
   if (revision !== undefined && /^[0-9a-f]{40}$/.test(revision)) {
-    const commit = await resolve(revision);
+    const commit = await refCommit(github, imageRepo, revision, when.at);
     if (commit === revision) {
       return {
         sha: commit,
@@ -3681,20 +3712,9 @@ async function labelCommit(
     }
   }
   if (version !== undefined && version !== "") {
-    const words = (
-      image
-        .replace(/@.*$/, "")
-        .replace(/:[^/]*$/, "")
-        .split("/")
-        .pop() ?? ""
-    ).split("-");
-    const tags = [
-      `v${version}`,
-      ...words.map((_, at) => `${words.slice(0, words.length - at).join("-")}-v${version}`),
-    ];
-    for (const tag of new Set(tags)) {
+    for (const tag of releaseTags(image, version)) {
       if (!(await github.hasTag(imageRepo, tag))) continue;
-      const commit = await resolve(tag);
+      const commit = await refCommit(github, imageRepo, tag, when.at);
       if (commit === undefined) continue;
       return {
         sha: commit,
@@ -3712,18 +3732,92 @@ async function labelCommit(
   };
 }
 
+/** The words of LEGION_IMAGE_RULE's COPY step that say how the copy is confirmed. */
+const BY_LABEL = "the COPY is confirmed by the image's version label, not by layer content";
+
+/** The words of LEGION_IMAGE_RULE that say why a COPY, not the final stage's base, decides. */
+const COPY_OVER =
+  "a COPY writes the copied files over whatever the final stage's base holds at those paths";
+
+/** How many characters of a step the evidence shows before `…`. */
+const STEP_SHOWN = 120;
+
+/** Whether a `COPY` or `ADD` to `dest` writes into the package `pkg`: `dest` is the package, a
+ *  path in it, or a directory above it. */
+function writesInto(dest: string, pkg: string): boolean {
+  const at = path.posix.normalize(dest).replace(/(.)\/+$/, "$1");
+  return at === "/" || at === pkg || pkg.startsWith(`${at}/`) || at.startsWith(`${pkg}/`);
+}
+
+/** Whether the text `text` of a RUN names a path of the package `pkg`: an absolute path word of it
+ *  (one that starts with `/` after white space, a quote, `=`, `:`, `,` or a shell operator) that
+ *  is the package, a path in it, or a directory above it other than `/`, compared name by name
+ *  (`/opt/legion/pi-acme.bak` is no path in `/opt/legion/pi-acme`). A word's names from the first
+ *  that holds a glob, a brace or a `$` on are left out, since they can stand for any name, so
+ *  `/opt/legion/*` is the directory `/opt/legion`. */
+function namesPath(text: string, pkg: string): boolean {
+  for (const [, word = ""] of text.matchAll(/(?:^|[\s"'`;&|()<>=:,])(\/[^\s"'`;&|()<>=:,]*)/g)) {
+    const names = word.split("/");
+    const open = names.findIndex((name) => /[*?[{$]/.test(name));
+    const literal = open < 0 ? word : names.slice(0, open).join("/") || "/";
+    const at = path.posix.normalize(literal).replace(/(.)\/+$/, "$1");
+    if (at !== "/" && writesInto(at, pkg)) return true;
+  }
+  return false;
+}
+
+/** Where a Dockerfile's final stage writes the package `pkg` from: the `--from` of each COPY that
+ *  writes into it (`writesInto`; none for a copy from the build context), each source of an ADD
+ *  that writes into it (a URL it names, else the build context), and the index in the stage's
+ *  steps of the last such COPY, -1 where none does. */
+interface PackageCopies {
+  readonly pkg: string;
+  readonly froms: readonly (string | undefined)[];
+  readonly added: readonly string[];
+  readonly last: number;
+}
+
+function packageCopies(steps: readonly FinalStep[], pkg: string): PackageCopies {
+  const froms = new Set<string | undefined>();
+  const added = new Set<string>();
+  let last = -1;
+  for (const [at, step] of steps.entries()) {
+    if (step.copy === undefined || !writesInto(step.copy.dest, pkg)) continue;
+    if (step.keyword === "COPY") {
+      froms.add(step.copy.from);
+      last = at;
+      continue;
+    }
+    // An ADD fetches a URL (a git one too), and reads any other source from the build context.
+    for (const source of step.copy.sources) {
+      added.add(/^([a-z][\w+.-]*:\/\/|git@)/i.test(source) ? source : "the build context");
+    }
+  }
+  return { pkg, froms: [...froms], added: [...added], last };
+}
+
+/** A stage's `FROM` as the evidence names it: the image, and the `ARG` whose default it is. */
+function stageWords(stage: DockerfileStage): string {
+  if (stage.arg === undefined) return stage.from;
+  return stage.base === undefined
+    ? `${stage.from}, an ARG with no default`
+    : `${stage.base} (the default of the ARG ${stage.arg})`;
+}
+
 /**
  * The commit of `imageRepo` that the image `image` carries, where the configuration names its
  * repository as one the deployment `deployment` builds on a worker image (`deploymentImages`, the
  * entry `built`), by LEGION_IMAGE_RULE's deployment step: the image's OCI config labels
  * `org.opencontainers.image.source` the deployment (case aside, a trailing `/` aside) and
- * `org.opencontainers.image.revision` a commit that `deployment` holds at or before `when.at`; the
- * Dockerfile `built.dockerfile` at that commit builds its final stage on a digest-pinned base
- * (pod-image.ts's `finalStage`); the base's `rootfs.diff_ids` are the first of the image's
- * (`builtOn`: a build can pass the Dockerfile another base than its ARG default); and the commit
- * is the base's, by its build provenance in `imageRepo`, else by its labels (`labelCommit`). `how`
- * names each read, or, with no `sha`, the step that failed and why. Throws when a GitHub read
- * fails other than with a 404 of the Dockerfile or of a provenance.
+ * `org.opencontainers.image.revision` a commit that `deployment` holds at or before `when.at`; at
+ * that commit, the Dockerfile `built.dockerfile` decides. A COPY writes the copied files over
+ * whatever the final stage's base holds at those paths, so where the final stage copies any of
+ * the worker's packages `imagePackages`, by COPY or ADD (`packageCopies`, of pod-image.ts's
+ * `dockerfileStages`), the stage it copies them from decides, which the image's version label
+ * confirms (`copiedCommit`), and the base is not read; where it copies none, the base it is built
+ * on decides (`baseCommit`). `how` names each read, or, with no `sha`, the step that failed and
+ * why. Throws when a GitHub read fails other than with a 404 of the Dockerfile or of a
+ * provenance.
  */
 async function deploymentCommit(
   github: GithubReads,
@@ -3732,6 +3826,7 @@ async function deploymentCommit(
     readonly built: DeploymentImage;
     readonly deployment: string;
     readonly imageRepo: string;
+    readonly imagePackages: readonly string[];
     readonly when: { readonly at: string; readonly words: string };
   }
 ): Promise<{ readonly sha?: string; readonly how: string }> {
@@ -3772,17 +3867,58 @@ async function deploymentCommit(
     };
   }
   const labelled = `${step}: ${labels}, a commit of ${deployment} (${asked})`;
-  const recipe = `${deployment}:${built.dockerfile} at ${revision} (gh api repos/${deployment}/contents/${built.dockerfile}?ref=${revision})`;
+  const recipe = `${labelled}; ${deployment}:${built.dockerfile} at ${revision} (gh api repos/${deployment}/contents/${built.dockerfile}?ref=${revision})`;
   const text = await github.text(deployment, revision, built.dockerfile);
-  if (text === undefined) return { how: `${labelled}; ${recipe} does not exist` };
-  const base = finalStage(text).base;
+  if (text === undefined) return { how: `${recipe} does not exist` };
+  const dockerfile = dockerfileStages(text);
+  const sources = read.imagePackages.map((pkg) => packageCopies(dockerfile.steps, pkg));
+  const final = dockerfile.stages.at(-1);
+  const none = sources.every(({ froms, added }) => froms.length === 0 && added.length === 0);
+  if (final === undefined || none) {
+    return baseCommit(github, { image, diffIds: config.diffIds, text, recipe, imageRepo, when });
+  }
+  const copied = await copiedCommit(github, {
+    image,
+    version: config.labels[OCI_VERSION],
+    stages: dockerfile.stages,
+    steps: dockerfile.steps,
+    sources,
+    imageRepo,
+    when,
+  });
+  const how = `${recipe}, whose final stage copies into the profile's packages: ${COPY_OVER}, so where it copies them from decides, and its base, FROM ${stageWords(final)}, is not read; ${copied.how}`;
+  return copied.sha === undefined ? { how } : { sha: copied.sha, how };
+}
+
+/**
+ * LEGION_IMAGE_RULE's built-on step for the image `image` (its config's `rootfs.diff_ids`
+ * `diffIds`), whose Dockerfile `text`, read as `recipe` says, copies none of the worker's
+ * packages in its final stage: the Dockerfile builds its final stage on a digest-pinned base
+ * (pod-image.ts's `finalStage`); the base's `rootfs.diff_ids` are the first of the image's
+ * (`builtOn`: a build can pass the Dockerfile another base than its ARG default); and the commit
+ * is the base's, by its build provenance in `imageRepo`, else by its labels (`labelCommit`).
+ * `how` names each read, or, with no `sha`, the step that failed and why.
+ */
+async function baseCommit(
+  github: GithubReads,
+  read: {
+    readonly image: string;
+    readonly diffIds: readonly string[];
+    readonly text: string;
+    readonly recipe: string;
+    readonly imageRepo: string;
+    readonly when: { readonly at: string; readonly words: string };
+  }
+): Promise<{ readonly sha?: string; readonly how: string }> {
+  const { image, recipe, imageRepo, when } = read;
+  const base = finalStage(read.text).base;
   const baseDigest = /@sha256:([0-9a-f]{64})$/.exec(base ?? "")?.[1];
   if (base === undefined || baseDigest === undefined) {
     return {
-      how: `${labelled}; ${recipe} ${base === undefined ? "names no base of its final stage" : `builds its final stage on ${base}, which pins no digest`}`,
+      how: `${recipe} ${base === undefined ? "names no base of its final stage" : `builds its final stage on ${base}, which pins no digest`}`,
     };
   }
-  const on = `${labelled}; ${recipe} builds its final stage on ${base}`;
+  const on = `${recipe} builds its final stage on ${base}`;
   const baseConfig = await github.imageConfig(base);
   if (baseConfig === undefined) {
     return { how: `${on}, but its registry gives no OCI config of ${base}` };
@@ -3790,7 +3926,7 @@ async function deploymentCommit(
   // A build can pass the Dockerfile another base than its ARG default, so the images confirm it.
   const layers = builtOn(
     { name: base, diffIds: baseConfig.diffIds },
-    { name: image, diffIds: config.diffIds }
+    { name: image, diffIds: read.diffIds }
   );
   if (!layers.on) {
     return {
@@ -3813,14 +3949,181 @@ async function deploymentCommit(
     : { sha: baseLabels.sha, how: `${confirmed}; ${without}; ${baseLabels.how}` };
 }
 
+/**
+ * LEGION_IMAGE_RULE's COPY step for the image `image` (its version label `version`), whose
+ * Dockerfile's final stage (`stages` and the final stage's `steps`, pod-image.ts's
+ * `dockerfileStages`) copies some of the worker's packages, by COPY or ADD, as `sources` says of
+ * each (`/opt/legion/<package>`, `packageCopies`): the final stage copies each package from one
+ * stage alone, every COPY line that writes into the package, or into a directory above it, naming
+ * that stage, and no ADD writing into it (from the build context or a URL); no later step of the
+ * final stage writes into a copied package: a COPY or ADD into it is one of those writes, and no
+ * RUN after the package's last COPY names a path of it (`namesPath`: the package, a path in it,
+ * or a directory above it other than `/`); the stage is FROM a digest-pinned image, directly or
+ * by the default of the ARG it names; that image's commit is the one its build provenance in
+ * `imageRepo` names, else the one its labels name (`labelCommit`); and the image's version label
+ * names that commit (`versionNames`), since a build can pass the stage another image than its ARG
+ * default: the COPY is confirmed by that label, not by layer content. The final stage's base is
+ * not read. `how` names each read, or, with no `sha`, the step that failed and why: each package
+ * and where the final stage copies it from, the later RUN (its first STEP_SHOWN characters) and
+ * the package it names, or the label and the stage's commit.
+ */
+async function copiedCommit(
+  github: GithubReads,
+  read: {
+    readonly image: string;
+    readonly version: string | undefined;
+    readonly stages: readonly DockerfileStage[];
+    readonly steps: readonly FinalStep[];
+    readonly sources: readonly PackageCopies[];
+    readonly imageRepo: string;
+    readonly when: { readonly at: string; readonly words: string };
+  }
+): Promise<{ readonly sha?: string; readonly how: string }> {
+  const { stages, sources, imageRepo, when } = read;
+  /** The stage a COPY's `--from` names: by its index, else by its name, case aside. */
+  const stageOf = (from: string | undefined) =>
+    from === undefined
+      ? undefined
+      : /^\d+$/.test(from)
+        ? stages[Number(from)]
+        : stages.find((stage) => stage.name?.toLowerCase() === from.toLowerCase());
+  const [name] = sources[0]?.froms ?? [];
+  const stage = stageOf(name);
+  const packages = `the profile's packages (the prefix-table.tsv rows under ${IMAGE_ROOT})`;
+  if (
+    stage === undefined ||
+    !sources.every(
+      ({ froms, added }) => froms.length === 1 && added.length === 0 && stageOf(froms[0]) === stage
+    )
+  ) {
+    const where = sources.map(({ pkg, froms, added }) => {
+      const each = [
+        ...froms.map((from) =>
+          from === undefined
+            ? "the build context"
+            : stageOf(from) === undefined
+              ? `${from}, no stage of the Dockerfile`
+              : `the stage ${from}`
+        ),
+        ...added.map((source) => `${source} by ADD`),
+      ];
+      return each.length === 0 ? `${pkg} not at all` : `${pkg} from ${each.join(" and ")}`;
+    });
+    return {
+      how: `the final stage does not copy each of ${packages} from one stage: ${where.join(", ")}`,
+    };
+  }
+  const copied = `the final stage copies ${sources.map(({ pkg }) => pkg).join(", ")}, ${packages}, from the stage ${name}, FROM ${stageWords(stage)}`;
+  // A RUN after a package's last COPY that names a path of it leaves the image's files there not
+  // the stage's; a COPY or ADD into it is one of the writes above.
+  for (const { pkg, last } of sources) {
+    const later = read.steps
+      .slice(last + 1)
+      .find((step) => step.keyword === "RUN" && namesPath(step.text, pkg));
+    if (later === undefined) continue;
+    const shown =
+      later.text.length > STEP_SHOWN ? `${later.text.slice(0, STEP_SHOWN)}…` : later.text;
+    return {
+      how: `${copied}, but its step "${shown}", after its last COPY of ${pkg}, names it, a path in it or a directory above it, so the image's ${pkg} need not be the stage's`,
+    };
+  }
+  const base = stage.base;
+  const digest = /@sha256:([0-9a-f]{64})$/.exec(base ?? "")?.[1];
+  if (base === undefined || digest === undefined) return { how: `${copied}, which pins no digest` };
+  const provenance = `gh api repos/${imageRepo}/attestations/sha256:${digest}`;
+  const found = await github.attestedCommit(imageRepo, digest);
+  let commit: string;
+  let named: string;
+  if (found !== undefined) {
+    commit = found.commit;
+    named = `${copied}; ${provenance} names ${found.uri} at ${found.commit}`;
+  } else {
+    const without = `its digest has no build provenance that names a commit (${provenance})`;
+    const labels = await labelCommit(github, { image: base, imageRepo, when });
+    if (labels.sha === undefined) {
+      const none = labels.how === "" ? `its registry gives no OCI config of ${base}` : labels.how;
+      return { how: `${copied}, but ${without}, and ${none}` };
+    }
+    commit = labels.sha;
+    named = `${copied}; ${without}; ${labels.how}`;
+  }
+  const label = await versionNames(github, {
+    image: read.image,
+    version: read.version,
+    commit,
+    imageRepo,
+    when,
+  });
+  return label.names
+    ? {
+        sha: commit,
+        how: `${named}; ${label.how}, so the label confirms the stage's commit: ${BY_LABEL}`,
+      }
+    : { how: `${named}, but ${label.how}: ${BY_LABEL}` };
+}
+
+/**
+ * Whether the version label `version` of the image `image` names `commit` of `imageRepo`: as
+ * `sha-<hex>` (7 to 40 hex digits) whose hex starts it; else as a release, by the first of its
+ * tags that `imageRepo` has whose last commit at or before `when.at` there is: the repository's
+ * own `<name>-v<version>` (`legion-v<version>` for a repository named legion), then those
+ * `labelCommit` tries (`releaseTags`). `how` says what the label names, and, where it names no
+ * commit or another, names the label and `commit` both.
+ */
+async function versionNames(
+  github: GithubReads,
+  read: {
+    readonly image: string;
+    readonly version: string | undefined;
+    readonly commit: string;
+    readonly imageRepo: string;
+    readonly when: { readonly at: string; readonly words: string };
+  }
+): Promise<{ readonly names: boolean; readonly how: string }> {
+  const { image, version, commit, imageRepo, when } = read;
+  if (version === undefined || version === "") {
+    return {
+      names: false,
+      how: `the OCI config of ${image} has no ${OCI_VERSION} label, so nothing confirms the stage's commit ${commit}`,
+    };
+  }
+  const labels = `the OCI config of ${image} labels ${OCI_VERSION} ${version}`;
+  const hex = /^sha-([0-9a-f]{7,40})$/.exec(version)?.[1];
+  if (hex !== undefined) {
+    const starts = commit.startsWith(hex);
+    return {
+      names: starts,
+      how: `${labels}, whose ${hex} ${starts ? "starts" : "does not start"} the stage's commit ${commit}`,
+    };
+  }
+  const tags = [
+    ...new Set([`${imageRepo.split("/").pop()}-v${version}`, ...releaseTags(image, version)]),
+  ];
+  for (const tag of tags) {
+    if (!(await github.hasTag(imageRepo, tag))) continue;
+    const at = await refCommit(github, imageRepo, tag, when.at);
+    if (at === undefined) continue;
+    const release = `${labels}, so the release ${tag}, a tag of ${imageRepo} (gh api repos/${imageRepo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${at}`;
+    return at === commit
+      ? { names: true, how: release }
+      : { names: false, how: `${release}, not the stage's commit ${commit}` };
+  }
+  return {
+    names: false,
+    how: `${labels}, which names no commit (sha-<hex>) and no release tag of ${imageRepo} (${tags.join(", ")}), so nothing confirms the stage's commit ${commit}`,
+  };
+}
+
 /** The commit of `imageRepo` that the image the `key:` line names for the project `project` was
  *  built from, read from `deployment` at `sha` by LEGION_IMAGE_RULE: the project file's top-level
  *  `key:` line, else the one of the project's entry in the Pulumi config; `how` gives the reads
  *  that decided it, or, with no `sha`, why no source gave one: the build provenance of the image's
  *  digest, then the OCI config labels of the image itself (`labelCommit`), then, for an image of a
- *  repository `deploymentImages` names, the base the deployment built it on (`deploymentCommit`),
- *  else the comment lines above its line. Throws when a GitHub read fails other than with a 404 of
- *  the project file, of the config file, of a Dockerfile or of a provenance. */
+ *  repository `deploymentImages` names, the stage its final stage copies the worker's packages
+ *  `imagePackages` from, or, where it copies none, the worker image the deployment built it on
+ *  (`deploymentCommit`), else the comment lines above its line. Throws when a GitHub read fails
+ *  other than with a 404 of the project file, of the config file, of a Dockerfile or of a
+ *  provenance. */
 async function imageCommit(
   github: GithubReads,
   read: {
@@ -3833,6 +4136,9 @@ async function imageCommit(
     readonly when: { readonly at: string; readonly words: string };
     /** The configuration's deploymentImages. */
     readonly deploymentImages: readonly DeploymentImage[];
+    /** The profile's packages in the worker image: `/opt/legion/<package>` of each prefix-table.tsv
+     *  row under IMAGE_ROOT. */
+    readonly imagePackages: readonly string[];
   }
 ): Promise<{ readonly sha?: string; readonly how: string }> {
   const { key, deployment, sha, project, imageRepo, when } = read;
@@ -3881,8 +4187,10 @@ async function imageCommit(
     return { sha: labelled.sha, how: `${named}${without}; ${labelled.how}` };
   }
   if (labelled.how !== "") without = `${without}, and ${labelled.how}`;
-  // An image the deployment built on a worker image: the commit of the base its Dockerfile names,
-  // once the images confirm that base; a step that fails leaves the commit not known.
+  // An image the deployment built on a worker image: the commit of the stage its final stage
+  // copies the worker's packages from, once the image's version label confirms it, else, where it
+  // copies none, that of the base its Dockerfile names, once the images confirm that base; a step
+  // that fails leaves the commit not known.
   const repository = entry.image.replace(/@.*$/, "").replace(/:[^/]*$/, "");
   const built = read.deploymentImages.find((each) => each.repository === repository);
   if (built !== undefined) {
@@ -3891,6 +4199,7 @@ async function imageCommit(
       built,
       deployment,
       imageRepo,
+      imagePackages: read.imagePackages,
       when,
     });
     const how = `${named}${without}; ${based.how}`;
@@ -5120,8 +5429,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   // The repositories the worker image's packages come from: a plugin list (omp-plugins) is the
   // pod's only when one of them holds it; another's (a dev box's own) installs nothing in a pod.
-  // Their units are read at the image's commit (LEGION_IMAGE_RULE, below).
+  // Their units are read at the image's commit (LEGION_IMAGE_RULE, below). The packages are each
+  // `/opt/legion/<package>` of those rows, which an image that copies them must copy from one
+  // stage.
   const imageRepositories = new Set<string>();
+  const imagePackages = new Set<string>();
   if (legion) {
     const ompUnits = new Set(
       copies.installers
@@ -5129,7 +5441,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         .map((row) => `${row.unit} (${row.manifest_repository}:${row.manifest_path})`)
     );
     for (const row of copies.prefixes) {
-      if (!(row.prefix ?? "").startsWith(IMAGE_ROOT)) continue;
+      const prefix = row.prefix ?? "";
+      if (!prefix.startsWith(IMAGE_ROOT)) continue;
+      const [name = ""] = prefix.slice(IMAGE_ROOT.length).split("/");
+      if (name !== "") imagePackages.add(`${IMAGE_ROOT}${name}`);
       for (const via of vias(row.via ?? "")) {
         imageRepositories.add(via.repository);
         if (units.has(viaKey(via)) || !ompUnits.has(viaKey(via))) continue;
@@ -5550,6 +5865,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         imageRepo,
         when: whenOf(deployment),
         deploymentImages: run.config.deploymentImages ?? [],
+        imagePackages: [...imagePackages].sort(),
       };
       const worker = await imageCommit(github, { ...read, key: "image" });
       const daemon = await imageCommit(github, { ...read, key: "daemonImage" });

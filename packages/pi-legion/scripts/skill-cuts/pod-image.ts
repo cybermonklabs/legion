@@ -286,6 +286,118 @@ export function finalStage(dockerfile: string): FinalStage {
   return { base, instructions, baseComment: commentAbove(lines, argLine < 0 ? at : argLine) };
 }
 
+/** A stage of a Dockerfile: its `AS` name (none for a stage without one), the reference its
+ *  `FROM` names as written, and the image that reference is: the default of the `ARG` it names
+ *  (`${NAME}` or `$NAME`, an `ARG` before the first `FROM`, as a `FROM` reads them), undefined
+ *  for an `ARG` with no default; else the reference itself. */
+export interface DockerfileStage {
+  readonly name: string | undefined;
+  readonly from: string;
+  readonly base: string | undefined;
+  /** The `ARG` whose default `base` is, where the `FROM` names one. */
+  readonly arg: string | undefined;
+}
+
+/** A `COPY` or `ADD` of a Dockerfile's final stage: the `--from` it names (a stage's name or
+ *  index, or an image; none for a copy from the build context), its sources and its destination,
+ *  as written. */
+export interface FinalCopy {
+  readonly from: string | undefined;
+  readonly sources: readonly string[];
+  readonly dest: string;
+}
+
+/** An instruction of a Dockerfile's final stage: its keyword upper-cased (`COPY`, `ADD`, `RUN`
+ *  and so on), its text as written (each run of white space one space), and, for a `COPY` or
+ *  `ADD` that names a source and a destination, what it copies. */
+export interface FinalStep {
+  readonly keyword: string;
+  readonly text: string;
+  readonly copy: FinalCopy | undefined;
+}
+
+/** What the `COPY` or `ADD` line `line` copies (`[--from=<stage>] [--chown=… and other flags]
+ *  <src>... <dest>`, or `["<src>", ..., "<dest>"]`): undefined for another line, or for one that
+ *  names no source and destination. */
+function copyOf(line: string): FinalCopy | undefined {
+  const words = /^\s*(?:COPY|ADD)\s+(.*)$/i.exec(line)?.[1]?.trim().split(/\s+/);
+  if (words === undefined) return undefined;
+  const first = words.findIndex((word) => !word.startsWith("--"));
+  const options = first < 0 ? words : words.slice(0, first);
+  const from = options.map((word) => /^--from=(.+)$/i.exec(word)?.[1]).findLast(Boolean);
+  let paths: unknown[] = first < 0 ? [] : words.slice(first);
+  if (String(paths[0]).startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(paths.join(" "));
+      paths = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      paths = [];
+    }
+  }
+  const dest = paths.at(-1);
+  if (paths.length < 2 || typeof dest !== "string") return undefined;
+  return { from, sources: paths.slice(0, -1).map(String), dest };
+}
+
+/** Read each stage of a Dockerfile (`FROM [--platform=…] <ref> [AS <name>]`, the `ARG` defaults
+ *  resolved) and the final stage's instructions in their order, each `COPY` and `ADD` with what
+ *  it copies: a line continued with `\` is read whole, the lines of a heredoc (`<<EOF` to the
+ *  line `EOF`, `<<-EOF` or a quoted word too) are read as part of the instruction that opens it,
+ *  and comment lines are left out. `finalStage` reads the final stage's base and instructions
+ *  for its callers. */
+export function dockerfileStages(dockerfile: string): {
+  readonly stages: readonly DockerfileStage[];
+  readonly steps: readonly FinalStep[];
+} {
+  const lines = dockerfile
+    .split(/\r?\n/)
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n")
+    .replace(/\\\n/g, " ")
+    .split("\n");
+  const defaults = new Map<string, string>();
+  const stages: DockerfileStage[] = [];
+  let steps: FinalStep[] = [];
+  for (let at = 0; at < lines.length; at++) {
+    const line = lines[at] ?? "";
+    let text = line;
+    for (const [, , word] of line.matchAll(/(?:^|\s)<<-?(["']?)([A-Za-z_]\w*)\1/g)) {
+      for (at++; at < lines.length && lines[at]?.trim() !== word; at++) {
+        text = `${text}\n${lines[at]}`;
+      }
+    }
+    const from = /^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?\s*$/i.exec(line);
+    if (from !== null) {
+      const ref = from[1] ?? "";
+      const named = /^\$(?:\{(\w+)\}|(\w+))$/.exec(ref);
+      const arg = named?.[1] ?? named?.[2];
+      stages.push({
+        name: from[2],
+        from: ref,
+        base: arg === undefined ? ref : defaults.get(arg),
+        arg,
+      });
+      steps = [];
+      continue;
+    }
+    if (stages.length === 0) {
+      const args = /^\s*ARG\s+(.*)$/i.exec(line)?.[1] ?? "";
+      for (const [, name = "", value = ""] of args.matchAll(/(\w+)=("[^"]*"|'[^']*'|\S+)/g)) {
+        if (!defaults.has(name)) defaults.set(name, value.replace(/^(["'])(.*)\1$/, "$2"));
+      }
+      continue;
+    }
+    const keyword = /^\s*(\w+)/.exec(line)?.[1];
+    if (keyword === undefined) continue;
+    steps.push({
+      keyword: keyword.toUpperCase(),
+      text: text.trim().replace(/\s+/g, " "),
+      copy: copyOf(line),
+    });
+  }
+  return { stages, steps };
+}
+
 /** Associate each link with the profile set when its RUN executes. */
 function linksIn(profile: string, env: readonly string[], stage: FinalStage) {
   const variables = new Map(
