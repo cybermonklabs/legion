@@ -60,6 +60,8 @@ export interface AskBlockLines {
  *   (footnoteLabelEnd). Every space and tab after a label belongs to it.
  * - An empty list item, or one numbered other than 1, opens no list where it would interrupt a
  *   paragraph, or a block that the browser editor's parser holds open (interruptsOpenBlock).
+ * - A list stays open at a line that reaches its empty last item's content column, where the line
+ *   before it holds more than spaces, tabs and `>` (pmdoc's emptyItemGuard, continueList).
  * - A fence is three or more backticks or tildes, and a backtick fence's info string holds no
  *   backtick. A run of the same character at least as long closes it, within three columns of its
  *   containers and with only spaces and tabs after it. A container that ends ends the fence in it.
@@ -67,8 +69,8 @@ export interface AskBlockLines {
  *   would otherwise continue.
  * - A line that a container does not continue, and that opens no block, continues the paragraph
  *   in that container (a lazy line), and the container stays open.
- * - After a front-matter opener that no later line closes, no quote, list or footnote definition
- *   opens at the document's level (frontMatterEnd).
+ * - After a front-matter opener that no later line closes, no quote, list, footnote definition or
+ *   typed block opens at the document's level (frontMatterEnd).
  *
  * HTML blocks, which the server refuses in a write, are not read.
  */
@@ -104,8 +106,8 @@ export function readAskBlocks(lines: readonly string[], reading: BlockReading): 
  * first later line that is the same closes it. pmdoc keeps it word for word, so no line of it opens
  * a block. `end` is 0 where the document opens with none, or with an opener nothing closes, which
  * the renderer never writes: a rule opening a document is written `***`. Past such an opener
- * (`unclosed`), no quote, list or footnote definition opens at the document's level (pmdoc's
- * frontmatterAttempt).
+ * (`unclosed`), no quote, list, footnote definition or typed block opens at the document's level
+ * (pmdoc's frontmatterAttempt).
  */
 function frontMatterEnd(lines: readonly string[]): { end: number; unclosed: boolean } {
   if (!FRONT_MATTER_FENCE.test(lines[0] ?? "")) return { end: 0, unclosed: false };
@@ -181,6 +183,8 @@ class ScanLine {
   readonly text: string;
   /** The column each character starts at, a tab reaching the next multiple of four, then the end's. */
   readonly #starts: number[];
+  /** The column of the line's end. */
+  readonly #end: number;
   #pos = 0;
   #column = 0;
 
@@ -193,6 +197,7 @@ class ScanLine {
       starts.push(column);
     }
     this.#starts = starts;
+    this.#end = column;
   }
 
   /** The column taken so far. */
@@ -200,9 +205,11 @@ class ScanLine {
     return this.#column;
   }
 
-  /** The column that the character at `index` starts at. */
+  /** The column that the character at `index` starts at, and the line's end past its last one. */
   columnAt(index: number): number {
-    return this.#starts[index];
+    // #starts holds a column for each index from 0 to the line's length, and every caller passes
+    // one of those, so the line's end never stands in for a column that #starts holds.
+    return this.#starts[index] ?? this.#end;
   }
 
   /** The index of the first character from `index` on that is no space or tab. */
@@ -347,8 +354,8 @@ function leafAt(parent: ScanBlock, line: ScanLine): { block: ScanBlock; children
   return { block: { kind: "leaf", ...under(parent) }, children: false };
 }
 
-/** Whether an unclosed front-matter opener keeps a list, quote or footnote definition from opening
- *  in `parent` (frontMatterEnd). */
+/** Whether an unclosed front-matter opener keeps a list, quote, footnote definition or typed
+ *  block from opening in `parent` (frontMatterEnd). */
 function frontMatterHolds(scan: BlockScan, parent: ScanBlock): boolean {
   return scan.unclosedFrontMatter && parent.kind === "document";
 }
@@ -479,7 +486,7 @@ const SCAN_PARSERS: readonly ScanParser[] = [
     open(scan, parent, line, width, at) {
       const text = line.text.slice(at);
       const opener = scan.typedOpener(text);
-      if (opener === undefined) return undefined;
+      if (opener === undefined || frontMatterHolds(scan, parent)) return undefined;
       let body: string[] | undefined;
       if (opener.name === "ask") {
         body = [];
@@ -535,7 +542,10 @@ const SCAN_PARSERS: readonly ScanParser[] = [
  * editor's parser holds open there, other than a paragraph `parent` holds: a paragraph that ends on
  * the line before, reached across the containers the line opens first and forming no table, or an
  * indented code block with only blank lines after it, unless that code stands right after a list,
- * or right after a quote with no blank line between them.
+ * or right after a quote with no blank line between them. Where the code is `parent`'s own last
+ * block, a line of only `>` after it leaves it open too. Where the list reaches the code only out
+ * of the containers its line opens (`opensContainers`), such a line is one that a container was
+ * already open on, so the code holds nothing open on the list's line.
  */
 function interruptsOpenBlock(scan: BlockScan, parent: ScanBlock): boolean {
   let previous = parent.last;
@@ -551,12 +561,19 @@ function interruptsOpenBlock(scan: BlockScan, parent: ScanBlock): boolean {
   if (previous?.kind !== "code") return false;
   if (previous.previous?.kind === "list") return false;
   if (previous.previous?.kind === "quote" && !previous.blankBefore) return false;
-  return scan.lines.slice(previous.lastLine + 1, scan.index).every((row) => /^[ \t>]*$/.test(row));
+  return scan.lines
+    .slice(previous.lastLine + 1, scan.index)
+    .every((row) => /^[ \t]*$/.test(row) || (!opensContainers && /^[ \t>]*$/.test(row)));
 }
 
-/** A table's delimiter row, which makes the paragraph above it a table (GFM's tables). */
+/**
+ * A table's delimiter row, which makes the paragraph above it a table (GFM's tables): a `|`
+ * somewhere in the row, and cells of `-` with an optional `:` at each end, between `|`s and
+ * spaces and tabs. A `|`, a `:` or a `-` stands between each two runs of spaces and tabs, so the
+ * pattern matches a long run in one way only, and it reads a row in time linear in its length.
+ */
 const TABLE_DELIMITER_ROW =
-  /^(?=.*\|)[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+  /^(?=.*\|)[ \t]*(?:\|[ \t]*)?:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*(?:\|[ \t]*)?$/;
 
 /** goldmark's `Continue` of each block the reader holds open. */
 function continueScanBlock(scan: BlockScan, block: ScanBlock, line: ScanLine): Continuation {
@@ -611,20 +628,52 @@ function continueScanBlock(scan: BlockScan, block: ScanBlock, line: ScanLine): C
   }
 }
 
-/** goldmark's `listParser.Continue`. */
+/**
+ * goldmark's `listParser.Continue` (continueListAt), which pmdoc's emptyItemGuard.Continue keeps
+ * from closing the list at a line that holds its empty last item's content: a line that reaches
+ * the item's content column, a list marker there included, where the line before it holds more
+ * than spaces, tabs and `>`.
+ */
 function continueList(
   scan: BlockScan,
   list: ScanBlock & { kind: "list" },
   line: ScanLine
 ): Continuation {
   const last = list.last;
-  const lastIsEmpty = last === undefined || last.children === 0;
   if (line.blank()) {
-    if (lastIsEmpty) scan.emptyItemWithBlankLines = true;
+    if (last === undefined || last.children === 0) scan.emptyItemWithBlankLines = true;
     return "children";
   }
-  const offset = last?.kind === "item" ? last.offset : 0;
   const { width, at } = line.indent();
+  const continuation = continueListAt(scan, list, line, width, at);
+  // The first line has no line before it, which reads here as a blank one (pmdoc's `start == 0`).
+  const before = scan.lines[scan.index - 1] ?? "";
+  if (
+    continuation === "close" &&
+    last?.kind === "item" &&
+    last.children === 0 &&
+    width >= last.offset &&
+    !/^[ \t>]*$/.test(before)
+  ) {
+    return "children";
+  }
+  return continuation;
+}
+
+/**
+ * goldmark's `listParser.Continue` of a line that is not blank, its text at index `at` and `width`
+ * columns past the list's container.
+ */
+function continueListAt(
+  scan: BlockScan,
+  list: ScanBlock & { kind: "list" },
+  line: ScanLine,
+  width: number,
+  at: number
+): Continuation {
+  const last = list.last;
+  const lastIsEmpty = last === undefined || last.children === 0;
+  const offset = last?.kind === "item" ? last.offset : 0;
   if (width < offset || lastIsEmpty) {
     if (width < 4) {
       const marker = listMarker(line);
@@ -766,10 +815,15 @@ function setextUnderline(text: string): boolean {
   return /^(?:=+|-+)[ \t]*$/.test(text);
 }
 
-/** directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces. */
+/**
+ * directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces and
+ * tabs. The colons stand between the two runs of spaces and tabs, so the pattern reads `text` in
+ * time linear in its length.
+ */
 function fenceColons(text: string): number {
-  const trimmed = text.replace(/^[ \t]+|[ \t]+$/g, "");
-  return /^:+$/.test(trimmed) ? trimmed.length : 0;
+  // Group 1 is in each match, so `colons` is undefined only where `text` does not match.
+  const [, colons] = /^[ \t]*(:+)[ \t]*$/.exec(text) ?? [];
+  return colons?.length ?? 0;
 }
 
 /** How many times `char` stands in a row in `text` from `index`. */
