@@ -24,6 +24,7 @@ func testerQuestion(id, identity, session string, received time.Time) AnswerQues
 // conversation of the same agent is still that question; the same identity for another agent is a
 // question of its own.
 func TestAQuestionHandedOffAgainIsRecordedOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	first, inserted, err := s.ReceiveQuestion(ctx, testerQuestion("q1", "dispatch:m1", "ses_tester", at(1)))
@@ -57,6 +58,7 @@ func TestAQuestionHandedOffAgainIsRecordedOnce(t *testing.T) {
 // An update moves a question only from a state it names, so two writers never both move it; the
 // open questions are the ones with work left, oldest first.
 func TestAQuestionMovesOnlyFromTheStateItIsIn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	for i, id := range []string{"qa", "qb", "qc", "qd"} {
@@ -95,6 +97,7 @@ func TestAQuestionMovesOnlyFromTheStateItIsIn(t *testing.T) {
 // The day's spend adds up within a UTC day, starts again on the next, and survives the store being
 // read afresh, as a restart reads it.
 func TestTheAnswerSpendIsKeptByProjectAndUTCDay(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	morning := time.Date(2026, 10, 26, 1, 0, 0, 0, time.UTC)
@@ -120,6 +123,7 @@ func TestTheAnswerSpendIsKeptByProjectAndUTCDay(t *testing.T) {
 
 // Every gh call of a question reads back in seq order, finished or not.
 func TestAQuestionsGHCallsReadBackInOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	for _, seq := range []int{2, 1} {
@@ -145,6 +149,7 @@ func TestAQuestionsGHCallsReadBackInOrder(t *testing.T) {
 // output fills to gh_output_chars: what `legion state` lists of a question is its writes, not the
 // output the model read. A question with no recorded call has none.
 func TestTheWritesReadOfTheGHCallsHoldsNoResult(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	for _, call := range []AnswerToolCall{

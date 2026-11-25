@@ -18,6 +18,7 @@ const answerQuestionsThreadReplyVersion = 20261124021727
 // migration finds, since the store's own insert names a column a later migration adds
 // (answer_questions.wake, 20261124114223).
 func TestMigrationAnswerQuestionsThreadReply(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, answerQuestionsThreadReplyVersion-1)

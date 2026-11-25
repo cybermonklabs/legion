@@ -68,6 +68,7 @@ func TestACallbackReplyDecodesAsTheReplyItIs(t *testing.T) {
 // nothing of the loop's own posting moves the ask's mirror row or the root's wait. The same
 // comment without the marker is the agent's reply, which does.
 func TestTheAnswerLoopsOwnReplyIsNoFact(t *testing.T) {
+	t.Parallel()
 	tester := map[string]any{"kind": "session", "id": "ses_tester"}
 	for _, eventType := range []string{"comment.created", "comment.answered"} {
 		for _, turn := range []string{"human", "agent"} {

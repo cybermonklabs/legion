@@ -36,6 +36,7 @@ func sameConversation(t *testing.T, got, want AgentConversation) {
 // and keeps the first registration's start; a close that forgets the claim's session and a
 // suspension that keeps it leave the row as it was.
 func TestARegistrationRecordsItsConversationAndNothingAClaimDoesDeletesIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	c := tmuxClaim(testerToken)
@@ -85,6 +86,7 @@ func TestARegistrationRecordsItsConversationAndNothingAClaimDoesDeletesIt(t *tes
 // registration wrote it, and a scanned one as the first scan did. A registration of a scanned
 // session makes it a registered one, started at the registration.
 func TestAScanNeverRewritesARowAndARegistrationOutranksAScan(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	registered := testerConversation("ses-registered", at(5))
@@ -125,6 +127,7 @@ func TestAScanNeverRewritesARowAndARegistrationOutranksAScan(t *testing.T) {
 // role's and another project's are not among them, and the project's whole list reads oldest
 // first.
 func TestRoleConversationsAreNewestFirstWithRegisteredBeforeScanned(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	for _, c := range []AgentConversation{testerConversation("old-registered", at(1)), testerConversation("new-registered", at(4))} {

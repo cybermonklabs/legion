@@ -388,6 +388,7 @@ func releasedAnswer(text string) intake.Handoff {
 // 043f9c67, `view.Released() ||` in runningLocked: the question is forwarded to the role topic and
 // nothing is answered.
 func TestIdleReleasedAgentsQuestionIsAnsweredFromItsConversationAndWakesNothing(t *testing.T) {
+	t.Parallel()
 	for _, stop := range []stopBy{stopByIdleRelease, stopByPause} {
 		t.Run(string(stop), func(t *testing.T) {
 			r := newReleasedRig(t, stop)
@@ -421,6 +422,7 @@ func TestIdleReleasedAgentsQuestionIsAnsweredFromItsConversationAndWakesNothing(
 // same message for an agent the workflow suspended, which is not released: the decision goes to
 // the architect as before, and no wake row is written.
 func TestIdleReleasedAgentsDecisionThatAlsoAsksWakesItOnceItsAnswerIsIn(t *testing.T) {
+	t.Parallel()
 	for _, stop := range []stopBy{stopByIdleRelease, stopByWorkflow} {
 		t.Run(string(stop), func(t *testing.T) {
 			r := newReleasedRig(t, stop)
@@ -474,6 +476,7 @@ func TestIdleReleasedAgentsDecisionThatAlsoAsksWakesItOnceItsAnswerIsIn(t *testi
 // the same replies for an agent the workflow suspended: the reply is posted and the controller
 // receives the question.
 func TestIdleReleasedAgentsRequestForWorkAndUnansweredQuestionWakeItAndTellTheControllerNothing(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []answer.Kind{answer.NeedsWork, answer.NotAnswered} {
 		for _, stop := range []stopBy{stopByIdleRelease, stopByWorkflow} {
 			t.Run(string(kind)+" after "+string(stop), func(t *testing.T) {
@@ -512,6 +515,7 @@ func TestIdleReleasedAgentsRequestForWorkAndUnansweredQuestionWakeItAndTellTheCo
 // does a comment that asks nothing; a comment carrying the loop's own mark and the daemon's own
 // post write no row.
 func TestIdleReleasedAgentsMessagesThatAskNothingWakeItAndItsOwnMarksDoNot(t *testing.T) {
+	t.Parallel()
 	r := newReleasedRig(t, stopByIdleRelease)
 	r.answer = func(req answer.Request) answer.Reply { return releasedReply(req, answer.None, "Noted.") }
 	r.handOff(releasedMessage("m-1", "B is green, by the way."))
@@ -539,6 +543,7 @@ func TestIdleReleasedAgentsMessagesThatAskNothingWakeItAndItsOwnMarksDoNot(t *te
 // nothing of it and the claim stays released; once the pause ends the row wakes the claim and,
 // once the woken session holds its role, publishes the message to its topic and ends.
 func TestIdleReleasedAgentsWakeRowIsWrittenOnceAndThePauseHoldsIt(t *testing.T) {
+	t.Parallel()
 	r := newReleasedRig(t, stopByIdleRelease)
 	comment := releasedComment(releasedPerson, "c-root", "Thanks, that settles it.")
 	r.handOff(comment)

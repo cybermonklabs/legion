@@ -63,6 +63,7 @@ func (noFacts) Facts(context.Context, string) (answerloop.IssueFacts, error) {
 // with nothing added to the conversation, and the question goes to the running agent on its role
 // topic (A7).
 func TestAClaimStartedDuringAnAnswerGetsTheQuestionAndItsConversationNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_daemon_answers")
 	path := filepath.Join(t.TempDir(), "ses_tester.jsonl")
@@ -153,6 +154,7 @@ func TestAClaimStartedDuringAnAnswerGetsTheQuestionAndItsConversationNothing(t *
 // notice went): one controller notice row, published once to the controller topic, whose body
 // names the question's id, issue, role, session, asker, ref, text and reason.
 func TestOutboxAgentQuestionIsQueuedAndDeliveredOncePerQuestion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -208,6 +210,7 @@ func TestOutboxAgentQuestionIsQueuedAndDeliveredOncePerQuestion(t *testing.T) {
 // notice names the decision's id, the agent's issue, role and session, the person, where and what
 // they decided.
 func TestADecisionGoesOnceToTheRunningArchitectElseToTheController(t *testing.T) {
+	t.Parallel()
 	const controller = "notifications.legion.legion.controller"
 	for _, tc := range []struct {
 		name      string
@@ -333,6 +336,7 @@ func movedBackIntoTheWorkflow(t *testing.T, pool *store.Pool, records record.Sto
 // loop still records the decision passed, so a redelivery after the relay's notice went queues
 // nothing either.
 func TestADecisionOnAParkedTreeIsLeftToTheRelayThatOwnsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -413,6 +417,7 @@ func TestADecisionOnAParkedTreeIsLeftToTheRelayThatOwnsIt(t *testing.T) {
 // one agent-decision notice to the controller, no parked-decision notice, and nothing more
 // however often the hand-off arrives or the daemon restarts.
 func TestADecisionTheRelayLeavesAloneOnAParkedTreeGoesOnceToTheController(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -484,6 +489,7 @@ func TestADecisionTheRelayLeavesAloneOnAParkedTreeGoesOnceToTheController(t *tes
 // it to awaiting_person at the next pass. Either way the root keeps its slot, since a root waiting
 // on a person holds one (record.KeepsSlot).
 func TestTheLoopsOwnAnswerOnAnAskLeavesTheAdmittedRootItsSlot(t *testing.T) {
+	t.Parallel()
 	const root, ask, session = "LEGION-700", "ask-q", "ses-architect"
 	for _, tc := range []struct {
 		name      string
@@ -580,6 +586,7 @@ func TestTheLoopsOwnAnswerOnAnAskLeavesTheAdmittedRootItsSlot(t *testing.T) {
 // and not after, newest first, with who asked and where as its hand-off says; a question never
 // passed on is not listed.
 func TestQuestionsForControllerListsAPassedQuestionForSevenDays(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_daemon_passed_questions")
 	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
@@ -742,6 +749,7 @@ func anthropicGHCall(id string, args ...string) []byte {
 // merge by its command, repository and exit, and no read; and the controller's agent-question
 // notice and the questions `legion state` lists name the merge alone.
 func TestAGhWriteBeforeAFaultIsInTheConversationTheReplyAndTheControllersRecords(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_daemon_fault_writes")
 	path := filepath.Join(t.TempDir(), "ses_tester.jsonl")
@@ -895,6 +903,7 @@ func TestAGhWriteBeforeAFaultIsInTheConversationTheReplyAndTheControllersRecords
 // gh tool names in a stopped agent's review footer (ghtool.Agent.Head). A role whose row records
 // no commit is absent, so its agent's tool holds no head and submits no review.
 func TestRecordFactsCarryEachRolesHandoffCommit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

@@ -290,6 +290,7 @@ const todaysMainsNewestMigration = 20261125000600
 // below main's newest, so the upgrade applies each once though the database already records a
 // higher version, and the store's highest version stays main's newest.
 func TestADatabaseCurrentMainMigratedAppliesAnswerMigrationsBelowItsNewest(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()

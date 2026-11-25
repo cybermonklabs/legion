@@ -99,6 +99,7 @@ func TestTheDispatchToolIsAbsentWithNoDispatchTokenFile(t *testing.T) {
 // /opt/legion/pi-envoy/bin/dispatch (the image build's last step runs its --help); and boot reads
 // it beside the loop's gh, so the daemon the boot starts carries it.
 func TestAKubernetesDaemonFindsDispatchWhereTheWorkerImageKeepsIt(t *testing.T) {
+	t.Parallel()
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
@@ -137,6 +138,7 @@ func TestAKubernetesDaemonFindsDispatchWhereTheWorkerImageKeepsIt(t *testing.T) 
 // under the state directory; one that found none hands it none. Its answers configure no
 // web_search tool, which the line names with why (TestTheBootLineNamesWebSearchOfferedOrWhyNot).
 func TestTheBootLineNamesTheLoopsToolsAndADaemonWithNoDispatchOffersNone(t *testing.T) {
+	t.Parallel()
 	stateDir, token := t.TempDir(), dispatchTokenFileOf(t)
 	shim := executable(t, t.TempDir(), "dispatch")
 	bunDir := t.TempDir()

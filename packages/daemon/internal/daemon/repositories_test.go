@@ -1195,6 +1195,7 @@ func TestALaterLaunchOfAKeptIssuePutsItsRepositoryBackInTheCacheSet(t *testing.T
 // their launch's refusals. Control: with issueRepository back in recordFacts.Facts, the question
 // about LEGION-9 puts zeta/tools in the cache set.
 func TestAQuestionAboutAnUnrecordedIssueLaunchesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"zeta/tools": "zeta/tools@main", "acme/widgets": "Acme/Widgets@main"})
 	installs := &installations{}

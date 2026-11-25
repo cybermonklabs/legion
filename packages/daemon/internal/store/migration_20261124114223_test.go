@@ -18,6 +18,7 @@ const releasedAgentMessagesVersion = 20261124114223
 // written before the migration, which the two checks refuse. The rows before it are written with
 // SQL that names the columns of the schema the migration finds, as the release before writes them.
 func TestMigrationReleasedAgentMessages(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, releasedAgentMessagesVersion-1)

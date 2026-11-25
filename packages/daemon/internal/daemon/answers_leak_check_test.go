@@ -236,6 +236,7 @@ const pendingRefusal = "refused: LEAK CHECK SETUP ERROR: the gh call: the shared
 // pin boot read and of the setting's manifest digest, under its state directory, and logs the tag
 // and the path.
 func TestAKubernetesDaemonInstallsItsGhToolsCheckFromTheRuntimesReader(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	var logs syncBuffer
 	reader := newServedCheckReader(t)
@@ -261,6 +262,7 @@ func TestAKubernetesDaemonInstallsItsGhToolsCheckFromTheRuntimesReader(t *testin
 // (ghtool.Host.LeakCheckManifestSHA256). The runtime is a real one (sandbox.New) over the stand-in
 // API, its reader the served check.
 func TestAKubernetesDaemonsAnswerLoopRunsTheCheckItInstalledFromTheRuntimesReader(t *testing.T) {
+	t.Parallel()
 	url := newIssueSandboxAPI().serve(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -302,6 +304,7 @@ func TestAKubernetesDaemonsAnswerLoopRunsTheCheckItInstalledFromTheRuntimesReade
 // it: the host every answer opens under is the one answersTools built. Its guard holds that check
 // to the setting's manifest digest where the deployment names one, and to none where it names none.
 func TestATmuxDaemonsGhToolResolvesTheMachinesCheckInTheDaemonsEnvironment(t *testing.T) {
+	t.Parallel()
 	for _, setting := range []leakguard.Setting{{}, leakCheckSetting} {
 		var logs syncBuffer
 		w := &workflowRuntime{log: slog.New(slog.NewTextHandler(&logs, nil))}
@@ -373,6 +376,7 @@ func TestTheAnswerLoopsGhToolRunsThePrivateNameRulesEveryLaunchCarries(t *testin
 // longer refused for it (internal/ghtool's
 // TestACallBeforeTheInstallLandsIsRefusedAndTheNextAfterItRuns runs such a call under the check).
 func TestATransientFailureOfTheChecksReadBootsTheDaemonAndInstallsTheCheckInTheBackground(t *testing.T) {
+	t.Parallel()
 	backoff := quickAppMints().retry
 	for _, tc := range []struct {
 		name    string
@@ -449,6 +453,7 @@ func TestATransientFailureOfTheChecksReadBootsTheDaemonAndInstallsTheCheckInTheB
 // try, and the next gh call is refused with that cause, in the sentence that says the install is
 // tried again only at the daemon's next boot.
 func TestAPermanentCauseMetInTheBackgroundEndsTheInstall(t *testing.T) {
+	t.Parallel()
 	backoff := quickAppMints().retry
 	other := strings.Repeat("0", 64)
 	for _, tc := range []struct {
@@ -529,6 +534,7 @@ func TestAPermanentCauseMetInTheBackgroundEndsTheInstall(t *testing.T) {
 // of a read that succeeded. Nothing is installed, so no copy of another check stands under the
 // state directory. The same reader under the setting naming its own digest installs the check.
 func TestAServedCheckOfAnotherManifestDigestRefusesTheBoot(t *testing.T) {
+	t.Parallel()
 	reader := newServedCheckReader(t)
 	other := strings.Repeat("0", 64)
 	stateDir := t.TempDir()
@@ -566,6 +572,7 @@ func TestAServedCheckOfAnotherManifestDigestRefusesTheBoot(t *testing.T) {
 // `--help` run fails. Each is refused in its own sentence. A served check of another manifest
 // digest is TestAServedCheckOfAnotherManifestDigestRefusesTheBoot's.
 func TestACauseNoWaitChangesRefusesTheBoot(t *testing.T) {
+	t.Parallel()
 	t.Run("no leak check setting", func(t *testing.T) {
 		_, _, err := answersLeakCheck("kubernetes", leakguard.Setting{}, environLookup([]string{leakguard.TagVariable + "=" + leakCheckTag}))
 		if err == nil || !strings.Contains(err.Error(), "set LEGION_LEAK_CHECK_REPOSITORY and LEGION_LEAK_CHECK_MANIFEST_SHA256 in the daemon's environment, "+

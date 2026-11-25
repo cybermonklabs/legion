@@ -43,6 +43,7 @@ func conversationOf(t *testing.T, dsn, session string) (store.AgentConversation,
 // A daemon with no `answers` still records every registration's conversation: the history is the
 // daemon's own record, and costs a row.
 func TestADaemonRecordsEveryRegisteredConversationWithoutAnswers(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	var record built
@@ -138,6 +139,7 @@ func answersEnvironment(t *testing.T) []string {
 // Dispatch project the issue key carries. With no workflow its answer loop does not run, so its
 // heartbeat says at boot that it does not answer.
 func TestADaemonWithAnswersWritesItsRegistrationsToTheRegistry(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	writes := registryListener(t, &cfg)
 	cfg.Answers = answersConfig(filepath.Join(t.TempDir(), "ran"), "")
@@ -183,6 +185,7 @@ func TestADaemonWithAnswersWritesItsRegistrationsToTheRegistry(t *testing.T) {
 // with that credential, so a listener still holding the answering key an earlier boot with `answers`
 // wrote stops handing the project's messages off at once. It writes no registration to the registry.
 func TestADaemonWithoutAnswersSaysAtBootItDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	writes := registryListener(t, &cfg)
 	rt := fake.NewRuntime()
@@ -250,6 +253,7 @@ runtime:
 // that it does not answer, and the listener refuses and drops a message to one of its stopped
 // agents as it does for a daemon without the block.
 func TestADaemonWhoseAnswersLeaveTheLoopOffSaysAtBootItDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	const postgres = "    session_store: postgres\n    session_dsn_secret: SESSION_DSN\n"
 	const cloudSQL = "    session_store: cloudsql-iam\n" +
 		"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"
@@ -311,6 +315,7 @@ func TestADaemonWhoseAnswersLeaveTheLoopOffSaysAtBootItDoesNotAnswer(t *testing.
 // A daemon with `answers` and the workflow open runs its answer loop, and its heartbeat says at boot
 // that it answers.
 func TestADaemonWhoseAnswerLoopRunsSaysItAnswers(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	writes := registryListener(t, &cfg)
 	cfg.Answers = answersConfig(filepath.Join(t.TempDir(), "ran"), "")

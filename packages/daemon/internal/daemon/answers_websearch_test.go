@@ -21,6 +21,7 @@ import (
 // answers offers the tool hands the loop a web_search tool, which opens each answer's tool; one
 // whose answers offers none hands it none.
 func TestTheBootLineNamesWebSearchOfferedOrWhyNot(t *testing.T) {
+	t.Parallel()
 	machine := filepath.Join(t.TempDir(), "public-leak-check.sh")
 	anthropic := config.AnswerEndpoint{BaseURL: "https://gateway.internal.example/anthropic", Credential: config.AnswerCredential{File: "/run/legion/anthropic-key"}}
 	openai := config.AnswerEndpoint{BaseURL: "https://gateway.internal.example/openai", Credential: config.AnswerCredential{Command: "printf openai-key"}}

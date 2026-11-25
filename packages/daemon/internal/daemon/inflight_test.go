@@ -368,6 +368,7 @@ func TestRunStampsItsBootWithoutWaitingOutALaunchThatIgnoresTheStop(t *testing.T
 // server to fail their reset on a connection no test of theirs opened (dispatch://INFRA-1964,
 // internal/testnats's drain).
 func TestRunClosesTheWorkflowsNATSConnectionWhenItStopsWaitingForItsWork(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	// The connections this test holds itself: workflowNATS keeps one for the stream it made, and
 	// keeps it until the test ends. The daemon's own is what must be gone once run has returned.

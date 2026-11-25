@@ -49,6 +49,7 @@ func deliverHandoff(ctx context.Context, d *fakeDelivery, run consumerRun, handl
 // records, acknowledges it and deletes that failure. The handler is handed the hand-off it decoded
 // with the bytes as published.
 func TestAHandoffIsAcknowledgedOnlyOnceTheLoopRecordedIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	run := productionRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
@@ -93,6 +94,7 @@ func TestAHandoffIsAcknowledgedOnlyOnceTheLoopRecordedIt(t *testing.T) {
 // that does not decode, kept under the hand-off consumer's name, and terminated, never handed to
 // the loop.
 func TestAHandoffTheDaemonCannotTrustIsGivenUpAsUndecodable(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	run := productionRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
@@ -130,6 +132,7 @@ func TestAHandoffTheDaemonCannotTrustIsGivenUpAsUndecodable(t *testing.T) {
 // with the value it carried. This reader once decoded expects_reply as a string of its own, so a
 // hand-off carrying false did not decode and was terminated as poison, its message never answered.
 func TestAHandoffReachesTheLoopWhateverItsExpectsReply(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	run := productionRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
@@ -180,6 +183,7 @@ func TestAHandoffReachesTheLoopWhateverItsExpectsReply(t *testing.T) {
 // the loop again: with the loop off it fails and leaves the record open, and once the loop records
 // it the record is closed as applied.
 func TestAHandoffTheLoopAlwaysFailsOnIsGivenUpVisibly(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	registerCaptureController(t, pool)
 	ctx := context.Background()
@@ -290,6 +294,7 @@ func TestAHandoffTheLoopAlwaysFailsOnIsGivenUpVisibly(t *testing.T) {
 // A Dispatch envelope's payload reads as the targeted send's frame, with its delivery attempt, or
 // as the bare event a follower route carries.
 func TestADispatchEnvelopeReadsAsItsFrameOrItsBareEvent(t *testing.T) {
+	t.Parallel()
 	frame := HandoffEnvelope{EventID: "e1", Source: "dispatch", Payload: `{"event":{"type":"comment.created","actor":{"kind":"user","id":"p@example.com"},` +
 		`"issue_key":"LEGION-9","payload":{"id":"c1","body":"@tester why?","ask_id":null}},"delivery":{"attempt":2,"mode":"btw","comment_id":"c1","target":"role:tester"}}`}
 	event, err := DispatchOf(frame)
@@ -337,6 +342,7 @@ func readHandoffFixture(t *testing.T, name string) DispatchEvent {
 // next move with the agent does, an agent's reply that hands the ask to the person does not
 // (sjawhar/legion#2163's testdata shapes, as the listener hands them off).
 func TestADispatchAskAnswerAndReplyReadAsTheirHandOffCarriesThem(t *testing.T) {
+	t.Parallel()
 	const ask = "6c83cb7f-8f4e-4820-9e05-7c94fa725007"
 	answered := readHandoffFixture(t, "ask-answered")
 	answer := answered.Payload.Answer

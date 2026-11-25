@@ -45,6 +45,7 @@ func dsnFileOf(t *testing.T, contents string) string {
 // conversation store's URL are boot's reads, and neither boot nor `legion config check` runs the
 // provider's key command.
 func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutGH(t *testing.T) {
+	t.Parallel()
 	noGH := []string{"PATH=" + t.TempDir()}
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.LeakCheck = leakCheckSetting
@@ -82,6 +83,7 @@ func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutGH(t *testing.T) {
 // repository the loop's gh is the one boot resolved for the daemon's own tools. The machine's
 // shared public leak check is on the same PATH.
 func TestATmuxDaemonWithAnswersResolvesGHWithOrWithoutARepository(t *testing.T) {
+	t.Parallel()
 	marker := filepath.Join(t.TempDir(), "ran")
 	cfg := testConfig(t)
 	cfg.Answers = answersConfig(marker, "")
@@ -118,6 +120,7 @@ func TestATmuxDaemonWithAnswersResolvesGHWithOrWithoutARepository(t *testing.T) 
 // file, or one holding no postgres:// URL, refuses the boot naming the key and the file and never
 // what the file holds.
 func TestBootRefusesAConversationStoreFileWithNoURL(t *testing.T) {
+	t.Parallel()
 	gh := binary(t, t.TempDir(), "gh")
 	withGH := environLookup([]string{"PATH=" + t.TempDir(), "LEGION_GH_PATH=" + gh, leakguard.TagVariable + "=" + leakCheckTag})
 	missing := filepath.Join(t.TempDir(), "absent")
@@ -145,6 +148,7 @@ func TestBootRefusesAConversationStoreFileWithNoURL(t *testing.T) {
 // answer loop's conversation store, in the one place the loop reads it from whichever key named
 // the file (config settles answers.conversation_store's file to the tmux one).
 func TestATmuxSessionDatabaseIsTheAnswerLoopsConversationStore(t *testing.T) {
+	t.Parallel()
 	onPath := t.TempDir()
 	binary(t, onPath, "gh")
 	leakguardtest.Write(t, onPath, leakguardtest.Passes)
@@ -175,6 +179,7 @@ func TestATmuxSessionDatabaseIsTheAnswerLoopsConversationStore(t *testing.T) {
 // or one holding no postgres:// URL, refuses the boot naming the key and the file and never what
 // the file holds.
 func TestBootRefusesATmuxSessionDSNFileWithNoURL(t *testing.T) {
+	t.Parallel()
 	lookup := environLookup([]string{"PATH=" + t.TempDir()})
 	missing := filepath.Join(t.TempDir(), "absent")
 	notAURL := dsnFileOf(t, "host=sessions.internal.example password=fixture-keyword-password\n")
@@ -201,6 +206,7 @@ func TestBootRefusesATmuxSessionDSNFileWithNoURL(t *testing.T) {
 // configuration home. With none of the three it refuses to start, naming the check and each place
 // it looked.
 func TestATmuxDaemonWithAnswersRefusesToStartWithoutALeakCheck(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.Answers = answersConfig(filepath.Join(t.TempDir(), "ran"), "")
 	onPath, home := t.TempDir(), t.TempDir()
@@ -248,6 +254,7 @@ func TestATmuxDaemonWithAnswersRefusesToStartWithoutALeakCheck(t *testing.T) {
 // start, naming the check and the variable, and so does `legion config check`; a check on the
 // daemon's host is none of a Kubernetes daemon's.
 func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutTheCheckPin(t *testing.T) {
+	t.Parallel()
 	gh := binary(t, t.TempDir(), "gh")
 	machine := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
 	noPin := []string{"PATH=" + t.TempDir(), "LEGION_GH_PATH=" + gh, leakguard.CheckVar + "=" + machine}
@@ -287,6 +294,7 @@ func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutTheCheckPin(t *testing
 // though the pin is set and a check is on the daemon's host; `legion config check` makes it too.
 // The same configuration with the setting reads the pin.
 func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutTheLeakCheckSetting(t *testing.T) {
+	t.Parallel()
 	gh := binary(t, t.TempDir(), "gh")
 	machine := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
 	env := []string{"PATH=" + t.TempDir(), "LEGION_GH_PATH=" + gh, leakguard.CheckVar + "=" + machine, leakguard.TagVariable + "=" + leakCheckTag}

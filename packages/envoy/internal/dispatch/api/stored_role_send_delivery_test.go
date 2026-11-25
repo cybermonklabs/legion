@@ -15,6 +15,7 @@ import "testing"
 // with answers removed: the branch recorded the role message queued for the finished architect's
 // session, where the base commit recorded it failed, no holder for role.
 func TestARoleMessageTheListenerOnlyStoresForAFinishedSessionKeepsTheNoHolderFailure(t *testing.T) {
+	t.Parallel()
 	listener := newStoppedAgentListener(t)
 	listener.storeSends.Store(true)
 	handler, database := newTargetedMessageHandler(t, listener.URL)

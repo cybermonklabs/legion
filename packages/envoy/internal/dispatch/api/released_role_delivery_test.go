@@ -45,6 +45,7 @@ func requireHandedToTheDaemon(t *testing.T, listener *stoppedAgentListener, sess
 // A message and a mention of a released session are sent to that session, the listener hands each
 // to its daemon, and the session's reply, which its daemon posts, answers the message.
 func TestReleasedAgentsMessageAndMentionAreSentToItsSession(t *testing.T) {
+	t.Parallel()
 	listener := newStoppedAgentListener(t)
 	listener.released.Store(true)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
@@ -87,6 +88,7 @@ func TestReleasedAgentsMessageAndMentionAreSentToItsSession(t *testing.T) {
 // session are sent to that session, pinned to it, and the listener hands each to its daemon; that
 // session's reply answers each. Nothing is kept for the role.
 func TestReleasedRolesMessageAndPickerMentionAreSentToItsNewestSession(t *testing.T) {
+	t.Parallel()
 	listener := newStoppedAgentListener(t)
 	listener.released.Store(true)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
@@ -142,6 +144,7 @@ func TestReleasedRolesMessageAndPickerMentionAreSentToItsNewestSession(t *testin
 // an entry goes to its newest session instead, and a role with no entry whose project does not
 // answer keeps the listener's no-holder answer.
 func TestRoleMessageToARoleWithNoEntryIsKeptForItsFirstHolder(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		role         string
@@ -271,6 +274,7 @@ func TestRoleMessageToARoleWithNoEntryIsKeptForItsFirstHolder(t *testing.T) {
 // (roleHolderReply): it is answered with the stored answer, and nothing it sends is stored or
 // moves the attempt off the holder.
 func TestTheFirstHolderOfARoleWithNoEntryMayReplyToWhatWasKeptForIt(t *testing.T) {
+	t.Parallel()
 	const holder, intruder, successor = "first-reviewer", "intruder", "successor-reviewer"
 	listener := newStoppedAgentListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)

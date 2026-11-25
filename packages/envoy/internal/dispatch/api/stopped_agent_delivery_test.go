@@ -242,6 +242,7 @@ func assertAnswered(t *testing.T, name string, response *httptest.ResponseRecord
 }
 
 func TestMessageToAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *testing.T) {
+	t.Parallel()
 	listener := newStoppedAgentListener(t)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Stopped agent", "before")
@@ -276,6 +277,7 @@ func TestMessageToAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 // A role's newest session takes the role's messages while no live session holds the role and its
 // project answers.
 func TestRoleMessageToAStoppedRegisteredRoleGoesToItsNewestSession(t *testing.T) {
+	t.Parallel()
 	listener := newStoppedAgentListener(t)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Stopped role", "before")
@@ -302,6 +304,7 @@ func TestRoleMessageToAStoppedRegisteredRoleGoesToItsNewestSession(t *testing.T)
 // its stopped newest session and settle sent there, and that session's reply, which its daemon
 // posts, answers each. A session named outright is handed off as ever.
 func TestARoleMessageAndARoleMentionOfAStoppedRoleGoToItsNewestSession(t *testing.T) {
+	t.Parallel()
 	listener := newStoppedAgentListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Running role", "before")
@@ -357,6 +360,7 @@ func TestARoleMessageAndARoleMentionOfAStoppedRoleGoToItsNewestSession(t *testin
 }
 
 func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *testing.T) {
+	t.Parallel()
 	listener := newStoppedAgentListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Stopped mention", "before")
@@ -415,6 +419,7 @@ func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 // is the role with no entry whose read says its project does not answer, which keeps the
 // listener's answer as with no registry.
 func TestTargetTheRegistryDoesNotNameKeepsTheListenersAnswer(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		registryDown bool

@@ -695,6 +695,7 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 // otherwise: the stop of a release that is over, one whose boundary cancels the release, and one
 // whose claim runs nothing.
 func TestARoleStopSuspendsTheClaimOfAReleaseThatStandsAndNoOther(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// before is what happens between the release's decision and the run of its rows. below is

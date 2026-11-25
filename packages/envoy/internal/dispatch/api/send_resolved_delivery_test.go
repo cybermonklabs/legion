@@ -161,6 +161,7 @@ func keptForPlanner() ResolvedMention {
 // that answers at once gets a window past the run (pastTheRun), and the late one answers only once
 // the client's short window has ended its request, as in the table above.
 func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		answer  http.HandlerFunc
@@ -207,6 +208,7 @@ func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
 // holder has none, so it is not kept: nothing is published, and the attempt settles with the
 // listener's own no-holder answer as refused, as a stopped session refuses it.
 func TestAConnectedOnlySendToAKeptRoleIsNotKept(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected request %s %s: a connected-only send keeps nothing for a role", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -239,6 +241,7 @@ func TestAConnectedOnlySendToAKeptRoleIsNotKept(t *testing.T) {
 // that session names no redirect, and its send is marked; the listener hands that one off on the
 // role token (handOffOrKeepRoleSend in cmd/listener).
 func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAnswer(t *testing.T) {
+	t.Parallel()
 	stopped := "stopped-2"
 	registered := func(answer ResolvedMention) ResolvedMention {
 		return ResolvedMention{Target: answer.Target, Delivery: "steer", SessionID: &stopped, redirect: &registryRedirect[ResolvedMention]{listenerAnswer: answer}}
@@ -274,7 +277,9 @@ func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAns
 				_, _ = w.Write([]byte(tc.answer))
 			}))
 			t.Cleanup(listener.Close)
-			s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+			// A window past the run (pastTheRun): the listener answers at once, and a loaded machine
+			// must not turn its answer into the client's timeout.
+			s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(pastTheRun))}}
 			outcome := s.sendResolvedDelivery(
 				context.Background(), tc.target, tc.target.Target, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 			if !tc.refused {

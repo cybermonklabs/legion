@@ -16,6 +16,7 @@ const answerToolCallsToolVersion = 20261124072849
 // before the migration, which the table has no column for. The row before it is written with SQL
 // that names the columns of the schema the migration finds, as the release before writes it.
 func TestMigrationAnswerToolCallsTool(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, answerToolCallsToolVersion-1)

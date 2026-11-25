@@ -61,6 +61,7 @@ func newTestGate(t *testing.T) (*answerGate, *launchChecks, *claimViews) {
 // before its check passes; from then on the gate refuses the loop the conversation, so the next
 // answer appends nothing (it is forwarded), until the process that start began has ended.
 func TestAStartDuringAnAppendWaitsForItAndThenHoldsTheConversation(t *testing.T) {
+	t.Parallel()
 	gate, inner, views := newTestGate(t)
 	appending, release := make(chan struct{}), make(chan struct{})
 	appended := make(chan struct{})
@@ -128,6 +129,7 @@ func releaseOnce(t *testing.T) (<-chan struct{}, func()) {
 // the first ends, either the second takes its turn and the start waits for it too, or the start
 // passes first and the second, finding the claim started, writes nothing.
 func TestTwoAppendsOnOneClaimTakeTurnsAndAStartWaitsForBoth(t *testing.T) {
+	t.Parallel()
 	gate, _, views := newTestGate(t)
 	var writers atomic.Int32
 	write := func(began chan<- struct{}, release <-chan struct{}) func() error {
@@ -217,6 +219,7 @@ func TestTwoAppendsOnOneClaimTakeTurnsAndAStartWaitsForBoth(t *testing.T) {
 
 // A start waits for an append at most the gate's bound, then starts anyway.
 func TestAStartWaitsForAnAppendOnlyAsLongAsTheBound(t *testing.T) {
+	t.Parallel()
 	gate, _, views := newTestGate(t)
 	gate.wait = 50 * time.Millisecond
 	appending, release := make(chan struct{}), make(chan struct{})
@@ -240,6 +243,7 @@ func TestAStartWaitsForAnAppendOnlyAsLongAsTheBound(t *testing.T) {
 // A start the store underneath refuses starts nothing, so the conversation stays the loop's; a
 // live claim runs its current conversation and not an older one a newer session replaced.
 func TestARefusedStartAndAnOlderConversationLeaveTheLoopItsAppend(t *testing.T) {
+	t.Parallel()
 	gate, inner, views := newTestGate(t)
 	inner.refuse = errors.New("the tree's cleanup is reserved")
 	if err := gate.CheckLaunch(context.Background(), views.view.Claim); err == nil {
@@ -265,6 +269,7 @@ func TestARefusedStartAndAnOlderConversationLeaveTheLoopItsAppend(t *testing.T) 
 // it does not answer through its wake. A start of the released claim that passes its check takes
 // the conversation back: it runs again, and is released no more.
 func TestTheGateHoldsAReleasedClaimsConversationAndNoOtherStoppedOne(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		state    supervise.ClaimState

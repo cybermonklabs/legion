@@ -39,6 +39,7 @@ func (a askBy) Thread(_ context.Context, commentID string) (dispatch.Thread, err
 // (answers.go:245-252), while the relay reads the issue the ask lives on, finds no recorded root
 // and sends nothing (workflow/ask_mirror.go:238, workflow/parked_decision.go:27-30).
 func TestADecisionOnAnAskOfAnotherIssueReachesSomeone(t *testing.T) {
+	t.Parallel()
 	// The control is the same answer on an ask of the agent's own issue, which #2163's relay owns
 	// and sends: it shows the seeding is right and the issue the ask lives on is the difference.
 	for _, tc := range []struct {

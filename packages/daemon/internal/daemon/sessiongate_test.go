@@ -28,6 +28,7 @@ func sessionGateUnder(t *testing.T, f imageOmp, dsn string) (pluginGate, *bytes.
 // not answer refuses the boot naming runtime.tmux.session_dsn_file and never the URL's password.
 // Under the files store neither runs.
 func TestTheTmuxGateRefusesASessionDatabaseItsPanesCouldNotUse(t *testing.T) {
+	t.Parallel()
 	const unreachable = "postgres://legion:fixture-session-password@127.0.0.1:1/legion?connect_timeout=5"
 	for _, tc := range []struct {
 		name, dsn string
@@ -66,6 +67,7 @@ func TestTheTmuxGateRefusesASessionDatabaseItsPanesCouldNotUse(t *testing.T) {
 // A session database the panes can use passes the gate: one whose session table exists, and one
 // no Oh My Pi has opened yet, whose table the first pane's Oh My Pi creates, which the gate logs.
 func TestTheTmuxGatePassesASessionDatabaseItsPanesCanUse(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The gate reads the session database with pgx.Connect (ompsessions.ConnectURL), as a
 	// deployment's session_dsn_file URL is read, so it is given a URL with no pgxpool key.

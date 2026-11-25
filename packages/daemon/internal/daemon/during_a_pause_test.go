@@ -55,6 +55,7 @@ func (r *releasedRig) resume() {
 // launches nothing, no wake row is written, and the controller is told nothing. The control is
 // answerloop's pause gate of 043f9c67: nothing is answered until the resume.
 func TestDuringAPauseAQuestionToAnAgentThePauseStoppedIsAnsweredPostedAndCounted(t *testing.T) {
+	t.Parallel()
 	r := newReleasedRig(t, stopByPause)
 	r.answer = func(req answer.Request) answer.Reply {
 		reply := releasedReply(req, answer.Answered, "Answered: "+req.Question.Text)
@@ -94,6 +95,7 @@ func TestDuringAPauseAQuestionToAnAgentThePauseStoppedIsAnsweredPostedAndCounted
 // claim, and the machine launches it, at once. With answerloop's pause gate of 043f9c67 restored,
 // nothing is answered and no row is written while the project is paused.
 func TestDuringAPauseAPersonsAnswerToItsAskWakesTheAgentThePauseStoppedOnlyAfterTheResume(t *testing.T) {
+	t.Parallel()
 	for _, stop := range []stopBy{stopByPause, stopByIdleRelease} {
 		t.Run(string(stop), func(t *testing.T) {
 			r := newReleasedRig(t, stop)

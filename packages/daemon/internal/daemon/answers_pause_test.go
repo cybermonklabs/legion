@@ -14,6 +14,7 @@ import (
 // loop's tools refuse every write, and a model call the provider fails keep its question for the
 // resume, while the project is paused in production.
 func TestTheAnswerLoopReadsTheProjectsPauseFlag(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	w := &workflowRuntime{pauses: r.pauses, log: quietLogger()}
 	loop := w.answersLoop(config.Config{Answers: &config.Answers{}}, plan{}, &supervision{}, r.st, nil, ghTools{})

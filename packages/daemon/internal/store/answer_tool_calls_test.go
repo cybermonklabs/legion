@@ -12,6 +12,7 @@ import (
 // read and gh's exit; a call number recorded once is refused a second time, a finished call is not
 // finished again, and a refused call that never ran is finished with no exit.
 func TestAnswerToolCallsAreRecordedBeforeAndFinishedAfter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	started := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
