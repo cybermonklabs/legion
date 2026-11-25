@@ -408,7 +408,8 @@ func deliveredTo(fromKind, fromID, login string, at time.Time, who model.Actor, 
 // retraction of the dismissed tuple of each person whose user_agent_thread_dismissed row names
 // it, then the delete of those rows, each statement reading the rows as they stand once the root
 // is held, as the trigger user_agent_thread_dismissed_clear does for an older build's reply
-// (migrations 20261105093507 and 20261125053125).
+// (migrations 20261105093507 and 20261125053125), and then the settle of the root's
+// agent_dismissed_at from what the delete left (queueAgentDismissalsClear).
 //
 // Steps 2 to 4 hold one lock rule: the rows are locked before the delivered_to of the people
 // holding them is appended, and the backfill marks a row under the same lock, so no delivery falls
@@ -561,13 +562,14 @@ func ownDismissal(w Write, person string, root thread) dismissal {
 // reply is written in, `for no key update` (queueRootLock): its writer queues it before the
 // reply's insert, and before any lock of a message or an attempt below the root it takes, so the
 // root is the first row of the thread the reply holds. The reply's clear deletes the root's Agent
-// dismissals (queueAgentDismissalsClear), and each delete updates the root's row
-// (agent_dismissed_at, migration 20261125053125). Without this lock the reply would reach the root
-// holding no more than the `for key share` its foreign key takes where it answers the root
-// directly, so a restore holding the root `for no key update` could wait for a mark the reply's
-// delete holds while the reply's update waits for the root, and Postgres would fail one of the
-// two. Any other record queues nothing: a person's own reply under an Agent thread takes the root
-// `for update` instead (AgentDismissal), and no write is both a session's and a person's.
+// dismissals and then settles the root (queueAgentDismissalsClear), each of which updates the
+// root's row (agent_dismissed_at, migration 20261125053125) while the reply holds the marks it
+// deleted. Without this lock the reply would reach the root holding no more than the `for key
+// share` its foreign key takes where it answers the root directly, so a restore holding the root
+// `for no key update` could wait for a mark the reply's delete holds while the reply's settle
+// waits for the root, and Postgres would fail one of the two. Any other record queues nothing: a
+// person's own reply under an Agent thread takes the root `for update` instead (AgentDismissal),
+// and no write is both a session's and a person's.
 func (r Recording) QueueRootLock(b *store.WriteBatch) {
 	if r.clears {
 		queueRootLock(b, r.thread.id)

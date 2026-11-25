@@ -449,17 +449,27 @@ const agentRepliesRead = `
 // user_agent_thread_dismissed row names the root, read by the statement that retracts it
 // (graphstore.MarkedIn); then the failure a test arms there (fail, failpoint.AgentDismissalClear);
 // then the delete of every one of those rows, whose trigger clears the root's agent_dismissed_at
-// (migration 20261125053125) under the lock the root already holds. Both statements read the rows
-// as they stand once the root is held, nothing read in the write's read phase, so a dismissal the
-// route committed before the reply's write phase - while the reply waited for the root among
+// (migration 20261125053125) under the lock the root already holds; then the settle of the root
+// (user_agent_thread_dismissed_settle, the same migration). The retraction and the delete read the
+// rows as they stand once the root is held, nothing read in the write's read phase, so a dismissal
+// the route committed before the reply's write phase - while the reply waited for the root among
 // them - ends with the reply, as the trigger ends it; and no dismissal of the root can commit
 // between the two, since the route marks one only under the root's `for update`.
+//
+// The settle comes after the delete, never before it. A restore of the release before takes no
+// root: it holds the mark it deletes, and its trigger, finding the root this reply holds, leaves
+// the column standing and owes it (user_agent_thread_dismissed_owed) rather than wait. This
+// reply's delete waits at that mark until the restore commits, so the settle, a statement of its
+// own after it, reads the mark gone and the owed row there, sets the column from the author's mark
+// as it now stands and deletes the owed rows.
 func queueAgentDismissalsClear(b *store.WriteBatch, root string, fail bool, w Write, event int64) {
 	dismissed := graphstore.MarkedIn(`select login from user_agent_thread_dismissed where message_id = $4::uuid`, root)
 	graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, graphstore.KindMessage, root, dismissed, w.At, w.Who, event)
 	failpoint.Queue(b, fail)
 	b.Queue(fmt.Sprintf("clear the dismissals of message %s", root),
 		`delete from user_agent_thread_dismissed where message_id = $1::uuid`, root)
+	b.Queue(fmt.Sprintf("settle the dismissal of message %s", root),
+		`select user_agent_thread_dismissed_settle($1::uuid)`, root)
 }
 
 // queueRootLock queues the lock of root, the message a session's reply climbed to, `for no key

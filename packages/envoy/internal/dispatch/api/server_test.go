@@ -213,6 +213,9 @@ type testServerOptions struct {
 	// liveSocketAge is the server's Deps.LiveSocketAge: nil draws each socket's age as
 	// production does.
 	liveSocketAge func() time.Duration
+	// horizonDB is the server's Deps.HorizonDB: nil observes the event horizon through the store's
+	// horizon pool, as production does.
+	horizonDB events.HorizonDB
 	// liveKinds adds view kinds to the ones a live socket serves beside the delivery views, or
 	// replaces them, before any socket opens.
 	liveKinds map[string]liveKind
@@ -432,6 +435,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	deps.LiveSocketAge = options.liveSocketAge
+	deps.HorizonDB = options.horizonDB
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)
