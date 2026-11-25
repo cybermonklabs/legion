@@ -43,6 +43,7 @@
       "!packages/daemon/internal/capabilities/testdata/web-search-open-planner.json",
       "!packages/daemon/internal/runtime/tmux/testdata/golden/launch-baseline-no-experiment.json",
       "!packages/envoy/going/testdata/filtered-answers.json",
+      "!packages/envoy/going/agent/testdata/findable_tools.json",
       "!packages/envoy/going/decision_models.json"
     ]
   },

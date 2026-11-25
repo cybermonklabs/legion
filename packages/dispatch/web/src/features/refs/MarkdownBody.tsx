@@ -305,8 +305,11 @@ function timeLinkAnchors(element: HTMLElement): ReferenceAnchor[] {
   for (const link of element.querySelectorAll<HTMLElement>(`[${TIME_LINK_ATTRIBUTE}]`)) {
     const words = link.textContent?.trim() ?? "";
     // Words that are an issue's key and nothing else: a reference of nothing more names that
-    // issue, and one of a key with anything after it names something else or nothing.
-    const route = parseDispatchReference(`dispatch://${words}`);
+    // issue, and one of a key with anything after it names something else or nothing. The words
+    // are the page's text, so they are percent-encoded before they make a route and its href: a
+    // key (letters, digits and a hyphen) encodes as itself, and words with a slash, a hash or any
+    // other character encode to a key no issue has, so they draw as a time, as before.
+    const route = parseDispatchReference(`dispatch://${encodeURIComponent(words)}`);
     if (route?.kind !== "issue") {
       continue;
     }
