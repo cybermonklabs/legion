@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/blockers"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -47,16 +47,6 @@ func passCounted(t *testing.T, cap int) (*Admission, *passReads) {
 	return admission, reads
 }
 
-// applyAsTheDaemon applies fact through the daemon's handlers in the daemon's order
-// (daemon/workflow.go): the mirror, the workflow engine admission holds, and admission.
-func applyAsTheDaemon(t *testing.T, pool *pgxpool.Pool, admission *Admission, source, eventID string, fact intake.Fact) {
-	t.Helper()
-	mirror := blockers.NewMirror(record.NewStore(), testProject)
-	if _, err := intake.ApplyFact(context.Background(), pool, source, eventID, fact, mirror, admission.engine, admission); err != nil {
-		t.Fatalf("ApplyFact %s/%s: %v", source, eventID, err)
-	}
-}
-
 // A GitHub fact whose transaction writes no record of the project runs no admission pass: a push
 // to an issue branch no pull request records, and a push to a base no recorded pull request is
 // on. A root waits in the line with a slot free, so any pass would admit it; after the push no
@@ -78,7 +68,7 @@ func TestAGitHubFactThatWritesNoRecordRunsNoAdmissionPass(t *testing.T) {
 			admission, reads := passCounted(t, 1)
 			seedWaiting(t, pool, "LEGION-ROOT", "A")
 
-			applyAsTheDaemon(t, pool, admission, "github", "push", tc.fact)
+			applyAsTheDaemon(t, pool, admission, "github", "push", tc.fact, admission.engine)
 
 			if reads.live != 0 {
 				t.Fatalf("the push read the project's live records %d times, want 0: a fact that writes no record runs no pass", reads.live)
@@ -108,7 +98,7 @@ func TestAFactThatWritesAnIssueRecordRunsOnePassThatPromotesTheLine(t *testing.T
 	seedWaiting(t, pool, "LEGION-ROOT", "B")
 
 	applyAsTheDaemon(t, pool, admission, "github", "push", intake.Push{Repo: "acme/widgets", Branch: "legion/LEGION-PR",
-		Before: "1111111", After: "2222222", Pusher: "someone", Sender: "someone"})
+		Before: "1111111", After: "2222222", Pusher: "someone", Sender: "someone"}, admission.engine)
 
 	if !pushRecorded(t, pool, "LEGION-PR", "2222222") {
 		t.Fatal("the pull request's record holds no push to 2222222, want the push the workflow writes into it")
@@ -142,7 +132,7 @@ func TestADispatchPositionAtAHeldRootsTargetRunsThePassThatReleasesIt(t *testing
 	assertSlots(t, pool, nil)
 	reads.live = 0
 
-	applyAsTheDaemon(t, pool, admission, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 3})
+	applyAsTheDaemon(t, pool, admission, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 3}, admission.engine)
 
 	if reads.live == 0 {
 		t.Fatal("the position that reached the hold's target read no live records, want the pass that releases the hold")
@@ -150,6 +140,54 @@ func TestADispatchPositionAtAHeldRootsTargetRunsThePassThatReleasesIt(t *testing
 	if admission.Held() {
 		t.Fatal("Held() = true after the position reached the hold's target, want the hold released")
 	}
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-HELD", Index: 0, AdmittedAt: fixedNow}})
+	assertWaiting(t, pool, nil)
+}
+
+// A completion that writes its phase row and the issue's movement, and no other record, runs the
+// pass: the tester records its phase's handoff and reports no verdict, which moves the issue no
+// further than that row, as a handoff landing after its issue left the phase moves it no further.
+// The pass reads the phase rows and the movement (resumeSlottedWorkers, tellStalledTrees), and it
+// promotes the root waiting for the free slot. Before the phase row and the movement kept the
+// mark, such a completion ran no pass.
+func TestACompletionThatWritesItsPhaseRowAloneRunsThePass(t *testing.T) {
+	pool := migratedPool(t)
+	admission, reads := passCounted(t, 2)
+	seedSlottedInPhase(t, pool, testProject, "LEGION-208", "A", phase.Testing, nil)
+	seedWaiting(t, pool, "LEGION-ROOT", "B")
+
+	applyAsTheDaemon(t, pool, admission, "api", "tester-handoff", intake.HandoffComplete{Issue: "LEGION-208",
+		Role: claim.RoleTester, Generation: 1, HandoffRecord: "handoff-test"}, admission.engine)
+
+	if got := issue(t, pool, "LEGION-208"); got.Phase != phase.Testing {
+		t.Fatalf("LEGION-208 stands in %s after the tester's handoff, want testing: the completion records its row and moves nothing", got.Phase)
+	}
+	if reads.live != 1 {
+		t.Fatalf("the completion read the project's live records %d times, want 1: one pass", reads.live)
+	}
+	assertSlots(t, pool, []record.Slot{
+		{Issue: "LEGION-208", Index: 0, AdmittedAt: fixedNow},
+		{Issue: "LEGION-ROOT", Index: 1, AdmittedAt: fixedNow},
+	})
+}
+
+// A catch-up hold released while the project is paused stays owed its pass: the pass the next
+// fact runs for it returns at the pause and pays nothing of the debt, so once the pause ends the
+// next fact that writes nothing still runs the pass, and the root the hold kept out takes the
+// free slot. The resume's own pass is not applied here, as where it failed.
+func TestACatchUpReleaseAPauseHeldBackIsOwedThePassAfterTheResume(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 1)
+	seedWaiting(t, pool, "LEGION-HELD", "A")
+	admission.HoldForCatchUp("LEGION-HELD")
+	pause := pauseTestProject(t, pool, fixedNow)
+
+	admission.ReleaseCatchUp("LEGION-HELD")
+	applyAsTheDaemon(t, pool, admission, "timer", "paused-linger", intake.LingerExpired{Issue: "LEGION-UNRELATED", Generation: 1}, engineStub{})
+	assertSlots(t, pool, nil)
+
+	endTestPause(t, pool, pause, fixedNow)
+	applyAsTheDaemon(t, pool, admission, "timer", "resumed-linger", intake.LingerExpired{Issue: "LEGION-UNRELATED-2", Generation: 1}, engineStub{})
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-HELD", Index: 0, AdmittedAt: fixedNow}})
 	assertWaiting(t, pool, nil)
 }
