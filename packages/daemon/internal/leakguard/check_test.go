@@ -283,7 +283,7 @@ func TestADestinationTheParserRefusesReadsNoVisibility(t *testing.T) {
 	guard := New(Options{
 		Check:      leakguardtest.Write(t, t.TempDir(), passes),
 		Visibility: answers(Public, &asked),
-		Env:        fixtureenv.Isolated(t.TempDir()),
+		Env:        withRules(t, fixtureenv.Isolated(t.TempDir())),
 	})
 	// An owner GitHub serves none under: a name beginning with a hyphen.
 	err := guard.Text(bound(t), TextRequest{Repo: "-invented-org/invented-repo", Text: "a clean title\n"})
@@ -650,7 +650,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	t.Run("the gh visibility read", func(t *testing.T) {
 		guard := New(Options{
 			Check: leakguardtest.Write(t, t.TempDir(), passes),
-			Env:   append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh")),
+			Env:   withRules(t, append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh"))),
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()

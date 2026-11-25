@@ -235,7 +235,6 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"pr"}},
 	{Argv: nil},
 	{Argv: []string{"--help"}},
-	{Argv: []string{"-h", "pr", "view", "1", "-R", "acme/w"}},
 	{Argv: []string{"pr", "view", "1", "--help"}},
 	{Argv: []string{"pr", "view", "1", "-R", "acme/w", "-h"}},
 	{Argv: []string{"api", "graphql", "-f", "query={viewer{login}}"}},
@@ -359,66 +358,161 @@ var RefusalAdvice = map[string]string{
 	"api search/issues?q=(repo:a/b)": "name it in the endpoint",
 }
 
-// SentFileCall is one row of ghroute's TestGhTargetOfReadsTheFilesTheCallWouldSend: a call and the
-// files TargetOf reads it would send to GitHub as content (ghroute.Target.Files).
+// SentBy is the leakguard.GhSent that steps build, each in turn, on the zero value: calls of
+// its exported methods Names and UsesStdin (SentNames, SentUsesStdin), the two ghroute's
+// sentFiles builds its answer with. Its fields of standard input are leakguard's own and no
+// literal here can set them, so an answer to compare whole is built so.
+func SentBy(steps ...func(*leakguard.GhSent)) *leakguard.GhSent {
+	sent := &leakguard.GhSent{}
+	for _, step := range steps {
+		step(sent)
+	}
+	return sent
+}
+
+// SentNames is the step of SentBy that names path as option's value (leakguard.GhSent.Names).
+func SentNames(option, path, field string, use leakguard.StdinUse) func(*leakguard.GhSent) {
+	return func(sent *leakguard.GhSent) { sent.Names(option, path, field, use) }
+}
+
+// SentUsesStdin is the step of SentBy that names standard input with use alone
+// (leakguard.GhSent.UsesStdin).
+func SentUsesStdin(use leakguard.StdinUse) func(*leakguard.GhSent) {
+	return func(sent *leakguard.GhSent) { sent.UsesStdin(use) }
+}
+
+// SentFileCall is one row of ghroute's TestGhTargetOfReadsTheFilesTheCallWouldSend: a call and
+// what TargetOf reads it would send to GitHub beside its argv (ghroute.Target.Sent), the parse's
+// whole answer, built by the calls sentFiles makes for it (SentBy).
 type SentFileCall struct {
 	Name string
 	Argv []string
-	Want []leakguard.GhFile
+	Want *leakguard.GhSent
 }
 
-// SentFileCalls are the files table's rows: a short cluster gives its last letter the next
-// argument, an attached value may carry an `=` of its own, and a value of `-`, an `@-`, a field
-// given a literal and a raw field name no file to open.
+// SentFileCalls are the sent table's rows: a short cluster gives its last letter the next
+// argument, an attached value may carry an `=` of its own, and a file a field names carries the
+// field's name. A value of `-`, an `@-`, a field given a literal and a raw field name no file to
+// open; a `-` and an `@-` are standard input instead, which the parse answers is sent, with the
+// use the option that named it makes of it, or none where two options with different uses did,
+// and with the name of each field whose value it is. `gh workflow run --json`, at a last value of
+// true, names it as a request body; `--json` of any other command takes the fields to print and
+// names none.
 var SentFileCalls = []SentFileCall{
 	{
 		Name: "a short cluster whose last letter is the option",
 		Argv: []string{"pr", "create", "-R", "acme/widgets", "-dF", "body.md"},
-		Want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+		Want: SentBy(SentNames("--body-file", "body.md", "", leakguard.StdinText)),
 	},
 	{
 		Name: "a short option with its value attached by an equals sign",
 		Argv: []string{"pr", "create", "-R", "acme/widgets", "-F=body.md"},
-		Want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+		Want: SentBy(SentNames("--body-file", "body.md", "", leakguard.StdinText)),
 	},
 	{
 		Name: "a separate --body-file",
 		Argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "body.md"},
-		Want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+		Want: SentBy(SentNames("--body-file", "body.md", "", leakguard.StdinText)),
 	},
 	{
 		Name: "gh api's field read from a file",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "--method", "PATCH", "-F", "body=@body.md"},
-		Want: []leakguard.GhFile{{Option: "--field", Path: "body.md"}},
+		Want: SentBy(SentNames("--field", "body.md", "body", leakguard.StdinField)),
 	},
 	{
 		Name: "gh api's request body",
 		Argv: []string{"api", "repos/acme/widgets/pulls", "--input", "request.json"},
-		Want: []leakguard.GhFile{{Option: "--input", Path: "request.json"}},
+		Want: SentBy(SentNames("--input", "request.json", "", leakguard.StdinRequestBody)),
 	},
 	{
 		Name: "a raw field, which sends its value literally",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-f", "body=@body.md"},
-		Want: []leakguard.GhFile{},
+		Want: SentBy(),
 	},
 	{
 		Name: "a field given a literal value",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=text"},
-		Want: []leakguard.GhFile{},
+		Want: SentBy(),
 	},
 	{
 		Name: "a body option whose value is standard input",
 		Argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "-"},
-		Want: []leakguard.GhFile{},
+		Want: SentBy(SentNames("--body-file", "-", "", leakguard.StdinText)),
+	},
+	{
+		Name: "a short option whose value is standard input",
+		Argv: []string{"pr", "create", "-R", "acme/widgets", "-F", "-"},
+		Want: SentBy(SentNames("--body-file", "-", "", leakguard.StdinText)),
 	},
 	{
 		Name: "a field read from standard input",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@-"},
-		Want: []leakguard.GhFile{},
+		Want: SentBy(SentNames("--field", "-", "body", leakguard.StdinField)),
 	},
 	{
+		Name: "a GraphQL query read from standard input",
+		Argv: []string{"api", "graphql", "-F", "query=@-"},
+		Want: SentBy(SentNames("--field", "-", "query", leakguard.StdinField)),
+	},
+	{
+		// The options are read in the order their names sort, so the field before --input.
+		Name: "a GraphQL query read from standard input beside a request body on it",
+		Argv: []string{"api", "graphql", "--input", "-", "-F", "query=@-"},
+		Want: SentBy(SentNames("--field", "-", "query", leakguard.StdinField),
+			SentNames("--input", "-", "", leakguard.StdinRequestBody)),
+	},
+	{
+		Name: "gh workflow run's field read from standard input",
+		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "-F", "notes=@-"},
+		Want: SentBy(SentNames("--field", "-", "notes", leakguard.StdinField)),
+	},
+	{
+		Name: "gh api's request body on standard input",
+		Argv: []string{"api", "repos/acme/widgets/pulls", "--input", "-"},
+		Want: SentBy(SentNames("--input", "-", "", leakguard.StdinRequestBody)),
+	},
+	{
+		Name: "gh workflow run's inputs as JSON on standard input",
+		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json"},
+		Want: SentBy(SentUsesStdin(leakguard.StdinRequestBody)),
+	},
+	{
+		Name: "gh workflow run's --json=true, which sends standard input as its inputs",
+		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json=true"},
+		Want: SentBy(SentUsesStdin(leakguard.StdinRequestBody)),
+	},
+	{
+		Name: "gh workflow run's --json whose last value is false",
+		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "--json=false"},
+		Want: SentBy(),
+	},
+	{
+		Name: "gh workflow run's --json beside a field read from standard input",
+		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "-F", "notes=@-"},
+		Want: SentBy(SentNames("--field", "-", "notes", leakguard.StdinField),
+			SentUsesStdin(leakguard.StdinRequestBody)),
+	},
+	{
+		Name: "another command's --json, which names the fields to print",
+		Argv: []string{"pr", "list", "-R", "acme/widgets", "--json", "number"},
+		Want: SentBy(),
+	},
+	{
+		Name: "two fields read from standard input",
+		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "title=@-", "-F", "body=@-"},
+		Want: SentBy(SentNames("--field", "-", "title", leakguard.StdinField),
+			SentNames("--field", "-", "body", leakguard.StdinField)),
+	},
+	{
+		Name: "two different options naming standard input",
+		Argv: []string{"api", "repos/acme/widgets/pulls/1", "--input", "-", "-F", "body=@-"},
+		Want: SentBy(SentNames("--field", "-", "body", leakguard.StdinField),
+			SentNames("--input", "-", "", leakguard.StdinRequestBody)),
+	},
+	{
+		// Named once, by the option whose name sorts first.
 		Name: "the same file named twice",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@body.md", "--input", "body.md"},
-		Want: []leakguard.GhFile{{Option: "--field", Path: "body.md"}},
+		Want: SentBy(SentNames("--field", "body.md", "body", leakguard.StdinField)),
 	},
 }

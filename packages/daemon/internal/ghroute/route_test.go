@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -314,6 +315,38 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 			}
 		case err != nil || target.Owner != tc.Owner:
 			t.Errorf("TargetOf(%q, %v) = %+v, %v; want the owner %q", tc.Argv, tc.Env, target, err, tc.Owner)
+		}
+	}
+	// A -h before the command's name is refused but as the whole argv (the walk's -h case says
+	// why); `gh pr --help` is the way to ask. The rows read gh 2.98.0's help of every command,
+	// saved whole, which holds `gh status`, so the words of a -h row are gh's commands and the row
+	// is refused for its -h alone.
+	walked := savedGhHelpOf(t, "2.98.0")
+	const hBeforeTheCommand = `"-h" comes before the command's name, and only -R/--repo and --help may (gh can take the word after such a -h as its value`
+	for _, tc := range []struct {
+		argv []string
+		err  string // a refusal containing this, and "" for a call that names no owner
+	}{
+		{argv: []string{"-h", "status", "config", "set", "-h", "github.com", "editor", "x"}, err: hBeforeTheCommand},
+		{argv: []string{"-h", "status", "auth", "logout", "-h", "github.com"}, err: hBeforeTheCommand},
+		{argv: []string{"-h", "status", "repo", "create", "acme/x", "--public"}, err: hBeforeTheCommand},
+		{argv: []string{"auth", "-h", "status", "logout", "-h", "github.com"}, err: hBeforeTheCommand},
+		{argv: []string{"repo", "-h", "view", "create", "acme/x", "--public"}, err: hBeforeTheCommand},
+		{argv: []string{"-R", "acme/widgets", "-h", "pr", "view", "1"}, err: hBeforeTheCommand},
+		{argv: []string{"-h", "pr", "view", "1", "-R", "acme/w"}, err: hBeforeTheCommand},
+		{argv: []string{"-h", "status"}, err: hBeforeTheCommand},
+		{argv: []string{"-R", "acme/widgets", "-h"}, err: hBeforeTheCommand},
+		{argv: []string{"pr", "-h"}, err: hBeforeTheCommand},
+		{argv: []string{"-h"}},
+	} {
+		target, err := TargetOf(tc.argv, nil, walked, noGitRepository, ghroutetest.OwnersOwnDirectories)
+		switch {
+		case tc.err != "":
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("TargetOf(%q) = %+v, %v; want a refusal containing %q", tc.argv, target, err, tc.err)
+			}
+		case err != nil || target.Owner != "":
+			t.Errorf("TargetOf(%q) = %+v, %v; want no owner", tc.argv, target, err)
 		}
 	}
 	// A pane of the issue owner acme, whose GH_CONFIG_DIR is acme's directory of the bundle.
@@ -1004,12 +1037,21 @@ func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 }
 
 // The files a call would send to GitHub as content are read out of the same parse that reads the
-// owner, so the leak guard reads each file's text (leakguard.GhRequest.Files) and needs no second
+// owner, so the leak guard reads each file's text (leakguard.GhRequest.Sent) and needs no second
 // reader of the argv. The parse knows each option's arity from the leaf's own help, which is what
 // a table of option names cannot: `-F` is --body-file in `gh pr create` and --field in `gh api`,
 // a short cluster gives its last letter the next argument (`-dF <path>` is `--draft --body-file
-// <path>`), and an attached value may carry an `=` of its own (`-F=<path>`). A value of `-`, an
-// `@-`, a field given a literal and a raw field name no file to open (ghroutetest.SentFileCalls).
+// <path>`), and an attached value may carry an `=` of its own (`-F=<path>`). A file a field names
+// carries the field's name. A value of `-`, an `@-`, a field given a literal and a raw field name
+// no file to open; a `-` and an `@-` are standard input instead, which the parse answers is sent,
+// with the use the option that named it makes of it, or none where two options with different
+// uses did, and with the name of each field whose value it is: `query` in a `gh api graphql`
+// call is what makes the guard read that input one GraphQL literal at a time. `gh workflow run
+// --json`, at a last value of true, names it as a request body; `--json` of any other command
+// takes the fields to print and names none. Each command here has a leaf, so its answer is never
+// nil, a command that sends nothing among them: the guard then reads nothing of it from the argv
+// again. The answer is compared whole, since the names of the fields of standard input are
+// leakguard's own and can be seen no other way (ghroutetest.SentFileCalls).
 func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 	for _, tc := range ghroutetest.SentFileCalls {
 		t.Run(tc.Name, func(t *testing.T) {
@@ -1017,8 +1059,11 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			if err != nil {
 				t.Fatalf("TargetOf(%q) = %v", tc.Argv, err)
 			}
-			if !slices.Equal(target.Files, tc.Want) {
-				t.Fatalf("TargetOf(%q) read the files %v, want %v", tc.Argv, target.Files, tc.Want)
+			if target.Sent == nil {
+				t.Fatalf("TargetOf(%q) handed no parse of what the call sends, so the guard would read the argv again", tc.Argv)
+			}
+			if !reflect.DeepEqual(target.Sent, tc.Want) {
+				t.Errorf("TargetOf(%q) read what the call sends as %+v, want %+v", tc.Argv, target.Sent, tc.Want)
 			}
 		})
 	}

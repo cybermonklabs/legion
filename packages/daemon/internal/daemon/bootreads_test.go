@@ -208,8 +208,8 @@ func TestATmuxDaemonWithAnswersRefusesToStartWithoutALeakCheck(t *testing.T) {
 	noCheck := []string{"PATH=" + onPath, "HOME=" + home}
 	pointer := filepath.Join(home, ".config", "public-leak-check", "path")
 	want := "answers needs the shared public leak check on the daemon's host, which the answer loop's gh tool runs before every call, and none was found: " +
-		"PUBLIC_LEAK_CHECK names none, public-leak-check.sh is on no PATH entry, and the pointer file " + pointer + " could not be read: open " + pointer +
-		": no such file or directory: install it with the check's own installer, or set PUBLIC_LEAK_CHECK to its path"
+		"PUBLIC_LEAK_CHECK names none, public-leak-check.sh is on no PATH entry, and the pointer file " + pointer + " could not be read: " +
+		"no such file or directory: install it with the check's own installer, or set PUBLIC_LEAK_CHECK to its path"
 	if _, err := readBoot(cfg, environLookup(noCheck), os.Getenv, false, quietLogger()); err == nil || err.Error() != want {
 		t.Fatalf("readBoot with answers and no leak check = %v, want %q", err, want)
 	}

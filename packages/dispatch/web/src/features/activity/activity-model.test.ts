@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import {
   DELETED_POST_DELIVERY_ERROR,
   NO_LIVE_SESSION,
@@ -6,7 +6,14 @@ import {
 } from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { activityDescription, buildActivityItems, dateKey } from "./activity-model";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function message(seq: number, at: string): DispatchEvent {
   const actor = { id: "alice", kind: "user" as const };

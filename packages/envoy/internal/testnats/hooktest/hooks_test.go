@@ -48,7 +48,7 @@ func newHeldConsumer(t *testing.T) *heldConsumer {
 	hooks := testnats.Hook(t)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(reachWithin))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -73,11 +73,11 @@ func newHeldConsumer(t *testing.T) *heldConsumer {
 // ackNext fetches C's next message and acks it, waiting for the server to take the ack.
 func (c *heldConsumer) ackNext(t *testing.T) {
 	t.Helper()
-	msgs, err := c.sub.Fetch(1, natsgo.MaxWait(5*time.Second))
+	msgs, err := c.sub.Fetch(1, natsgo.Context(testwait.Context(t)))
 	if err != nil || len(msgs) != 1 {
 		t.Fatalf("fetch C's next message: %d messages, %v", len(msgs), err)
 	}
-	if err := msgs[0].AckSync(natsgo.AckWait(5 * time.Second)); err != nil {
+	if err := msgs[0].AckSync(natsgo.Context(testwait.Context(t))); err != nil {
 		t.Fatalf("ack C's message: %v", err)
 	}
 }

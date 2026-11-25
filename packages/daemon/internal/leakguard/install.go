@@ -485,11 +485,13 @@ func firstLine(printed string) string {
 // its roles no CheckerVar, so the role starts without one.
 //
 // With a pin and CheckerVar it answers a *SetupFailure, naming the pin and what the install holds,
-// where the check is absent, where its tag file cannot be read (naming why), where the install
-// records no tag, where it records another tag, and where the install's manifest digest
-// (manifestSHA256: the launcher script, the program, the must-pass lines and the README) is not
-// the deployment's or cannot be read: a role whose check is not the pin's, or not the one the
-// deployment named by its manifest digest (Setting.ManifestSHA256), runs no agent.
+// each as shownText shows it, where the check is absent, where its tag file cannot be read (naming
+// why), where the install records no tag, where it records another tag, and where the install's
+// manifest digest (manifestSHA256: the launcher script, the program, the must-pass lines and the
+// README) is not the deployment's or cannot be read: a role whose check is not the pin's, or not
+// the one the deployment named by its manifest digest (Setting.ManifestSHA256), runs no agent. The
+// reason a refused tag file gives is rolefile's own sentence, which names the tag file's path as
+// written, and not as shownText shows it.
 func Installed(env []string, dir string) (string, error) {
 	pin := value(env, TagVariable)
 	if pin == "" || !configured(env) {
@@ -503,26 +505,26 @@ func Installed(env []string, dir string) (string, error) {
 	switch {
 	case refused != nil:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s is no install of it: its tag file is refused (%v)", TagVariable, pin, dir, refused)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s is no install of it: its tag file is refused (%v)", TagVariable, shownText(pin), shownText(dir), refused)}
 	case !there:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the pod's launcher installed no check at %s", TagVariable, pin, check)}
+			Why: fmt.Sprintf("%s=%s, and the pod's launcher installed no check at %s", TagVariable, shownText(pin), shownText(check))}
 	case tag == "":
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s records no tag (%s)", TagVariable, pin, dir, tagFile)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s records no tag (%s)", TagVariable, shownText(pin), shownText(dir), tagFile)}
 	case tag != pin:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, pin, dir, tag)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, shownText(pin), shownText(dir), shownText(tag))}
 	}
 	checker := value(env, CheckerVar)
 	held, err := manifestSHA256(check)
 	switch {
 	case err != nil:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the manifest of the install at %s cannot be read to compare with %s=%s: %v", TagVariable, pin, dir, CheckerVar, checker, err)}
+			Why: fmt.Sprintf("%s=%s, and the manifest of the install at %s cannot be read to compare with %s=%s: %v", TagVariable, shownText(pin), shownText(dir), CheckerVar, shownText(checker), err)}
 	case !strings.EqualFold(held, checker):
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s has the manifest digest %s, not the deployment's %s=%s", TagVariable, pin, dir, held, CheckerVar, checker)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s has the manifest digest %s, not the deployment's %s=%s", TagVariable, shownText(pin), shownText(dir), held, CheckerVar, shownText(checker))}
 	}
 	return check, nil
 }

@@ -26,12 +26,14 @@ import (
 // namespace of its own, since off PID 1 the drain does nothing
 // (TestControllerDrainRunningHeldPIDOneHelper).
 func TestTheControllerPodsDrainLeavesARunningHeldChildToFinish(t *testing.T) {
+	t.Parallel()
 	t.Logf("%s", runAsPIDOne(t, "TestControllerDrainRunningHeldPIDOneHelper"))
 }
 
 // TestControllerDrainRunningHeldPIDOneHelper is TestTheControllerPodsDrainLeavesARunningHeldChildToFinish's
 // body, run as PID 1.
 func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
 	}
@@ -241,12 +243,14 @@ exit 5`, "sh", started, finished, released)
 // process's stat. It runs as PID 1, which adopts the orphan
 // (TestGuardReapsAHeldGroupsOrphanPIDOneHelper).
 func TestTheGuardsReapTakesAnOrphanOfAHeldChildsGroup(t *testing.T) {
+	t.Parallel()
 	t.Logf("%s", runAsPIDOne(t, "TestGuardReapsAHeldGroupsOrphanPIDOneHelper"))
 }
 
 // TestGuardReapsAHeldGroupsOrphanPIDOneHelper is TestTheGuardsReapTakesAnOrphanOfAHeldChildsGroup's
 // body, run as PID 1, once for each of the guard's passes.
 func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
 	}
@@ -312,6 +316,7 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 // it may not signal, as kill(-1) does, rather than fail and panic PID 1, and over one already gone;
 // it signals every other process of the listing, and any other error ends it with that error.
 func TestTheDrainsSignalsPassOverAProcessTheyMayNotSignal(t *testing.T) {
+	t.Parallel()
 	var signalled []int
 	kill := func(pid int, _ syscall.Signal) error {
 		signalled = append(signalled, pid)

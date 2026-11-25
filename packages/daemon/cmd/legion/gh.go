@@ -65,15 +65,19 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, one whose checks could not be made to run, and one whose destination GitHub answers
-// 404 for, are refused here, exit 2, with the guard's own message, and gh never runs. A call that
-// writes nothing, by the rule ghroute holds (ghroute.Target.WritesNothing) and under the shared
-// check that rule was proven against (ghroute.ReadsProvenCheckSHA256), is read by that check alone
-// and gets no read of a repository's visibility and no private-name pass. Three calls pass
-// unchecked: `legion gh auth git-credential`, which answers above before any of this, the exact
-// `gh api rate_limit` (ghRateLimitRead), and the guard's own visibility reads (ghVisibilityRead).
-// The shared check's visibility read this command answers itself (sharedCheckVisibilityRead),
-// before it reads anything else of the call. gh runs the rate-limit read, the guard's own
-// visibility reads and each call the shared check alone read with no pager.
+// 404 for, are refused here, exit 2, with the guard's own message, and gh never runs. Its
+// private-name pass runs the deployment's rule file, the one LEGION_PRIVATE_NAME_RULES_FILE names;
+// where none is named, the guard runs the shared check alone, where the deployment runs one, and
+// reads no visibility, and this command prints nothing of it, since the daemon's boot has said
+// once that the deployment names no rule file. A call that writes nothing, by the rule ghroute
+// holds (ghroute.Target.WritesNothing) and under the shared check that rule was proven against
+// (ghroute.ReadsProvenCheckSHA256), is read by that check alone and gets no read of a
+// repository's visibility and no private-name pass. Three calls pass unchecked: `legion gh auth
+// git-credential`, which answers above before any of this, the exact `gh api rate_limit`
+// (ghRateLimitRead), and the guard's own visibility reads (ghVisibilityRead). The shared check's
+// visibility read this command answers itself (sharedCheckVisibilityRead), before it reads
+// anything else of the call. gh runs the rate-limit read, the guard's own visibility reads and
+// each call the shared check alone read with no pager.
 //
 // gh runs with an environment built from an allowlist (ghChildEnviron), never the caller's whole:
 // the proxy variables are kept, since a deployment that reaches GitHub through a proxy names it
@@ -281,23 +285,37 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// typed with) is handed to the guard as one (leakguard.GhRequest.WritesNothing), with the
 	// sha256 of the shared check its rule was proven against, which this binary holds
 	// (ghProvenCheckSHA256). Under that check the guard runs the check and nothing more, and says
-	// so (leakguard.GhAnswer.CheckedOnly), and the log line says checked-only; under any other it
+	// so (leakguard.GhReadCheckedOnly), and the log line says checked-only; under any other it
 	// runs whole. The checker a role is told (leakguard.CheckerVar) plays no part in it. Every
-	// other call is guarded whole, the visibility read and the private-name pass included.
+	// other call is guarded whole, the visibility read and the private-name pass included, where
+	// the deployment names its rule file (LEGION_PRIVATE_NAME_RULES_FILE, leakguard.RulesFileVar).
+	// Where it names none, the guard runs the shared check alone, where one runs, reads no
+	// visibility and no file the call sends, and says so (leakguard.GhReadNoRules): the log line
+	// says no-rules, and standard error holds nothing of it, so that a script reading gh's output
+	// reads gh's alone.
 	//
 	// A *leakguard.Refusal, a *leakguard.SetupFailure and a *leakguard.NotFound each refuse the
 	// call: a check that did not run has cleared nothing, and neither has a visibility read GitHub
 	// answered 404. All three exit 2, this command's status for a refusal made before gh runs,
 	// which is what an unreadable command and an unset variable already exit with, and all three
-	// print the guard's own message, which never holds the text it refused.
+	// print the guard's own message. A refusal by the private-name rules shows, for each finding,
+	// the record, the rule's description, the text that matched and the line it stands on: the
+	// agent that runs this command wrote that text, so there is nothing in it to hide from the
+	// agent the refusal is shown to.
 	//
-	// The files the call would send go with it, read out of the parse above, which knew each
-	// option's arity from the leaf's own help (ghroute.Target.Files): the guard reads the text
-	// of each, and needs no second reader of the argv for a call this command checked. So does
-	// whether the call sends its standard input as content, which the guard reads itself where no
-	// shared check runs to ask for it (ghroute.Target.StdinSent, leakguard.GhRequest.StdinSent).
+	// What the call would send goes with it, read out of the parse above, which knew each
+	// option's arity from the leaf's own help (ghroute.Target.Sent), as one answer
+	// (leakguard.GhRequest.Sent): the files, whose text the guard reads, so it needs no second
+	// reader of the argv for a call this command checked; the use the call makes of standard
+	// input, which says whether that input is a request body (`gh api --input -`, `gh
+	// workflow run --json`), the value of fields, or text GitHub stores as it stands, and where
+	// two options name it with different uses the parse hands none and the guard reads the input
+	// both ways; and whether the call sends its standard input as content at all, by which the
+	// guard reads that input as leakguard.GhRequest.Sent says.
 	var buffered []byte
-	checkedOnly := false
+	// read is how much of the guard the call had (leakguard.GhRead), whole for a mode that runs
+	// no guard.
+	read := leakguard.GhReadWhole
 	mode := ghCallModeOf(rateLimitRead, isVisibilityRead, target.WritesNothing)
 	switch mode {
 	case ghRateLimitCall:
@@ -316,8 +334,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			Args:          args,
 			Stdin:         os.Stdin,
 			Repo:          repo,
-			Files:         target.Files,
-			StdinSent:     target.StdinSent,
+			Sent:          target.Sent,
 			WritesNothing: mode == ghReadCall,
 			ProvenCheck:   ghProvenCheckSHA256,
 		})
@@ -328,9 +345,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
 		}
-		buffered, checkedOnly = answer.Stdin, answer.CheckedOnly
-		if checkedOnly {
+		buffered, read = answer.Stdin, answer.Read
+		switch read {
+		case leakguard.GhReadCheckedOnly:
 			visibilitySource = ghCheckedOnlyVisibility
+		case leakguard.GhReadNoRules:
+			visibilitySource = ghNoRulesVisibility
 		}
 	}
 	dir := env["GH_CONFIG_DIR"]
@@ -346,15 +366,20 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return 2
 	}
 	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, leakguard.RunByRealGhVar: gh}
-	// A call no private-name pass read runs no pager program: such a program runs with this call's
-	// token directory and could write what that pass never read. Its pager is cat, which gh reads
-	// as no pager (GH_PAGER outranks gh's config `pager`; gh starts a pager only when its standard
-	// output is a terminal). No call is given a browser, an editor or a pager from the caller's
-	// environment (ghChildEnviron); gh's config `browser` is left, because gh reads it only to open
-	// a page, which such a call never does: a leaf ghroute reads as a read opens one only under
-	// --web, which no read grammar names, so a call giving it is guarded whole
+	// A call that went around the private-name pass — the rate-limit read and the guard's own
+	// visibility reads, which run no guard, and a call the shared check alone read
+	// (leakguard.GhReadCheckedOnly) — runs no pager program: such a program runs with this call's
+	// token directory and could write what that pass never read. Its pager is cat, which gh
+	// reads as no pager (GH_PAGER outranks gh's config `pager`; gh starts a pager only when its
+	// standard output is a terminal). A call guarded whole keeps gh's config `pager`, and so does
+	// a call the guard answered leakguard.GhReadNoRules: the deployment names no private-name
+	// rule, so there is no pass for it to go around, and what its pager could write no pass would
+	// have read either. No call is given a browser, an editor or a pager from the caller's
+	// environment (ghChildEnviron); gh's config `browser` is left, because gh reads it only to
+	// open a page, which such a call never does: a leaf ghroute reads as a read opens one only
+	// under --web, which no read grammar names, so a call giving it is guarded whole
 	// (ghroute.Target.WritesNothing), and `gh api` opens none.
-	if mode == ghRateLimitCall || mode == ghVisibilityCall || checkedOnly {
+	if mode == ghRateLimitCall || mode == ghVisibilityCall || read == leakguard.GhReadCheckedOnly {
 		set["GH_PAGER"] = "cat"
 	}
 	childEnv, err := withGitHubUseHTTPPath(ghChildEnviron(os.Environ(), set))

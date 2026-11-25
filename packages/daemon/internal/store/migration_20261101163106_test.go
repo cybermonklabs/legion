@@ -11,6 +11,7 @@ import (
 // version. Both carry the claim of the outbox row that names them and the hold of the delivery
 // that carries them, and both go with the issue they name.
 func TestParkedDecisionsArriveWith20261101163106AndGoWithTheirIssue(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 67)

@@ -39,6 +39,7 @@ import { useAgents } from "../conversation/useAgents";
 import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 import { deliveryAttempts } from "./attempts";
@@ -169,7 +170,12 @@ function BroadcastRecipientRow({
             <Timestamp at={reply.created_at} />
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
+            <MarkdownBody
+              markdown={reply.body}
+              source={textSourceOf("message", reply.id, reply.issue_key)}
+              surface="broadcast-recipient-reply"
+              tree={reply.body_tree}
+            />
           </div>
         </div>
       ))}
@@ -223,8 +229,10 @@ export function BroadcastPage(): ReactNode {
             {answeredCount(recipients)} of {recipients.length} answered
           </span>
         </p>
+        {/* No `source`: why a broadcast's own body is no record is the reading list's
+            `broadcast-sent-body` (`DISPATCH_READING_SURFACES`). */}
         <div className={`mt-2 ${textPrimaryOnCanvas}`}>
-          <MarkdownBody markdown={sent.body} tree={sent.body_tree} />
+          <MarkdownBody markdown={sent.body} surface="broadcast-sent-body" tree={sent.body_tree} />
         </div>
         {excluded.length === 0 ? null : (
           <p className={`mt-2 text-sm ${dangerText}`}>

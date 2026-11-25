@@ -14,7 +14,12 @@ body: |-
   either runtime, as a pane's and a pod's guard are, and refuses a call under a check of another
   digest; it runs a private copy of the check, made in the answer's own 0700 directory under
   `<state_dir>/answers/`, since the daemon's container has no role's private directory to make it
-  in.
+  in. The guard runs the deployment's private-name rule file, the bytes boot read and every launch
+  carries as `LEGION_PRIVATE_NAME_RULES`: each answer writes them to a 0600 file of its own and
+  names it to the guard as `LEGION_PRIVATE_NAME_RULES_FILE`, as a role's runtime does, so a write
+  the loop makes for a stopped agent is refused by the rules a running agent's write is refused
+  by. Where the deployment names no rule file the loop's guard runs none, and reads no visibility,
+  as a role's does.
 
   Boot refuses to start with the answer loop on and no check, as it refuses one with no `gh`, and so do
   `legion config check` and `legion probe-boot`: under tmux when none of `PUBLIC_LEAK_CHECK`,

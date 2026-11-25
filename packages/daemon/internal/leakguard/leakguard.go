@@ -5,28 +5,37 @@
 //     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text. The
 //     deployment names it (Setting); under a deployment that names none, a write where no check
 //     is named skips it rather than being refused for its absence (Guard.sharedCheck).
-//   - This repository's own private-name rules, the embedded private-names.toml, run in process
-//     over the records the write is made of, and only when the destination repository is one
-//     GitHub reports public.
+//   - The deployment's private-name rules, a gitleaks rule file the deployment names in
+//     LEGION_PRIVATE_NAME_RULES_FILE (RulesFileVar), run in process over the records the write is
+//     made of, and only when the destination repository is one GitHub reports public. A
+//     deployment that names no rule file runs no private-name rule: the guard runs the shared
+//     check alone, where one runs, reads no visibility, builds no record, and says nothing of it,
+//     write after write. The daemon says it once, at boot, in its own log (internal/daemon's
+//     privateNameRulesNone).
 //
-// A call site reaches the guard through one of four entry points — Push, GhCall, Text and Rules —
-// and reads one of three answers from a refused write: a *Refusal, which is about the text the
-// write carries; a *SetupFailure, which is the check missing, the check failing, the engine
-// failing, or a destination whose visibility cannot be read; and a *NotFound, which is a
-// destination GitHub answers 404 for. All three refuse the write; they are three types so that a
-// call site can say which one it met, the way the shared check itself keeps "LEAK CHECK: refusing"
-// apart from "LEAK CHECK SETUP ERROR".
+// A call site reaches the guard through one of three entry points — Push, GhCall and Text — and
+// reads one of three answers from a refused write: a *Refusal, which is about the text the write
+// carries; a *SetupFailure, which is the check missing, the check failing, the engine failing, a
+// rule file that cannot be used, or a destination whose visibility cannot be read; and a
+// *NotFound, which is a destination GitHub answers 404 for. All three refuse the write; they are
+// three types so that a call site can say which one it met, the way the shared check itself keeps
+// "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR". A write with no repository behind
+// it, the daemon's branch create, builds no guard: it runs the rule set the daemon compiled at
+// boot through RuleSet.Check, which answers a *Refusal or a *SetupFailure.
 //
-// What the guard reports is the record and the class: never the text that matched, never the
-// component of a path that matched, and never anything the detection engine itself printed. The
-// classes are the descriptions of the rules in private-names.toml, and a path in a report has
-// every component the repository and company rules match replaced by "<name>", the masking
-// .github/scripts/check-private-names.sh does (its named_parts function, which its mask applies).
+// A rule-pass refusal shows what matched: each line of its report names the record, the class
+// (the description of the deployment's rule), the text that matched and the line it stands on,
+// quoted and cut to the bounds RuleSet.scan names. The agent that would make the write wrote that
+// text, so there is nothing in it to hide from the agent the refusal is shown to; this
+// repository's public CI never prints the guard's report. Nothing the detection engine itself
+// printed is reported. A record about a file is named by its path, and a report or a setup failure
+// prints a record's label, a path, a repository slug or an option on one line and bounded
+// (shownText): as it was written, where that is printable text of at most 200 bytes.
 //
 // The rule pass of a push reads git's output as git writes it, the added paths and the diff, and
-// scans each record as it arrives (pass), and a refusal names at most 1000 lines, counting the
-// rest (refusalLines). So the pass holds one line of git's output, the record in hand, the
-// detector's cost of scanning it, and one commit's author, committer and message, whatever the
+// scans each record as it arrives (pass), and a refusal shows at most maxLinesShown lines,
+// counting the rest (shownReport). So the pass holds one line of git's output, the record in hand,
+// the detector's cost of scanning it, and one commit's author, committer and message, whatever the
 // number and size of the push's files; what grows with the push is the list of its commits, about
 // one line of a commit's id each. One line is held whole, a few times over (the reader's buffer,
 // the record's text, the detector's lower-cased copy), however long it is: a line is neither
@@ -64,15 +73,17 @@ const (
 )
 
 // Options are what a guard is built with, and a field left empty is the ordinary case, a role's:
-// every call resolves the check for itself (Resolve) in this process's own environment, and makes
-// the private copy of a check under a deployment's digest under this package's PrivateCopyBase or
-// its fallback. A caller sets what it holds of its own: `legion gh` an observer of the visibility
-// answer (OnVisibility), the daemon the environment it resolves the machine's check in (Env), and
-// the answer loop's gh tool, on every call, the check its host answered, the environment the
-// guard's children start from and the directory of the private copy (Check, Env and
-// PrivateCopyBase, internal/ghtool's Answer.leakGuard). Visibility, Clock and Curl are seams a
-// test fills. The engine needs no seam: its rules are embedded in this package and it is linked
-// into this binary, so there is no copy of it for a test to stand in for.
+// every call resolves the check for itself (Resolve) and reads the deployment's rule file
+// (RulesFileVar) in this process's own environment, and makes the private copy of a check under a
+// deployment's digest under this package's PrivateCopyBase or its fallback. A caller sets what it
+// holds of its own: `legion gh` an observer of the visibility answer (OnVisibility), the daemon
+// the environment it resolves the machine's check in (Env), and the answer loop's gh tool, on
+// every call, the check its host answered, the environment the guard's children start from, which
+// names the deployment's rule file where the deployment names one, and the directory of the
+// private copy (Check, Env and PrivateCopyBase, internal/ghtool's Answer.leakGuard). Visibility,
+// Clock and Curl are seams a test fills. The engine needs no seam: it is linked into this binary,
+// and the rules it runs are the deployment's, so a test names a fixture rule file in Env as a
+// deployment names its own.
 type Options struct {
 	// Check is the shared public leak check's path, which stands in front of every place Resolve
 	// reads. Empty, every call resolves the check for itself (Resolve), as a role's `legion gh`
@@ -96,7 +107,7 @@ type Options struct {
 	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote),
 	// which keeps only the names lsRemoteInherits allows. The guard adds to it the names that make
 	// a credential prompt fail closed (promptsNothing) and RunByRealGhVar blanked, and each child's
-	// own names on top of those.
+	// own names on top of those. It is also where the guard reads RulesFileVar (Guard.rules).
 	Env []string
 	// Curl is the curl the guard's reads through curl run (Guard.CurlGet). Empty is the ordinary
 	// case, curlProgram: the system's own curl at a fixed path, never the first curl on the
@@ -115,9 +126,9 @@ type Options struct {
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
-// guard of its own for the one write it is about to make (cmd/legion's gh and leak-check,
-// internal/ghtool's call of the answer loop, internal/ghbranch), and each entry point reads a
-// destination's visibility at most once, so there is nothing a shared answer would spare.
+// guard of its own for the one write it is about to make (cmd/legion's gh and leak-check, and
+// internal/ghtool's call of the answer loop), and each entry point reads a destination's
+// visibility at most once, so there is nothing a shared answer would spare.
 type Guard struct {
 	opts Options
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
@@ -202,55 +213,57 @@ func (g *Guard) env(base []string, inherit func(name string) bool, extra ...stri
 	return append(out, extra...)
 }
 
-// Record is one piece of a write the rules read: Label is what the report calls it, and Text is
-// what the rules match against. A label never carries the write's own text, since the report is
-// printed and that text is what must not be, with one exception this repository's own check
-// already makes: a record about a file carries that file's path, masked in the report as
-// .github/scripts/check-private-names.sh masks one. The path is also what the engine's path
-// rules read, and it is the whole label for a second reason — the rule file's one path-scoped
-// allowlist is anchored on a whole path, and a label with anything else in it would take that
-// allowlist away.
+// Record is one piece of a write the rules read.
 type Record struct {
+	// Label is what the report calls the record, as it was written: "the title", "commit 1a2b3c4
+	// message", a file's path. A report line holds the label as shownText shows it, and then the
+	// text that matched and the line it stands on (RuleSet.scan).
 	Label string
-	Text  string
+	// Text is what the rules match against.
+	Text string
+	// Path is the path of the file the destination will hold the text at, which is what the
+	// engine's path rules and a rule file's path-scoped allowlist read: a pushed file's added or
+	// renamed path and each of its added lines carry it. Every other record carries none, so that
+	// no label is read as a path. A file a gh call sends carries none either: GitHub never sees
+	// the name the file has here, so its label is that name and its Path is empty.
+	Path string
+	// FirstLine is the record's first line in its file, counted from 1, so that a report names
+	// the file's line: an added line's line in the file it is added to. 0 is a record that is no
+	// file's line, whose own first line is line 1.
+	FirstLine int
 }
 
 // RefRecord is the record of a ref name, the whole of what the daemon's branch create has to
-// show and one record of every push. Its label names no ref: a ref name is text of the caller's,
-// and a report that printed it would carry out of this process the very thing it refused.
+// show (RuleSet.Check) and one record of every push. A report shows the ref name as the line its
+// match stands on, as it shows any record's text.
 func RefRecord(ref string) Record {
 	return Record{Label: "the ref name", Text: ref}
 }
 
-// Rules runs the rule-file pass over records and nothing else: no shared check, and no visibility
-// read. It is what a write with no repository behind it has — the daemon's branch create, which
-// holds a ref name and no checkout at all.
-func (g *Guard) Rules(ctx context.Context, records ...Record) error {
-	return g.rules(ctx, "the write", records)
-}
-
-// rules is the rule-file pass over records, reported as a refusal of what.
-func (g *Guard) rules(ctx context.Context, what string, records []Record) error {
-	pass, err := g.rulePass(ctx, what)
+// rules is the private-name rule set a write of what runs: the rule file RulesFileVar names in
+// the base environment, read and compiled at this write; else none, which is nil with no error. A
+// write that runs no rule says nothing of it, since the daemon's boot has said once that the
+// deployment names no rule file. An empty RulesFileVar names none, as an unset one does.
+//
+// A file named that cannot be used — missing, unreadable, longer than MaxRulesFile, or one
+// LoadRules refuses — is a setup failure naming the file, as shownText shows it, and why, so the
+// write is refused: a deployment that named rules meant them to run, and a guard that ran none in
+// their place would pass what they refuse.
+func (g *Guard) rules(what string) (*RuleSet, error) {
+	path := value(g.base(), RulesFileVar)
+	if path == "" {
+		return nil, nil
+	}
+	named := "the private-name rule file " + shownText(path) + ", which " + RulesFileVar + " names, "
+	content, err := ReadRulesContent(path)
 	if err != nil {
-		return err
+		return nil, &SetupFailure{What: what, Why: named + err.Error()}
 	}
-	for _, record := range records {
-		if pass.add(record) != nil {
-			break
-		}
-	}
-	return pass.end(what)
-}
-
-// rulePass is a rule pass of the embedded rules, for records read one at a time, or the setup
-// failure of rules that could not be compiled.
-func (g *Guard) rulePass(ctx context.Context, what string) (*pass, error) {
-	engine, err := compiled()
+	rules, err := LoadRules(content)
 	if err != nil {
-		return nil, &SetupFailure{What: what, Why: "the private-name rules could not be read", Err: err}
+		return nil, &SetupFailure{What: what, Why: named + "is no rule file the guard can run", Err: err}
 	}
-	return &pass{ctx: ctx, engine: engine}, nil
+	return rules, nil
 }
 
 // TextRequest is a piece of text a write would publish, as the shared check's text shape reads it:
@@ -265,8 +278,9 @@ type TextRequest struct {
 
 // Text checks a piece of text a write would publish: a pull request's title and body, an issue
 // comment, a release note. The shared check reads it on standard input in its check-public-text
-// shape, and the rule pass then reads the title and the body as two records of their own. Under a
-// deployment that runs no shared check (sharedCheck) the rule pass is the whole of it.
+// shape, and the rule pass, where a rule is named, then reads the title and the body as two
+// records of their own. Under a deployment that runs no shared check (sharedCheck) the rule pass
+// is the whole of it.
 func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	const what = "the text"
 	check, err := g.sharedCheck(what)
@@ -282,6 +296,13 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 			return err
 		}
 	}
+	rules, err := g.rules(what)
+	if err != nil {
+		return err
+	}
+	if rules == nil {
+		return nil
+	}
 	public, err := g.scanThrough(ctx, what, req.Repo)
 	if err != nil {
 		return err
@@ -290,7 +311,7 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 		return nil
 	}
 	title, body, _ := strings.Cut(req.Text, "\n")
-	return g.rules(ctx, what, []Record{{Label: "the title", Text: title}, {Label: "the body", Text: body}})
+	return rules.Check(ctx, what, Record{Label: "the title", Text: title}, Record{Label: "the body", Text: body})
 }
 
 // scanThrough is whether the rule pass runs for a write to slug: it does for a destination GitHub
@@ -305,8 +326,8 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 // requires the slug to be one ghrepo.Parse takes (its ghVisibilityRead), so a read for any other
 // slug would go back through `legion gh`, into the guard, into a read of the same slug, without
 // end. The guard therefore reads no visibility it could not have exempted. The refusal carries no
-// error of Parse's: that refusal repeats the slug as it was written, and a report carries a
-// masked name alone.
+// error of Parse's, which says again the slug the refusal names. Each refusal names the slug as
+// shownText shows it.
 func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error) {
 	if slug == "" {
 		return true, nil
@@ -314,17 +335,17 @@ func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error
 	if _, err := ghrepo.Parse("", slug); err != nil {
 		return false, &SetupFailure{
 			What: what,
-			Why:  "the destination " + maskPath(slug) + " is no repository GitHub serves, so no visibility can be read for it",
+			Why:  "the destination " + shownText(slug) + " is no repository GitHub serves, so no visibility can be read for it",
 		}
 	}
 	visibility, err := g.Visibility(ctx, slug)
 	switch {
 	case errors.As(err, new(*notFoundError)):
-		return false, &NotFound{What: what, Repo: maskPath(slug)}
+		return false, &NotFound{What: what, Repo: shownText(slug)}
 	case err != nil:
 		return false, &SetupFailure{
 			What: what,
-			Why:  "the visibility of " + maskPath(slug) + " could not be read",
+			Why:  "the visibility of " + shownText(slug) + " could not be read",
 			Err:  err,
 		}
 	}

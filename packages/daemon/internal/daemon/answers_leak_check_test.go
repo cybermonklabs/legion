@@ -326,6 +326,43 @@ func TestATmuxDaemonsGhToolResolvesTheMachinesCheckInTheDaemonsEnvironment(t *te
 	}
 }
 
+// The answer loop's gh tool runs the deployment's private-name rule file as every launch does: its
+// host carries the bytes boot read into the launch secret leakguard.RulesSecret
+// (readLaunchSecrets), which each answer writes to a file of its own and names to the guard
+// (ghtool.Host.PrivateNameRules; internal/ghtool's
+// TestALoopWriteNamingAPrivateNameOfTheDeploymentsRuleFileIsRefused runs a call under them). A
+// deployment that names no rule file hands the host none, and the loop's guard runs none.
+func TestTheAnswerLoopsGhToolRunsThePrivateNameRulesEveryLaunchCarries(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, file, want string
+	}{
+		{name: "a rule file named", file: leakguardtest.WriteRules(t, t.TempDir()), want: leakguardtest.Rules},
+		{name: "none named"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{StateDir: t.TempDir(), Answers: &config.Answers{}, PrivateNameRulesFile: tc.file}
+			if tc.file != "" {
+				cfg.PrivateNameRulesNamedBy = "private_name_rules_file"
+			}
+			secrets, err := readLaunchSecrets(cfg, lookup(nil))
+			if err != nil {
+				t.Fatalf("readLaunchSecrets: %v", err)
+			}
+			w := &workflowRuntime{log: quietLogger()}
+			machine := filepath.Join(t.TempDir(), "public-leak-check.sh")
+			tools, stop, err := w.answersTools(context.Background(), cfg, plan{secrets: secrets, answers: answersReads{leakCheck: machine}}, nil, nil)
+			if err != nil {
+				t.Fatalf("answersTools: %v", err)
+			}
+			defer stop()
+			if tools.host.PrivateNameRules != tc.want || tools.host.PrivateNameRules != secrets[leakguard.RulesSecret] {
+				t.Errorf("the gh tool's host carries the rules %q, want %q, the launch secret %s every launch carries", tools.host.PrivateNameRules, tc.want, leakguard.RulesSecret)
+			}
+		})
+	}
+}
+
 // A failure of the check's read that is GitHub's trouble (appTransient, over the read as
 // transientReads reports it) does not stop a Kubernetes daemon's boot: the install step returns
 // with no error and installs the check in the background. Here GitHub answers the tarball read

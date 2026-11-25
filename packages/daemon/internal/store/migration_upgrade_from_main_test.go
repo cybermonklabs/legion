@@ -120,6 +120,7 @@ var mainsOutboxKinds = []string{
 // what it leaves unrecorded. The negative control is the fix's own absence: with `claim_release`
 // out of either list, the Migrate below fails on the pending release row.
 func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
@@ -213,6 +214,7 @@ const thisBranchsClaimSessions = 20261116144907
 // unapplied. Seed a claim before that backfill and read its holder after it.
 // The answer-loop tables were not yet present at this historical base either.
 func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()

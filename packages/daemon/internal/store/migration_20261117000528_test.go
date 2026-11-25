@@ -39,6 +39,7 @@ var stepRecordReleaseKinds = []string{
 // and with a payload of its own — come through the migration whole: the same id, kind, issue,
 // payload, attempts, due time and error.
 func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, stepRecordKindVersion-1)

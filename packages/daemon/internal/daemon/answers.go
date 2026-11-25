@@ -122,6 +122,15 @@ func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision,
 // leakguard.CheckerVar and holds the check to, as a pane's and a pod's guard do: a check of another
 // digest refuses the call (ghtool.Host.LeakCheckManifestSHA256). A tmux deployment that names no
 // setting tells the guard none, and its machine's check runs as it is.
+//
+// Under either runtime the host carries the deployment's private-name rule file, the bytes boot
+// read and compiled and every launch carries as the launch secret leakguard.RulesSecret
+// (launchSecrets, readBoot), which each answer writes into a file of its own and names to the
+// guard as leakguard.RulesFileVar (ghtool.Host.PrivateNameRules), as a role's runtime does with
+// that secret: a write the loop makes for a stopped agent is refused by the rules a running
+// agent's write is refused by, which are the rules the outbox's branch create runs
+// (plan.privateNameRules). A deployment that names no rule file hands the host none, and the
+// loop's guard runs no private-name rule, as no role's does.
 func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p plan, rt runtime.Runtime, st *store.Store) (ghTools, func(), error) {
 	legion, err := os.Executable()
 	if err != nil {
@@ -151,7 +160,7 @@ func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p
 	// launches and its drift check read, and an answer's bundle is neither.
 	host := ghtool.Host{
 		GH: p.answers.gh, Git: p.tools["git"], Legion: legion, StateDir: cfg.StateDir,
-		LeakCheck: check, LeakCheckManifestSHA256: cfg.LeakCheck.ManifestSHA256, Environ: environ,
+		LeakCheck: check, LeakCheckManifestSHA256: cfg.LeakCheck.ManifestSHA256, PrivateNameRules: p.secrets[leakguard.RulesSecret], Environ: environ,
 		Credential: appauth.GitHubCredential(w.apps, p.repositories.servesRepository, cfg.RepositoryRenames, nil, nil, w.log), Calls: st, Log: w.log, Now: time.Now,
 	}
 	return ghTools{host: host, bounds: cfg.Answers.Bounds}, stop, nil

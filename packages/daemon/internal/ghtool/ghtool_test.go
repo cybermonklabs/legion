@@ -231,6 +231,22 @@ func setBehaviour(t *testing.T, dir string, b behaviour) {
 
 func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 	t.Helper()
+	return newFixtureOf(t, agent, b, "")
+}
+
+// newRulesFixture is newFixture under a deployment that names the fixture's private-name rule file
+// (leakguardtest.Rules), whose bytes the host carries as a daemon's host carries the ones boot read
+// (Host.PrivateNameRules): its guard reads a destination's visibility and runs the rules over what
+// a call to a public repository sends, as a role's guard does where its deployment names the file.
+func newRulesFixture(t *testing.T, agent Agent, b behaviour) *fixture {
+	t.Helper()
+	return newFixtureOf(t, agent, b, leakguardtest.Rules)
+}
+
+// newFixtureOf is the fixture of agent under the stand-in gh b, its host carrying rules as the
+// deployment's private-name rule file ("" for none).
+func newFixtureOf(t *testing.T, agent Agent, b behaviour, rules string) *fixture {
+	t.Helper()
 	f := &fixture{t: t, stand: standInGH(t, b), check: t.TempDir(), tokens: &fakeTokens{}, calls: newFakeRecorder(), logs: &bytes.Buffer{}}
 	root := t.TempDir()
 	f.record = filepath.Join(root, "leak-check-record")
@@ -239,14 +255,16 @@ func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 		GH: filepath.Join(f.stand, "gh"), Git: filepath.Join(root, "gitbin", "git"), Legion: filepath.Join(root, "legion"),
 		StateDir: filepath.Join(root, "state"), Calls: f.calls, Log: slog.New(slog.NewJSONHandler(f.logs, nil)), Now: time.Now,
 		Credential: appauth.GitHubCredential(f.tokens, servedRepositories, ghrepo.Renames{}, nil, nil, slog.New(slog.DiscardHandler)),
-		// The guard's own two seams, as the daemon fills them: the check an installed one, as a
+		// The guard's own seams, as the daemon fills them: the check an installed one, as a
 		// Kubernetes daemon's is once its install lands, a stand-in of this test's, since the real
 		// one is a script no clone of this repository holds, recording in the fixture's record
-		// file; and the environment this process's own with a state home of this fixture's added,
-		// where the guard keeps the public answers it read (leakguard's visibility cache), so no
-		// answer another run kept stands in for this one's read.
-		LeakCheck: installedAt(f.path),
-		Environ:   append(os.Environ(), "XDG_STATE_HOME="+filepath.Join(root, "daemon-state")),
+		// file; the deployment's private-name rule file, the bytes boot read, or none; and the
+		// environment this process's own with a state home of this fixture's added, where the
+		// guard keeps the public answers it read (leakguard's visibility cache), so no answer
+		// another run kept stands in for this one's read.
+		LeakCheck:        installedAt(f.path),
+		PrivateNameRules: rules,
+		Environ:          append(os.Environ(), "XDG_STATE_HOME="+filepath.Join(root, "daemon-state")),
 	}
 	answer, err := Open(context.Background(), f.host, agent, question)
 	if err != nil {
@@ -1837,9 +1855,10 @@ func TestACheckThatCannotBeRunRefusesTheCall(t *testing.T) {
 // with that refusal and no exit, and the guard's one line names the issue, the role, the
 // repository and why, as for each of the guard's refusals. The check ran, and the guard made one
 // read of the repository, which the stand-in gh answers as gh printed GitHub's 404
-// (leakguardtest.GhReadNotFound).
+// (leakguardtest.GhReadNotFound). The deployment names its rule file (newRulesFixture): the guard
+// reads a destination's visibility only where a rule is named.
 func TestACallWhoseRepositoryGitHubAnswers404ForIsRefused(t *testing.T) {
-	f := newFixture(t, implementer, behaviour{Stdout: "posted\n", VisibilityRefused: leakguardtest.GhReadNotFound})
+	f := newRulesFixture(t, implementer, behaviour{Stdout: "posted\n", VisibilityRefused: leakguardtest.GhReadNotFound})
 	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
 	got := f.run(1, argv...)
 	why := (&leakguard.NotFound{What: leakguard.WhatGhCall, Repo: "acme/widgets"}).Error()
@@ -1926,10 +1945,12 @@ func TestACallTheLeakGuardClearsRunsAsBefore(t *testing.T) {
 }
 
 // What the guard is given is the call as the routing read it: the repository it targets, which is
-// the destination whose visibility decides whether this repository's own rules run, and the files
-// the parse found, which is no file for every command of this tool — none of them reads one, and
-// the guard therefore reads the argv with no table of its own, which would take the `-Fixed in
-// abc123` of a body for a file nobody named and refuse the call over it.
+// the destination whose visibility decides whether the deployment's private-name rules run, and
+// what the parse found the call sends (ghroute.Target.Sent), which is no file for every command of
+// this tool — none of them reads one, and the guard therefore reads the argv with no tables of its
+// own, which would take the `-Fixed in abc123` of a body for a file nobody named and refuse the
+// call over it. The deployment names its rule file (newRulesFixture), so the guard reads the
+// visibility and runs the rule pass, which it does only where a rule is named.
 //
 // The visibility read is the guard's own gh child, and it is the real gh that makes it, on the
 // guard's PATH, with the routed owner's gh directory and no token of the daemon's to answer in
@@ -1937,7 +1958,7 @@ func TestACallTheLeakGuardClearsRunsAsBefore(t *testing.T) {
 // own over the read.
 func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 	t.Run("the repository the call targets, read by the real gh as the agent", func(t *testing.T) {
-		f := newFixture(t, implementer, behaviour{Stdout: "gh's answer\n"})
+		f := newRulesFixture(t, implementer, behaviour{Stdout: "gh's answer\n"})
 		// A token and a wrapper of the daemon's own, which this environment must not carry to
 		// the guard's children.
 		f.answer.host.Environ = append(f.answer.host.Environ,
@@ -1977,21 +1998,21 @@ func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 	})
 
 	t.Run("the files the parse found, which no command of this tool sends", func(t *testing.T) {
-		f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+		f := newRulesFixture(t, implementer, behaviour{Stdout: "posted\n"})
 		body := "-Fixed in abc123"
 		argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", body}
 		got := f.run(1, argv...)
 		if !got.Ran || got.Exit != 0 {
 			t.Fatalf("gh %q = %+v; want it run: the parse found no file, so the guard reads none", argv, got)
 		}
-		// The same call with no files named, which is what a caller that leaves the guard to
-		// read the argv itself hands it: the guard's own table takes the body for a file.
+		// The same call with no parse handed, which is what a caller that leaves the guard to
+		// read the argv itself hands it: the guard's own tables take the body for a file.
 		run, why := withFooter(argv, commandWords(argv), footer(implementer, question, 1, ""))
 		if why != "" {
 			t.Fatalf("the call's footer: %s", why)
 		}
 		guard := leakguard.New(leakguard.Options{
-			Check: f.path, Env: f.answer.host.Environ,
+			Check: f.path, Env: append(slices.Clone(f.answer.host.Environ), leakguard.RulesFileVar+"="+f.answer.rules),
 			Visibility: func(context.Context, string) (leakguard.Visibility, error) { return leakguard.Public, nil },
 		})
 		_, err := guard.GhCall(context.Background(), leakguard.GhRequest{Args: run, Repo: "acme/widgets"})
@@ -2003,11 +2024,13 @@ func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 }
 
 // The guard is given the names of the daemon's environment that guardKeeps allows and no other
-// name of it: a secret of the daemon's own, a trust store and the variable naming the check (the
-// guard is handed the check's path, Host.LeakCheck) stay out, and every allowed name the daemon
-// holds reaches the guard, and its gh read of the call's repository, with the daemon's value.
+// name of it: a secret of the daemon's own, a trust store, the variable naming the check (the
+// guard is handed the check's path, Host.LeakCheck) and the variable naming a rule file (the guard
+// is told the deployment's from the host, Host.PrivateNameRules) stay out, and every allowed name
+// the daemon holds reaches the guard, and its gh read of the call's repository, with the daemon's
+// value. Beside them the guard is told the answer's copy of the deployment's rule file.
 func TestTheGuardIsGivenOnlyTheAllowedNamesOfTheDaemonsEnvironment(t *testing.T) {
-	f := newFixture(t, implementer, behaviour{Stdout: "gh's answer\n"})
+	f := newRulesFixture(t, implementer, behaviour{Stdout: "gh's answer\n"})
 	allowed := map[string]string{
 		"HOME": t.TempDir(), "TMPDIR": t.TempDir(),
 		"TERM": "dumb", "TZ": "UTC", "LANG": "C", "LC_ALL": "C", "LC_MESSAGES": "C",
@@ -2016,7 +2039,7 @@ func TestTheGuardIsGivenOnlyTheAllowedNamesOfTheDaemonsEnvironment(t *testing.T)
 		"XDG_CONFIG_HOME": t.TempDir(), "XDG_CACHE_HOME": t.TempDir(), "XDG_DATA_HOME": t.TempDir(), "XDG_STATE_HOME": t.TempDir(),
 	}
 	keptOut := map[string]string{"LEGION_TEST_DAEMON_SECRET": "the daemon's own secret", "SSL_CERT_FILE": "/the/daemons/ca.pem",
-		leakguard.CheckVar: f.path}
+		leakguard.CheckVar: f.path, leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir())}
 	daemon := []string{"PATH=" + os.Getenv("PATH")}
 	for name, value := range allowed {
 		daemon = append(daemon, name+"="+value)
@@ -2028,7 +2051,8 @@ func TestTheGuardIsGivenOnlyTheAllowedNamesOfTheDaemonsEnvironment(t *testing.T)
 
 	configDir := filepath.Join(f.answer.owners, "acme")
 	want := []string{"PATH=" + f.stand + ":" + filepath.Dir(f.host.Git) + ":" + os.Getenv("PATH"), "GH_CONFIG_DIR=" + configDir,
-		"GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "GH_SPINNER_DISABLED=1", "NO_COLOR=1"}
+		"GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "GH_SPINNER_DISABLED=1", "NO_COLOR=1",
+		leakguard.RulesFileVar + "=" + f.answer.rules}
 	for name, value := range allowed {
 		want = append(want, name+"="+value)
 	}
@@ -2054,11 +2078,87 @@ func TestTheGuardIsGivenOnlyTheAllowedNamesOfTheDaemonsEnvironment(t *testing.T)
 			t.Errorf("the guard's read ran with %s=%q, want the daemon's %q", name, values[name], value)
 		}
 	}
-	for name := range keptOut {
-		if value, ok := values[name]; ok {
-			t.Errorf("the guard's read ran with the daemon's %s=%q", name, value)
+	for name, value := range keptOut {
+		if got, ok := values[name]; ok && got == value {
+			t.Errorf("the guard's read ran with the daemon's %s=%q", name, got)
 		}
 	}
+}
+
+// The loop's guard runs the deployment's private-name rule file, the bytes boot read, as a role's
+// `legion gh` runs it (Host.PrivateNameRules). With the fixture's rule file named, a comment to a
+// public repository whose body names a machine of the fixture's invented tailnet is refused
+// before gh starts: the model reads the rule pass's report, which names the argument, the rule's
+// description, the text that matched and the line it stands on; the call is recorded with that
+// refusal and no exit, and the guard's one line names the repository and the report. The shared
+// check ran and the guard read the repository's visibility once. The rules it ran are the
+// answer's own 0600 copy of the bytes the host carries, named to it by leakguard.RulesFileVar.
+//
+// The control is the same call under a deployment that names no rule file: it runs, gh started
+// once, and the guard runs the shared check alone and reads no visibility, as a role's guard does
+// with no rule file named (leakguard.GhReadNoRules).
+func TestALoopWriteNamingAPrivateNameOfTheDeploymentsRuleFileIsRefused(t *testing.T) {
+	const line = "The runner answers at " + leakguardtest.RulesHost + " today."
+	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", line}
+	t.Run("the deployment names its rule file", func(t *testing.T) {
+		f := newRulesFixture(t, implementer, behaviour{Stdout: "posted\n"})
+		info, err := os.Stat(f.answer.rules)
+		if err != nil {
+			t.Fatalf("the answer's copy of the rule file: %v", err)
+		}
+		if copied, err := os.ReadFile(f.answer.rules); err != nil || string(copied) != leakguardtest.Rules || info.Mode().Perm() != 0o600 {
+			t.Errorf("the answer's copy of the rule file is %q (mode %v), %v; want the host's bytes, 0600", copied, info.Mode().Perm(), err)
+		}
+		if env := f.answer.guardEnv(t.TempDir()); !slices.Contains(env, leakguard.RulesFileVar+"="+f.answer.rules) {
+			t.Errorf("the guard's environment %q names no %s=%s", env, leakguard.RulesFileVar, f.answer.rules)
+		}
+		got := f.run(1, argv...)
+		report := leakguardtest.ReportLine("the gh call's argument 6", leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 1, line)
+		if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: LEAK CHECK: refusing the gh call") || !strings.Contains(got.Output, report) {
+			t.Fatalf("gh %q = %+v; want the rule pass's refusal holding %q, gh never run", argv, got, report)
+		}
+		if ran := f.invocations(false); len(ran) != 0 {
+			t.Errorf("gh ran for a call the deployment's rules refused: %+v", ran)
+		}
+		if f.checked() == "" {
+			t.Errorf("the shared check was never run for %q", argv)
+		}
+		if reads := f.guardReads(); len(reads) != 1 || !slices.Contains(reads[0].Argv, "repos/acme/widgets") {
+			t.Errorf("the guard's visibility reads were %+v; want one read of repos/acme/widgets", reads)
+		}
+		row, recorded := f.calls.row(question, 1)
+		if !recorded || row.Result == nil || *row.Result != got.Output || row.Exit != nil || row.FinishedAt == nil {
+			t.Errorf("the refused call is recorded as %+v (%t); want the rules' refusal and no exit", row, recorded)
+		}
+		lines := f.logLines("answers: gh call refused by the leak guard")
+		if len(lines) != 1 || lines[0]["repository"] != "acme/widgets" || !strings.Contains(fmt.Sprint(lines[0]["why"]), report) {
+			t.Errorf("the refusal logged %v; want one line naming acme/widgets and %q", lines, report)
+		}
+	})
+	t.Run("the deployment names none", func(t *testing.T) {
+		f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+		if f.answer.rules != "" {
+			t.Errorf("the answer holds a rule file %s, want none", f.answer.rules)
+		}
+		for _, pair := range f.answer.guardEnv(t.TempDir()) {
+			if strings.HasPrefix(pair, leakguard.RulesFileVar+"=") {
+				t.Errorf("the guard's environment names a rule file, %q, want none", pair)
+			}
+		}
+		got := f.run(1, argv...)
+		if !got.Ran || got.Exit != 0 || got.Output != "posted\n" {
+			t.Fatalf("gh %q = %+v; want gh's answer, exit 0", argv, got)
+		}
+		if ran := f.invocations(false); len(ran) != 1 {
+			t.Errorf("gh %q ran gh %d times, want once: %+v", argv, len(ran), ran)
+		}
+		if f.checked() == "" {
+			t.Errorf("the shared check was never run for %q", argv)
+		}
+		if reads := f.guardReads(); len(reads) != 0 {
+			t.Errorf("the guard read the visibility %+v with no rule named, want no read", reads)
+		}
+	})
 }
 
 // The recorded calls of an answer that write are the ones Writes names, in their order, each by

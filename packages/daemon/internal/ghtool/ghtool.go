@@ -84,7 +84,7 @@ type Recorder interface {
 // every owner the role's App is installed on. Calls records each call, Log takes its line, Now is
 // the clock.
 //
-// The last three are the leak guard's, which every call passes before gh is handed anything
+// The last four are the leak guard's, which every call passes before gh is handed anything
 // (Answer.leakGuard). LeakCheck is the shared public leak check the guard runs, required and
 // asked at each call (LeakChecker), which hands the guard the check's path: a Kubernetes daemon's
 // copy, installed at its pin (LeakCheck, which refuses the call until an install lands), or a
@@ -95,6 +95,14 @@ type Recorder interface {
 // config's leak_check), which the guard is told as leakguard.CheckerVar (Answer.guardEnv) and
 // holds the check LeakCheck answers to, as a pane's or a pod's guard holds its role's; "" is a
 // deployment that names no check, whose guard is told none.
+// PrivateNameRules is the deployment's private-name rule file, its bytes verbatim as boot read and
+// compiled them (the launch secret leakguard.RulesSecret every launch carries, internal/daemon's
+// launchSecrets), and "" for a deployment that names none. Each answer writes it into a file of
+// its own (Open) and names that file to the guard as leakguard.RulesFileVar (Answer.guardEnv), as
+// a role's runtime writes the launch secret into a file of the launch's own behind that pointer:
+// so a write the loop makes for a stopped agent is refused by the rules a running agent's write is
+// refused by, and a deployment that names no file runs none in the loop, as in a role, where the
+// guard runs the shared check alone and reads no visibility.
 // Environ is the daemon's own environment (os.Environ() form), of which the guard's own children —
 // the check, and the gh read of a repository's visibility — start from the names guardKeeps
 // allows; nil is this process's own, read at each call. It is the daemon's and not the call's: a
@@ -107,6 +115,7 @@ type Host struct {
 	StateDir                string
 	LeakCheck               LeakChecker
 	LeakCheckManifestSHA256 string
+	PrivateNameRules        string
 	Environ                 []string
 	Credential              runtime.GitHubCredential
 	Calls                   Recorder
@@ -116,8 +125,8 @@ type Host struct {
 
 // Answer is one answer's gh environment, Open's: the agent, the question, the agent's credential
 // bundle, the empty directories a call runs in, the directory the leak guard copies the check
-// into, the wrapper GH_PATH names, and the agent's usage as a refusal ends with it, rendered once.
-// Close removes it.
+// into, the answer's copy of the deployment's private-name rule file, the wrapper GH_PATH names,
+// and the agent's usage as a refusal ends with it, rendered once. Close removes it.
 type Answer struct {
 	host     Host
 	agent    Agent
@@ -129,7 +138,11 @@ type Answer struct {
 	home, config, cache, data, state, cwd string
 	// copies is dir's leak-check-copies, where the guard of each call makes its private copy of
 	// the check under the deployment's digest (Answer.leakGuard, leakguard.Options.PrivateCopyBase).
-	copies  string
+	copies string
+	// rules is dir's private-name-rules.toml, the deployment's rule file as boot read it
+	// (Host.PrivateNameRules), which the guard of each call runs (Answer.guardEnv); "" where the
+	// deployment names none.
+	rules   string
 	wrapper string
 	usage   string
 }
@@ -139,7 +152,8 @@ type Answer struct {
 // there removed first) holding the agent's bundle (host.Credential for its role and its issue's
 // repository, written with ghconfig.WriteBundle, exactly as a tmux pane's is), the empty
 // HOME, XDG and working directories every call runs with, the 0700 directory the leak guard
-// copies the check into, and the GH_PATH wrapper. It logs the App and owners the bundle holds,
+// copies the check into, the deployment's private-name rule file, 0600, where it names one
+// (host.PrivateNameRules), and the GH_PATH wrapper. It logs the App and owners the bundle holds,
 // never a token.
 func Open(ctx context.Context, host Host, agent Agent, question string) (*Answer, error) {
 	switch {
@@ -200,6 +214,12 @@ func Open(ctx context.Context, host Host, agent Agent, question string) (*Answer
 		"\nexport LEGION_GH_PATH LEGION_GH_OWNERS_DIR\nexec " + shellprefix.Literal(host.Legion) + " gh \"$@\"\n"
 	if err := os.WriteFile(a.wrapper, []byte(script), 0o700); err != nil {
 		return nil, fmt.Errorf("the gh tool for %s: write its gh wrapper: %w", question, err)
+	}
+	if host.PrivateNameRules != "" {
+		a.rules = filepath.Join(a.dir, "private-name-rules.toml")
+		if err := os.WriteFile(a.rules, []byte(host.PrivateNameRules), 0o600); err != nil {
+			return nil, fmt.Errorf("the gh tool for %s: write the deployment's private-name rule file: %w", question, err)
+		}
 	}
 	written := bundle.Dirs[bundle.Default]
 	host.Log.Info("answers: github credential written", "question", question, "issue", agent.Issue, "role", agent.Role,

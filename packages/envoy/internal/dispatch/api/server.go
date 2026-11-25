@@ -150,6 +150,13 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *cipher.Client
+	// LegionStatusScope turns on the refusal of three writes of a Legion issue (cmd/dispatch:
+	// DISPATCH_LEGION_STATUS_SCOPE): a write of its status, the removal of its legion label, and
+	// a move that leaves it under no labelled issue. With it on, Dispatch refuses each of them to
+	// a credential that holds neither model.ScopePerson nor model.ScopeLegionStatus, but for the
+	// status write of the architect of an issue above (legion_status_scope.go). False refuses none
+	// of them, which is every deployment that has not turned it on.
+	LegionStatusScope bool
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -321,6 +328,8 @@ type DepsInput struct {
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -435,6 +444,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
+		LegionStatusScope:      input.LegionStatusScope,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
@@ -1381,7 +1391,7 @@ func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
 // rather than of one request — a browser's cookie holds both scopes, and the shared token and a
 // service-account token hold none — and the cookie's is on the dashboard's hottest path, so
 // allocating either per request would be waste. Nothing writes a Credential or appends to its
-// Scopes: Holds reads, actingPerson copies the slice header onto the act it records, and
+// Scopes: Holds reads, actScopes copies the slice header onto the act it records, and
 // tokenScopes builds a set of its own.
 var (
 	scopelessCredential = &model.Credential{}
@@ -1456,6 +1466,19 @@ func actorNamesWriter(supplied *model.Actor) bool {
 	return supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 }
 
+// actScopes is the scopes an act records of credential: the ones of model.Scopes, which an act's
+// reader may ask about (ActorAct.Holds; DISPATCH_SCOPES and ActorActSchema in @legion/contracts).
+// legion-status, which a Legion daemon's own broker token holds and holds alone, is the
+// credential's leave to write a Legion issue's status (legion_status_scope.go), not a grant an act
+// carries, so such a credential's act records no scope. No credential holds it beside another
+// scope (model.Credential), so every other credential's scopes are recorded whole, with no copy.
+func actScopes(credential *model.Credential) []string {
+	if credential.Holds(model.ScopeLegionStatus) {
+		return nil
+	}
+	return credential.Scopes
+}
+
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
 // session in the request body, and what the token itself proved — a personal token's owner, a
 // service token's verified subject — stays attached for attribution. Neither is ever taken from
@@ -1504,7 +1527,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 			actor.Act = &model.ActorAct{
 				Session:       authenticated.ID,
 				SessionProven: true,
-				Scopes:        authenticated.Credential.Scopes,
+				Scopes:        actScopes(authenticated.Credential),
 			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
@@ -1785,7 +1808,7 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			SessionProven: session != "" && session == credential.Session,
 			TokenID:       credential.TokenID,
 			TokenName:     credential.TokenName,
-			Scopes:        credential.Scopes,
+			Scopes:        actScopes(credential),
 		}
 	}
 	// Proven: every credential that holds the person scope proves its person - the cookie its
