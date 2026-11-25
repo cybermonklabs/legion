@@ -33,6 +33,7 @@ func blocksByName(doc *Node) map[string]string {
 // nothing of its own but its attributes. A typed block is no such wrapper, and a removal of
 // nothing leaves nothing uncovered.
 func TestUncoveredBlocksIsWhatOfARemovalTheGuardDoesNotCover(t *testing.T) {
+	t.Parallel()
 	const (
 		nested = "- Parent\n  - Child\n- Other\n"
 		twice  = "- Parent\n  - First\n  - Second\n- Other\n"

@@ -8,6 +8,7 @@ import (
 )
 
 func TestBlockInsertAtParagraphAnchorFollowsEnclosingParagraph(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("Before anchor after.\n\nNext.\n")
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +33,7 @@ func TestBlockInsertAtParagraphAnchorFollowsEnclosingParagraph(t *testing.T) {
 }
 
 func TestBlockInsertAtTableCellAnchorFollowsEnclosingTable(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("| Key | Value |\n| --- | --- |\n| A10 | old |\n\nNext.\n")
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +58,7 @@ func TestBlockInsertAtTableCellAnchorFollowsEnclosingTable(t *testing.T) {
 }
 
 func TestTableRowInsertAfterCellAnchorExtendsContainingTable(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("| Key | Value |\n| --- | --- |\n| A10 | old |\n")
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +82,7 @@ func TestTableRowInsertAfterCellAnchorExtendsContainingTable(t *testing.T) {
 }
 
 func TestTableRowInsertBeforeCellAnchorExtendsContainingTable(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("| Key | Value |\n| --- | --- |\n| A10 | old |\n| A12 | later |\n")
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +102,7 @@ func TestTableRowInsertBeforeCellAnchorExtendsContainingTable(t *testing.T) {
 }
 
 func TestTableRowInsertRejectsRowsWiderThanContainingTable(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("| Key | Value |\n| --- | --- |\n| A10 | old |\n")
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +124,7 @@ func TestTableRowInsertRejectsRowsWiderThanContainingTable(t *testing.T) {
 // after an even run of backslashes ends a cell on either path, and a line opening a block that
 // interrupts a paragraph is no table row to either.
 func TestTableRowInsertAnswersAsTheDocumentWrite(t *testing.T) {
+	t.Parallel()
 	const table = "| Key | Value |\n| --- | --- |\n| A10 | old |\n"
 	for _, test := range []struct {
 		row string
@@ -218,6 +224,7 @@ func TestTableRowInsertAnswersAsTheDocumentWrite(t *testing.T) {
 }
 
 func TestTableRowInsertPadsRowsToContainingTableWidth(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("| Key | Value |\n| --- | --- |\n| A10 | old |\n")
 	if err != nil {
 		t.Fatal(err)
@@ -240,6 +247,7 @@ func TestTableRowInsertPadsRowsToContainingTableWidth(t *testing.T) {
 // holding the anchor: the boundary ListBoundary answers, where the splice's own fitting rule takes
 // the content as items of that list (fitReplacement).
 func TestListBoundaryPlacesContentBesideTheAnchoredItem(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("- a\n  - x\n  - y\n- b\n")
 	if err != nil {
 		t.Fatal(err)
@@ -307,6 +315,7 @@ func TestListBoundaryOnTheListsOwnBlockTakesTheContentAsAnItem(t *testing.T) {
 // A target in no list takes the boundary BlockBoundary answers: no list holds it for list content
 // to join, so the content lands beside the anchor's block as any other content does.
 func TestListBoundaryOfATargetInNoListIsBlockBoundary(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("Intro.\n\n- a\n")
 	if err != nil {
 		t.Fatal(err)
@@ -324,6 +333,7 @@ func TestListBoundaryOfATargetInNoListIsBlockBoundary(t *testing.T) {
 
 // ListContent is what the caller of ListBoundary weighs: a fragment holding lists alone.
 func TestListContentIsAFragmentOfListsAlone(t *testing.T) {
+	t.Parallel()
 	for markdown, want := range map[string]bool{
 		"- z\n":           true,
 		"1. z\n":          true,
@@ -352,6 +362,7 @@ func TestListContentIsAFragmentOfListsAlone(t *testing.T) {
 // (INFRA-341). The item's content rule, paragraph block*, asks for a paragraph ahead of a block
 // only where that block would open the item.
 func TestASpliceAfterAListItemsTextWritesNoEmptyParagraph(t *testing.T) {
+	t.Parallel()
 	quote := func(text string) func(*testing.T, *Node) Range {
 		return func(t *testing.T, doc *Node) Range {
 			t.Helper()

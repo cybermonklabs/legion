@@ -14,6 +14,7 @@ import (
 // paragraph from its start, so it never spans blocks and both finders count it the same
 // (dispatch://INFRA-4345, R1).
 func TestAnEditFinderCountsNoMatchThatSpansTextblocks(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, markdown, quote string
 		find                  func(*QuoteFinder, string) (Range, error)
@@ -73,6 +74,7 @@ func TestAnEditFinderCountsNoMatchThatSpansTextblocks(t *testing.T) {
 // whatever occurrence it names, so the edit refuses it as spanning blocks rather than as ambiguous
 // or out of range; and one with several matches inside textblocks is ambiguous among those alone.
 func TestAnEditFinderResolvesAQuoteOfSpansAloneToTheFirst(t *testing.T) {
+	t.Parallel()
 	doc := parseFixture(t, "- Passes (the gate on v46).\n- The errors are read.\n\n- Fails (the gate on v46).\n- The errors are kept.\n")
 	finder := validOf(t, doc).EditQuoteFinder()
 	var ambiguous *ErrTargetAmbiguous

@@ -166,6 +166,7 @@ func topLevelBlocksOfHTML(t *testing.T, rendered string) []firstScreenBlock {
 }
 
 func TestFirstScreenDrawsTheBlocksThePageDraws(t *testing.T) {
+	t.Parallel()
 	for _, fixture := range loadFirstScreenFixtures(t) {
 		t.Run(fixture.Name, func(t *testing.T) {
 			tree, err := FromJSON(fixture.PMJSON)
@@ -194,6 +195,7 @@ func TestFirstScreenDrawsTheBlocksThePageDraws(t *testing.T) {
 }
 
 func TestFirstScreenCutsAtItsBudget(t *testing.T) {
+	t.Parallel()
 	fixtures := loadFirstScreenFixtures(t)
 	var many firstScreenFixture
 	for _, fixture := range fixtures {
@@ -221,6 +223,7 @@ func TestFirstScreenCutsAtItsBudget(t *testing.T) {
 }
 
 func TestFirstScreenCutsAtItsByteBudget(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc"}
 	for index := range 20 {
 		doc.Children = append(doc.Children, &Node{
@@ -247,6 +250,7 @@ func TestFirstScreenCutsAtItsByteBudget(t *testing.T) {
 // and a page with no first screen is the static shell, which is the answer every other refused
 // read gets (dispatch://INFRA-341, R11 Design item 1).
 func TestFirstScreenDrawsNothingForAnOversizedOpeningBlock(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{
 		{
 			Type:     "paragraph",
@@ -271,6 +275,7 @@ func TestFirstScreenDrawsNothingForAnOversizedOpeningBlock(t *testing.T) {
 // Everything the HTML carries is a person's document, so nothing a person writes may close an
 // element, open an attribute of its own, or reach the page as a scheme a browser runs.
 func TestFirstScreenEscapesWhatAPersonWrote(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{
 		{
 			Type:  "paragraph",
@@ -311,6 +316,7 @@ func TestFirstScreenEscapesWhatAPersonWrote(t *testing.T) {
 // The first screen keeps the link and picture schemes the page keeps (`sanitizeLinkHref`) and
 // drops every other, so a `javascript:` address reaches the reader as no address at all.
 func TestFirstScreenKeepsOnlyTheSchemesThePageKeeps(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ href, want string }{
 		{"https://example.test/a", "https://example.test/a"},
 		{"http://example.test/a", "http://example.test/a"},
@@ -354,6 +360,7 @@ func TestFirstScreenKeepsOnlyTheSchemesThePageKeeps(t *testing.T) {
 // A picture under a scheme the page refuses reaches it with no source, and a `dispatch://`
 // picture as the empty anchor the page's own serializer draws in its place.
 func TestFirstScreenPictureSources(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{
 		Type:  "paragraph",
 		Attrs: Attrs{BlockIDAttr: "b-001"},
@@ -385,6 +392,7 @@ func TestFirstScreenPictureSources(t *testing.T) {
 }
 
 func TestFirstScreenOfNoDocument(t *testing.T) {
+	t.Parallel()
 	rendered, complete := FirstScreenHTML(nil)
 	if rendered != "" || complete {
 		t.Fatalf("a nil document drew %q (complete %v)", rendered, complete)
@@ -399,6 +407,7 @@ func TestFirstScreenOfNoDocument(t *testing.T) {
 // a child of the `li` beside the paragraph would stand alone on a line above the item's own
 // words, since `<p>` is block-level, until the editor replaced it.
 func TestFirstScreenDrawsATaskCheckboxWhereThePageDraws(t *testing.T) {
+	t.Parallel()
 	var lists firstScreenFixture
 	for _, fixture := range loadFirstScreenFixtures(t) {
 		if fixture.Name == "lists" {
@@ -469,6 +478,7 @@ func checkboxesOfHTML(t *testing.T, rendered string) []drawnCheckbox {
 // drawn whole: the cap refuses the block that would pass it, and a document with no such block
 // has had all of itself drawn. Landing on the cap is not itself a cut (dispatch://INFRA-341).
 func TestFirstScreenLandingExactlyOnItsByteCapIsComplete(t *testing.T) {
+	t.Parallel()
 	empty := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Attrs: Attrs{BlockIDAttr: "b-001"}}}}
 	around, _ := FirstScreenHTML(empty)
 	doc := &Node{Type: "doc", Children: []*Node{
