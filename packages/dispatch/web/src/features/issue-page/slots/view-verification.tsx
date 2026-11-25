@@ -44,6 +44,7 @@ export function ViewVerificationSlot({
   // The id of the node the address names, which `named` holds: the body puts the focus on its row
   // once every read the tree is built from has settled (`readsSettled`), for the reason
   // `SpecFilterBody` gives, and makes that row its tab stop.
+  // It is the last node of the hook's `reveal`, read from `named`: the slot takes only `named`.
   const revealed = [...named].at(0);
   const view = useMemo(
     () => presetView(root, "verification", address.filter, named),

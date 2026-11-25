@@ -46,13 +46,7 @@ import { useDocumentAdmissions } from "../document-admission";
 import { useDocumentStage } from "../document-stage";
 import { useSetFocusedNode } from "../focused-node";
 import { type BriefCounts, ChecksNumber, IssueThreeThings } from "../IssueThreeThings";
-import {
-  focusedNodeOf,
-  holdInPlaceOf,
-  landOnRow,
-  type OutlineRequest,
-  useReleaseFocus,
-} from "../IssueTree";
+import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
 import { presetPath } from "../issue-address";
 import { artifactsBySlug, documentOfNode } from "../issue-artifacts";
@@ -79,7 +73,6 @@ import {
 import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
-import { useFollowing } from "../slots/following";
 import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
@@ -88,6 +81,8 @@ import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
+import { treeItemOf, useAddressLanding } from "./address-landing";
+import { holdWhereItStands } from "./hold-where-it-stands";
 import { focusedTreeItem, pressInWords, statementWordsAt } from "./pressed-words";
 import {
   type SpecDecision,
@@ -488,61 +483,32 @@ export function SpecFilterBody({
     if (request === undefined || !takeRequest(request) || request.id === undefined) return;
     tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(request.id))?.focus();
   }, [request, takeRequest]);
-  // An address that names a row puts the focus on it, once per following of the address (R19),
-  // as the outline lands on one (`IssueTree.tsx`'s `landOnRow`): the focus comes in the next
-  // frame and brings the row on screen, and the hold keeps it there, until the reader acts, while
-  // the page grows above it - with the statements, which the coverage read draws
-  // (`tree-drafts.ts`'s `addRequirements`), or the spec's blocks where they answer first, and
-  // with what the page draws after the reads (the names, the cuts once measured). The landing
-  // waits for every read the tree's rows come from to settle (`readsSettled`) for one reason the
-  // hold and the reader's acts do not cover: until then the stage may still draw the outline in
-  // the view's place. The view tells the stage whether it draws the node only once those reads
-  // have settled (`onAddressDrawn`, `useTellsAddressDrawn`), and a read the view draws no line of
-  // its own for that stands refused then - the comments', the messages' - makes the stage take
-  // the view off the page and draw the outline, which lands on the node itself. A landing before
-  // that would move the focus and the page to a row the stage then takes away, and the outline's
-  // landing would move them again. The row is not on the page until the reads that hold it have
-  // answered, so this looks again on every drawing of the columns, and the address is taken only
-  // once its row is found. The reader's first act since they followed the address ends the
-  // landing (`addressActs`), as it ends the outline's: a reader who acted before the reads
-  // settled - a key, a turn of the wheel, a press on another control, while the stage held the
-  // focus on the first statement - keeps the focus where they put it and the page where they had
-  // it, and the landing does nothing to the page: no focus, no scroll, no hold. Watched only from
-  // the landing's start, a read that answered late pulled them back to the address's row. The
-  // landing is keyed on the following and the node (`landingKey`), as the outline's is: a link to
-  // the node the reader moved away from, followed again, lands again, and the columns drawn again
-  // at the same following land nowhere again.
-  const landingHold = useRef<AbortController | undefined>(undefined);
-  useEffect(() => () => landingHold.current?.abort(), []);
-  // The following, which the landing is keyed on with the node.
-  const following = useFollowing();
-  const taken = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (reveal === undefined || !readsSettled || statements.length === 0) return;
-    const landingKey = `${following}:${reveal}`;
-    if (taken.current === landingKey) return;
-    const row = treeItemOf(tree.current, reveal);
-    if (row === null) return;
-    taken.current = landingKey;
-    // The landing ends as it starts: the reader has acted since the following, and the page
-    // stays as they left it.
-    if (addressActs?.current?.signal.aborted === true) return;
-    landOnRow(row, landingHold);
-  }, [addressActs, following, readsSettled, reveal, statements]);
+  // An address that names a row puts the focus on it once every read the tree's rows come from
+  // has settled (`useAddressLanding`), looking again at each drawing of the columns, and the
+  // landing's hold keeps it on screen while the page grows above it - with the statements, which
+  // the coverage read draws (`tree-drafts.ts`'s `addRequirements`), or the spec's blocks where
+  // they answer first, and with what the page draws after the reads (the names, the cuts once
+  // measured).
+  const landingHold = useAddressLanding({
+    acts: addressActs,
+    drawn: statements.map((node) => node.id).join(" "),
+    id: readsSettled ? reveal : undefined,
+    tree,
+  });
 
-  // Hold a tree item on screen until the next act, so reads that draw rows above it cannot
-  // push it out of view. A key starts a hold at keyup only where the page answered it - its
-  // keydown's default was prevented, by the keymap or by the tree's own cell keys - so End on
-  // the last row still holds it while Page Down, Space and Page Up, which the browser answers,
-  // start no hold. The native keydown event is kept until the matching keyup because the
-  // keymap's window listener runs after React's handler, so `defaultPrevented` is final only
-  // by then. A press can hold the item it clicked if that item has focus. Tab and a press
-  // outside an item start no hold. The editor places its own caret, so its row starts no hold
-  // either. The hold replaces the address's landing in `landingHold` (`holdInPlaceOf`).
+  // Hold a tree item where it stands until the next act, so reads that draw rows above it cannot
+  // push it out of view (`holdWhereItStands`). A key starts a hold at keyup only where the page
+  // answered it - its keydown's default was prevented, by the keymap or by the tree's own cell
+  // keys - so End on the last row still holds it while Page Down, Space and Page Up, which the
+  // browser answers, start no hold. The native keydown event is kept until the matching keyup
+  // because the keymap's window listener runs after React's handler, so `defaultPrevented` is
+  // final only by then. A press can hold the item it clicked if that item has focus. Tab and a
+  // press outside an item start no hold. The editor places its own caret, so its row starts no
+  // hold either. The hold replaces the address's landing in `landingHold`.
   const keyInTree = useRef<globalThis.KeyboardEvent | undefined>(undefined);
   const holdFocusedItem = (item: HTMLElement) => {
     if (editingRow !== undefined && item.dataset.rowKey === editingRow) return;
-    holdInPlaceOf(item, landingHold);
+    holdWhereItStands(item, landingHold);
   };
   const pressedWords = useRef<HTMLElement | null>(null);
   // The statement a press on its words is opening the editor in, from the click until the editor
@@ -928,13 +894,6 @@ function clearOfHeads(element: HTMLElement): void {
   if (top < heads.bottom) window.scrollBy({ top: top - heads.bottom - CLEARANCE });
 }
 
-/** The statement or the decision cell of `tree` that draws node `id`; null where none does. */
-function treeItemOf(tree: HTMLElement | null, id: string): HTMLElement | null {
-  return (
-    tree?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(id)}"][role="treeitem"]`) ?? null
-  );
-}
-
 /** The key `event` is as one of the keymap's single-key bindings reads it - a letter in lower
  *  case - or undefined where the keymap would read it otherwise: with a modifier held, in an
  *  input method's composition, or as the second key of a chord it is reading (`t k`). */
@@ -1247,6 +1206,9 @@ function DecisionCell({
       />
       <div
         className="sticky top-[calc(var(--issue-identity-height,0px)+44px)] flex min-w-0 flex-col gap-[3px] max-[901px]:static"
+        // What the reader sees of the cell, which a hold of the cell keeps where it stands
+        // (`holdWhereItStands`).
+        data-spec-cell-words=""
         ref={words}
       >
         {decision === undefined ? (

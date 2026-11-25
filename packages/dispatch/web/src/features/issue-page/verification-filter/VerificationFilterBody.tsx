@@ -3,7 +3,6 @@ import {
   type MouseEvent,
   type ReactNode,
   type RefObject,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -36,7 +35,6 @@ import { postDeletion } from "../../refs/post-marks";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
-import { landOnRow } from "../IssueTree";
 import { lineWords, type NodeChip, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
@@ -61,7 +59,7 @@ import {
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { useFollowing } from "../slots/following";
-import { nodeRowSelectorOf } from "../tree-focus";
+import { useAddressLanding } from "../spec-filter/address-landing";
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
@@ -295,44 +293,24 @@ export function VerificationFilterBody({
   // back, under the key the landing takes (the following and the row, `stopGiven`), and not
   // again in that following. It is the stop where the reader has acted since the following as
   // well, and moves no focus then: no render reads whether they have acted, so a stop that read
-  // it would move at whatever render came next.
+  // it would move at whatever render came next. A key that moved the stop in this following is
+  // the one act the body holds in its state (`keyMovedIn`): the row the reader moved to keeps
+  // the stop, as it keeps the focus, and the address's row takes none, as the Spec view keeps
+  // the row the reader moved to first (`SpecFilterBody`'s `stop`).
   const following = useFollowing();
   const addressRow =
     readsSettled && reveal !== undefined && rows.includes(reveal) ? reveal : undefined;
   const [stopGiven, setStopGiven] = useState<string | undefined>(undefined);
+  const [keyMovedIn, setKeyMovedIn] = useState<string | undefined>(undefined);
   if (addressRow !== undefined && stopGiven !== `${following}:${addressRow}`) {
     setStopGiven(`${following}:${addressRow}`);
-    setRovingId(addressRow);
+    if (keyMovedIn !== following) setRovingId(addressRow);
   }
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
-  // An address that names a row puts the focus on it, once per following of the address, as the
-  // outline and the Spec view land on one (`IssueTree.tsx`'s `landOnRow`): the focus comes in the
-  // next frame and brings the row on screen, and the hold keeps it there, until the reader
-  // acts, while the page grows around it. It waits for every read the page's tree is built from to
-  // settle (`readsSettled`), for the reason the Spec view gives (`SpecFilterBody`): until then the
-  // stage may still draw the outline in the view's place. The row is drawn only once the view's
-  // own reads have answered, so this looks again at every drawing of the rows, and the address is
-  // taken only once its row is found. The reader's first act since they followed the address ends
-  // the landing (`addressActs`): a reader who acted before the reads settled keeps the focus where
-  // they put it and the page where they had it. The landing is keyed on the following and the
-  // node, so a link to the node followed again lands again, and the rows drawn again at the same
-  // following land nowhere again.
+  // An address that names a row puts the focus on it once every read the page's tree is built
+  // from has settled, as the Spec view's does (`useAddressLanding`).
   const tree = useRef<HTMLDivElement>(null);
-  const landingHold = useRef<AbortController | undefined>(undefined);
-  useEffect(() => () => landingHold.current?.abort(), []);
-  const taken = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (addressRow === undefined) return;
-    const landingKey = `${following}:${addressRow}`;
-    if (taken.current === landingKey) return;
-    const row = tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(addressRow)) ?? null;
-    if (row === null) return;
-    taken.current = landingKey;
-    // The landing ends as it starts: the reader has acted since the following, and the page
-    // stays as they left it.
-    if (addressActs?.current?.signal.aborted === true) return;
-    landOnRow(row, landingHold);
-  }, [addressActs, addressRow, following]);
+  useAddressLanding({ acts: addressActs, drawn: rows.join(" "), id: addressRow, tree });
   // Each drawn check's press, by its row's id in `rows`: true where the reader pressed its facts
   // open, false where they pressed them shut while the focus held them open, and no entry where
   // the focus alone decides. It is held here rather than in each check so the tree's keys and a
@@ -420,6 +398,8 @@ export function VerificationFilterBody({
       // it is, still bring that row back on screen where the reader scrolled it off.
       const id = to.dataset.verificationRow;
       if (id !== undefined) setRovingId(id);
+      // In this following the address's row takes the stop no more (`keyMovedIn`).
+      if (id !== undefined) setKeyMovedIn(following);
       moveToRow(to);
       return;
     }

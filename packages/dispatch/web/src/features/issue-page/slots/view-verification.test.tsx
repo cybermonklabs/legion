@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
@@ -31,10 +32,12 @@ afterEach(() => {
   for (const stub of stubs) stub.mockRestore();
 });
 
-// `VERIFICATION_DOCUMENT`, `verifiedIssue`, `typedBlock`, `BLOCKS` and `answerVerificationReads`
-// are cut-down copies of the private fixtures of the same names in `view-address.test.tsx`: a
-// test file imports no other test file, and `stage-fixtures.tsx`, where a shared copy would go,
-// may take no more changed lines in this change. They go once those fixtures move into it.
+// `VERIFICATION_DOCUMENT`, `verifiedIssue`, `typedBlock`, `blocksOf` and `answerVerificationReads`
+// are cut-down copies of the private fixtures `VERIFICATION_DOCUMENT`, `verifiedIssue`,
+// `typedBlock`, `BLOCKS` and `answerVerificationReads` in `view-address.test.tsx`, over the
+// statements a case names: a test file imports no other test file, and `stage-fixtures.tsx`,
+// where a shared copy would go, may take no more changed lines in this change. They go once
+// those fixtures move into it.
 
 /** The Verification document of the issue the case draws (`verifiedIssue`), beside its spec and
  *  its decisions document. */
@@ -69,35 +72,38 @@ function typedBlock(id: string, type: string, serves?: string): ArtifactBlock {
   };
 }
 
-/** Each document's blocks, by its id: the spec's statement, and the Verification document's
- *  check, whose `serves` places it under that statement (`tree-drafts.ts`). */
-const BLOCKS: Readonly<Record<string, readonly ArtifactBlock[]>> = {
-  "artifact-spec": [typedBlock(STATEMENT, "requirement")],
-  [VERIFICATION_DOCUMENT.id]: [typedBlock(CHECK, "check", specRef(STATEMENT))],
-};
+/** Each document's blocks, by its id: the spec's `statements`, and the Verification document's
+ *  check, whose `serves` places it under `STATEMENT` (`tree-drafts.ts`). */
+function blocksOf(
+  statements: readonly string[]
+): Readonly<Record<string, readonly ArtifactBlock[]>> {
+  return {
+    "artifact-spec": statements.map((id) => typedBlock(id, "requirement")),
+    [VERIFICATION_DOCUMENT.id]: [typedBlock(CHECK, "check", specRef(STATEMENT))],
+  };
+}
 
 /** Answers the reads the tree and the Verification view are drawn from for `verifiedIssue`: the
- *  coverage read with the statement, each document's blocks, and the results read with the
+ *  coverage read with `statements`, each document's blocks, and the results read with the
  *  check. Each spy is the one `stubReads` set, which `spyOn` hands back, so the `afterEach` that
  *  restores those restores it. */
-function answerVerificationReads(): void {
+function answerVerificationReads(statements: readonly string[] = [STATEMENT]): void {
   spyOn(api, "getIssueCoverage").mockResolvedValue({
     gaps: [],
     has_plan: false,
     issue: KEY,
-    requirements: [
-      {
-        block_id: STATEMENT,
-        checks: 1,
-        gaps: [],
-        plan_tasks: 0,
-        ref: specRef(STATEMENT),
-        text: "The view lands on the statement an address names.",
-      },
-    ],
+    requirements: statements.map((id) => ({
+      block_id: id,
+      checks: id === STATEMENT ? 1 : 0,
+      gaps: [],
+      plan_tasks: 0,
+      ref: specRef(id),
+      text: `The view lands on the statement an address names (${id}).`,
+    })),
     spec_artifact_id: "artifact-spec",
   });
-  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => [...(BLOCKS[id] ?? [])]);
+  const blocks = blocksOf(statements);
+  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => [...(blocks[id] ?? [])]);
   spyOn(api, "getIssueResults").mockResolvedValue({
     checks: [check({ block_id: CHECK })],
     issue: KEY,
@@ -163,4 +169,37 @@ test("an address naming a statement on the Verification view lands the focus on 
   } finally {
     control.remove();
   }
+});
+
+// The address's row takes the tree's one tab stop as the reads settle only where no key moved the
+// stop in that following, as the Spec view keeps the row the reader moved to first. With the
+// messages read out, the view draws its rows from its own reads and the stage puts the focus on
+// the issue's row; ArrowDown moves the focus, and the stop with it, to the first statement. Once
+// the messages answer, the landing yields to that key and leaves the focus there, and the stop
+// stays with it: Tab out of the tree and Shift+Tab back lands where the reader was, not on the
+// address's row.
+test("a row the reader moved to by key before the reads settled keeps the tab stop", async () => {
+  const user = userEvent.setup();
+  const second = "r2";
+  answerVerificationReads([STATEMENT, second]);
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
+  const view = drawStage(`#b-${second}`, { issue: verifiedIssue(), preset: "verification" });
+  await rowTakesFocus(view, ISSUE_ROW, "the Verification view with the messages out");
+  await user.keyboard("{ArrowDown}");
+  const first = view.container.querySelector<HTMLElement>(STATEMENT_ROW);
+  const addressed = view.container.querySelector<HTMLElement>(
+    `[data-verification-body] ${nodeRowSelectorOf(blockNodeId(SPEC_SLUG, second))}`
+  );
+  expect(first, "ArrowDown from the issue's row did not reach the first statement").toHaveFocus();
+  expect(addressed, "the view drew no row for the address's statement").toBeInTheDocument();
+  await act(async () => messagesOut.resolve([]));
+  // The frame a landing would have asked for as the reads settled.
+  await act(() => nextFrame());
+  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  expect(first, `the reads settling moved the focus to ${focusedRow()}`).toHaveFocus();
+  expect(
+    [first?.tabIndex, addressed?.tabIndex],
+    "the address's row took the tab stop from the row the reader moved to"
+  ).toEqual([0, -1]);
 });
