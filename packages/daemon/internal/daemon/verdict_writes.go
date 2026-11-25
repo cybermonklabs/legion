@@ -380,10 +380,11 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 // project: another project's issue head holds no verdict here (decideVerdict). It creates its own
 // check run or turns each run of the one App to the head's conclusion, the runs its record holds
 // among them, and writes its conclusion over each status of the one App its record does not hold
-// (spec R19, writeDecided). A success this daemon wrote stands only while the head's verdict does:
-// a write a fact asks for on a head with no verdict now, of its pull request or over every open pull
-// request there, turns that success to failure. Where the pull request's own verdict is none and
-// the daemon wrote no success there, it writes nothing and reads nothing of GitHub. Where GitHub
+// (spec R19, writeDecided). A run this daemon wrote stands only while the head's verdict does: a
+// write a fact asks for on a head with no verdict now, of its pull request or over every open pull
+// request there, turns that run to failure, and writes its output for the head as it is now. Where
+// the pull request's own verdict is none and the daemon wrote nothing there, it writes nothing and
+// reads nothing of GitHub. Where GitHub
 // gave no answer to a read the decision needs, the head is undecided (verdict.Undecided): nothing is
 // written, and a run written before stands until a read is answered (undecided).
 //
@@ -421,7 +422,9 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 // decideHead is what writeVerdictOver writes on target's head, written being that head of target's
 // pull request: the pull request's decision (decideVerdict), made over every open pull request at
 // the head unless the sweep found the pull request alone there (atHead), and failure where that is
-// none and the newest run or status this daemon wrote there concluded success (wroteSuccess). A
+// none and the daemon wrote a run or status there (newestWrite): a success stands only while the
+// head's verdict does, and a failure's output is written again for the head as it is now, so a
+// failure for a commit with no reader no longer says each check reads yes once one does not. A
 // failure is made over the others too, for the head's output alone (headOutput): its conclusion
 // needs no other read, so where the others cannot be read the pull request's own failure stands.
 // The write reads the open pull requests at the head once (headPulls).
@@ -433,7 +436,7 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 	}
 	standing, read := false, false
 	if decided.conclusion == verdict.None && !target.overForeign {
-		if standing, err = w.wroteSuccess(ctx, written); err != nil || !standing {
+		if standing, err = w.wroteAt(ctx, written); err != nil || !standing {
 			return decided, err
 		}
 		read = true
@@ -449,7 +452,7 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 	}
 	if decided.conclusion == verdict.None && !target.overForeign && !read {
 		// Another pull request at the head turned the pull request's own verdict to none there.
-		if standing, err = w.wroteSuccess(ctx, written); err != nil {
+		if standing, err = w.wroteAt(ctx, written); err != nil {
 			return verdictDecision{}, err
 		}
 	}
@@ -457,6 +460,13 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 		decided.conclusion = verdict.Failure
 	}
 	return decided, nil
+}
+
+// wroteAt is whether the store records a run or a status the daemon wrote on target's head
+// (newestWrite).
+func (w *workflowRuntime) wroteAt(ctx context.Context, target verdictTarget) (bool, error) {
+	newest, err := w.newestWrite(ctx, target)
+	return newest != verdict.None, err
 }
 
 // undecided is whether decided, of target's head, is no decision yet (verdict.Undecided): GitHub

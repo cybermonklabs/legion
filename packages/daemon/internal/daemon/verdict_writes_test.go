@@ -2341,6 +2341,25 @@ func TestLegionVerdictANewReasonOfAFailureIsWrittenOverItsRun(t *testing.T) {
 	}
 }
 
+// R4: a failure for a commit with no reader says each check reads yes. Once a check leaves yes
+// without reading no, the head's verdict is none, and the run the daemon wrote there stays at
+// failure; the fact's own write rewrites its title and summary, so they claim no check that no
+// longer reads yes, without waiting for the writers' sweep.
+func TestLegionVerdictACheckThatLeavesYesRewritesANoReaderFailureAtOnce(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit)
+	rig.github.mu.Lock()
+	rig.github.messages["code"] = commitOf(captureReviewerSession)
+	rig.github.mu.Unlock()
+	rig.apply(t, rig.signOff(t))
+	rig.written(t)
+	rig.noReader(t, "code", wantNoReaderOpening, "code")
+	rig.checkState(t, "code", "k2", verdict.StateUnknown)
+	rig.written(t)
+	if run := rig.soleRun(t, "code", "failure"); run.Title != "legion-verdict: failure" || strings.HasPrefix(run.Summary, "Each check reads yes") {
+		t.Fatalf("the run's output reads %q / %q after k2 left yes, want the plain failure's: no check is said to read yes", run.Title, run.Summary)
+	}
+}
+
 // Every Omp-Session line of a commit's message names a session the Omp-Session test reads, in any
 // case of its key and wherever it stands, as a squash can carry it into the body of another: the
 // two `legion git` writes, one an amend gave a second line, one a squash's body kept. A line with

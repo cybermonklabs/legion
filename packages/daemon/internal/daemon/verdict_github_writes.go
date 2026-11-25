@@ -30,6 +30,20 @@ func (w *workflowRuntime) wroteSuccess(ctx context.Context, target verdictTarget
 	return newest[store.VerdictWriteCheckRun] == store.VerdictConclusionSuccess || newest[store.VerdictWriteStatus] == store.VerdictConclusionSuccess, err
 }
 
+// newestWrite is the conclusion of the newest check run or commit status the store records the
+// daemon wrote on target's head, verdict.None where it records none.
+func (w *workflowRuntime) newestWrite(ctx context.Context, target verdictTarget) (verdict.Conclusion, error) {
+	newest := verdict.None
+	err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		writes, err := store.VerdictWritesTx(ctx, tx, target.repository, target.head)
+		if len(writes) > 0 {
+			newest = writes[len(writes)-1].Conclusion
+		}
+		return err
+	})
+	return newest, err
+}
+
 // listedCheckRun is one check run as GitHub lists a commit's (GET /commits/{ref}/check-runs): its
 // id, its conclusion, the title and summary of its output, and the id of the App that made it,
 // which a rename of the App leaves as it is.
