@@ -51,13 +51,13 @@ var (
 
 // askOpenRefusals are the refusals of the ask a document's or an issue's ask list opens (openAsk),
 // with more, the route's own, after them: its kind, its question, options and urgency, a value past
-// its bound, and its anchor.
+// its bound, and its anchor and what the document service answers it (anchorRefusals).
 func askOpenRefusals(more ...apicode.Refusal) []apicode.Refusal {
-	return append([]apicode.Refusal{
+	return append(anchorRefusals([]apicode.Refusal{
 		undeclaredKeyRefusal, valuePastBoundRefusal, anchorInvalidRefusal, artifactNotDocumentRefusal,
 		{Condition: apicode.AskKindRefused, Code: apicode.AskKindInput},
 		{Condition: apicode.AskInvalid, Code: apicode.InvalidAsk},
-	}, more...)
+	}...), more...)
 }
 
 // The refusals of a follow and an unfollow of an ask (changeAskFollowerV2, askFollowerActor): a
@@ -152,13 +152,15 @@ func (s *server) v2AskRows() []routeRow {
 			Authorities: []authorityRule{askAskedOfAuthority},
 			Scope:       scopeProject, ProjectOf: projectPathAsk,
 			IDs: askIDs(),
-			Refusals: []apicode.Refusal{
+			// A reword of a block ask rewrites its block (docs.SetAskBlockText).
+			Refusals: documentRefusals(
 				undeclaredKeyRefusal, askMissing, notAuthorRefusal, assigneeNotSignedInRefusal, valuePastBoundRefusal,
-				issueClosedRefusal,
-				{Condition: apicode.AskInvalid, Code: apicode.InvalidAsk},
-				{Condition: apicode.AskNotOpenToEdit, Code: apicode.AskNotOpen},
-				{Condition: apicode.AskKindChange, Code: apicode.AskKindFixed},
-			},
+				issueClosedRefusal, askBlockMissingRefusal, documentPastSizeBoundRefusal,
+				apicode.Refusal{Condition: apicode.AskInvalid, Code: apicode.InvalidAsk},
+				apicode.Refusal{Condition: apicode.AskNotOpenToEdit, Code: apicode.AskNotOpen},
+				apicode.Refusal{Condition: apicode.AskKindChange, Code: apicode.AskKindFixed},
+				apicode.Refusal{Condition: apicode.AskBlockUnrepresentable, Code: apicode.AskBlockText},
+			),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/asks/{id}/followers/{session_id}", Auth: authAny, Versions: onlyV2,
@@ -219,21 +221,22 @@ func (s *server) v2AskRows() []routeRow {
 			Authorities: []authorityRule{askAnsweredAuthority, askDeclinedAuthority},
 			Scope:       scopeProject, ProjectOf: projectPathAsk,
 			IDs: askIDs(),
-			Refusals: []apicode.Refusal{
-				undeclaredKeyRefusal, askMissing, issueClosedRefusal, valuePastBoundRefusal,
-				{Condition: apicode.AskAnsweredBefore, Code: apicode.AskAnswered},
-				{Condition: apicode.AnsweredFirstByAnother, Code: apicode.AskClosed},
-				{Condition: apicode.AskResolvedBefore, Code: apicode.AskResolved},
-				{Condition: apicode.AnswerMoved, Code: apicode.AskAnswerChanged},
-				{Condition: apicode.ApprovalAnsweredBefore, Code: apicode.AskApprovalReview},
-				{Condition: apicode.QuestionEditedSinceRead, Code: apicode.AskEdited},
-				{Condition: apicode.ApprovalDeclined, Code: apicode.AskNotDeclinable},
-				{Condition: apicode.RevisionMissing, Code: apicode.AskRevisionRequired},
-				{Condition: apicode.AnswerInvalid, Code: apicode.InvalidAnswer},
-				{Condition: apicode.ResolutionInvalid, Code: apicode.InvalidResolution},
-				{Condition: apicode.NotTheAnswerer, Code: apicode.NotAnswerer},
-				{Condition: apicode.ReasonMissing, Code: apicode.ReasonRequired},
-			},
+			// A block ask's state is written into its block (docs.SetBlockAttributes, docs.SettleCopiesOf).
+			Refusals: documentRefusals(
+				undeclaredKeyRefusal, askMissing, issueClosedRefusal, valuePastBoundRefusal, askBlockMissingRefusal,
+				apicode.Refusal{Condition: apicode.AskAnsweredBefore, Code: apicode.AskAnswered},
+				apicode.Refusal{Condition: apicode.AnsweredFirstByAnother, Code: apicode.AskClosed},
+				apicode.Refusal{Condition: apicode.AskResolvedBefore, Code: apicode.AskResolved},
+				apicode.Refusal{Condition: apicode.AnswerMoved, Code: apicode.AskAnswerChanged},
+				apicode.Refusal{Condition: apicode.ApprovalAnsweredBefore, Code: apicode.AskApprovalReview},
+				apicode.Refusal{Condition: apicode.QuestionEditedSinceRead, Code: apicode.AskEdited},
+				apicode.Refusal{Condition: apicode.ApprovalDeclined, Code: apicode.AskNotDeclinable},
+				apicode.Refusal{Condition: apicode.RevisionMissing, Code: apicode.AskRevisionRequired},
+				apicode.Refusal{Condition: apicode.AnswerInvalid, Code: apicode.InvalidAnswer},
+				apicode.Refusal{Condition: apicode.ResolutionInvalid, Code: apicode.InvalidResolution},
+				apicode.Refusal{Condition: apicode.NotTheAnswerer, Code: apicode.NotAnswerer},
+				apicode.Refusal{Condition: apicode.ReasonMissing, Code: apicode.ReasonRequired},
+			),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/asks", Auth: authAny, Versions: onlyV2,
@@ -263,10 +266,10 @@ func (s *server) v2AskRows() []routeRow {
 			Body: requestBody{Kind: bodyJSON, Type: createAskInput{}},
 			Shape: routeShape{
 				Status: http.StatusCreated, Response: askWriteV2{}, Advice: writeAdvice{},
-				OtherAdvice: []any{suggestionsOnlyAdvice{}},
+				OtherAdvice: []any{suggestionsOnlyAdvice{}}, Refusals: anchorRefusalAnswers(),
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: askOpenRefusals(issueMissing, issueClosedRefusal),
+			Refusals: askOpenRefusals(issueMissing, issueClosedRefusal, anchorDocumentMissingRefusal),
 		},
 	}
 }

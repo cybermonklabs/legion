@@ -7772,6 +7772,17 @@ export interface operations {
             | components["schemas"]["ErrorBody"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["AmbiguousTargetError"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7965,6 +7976,17 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["AmbiguousTargetError"]
             | components["schemas"]["ErrorBody"];
         };
       };
@@ -9505,6 +9527,17 @@ export interface operations {
             | components["schemas"]["ErrorBody"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["EditLostError"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -10493,6 +10526,17 @@ export interface operations {
             | components["schemas"]["ErrorBody"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["EditPreconditionError"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -10589,6 +10633,17 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["AmbiguousTargetError"]
             | components["schemas"]["ErrorBody"];
         };
       };
@@ -10908,6 +10963,17 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["AmbiguousTargetError"]
             | components["schemas"]["ErrorBody"];
         };
       };
@@ -13883,6 +13949,17 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["EditPreconditionError"]
             | components["schemas"]["ErrorBody"];
         };
       };

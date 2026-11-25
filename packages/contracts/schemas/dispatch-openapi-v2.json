@@ -1655,6 +1655,10 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -2242,12 +2246,30 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AmbiguousTargetError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
         "x-refusal-codes": {
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
+          "ANCHOR_MISSING": 409,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_AGENT_OWNED": 400,
           "ARTIFACT_LINKED": 400,
@@ -2260,6 +2282,10 @@
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
           "CAP_EXCEEDED": 400,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -2286,6 +2312,8 @@
           "REQUEST_TOO_LARGE": 413,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "TARGET_AMBIGUOUS": 409,
+          "TARGET_NOT_FOUND": 404,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         },
@@ -2371,6 +2399,10 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -2681,12 +2713,30 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AmbiguousTargetError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
         "x-refusal-codes": {
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
+          "ANCHOR_MISSING": 409,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_AGENT_OWNED": 400,
           "ARTIFACT_LINKED": 400,
@@ -2700,6 +2750,10 @@
           "BROKER_UNAVAILABLE": 503,
           "CAP_EXCEEDED": 400,
           "DECISION_BLOCK_IN_BODY": 400,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -2729,6 +2783,8 @@
           "ROUTE_CHANGED": 409,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "TARGET_AMBIGUOUS": 409,
+          "TARGET_NOT_FOUND": 404,
           "TOKEN_REVOKED": 401,
           "TURN_REQUIRES_ASK": 400,
           "UNAUTHORIZED": 401
@@ -2842,12 +2898,20 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "EDIT_LOST_TO_CONCURRENT_CHANGE": 409,
+          "EDIT_QUEUE_FULL": 429,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
+          "INVALID_ASK_BLOCK": 400,
+          "INVALID_CI_CHECK": 400,
           "INVALID_JSON": 400,
           "INVALID_OP": 400,
+          "INVALID_PRECONDITION": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
           "ISSUE_CLOSED": 409,
@@ -2871,7 +2935,10 @@
           "REQUEST_TOO_LARGE": 413,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "TABLE_WIDTH": 400,
           "TARGET_AMBIGUOUS": 409,
+          "TARGET_NOT_FOUND": 404,
+          "TARGET_SPANS_BLOCKS": 400,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         },
@@ -3239,10 +3306,15 @@
           "BROKER_UNAVAILABLE": 503,
           "DOCUMENT_LIVE": 409,
           "DOCUMENT_LOADS": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
+          "INVALID_ASK_BLOCK": 400,
+          "INVALID_CI_CHECK": 400,
           "INVALID_JSON": 400,
+          "INVALID_MARKDOWN": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
           "ISSUE_CLOSED": 409,
@@ -4069,6 +4141,10 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -4646,6 +4722,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ASK_BLOCK_TEXT": 400,
           "ASK_KIND_FIXED": 409,
           "ASK_NOT_FOUND": 404,
           "ASK_NOT_OPEN": 409,
@@ -4657,6 +4734,10 @@
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
           "CAP_EXCEEDED": 400,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -4684,6 +4765,7 @@
           "REQUEST_TOO_LARGE": 413,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "TARGET_NOT_FOUND": 404,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         },
@@ -5104,6 +5186,10 @@
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
           "CAP_EXCEEDED": 400,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -5134,6 +5220,7 @@
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
           "STATE_INVALID": 400,
+          "TARGET_NOT_FOUND": 404,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         },
@@ -5931,6 +6018,10 @@
           "BROKER_UNAVAILABLE": 503,
           "COMMENT_NOT_FOUND": 404,
           "DELETE_CONTENDED": 409,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -6045,6 +6136,10 @@
           "CAP_EXCEEDED": 400,
           "COMMENT_NOT_FOUND": 404,
           "DECISION_BLOCK_IN_BODY": 400,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -6587,6 +6682,23 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/EditLostError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -6620,6 +6732,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ALREADY_ACTIONED": 409,
+          "ANCHOR_ORPHANED": 409,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -6628,11 +6741,20 @@
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
           "COMMENT_NOT_FOUND": 404,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
+          "EDIT_LOST_TO_CONCURRENT_CHANGE": 409,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
+          "INVALID_ASK_BLOCK": 400,
+          "INVALID_CI_CHECK": 400,
           "INVALID_COMMENT": 400,
           "INVALID_JSON": 400,
+          "INVALID_MARKDOWN": 400,
+          "INVALID_OP": 400,
           "INVALID_QUERY": 400,
           "INVALID_SUGGESTION": 400,
           "INVALID_UTF8": 400,
@@ -8575,9 +8697,12 @@
           "EXTERNAL_PROJECT_MISMATCH": 400,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
+          "INVALID_ASK_BLOCK": 400,
+          "INVALID_CI_CHECK": 400,
           "INVALID_ISSUE": 400,
           "INVALID_ISSUE_REF": 400,
           "INVALID_JSON": 400,
+          "INVALID_MARKDOWN": 400,
           "INVALID_PRIORITY": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
@@ -8820,6 +8945,10 @@
           "BROKER_UNAVAILABLE": 503,
           "CAP_EXCEEDED": 400,
           "COMPONENTS_INPUT": 400,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "EXTERNAL_LINK_TAKEN": 409,
           "FOREIGN_CHILD_OPEN": 409,
           "IDENTITY_ERROR": 500,
@@ -8980,6 +9109,10 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_LIMIT": 400,
@@ -9097,6 +9230,23 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -9113,12 +9263,19 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "FILE_STORE_UNAVAILABLE": 502,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_ARTIFACT": 400,
+          "INVALID_ASK_BLOCK": 400,
           "INVALID_BODY": 400,
+          "INVALID_CI_CHECK": 400,
           "INVALID_JSON": 400,
+          "INVALID_MARKDOWN": 400,
           "INVALID_PRECONDITION": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
@@ -9369,12 +9526,30 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AmbiguousTargetError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
         "x-refusal-codes": {
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
+          "ANCHOR_MISSING": 409,
           "ANSWER_NOT_KEPT": "*",
           "ASK_KIND_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -9384,6 +9559,10 @@
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
           "CAP_EXCEEDED": 400,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_ANCHOR": 400,
@@ -9400,6 +9579,7 @@
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
           "NOT_DOCUMENT": 400,
+          "NOT_FOUND": 404,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
@@ -9411,6 +9591,8 @@
           "REQUEST_TOO_LARGE": 413,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "TARGET_AMBIGUOUS": 409,
+          "TARGET_NOT_FOUND": 404,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         },
@@ -9517,6 +9699,10 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_LIMIT": 400,
@@ -10098,12 +10284,30 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AmbiguousTargetError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
         "x-refusal-codes": {
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
+          "ANCHOR_MISSING": 409,
           "ANSWER_NOT_KEPT": "*",
           "ASK_ID_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -10114,6 +10318,10 @@
           "BROKER_UNAVAILABLE": 503,
           "CAP_EXCEEDED": 400,
           "DECISION_BLOCK_IN_BODY": 400,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_ANCHOR": 400,
@@ -10131,6 +10339,7 @@
           "LOGIN_CHANGED": 409,
           "MENTION_INPUT": 400,
           "NOT_DOCUMENT": 400,
+          "NOT_FOUND": 404,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
@@ -10144,6 +10353,8 @@
           "ROUTE_CHANGED": 409,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "TARGET_AMBIGUOUS": 409,
+          "TARGET_NOT_FOUND": 404,
           "TOKEN_REVOKED": 401,
           "TURN_REQUIRES_ASK": 400,
           "UNAUTHORIZED": 401
@@ -10220,6 +10431,10 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_QUERY": 400,
@@ -10344,6 +10559,10 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_LIMIT": 400,
@@ -10485,6 +10704,10 @@
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
           "DECISION_CHANGED": 409,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_JSON": 400,
@@ -11499,6 +11722,10 @@
           "CHECK_AMBIGUOUS": 409,
           "CHECK_CONTENDED": 409,
           "CHECK_PROVED_BY_CI": 409,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "GITHUB_UNREADABLE": 502,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
@@ -11618,6 +11845,10 @@
           "BROKER_UNAVAILABLE": 503,
           "CHECK_AMBIGUOUS": 409,
           "CHECK_PROVED_BY_CI": 409,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "GITHUB_UNREADABLE": 502,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
@@ -17165,6 +17396,10 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_LIMIT": 400,
@@ -17282,6 +17517,23 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -17297,12 +17549,19 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_UNLOADABLE": 409,
+          "DOC_NEWER_CONTENT": 409,
+          "DOC_SCHEMA": 409,
+          "DOC_SERVICE_UNAVAILABLE": 503,
           "FILE_STORE_UNAVAILABLE": 502,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_ARTIFACT": 400,
+          "INVALID_ASK_BLOCK": 400,
           "INVALID_BODY": 400,
+          "INVALID_CI_CHECK": 400,
           "INVALID_JSON": 400,
+          "INVALID_MARKDOWN": 400,
           "INVALID_PRECONDITION": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,

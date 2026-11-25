@@ -101,16 +101,18 @@ var (
 )
 
 // checkResultRefusals are the refusals a result's record and its dry run both answer before the
-// record writes (readResultRequest, checkResultInput.refusal), with more, the route's own, after them.
+// record writes (readResultRequest, checkResultInput.refusal), with more, the route's own, after them,
+// and the four of a document the document service could not serve, since both read the check's
+// attributes out of the live document (resolveCheck, checkBlockAttributes).
 func checkResultRefusals(more ...apicode.Refusal) []apicode.Refusal {
-	return append([]apicode.Refusal{
+	return append(documentRefusals([]apicode.Refusal{
 		undeclaredKeyRefusal, issueMissingRefusal, gitHubReadFailedRefusal, resultInputInvalidRefusal,
 		{Condition: apicode.ResultCountsContradict, Code: apicode.ResultContradicts},
 		{Condition: apicode.CheckMissing, Code: apicode.UnknownCheck},
 		{Condition: apicode.CheckRefAmbiguous, Code: apicode.CheckAmbiguous},
 		{Condition: apicode.ResultOfCICheck, Code: apicode.CheckProvedByCI},
 		{Condition: apicode.ResultCommitUnheld, Code: apicode.ResultCommitUnknown},
-	}, more...)
+	}...), more...)
 }
 
 // The refusals of a result's input, and of a step's, a rating's and a plan's write
@@ -223,8 +225,10 @@ func (s *server) v2IssueRows() []routeRow {
 				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
 			},
 			Scope: scopeProjectInBody,
+			// The spec is seeded straight into the store (docs.SeedText), which opens no room.
 			Refusals: issueFieldRefusals(
 				dependencyLoopRefusal, issueRefInvalidRefusal,
+				markdownRefusedRefusal, askBlockRefusedRefusal, ciCheckRuleBrokenRefusal, documentPastSizeBoundRefusal,
 				apicode.Refusal{Condition: apicode.IssueRefAmbiguous, Code: apicode.AmbiguousIssueRef},
 				apicode.Refusal{Condition: apicode.ExternalOfAnotherProject, Code: apicode.ExternalProjectMismatch},
 				apicode.Refusal{Condition: apicode.TitleNearCopy, Code: apicode.PossibleDuplicate},
@@ -307,7 +311,8 @@ func (s *server) v2IssueRows() []routeRow {
 				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: issueFieldRefusals(
+			// A close or a reopen writes the state of its asks into their blocks (docs.WriteIssueAskStates).
+			Refusals: documentRefusals(issueFieldRefusals(
 				issueMissingRefusal, parentLoopRefusal, dependencyLoopRefusal, issueClosedRefusal,
 				apicode.Refusal{Condition: apicode.OpenForeignChild, Code: apicode.ForeignChildOpen},
 				apicode.Refusal{Condition: apicode.AdvancesRevisionMoved, Code: apicode.AdvancesRevision},
@@ -318,7 +323,7 @@ func (s *server) v2IssueRows() []routeRow {
 				apicode.Refusal{Condition: apicode.ParentLockContended, Code: apicode.ParentContended},
 				rankInvalidRefusal,
 				apicode.Refusal{Condition: apicode.IssueRouteInvalid, Code: apicode.RouteInvalid},
-			),
+			)...),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/issues/{key}/claim", Auth: authAny, Versions: onlyV2,
@@ -383,7 +388,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Handler:  s.getIssueCoverageV2,
 			Resource: "coverage", Kind: kindReport,
 			Shape:    routeShape{Status: http.StatusOK, Response: model.IssueCoverage{}},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: documentRefusals(undeclaredKeyRefusal, issueMissingRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/decisions", Auth: authAny, Versions: onlyV2,
@@ -400,7 +405,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Resource: "decisions", Kind: kindCollection, Key: "{block_id}",
 			Query:    issueDecisionsV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: issueDecisionsV2{}},
-			Refusals: listRefusals(issueMissingRefusal),
+			Refusals: documentRefusals(listRefusals(issueMissingRefusal)...),
 		},
 		{
 			Method: http.MethodPut, Pattern: "/issues/{key}/decisions/{block_id}/state", Auth: authAny, Versions: onlyV2,
@@ -421,11 +426,11 @@ func (s *server) v2IssueRows() []routeRow {
 			Scope:       scopeProject, ProjectOf: projectPathIssue,
 			IDs: &idRoute{Reason: "a decision's heading block id, which names a block of the issue's decisions document; " +
 				"the path names no document to resolve a prefix within"},
-			Refusals: []apicode.Refusal{
+			Refusals: documentRefusals(
 				undeclaredKeyRefusal, issueMissingRefusal, blockMissingRefusal,
-				{Condition: apicode.DecisionTextMoved, Code: apicode.DecisionChanged},
-				{Condition: apicode.KeepWithoutDigest, Code: apicode.InvalidKeep},
-			},
+				apicode.Refusal{Condition: apicode.DecisionTextMoved, Code: apicode.DecisionChanged},
+				apicode.Refusal{Condition: apicode.KeepWithoutDigest, Code: apicode.InvalidKeep},
+			),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/references", Auth: authAny, Versions: onlyV2,
@@ -492,7 +497,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Resource: "checks", Kind: kindCollection,
 			Query:    issueChecksV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: issueChecksV2{}},
-			Refusals: listRefusals(issueMissingRefusal),
+			Refusals: documentRefusals(listRefusals(issueMissingRefusal)...),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/results", Auth: authAny, Versions: onlyV2,

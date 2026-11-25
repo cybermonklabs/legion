@@ -239,7 +239,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Query:    artifactReadV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: artifactV2{}},
 			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			Refusals: documentRefusals(undeclaredKeyRefusal, documentMissingRefusal),
 		},
 		{
 			Method: http.MethodPatch, Pattern: "/artifacts/{id}", Auth: authAny, Versions: onlyV2,
@@ -328,7 +328,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Body: requestBody{Kind: bodyJSON, Type: createAskInput{}},
 			Shape: routeShape{
 				Status: http.StatusCreated, Response: askWriteV2{}, Advice: writeAdvice{},
-				OtherAdvice: []any{suggestionsOnlyAdvice{}},
+				OtherAdvice: []any{suggestionsOnlyAdvice{}}, Refusals: anchorRefusalAnswers(),
 			},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs:      documentIDs(),
@@ -347,7 +347,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			IDs: &idRoute{
 				Kind: "artifact", Blocks: true, NotFound: apicode.ArtifactNotFound, BlockNotFound: apicode.BlockNotFound,
 			},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal, blockMissingRefusal, artifactNotDocumentRefusal},
+			Refusals: documentRefusals(undeclaredKeyRefusal, documentMissingRefusal, blockMissingRefusal, artifactNotDocumentRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/changes", Auth: authAny, Versions: onlyV2,
@@ -397,7 +397,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Handler:  s.createArtifactCommentV2,
 			Resource: "comments", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyJSON, Type: commentInput{}},
-			Shape: routeShape{Status: http.StatusCreated, Response: commentWriteResponse{}, Advice: writeAdvice{}},
+			Shape: routeShape{Status: http.StatusCreated, Response: commentWriteResponse{}, Advice: writeAdvice{}, Refusals: anchorRefusalAnswers()},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs:      documentIDs(),
 			Replay:   replayRecovered(s, s.replayComment),
@@ -431,13 +431,17 @@ func (s *server) v2DocumentRows() []routeRow {
 			},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs: documentIDs(),
-			Refusals: []apicode.Refusal{
+			Refusals: documentRefusals(
 				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
-				documentPreconditionRefusal, quoteAmbiguousRefusal,
-				{Condition: apicode.EditOpInvalid, Code: apicode.InvalidOp},
-				{Condition: apicode.ReplaceFieldsInvalid, Code: apicode.ReplaceFields},
-				{Condition: apicode.EditLost, Code: apicode.EditLostToConcurrentChange},
-			},
+				documentPreconditionRefusal, quoteAmbiguousRefusal, editLostRefusal, targetMissingRefusal,
+				askBlockRefusedRefusal, ciCheckRuleBrokenRefusal, documentPastSizeBoundRefusal,
+				apicode.Refusal{Condition: apicode.EditOpInvalid, Code: apicode.InvalidOp},
+				apicode.Refusal{Condition: apicode.ReplaceFieldsInvalid, Code: apicode.ReplaceFields},
+				apicode.Refusal{Condition: apicode.QuoteSpansBlocks, Code: apicode.TargetSpansBlocks},
+				apicode.Refusal{Condition: apicode.TableRowsTooWide, Code: apicode.TableWidth},
+				apicode.Refusal{Condition: apicode.EditPreconditionMalformed, Code: apicode.InvalidPrecondition},
+				apicode.Refusal{Condition: apicode.ConditionalEditsQueued, Code: apicode.EditQueueFull},
+			),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/plan-reviews", Auth: authAny, Versions: onlyV2,
@@ -474,8 +478,12 @@ func (s *server) v2DocumentRows() []routeRow {
 			OAuthScopes: person,
 			Scope:       scopeProject, ProjectOf: projectPathArtifact,
 			IDs: documentIDs(),
+			// A rebuild replaces a history that does not load, so it answers no DOCUMENT_UNLOADABLE,
+			// and it parses its source afresh, so no stored tree outside the schema is its refusal.
 			Refusals: []apicode.Refusal{
 				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
+				documentServiceDownRefusal, documentNewerContentRefusal, markdownRefusedRefusal, askBlockRefusedRefusal,
+				ciCheckRuleBrokenRefusal, documentPastSizeBoundRefusal,
 				{Condition: apicode.DocumentOpenInRoom, Code: apicode.DocumentLive},
 				{Condition: apicode.DocumentHistoryLoads, Code: apicode.DocumentLoads},
 			},
@@ -591,10 +599,10 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape: routeShape{Status: http.StatusCreated, Response: model.Version{}},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs: documentIDs(),
-			Refusals: []apicode.Refusal{
+			Refusals: documentRefusals(
 				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
-				{Condition: apicode.VersionSummaryBlank, Code: apicode.InvalidVersion},
-			},
+				apicode.Refusal{Condition: apicode.VersionSummaryBlank, Code: apicode.InvalidVersion},
+			),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/versions/{number}", Auth: authAny, Versions: onlyV2,
@@ -637,7 +645,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			List:          artifactList,
 			Shape:         routeShape{Status: http.StatusOK, Response: page[artifactV2]{}},
 			DocumentOwner: documentOwnerIssue,
-			Refusals:      listRefusals(issueMissingRefusal),
+			Refusals:      documentRefusals(listRefusals(issueMissingRefusal)...),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/artifacts", Auth: authAny, Versions: onlyV2,
@@ -653,10 +661,14 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape: routeShape{
 				Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: writeAdvice{},
 				OtherAdvice: []any{documentWriteAdvice{}},
+				// A token behind the live document (writeUploadDocumentError).
+				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: editPreconditionError{}}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			RefusesClosedOwner: true,
-			Refusals:           uploadBodyRefusals(issueMissingRefusal, documentPreconditionRefusal, roleDocumentNameRefusal),
+			Refusals: documentContentRefusals(
+				uploadBodyRefusals(issueMissingRefusal, documentPreconditionRefusal, roleDocumentNameRefusal)...,
+			),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/projects/{key}/artifacts", Auth: authAny, Versions: onlyV2,
@@ -671,7 +683,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			List:          artifactList,
 			Shape:         routeShape{Status: http.StatusOK, Response: page[artifactV2]{}},
 			DocumentOwner: documentOwnerProject,
-			Refusals:      listRefusals(projectMissingRefusal),
+			Refusals:      documentRefusals(listRefusals(projectMissingRefusal)...),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/projects/{key}/artifacts", Auth: authAny, Versions: onlyV2,
@@ -684,9 +696,13 @@ func (s *server) v2DocumentRows() []routeRow {
 			Body: requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
 			// A project document has no issue state to report, so its write advice is the document
 			// half alone (storeArtifact, the withRawAdvice arm).
-			Shape: routeShape{Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: documentWriteAdvice{}},
+			Shape: routeShape{
+				Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: documentWriteAdvice{},
+				// A token behind the live document (writeUploadDocumentError).
+				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: editPreconditionError{}}},
+			},
 			Scope: scopeProject, ProjectOf: projectPathProject,
-			Refusals: uploadBodyRefusals(projectMissingRefusal, documentPreconditionRefusal),
+			Refusals: documentContentRefusals(uploadBodyRefusals(projectMissingRefusal, documentPreconditionRefusal)...),
 		},
 	}
 }

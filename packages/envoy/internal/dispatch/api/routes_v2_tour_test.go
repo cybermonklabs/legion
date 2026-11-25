@@ -482,6 +482,47 @@ func refusalBody(name string, value any) func(*testing.T, *routeTour, tourReques
 	}
 }
 
+// The markdown of the tour's refusals of what a write puts into a document (tourRefusals): a check
+// block carrying ci_check with no negative control, which breaks a rule of a check CI proves; an
+// ask whose question holds a code block, which breaks an ask's content rule; and HTML, which is no
+// Proof document.
+const (
+	tourCICheckBroken   = ":::check{#c1 ci_check=\"go-test\"}\nThe server builds at the head.\n:::\n"
+	tourAskBlockBroken  = "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich?\n\n```\ncode\n```\n:::\n\nAfter.\n"
+	tourMarkdownRefused = "<details>x</details>"
+)
+
+// refusalDocumentAnchor is a tourRefusal's change that anchors its step's comment or ask on the
+// document the path's {id} names, the anchor's member name set to value: a quote or a mark_id.
+func refusalDocumentAnchor(name string, value any) func(*testing.T, *routeTour, tourRequest) tourRequest {
+	return func(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+		return refusalBody("anchor", map[string]any{"artifact": request.Path["id"], name: value})(t, tour, request)
+	}
+}
+
+// refusalStaleIssueUpload and refusalStaleProjectUpload are a tourRefusal's change that first
+// stores the document its step's JSON upload names, under the issue or the project the path's
+// {key} names, and then names as the upload's precondition a token that document never had, so
+// the upload replaces a document whose token it does not hold.
+var (
+	refusalStaleIssueUpload = refusalStaleUpload(func(t *testing.T, tour *routeTour, key, name string) {
+		tour.issueDocument(t, key, name, "# Findings\n\nWhat the tour found first.\n")
+	})
+	refusalStaleProjectUpload = refusalStaleUpload(func(t *testing.T, tour *routeTour, key, name string) {
+		createProjectDocument(t, tour.handler, key, name, "# Design\n\nThe tour's first design.\n")
+	})
+)
+
+// refusalStaleUpload is the change of refusalStaleIssueUpload and refusalStaleProjectUpload, the
+// document stored through store.
+func refusalStaleUpload(store func(t *testing.T, tour *routeTour, key, name string)) func(*testing.T, *routeTour, tourRequest) tourRequest {
+	return func(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+		t.Helper()
+		store(t, tour, request.Path["key"], request.Body.(map[string]any)["name"].(string))
+		return refusalBody("precondition", map[string]any{"document": "sha256:" + strings.Repeat("0", 64)})(t, tour, request)
+	}
+}
+
 // withoutMembers is the JSON value body with each member paths names taken out (tourStep's
 // ReplayMoves), and body itself where paths names none.
 func withoutMembers(t *testing.T, body []byte, paths []string) json.RawMessage {

@@ -83,6 +83,48 @@ var tourRefusals = map[string][]tourRefusal{
 	"POST /api/v2/priorities": {
 		{Name: "a blank title", Change: refusalBody("title", "  "), Code: apicode.PriorityInput},
 	},
+	"POST /api/v2/artifacts/{id}/edits": {
+		{Name: "a precondition behind the document", Change: refusalBody("precondition", map[string]any{"document": "sha256:" + strings.Repeat("0", 64)}), Code: apicode.PreconditionFailed},
+		{Name: "a precondition naming neither document nor blocks", Change: refusalBody("precondition", map[string]any{}), Code: apicode.InvalidPrecondition},
+		{Name: "a quote the spec does not hold", Change: refusalBody("ops", []map[string]any{{"op": "replace", "find": "words the tour never wrote", "with": "new words"}}), Code: apicode.TargetNotFound},
+		{Name: "a quote the spec holds in several places", Change: refusalBody("ops", []map[string]any{{"op": "replace", "find": "a", "with": "the"}}), Code: apicode.TargetAmbiguous},
+		{Name: "a check block that breaks a rule of a check CI proves", Change: refusalBody("ops", []map[string]any{{"op": "insert", "after": "end", "markdown": tourCICheckBroken}}), Code: apicode.InvalidCICheck},
+	},
+	"POST /api/v2/artifacts/{id}/comments": {
+		{Name: "a quote the document does not hold", Change: refusalDocumentAnchor("quote", "words the tour never wrote"), Code: apicode.TargetNotFound},
+		{Name: "a quote the document holds in several places", Change: refusalDocumentAnchor("quote", "a"), Code: apicode.TargetAmbiguous},
+		{Name: "a mark_id the document does not hold", Change: refusalDocumentAnchor("mark_id", "mark-the-tour-never-made"), Code: apicode.AnchorMissing},
+	},
+	"POST /api/v2/artifacts/{id}/asks": {
+		{Name: "a quote the document does not hold", Change: refusalDocumentAnchor("quote", "words the tour never wrote"), Code: apicode.TargetNotFound},
+		{Name: "a quote the document holds in several places", Change: refusalDocumentAnchor("quote", "a"), Code: apicode.TargetAmbiguous},
+		{Name: "a mark_id the document does not hold", Change: refusalDocumentAnchor("mark_id", "mark-the-tour-never-made"), Code: apicode.AnchorMissing},
+	},
+	"POST /api/v2/issues/{key}/comments": {
+		{Name: "a quote the spec does not hold", Change: refusalBody("anchor", map[string]any{"artifact": "spec", "quote": "words the tour never wrote"}), Code: apicode.TargetNotFound},
+		{Name: "a quote the spec holds in several places", Change: refusalBody("anchor", map[string]any{"artifact": "spec", "quote": "a"}), Code: apicode.TargetAmbiguous},
+		{Name: "an anchor naming no document of the issue", Change: refusalBody("anchor", map[string]any{"artifact": "no-such-document", "quote": "a"}), Code: apicode.NotFound},
+	},
+	"POST /api/v2/issues/{key}/asks": {
+		{Name: "a quote the spec does not hold", Change: refusalBody("anchor", map[string]any{"artifact": "spec", "quote": "words the tour never wrote"}), Code: apicode.TargetNotFound},
+		{Name: "a quote the spec holds in several places", Change: refusalBody("anchor", map[string]any{"artifact": "spec", "quote": "a"}), Code: apicode.TargetAmbiguous},
+		{Name: "an anchor naming no document of the issue", Change: refusalBody("anchor", map[string]any{"artifact": "no-such-document", "quote": "a"}), Code: apicode.NotFound},
+	},
+	"POST /api/v2/issues": {
+		{Name: "a spec that is no Proof document", Change: refusalBody("spec", tourMarkdownRefused), Code: apicode.InvalidMarkdown},
+		{Name: "a spec whose ask breaks its content rule", Change: refusalBody("spec", tourAskBlockBroken), Code: apicode.InvalidAskBlock},
+		{Name: "a spec whose check breaks a rule of a check CI proves", Change: refusalBody("spec", tourCICheckBroken), Code: apicode.InvalidCICheck},
+	},
+	"POST /api/v2/issues/{key}/artifacts": {
+		{Name: "content that is no Proof document", Change: refusalBody("content", tourMarkdownRefused), Code: apicode.InvalidMarkdown},
+		{Name: "an ask that breaks its content rule", Change: refusalBody("content", tourAskBlockBroken), Code: apicode.InvalidAskBlock},
+		{Name: "a check that breaks a rule of a check CI proves", Change: refusalBody("content", tourCICheckBroken), Code: apicode.InvalidCICheck},
+		{Name: "a precondition behind the document it replaces", Change: refusalStaleIssueUpload, Code: apicode.PreconditionFailed},
+	},
+	"POST /api/v2/projects/{key}/artifacts": {
+		{Name: "content that is no Proof document", Change: refusalBody("content", tourMarkdownRefused), Code: apicode.InvalidMarkdown},
+		{Name: "a precondition behind the document it replaces", Change: refusalStaleProjectUpload, Code: apicode.PreconditionFailed},
+	},
 }
 
 // TestV2RouteTourRefusalsAreListedOnTheirOperations sends, for each step of the route tour, the

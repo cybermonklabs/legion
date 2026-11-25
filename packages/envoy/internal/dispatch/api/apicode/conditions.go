@@ -259,7 +259,8 @@ var (
 	// DocumentPreconditionUnmet is a write's precondition the live document no longer meets, or
 	// one on a first upload of a name, which replaces no version.
 	DocumentPreconditionUnmet = Condition{"document precondition unmet"}
-	// EditLost is an edit whose text a concurrent change removed before it could be versioned.
+	// EditLost is an edit, or a suggestion's accept, whose text a concurrent change removed before
+	// it could be versioned.
 	EditLost = Condition{"edit lost to a concurrent change"}
 	// QuoteAmbiguous is a quote an edit or an anchor names that the document holds in several
 	// places.
@@ -304,6 +305,54 @@ var (
 	GitHubReadFailed = Condition{"github read failed"}
 	// SessionNotFollowing is the unfollow of an ask by a session that does not follow it.
 	SessionNotFollowing = Condition{"session not following"}
+	// TargetMissing is a quote, a heading or a block that an edit or an anchor names and the
+	// document does not hold.
+	TargetMissing = Condition{"target missing"}
+	// AskBlockMissing is an answer, a resolution, a decline or a reword of a block ask whose block
+	// its document no longer holds, which settlement has not retracted the ask for yet.
+	AskBlockMissing = Condition{"ask block missing"}
+	// AnchorMarkMissing is an anchor's mark_id that its document does not hold when the wait for
+	// it ends.
+	AnchorMarkMissing = Condition{"anchor mark missing"}
+	// AnchorDocumentMissing is an anchor whose artifact names, by id or slug, no document of the
+	// issue the write is on.
+	AnchorDocumentMissing = Condition{"anchor document missing"}
+	// SuggestionMarkGone is an accept or a reject of a suggestion whose mark is no longer in its
+	// document.
+	SuggestionMarkGone = Condition{"suggestion mark gone"}
+)
+
+// The conditions of what a write puts into a document, or of the document it writes into.
+var (
+	// MarkdownRefused is markdown a write puts into a document that is no Proof document, that
+	// repeats a block id, or that leaves an open anchor's quote nowhere its mark may stand, or a
+	// block pointer it introduces that names a block the pointer may not name.
+	MarkdownRefused = Condition{"markdown refused"}
+	// AskBlockRefused is an ask block a write puts into a document that does not read as an ask,
+	// or a write that changes or drops the block of an open ask.
+	AskBlockRefused = Condition{"ask block refused"}
+	// CICheckRuleBroken is a check block a write puts into a document that carries ci_check and
+	// breaks one of the rules of a check CI proves.
+	CICheckRuleBroken = Condition{"ci check rule broken"}
+	// DocumentPastSizeBound is a write that would leave a document, its margin or the marks on its
+	// text larger than the server stores.
+	DocumentPastSizeBound = Condition{"document past its size bound"}
+	// AskBlockUnrepresentable is a reword of an ask that its block in the document cannot carry as
+	// written.
+	AskBlockUnrepresentable = Condition{"ask block unrepresentable"}
+	// AcceptRefused is an accept of a suggestion whose replacement the document cannot hold where
+	// the suggestion stands.
+	AcceptRefused = Condition{"accept refused"}
+	// QuoteSpansBlocks is an edit's quote whose match runs past one textblock.
+	QuoteSpansBlocks = Condition{"quote spans blocks"}
+	// TableRowsTooWide is table rows an edit inserts that hold more cells than the table is wide.
+	TableRowsTooWide = Condition{"table rows too wide"}
+	// EditPreconditionMalformed is an edit's precondition that names neither or both of document
+	// and blocks, a block without its id or token or twice, or no token for a block or a quote
+	// spanning blocks that its operations resolve.
+	EditPreconditionMalformed = Condition{"edit precondition malformed"}
+	// ConditionalEditsQueued is a conditional edit while the document's queue of them is full.
+	ConditionalEditsQueued = Condition{"conditional edits queued"}
 )
 
 // The conditions of an issue's write and of the members of an issue's body.
@@ -473,6 +522,17 @@ var (
 	// FileStoreNotConfigured is a file version whose bytes are in a file store this server is
 	// not configured to read.
 	FileStoreNotConfigured = Condition{"file store not configured"}
+	// DocumentServiceDown is a document the document service cannot serve now: its room failed,
+	// the service is shutting down, or a rebuild holds it.
+	DocumentServiceDown = Condition{"document service down"}
+	// DocumentHistoryUnloadable is a document whose stored history does not load, the state a
+	// rebuild repairs.
+	DocumentHistoryUnloadable = Condition{"document history unloadable"}
+	// DocumentNewerContent is a document holding an element that a newer build wrote and this
+	// build does not know.
+	DocumentNewerContent = Condition{"document holds newer content"}
+	// DocumentOutsideSchema is a document whose tree is outside the Proof schema.
+	DocumentOutsideSchema = Condition{"document outside the schema"}
 )
 
 // The conditions every v2 route can meet in its query or its loops (R4, R5 and R7 of

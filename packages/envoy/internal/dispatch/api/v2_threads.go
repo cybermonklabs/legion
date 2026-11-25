@@ -83,16 +83,17 @@ var (
 
 // commentWriteRefusals are the refusals of the comment a document's or an issue's comment list
 // takes (writeComment), with more, the route's own, after them: its body and thread members, its
-// mentions, its anchor, the post it replies to deleted, and a delivery route that moved under it.
+// mentions, its anchor and what the document service answers it (anchorRefusals), the post it
+// replies to deleted, and a delivery route that moved under it.
 func commentWriteRefusals(more ...apicode.Refusal) []apicode.Refusal {
-	return append([]apicode.Refusal{
+	return append(anchorRefusals([]apicode.Refusal{
 		undeclaredKeyRefusal, commentInvalidRefusal, valuePastBoundRefusal, bodyDecisionBlockRefusal,
 		anchorInvalidRefusal, artifactNotDocumentRefusal, postDeletedRefusal,
 		mentionInvalidRefusal,
 		{Condition: apicode.AskIDShort, Code: apicode.AskIDInput},
 		{Condition: apicode.RouteMoved, Code: apicode.RouteChanged},
 		{Condition: apicode.TurnWithoutAsk, Code: apicode.TurnRequiresAsk},
-	}, more...)
+	}...), more...)
 }
 
 // messageWriteRefusals are the refusals of the message an issue's or a session's message list
@@ -176,10 +177,11 @@ func (s *server) v2ThreadRows() []routeRow {
 			Scope: scopeProject, ProjectOf: projectPathComment,
 			IDs:    commentIDs(),
 			Reread: (*server).rereadComment,
-			Refusals: []apicode.Refusal{
+			// The thread's margin record is projected again (projectThreadMark), held to its size bound.
+			Refusals: documentRefusals(
 				undeclaredKeyRefusal, commentMissingRefusal, notAuthorRefusal, commentInvalidRefusal, valuePastBoundRefusal,
-				bodyDecisionBlockRefusal, postDeletedRefusal,
-			},
+				bodyDecisionBlockRefusal, postDeletedRefusal, documentPastSizeBoundRefusal,
+			),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/comments/{id}", Auth: authAny, Versions: onlyV2,
@@ -205,9 +207,12 @@ func (s *server) v2ThreadRows() []routeRow {
 			Scope: scopeProject, ProjectOf: projectPathComment,
 			IDs:    commentIDs(),
 			Reread: (*server).rereadDeletedComment,
-			Refusals: []apicode.Refusal{
+			// A pending suggestion is rejected out of the document and the margin record projected
+			// again (RejectDeletedCommentSuggestion, projectThreadMark); an orphaned mark is recorded,
+			// not refused.
+			Refusals: documentRefusals(
 				undeclaredKeyRefusal, commentMissingRefusal, notAuthorRefusal, postDeletedRefusal, deleteRacedSendRefusal,
-			},
+			),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/comments/{id}/corrections", Auth: authAny, Versions: onlyV2,
@@ -302,16 +307,23 @@ func (s *server) v2ThreadRows() []routeRow {
 			Shape: routeShape{
 				Status: http.StatusOK, Response: shapedComment{},
 				Also: []routeAnswer{{Status: http.StatusOK, Body: acceptedComment{}}},
+				// An accept whose replacement a concurrent change removed first (docs.ErrEditLost).
+				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: editLostError{}}},
 			},
 			Authorities: []authorityRule{commentOpenAuthority, commentAcceptedAuthority, commentRejectedAuthority},
 			Scope:       scopeProject, ProjectOf: projectPathComment,
 			IDs:    commentIDs(),
 			Reread: (*server).rereadComment,
-			Refusals: []apicode.Refusal{
+			// Each state projects the margin record again, and an accept writes the suggestion's
+			// replacement into the document (docs.AcceptSuggestion), a reject takes its mark out.
+			Refusals: documentContentRefusals(
 				undeclaredKeyRefusal, commentMissingRefusal, commentInvalidRefusal, issueClosedRefusal, postDeletedRefusal,
-				{Condition: apicode.SuggestionActionInvalid, Code: apicode.InvalidSuggestion},
-				{Condition: apicode.SuggestionDecided, Code: apicode.AlreadyActioned},
-			},
+				editLostRefusal,
+				apicode.Refusal{Condition: apicode.SuggestionActionInvalid, Code: apicode.InvalidSuggestion},
+				apicode.Refusal{Condition: apicode.SuggestionDecided, Code: apicode.AlreadyActioned},
+				apicode.Refusal{Condition: apicode.SuggestionMarkGone, Code: apicode.AnchorOrphaned},
+				apicode.Refusal{Condition: apicode.AcceptRefused, Code: apicode.InvalidOp},
+			),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/comments", Auth: authAny, Versions: onlyV2,
@@ -349,10 +361,10 @@ func (s *server) v2ThreadRows() []routeRow {
 			Handler:  s.createIssueCommentV2,
 			Resource: "comments", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyJSON, Type: commentInput{}},
-			Shape: routeShape{Status: http.StatusCreated, Response: commentWriteResponse{}, Advice: writeAdvice{}},
+			Shape: routeShape{Status: http.StatusCreated, Response: commentWriteResponse{}, Advice: writeAdvice{}, Refusals: anchorRefusalAnswers()},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			Replay:   replayRecovered(s, s.replayComment),
-			Refusals: commentWriteRefusals(issueMissingRefusal, issueClosedRefusal),
+			Refusals: commentWriteRefusals(issueMissingRefusal, issueClosedRefusal, anchorDocumentMissingRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/messages/{id}", Auth: authAny, Versions: onlyV2,
