@@ -1621,9 +1621,14 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
+		// The broker's API, held to BROKER_PUBLIC_URL's form, which the broker's config.Load
+		// holds that URL to: Dispatch's broker client and token verifier join each route onto it,
+		// and a deployment names the same URL in both settings. The refusal names the setting
+		// alone: the URL as written is where a credential would be.
 		parsed, err := url.Parse(agentSecretsURL)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
-			return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(agentSecretsURL))
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+			parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_URL (expected an absolute http(s) URL with no user information, path, query or fragment)")
 		}
 		boot.AgentSecretsURL = agentSecretsURL
 		boot.AgentSecretsTokenFile = strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"))
