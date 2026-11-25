@@ -2280,7 +2280,10 @@ def browser_gate(filter, job):
          "merged report"),
         *ci_retry(
             "dispatch-browser-run-reads.sh sources it from its own directory, so the merge job's read "
-            "of its own attempt's jobs retries, and the blobs-refused mode makes no request"),
+            "of its own attempt's jobs retries, and the blobs-refused mode makes no request; and "
+            "dispatch-browser-fetch-binaries.sh sources it from its own directory, so "
+            f"{at_browser(BROWSER_FETCH_STEP)} and {at_browser(BROWSER_FETCH_STEP, BROWSER_ALONE)} "
+            "retry the artifact list and the zip"),
         (f"{SCRIPTS}/gh-read.sh",
          "dispatch-browser-run-reads.sh sources it from its own directory and runs the merge job's "
          "read of its own attempt's jobs through its gh_wait_reset, and "

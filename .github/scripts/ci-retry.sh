@@ -177,9 +177,11 @@ fi
 # image's config holds), and its refusal `landed at $have` (the digest crane read);
 # post-check-run.sh's notice `posted $CHECK_NAME …` (the check run's html_url);
 # browser-image.yaml's `publish=$publish: $why` in `Decide whether to publish` (the recipe label
-# an image's config carries); and main-bypass-check.yaml's `cat "$RUNNER_TEMP/reasoning" >&2`
-# (main-bypass-check.sh's lines, which name the conclusions of the runs and check runs it read,
-# escaped by jq's @tsv). Those lines are the callers' own, outside
+# an image's config carries); dispatch-browser-fetch-binaries.sh's notice `artifact $name, id $id,
+# … $size bytes, digest …`, its refusal that the artifact `id $id` has expired and its last
+# refusal's `of $size bytes` (the run's artifact list, main's #5144); and main-bypass-check.yaml's
+# `cat "$RUNNER_TEMP/reasoning" >&2` (main-bypass-check.sh's lines, which name the conclusions of
+# the runs and check runs it read, escaped by jq's @tsv). Those lines are the callers' own, outside
 # this function: the boundary of the INFRA-3862 lane (dispatch://INFRA-5224). Third, the callers'
 # rule: the runner keeps one stop state for the whole step and reads standard output and standard
 # error on two threads, so a workflow command a caller writes on STANDARD OUTPUT beside a call of

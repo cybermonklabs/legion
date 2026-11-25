@@ -407,8 +407,9 @@
 #      `timeout` whose short options cluster before a value, `-vk 5`, is refused by name
 #      (dispatch://INFRA-1545, round 37).
 #   7. SHELL TEXT AND HEREDOCS: `bash -c '<text>'`, with `-c` the shell's one option and no
-#      loop, function or alias in the text, one in this tree, dispatch-browser-run-reads.sh's
-#      jobs read. Text in any other form — options before `-c`, `sh -c`, `eval` — is still read
+#      loop, function or alias in the text, two in this tree: dispatch-browser-run-reads.sh's
+#      jobs read and dispatch-browser-fetch-binaries.sh's attempts at its zip (main's #5144).
+#      Text in any other form — options before `-c`, `sh -c`, `eval` — is still read
 #      for its sites, and refused by name where it fetches. A heredoc's body is data, as it is
 #      for the consumers this tree feeds one to, `python3`, `cat` and `read`, and its operator
 #      is one the Scanner reads outside quotes and comments (heredocs_of), so an `echo` of

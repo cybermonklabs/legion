@@ -128,7 +128,10 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-the-second-read-of-the-binaries-is-a-script
       - name: Download the binaries again, after a first attempt that did not complete
         if: steps.binaries.outcome != 'success'
-        timeout-minutes: 2
+        # The artifact list's 5 x 30 + 150 = 300 s and the zip's 5 x 150 + 150 = 900 s, 1200 s
+        # together, a whole number of minutes, so the budget is the next one strictly above it
+        # -> 21 min.
+        timeout-minutes: 21
         env:
           GH_TOKEN: ${{ github.token }}
         run: .github/scripts/dispatch-browser-fetch-binaries.sh packages/envoy/out/dispatch-e2e-binaries-2 "${{ inputs.job }}"
@@ -252,7 +255,10 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-the-second-read-of-the-binaries-is-a-script
       - name: Download the binaries again, after a first attempt that did not complete
         if: steps.binaries.outcome != 'success'
-        timeout-minutes: 2
+        # The artifact list's 5 x 30 + 150 = 300 s and the zip's 5 x 150 + 150 = 900 s, 1200 s
+        # together, a whole number of minutes, so the budget is the next one strictly above it
+        # -> 21 min.
+        timeout-minutes: 21
         env:
           GH_TOKEN: ${{ github.token }}
         run: .github/scripts/dispatch-browser-fetch-binaries.sh packages/envoy/out/dispatch-e2e-binaries-2 "${{ inputs.job }}"

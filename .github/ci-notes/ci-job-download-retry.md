@@ -314,14 +314,20 @@ mise.jdx.dev by 5/5 itself after that outage) and runtime 26/40 (corepack's pnpm
 registry.npmjs.org). Each is a later RUN line on a host an earlier RUN line of the same build
 already met in its outage, so a fault keyed to a host cannot single it out, and each uses the same
 inline `retry()` that other lines prove under fault. The sixth is the Envoy image's build 6/12,
-its `go mod download`, which is the same shape in another arm: build 4/12's go-licenses install
+its `go mod download`, and unlike those five it is coverable. Build 4/12's go-licenses install
 decides proxy.golang.org first, at 5.7 s in outage 1 of job 138996340640, and the download's other
 hosts are first reached within 190 s after that outage ends (sum.golang.org at 76.0 s,
 storage.googleapis.com at 99.9 s and its go-get hosts from 125.3 s), so none is faulted. An Envoy
-run that listed storage.googleapis.com and those go-get hosts alone would open its outage there,
-and the arm has no such run. The same `go mod download` under the same inline `retry()` meets its
-fault in the held-port image's wrapper 4/4 and in the worker image's go-modules 4/4. The seventh
-is the worker image's runtime 40/40, `legion probe-image`, on commandcode.ai, kilo.ai, venice.ai,
+run that listed storage.googleapis.com and those go-get hosts alone would open its outage at the
+download's first request there and fault it. INFRA-1310's architect ruled at 07:29Z on 2026-11-25
+that the arm adds no such run: it would run every lane for about two hours more and add its
+build's 4263 s to download-retry-images' key, to prove the inline `retry()` that other RUN lines
+prove under fault, the same `go mod download` among them in the held-port image's wrapper 4/4 and
+the worker image's go-modules 4/4. The last run in which this line met a fault is round 63's run
+45383555145 (job 138409597173, at fbcc6647), whose window per host faulted each Envoy host from its
+own first request: build 6/12 failed three attempts, go's fall-through lines at 9.1, 19.2 and
+39.3 s into the step, and passed on the fourth, done at 84.9 s. The seventh is the worker image's
+runtime 40/40, `legion probe-image`, on commandcode.ai, kilo.ai, venice.ai,
 stencil.so, aliyuncs.com, charm.land and zenmux.ai. What it fetches from them is Oh My Pi's
 background model refresh, which is no retried call and fails nothing (the paragraph on the worker
 image's hosts above cites the code). So a run that faults those hosts alone drives no retry, and

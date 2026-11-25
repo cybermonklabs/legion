@@ -5,14 +5,21 @@
 # does, and answers a `name=` query with the artifacts of that name, as the REST API does; the
 # artifact's API address, which redirects to a blob address on another host name (localhost);
 # and the blob, which serves a fixture zip and honours a byte range. A case's mode makes the blob
-# stall partway through its first answer, serve bytes whose digest is not the artifact's, the list
-# hold only the other caller's artifact, hold this caller's three times as a re-run does (out of
-# id order, the lower ids serving an older build), or hold it expired. The script runs against it
-# as the step runs it, for the caller dispatch-browser-pr, with the low-speed bound shortened to
-# the stand-in's scale.
+# stall partway through its first answer, stall and then answer the resumed read with the whole
+# object, as a host that ignores a range does, serve bytes whose digest is not the artifact's, the
+# list hold only the other caller's artifact, hold this caller's three times as a re-run does (out
+# of id order, the lower ids serving an older build), or hold it expired. The script runs against
+# it as the step runs it, for the caller dispatch-browser-pr, with the low-speed bound shortened
+# to the stand-in's scale.
 #
 # The stall case has a control: the same stall with a low-speed bound longer than the case's
 # limit never completes, which shows the stand-in really stalls and the bound is what ends it.
+#
+# The script reads through retry_fetch (.github/scripts/ci-retry.sh), which sleeps 10, 20, 40 and
+# 80 seconds between its five attempts. Those waits are ci-retry.test.sh's to prove, by measuring
+# them; here they would add up to 150 s to a case. So the script runs with a `sleep` on its PATH
+# that writes its argument down and returns at once, and a case reads the waits the ladder asked
+# for from what it wrote.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-fetch-binaries.test.sh
 # CI runs it in ci.yaml's test job.
@@ -125,7 +132,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             blob_reads += 1
             start = 0
             ranged = self.headers.get("Range", "")
-            if ranged.startswith("bytes="):
+            # norange: a host that ignores a range and answers with the whole object.
+            if ranged.startswith("bytes=") and mode != "norange":
                 start = int(ranged[len("bytes="):].split("-")[0])
             body = served[start:]
             self.send_response(206 if start else 200)
@@ -134,7 +142,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if start:
                 self.send_header("Content-Range", f"bytes {start}-{len(served) - 1}/{len(served)}")
             self.end_headers()
-            if mode == "stall" and blob_reads == 1:
+            if mode in ("stall", "norange") and blob_reads == 1:
                 self.wfile.write(body[:STALL_AT])
                 self.wfile.flush()
                 time.sleep(30)  # the stall: the connection stays open and sends nothing
@@ -151,13 +159,26 @@ os.rename(port_file + ".tmp", port_file)
 httpd.serve_forever()
 PY
 
-# start <mode>: starts the stand-in for one case and sets $port, $server, $log and $out.
+# The `sleep` retry_fetch finds on the script's PATH: it writes its argument to $work/sleeps,
+# which each case starts empty, and returns at once.
+mkdir "$work/bin"
+cat > "$work/bin/sleep" <<SH
+#!/usr/bin/env bash
+echo "\$*" >> "$work/sleeps"
+SH
+chmod +x "$work/bin/sleep"
+sleeps() { paste -sd ' ' "$work/sleeps"; }
+
+# start <mode>: starts the stand-in for one case and sets $port, $server, $log, $out and
+# $output_file, and empties $work/sleeps.
 start() {
   local case_dir
   case_dir=$(mktemp -d "$work/case.XXXXXX")
   log="$case_dir/requests.log"
   out="$case_dir/out"
+  output_file="$case_dir/output"
   : > "$log"
+  : > "$work/sleeps"
   python3 "$work/server.py" "$1" "$work/fixture.zip" "$case_dir/port" "$log" &
   server=$!
   for _ in $(seq 1 100); do
@@ -174,14 +195,19 @@ stop() {
 }
 
 # fetch_as_step [timeout] [env...]: runs the script as the step of the caller dispatch-browser-pr
-# does, against this case's stand-in; prints its output and sets $status.
+# does, against this case's stand-in, with the `sleep` above on its PATH; sets $output to what it
+# printed and $status. Its output goes to a file and not to a capture. Where the case's limit ends
+# the script, the attempt retry_fetch was running goes on, since `timeout` runs it in a process
+# group of its own, and a capture would wait for that attempt to close its standard error.
 fetch_as_step() {
   local limit=$1
   shift
   status=0
-  output=$(env GITHUB_API_URL="http://127.0.0.1:$port" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=7 \
+  env GITHUB_API_URL="http://127.0.0.1:$port" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=7 \
     GH_TOKEN=test-token DISPATCH_BROWSER_FETCH_SPEED_LIMIT=1000 DISPATCH_BROWSER_FETCH_SPEED_TIME=1 \
-    "$@" timeout "$limit" "$fetch" "$out" dispatch-browser-pr 2>&1) || status=$?
+    PATH="$work/bin:$PATH" "$@" timeout "$limit" "$fetch" "$out" dispatch-browser-pr \
+    > "$output_file" 2>&1 || status=$?
+  output=$(cat "$output_file")
 }
 
 same_files() {
@@ -192,12 +218,17 @@ same_files() {
   echo true
 }
 
+# attempts: how many attempt lines the script printed, one for each run of its curl.
+attempts() { grep -c '^attempt [0-9]*: curl exit' <<<"$output" || true; }
+
 echo "A read that completes: one attempt, this caller's artifact, the token kept to the API's host"
 start clean
 fetch_as_step 30
 check "exits 0 ($status)" "$(is "$status" 0)"
 check "unzips its own caller's artifact's four files, byte for byte" "$(same_files)"
-check "reads in one attempt" "$(is "$(grep -c '^attempt ' <<<"$output")" 1)"
+check "reads in one attempt" "$(is "$(attempts)" 1)"
+check "waits for nothing, since retry_fetch sleeps only after a failed attempt" \
+  "$(is "$(sleeps)" '')"
 check "sends the token to the artifact list and to the artifact's API address" \
   "$(is "$(grep -c '^\(list\|zip\) auth=yes' "$log")" 2)"
 check "sends no token to the blob's host" "$(contains "$(grep '^blob' "$log")" '^blob auth=no range=none$')"
@@ -208,8 +239,10 @@ start stall
 fetch_as_step 30
 check "exits 0 ($status)" "$(is "$status" 0)"
 check "unzips the artifact's four files, byte for byte" "$(same_files)"
-check "reads in two attempts" "$(is "$(grep -c '^attempt ' <<<"$output")" 2)"
-check "the first attempt says where it stopped" "$(contains "$output" '^attempt 1: curl exit 28, HTTP 200, 65536 bytes')"
+check "reads in two attempts" "$(is "$(attempts)" 2)"
+check "the first attempt says where it stopped, on the standard error retry_fetch passes on" \
+  "$(contains "$output" '^attempt 1: curl exit 28, HTTP 200, 65536 bytes')"
+check "retry_fetch waits its first 10 s before the attempt that resumes" "$(is "$(sleeps)" 10)"
 check "the second attempt asks for the bytes after the stall" \
   "$(is "$(grep '^blob' "$log" | sed -n 2p)" 'blob auth=no range=bytes=65536-')"
 check "each attempt names the TCP segments retransmitted during it" "$(contains "$output" 'TCP segments retransmitted')"
@@ -222,14 +255,37 @@ check "is ended by the case's limit (status 124, was $status)" "$(is "$status" 1
 check "reads the blob once" "$(is "$(grep -c '^blob' "$log")" 1)"
 stop
 
+echo "A blob host that answers the resumed read with the whole object: that attempt cannot be" \
+  "continued, and the next reads from byte 0"
+start norange
+fetch_as_step 30
+check "exits 0 ($status)" "$(is "$status" 0)"
+check "unzips the artifact's four files, byte for byte" "$(same_files)"
+check "reads in three attempts" "$(is "$(attempts)" 3)"
+check "the second attempt is curl's exit 33, with the first attempt's 65536 bytes on disk" \
+  "$(contains "$output" '^attempt 2: curl exit 33, .* 65536 of [0-9]* bytes on disk')"
+check "and says the next attempt starts again from byte 0" \
+  "$(contains "$output" \
+    '^attempt 2 cannot be continued from byte 65536; the next attempt starts again from byte 0$')"
+check "the second attempt asks for the bytes after the stall, and the third for no range" \
+  "$(is "$(grep '^blob' "$log" | sed -n 2,3p | paste -sd ' ')" \
+    'blob auth=no range=bytes=65536- blob auth=no range=none')"
+check "retry_fetch waits 10 s before the second attempt and 20 s before the third" \
+  "$(is "$(sleeps)" '10 20')"
+stop
+
 echo "A blob whose bytes are not the artifact's digest: refused, and read again from byte 0"
 start corrupt
-fetch_as_step 30 DISPATCH_BROWSER_FETCH_ATTEMPTS=2
+fetch_as_step 30
 check "exits 1 ($status)" "$(is "$status" 1)"
-check "says the sha256 is not the artifact's" "$(contains "$output" 'their sha256 is not the artifact')"
-check "says the artifact was not read whole, and that no row failed" \
-  "$(contains "$output" 'was not read whole in 2 attempts.*not a failed browser row')"
-check "starts the second attempt from byte 0" "$(is "$(grep '^blob' "$log" | sed -n 2p)" 'blob auth=no range=none')"
+check "says the sha256 is not the one the artifact names" \
+  "$(contains "$output" 'their sha256 is not the one the artifact names')"
+check "says the artifact was not read whole in retry_fetch's five attempts, and that no row failed" \
+  "$(contains "$output" 'was not read whole in 5 attempts.*not a failed browser row')"
+check "starts every attempt from byte 0" \
+  "$(is "$(grep -c '^blob auth=no range=none$' "$log"):$(grep -c '^blob' "$log")" '5:5')"
+check "retry_fetch waits 10, 20, 40 and 80 s between the five attempts" \
+  "$(is "$(sleeps)" '10 20 40 80')"
 check "unzips nothing" "$(is "$(find "$out" -type f | wc -l)" 0)"
 stop
 
@@ -252,7 +308,7 @@ check "says which of the three it read" \
   "$(contains "$output" '^artifact dispatch-browser-pr-binaries, id 1003, the highest of the 3 the run holds under that name')"
 check "reads the highest id's address alone, never an older attempt's" \
   "$(is "$(grep -c '^zip auth=yes' "$log"):$(grep -c '^old-zip' "$log")" '1:0')"
-check "reads in one attempt, held to that artifact's own size and digest" "$(is "$(grep -c '^attempt ' <<<"$output")" 1)"
+check "reads in one attempt, held to that artifact's own size and digest" "$(is "$(attempts)" 1)"
 stop
 
 echo "A run whose only artifact of the name has expired: refused, naming it"

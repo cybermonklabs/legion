@@ -368,6 +368,10 @@ seconds" in that log) answers a failed read, not a slow one. The job's budget is
 browser step's 1,080 s, the two download attempts' 120 s each, and the steps without a
 budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to the 32 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
+The second download attempt has retried since dispatch://INFRA-1545, and it still counts here
+at the 120 s it carried before that. A retried step counts in this term at its measured
+maximum, as the setup-bun step and the workspace install do, and no leg of the census ran the
+second attempt, so the 120 s stands in for a reading.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -383,9 +387,11 @@ That 1,885 s, 32 minutes, 1920 s, is this job's first term, the measured half of
 which holds every step at its maximum above, the retried setup-bun and workspace install among
 them. To it dispatch://INFRA-1545 adds the arithmetic of this job's slowest retried step, the
 setup-bun step at 3416 s - the figure its own key derives - above the workspace install's
-5 x 180 + 150 = 1050 s. The two download attempts are no second term: each is a `uses:` of an
-artifact this run built, which no `retry_fetch` holds, and their 240 s is in the first term
-already. 1920 + 3416 = 5336 s -> 89 min, which stands above the largest step budget of this
+5 x 180 + 150 = 1050 s. The first download attempt is no second term: it is a `uses:` of an
+artifact this run built, which no `retry_fetch` holds, and its 120 s is in the first term
+already. Nor is the second attempt: its two ladders, 300 + 900 = 1,200 s
+([its section](#why-the-second-read-of-the-binaries-is-a-script)), are under the setup-bun
+step's 3416 s. 1920 + 3416 = 5336 s -> 89 min, which stands above the largest step budget of this
 job, so no job budget fires before a step's own and every `if: always()` upload still runs.
 
 ## Why the leg count stands in two places
@@ -407,13 +413,14 @@ binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN (.githu
 
 A BOUND OF ITS OWN AND A SECOND ATTEMPT. A read of this artifact took 2 to 6 s on every
 leg but one, which took 428 s (the budget note above), so a slow read is answered by
-reading again rather than by waiting. Each attempt carries this file's floor of 2
+reading again rather than by waiting. The first attempt carries this file's floor of 2
 minutes, twenty times the longest of the other reads. That is not this file's rule of
 the measured maximum plus 15 per cent, which the 428 s read would put at 9 minutes: those
 9 minutes are the wait this bound is here to cut, since the same bytes took seconds on
 every other leg. The second attempt runs only when the first did not end in success, and
 a second failure fails the job there, by name. The second attempt is a script and not the
-action again; the section after this one says why.
+action again; the section after this one says why. It retries, so its key is the arithmetic
+of its retries and not this floor.
 
 EACH ATTEMPT INTO A DIRECTORY OF ITS OWN. A step that runs past its budget in a
 `container:` job ends the `docker exec` that started it, and the action's process inside
@@ -445,16 +452,35 @@ and one that is ended throws away what it read. So the second read is
 address with curl: an attempt whose connection stays under 1 MiB a second for 10 s ends
 (`--speed-limit`, `--speed-time`), the next one opens a new connection and asks for the bytes
 after the last one's (`--continue-at`), and the whole zip is held to the artifact's sha256
-digest before it is unzipped. Each attempt prints its bytes, its speed and the TCP segments
-the leg retransmitted during it, so the next stall says whether the connection was silent or
-slow. Its first read stays actions/download-artifact, which reads in seconds on all but about
-one leg in a thousand. The script runs in the step's 2 minutes, with the same directory of
-its own as the action's attempt, and reads the artifact the action reads, `<job>-binaries`,
-given the calling job's id (`${{ inputs.job }}`): a pull request labelled full-ci runs both
-callers in one run, and each reads only its own build's binaries. A re-run uploads them again
-under the same name, and the action takes the highest id of the run's artifacts of that name
-(run 45306887784 held three by its attempt 3, and the highest id was not the newest by
-`created_at`), so the script takes that same one and reads its address, size and digest from it.
+digest before it is unzipped. An attempt that cannot be continued, or whose zip fails the
+digest, deletes the zip, and the next one starts again from byte 0. Each attempt prints its
+bytes, its speed and the TCP segments the leg retransmitted during it, so the next stall says
+whether the connection was silent or slow. Its first read stays actions/download-artifact,
+which reads in seconds on all but about one leg in a thousand.
+
+Both of the script's reads go through retry_fetch (.github/scripts/ci-retry.sh), the one retry
+of this repository's CI (dispatch://INFRA-1545, R2). The read of the run's artifact list is
+bounded at 30 s an attempt, the bound the Retries note of .github/ci-budgets.md gives a
+`gh api` read of the same API. The attempts at the zip are bounded at 150 s, a figure the
+script's comment above the call derives from the zip's size: a read held just above 1 MiB a
+second takes 102 s of the 107 MB, curl's two connections may take 10 s each to open, and
+curl's own `--max-time 140` ends a transfer under the helper's bound. So the zip is read in at
+most five attempts, with the helper's waits of 10, 20, 40 and 80 s between them. An attempt
+that a bound ends loses nothing, since the next resumes at the byte it reached. Each attempt
+prints its line on standard error, because retry_fetch withholds a failed attempt's standard
+output. The step's key holds both ladders: the list's 5 x 30 + 150 = 300 s and the zip's
+5 x 150 + 150 = 900 s, 1,200 s together, a whole number of minutes, so the key is the next
+minute strictly above it, 21 minutes. Before dispatch://INFRA-1545 put the script through
+retry_fetch, it made up to eight attempts of its own, with no wait between them, inside the
+step's 2 minutes.
+
+The script runs with the same directory of its own as the action's attempt, and reads the
+artifact the action reads, `<job>-binaries`, given the calling job's id
+(`${{ inputs.job }}`): a pull request labelled full-ci runs both callers in one run, and each
+reads only its own build's binaries. A re-run uploads them again under the same name, and the
+action takes the highest id of the run's artifacts of that name (run 45306887784 held three by
+its attempt 3, and the highest id was not the newest by `created_at`), so the script takes that
+same one and reads its address, size and digest from it.
 
 ## What the shard job places, and what its budget leaves for it
 
@@ -802,12 +828,13 @@ without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up t
 minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
 The browser step's own budget is unchanged, and it still
-fires first.
+fires first. The second download attempt still counts at its 120 s, for the reason the shard
+job's budget gives.
 
 That 862 s, 15 minutes, 900 s, is this job's first term. To it dispatch://INFRA-1545 adds the
 arithmetic of this job's slowest retried step, the setup-bun step at 3416 s, above the
-workspace install's 5 x 180 + 150 = 1050 s; the two download attempts are no second term, for
-the reason the shard job's budget gives. 900 + 3416 = 4316 s -> 72 min, which stands above the
+workspace install's 5 x 180 + 150 = 1050 s; neither download attempt is a second term, for the
+reasons the shard job's budget gives. 900 + 3416 = 4316 s -> 72 min, which stands above the
 largest step budget of this job, so no job budget fires before a step's own and every
 `if: always()` upload still runs.
 
