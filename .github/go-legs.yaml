@@ -37,6 +37,7 @@ packages/daemon:
     2:
       - internal/workspace                      # 171 s
       - internal/admit                          # 134 s
+      - internal/replay                         # ~131 s, from a build Job, not the four-run CI median
       - internal/api                            # 90 s
       - internal/leakguard                      # 51 s
       - internal/classify                       # 39 s
