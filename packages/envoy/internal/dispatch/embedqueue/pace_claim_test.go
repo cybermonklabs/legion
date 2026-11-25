@@ -124,6 +124,30 @@ func requireRenewedThroughTheSlowestWait(t *testing.T, deps Deps, late time.Dura
 	}
 }
 
+// A wait whose renewal takes longer than renewClaimInterval still ends by itself. The claim is due
+// again the moment such a renewal returns, so a slice cut to the claim's next due time was 0: the
+// wait never shrank, and the loop renewed again and again until the caller's context ended. Here
+// each renewal takes renewClaimInterval and a second on a synctest fake clock, and the wait of two
+// intervals runs under a context with an hour to live.
+func TestAWaitWhoseRenewalOutlastsTheIntervalStillEnds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+		defer cancel()
+		started := time.Now()
+		renewal := newClaimRenewal(Deps{}, []pendingRow{{kind: "issue", id: "slow", text: "slow"}}, started.Add(-renewClaimInterval))
+		renewals := 0
+		renewal.extend = func(context.Context, []pendingRow) error {
+			renewals++
+			time.Sleep(renewClaimInterval + time.Second)
+			return nil
+		}
+		waitOutDebt(ctx, 2*renewClaimInterval, renewal)
+		if err := ctx.Err(); err != nil {
+			t.Errorf("the wait ended only with its context (%v), after %v and %d renewals; want it to end by itself", err, time.Since(started), renewals)
+		}
+	})
+}
+
 // passThrough wraps an embedder as a metrics or tracing wrapper would, counting the calls that
 // reach it.
 type passThrough struct {
