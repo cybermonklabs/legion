@@ -80,22 +80,25 @@
 #                 entries, and main holds them as entry files: an entry whose text opens an entry
 #                 file of the ref is refused, naming that file; run this with --base naming the base
 #                 branch's last commit before the squash, then merge main. An entry whose constant
-#                 an entry file of the ref declares (a text edited after the conversion keeps that
-#                 name) is refused too, since two declarations of it do not compile, naming both
-#                 causes: either it is such an entry, or another change took that name, and then
-#                 the author renames the entry's constant in the branch. An entry whose text changed
-#                 after its conversion and that declares no constant, or whose constant was renamed
-#                 too, is not caught. A branch with more than one merge
-#                 base with a ref that holds the cutover, which merged a commit of the ref's history
-#                 apart from the ref, is refused, naming them: which entries are the branch's own
-#                 would hang on the one git picks. Merge into the branch the ref as it was before it
-#                 merged the cutover. Where that leaves more than one merge base, make the branch
-#                 that commit and its own commits, which leaves that commit the one merge base: `git
-#                 rebase -i <that commit>` and drop each commit that came into the branch through a
-#                 merge, or cherry-pick the branch's own commits onto a branch made at that commit.
-#                 A plain `git rebase` replays the commits that came in through a merge too, and
-#                 their numbered entries would read as the branch's own. A ref that has not merged
-#                 the cutover is refused for that first.
+#                 an entry file of the ref declares is refused too, since two declarations of it do
+#                 not compile: the constant it declares, which an edit of its text after the
+#                 conversion leaves as it was, or for an entry that declares none, the one this
+#                 script names it. The refusal names both causes: either it is such an entry, or
+#                 another change took that name, and then the author renames the entry's constant,
+#                 or gives one to an entry that declares none. Not caught: an entry whose text
+#                 changed after its conversion and whose constant is not the one the entry file
+#                 declares, renamed, or named otherwise than at its first conversion (after a
+#                 renumber, or with a `-2` suffix). A branch with more than one merge base with a
+#                 ref that holds the cutover, which merged a commit of the ref's history apart from
+#                 the ref, is refused, naming them: which entries are the branch's own would hang on
+#                 the one git picks. Merge into the branch the ref as it was before it merged the
+#                 cutover. Where that leaves more than one merge base, make the branch that commit
+#                 and its own commits, which leaves that commit the one merge base: `git rebase -i
+#                 <that commit>` and drop each commit that came into the branch through a merge, or
+#                 cherry-pick the branch's own commits onto a branch made at that commit. A plain
+#                 `git rebase` replays the commits that came in through a merge too, and their
+#                 numbered entries would read as the branch's own. A ref that has not merged the
+#                 cutover is refused for that first.
 #   --report      steps 1 to 4 read and nothing done: no file written, no merge, no Go toolchain,
 #                 and no git read but of commits, trees, the blobs of the files the branch changed
 #                 and those of the ref's entry files, so it runs in a blobless clone. It prints, for
@@ -585,10 +588,12 @@ def summary(entry):
 
 
 def held_in_entry_files(ref, entries):
-    """The entry file of ref that holds each entry, by the entry's number, as (path, None) where its
-    text opens with the entry's summary (an entry file writes the entry's text verbatim after `// <id>
-    <slug>: `), else as (path, constant) where it declares the constant the entry declares, whose name
-    an edit of the text after the conversion leaves as it was."""
+    """The entry file of ref that holds each entry, by the entry's number, as (path, how): "text" where
+    its text opens with the entry's summary (an entry file writes the entry's text verbatim after `//
+    <id> <slug>: `), else "declared" where it declares the constant the entry declares, whose name an
+    edit of the text after the conversion leaves as it was, else "named" where it declares the
+    constant this script names an entry that declares none (entries are read after the names are
+    given), which a second declaration would keep from compiling all the same."""
     if not entries:
         return {}
     paths = [p for p in git("ls-tree", "--name-only", ref, f"{API}/").decode().split("\n")
@@ -616,11 +621,11 @@ def held_in_entry_files(ref, entries):
         path = next((p for p, opening, _ in files
                      if opening is not None and (opening == want or opening.startswith(want + " "))), None)
         if path:
-            held[e["number"]] = (path, None)
+            held[e["number"]] = (path, "text")
             continue
-        path = next((p for p, _, consts in files if e["const_path"] and e["const"] in consts), None)
+        path = next((p for p, _, consts in files if e["const"] in consts), None)
         if path:
-            held[e["number"]] = (path, e["const"])
+            held[e["number"]] = (path, "declared" if e["const_path"] else "named")
     return held
 
 
@@ -885,22 +890,29 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
         print(f"onmain {number} {path}")
     if held and mode == "convert":
         squash = f"with --base naming the base branch's last commit before the squash, then merge {main_name}"
-        by_text = [f"entry {n} of this branch is {path} of {main_name}"
-                   for n, (path, const) in sorted(held.items()) if not const]
+        const_of = {e["number"]: e["const"] for e in entries}
+        found = {how: [(n, path, const_of[n]) for n, (path, h) in sorted(held.items()) if h == how]
+                 for how in ("text", "declared", "named")}
         # A constant the ref declares is either a base branch's entry taken as a squash, or another
         # change's that took the same name; two declarations of it do not compile either way.
-        by_const = [f"entry {n} of this branch declares {const}, which {path} of {main_name} declares too"
-                    for n, (path, const) in sorted(held.items()) if const]
+        either = (": two declarations of one constant in package api do not compile. Either "
+                  f"{main_name} took that entry from a base branch as a squash after the cutover: run this "
+                  f"{squash}. Or another change took that name: ")
         refusals = []
-        if by_text:
-            refusals.append("; ".join(by_text) + f": the branch carries the entries of a base branch that "
-                            f"{main_name} took as a squash after the cutover, and would convert them again under "
-                            f"other ids. Run this {squash}")
-        if by_const:
-            refusals.append("; ".join(by_const) + ": two declarations of one constant in package api do not "
-                            f"compile. Either {main_name} took that entry from a base branch as a squash after the "
-                            f"cutover: run this {squash}. Or another change took that name: rename the entry's "
-                            "constant in the branch, its declaration and each line that names it, then run this again")
+        if found["text"]:
+            refusals.append("; ".join(f"entry {n} of this branch is {path} of {main_name}" for n, path, _ in found["text"])
+                            + f": the branch carries the entries of a base branch that {main_name} took as a squash "
+                            f"after the cutover, and would convert them again under other ids. Run this {squash}")
+        if found["declared"]:
+            refusals.append("; ".join(f"entry {n} of this branch declares {const}, which {path} of {main_name} "
+                                      "declares too" for n, path, const in found["declared"]) + either +
+                            "rename the entry's constant in the branch, its declaration and each line that names it, "
+                            "then run this again")
+        if found["named"]:
+            refusals.append("; ".join(f"entry {n} of this branch declares no constant, and the one this script names "
+                                      f"it, {const}, {path} of {main_name} declares" for n, path, const in found["named"])
+                            + either + "give the entry a constant of another name in the branch, `const "
+                            "<name>Contract = <its number>` beside the others, then run this again")
         die(". ".join(refusals))
     entries = [e for e in entries if e["number"] not in stale and e["number"] not in held]
     if not entries:
