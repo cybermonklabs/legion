@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -171,16 +170,8 @@ func wholeCensus(t *testing.T) []finding {
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOFLAGS", "")
 	dir := t.TempDir()
-	for name, text := range wholeModule {
-		path := filepath.Join(dir, "m", name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 	modDir := filepath.Join(dir, "m")
+	writeTree(t, modDir, wholeModule)
 	listed, err := goList(modDir, hostBuild(), true, "./p", "./r")
 	if err != nil {
 		t.Fatal(err)
