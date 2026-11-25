@@ -49,14 +49,22 @@ var (
 	}
 )
 
+// The refusals of an ask's writes: a question, options or urgency its open or its reword refuses,
+// and a block ask whose block its document no longer holds when the ask is reworded, answered,
+// resolved or declined.
+var (
+	askInvalidRefusal      = apicode.Refusal{Condition: apicode.AskInvalid, Code: apicode.InvalidAsk}
+	askBlockMissingRefusal = apicode.Refusal{Condition: apicode.AskBlockMissing, Code: apicode.TargetNotFound}
+)
+
 // askOpenRefusals are the refusals of the ask a document's or an issue's ask list opens (openAsk),
 // with more, the route's own, after them: its kind, its question, options and urgency, a value past
 // its bound, and its anchor and what the document service answers it (anchorRefusals).
 func askOpenRefusals(more ...apicode.Refusal) []apicode.Refusal {
 	return append(anchorRefusals([]apicode.Refusal{
 		undeclaredKeyRefusal, valuePastBoundRefusal, anchorInvalidRefusal, artifactNotDocumentRefusal,
+		askInvalidRefusal,
 		{Condition: apicode.AskKindRefused, Code: apicode.AskKindInput},
-		{Condition: apicode.AskInvalid, Code: apicode.InvalidAsk},
 	}...), more...)
 }
 
@@ -77,8 +85,6 @@ const askRowText = "Each ask is one row: the ask's own fields at top level, open
 // 42; 93; and 94 of the route map.
 func (s *server) v2AskRows() []routeRow {
 	askIDs := func() *idRoute { return &idRoute{Kind: "ask", NotFound: apicode.AskNotFound} }
-	askMissing := apicode.Refusal{Condition: apicode.AskMissing, Code: apicode.AskNotFound}
-	issueMissing := apicode.Refusal{Condition: apicode.IssueMissing, Code: apicode.IssueNotFound}
 	// askList is the List of the two lists of asks here: no bounds of their own, so 50 and 200
 	// (listBounds.limits), which each one's description words its page from.
 	askList := listBounds{}
@@ -131,7 +137,7 @@ func (s *server) v2AskRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: askV2{}},
 			IDs:         askIDs(),
 			Authorities: []authorityRule{askMarkAuthority},
-			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, askMissing, actingSessionMismatchRefusal},
+			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, askMissingRefusal, actingSessionMismatchRefusal},
 		},
 		{
 			Method: http.MethodPatch, Pattern: "/asks/{id}", Auth: authAny, Versions: onlyV2,
@@ -154,9 +160,8 @@ func (s *server) v2AskRows() []routeRow {
 			IDs: askIDs(),
 			// A reword of a block ask rewrites its block (docs.SetAskBlockText).
 			Refusals: documentRefusals(
-				undeclaredKeyRefusal, askMissing, notAuthorRefusal, assigneeNotSignedInRefusal, valuePastBoundRefusal,
-				issueClosedRefusal, askBlockMissingRefusal, documentPastSizeBoundRefusal,
-				apicode.Refusal{Condition: apicode.AskInvalid, Code: apicode.InvalidAsk},
+				undeclaredKeyRefusal, askMissingRefusal, notAuthorRefusal, assigneeNotSignedInRefusal, valuePastBoundRefusal,
+				issueClosedRefusal, askBlockMissingRefusal, documentPastSizeBoundRefusal, askInvalidRefusal,
 				apicode.Refusal{Condition: apicode.AskNotOpenToEdit, Code: apicode.AskNotOpen},
 				apicode.Refusal{Condition: apicode.AskKindChange, Code: apicode.AskKindFixed},
 				apicode.Refusal{Condition: apicode.AskBlockUnrepresentable, Code: apicode.AskBlockText},
@@ -174,7 +179,7 @@ func (s *server) v2AskRows() []routeRow {
 			Scope: scopeProject, ProjectOf: projectPathAsk, SessionPath: "session_id",
 			IDs: askIDs(),
 			Refusals: []apicode.Refusal{
-				undeclaredKeyRefusal, askMissing, followerSessionBlankRefusal, followOfAnotherSessionRefusal,
+				undeclaredKeyRefusal, askMissingRefusal, followerSessionBlankRefusal, followOfAnotherSessionRefusal,
 				{Condition: apicode.SessionNotFollowing, Code: apicode.FollowerNotFound},
 			},
 		},
@@ -191,7 +196,7 @@ func (s *server) v2AskRows() []routeRow {
 			Shape: routeShape{Status: http.StatusOK, Response: model.AskFollower{}},
 			Scope: scopeProject, ProjectOf: projectPathAsk, SessionPath: "session_id",
 			IDs:      askIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, askMissing, followerSessionBlankRefusal, followOfAnotherSessionRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, askMissingRefusal, followerSessionBlankRefusal, followOfAnotherSessionRefusal},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/asks/{id}/state", Auth: authAny, Versions: onlyV2,
@@ -223,7 +228,7 @@ func (s *server) v2AskRows() []routeRow {
 			IDs: askIDs(),
 			// A block ask's state is written into its block (docs.SetBlockAttributes, docs.SettleCopiesOf).
 			Refusals: documentRefusals(
-				undeclaredKeyRefusal, askMissing, issueClosedRefusal, valuePastBoundRefusal, askBlockMissingRefusal,
+				undeclaredKeyRefusal, askMissingRefusal, issueClosedRefusal, valuePastBoundRefusal, askBlockMissingRefusal,
 				apicode.Refusal{Condition: apicode.AskAnsweredBefore, Code: apicode.AskAnswered},
 				apicode.Refusal{Condition: apicode.AnsweredFirstByAnother, Code: apicode.AskClosed},
 				apicode.Refusal{Condition: apicode.AskResolvedBefore, Code: apicode.AskResolved},
@@ -235,7 +240,7 @@ func (s *server) v2AskRows() []routeRow {
 				apicode.Refusal{Condition: apicode.AnswerInvalid, Code: apicode.InvalidAnswer},
 				apicode.Refusal{Condition: apicode.ResolutionInvalid, Code: apicode.InvalidResolution},
 				apicode.Refusal{Condition: apicode.NotTheAnswerer, Code: apicode.NotAnswerer},
-				apicode.Refusal{Condition: apicode.ReasonMissing, Code: apicode.ReasonRequired},
+				reasonMissingRefusal,
 			),
 		},
 		{
@@ -249,7 +254,7 @@ func (s *server) v2AskRows() []routeRow {
 			List:        askList,
 			Shape:       routeShape{Status: http.StatusOK, Response: page[askV2]{}},
 			Authorities: []authorityRule{askMarkAuthority},
-			Refusals:    listRefusals(issueMissing, actingSessionMismatchRefusal),
+			Refusals:    listRefusals(issueMissingRefusal, actingSessionMismatchRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/asks", Auth: authAny, Versions: onlyV2,
@@ -269,7 +274,7 @@ func (s *server) v2AskRows() []routeRow {
 				OtherAdvice: []any{suggestionsOnlyAdvice{}}, Refusals: anchorRefusalAnswers(),
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: askOpenRefusals(issueMissing, issueClosedRefusal, anchorDocumentMissingRefusal),
+			Refusals: askOpenRefusals(issueMissingRefusal, issueClosedRefusal, anchorDocumentMissingRefusal),
 		},
 	}
 }

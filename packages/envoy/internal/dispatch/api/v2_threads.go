@@ -62,23 +62,29 @@ var notAuthorRefusal = apicode.Refusal{Condition: apicode.NotTheAuthor, Code: ap
 
 // The refusals of a post's body and its writes that the thread routes share: a comment's input the
 // write refuses, a body holding a decision block, a message's input, its target or delivery, a
-// mention's input, a send moved under a delete, a message whose target moved, and a reply from a
-// caller the attempt is not for.
+// mention's input, a send moved under a delete, a message whose target moved, a reply from a
+// caller the attempt is not for, and the edit or the delete of a message of a conversation with no
+// issue.
 var (
-	commentInvalidRefusal        = apicode.Refusal{Condition: apicode.CommentInvalid, Code: apicode.InvalidComment}
-	bodyDecisionBlockRefusal     = apicode.Refusal{Condition: apicode.BodyHoldsDecisionBlock, Code: apicode.DecisionBlockInBody}
-	messageInvalidRefusal        = apicode.Refusal{Condition: apicode.MessageInvalid, Code: apicode.InvalidMessage}
-	messageInputRefusal          = apicode.Refusal{Condition: apicode.MessageInputRefused, Code: apicode.MessageInput}
-	mentionInvalidRefusal        = apicode.Refusal{Condition: apicode.MentionInvalid, Code: apicode.MentionInput}
-	deleteRacedSendRefusal       = apicode.Refusal{Condition: apicode.DeleteRacedSend, Code: apicode.DeleteContended}
-	messageTargetMovedRefusal    = apicode.Refusal{Condition: apicode.MessageTargetMoved, Code: apicode.MessageTargetChanged}
-	replyNotRecipientRefusal     = apicode.Refusal{Condition: apicode.ReplyNotTheRecipient, Code: apicode.ReplyForbidden}
-	correctionOfDirectRefusal    = apicode.Refusal{Condition: apicode.CorrectionOfDirectMessage, Code: apicode.NotAnIssueMessage}
-	directThreadNoSessionRefusal = apicode.Refusal{
-		Condition: apicode.DirectThreadWithoutSession, Code: apicode.SessionRequired,
-	}
-	directThreadOutsideRefusal = apicode.Refusal{Condition: apicode.DirectThreadOfAnotherSession, Code: apicode.ThreadForbidden}
-	handoffInputRefusal        = apicode.Refusal{Condition: apicode.HandoffInputInvalid, Code: apicode.HandoffInput}
+	commentInvalidRefusal     = apicode.Refusal{Condition: apicode.CommentInvalid, Code: apicode.InvalidComment}
+	bodyDecisionBlockRefusal  = apicode.Refusal{Condition: apicode.BodyHoldsDecisionBlock, Code: apicode.DecisionBlockInBody}
+	messageInvalidRefusal     = apicode.Refusal{Condition: apicode.MessageInvalid, Code: apicode.InvalidMessage}
+	messageInputRefusal       = apicode.Refusal{Condition: apicode.MessageInputRefused, Code: apicode.MessageInput}
+	mentionInvalidRefusal     = apicode.Refusal{Condition: apicode.MentionInvalid, Code: apicode.MentionInput}
+	deleteRacedSendRefusal    = apicode.Refusal{Condition: apicode.DeleteRacedSend, Code: apicode.DeleteContended}
+	messageTargetMovedRefusal = apicode.Refusal{Condition: apicode.MessageTargetMoved, Code: apicode.MessageTargetChanged}
+	replyNotRecipientRefusal  = apicode.Refusal{Condition: apicode.ReplyNotTheRecipient, Code: apicode.ReplyForbidden}
+	correctionOfDirectRefusal = apicode.Refusal{Condition: apicode.CorrectionOfDirectMessage, Code: apicode.NotAnIssueMessage}
+)
+
+// The refusals of a direct conversation's read and of a handoff that the thread routes share: a
+// direct conversation read by a credential without the person scope that names no session, or
+// as a session outside it; and a handoff's phase that is no lowercase slug, or a body that is not
+// one JSON object as a string.
+var (
+	directThreadNoSessionRefusal = apicode.Refusal{Condition: apicode.DirectThreadWithoutSession, Code: apicode.SessionRequired}
+	directThreadOutsideRefusal   = apicode.Refusal{Condition: apicode.DirectThreadOfAnotherSession, Code: apicode.ThreadForbidden}
+	handoffInputRefusal          = apicode.Refusal{Condition: apicode.HandoffInputInvalid, Code: apicode.HandoffInput}
 )
 
 // commentWriteRefusals are the refusals of the comment a document's or an issue's comment list

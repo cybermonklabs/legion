@@ -1083,11 +1083,11 @@ func openAPIOperationCodes(route apiRoute) map[string]any {
 		codes = append(codes, apicode.KeyReused, apicode.KeyInFlight, apicode.KeyInvalid, apicode.KeyCommitted, apicode.AnswerNotKept,
 			apicode.RequestBodyUnreadable)
 	}
-	actsAsPerson := slices.Contains(route.OAuthScopes, model.ScopePerson)
-	if bodyNamesWriter(route.Body) || actsAsPerson {
+	actsAsPerson, namesWriter := slices.Contains(route.OAuthScopes, model.ScopePerson), bodyNamesWriter(route.Body)
+	if namesWriter || actsAsPerson {
 		codes = append(codes, apicode.ActorSessionMismatch)
 	}
-	if bodyNamesWriter(route.Body) && !actsAsPerson {
+	if namesWriter && !actsAsPerson {
 		codes = append(codes, apicode.ActorKind)
 	}
 	named := map[string]any{}

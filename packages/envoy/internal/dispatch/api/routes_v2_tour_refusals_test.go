@@ -85,7 +85,7 @@ var tourRefusals = map[string][]tourRefusal{
 		{Name: "a blank title", Change: refusalBody("title", "  "), Code: apicode.PriorityInput},
 	},
 	"POST /api/v2/artifacts/{id}/edits": {
-		{Name: "a precondition behind the document", Change: refusalBody("precondition", map[string]any{"document": "sha256:" + strings.Repeat("0", 64)}), Code: apicode.PreconditionFailed},
+		{Name: "a precondition behind the document", Change: refusalBody("precondition", map[string]any{"document": tourStaleDocumentToken}), Code: apicode.PreconditionFailed},
 		{Name: "a precondition naming neither document nor blocks", Change: refusalBody("precondition", map[string]any{}), Code: apicode.InvalidPrecondition},
 		{Name: "a quote the spec does not hold", Change: refusalBody("ops", []map[string]any{{"op": "replace", "find": "words the tour never wrote", "with": "new words"}}), Code: apicode.TargetNotFound},
 		{Name: "a quote the spec holds in several places", Change: refusalBody("ops", []map[string]any{{"op": "replace", "find": "a", "with": "the"}}), Code: apicode.TargetAmbiguous},

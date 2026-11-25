@@ -61,17 +61,14 @@ var (
 
 // sessionGroupWriteRefusals are the refusals of a session group's create and of its edit, which
 // write a group's name and sessions alike (createDeliverySessionGroupFrom,
-// updateDeliverySessionGroupFrom), after the route's own.
-func sessionGroupWriteRefusals(own ...apicode.Refusal) []apicode.Refusal {
-	return append(own, sessionGroupInvalidRefusal, sessionAlreadyGroupedRefusal, sessionGroupNameHeldRefusal, sessionGroupNameTitledRefusal)
+// updateDeliverySessionGroupFrom), after more, the route's own.
+func sessionGroupWriteRefusals(more ...apicode.Refusal) []apicode.Refusal {
+	return append(more, sessionGroupInvalidRefusal, sessionAlreadyGroupedRefusal, sessionGroupNameHeldRefusal, sessionGroupNameTitledRefusal)
 }
 
 // deliveryUnconfiguredRefusal is the refusal of a route that reads the deployment's delivery
 // settings (deliverySettings) on a Dispatch that holds none.
 var deliveryUnconfiguredRefusal = apicode.Refusal{Condition: apicode.DeliveryUnconfigured, Code: apicode.DeliveryNotConfigured}
-
-// queryProjectMalformedRefusal is the refusal of a project filter whose value is no project key.
-var queryProjectMalformedRefusal = apicode.Refusal{Condition: apicode.QueryProjectMalformed, Code: apicode.InvalidProject}
 
 // sessionGroupText is what the three session-group writes say of a group and of who may write
 // one.
@@ -99,7 +96,7 @@ func (s *server) v2MiscRows() []routeRow {
 			Resource: "agents", Kind: kindCollection, Key: "{session_id}",
 			Query:    agentsV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: page[agentResponse]{}},
-			Refusals: listRefusals(envoyUnreachableRefusal, envoyRefillingRefusal),
+			Refusals: listRefusals(envoyListenerRefusals()...),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/agents/{session_id}/answers", Auth: authAny, Versions: onlyV2,

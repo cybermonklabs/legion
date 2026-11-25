@@ -44,13 +44,11 @@ var (
 // The refusals of what a document route's request names or meets beside its path's objects
 // (dispatch://INFRA-4071/spec R7).
 var (
-	documentOfIssueRefusal        = apicode.Refusal{Condition: apicode.DocumentOfIssue, Code: apicode.ArtifactLinked}
-	documentOfConversationRefusal = apicode.Refusal{Condition: apicode.DocumentOfConversation, Code: apicode.ArtifactAgentOwned}
-	roleDocumentNameRefusal       = apicode.Refusal{Condition: apicode.RoleDocumentName, Code: apicode.ArtifactRoleName}
-	noSettledVersionRefusal       = apicode.Refusal{Condition: apicode.NoSettledVersion, Code: apicode.NoVersion}
-	reviewInvalidRefusal          = apicode.Refusal{Condition: apicode.ReviewInvalid, Code: apicode.InvalidReview}
-	quoteAmbiguousRefusal         = apicode.Refusal{Condition: apicode.QuoteAmbiguous, Code: apicode.TargetAmbiguous}
-	fileStoreDownRefusal          = apicode.Refusal{Condition: apicode.FileStoreDown, Code: apicode.FileStoreUnavailable}
+	roleDocumentNameRefusal     = apicode.Refusal{Condition: apicode.RoleDocumentName, Code: apicode.ArtifactRoleName}
+	noSettledVersionRefusal     = apicode.Refusal{Condition: apicode.NoSettledVersion, Code: apicode.NoVersion}
+	reviewInvalidRefusal        = apicode.Refusal{Condition: apicode.ReviewInvalid, Code: apicode.InvalidReview}
+	fileStoreDownRefusal        = apicode.Refusal{Condition: apicode.FileStoreDown, Code: apicode.FileStoreUnavailable}
+	documentPreconditionRefusal = apicode.Refusal{Condition: apicode.DocumentPreconditionUnmet, Code: apicode.PreconditionFailed}
 )
 
 // artifactRowText is what every description of a route answering artifacts says of the row.
@@ -208,7 +206,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Body: requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
 			Shape: routeShape{
 				Status: http.StatusCreated, Response: artifactUploadV2{},
-				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: editPreconditionError{}}},
+				Refusals: uploadPreconditionRefusalAnswers(),
 			},
 			Scope: scopeSession, SessionPath: "session_id",
 			Refusals: uploadBodyRefusals(sessionIDMalformedRefusal, documentPreconditionRefusal),
@@ -313,9 +311,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: page[askV2]{}},
 			Authorities: []authorityRule{askMarkAuthority},
 			IDs:         documentIDs(),
-			Refusals: listRefusals(
-				documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal, actingSessionMismatchRefusal,
-			),
+			Refusals:    listRefusals(projectDocumentRefusals(actingSessionMismatchRefusal)...),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/asks", Auth: authAny, Versions: onlyV2,
@@ -336,7 +332,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs:      documentIDs(),
-			Refusals: askOpenRefusals(documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
+			Refusals: askOpenRefusals(projectDocumentRefusals()...),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/blocks/{block_id}", Auth: authAny, Versions: onlyV2,
@@ -366,9 +362,8 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape: routeShape{Status: http.StatusOK, Response: artifactChanges{}},
 			IDs:   documentIDs(),
 			Refusals: []apicode.Refusal{
-				undeclaredKeyRefusal, documentMissingRefusal,
+				undeclaredKeyRefusal, documentMissingRefusal, artifactNotDocumentRefusal,
 				{Condition: apicode.QueryVersionMissing, Code: apicode.NotFound},
-				{Condition: apicode.ArtifactNotDocument, Code: apicode.NotDocument},
 			},
 		},
 		{
@@ -387,7 +382,7 @@ func (s *server) v2DocumentRows() []routeRow {
 				Also: []routeAnswer{{Status: http.StatusNotModified}},
 			},
 			IDs:      documentIDs(),
-			Refusals: listRefusals(documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
+			Refusals: listRefusals(projectDocumentRefusals()...),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/comments", Auth: authAny, Versions: onlyV2,
@@ -405,7 +400,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs:      documentIDs(),
 			Replay:   replayRecovered(s, s.replayComment),
-			Refusals: commentWriteRefusals(documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
+			Refusals: commentWriteRefusals(projectDocumentRefusals()...),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/edits", Auth: authAny, Versions: onlyV2,
@@ -484,13 +479,12 @@ func (s *server) v2DocumentRows() []routeRow {
 			IDs: documentIDs(),
 			// A rebuild replaces a history that does not load, so it answers no DOCUMENT_UNLOADABLE,
 			// and it parses its source afresh, so no stored tree outside the schema is its refusal.
-			Refusals: []apicode.Refusal{
+			Refusals: markdownWriteRefusals(
 				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
-				documentServiceDownRefusal, documentNewerContentRefusal, markdownRefusedRefusal, askBlockRefusedRefusal,
-				ciCheckRuleBrokenRefusal, documentPastSizeBoundRefusal,
-				{Condition: apicode.DocumentOpenInRoom, Code: apicode.DocumentLive},
-				{Condition: apicode.DocumentHistoryLoads, Code: apicode.DocumentLoads},
-			},
+				documentServiceDownRefusal, documentNewerContentRefusal,
+				apicode.Refusal{Condition: apicode.DocumentOpenInRoom, Code: apicode.DocumentLive},
+				apicode.Refusal{Condition: apicode.DocumentHistoryLoads, Code: apicode.DocumentLoads},
+			),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/references", Auth: authAny, Versions: onlyV2,
@@ -541,7 +535,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Refusals: []apicode.Refusal{
 				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
 				valuePastBoundRefusal, noSettledVersionRefusal, reviewInvalidRefusal,
-				{Condition: apicode.ReasonMissing, Code: apicode.ReasonRequired},
+				reasonMissingRefusal,
 				{Condition: apicode.ReviewedVersionMoved, Code: apicode.ReviewVersionMoved},
 			},
 		},
@@ -558,10 +552,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: page[subscriber]{}},
 			OAuthScopes: person,
 			IDs:         documentIDs(),
-			Refusals: listRefusals(
-				documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal,
-				envoyUnreachableRefusal, envoyRefillingRefusal,
-			),
+			Refusals:    listRefusals(projectDocumentRefusals(envoyListenerRefusals()...)...),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/artifacts/{id}/subscribers/{session_id}", Auth: authAny, Versions: onlyV2,
@@ -575,9 +566,8 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusNoContent},
 			OAuthScopes: person,
 			Scope:       scopeProject, ProjectOf: projectPathArtifact, SessionPath: "session_id",
-			IDs: documentIDs(),
-			Refusals: append(unsubscribeRefusals(),
-				undeclaredKeyRefusal, documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
+			IDs:      documentIDs(),
+			Refusals: unsubscribeRefusals(projectDocumentRefusals(undeclaredKeyRefusal)...),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/versions", Auth: authAny, Versions: onlyV2,
@@ -664,9 +654,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			// alone (storeArtifact, the withRawAdvice arm).
 			Shape: routeShape{
 				Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: writeAdvice{},
-				OtherAdvice: []any{documentWriteAdvice{}},
-				// A stale document or file token names the current version.
-				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: editPreconditionError{}}},
+				OtherAdvice: []any{documentWriteAdvice{}}, Refusals: uploadPreconditionRefusalAnswers(),
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			RefusesClosedOwner: true,
@@ -702,8 +690,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			// half alone (storeArtifact, the withRawAdvice arm).
 			Shape: routeShape{
 				Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: documentWriteAdvice{},
-				// A stale document or file token names the current version.
-				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: editPreconditionError{}}},
+				Refusals: uploadPreconditionRefusalAnswers(),
 			},
 			Scope: scopeProject, ProjectOf: projectPathProject,
 			Refusals: documentContentRefusals(uploadBodyRefusals(projectMissingRefusal, documentPreconditionRefusal)...),

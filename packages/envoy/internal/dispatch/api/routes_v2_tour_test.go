@@ -548,13 +548,17 @@ var (
 	})
 )
 
+// tourStaleDocumentToken is a document token no document stands at, which a tourRefusal names as
+// a write's precondition so the write holds to a token its document does not hold.
+var tourStaleDocumentToken = "sha256:" + strings.Repeat("0", 64)
+
 // refusalStaleUpload is the change of refusalStaleIssueUpload and refusalStaleProjectUpload, the
 // document stored through store.
 func refusalStaleUpload(store func(t *testing.T, tour *routeTour, key, name string)) func(*testing.T, *routeTour, tourRequest) tourRequest {
 	return func(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
 		t.Helper()
 		store(t, tour, request.Path["key"], request.Body.(map[string]any)["name"].(string))
-		return refusalBody("precondition", map[string]any{"document": "sha256:" + strings.Repeat("0", 64)})(t, tour, request)
+		return refusalBody("precondition", map[string]any{"document": tourStaleDocumentToken})(t, tour, request)
 	}
 }
 

@@ -69,15 +69,17 @@ var (
 	// SessionIDMalformed is a {session_id} that is no session id: empty, or holding /, ?, #,
 	// whitespace, a control character or <>"'`[]| (text.IsSessionID).
 	SessionIDMalformed = Condition{"session id malformed"}
+	// SessionIDBlank is a {session_id} of a session's conversations that is blank.
+	SessionIDBlank = Condition{"session id blank"}
 )
 
 // The conditions of what the object a request's path names is, where the route serves another.
 var (
-	// DocumentOfIssue is an issue's document on a route of a project document's comments, asks or
-	// subscribers, which an issue's are its own.
+	// DocumentOfIssue is an issue's document on a route of a project document's comments, asks,
+	// events or subscribers, which an issue's are its own.
 	DocumentOfIssue = Condition{"document of an issue"}
 	// DocumentOfConversation is a file of an agent's conversation on a route of a project
-	// document's comments, asks or subscribers, which a conversation has none of.
+	// document's comments, asks, events or subscribers, which a conversation has none of.
 	DocumentOfConversation = Condition{"file of an agent's conversation"}
 	// ProjectDocumentRemoved is a project's document on the removal of an untouched issue document.
 	ProjectDocumentRemoved = Condition{"removal of a project document"}
@@ -188,8 +190,6 @@ var (
 	// MessageInputRefused is a message's target, delivery mode or in_reply_to the write refuses,
 	// or a delivery reply's blank body.
 	MessageInputRefused = Condition{"message target or delivery refused"}
-	// SessionIDBlank is a {session_id} of a session's conversations that is blank.
-	SessionIDBlank = Condition{"session id blank"}
 	// BroadcastInputInvalid is a broadcast's delivery mode or sessions the write refuses.
 	BroadcastInputInvalid = Condition{"broadcast input invalid"}
 	// HandoffInputInvalid is a handoff's phase that is no lowercase slug, or a body that is not one
@@ -206,10 +206,6 @@ var (
 	MarkStateInvalid = Condition{"mark state invalid"}
 	// SnoozeInvalid is an ask mark's snoozed_until left out or not in the future.
 	SnoozeInvalid = Condition{"snooze invalid"}
-	// ReferenceQueryInvalid is a reference read that names no reference, names neither or both of
-	// to and from, or names one that is no dispatch:// reference: GET /api/v2/references,
-	// /reference-targets and /block-links.
-	ReferenceQueryInvalid = Condition{"reference query invalid"}
 	// RoleHoldersInvalid is a role-holder set the write refuses: no holders, a role that is none of
 	// the six, a session that is no session id, a role or a session named twice.
 	RoleHoldersInvalid = Condition{"role holders invalid"}
@@ -617,6 +613,10 @@ var (
 	// QueryProjectMalformed is a project a request's query names that is no project key: the
 	// project filter of GET /api/v2/nodes, /search-results and /related-check-stats.
 	QueryProjectMalformed = Condition{"query project malformed"}
+	// ReferenceQueryInvalid is a reference read that names no reference, names neither or both of
+	// to and from, or names one that is no dispatch:// reference: GET /api/v2/references,
+	// /reference-targets and /block-links.
+	ReferenceQueryInvalid = Condition{"reference query invalid"}
 )
 
 // The conditions of what the caller's credential covers.
