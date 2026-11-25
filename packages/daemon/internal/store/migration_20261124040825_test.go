@@ -13,8 +13,8 @@ const admissionCapVersion = 20261124040825
 // 20261124040825 adds project_admission_cap_changes, every change of the cap made while the daemon
 // runs. Its checks refuse a cap of 0 (a clear names no cap), a negative cap before or after, a
 // ceiling of 0, an actor of neither kind, a controller with no session, an operator with one, a
-// blank reason, a decision id of another project or with no time, and a project that is no
-// Dispatch key; the rows they admit, a set by a decision and a clear by none, read back as written.
+// blank reason and a project that is no Dispatch key; the rows they admit, a set and a clear, read
+// back as written.
 //
 // The negative control is the read of the table before the migration, which the database refuses
 // as a relation it does not know. Each refused insert is the control of its own check: the
@@ -49,17 +49,6 @@ func TestMigrationAdmissionCap(t *testing.T) {
 	} {
 		if _, err := store.Pool().Exec(ctx, columns+refused.values); err == nil {
 			t.Errorf("%s was written, want the table to refuse it", refused.name)
-		}
-	}
-	for name, values := range map[string]string{
-		"a decision id of another project": `('LEGION', 2, 4, 2, 4, 'operator', '', 'why', 'admission:INFRA:2026-11-24T06:00:00Z', '2026-11-24T06:00:00Z', now())`,
-		"a decision id with no time":       `('LEGION', 2, 4, 2, 4, 'operator', '', 'why', 'admission:LEGION:2026-11-24T06:00:00Z', null, now())`,
-		"a decision time with no id":       `('LEGION', 2, 4, 2, 4, 'operator', '', 'why', null, '2026-11-24T06:00:00Z', now())`,
-	} {
-		if _, err := store.Pool().Exec(ctx, `insert into project_admission_cap_changes
-		(project, cap, cap_before, cap_after, ceiling, by_kind, by_session, reason, decision_id, decision_at, changed_at)
-		values `+values); err == nil {
-			t.Errorf("%s was written, want the table to refuse it", name)
 		}
 	}
 

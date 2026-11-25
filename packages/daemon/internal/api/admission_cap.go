@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -31,27 +30,23 @@ import (
 const admissionCapContract = 268
 
 // ProjectAdmissionCapRequest is the controller's POST /legion/v1/project/admission-cap: its grant,
-// the cap to set, a whole number from 1 to the ceiling, why, and the regulator decision that sets
-// it (`admission:<KEY>:<RFC 3339 UTC time>`, store.ParseAdmissionDecision), absent for a set no
-// regulator makes.
+// the cap to set, a whole number from 1 to the ceiling, and why: the person's words that ask for
+// the change (dispatch://INFRA-5616/spec#b-r8-who-sets).
 type ProjectAdmissionCapRequest struct {
-	GrantID    string `json:"grantId"`
-	Cap        int    `json:"cap"`
-	Reason     string `json:"reason"`
-	DecisionID string `json:"decisionId,omitempty"`
+	GrantID string `json:"grantId"`
+	Cap     int    `json:"cap"`
+	Reason  string `json:"reason"`
 }
 
 // ProjectAdmissionCapClearRequest is the controller's POST /legion/v1/project/admission-cap/clear:
-// its grant, why, and the regulator decision that clears the cap, absent for a clear no regulator
-// makes.
+// its grant and why.
 type ProjectAdmissionCapClearRequest struct {
-	GrantID    string `json:"grantId"`
-	Reason     string `json:"reason"`
-	DecisionID string `json:"decisionId,omitempty"`
+	GrantID string `json:"grantId"`
+	Reason  string `json:"reason"`
 }
 
 // OperatorAdmissionCapRequest is the operator's POST /legion/v1/operator/project/admission-cap:
-// the cap to set and why. An operator's change is no regulator's decision.
+// the cap to set and why.
 type OperatorAdmissionCapRequest struct {
 	Cap    int    `json:"cap"`
 	Reason string `json:"reason"`
@@ -65,16 +60,14 @@ type OperatorAdmissionCapClearRequest struct {
 
 // AdmissionCapOverride is the cap the controller or the operator set while the daemon runs and that
 // stands, as the state's `admission.override` and the cap routes' answer carry it: the cap set, who
-// set it (a pause's actor view: the controller with its session, or the operator), when, why, and
-// the regulator decision that set it, absent where no regulator did. Its cap may stand above the
-// ceiling where a later configuration lowered the ceiling, and the daemon then admits under the
-// ceiling.
+// set it (a pause's actor view: the controller with its session, or the operator), when and why.
+// Its cap may stand above the ceiling where a later configuration lowered the ceiling, and the
+// daemon then admits under the ceiling.
 type AdmissionCapOverride struct {
-	Cap        int            `json:"cap"`
-	SetBy      PauseActorView `json:"setBy"`
-	SetAt      time.Time      `json:"setAt"`
-	Reason     string         `json:"reason"`
-	DecisionID string         `json:"decisionId,omitempty"`
+	Cap    int            `json:"cap"`
+	SetBy  PauseActorView `json:"setBy"`
+	SetAt  time.Time      `json:"setAt"`
+	Reason string         `json:"reason"`
 }
 
 // AdmissionCapChangeView is one change of the cap as the state's `admission.capChanges` lists it,
@@ -82,20 +75,17 @@ type AdmissionCapOverride struct {
 // dispatch://INFRA-979/spec#b-r39), so its names are a contract of their own. `id` is the change's
 // own, rising; `cap` the cap it set, absent for a clear; `capBefore` and `capAfter` the caps the
 // daemon admitted under before it and from it on; `ceiling` the deployment's cap then; `setBy` who
-// made it, in the actor view of a pause; `setAt` when; `reason` why; and `decisionId` the regulator
-// decision that made it, absent for a change no regulator made, a person's through the controller
-// or the operator's. A set of the cap that stands and a clear where none stands change nothing and
-// are no entry.
+// made it, in the actor view of a pause; `setAt` when; and `reason` why. A set of the cap that
+// stands and a clear where none stands change nothing and are no entry.
 type AdmissionCapChangeView struct {
-	ID         int64          `json:"id"`
-	Cap        int            `json:"cap,omitempty"`
-	CapBefore  int            `json:"capBefore"`
-	CapAfter   int            `json:"capAfter"`
-	Ceiling    int            `json:"ceiling"`
-	SetBy      PauseActorView `json:"setBy"`
-	SetAt      time.Time      `json:"setAt"`
-	Reason     string         `json:"reason"`
-	DecisionID string         `json:"decisionId,omitempty"`
+	ID        int64          `json:"id"`
+	Cap       int            `json:"cap,omitempty"`
+	CapBefore int            `json:"capBefore"`
+	CapAfter  int            `json:"capAfter"`
+	Ceiling   int            `json:"ceiling"`
+	SetBy     PauseActorView `json:"setBy"`
+	SetAt     time.Time      `json:"setAt"`
+	Reason    string         `json:"reason"`
 }
 
 // AdmissionCapResponse answers a set or a clear of the cap: `cap`, the cap the daemon admits under
@@ -116,12 +106,6 @@ const (
 	admissionCapAboveCeiling = "ADMISSION_CAP_ABOVE_CEILING"
 	// admissionCapReasonRequired is a change that says nothing of why it is made.
 	admissionCapReasonRequired = "ADMISSION_CAP_REASON_REQUIRED"
-	// invalidDecisionID is a decision id not of the form `admission:<KEY>:<RFC 3339 UTC time>`,
-	// KEY this daemon's project.
-	invalidDecisionID = "INVALID_DECISION_ID"
-	// admissionCapDecisionFenced is a decision at or before the time of the project's newest one,
-	// which the sentence names.
-	admissionCapDecisionFenced = "ADMISSION_CAP_DECISION_FENCED"
 	// admissionCapUnavailable is a daemon with no workflow, which admits nothing.
 	admissionCapUnavailable = "ADMISSION_CAP_UNAVAILABLE"
 )
@@ -145,7 +129,7 @@ func (s *server) projectAdmissionCap(w http.ResponseWriter, r *http.Request) {
 	}
 	if by, ok := s.controllerActor(w, r, req.GrantID, "a change of the admission cap"); ok {
 		s.setAdmissionCap(w, r, AnswerAdmissionCap, admissionCapRoute,
-			intake.AdmissionCapSet{Cap: req.Cap, By: by, Reason: req.Reason, DecisionID: req.DecisionID})
+			intake.AdmissionCapSet{Cap: req.Cap, By: by, Reason: req.Reason})
 	}
 }
 
@@ -158,7 +142,7 @@ func (s *server) projectAdmissionCapClear(w http.ResponseWriter, r *http.Request
 	}
 	if by, ok := s.controllerActor(w, r, req.GrantID, "a change of the admission cap"); ok {
 		s.changeAdmissionCap(w, r, AnswerAdmissionCap, admissionCapClearRoute,
-			intake.AdmissionCapSet{By: by, Reason: req.Reason, DecisionID: req.DecisionID})
+			intake.AdmissionCapSet{By: by, Reason: req.Reason})
 	}
 }
 
@@ -203,26 +187,16 @@ func (s *server) setAdmissionCap(w http.ResponseWriter, r *http.Request, answer 
 	s.changeAdmissionCap(w, r, answer, route, set)
 }
 
-// changeAdmissionCap refuses a change that says nothing of why and a decision id of another form
-// than `admission:<KEY>:<RFC 3339 UTC time>` with KEY this daemon's project
-// (store.ParseAdmissionDecision), then applies the change as one fact through the workflow's
-// handlers, whose admission fences the decision, records the change and makes its pass in the
-// fact's one transaction, so the cap is in force from that pass on, and answers the cap as the state
-// then reads it. A decision at or before the time of the project's newest one is refused
-// ADMISSION_CAP_DECISION_FENCED, naming that newest decision, and its fact writes nothing. A daemon
-// with no workflow (no dispatch_url) has no admission and refuses it ADMISSION_CAP_UNAVAILABLE.
+// changeAdmissionCap refuses a change that says nothing of why, then applies the change as one fact
+// through the workflow's handlers, whose admission records it and makes its pass in the fact's one
+// transaction, so the cap is in force from that pass on, and answers the cap as the state then
+// reads it. A daemon with no workflow (no dispatch_url) has no admission and refuses it
+// ADMISSION_CAP_UNAVAILABLE.
 func (s *server) changeAdmissionCap(w http.ResponseWriter, r *http.Request, answer AnswerID, route string, change intake.AdmissionCapSet) {
 	if strings.TrimSpace(change.Reason) == "" {
 		s.writeFailure(w, r, http.StatusBadRequest, admissionCapReasonRequired,
 			"a change of the admission cap needs a reason: say in reason why the cap changes; nothing changed")
 		return
-	}
-	if change.DecisionID != "" {
-		if _, err := store.ParseAdmissionDecision(s.dispatchProject, change.DecisionID); err != nil {
-			s.writeFailure(w, r, http.StatusBadRequest, invalidDecisionID,
-				err.Error()+"; decisionId names the regulator decision that makes the change by the time of the newest value it rests on, or is left out for a change no regulator makes; nothing changed")
-			return
-		}
 	}
 	if s.pool == nil || len(s.handlers) == 0 {
 		s.writeFailure(w, r, http.StatusConflict, admissionCapUnavailable,
@@ -231,15 +205,8 @@ func (s *server) changeAdmissionCap(w http.ResponseWriter, r *http.Request, answ
 	}
 	change.At = s.now().UTC()
 	if _, err := s.apply(r.Context(), "api", requestFactID(route), change); err != nil {
-		var fenced *store.DecisionFencedError
-		if errors.As(err, &fenced) {
-			s.writeFailure(w, r, http.StatusConflict, admissionCapDecisionFenced, fmt.Sprintf(
-				"the project already holds a change of decision %s, whose time is not before %s's: a decision sets the cap once, and a late decision never undoes a newer one; nothing changed",
-				fenced.Newest, fenced.Decision))
-			return
-		}
 		s.logRequestFailure(r, err, "api: the change of the admission cap failed", "cap", change.Cap,
-			"by", string(change.By.Kind), "by_session", change.By.Session, "decision", change.DecisionID)
+			"by", string(change.By.Kind), "by_session", change.By.Session)
 		s.writeFailure(w, r, http.StatusInternalServerError, "ADMISSION_CAP_FAILED", "the change of the admission cap failed: "+err.Error())
 		return
 	}
@@ -272,7 +239,7 @@ func AdmissionCapStateTx(ctx context.Context, tx pgx.Tx, project string, ceiling
 		return effective, nil, nil
 	}
 	return effective, &AdmissionCapOverride{Cap: newest.Cap, SetBy: pauseActorViewOf(newest.By), SetAt: newest.At,
-		Reason: newest.Reason, DecisionID: newest.DecisionID}, nil
+		Reason: newest.Reason}, nil
 }
 
 // AdmissionCapChangesTx is, through tx, the state's `admission.capChanges`: project's newest
@@ -285,7 +252,7 @@ func AdmissionCapChangesTx(ctx context.Context, tx pgx.Tx, project string) ([]Ad
 	views := make([]AdmissionCapChangeView, len(changes))
 	for i, c := range changes {
 		views[i] = AdmissionCapChangeView{ID: c.ID, Cap: c.Cap, CapBefore: c.CapBefore, CapAfter: c.CapAfter,
-			Ceiling: c.Ceiling, SetBy: pauseActorViewOf(c.By), SetAt: c.At, Reason: c.Reason, DecisionID: c.DecisionID}
+			Ceiling: c.Ceiling, SetBy: pauseActorViewOf(c.By), SetAt: c.At, Reason: c.Reason}
 	}
 	return views, nil
 }

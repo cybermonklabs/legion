@@ -67,7 +67,7 @@ func TestTheCapChangesAreAListPerProjectWhoseNewestIsInForce(t *testing.T) {
 
 	byController := PauseActor{Kind: PauseByController, Session: "ses_controller"}
 	first := record(AdmissionCapChange{Project: "LEGION", Cap: 6, CapBefore: 8, CapAfter: 6, Ceiling: 8,
-		By: byController, Reason: "the merge queue waits 40 minutes", DecisionID: "admission:LEGION:2026-11-24T04:00:00Z", At: capChangeAt})
+		By: byController, Reason: "the merge queue waits 40 minutes", At: capChangeAt})
 	record(AdmissionCapChange{Project: "INFRA", Cap: 2, CapBefore: 4, CapAfter: 2, Ceiling: 4,
 		By: PauseActor{Kind: PauseByOperator}, Reason: "a pool is down", At: capChangeAt})
 	if first.ID == 0 {

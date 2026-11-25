@@ -3143,7 +3143,6 @@
     "route": "POST /legion/v1/project/admission-cap",
     "fieldPaths": [
       "cap",
-      "decisionId",
       "grantId",
       "reason"
     ]
@@ -3152,7 +3151,6 @@
     "contract": 268,
     "route": "POST /legion/v1/project/admission-cap/clear",
     "fieldPaths": [
-      "decisionId",
       "grantId",
       "reason"
     ]

@@ -198,8 +198,8 @@ const schemas: Record<string, z.ZodType> = {
   "intake-replay.json": LegionIntakeReplayResponse,
   "intake-discard.json": LegionIntakeDiscardResponse,
   // The admission cap set while the daemon runs (contract 268), each written from what the route
-  // itself answers (internal/api's TestAdmissionCapRouteGoldens): a set at a regulator's tick, and
-  // the clear after it.
+  // itself answers (internal/api's TestAdmissionCapRouteGoldens): a set on a person's word, and the
+  // clear after it.
   "admission-cap.json": LegionAdmissionCapResponse,
   "admission-cap-clear.json": LegionAdmissionCapResponse,
   // No route answers this one: it is the contract number the daemon's boot gate requires of the

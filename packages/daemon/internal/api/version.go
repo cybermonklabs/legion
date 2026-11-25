@@ -3612,32 +3612,25 @@ package api
 // main's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 268: dispatch://INFRA-5616 -- the controller changes the project's admission cap while the
-// daemon runs, with no pull request and no restart, up to the deployment's ceiling. Four routes:
-// the controller's `POST /legion/v1/project/admission-cap` (`{grantId, cap, reason, decisionId?}`)
-// and `POST /legion/v1/project/admission-cap/clear` (`{grantId, reason, decisionId?}`), which take a
-// controller grant, the controller session's or one the operator's bearer minted, and refuse any
-// other with 403 `CONTROLLER_REQUIRED` (the pause's actor rule: a grant the operator's bearer
-// minted changes the cap as the operator), and the operator's `POST
-// /legion/v1/operator/project/admission-cap` (`{cap, reason}`) and `POST
-// /legion/v1/operator/project/admission-cap/clear` (`{reason}`), which take the operator's bearer
-// as every operator route does (`legion project set-admission-cap` and `clear-admission-cap`) and
-// name no decision. None names a project: the daemon changes its own. A set refuses a cap below 1 with
-// `400 INVALID_ADMISSION_CAP` and one above the ceiling, the deployment's `admission_cap` (else
-// `LEGION_ADMISSION_CAP`), with `409 ADMISSION_CAP_ABOVE_CEILING`, whose sentence names the
-// ceiling and that the operator raises it in legion.yaml; every change refuses a blank reason
-// with `400 ADMISSION_CAP_REASON_REQUIRED` and a decision id of another form with `400
-// INVALID_DECISION_ID`; a change that names a decision when the project already holds a change of a
-// decision at the same time or a later one is refused `409 ADMISSION_CAP_DECISION_FENCED`, whose
-// sentence names the newest decision held (the fence of
-// dispatch://INFRA-5616/spec#b-r6-fenced-ticks: a decision id is `admission:<KEY>:<time>`, KEY the
-// project's Dispatch key and time the RFC 3339 UTC time of the newest value the decision rests on,
-// and decisions are ordered by that time); a daemon with no workflow refuses all four with `409
-// ADMISSION_CAP_UNAVAILABLE`. Each refusal is a Failure, its code and its sentence, and changes
-// nothing. A set or a clear is one fact (`intake.AdmissionCapSet`) whose admission takes the
-// project's lock on its cap changes, fences its decision, appends the change to the new table
-// `project_admission_cap_changes` (migration `20261124040825`) and makes
-// its pass in the same transaction, so the cap is in force from that pass on; every pass reads the
+// 268: dispatch://INFRA-5616 -- a person changes the project's admission cap while the daemon
+// runs, with no pull request and no restart, up to the deployment's ceiling: the operator, or the
+// controller on a person's cited words. Four routes: the controller's `POST
+// /legion/v1/project/admission-cap` (`{grantId, cap, reason}`) and `POST
+// /legion/v1/project/admission-cap/clear` (`{grantId, reason}`), which take a controller grant,
+// the controller session's or one the operator's bearer minted, and refuse any other with 403
+// `CONTROLLER_REQUIRED` (the pause's actor rule: a grant the operator's bearer minted changes the
+// cap as the operator), and the operator's `POST /legion/v1/operator/project/admission-cap`
+// (`{cap, reason}`) and `POST /legion/v1/operator/project/admission-cap/clear` (`{reason}`), which
+// take the operator's bearer as every operator route does (`legion project set-admission-cap` and
+// `clear-admission-cap`). None names a project: the daemon changes its own. A set refuses a cap
+// below 1 with `400 INVALID_ADMISSION_CAP` and one above the ceiling, the deployment's
+// `admission_cap` (else `LEGION_ADMISSION_CAP`), with `409 ADMISSION_CAP_ABOVE_CEILING`, whose
+// sentence names the ceiling and that the operator raises it in legion.yaml; every change refuses a
+// blank reason with `400 ADMISSION_CAP_REASON_REQUIRED`; a daemon with no workflow refuses all four
+// with `409 ADMISSION_CAP_UNAVAILABLE`. Each refusal is a Failure, its code and its sentence, and
+// changes nothing. A set or a clear is one fact (`intake.AdmissionCapSet`) whose admission appends
+// the change to the new table `project_admission_cap_changes` (migration `20261124040825`) and
+// makes its pass in the same transaction, so the cap is in force from that pass on; every pass reads the
 // project's newest change again (admit's capAt) and admits under the smaller of the cap it set and
 // the ceiling, or under the ceiling after a clear, so a cap set before a restart holds after it,
 // unless the ceiling is lower then. A lower cap stops nothing that runs: it starts nothing new
@@ -3647,14 +3640,14 @@ package api
 // answers.go's AnswerAdmissionCap, whose routes arrive with it, so no contract below 268 records
 // either); the operator's answer the same body to the `legion` command, which no plugin parses.
 // `cap` is the cap the passes admit under, `ceiling` the deployment's, and `override`, `{cap,
-// setBy, setAt, reason, decisionId?}` with `setBy` a pause's actor view (`{kind: controller,
-// session}` or `{kind: operator}`), is the cap set while the daemon runs, absent after a clear.
+// setBy, setAt, reason}` with `setBy` a pause's actor view (`{kind: controller, session}` or
+// `{kind: operator}`), is the cap set while the daemon runs, absent after a clear.
 // `GET /legion/v1/state` gains three keys under `admission`: `admission.ceiling`,
-// `admission.override` and `admission.capChanges`, the newest 50 changes, newest first, each
-// `{id, cap?, capBefore, capAfter, ceiling, setBy, setAt, reason, decisionId?}` (`cap` absent for a
-// clear, `decisionId` absent for a change no regulator made), the record the project's Evals tab
-// reads (dispatch://INFRA-5616/spec#b-r7-tick-log, dispatch://INFRA-979/spec#b-r39), so its names
-// are held as they stand. `admission.cap`, which every reader has typed since before the floor, now says the cap
+// `admission.override` and `admission.capChanges`, the newest 50 changes, newest first, `[]`
+// before the first change, each `{id, cap?, capBefore, capAfter, ceiling, setBy, setAt, reason}`
+// (`cap` absent for a clear), the record the project's Evals tab reads
+// (dispatch://INFRA-5616/spec#b-r7-tick-log, dispatch://INFRA-979/spec#b-r39), so its names are
+// held as they stand. `admission.cap`, which every reader has typed since before the floor, now says the cap
 // the passes admit under where it said the configured cap, the same number until a cap is set.
 // The records of 268 hold the three keys, and no record below 268 does: a caller whose contract
 // (the one it states, else its pod's) is below 268 is served the admission without them (the band

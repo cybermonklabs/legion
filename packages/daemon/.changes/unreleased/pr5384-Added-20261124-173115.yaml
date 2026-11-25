@@ -7,9 +7,8 @@ body: |-
     the same with `legion project set-admission-cap --cap <n> --reason <text>` and
     `legion project clear-admission-cap --reason <text>`. A change is in force at its own admission
     pass, holds across a restart, and a lower cap stops nothing that runs. A cap below 1, a cap
-    above the ceiling (naming the ceiling), a change with no reason, a `decisionId` that is not
-    `admission:<KEY>:<RFC 3339 UTC time>`, and a decision at or before the project's newest one
-    are each refused with a code of their own, and change nothing. Each change appends one row to
+    above the ceiling (naming the ceiling) and a change with no reason are each refused with a
+    code of their own, and change nothing. Each change appends one row to
     `project_admission_cap_changes` (migration `20261124040825`) and one Info line to the log; a
     change that changes nothing appends no row. `GET /legion/v1/state` and `legion state` name the
     cap in force, `admission.ceiling`, the cap that stands (`admission.override`) and the newest 50

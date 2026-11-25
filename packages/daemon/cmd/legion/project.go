@@ -158,17 +158,13 @@ func printAdmissionCapAnswer(w io.Writer, answer []byte) error {
 
 // admissionCapWords is the cap the daemon admits under as `legion state` and a change's answer name
 // it: the cap, the ceiling, and the cap set while the daemon runs where one stands, with who set it,
-// when, why and by which regulator decision.
+// when and why.
 func admissionCapWords(capValue, ceiling int, override *api.AdmissionCapOverride) string {
 	words := fmt.Sprintf("%d in force, ceiling %d", capValue, ceiling)
 	if override == nil {
 		return words + "; no cap set while the daemon runs"
 	}
-	words += fmt.Sprintf("; set to %d by %s at %s: %s", override.Cap, pauseActorWords(override.SetBy), override.SetAt.Format(time.RFC3339), override.Reason)
-	if override.DecisionID != "" {
-		words += " (decision " + override.DecisionID + ")"
-	}
-	return words
+	return words + fmt.Sprintf("; set to %d by %s at %s: %s", override.Cap, pauseActorWords(override.SetBy), override.SetAt.Format(time.RFC3339), override.Reason)
 }
 
 // pausedSummary is `legion state`'s line for the project's open pause (api.State.Paused): the

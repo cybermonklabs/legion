@@ -334,11 +334,6 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       description:
         "set_admission_cap's cap: how many issues the daemon may have started at once, from 1 to the deployment's ceiling, admission.ceiling in read_state",
     },
-    decision_id: {
-      type: "string",
-      description:
-        "set_admission_cap's and clear_admission_cap's regulator decision: admission:<KEY>:<RFC 3339 UTC time of the newest value it rests on>, left out of a change a person asked for",
-    },
   },
   required: ["op"],
   additionalProperties: false,
@@ -2174,11 +2169,11 @@ test("the controller pauses the project with its reason and resumes it, and each
 });
 
 // The admission cap set while the daemon runs (dispatch://INFRA-5616). The controller sets the cap
-// with its reason and its regulator's decision and clears it with a reason, and neither names a
+// with its reason and clears it with a reason, and neither names a
 // project: the daemon changes its own. Each goes through the real daemon client, so the answer the
 // controller reads is the golden the daemon's own test wrote, parsed by the contract's schema. A
 // call the tool can tell is wrong is refused before a grant is minted or a request sent.
-test("the controller sets the admission cap with its reason and decision and clears it, and each answer is the daemon's golden", async () => {
+test("the controller sets the admission cap with its reason and clears it, and each answer is the daemon's golden", async () => {
   const { posted, daemon } = goldenDaemon({
     "/legion/v1/project/admission-cap": "admission-cap.json",
     "/legion/v1/project/admission-cap/clear": "admission-cap-clear.json",
@@ -2188,18 +2183,13 @@ test("the controller sets the admission cap with its reason and decision and cle
   const run = (parameters: Record<string, unknown>) =>
     tool.execute("", parameters, undefined, undefined, context("ses_controller"));
   const reason = "the merge queue waits 52 minutes";
-  const decision = "admission:LEGION:2026-11-24T06:00:00Z";
 
-  const set = await run({ op: "set_admission_cap", cap: 2, reason, decision_id: decision });
+  const set = await run({ op: "set_admission_cap", cap: 2, reason });
   expect(set.isError).toBeUndefined();
   expect(set.details).toEqual(daemonFixture("admission-cap.json"));
   expect(posted).toEqual([
-    [
-      "/legion/v1/project/admission-cap",
-      { grantId: "controller-grant-1", cap: 2, reason, decisionId: decision },
-    ],
+    ["/legion/v1/project/admission-cap", { grantId: "controller-grant-1", cap: 2, reason }],
   ]);
-  // A person's change names no decision, and the request carries none.
   await run({ op: "set_admission_cap", cap: 3, reason: "a person asked for 3" });
   expect(posted.at(-1)).toEqual([
     "/legion/v1/project/admission-cap",
@@ -2233,17 +2223,22 @@ test("the controller sets the admission cap with its reason and decision and cle
     ],
     [{ op: "set_admission_cap", cap: 2 }, "set_admission_cap requires reason"],
     [
-      { op: "set_admission_cap", cap: 2, reason, decision_id: " " },
-      "set_admission_cap requires decision_id",
+      {
+        op: "set_admission_cap",
+        cap: 2,
+        reason,
+        decision_id: "admission:LEGION:2026-11-24T06:00:00Z",
+      },
+      'set_admission_cap does not accept field "decision_id"; it takes cap, reason',
     ],
     [
       { op: "set_admission_cap", cap: 2, reason, issue: "LEGION-208" },
-      'set_admission_cap does not accept field "issue"; it takes cap, reason, decision_id',
+      'set_admission_cap does not accept field "issue"; it takes cap, reason',
     ],
     [{ op: "clear_admission_cap" }, "clear_admission_cap requires reason"],
     [
       { op: "clear_admission_cap", reason, cap: 2 },
-      'clear_admission_cap does not accept field "cap"; it takes reason, decision_id',
+      'clear_admission_cap does not accept field "cap"; it takes reason',
     ],
   ] as const;
   for (const [parameters, text] of refusals) {
@@ -2258,7 +2253,7 @@ test("the controller sets the admission cap with its reason and decision and cle
 });
 
 // The summary names the cap in force with the ceiling, and the cap that stands with who set it,
-// when, why and by which decision; a state with no cap set names the ceiling alone, and one served
+// when and why; a state with no cap set names the ceiling alone, and one served
 // below the contract that added both names neither.
 test("read_state's summary names the cap in force, the ceiling and the cap that stands", async () => {
   const base = { issues: {}, admission: { cap: 2, active: [], waiting: [] } };
@@ -2284,13 +2279,12 @@ test("read_state's summary names the cap in force, the ceiling and the cap that 
       setBy: { kind: "controller", session: "ses_controller" },
       setAt: "2026-11-24T06:00:00Z",
       reason: "the merge queue waits 52 minutes",
-      decisionId: "admission:LEGION:2026-11-24T06:00:00Z",
     },
     capChanges: [],
   });
   expect(set).toContain(
     "\nadmission cap 2 ceiling 6\ncap set 2 by the controller (session ses_controller) at 2026-11-24T06:00:00Z: " +
-      "the merge queue waits 52 minutes decision admission:LEGION:2026-11-24T06:00:00Z\nactive (none)\n"
+      "the merge queue waits 52 minutes\nactive (none)\n"
   );
   const none = await summaryOf({ cap: 6, ceiling: 6, capChanges: [] });
   expect(none).toContain("\nadmission cap 6 ceiling 6\nactive (none)\n");

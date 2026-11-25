@@ -6,9 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,32 +20,13 @@ import (
 // capSetter is who changes the cap in these tests: the controller, from its session.
 var capSetter = store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
 
-// decisions is the decision id each event of these tests names: `admission:LEGION:<time>`, one
-// second later than every id given before it, so no change of a test is fenced by an earlier one.
-var decisions = struct {
-	sync.Mutex
-	byEvent map[string]string
-}{byEvent: map[string]string{}}
-
-// decisionFor is the decision id of eventID's change, given at its first use.
-func decisionFor(eventID string) string {
-	decisions.Lock()
-	defer decisions.Unlock()
-	if id, ok := decisions.byEvent[eventID]; ok {
-		return id
-	}
-	id := "admission:" + testProject + ":" + fixedNow.Add(time.Duration(len(decisions.byEvent)+1)*time.Second).UTC().Format(time.RFC3339)
-	decisions.byEvent[eventID] = id
-	return id
-}
-
 // setCap applies a change of the cap as the cap routes do (api's changeAdmissionCap): one fact of
-// its own id through the handlers, cap 0 being a clear, made by the controller's regulator by the
-// decision decisionFor gives the event.
+// its own id through the handlers, cap 0 being a clear, made by the controller, its reason named
+// after the event.
 func setCap(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, cap int) {
 	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), pool, "admission-cap", eventID,
-		intake.AdmissionCapSet{Cap: cap, By: capSetter, Reason: "the signals of " + eventID, DecisionID: decisionFor(eventID), At: fixedNow},
+		intake.AdmissionCapSet{Cap: cap, By: capSetter, Reason: "a person asked for " + eventID, At: fixedNow},
 		engineStub{}, admission); err != nil {
 		t.Fatalf("set the cap to %d: %v", cap, err)
 	}
@@ -79,7 +58,7 @@ func capChanges(t *testing.T, pool *pgxpool.Pool) []store.AdmissionCapChange {
 // raise to 2 admits a second on the raise's own pass, and a raise to the ceiling a third. A lower
 // cap then stops nothing that runs and starts nothing new: the three keep their slots, the fourth
 // root keeps waiting, and a controller's tick under the lower cap admits nothing either. Each
-// change is recorded with the caps before and after it, its reason and its decision.
+// change is recorded with the caps before and after it, who made it and why.
 //
 // The control is the first step: a pass that read the ceiling rather than the cap set admits three
 // roots there, and a pass that read the cap only at boot admits none at the raises.
@@ -107,14 +86,14 @@ func TestACapSetAtRunTimeIsInForceFromItsOwnPass(t *testing.T) {
 
 	var got []string
 	for _, change := range capChanges(t, pool) {
-		got = append(got, fmt.Sprintf("%d %d->%d of %d by %s %s for %q at %s", change.Cap, change.CapBefore, change.CapAfter,
-			change.Ceiling, change.By.Kind, change.By.Session, change.Reason, change.DecisionID))
+		got = append(got, fmt.Sprintf("%d %d->%d of %d by %s %s for %q", change.Cap, change.CapBefore, change.CapAfter,
+			change.Ceiling, change.By.Kind, change.By.Session, change.Reason))
 	}
 	want := []string{
-		`1 3->1 of 3 by controller ses_controller for "the signals of cap-lowered" at ` + decisionFor("cap-lowered"),
-		`3 2->3 of 3 by controller ses_controller for "the signals of cap-3" at ` + decisionFor("cap-3"),
-		`2 1->2 of 3 by controller ses_controller for "the signals of cap-2" at ` + decisionFor("cap-2"),
-		`1 3->1 of 3 by controller ses_controller for "the signals of cap-1" at ` + decisionFor("cap-1"),
+		`1 3->1 of 3 by controller ses_controller for "a person asked for cap-lowered"`,
+		`3 2->3 of 3 by controller ses_controller for "a person asked for cap-3"`,
+		`2 1->2 of 3 by controller ses_controller for "a person asked for cap-2"`,
+		`1 3->1 of 3 by controller ses_controller for "a person asked for cap-1"`,
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the cap changes =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -141,7 +120,7 @@ func TestAClearReturnsTheProjectToTheDeploymentsCap(t *testing.T) {
 }
 
 // A change that changes nothing writes no row and logs one Debug line: a set of the cap that
-// stands, which a regulator makes again while its signals hold still, and a clear where no cap stands
+// stands, which a person may ask for again, and a clear where no cap stands
 // clears nothing. The project's changes are the two that changed something, and the log holds one
 // Debug line for each of the three that did not, naming the cap in force.
 //
@@ -159,8 +138,8 @@ func TestAChangeThatChangesNothingWritesNoRowAndLogsOneDebugLine(t *testing.T) {
 	setCap(t, pool, admission, "set-3", 3)
 
 	changes := capChanges(t, pool)
-	if len(changes) != 2 || changes[0].Cap != 3 || changes[0].DecisionID != decisionFor("set-3") || changes[1].Cap != 2 ||
-		changes[1].DecisionID != decisionFor("set-2") {
+	if len(changes) != 2 || changes[0].Cap != 3 || changes[0].Reason != "a person asked for set-3" || changes[1].Cap != 2 ||
+		changes[1].Reason != "a person asked for set-2" {
 		t.Fatalf("the cap changes = %+v, want the set of 3 and the first set of 2 alone", changes)
 	}
 	var unchanged, changed []string
@@ -176,7 +155,7 @@ func TestAChangeThatChangesNothingWritesNoRowAndLogsOneDebugLine(t *testing.T) {
 		}
 	}
 	if len(unchanged) != 3 || !strings.Contains(unchanged[0], "set=clear cap=4") ||
-		!strings.Contains(unchanged[1], "set=2 cap=2") || !strings.Contains(unchanged[2], "decision="+decisionFor("set-2-once-more")) {
+		!strings.Contains(unchanged[1], "set=2 cap=2") || !strings.Contains(unchanged[2], `reason="a person asked for set-2-once-more"`) {
 		t.Fatalf("the lines of the changes that change nothing = %q, want the clear of none at 4 and the two sets of 2", unchanged)
 	}
 	if len(changed) != 2 || !strings.Contains(changed[0], "level=INFO") || !strings.Contains(changed[0], "cap_before=4 cap_after=2") ||

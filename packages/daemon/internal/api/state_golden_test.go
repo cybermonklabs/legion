@@ -308,19 +308,16 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			// The cap in force is the one the controller's regulator set below the deployment's
-			// ceiling of 8 (contract 268): the override names the regulator's decision, and the list
-			// of changes carries both shapes of an entry, the set and an earlier clear by the
-			// operator, which names no cap and no tick.
+			// The cap in force is the one the controller set below the deployment's ceiling of 8
+			// (contract 268), and the list of changes carries both shapes of an entry, the set and
+			// an earlier clear by the operator, which names no cap.
 			Cap:     5,
 			Ceiling: 8,
 			Override: &AdmissionCapOverride{Cap: 5, SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
-				SetAt: time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45",
-				DecisionID: "admission:LEGION:2026-09-22T09:00:00Z"},
+				SetAt: time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45"},
 			CapChanges: []AdmissionCapChangeView{
 				{ID: 2, Cap: 5, CapBefore: 8, CapAfter: 5, Ceiling: 8, SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
-					SetAt: time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45",
-					DecisionID: "admission:LEGION:2026-09-22T09:00:00Z"},
+					SetAt: time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45"},
 				{ID: 1, CapBefore: 3, CapAfter: 8, Ceiling: 8, SetBy: PauseActorView{Kind: "operator"},
 					SetAt: time.Date(2026, 9, 21, 18, 0, 0, 0, time.UTC), Reason: "the provider outage is over"},
 			},

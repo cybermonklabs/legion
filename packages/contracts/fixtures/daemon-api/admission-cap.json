@@ -8,7 +8,6 @@
       "session": "ses_controller"
     },
     "setAt": "2026-11-24T06:00:00Z",
-    "reason": "the merge queue waits 52 minutes",
-    "decisionId": "admission:LEGION:2026-11-24T06:00:00Z"
+    "reason": "the merge queue waits 52 minutes"
   }
 }

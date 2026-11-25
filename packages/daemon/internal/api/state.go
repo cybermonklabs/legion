@@ -648,13 +648,13 @@ type Admission struct {
 	// zeroes it, and `omitzero` writes no key for the zero).
 	Ceiling int `json:"ceiling,omitzero"`
 	// Override is the cap the controller or the operator set while the daemon runs and that stands,
-	// who set it, when, why and by which regulator decision, absent where none stands and from a body
+	// who set it, when and why, absent where none stands and from a body
 	// served a caller below admissionCapContract.
 	Override *AdmissionCapOverride `json:"override,omitempty"`
 	// CapChanges is the project's newest changes of the cap, newest first, at most
 	// store.AdmissionCapChangesShown of them (AdmissionCapChangesTx): each with the cap it set or
-	// none for a clear, the caps before and after it, the ceiling then, who, when, why and the
-	// regulator decision that made it. The daemon's log names every change, and its store keeps every
+	// none for a clear, the caps before and after it, the ceiling then, who, when and why. The
+	// daemon's log names every change, and its store keeps every
 	// one. Every body at admissionCapContract carries the list, `[]` before the first change and
 	// never left out (dispatch://INFRA-5616/spec#b-r7-tick-log): MarshalJSON fills a nil list,
 	// and only an admission whose cap keys a band hid (capChangesHidden, withoutAdmissionCap)

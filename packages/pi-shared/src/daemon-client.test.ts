@@ -486,7 +486,6 @@ test("posts every Stage 3 workflow request through its matching route", async ()
         grantId: "grant-208",
         cap: 2,
         reason: "the merge queue waits 52 minutes",
-        decisionId: "admission:LEGION:2026-11-24T06:00:00Z",
       },
       "admission-cap.json",
     ],

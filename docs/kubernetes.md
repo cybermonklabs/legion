@@ -8487,19 +8487,16 @@ Raising the ceiling stays the operator's change: edit `admission_cap` and restar
 
 Two callers move the cap, and neither names a project, because each acts on the project of the daemon it calls:
 
-- the project's controller, with the `set_admission_cap` operation of its `legion` tool, which takes a `cap`, a `reason` and an optional `decision_id`, and `clear_admission_cap`, which takes a `reason` and an optional `decision_id`.
+- the project's controller, with the `set_admission_cap` operation of its `legion` tool, which takes a `cap` and a `reason`, and `clear_admission_cap`, which takes a `reason`.
   They post `POST /legion/v1/project/admission-cap` and `POST /legion/v1/project/admission-cap/clear` with a controller grant, and any other grant is refused 403 `CONTROLLER_REQUIRED`.
-  `decision_id` names a regulator's decision, `admission:<KEY>:<time>`, with KEY the project's key and time the RFC 3339 UTC time of the newest value the decision rests on; a change a person asked for names none.
-  Until the signal limits of dispatch://INFRA-3199 are approved, the controller changes the cap only where a person's words, cited in `reason`, ask for it;
+  The controller changes the cap only where a person's words, cited in `reason`, ask for it;
 
 - the operator, with `legion project set-admission-cap --cap <n> --reason <text> --operator-token-file <file>` and `legion project clear-admission-cap --reason <text> --operator-token-file <file>`.
   They post `POST /legion/v1/operator/project/admission-cap` and `POST /legion/v1/operator/project/admission-cap/clear` with the operator's bearer.
   Each also takes `--config` and `--port`, and `--json`, which prints the daemon's answer as it served it.
 
 A set names a whole number from 1 to the ceiling.
-The daemon refuses a cap below 1 (`INVALID_ADMISSION_CAP`), a cap above the ceiling (`ADMISSION_CAP_ABOVE_CEILING`, whose sentence names the ceiling), a change with no reason (`ADMISSION_CAP_REASON_REQUIRED`), a `decision_id` of another form (`INVALID_DECISION_ID`) and, on a daemon with no workflow, every change (`ADMISSION_CAP_UNAVAILABLE`).
-It also fences the regulator's decisions: a change that names a decision when the project already holds a change of a decision at the same time or a later one is refused `ADMISSION_CAP_DECISION_FENCED`, whose sentence names the newest decision.
-So two regulators never both set the cap, and a late decision never undoes a newer one; a change that names no decision is not fenced.
+The daemon refuses a cap below 1 (`INVALID_ADMISSION_CAP`), a cap above the ceiling (`ADMISSION_CAP_ABOVE_CEILING`, whose sentence names the ceiling), a change with no reason (`ADMISSION_CAP_REASON_REQUIRED`) and, on a daemon with no workflow, every change (`ADMISSION_CAP_UNAVAILABLE`).
 A refusal changes nothing.
 
 A set or a clear is one fact, and its admission pass runs in the fact's own transaction, so the cap is in force from that pass on.
@@ -8507,7 +8504,7 @@ Every pass reads the cap again, and admits under the smaller of the cap set and 
 A raise starts the issues that wait for the slots it adds.
 A lower cap stops nothing that runs: it starts no new issue until fewer issues hold a slot than it allows.
 
-The daemon's store keeps one row for each change (`project_admission_cap_changes`): the cap set, or none for a clear, the caps the daemon admitted under before and after it, the ceiling then, who made it, why, the decision and its time, and when.
+The daemon's store keeps one row for each change (`project_admission_cap_changes`): the cap set, or none for a clear, the caps the daemon admitted under before and after it, the ceiling then, who made it, why, and when.
 Who is the controller, with the session it acted from, or the operator.
 The record is in the store, so the cap holds across a restart; a restart under a lower ceiling admits under that ceiling, and the cap set comes back when the ceiling is raised again.
 A set of the cap that stands, and a clear where none stands, change nothing: the daemon writes no row and logs one Debug line.
@@ -8516,9 +8513,9 @@ Every other change is one Info line of the daemon's log, `admission: the cap cha
 `GET /legion/v1/state` answers the cap under `admission`:
 `cap`, the cap in force;
 `ceiling`, `admission_cap`;
-`override`, the cap set that stands, `{cap, setBy, setAt, reason, decisionId?}`;
+`override`, the cap set that stands, `{cap, setBy, setAt, reason}`;
 and `capChanges`, the newest 50 changes, newest first.
-Each change is `{id, cap?, capBefore, capAfter, ceiling, setBy, setAt, reason, decisionId?}`, with `cap` absent for a clear and `decisionId` absent for a change no regulator made.
+Each change is `{id, cap?, capBefore, capAfter, ceiling, setBy, setAt, reason}`, with `cap` absent for a clear.
 `capChanges` is `[]` before the first change, and a caller below the contract that added it is served none.
 Those names are the record the project's Evals tab reads (dispatch://INFRA-5616/spec#b-r7-tick-log, dispatch://INFRA-979/spec#b-r39), so they stay as they are.
 `legion state` prints the cap on its `admission cap` line.

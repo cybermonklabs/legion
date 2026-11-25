@@ -487,19 +487,12 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 
 // setAdmissionCap appends the change the fact makes (store.RecordAdmissionCapChangeTx) with the cap
 // the passes admitted under before it and the one they admit under from it on, and logs it once it
-// commits: who made it, why, the regulator decision that made it, the cap it set or that it
-// cleared, the caps before and after it and the deployment's ceiling. A change that changes
-// nothing writes no row and logs one Debug line: a set of the cap that stands, and a clear where no
-// cap stands. It refuses one change of its own, before it reads the cap: a change that names a
-// regulator decision when the project already holds a change of a decision at the same time or a
-// later one (store.FenceAdmissionCapDecisionTx, whose *store.DecisionFencedError fails the fact, so
-// its transaction writes nothing and the route answers ADMISSION_CAP_DECISION_FENCED). The routes
-// refused a cap above the ceiling and a decision id of another form before the fact, and capAt
-// admits under the smaller of the two whatever the row holds.
+// commits: who made it, why, the cap it set or that it cleared, the caps before and after it and
+// the deployment's ceiling. A change that changes nothing writes no row and logs one Debug line: a
+// set of the cap that stands, and a clear where no cap stands. It refuses nothing: the routes
+// refused a cap above the ceiling before the fact, and capAt admits under the smaller of the two
+// whatever the row holds.
 func (a *Admission) setAdmissionCap(ctx context.Context, tx pgx.Tx, change intake.AdmissionCapSet) error {
-	if err := store.FenceAdmissionCapDecisionTx(ctx, tx, a.project, change.DecisionID); err != nil {
-		return err
-	}
 	standing, found, err := store.AdmissionCapTx(ctx, tx, a.project)
 	if err != nil {
 		return err
@@ -507,14 +500,14 @@ func (a *Admission) setAdmissionCap(ctx context.Context, tx pgx.Tx, change intak
 	stands := found && !standing.Cleared()
 	before := store.EffectiveAdmissionCap(a.ceiling, standing, found)
 	args := []any{"by", string(change.By.Kind), "by_session", change.By.Session, "reason", change.Reason,
-		"decision", change.DecisionID, "ceiling", a.ceiling}
+		"ceiling", a.ceiling}
 	if (change.Cap == 0 && !stands) || (stands && change.Cap == standing.Cap) {
 		args = append(args, "set", capWords(change.Cap), "cap", before)
 		store.OnCommit(ctx, func() { a.log.Debug("admission: the cap change changes nothing, so no change is recorded", args...) })
 		return nil
 	}
 	recorded := store.AdmissionCapChange{Project: a.project, Cap: change.Cap, CapBefore: before, Ceiling: a.ceiling,
-		By: change.By, Reason: change.Reason, DecisionID: change.DecisionID, At: change.At}
+		By: change.By, Reason: change.Reason, At: change.At}
 	recorded.CapAfter = store.EffectiveAdmissionCap(a.ceiling, recorded, true)
 	if recorded, err = store.RecordAdmissionCapChangeTx(ctx, tx, recorded); err != nil {
 		return err

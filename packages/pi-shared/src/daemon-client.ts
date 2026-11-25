@@ -216,14 +216,14 @@ export interface LegionDaemonClient {
     input: z.input<typeof LegionIntakeDiscardRequest>
   ) => Promise<z.output<typeof LegionIntakeDiscardResponse>>;
   /** The controller's `set_admission_cap`: the daemon admits under `cap`, up to its deployment's
-   * ceiling, from the change's own admission pass on, and records who set it, why and by which
-   * regulator decision; the effect `legion project set-admission-cap` runs for an operator. The answer
+   * ceiling, from the change's own admission pass on, and records who set it, when and why; the
+   * effect `legion project set-admission-cap` runs for an operator. The answer
    * is the cap in force, the ceiling and the cap that stands. */
   readonly admissionCap: (
     input: z.input<typeof LegionProjectAdmissionCapRequest>
   ) => Promise<z.output<typeof LegionAdmissionCapResponse>>;
   /** The controller's `clear_admission_cap`: the daemon admits under its deployment's cap again,
-   * and records who cleared the cap, why and by which regulator decision. The answer is the cap in
+   * and records who cleared the cap, when and why. The answer is the cap in
    * force and the ceiling. */
   readonly admissionCapClear: (
     input: z.input<typeof LegionProjectAdmissionCapClearRequest>

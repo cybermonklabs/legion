@@ -717,13 +717,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{goldenIntakeReplay}},
 		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
 		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
-		// A set of the cap by the controller's regulator (contract 268): the cap in force, the
-		// ceiling, and the cap that stands with who set it, when, why and at which tick, every key
-		// the answer can carry. A clear answers no override.
+		// A set of the cap by the controller on a person's word (contract 268): the cap in force,
+		// the ceiling, and the cap that stands with who set it, when and why, every key the answer
+		// can carry. A clear answers no override.
 		AnswerAdmissionCap: {roots: typesOf(AdmissionCapResponse{}), bodies: []any{AdmissionCapResponse{Cap: 5, Ceiling: 8,
 			Override: &AdmissionCapOverride{Cap: 5, SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
-				SetAt: time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45",
-				DecisionID: "admission:LEGION:2026-11-24T06:00:00Z"}}}},
+				SetAt: time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45"}}}},
 	}
 }
 

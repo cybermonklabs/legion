@@ -185,7 +185,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/project/pause":                          reads("reason"),
 		"POST /legion/v1/project/resume":                         reads("grantId"),
 		"POST /legion/v1/project/admission-cap":                  reads("reason"),
-		"POST /legion/v1/project/admission-cap/clear":            reads("decisionId"),
+		"POST /legion/v1/project/admission-cap/clear":            reads("reason"),
 		"POST /legion/v1/gates/register":                         reads("artifactId"),
 		"POST /legion/v1/plans/register":                         reads("artifactId"),
 		"POST /legion/v1/tasks/stop":                             reads("task"),
