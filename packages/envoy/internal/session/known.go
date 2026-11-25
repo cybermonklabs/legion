@@ -88,8 +88,10 @@ const (
 // session is stopped, so a publish's count judges each record's topics by that rule
 // (cmd/listener's recipientCounts, store.LaneHolders.Keeps).
 //
-// The record holds nothing else, and not the client instance id in particular, which only a role
-// claim's arbitration reads (cmd/listener/role_holder.go), and that reads the live session entry.
+// Beside those it holds the principal the session last registered as (Principal), which a role
+// claim that names the session as the one it replaces reads (cmd/listener's handoverRefusal), and
+// nothing else: not the client instance id in particular, which only a role claim's arbitration
+// reads (cmd/listener/role_holder.go), and that reads the live session entry.
 type KnownSession struct {
 	SessionID    string   `json:"session_id"`
 	Title        string   `json:"title"`
@@ -98,6 +100,15 @@ type KnownSession struct {
 	// LastSeen is when the record was last written, in unix milliseconds, as
 	// SessionEntry.UpdatedAt is.
 	LastSeen int64 `json:"last_seen"`
+	// Principal is the principal of the credential the session last registered on
+	// (cmd/listener's requestPrincipal): a broker token's person, else its service; else an
+	// identity token's subject or account; and empty for a credential that proves none, the
+	// shared token and an open /v1. The registration writes it (RecordRegistrationWithin), and
+	// every other write that carries none keeps it (RecordWithin). A listener of an earlier build
+	// reads a record with the field unknown and writes one without it, so a record such a
+	// listener rewrote names no principal until the session's next registration through this
+	// build.
+	Principal string `json:"principal,omitempty"`
 }
 
 type KnownSessionsOption func(*knownSessionsOpts)
@@ -738,6 +749,14 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // has delivered the others' writes, and a write made before that compares an older copy, which
 // costs at most one write of a record the bucket already holds.
 //
+// A record that carries no principal keeps the one this listener's copy of the record names
+// (KnownSession.Principal): the routes that write here - an interest change, a role claim's
+// narrowing of the session it took the role from - are no registration and know no principal,
+// which is a registration's to write (RecordRegistrationWithin). A record that carries one writes
+// it, and so replaces the one stored. Like the throttle, the keep reads this listener's copy, so a
+// write made before this listener's watcher delivered another listener's write of the record can
+// still store none; the session's next registration, at most a heartbeat later, writes it again.
+//
 // A record whose encoding is past one NATS message is written in chunks and a manifest naming
 // them (kvchunk.Write), and the chunks of the record it replaces, as this listener's copy holds
 // it, are deleted once it lands; the store's sweep collects what a write that stopped part way
@@ -746,20 +765,35 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // A store whose bucket is not open writes nothing and answers nil, as a nil store does: its
 // reads answer no record either, so nothing it could write would be read.
 func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) error {
-	return s.writeWithin(ctx, record, true)
+	return s.writeWithin(ctx, record, true, true)
 }
 
-// writeWithin is the write both of this store's write paths make. throttled is RecordWithin's
-// skip of an unchanged record younger than the refresh age; TouchWithin passes false, since a
-// clean stop is one write per session lifetime and the whole point of it is to move last_seen.
+// RecordRegistrationWithin is RecordWithin for a registration, whose record's principal is the
+// principal of the credential the session registered on, none included: a registration on a
+// credential that proves no principal writes a record naming none, whatever the stored record
+// named, since the record names the principal the session last registered as.
+func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, record KnownSession) error {
+	return s.writeWithin(ctx, record, true, false)
+}
+
+// writeWithin is the write every one of this store's write paths makes. throttled is
+// RecordWithin's skip of an unchanged record younger than the refresh age; TouchWithin passes
+// false, since a clean stop is one write per session lifetime and the whole point of it is to move
+// last_seen. keepPrincipal is RecordWithin's keep of the stored principal for a record that
+// carries none; a registration's write passes false, and so does a clean stop, which writes the
+// stored record as it is.
 //
 // No caller fails its request over what this answers: a registration and a subscription change
-// (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the error
-// is for the call site's WARN.
-func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool) error {
+// (RecordRegistrationWithin, RecordWithin) and a clean stop (TouchWithin) each answer whatever the
+// write did, and the error is for the call site's WARN.
+func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled, keepPrincipal bool) error {
 	watcher := s.watch()
 	if watcher == nil || record.SessionID == "" {
 		return nil
+	}
+	held, ok := s.cached(record.SessionID)
+	if keepPrincipal && ok && record.Principal == "" {
+		record.Principal = held.Principal
 	}
 	now := s.now()
 	record.LastSeen = now.UnixMilli()
@@ -767,7 +801,6 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	if err != nil {
 		return err
 	}
-	held, ok := s.cached(record.SessionID)
 	if throttled && ok && now.UnixMilli()-held.LastSeen < KnownSessionRefreshAge.Milliseconds() {
 		// What the skip asks is whether this write would store the record already there, so it
 		// compares the two encodings rather than the fields one by one: a field added to
@@ -833,7 +866,7 @@ func (s *KnownSessions) TouchWithin(ctx context.Context, sessionID string) error
 	if !ok {
 		return nil
 	}
-	return s.writeWithin(ctx, held.KnownSession, false)
+	return s.writeWithin(ctx, held.KnownSession, false, false)
 }
 
 // Rewatch moves the cache's watcher and the handle the store writes through to conn

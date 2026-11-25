@@ -414,6 +414,16 @@ type DeleteSessionResponse struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
+// SessionSuccessors is what GET /v1/sessions/<session_id>/successors answers: the sessions the
+// stream's handover records name as having replaced SessionID (bus.Client.HandoverSuccessors),
+// sorted and each once, which the listener copies that session's unread messages to. Successors
+// is the empty list, never null, for a session no record names. Dispatch reads it to let such a
+// session answer a delivery attempt the replaced session holds.
+type SessionSuccessors struct {
+	SessionID  string   `json:"session_id"`
+	Successors []string `json:"successors"`
+}
+
 // Interest is one session's persisted Envoy topic subscriptions, as the listener's interest bucket
 // stores it (internal/store) and its interest routes answer it (InterestRow).
 type Interest struct {

@@ -90,6 +90,40 @@ func handoverOf(subject string) (role, previous, successor string, ok bool) {
 	return rest[:before], rest[before+1:], successor, true
 }
 
+// HandoverSuccessors is every session a handover record the stream holds names as the successor of
+// previous (HandoverSubject), sorted and each once: the sessions that replaced previous, which its
+// unread messages are copied to. It reads subjects alone and no record's body, in one STREAM.INFO
+// for each form a role takes in a record's subject - one token, and two (<project>.<role>) - with
+// previous in the place before the record's last token as its filter, and keeps each subject
+// handoverOf reads as a handover record whose previous session is previous: a takeover record of
+// a claim that named no session it replaces names no successor. A finished record still names its
+// successor for as long as the stream keeps it, since the copies it made stay on the successor's
+// subject. A previous no session consumer can be named for (SessionConsumerName) has no record,
+// and answers none, as does a previous that no record names. Its errors are the stream's own,
+// named with the lane and previous.
+func (c *Client) HandoverSuccessors(ctx context.Context, previous string) ([]string, error) {
+	if _, ok := SessionConsumerName(previous); !ok {
+		return nil, nil
+	}
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return nil, err
+	}
+	var successors []string
+	for _, filter := range []string{TakeoverSubjectPrefix + "*." + previous + ".*", TakeoverSubjectPrefix + "*.*." + previous + ".*"} {
+		info, err := c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("bus: read %s's handover records of %s: %w", Stream, previous, err)
+		}
+		for subject, held := range info.State.Subjects {
+			if _, named, successor, ok := handoverOf(subject); ok && held > 0 && named == previous {
+				successors = append(successors, successor)
+			}
+		}
+	}
+	slices.Sort(successors)
+	return slices.Compact(successors), nil
+}
+
 // TakeoverRecord is the body of one takeover record (TakeoverSubject): what a pass of the
 // listener's copy needs to go on from where the last one stopped. A writer writes every field at
 // once, since a reader takes the whole body as one answer.

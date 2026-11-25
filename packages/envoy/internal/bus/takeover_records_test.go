@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -185,5 +186,50 @@ func TestAHandoverRecordNamesItsRoleAndSessionsInItsSubjectAlone(t *testing.T) {
 	}
 	if named, ok := TakeoverSuccessor(plain); ok {
 		t.Errorf("TakeoverSuccessor(%s) = %q; want none", plain, named)
+	}
+}
+
+// The sessions that replaced a session are read from the subjects of its handover records alone:
+// a record of a role under a project (two tokens) and one of a bare role (one token) each name
+// their successor, a second record of a role under a project naming a successor already named
+// adds nothing, and a plain takeover record of the same session, and a handover record of another
+// session, name none. Each successor is named by records of one form alone, so a read that misses
+// either form misses a successor. A session id no record can be written under answers none.
+func TestHandoverSuccessorsAreTheSessionsTheHandoverRecordsOfASessionName(t *testing.T) {
+	uri := testnats.URL(t)
+	client, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	for _, subject := range []string{
+		HandoverSubject("ACME.reviewer", "ses_a", "ses_b"),
+		HandoverSubject("plain-role", "ses_a", "ses_c"),
+		HandoverSubject("ACME.tester", "ses_a", "ses_b"),
+		TakeoverSubject("plain-role", "ses_a", "attempt1"),
+		HandoverSubject("plain-role", "ses_other", "ses_d"),
+	} {
+		if err := client.WriteTakeoverRecord(ctx, subject, TakeoverRecord{ClaimedAt: 1}); err != nil {
+			t.Fatalf("write the record %s: %v", subject, err)
+		}
+	}
+
+	successors, err := client.HandoverSuccessors(ctx, "ses_a")
+	if err != nil {
+		t.Fatalf("read the successors of ses_a: %v", err)
+	}
+	if want := []string{"ses_b", "ses_c"}; !slices.Equal(successors, want) {
+		t.Errorf("the successors of ses_a = %v, want %v", successors, want)
+	}
+	if successors, err := client.HandoverSuccessors(ctx, "ses_other"); err != nil || !slices.Equal(successors, []string{"ses_d"}) {
+		t.Errorf("the successors of ses_other = %v, %v; want [ses_d]", successors, err)
+	}
+	for _, previous := range []string{"ses_none", "ses.a", ""} {
+		if successors, err := client.HandoverSuccessors(ctx, previous); err != nil || len(successors) != 0 {
+			t.Errorf("the successors of %q = %v, %v; want none", previous, successors, err)
+		}
 	}
 }

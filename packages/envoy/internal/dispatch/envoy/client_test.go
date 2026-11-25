@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -980,6 +981,50 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 		if _, err := call(New(closed)); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("%s on an unreachable listener: %v, want ErrUnavailable", name, err)
 		}
+	}
+}
+
+// The successors of a session are the listener's list, read from GET
+// /v1/sessions/<session_id>/successors. A 5xx, a body that does not decode and a listener that
+// cannot be reached are ErrUnavailable: who replaced the session was not read. Any other status
+// is the listener's own answer and is not ErrUnavailable: a listener that predates the route
+// answers its GET 405 through the session delete route, and names no successor.
+func TestSuccessorsReadsTheListenersListAndTellsAnUnansweredRead(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.EscapedPath() != "/v1/sessions/ses-old/successors" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.EscapedPath())
+		}
+		_, _ = w.Write([]byte(`{"session_id":"ses-old","successors":["ses-a","ses-b"]}`))
+	}))
+	defer listener.Close()
+	successors, err := New(listener.URL).Successors(context.Background(), "ses-old")
+	if err != nil || !slices.Equal(successors, []string{"ses-a", "ses-b"}) {
+		t.Fatalf("Successors = %v, %v; want [ses-a ses-b]", successors, err)
+	}
+
+	for _, tc := range []struct {
+		status      int
+		body        string
+		unavailable bool
+		reason      string
+	}{
+		{http.StatusServiceUnavailable, `{"error":"envoy: the message bus did not answer: timeout"}`, true, "did not answer"},
+		{http.StatusInternalServerError, `{"error":"envoy: broken"}`, true, "broken"},
+		{http.StatusOK, `{"successors":`, true, "decode"},
+		{http.StatusMethodNotAllowed, `{"error":"method not allowed"}`, false, "405"},
+	} {
+		answering := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		successors, err := New(answering.URL).Successors(context.Background(), "ses-old")
+		answering.Close()
+		if err == nil || errors.Is(err, ErrUnavailable) != tc.unavailable || successors != nil || !strings.Contains(err.Error(), tc.reason) {
+			t.Fatalf("Successors on a %d %s = %v, %v; want an error carrying %q, ErrUnavailable %t", tc.status, tc.body, successors, err, tc.reason, tc.unavailable)
+		}
+	}
+	if _, err := New("http://"+testport.Refused(t)).Successors(context.Background(), "ses-old"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Successors on an unreachable listener: %v, want ErrUnavailable", err)
 	}
 }
 

@@ -26,7 +26,10 @@
 // agent subject (handOverDirectFrame), and each role message of any role goes to that role's kept
 // lane, which hands it to the role's next live holder, the claimant for each role it claims too.
 // Delivery is at least once: a message the replaced session acknowledged above its floor is
-// copied as well, and a copy keeps the message's event id.
+// copied as well, and a copy keeps the message's event id. A claim hands over only between
+// sessions of one principal: the claim route writes the record only when the claim's credential
+// acts for the principal the replaced session last registered as (handoverRefusal), and answers
+// any other claim with a warning that no message of that session is handed over.
 
 package main
 
@@ -37,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,6 +53,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -406,6 +411,60 @@ func publishHandover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 		return fmt.Errorf("%w: record the handover of %s's messages to %s for role %s: %w", errHandoverUnrecorded, previous, successor, role, err)
 	}
 	return nil
+}
+
+// requestPrincipal is the principal r's credential acts for: a broker token's person, else the
+// service it names (brokerCaller, ciphertoken.Caller); for a request with no broker token, the
+// principal an identity token proved (verifiedPrincipal), a projected service account's subject
+// or a Google account; and empty for a credential that proves none, the shared token and a
+// request on an open /v1. The registration route records it as the session's principal
+// (session.KnownSession.Principal), and the claim route holds a handover to it (handoverRefusal).
+func requestPrincipal(r *http.Request) string {
+	if caller, ok := brokerCaller(r); ok {
+		if caller.Person != "" {
+			return caller.Person
+		}
+		return caller.Service
+	}
+	return verifiedPrincipal(r)
+}
+
+// handoverRefusal is the rule a claim that landed and names replaced as the session it replaces
+// (previous_session_id) is held to before the claim route writes replaced's handover record
+// (publishHandover): empty when replaced's known-session record names the principal r's
+// credential acts for (requestPrincipal), none equal to none, and otherwise the warning the claim
+// is answered with, which names replaced. A refused claim stands and writes no handover record,
+// so nothing copies replaced's unread messages to the claimant, and replaced's consumer keeps
+// them for replaced itself.
+//
+// A claim names any session it likes as the one it replaces, and a handover record's passes copy
+// that session's direct messages to the claimant. The broker token a session holds proves the
+// claimant is itself (sessionNotBound), not that it continues the session it names, so without
+// this rule any session could name a stopped session - a person's among them - and read its
+// messages. A Legion claim's fresh session and the session it replaces register on credentials of
+// one principal, so that handover stands. An agent session that names a person's session is
+// refused by design: its credential acts for its service, or for another principal, and not for
+// the person. A credential that proves no principal acts for any session on every route already,
+// and may name a session whose last registration proved none either, which is every handover on a
+// listener its clients reach with no credential; it may not name a session that registered as a
+// principal.
+//
+// A session the store holds no record of - none registered within the retention, or a listener
+// whose known-session store does not answer (session.KnownSessions.Get, a nil store among them) -
+// is refused, since nothing says which principal it registered as. The record names the principal
+// of its session's last registration, which the interest changes and the clean stop since keep
+// (session.KnownSessions.RecordWithin). Dispatch lets a session answer a delivery attempt of the
+// session it replaced only where a handover record names it (bus.Client.HandoverSuccessors), so
+// that reply rule is held to this one too.
+func handoverRefusal(r *http.Request, known *session.KnownSessions, replaced string) string {
+	record, recorded := known.Get(replaced)
+	if !recorded {
+		return fmt.Sprintf("no message of %s is handed over to this session: this listener holds no record of the principal %s last registered as, so it cannot tell that this claim's credential acts for the same one", replaced, replaced)
+	}
+	if record.Principal != requestPrincipal(r) {
+		return fmt.Sprintf("no message of %s is handed over to this session: this claim's credential acts for another principal than the one %s last registered as", replaced, replaced)
+	}
+	return ""
 }
 
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the

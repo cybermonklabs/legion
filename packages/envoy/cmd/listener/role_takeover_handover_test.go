@@ -205,6 +205,12 @@ func TestASessionThatReplacesAnotherReceivesItsUnreadMessages(t *testing.T) {
 // has stopped (row 3), and not while it is live (row 4): a session that answers reads its own
 // messages. The case rows fail on the base this change builds on, where nothing is copied from a
 // session whose claim did not stand and no direct message is copied at all.
+//
+// Every session here registers and claims on no credential, so each record and each claim names no
+// principal, and the rule that hands over only between sessions of one principal (handoverRefusal)
+// lets each handover stand. A person's session registered on its person's credential is handed to
+// no agent session on a credential of its own service, by design
+// (TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal).
 func TestTheHandoverHoldsForEachRoleAndForAPersonsSession(t *testing.T) {
 	t.Run("1 the replaced session held two roles, and the new session claims both", func(t *testing.T) {
 		rig := newCopiesRig(t)

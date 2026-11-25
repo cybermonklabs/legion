@@ -16,22 +16,26 @@ import (
 )
 
 // roleRouteListener stands in for the Envoy listener of one Dispatch deployment in the tests of a
-// reply to an attempt sent for a route to a role: for each role, the session its claim names now
-// and whether that session is live, as GET /v1/roles/<role> answers them (200 for a live holder,
-// 404 holder_lapsed naming the holder for one that is not), and every session's own record. A
-// send is stored for its target and answered as the listener answers one.
+// reply to an attempt that a session the attempt does not name may answer: for each role, the
+// session its claim names now and whether that session is live, as GET /v1/roles/<role> answers
+// them (200 for a live holder, 404 holder_lapsed naming the holder for one that is not); for each
+// session, the sessions that replaced it, as GET /v1/sessions/<session>/successors answers them;
+// and every session's own record. A send is stored for its target and answered as the listener
+// answers one.
 type roleRouteListener struct {
-	mu      sync.Mutex
-	holders map[string]string
-	lapsed  map[string]bool
-	// silent answers every role lookup 503, as a listener whose bus does not answer does.
+	mu         sync.Mutex
+	holders    map[string]string
+	lapsed     map[string]bool
+	successors map[string][]string
+	// silent answers every role lookup and every successor read 503, as a listener whose bus does
+	// not answer does.
 	silent bool
 	server *httptest.Server
 }
 
 func newRoleRouteListener(t *testing.T) *roleRouteListener {
 	t.Helper()
-	listener := &roleRouteListener{holders: map[string]string{}, lapsed: map[string]bool{}}
+	listener := &roleRouteListener{holders: map[string]string{}, lapsed: map[string]bool{}, successors: map[string][]string{}}
 	listener.server = httptest.NewServer(http.HandlerFunc(listener.serve))
 	t.Cleanup(listener.server.Close)
 	return listener
@@ -45,6 +49,21 @@ func (l *roleRouteListener) claim(role, session string, live bool) {
 	l.lapsed[session] = !live
 }
 
+// replace names successor as a session that replaced previous, as a claim that named previous
+// as the session it replaces has the listener's handover record name it.
+func (l *roleRouteListener) replace(previous, successor string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.successors[previous] = append(l.successors[previous], successor)
+}
+
+// silence makes the listener answer every role lookup and successor read 503.
+func (l *roleRouteListener) silence() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.silent = true
+}
+
 func (l *roleRouteListener) serve(w http.ResponseWriter, r *http.Request) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -55,10 +74,15 @@ func (l *roleRouteListener) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		return map[string]any{"session_id": session, "title": session, "capabilities": []string{"btw", "steer", "aside"}, "state": state}
 	}
+	successorsOf, readsSuccessors := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/v1/sessions/"), "/successors")
+	readsSuccessors = readsSuccessors && r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/sessions/")
 	switch {
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/") && l.silent:
+	case (readsSuccessors || r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/")) && l.silent:
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":"envoy: the message bus did not answer: timeout"}`))
+	case readsSuccessors:
+		successors := append([]string{}, l.successors[successorsOf]...)
+		_ = json.NewEncoder(w).Encode(map[string]any{"session_id": successorsOf, "successors": successors})
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/"):
 		role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
 		holder, claimed := l.holders[role]
@@ -143,14 +167,36 @@ func (rig *roleRouteReplies) message(t *testing.T, role, holder, body string) mo
 // mention's first attempt went to holder.
 func (rig *roleRouteReplies) mention(t *testing.T, role, holder, body string) mentionedCommentRead {
 	t.Helper()
+	return rig.mentionOf(t, "role:"+role, holder, body)
+}
+
+// mentionOf posts a comment mentioning target and returns it once its mention's first attempt
+// went to holder.
+func (rig *roleRouteReplies) mentionOf(t *testing.T, target, holder, body string) mentionedCommentRead {
+	t.Helper()
 	comment := decodeMentionedComment(t, postMentionedComment(t, rig.handler, rig.issue, map[string]any{
-		"body": body, "delivery": "steer", "mentions": []map[string]any{{"target": "role:" + role}},
+		"body": body, "delivery": "steer", "mentions": []map[string]any{{"target": target}},
 	}))
 	attempts := settledCommentDeliveries(t, rig.database, comment.ID)
 	if len(attempts) != 1 || attempts[0].SessionID == nil || *attempts[0].SessionID != holder || attempts[0].State != "sent" {
-		t.Fatalf("the mention of role:%s = %#v, want one attempt sent to %s", role, attempts, holder)
+		t.Fatalf("the mention of %s = %#v, want one attempt sent to %s", target, attempts, holder)
 	}
 	return comment
+}
+
+// direct sends a person's direct message to session, with no issue, as the Agents page sends one
+// (POST /api/v1/agents/{session_id}/messages), and returns it once its first attempt went there.
+func (rig *roleRouteReplies) direct(t *testing.T, session, body string) model.Message {
+	t.Helper()
+	response := postAgentMessage(t, rig.handler, session, map[string]any{"body": body, "delivery": "steer"}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("a direct message to %s: status=%d body=%s", session, response.Code, response.Body.String())
+	}
+	message := decodeBody[model.Message](t, response)
+	if got := message.Deliveries; len(got) != 1 || got[0].SessionID != session || got[0].State != "sent" {
+		t.Fatalf("the direct message to %s = %#v, want one attempt sent to it", session, got)
+	}
+	return message
 }
 
 // replyMessage is one reply callback on attempt 1 of message, as session's host makes it: a body
@@ -383,6 +429,96 @@ func TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain(t *testing.T) {
 	if answered := rig.replyMessage(t, message, "ses_role_a", map[string]any{"body": "Warm, says A."}, false); answered.Code != http.StatusCreated {
 		t.Fatalf("the attempt's own session's reply with the lookup unanswered: status=%d body=%s, want 201", answered.Code, answered.Body.String())
 	}
+}
+
+// A person's direct message to session A, and a mention of A, go to A. A claim that named A as the
+// session it replaces has the listener copy what A had not read to the claimant, B, each copy
+// keeping A's attempt, so B answers that attempt: its reply and its error callback are accepted
+// while the listener names B among A's successors (GET /v1/sessions/<A>/successors), and the
+// attempt keeps A as its session and B's reply as its reply. A session the listener names for no
+// session, and one it names as the successor of another session, are refused 403
+// REPLY_FORBIDDEN, and so is B while the listener does not name it. A successor read the listener
+// does not answer is a 503 ENVOY_UNAVAILABLE the reply's host can make again, and A's own reply is
+// answered as ever, with no read at all.
+func TestAReplyToADirectMessageComesFromTheSessionThatReplacedItsRecipient(t *testing.T) {
+	t.Parallel()
+	const replaced, successor, other = "ses_handover_a", "ses_handover_b", "ses_handover_other"
+
+	t.Run("(a) the session that replaced the recipient answers its direct message and its mention", func(t *testing.T) {
+		rig := newRoleRouteReplies(t)
+		answered := rig.direct(t, replaced, "Which release carries the fix?")
+		failed := rig.direct(t, replaced, "Can you run the migration?")
+		mention := rig.mentionOf(t, "session:"+replaced, replaced, "Please review the plan.")
+		rig.listener.replace(replaced, successor)
+
+		reply := rig.replyMessage(t, answered, successor, map[string]any{"body": "Release 4 carries it."}, false)
+		if reply.Code != http.StatusCreated {
+			t.Fatalf("the successor's reply to the direct message: status=%d body=%s, want 201", reply.Code, reply.Body.String())
+		}
+		if stored := decodeBody[roleRouteMessageReply](t, reply); stored.Author.ID != successor || stored.Body != "Release 4 carries it." {
+			t.Fatalf("the successor's reply = %+v, want its body authored by %s", stored, successor)
+		}
+		if session, state, replyID := rig.messageAttempt(t, answered); session != replaced || state != "sent" || replyID == nil {
+			t.Fatalf("the answered attempt = session %s state %s reply %v, want A's attempt, sent, with B's reply", session, state, replyID)
+		}
+		callback := rig.replyMessage(t, failed, successor, map[string]any{"error": "No migration tool on this host"}, false)
+		if callback.Code != http.StatusOK {
+			t.Fatalf("the successor's error callback on the direct message: status=%d body=%s, want 200", callback.Code, callback.Body.String())
+		}
+		if attempt := decodeBody[model.MessageDelivery](t, callback); attempt.State != "failed" {
+			t.Fatalf("the attempt after the successor's error callback = %+v, want failed", attempt)
+		}
+
+		mentionReply := rig.replyComment(t, mention, successor, map[string]any{"body": "The plan holds."})
+		if mentionReply.Code != http.StatusCreated {
+			t.Fatalf("the successor's reply to the mention: status=%d body=%s, want 201", mentionReply.Code, mentionReply.Body.String())
+		}
+		if stored := decodeBody[roleRouteCommentReply](t, mentionReply); stored.Author.ID != successor || stored.ReplyTo == nil || *stored.ReplyTo != mention.ID {
+			t.Fatalf("the successor's reply to the mention = %+v, want B's reply under %s", stored, mention.ID)
+		}
+		if session, _, replyID := rig.commentAttempt(t, mention); session == nil || *session != replaced || replyID == nil {
+			t.Fatalf("the mention's attempt = session %v reply %v, want A's attempt with B's reply", session, replyID)
+		}
+	})
+
+	t.Run("(b) a session the listener does not name as the recipient's successor is refused", func(t *testing.T) {
+		rig := newRoleRouteReplies(t)
+		message := rig.direct(t, replaced, "Who owns the deploy?")
+		mention := rig.mentionOf(t, "session:"+replaced, replaced, "Who owns the rollback?")
+		replyRefused(t, "the successor's reply before the listener names it", rig.replyMessage(t, message, successor, map[string]any{"body": "I do."}, false))
+		rig.listener.replace(replaced, successor)
+		rig.listener.replace("ses_handover_elsewhere", other)
+
+		replyRefused(t, "a reply to the direct message from a session nothing names", rig.replyMessage(t, message, other, map[string]any{"body": "I do."}, false))
+		replyRefused(t, "an error callback on the direct message from a session nothing names", rig.replyMessage(t, message, other, map[string]any{"error": "no"}, false))
+		replyRefused(t, "a reply to the mention from a session nothing names", rig.replyComment(t, mention, other, map[string]any{"body": "I do."}))
+		if _, state, replyID := rig.messageAttempt(t, message); state != "sent" || replyID != nil {
+			t.Fatalf("the direct message's attempt after the refusals = %s with reply %v, want sent and unanswered", state, replyID)
+		}
+		if _, state, replyID := rig.commentAttempt(t, mention); state != "sent" || replyID != nil {
+			t.Fatalf("the mention's attempt after the refusals = %s with reply %v, want sent and unanswered", state, replyID)
+		}
+	})
+
+	t.Run("(c) a successor read the listener does not answer is asked again", func(t *testing.T) {
+		rig := newRoleRouteReplies(t)
+		message := rig.direct(t, replaced, "Is the cache warm?")
+		mention := rig.mentionOf(t, "session:"+replaced, replaced, "Is the queue drained?")
+		rig.listener.replace(replaced, successor)
+		rig.listener.silence()
+
+		for what, response := range map[string]*httptest.ResponseRecorder{
+			"the direct message": rig.replyMessage(t, message, successor, map[string]any{"body": "Warm."}, false),
+			"the mention":        rig.replyComment(t, mention, successor, map[string]any{"body": "Drained."}),
+		} {
+			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"ENVOY_UNAVAILABLE"`) {
+				t.Fatalf("the successor's reply to %s with the read unanswered: status=%d body=%s, want 503 ENVOY_UNAVAILABLE", what, response.Code, response.Body.String())
+			}
+		}
+		if answered := rig.replyMessage(t, message, replaced, map[string]any{"body": "Warm, says A."}, false); answered.Code != http.StatusCreated {
+			t.Fatalf("the attempt's own session's reply with the read unanswered: status=%d body=%s, want 201", answered.Code, answered.Body.String())
+		}
+	})
 }
 
 // routeReadFault ends the reply routes' read of the route and the attempt a reply answers
