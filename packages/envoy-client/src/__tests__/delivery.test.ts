@@ -1896,6 +1896,10 @@ describe("renderInbound non-dispatch envelopes", () => {
     // The card stops laying a value out once its lines pass the bound, so an object chain 9,999
     // deep is refused by the bound before the encoder's recursion reaches its bottom.
     const BOUND = "its layout is larger than the 1048576 bytes a card holds";
+    // The bound a card's reason names (`payloadShownAsText`), or NaN where the reason names none,
+    // which no byte count is within.
+    const boundNamed = (reason: string | undefined) =>
+      Number(/^its layout is larger than the (\d+) bytes a card holds$/.exec(reason ?? "")?.[1]);
 
     test("a message whose JSON payload is nested 9,999 deep is shown as the text its sender sent", () => {
       const rendered = renderInbound(
@@ -1987,11 +1991,7 @@ describe("renderInbound non-dispatch envelopes", () => {
         `${'"'.repeat(1_048_300 - end.length)}${end}`
       );
 
-      const bound = Number(
-        /^its layout is larger than the (\d+) bytes a card holds$/.exec(
-          rendered.payloadShownAsText ?? ""
-        )?.[1]
-      );
+      const bound = boundNamed(rendered.payloadShownAsText);
       const cardBytes = Buffer.byteLength(rendered.content);
       console.log(
         `a card shown as text with a body read whole: ${cardBytes} bytes, bound ${bound}`
@@ -2115,11 +2115,7 @@ describe("renderInbound non-dispatch envelopes", () => {
       );
       const rendered = renderInbound(raw, reader);
 
-      const bound = Number(
-        /^its layout is larger than the (\d+) bytes a card holds$/.exec(
-          rendered.payloadShownAsText ?? ""
-        )?.[1]
-      );
+      const bound = boundNamed(rendered.payloadShownAsText);
       const cardBytes = Buffer.byteLength(rendered.content);
       console.log(
         `a card of a ${Buffer.byteLength(raw)}-byte frame whose issue key is quotes: ${cardBytes} bytes, bound ${bound}`
