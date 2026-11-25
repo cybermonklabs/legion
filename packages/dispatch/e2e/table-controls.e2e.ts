@@ -9923,6 +9923,8 @@ test("Change answer opens the answer form with its first choice whole in the win
 // 20f534c5 made the Status that list (features/issue/IssueHeader.tsx:538-563). The rule: a list
 // the reader walks with the arrows shows the option it marks active, as the select it replaced
 // did (the round's item 6: every option of an open list can be reached).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-25 tester pinned (e2e/playwright.config.ts).
 test("the issue header's Status list keeps the option its arrows mark active wholly inside the list's box, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
@@ -10044,6 +10046,8 @@ test("the issue header's Status list keeps the option its arrows mark active who
 // cause (components/focus-place.ts:744-747), and a shared control whose own press takes the
 // focused control away and drops the focus onto the body, where its code arms a hand-off, fails
 // (the architect's ruling of 2026-11-23 21:2xZ, open-items.md, "#3729 sheds the rescue").
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-25 tester pinned (e2e/playwright.config.ts).
 test("a second Enter on the held Snooze selected asks leaves the focus where the pick alone puts it once the snooze lands and the bar goes, never on the body @firefox @webkit", async ({
   page,
 }) => {
@@ -10177,6 +10181,8 @@ test("a second Enter on the held Snooze selected asks leaves the focus where the
 // undefined until the first answer). Main drew its FacetPanel only once the timeline answered.
 // With the socket open the same fixture reads value 1, rework 1, deployed 1, waiting 1 and
 // not tracked 0, which this row reads too, so it can tell a count from a placeholder.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-25 tester pinned (e2e/playwright.config.ts).
 test("the Delivery page's Filter panel draws no count beside a verdict before the timeline answers, nor after its socket fails @firefox @webkit", async ({
   page,
 }) => {
@@ -10247,6 +10253,8 @@ test("the Delivery page's Filter panel draws no count beside a verdict before th
 // as INFRA-3135's rule keeps the questions' count, and only the thread kinds carry none. With the
 // read answered the Inbox reads "Question, 2 rows" and "Threads, 2 rows" (this branch's name for
 // the reply threads' kind), and the Dismissed view "Threads, 2 rows".
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-25 tester pinned (e2e/playwright.config.ts).
 test("the Inbox's Type list draws no count for a kind while the one read its rows come from is out or refused, in the Inbox and in its Dismissed view, whose ask kinds keep their count @firefox @webkit", async ({
   page,
 }) => {
@@ -10387,6 +10395,8 @@ test("the Inbox's Type list draws no count for a kind while the one read its row
 // keyboard reader at 390 takes one off. So the row walks that list: the ten chips these
 // narrowings draw (the switch's Blocked on you draws none) over the panel's five fields, more than
 // its box holds.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-25 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): twenty-two seeded questions, ten narrowings, and the Filter panel walked chip by chip.
 test("each chip the Tab key reaches in the Inbox's Filter panel stands wholly inside the panel's visible box while the panel scrolls, at 390 @firefox @webkit", async ({
   page,
@@ -10521,6 +10531,8 @@ test("each chip the Tab key reaches in the Inbox's Filter panel stands wholly in
 //   reader's (`causedByReader`).
 // The refused Move is the control: the row asserts that the closed-issues path ends where the
 // refused path ends, so it pins no landing of its own.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-25 tester pinned (e2e/playwright.config.ts).
 test("a Move with only closed issues marked keeps no press live: a live update that empties the List's bar then lands the focus where it lands after a refused Move, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
@@ -10672,6 +10684,8 @@ test("a Move with only closed issues marked keeps no press live: a live update t
 // and hands the focus to its first field once no chip is left (D26). So the row presses the only
 // chip there, with the window scrolled as above, and reads R8's rule where it pressed Clear
 // filters: none is drawn.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-25 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): twenty-three seeded rows, and two presses at 390 px waiting out the list's redraw.
 test("taking off the Inbox's only narrowing by its chip in the Filter panel at 390 leaves the focus on a control in sight, with the window scrolled a little or not at all, and no Clear filters is drawn there @firefox @webkit", async ({
   page,
@@ -10804,6 +10818,8 @@ test("taking off the Inbox's only narrowing by its chip in the Filter panel at 3
 // arrows and a single pick's open scroll the box to the option they mark (`showOption`). The rule
 // (the architect's ruling of 2026-11-24 08:07Z on round 25's Status row): the shared list shows the
 // option it marks active, on every list it draws.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-26 tester pinned (e2e/playwright.config.ts).
 test("the shared list keeps the option it marks active wholly inside its box when a typed word narrows it and when the word is cleared, in the issue header's Status and the project List's Labels filter, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
@@ -10967,6 +10983,8 @@ test("the shared list keeps the option it marks active wholly inside its box whe
 // the list has redrawn: only the arrows and a single pick's open scroll the box to it
 // (`showOption`). The rule (the architect's ruling of 2026-11-24 08:07Z on round 25's Status row):
 // the shared list shows the option it marks active, on every list it draws.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-26 tester pinned (e2e/playwright.config.ts).
 test("Enter on a value of the shared multi-select keeps the option the list marks active wholly inside its box once the list has redrawn, in the project List's Labels filter and the Delivery page's Repository list, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
@@ -11145,6 +11163,8 @@ test("Enter on a value of the shared multi-select keeps the option the list mark
 // which it draws beside each session (SessionGroupsEditor.tsx:290, :312). Once the new window
 // answers, the editor lists that window's own sessions and counts, which this row reads too, so it
 // can tell a count from a placeholder.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-26 tester pinned (e2e/playwright.config.ts).
 test("the Delivery page's session-groups editor draws no count from the previous window while a new window's answer is held @firefox @webkit", async ({
   page,
 }) => {
@@ -11228,6 +11248,8 @@ test("the Delivery page's session-groups editor draws no count from the previous
 // (issues-table-data.ts:150, `claimIsTakeable` over a registry whose states are `unknown`), and the
 // table hands its header filters the counts with no gate (`filterCounts={openFacets}`, no
 // `filterCounted`, IssuesTable.tsx:596).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-26 tester pinned (e2e/playwright.config.ts).
 test("the project List's Claimed by filter draws no count of the lapsed claims before the agent list answers @firefox @webkit", async ({
   page,
 }) => {
@@ -11297,6 +11319,8 @@ test("the project List's Claimed by filter draws no count of the lapsed claims b
 // (`DONE_UNLOADED`, :69, :597), and every other value is counted over the rows read so far
 // (`filterCounts={openFacets}`, :596, with no `filterCounted`; the `counted` of :249 gates the
 // Showing chip alone).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-26 tester pinned (e2e/playwright.config.ts).
 test("the project List's header filters draw no count while the closed issues they count are out @firefox @webkit", async ({
   page,
 }) => {
@@ -11387,6 +11411,8 @@ test("the project List's header filters draw no count while the closed issues th
 // (`subscribersQuery.data ?? EMPTY_SUBSCRIBERS`, features/inbox/AskRecipients.tsx:276) and holds
 // the count back only on a failure (`const counted = !subscribersQuery.isError`, :288), so the
 // toggle draws `reachLabel` (:372) over the followers alone.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-26 tester pinned (e2e/playwright.config.ts).
 test("an Inbox card's Reaches draws no count while the subscribers it counts are out @firefox @webkit", async ({
   page,
 }) => {
@@ -11479,6 +11505,8 @@ test("an Inbox card's Reaches draws no count while the subscribers it counts are
 // at, so nothing lands the focus. With the focus put back on Take out of epic after the clicks, as
 // Safari's click leaves it, 8e7e463a lands on the row after the marked two and 34dc6a07 on the
 // body, so 1946cb1c holds the press; it is the landing that is missing.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-26 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): two projects of thirteen issues, and six Take out of epic presses with held writes.
 test("a double click or two clicks on a marked row's held Start next while Take out of epic's writes are out leave the focus where Take out of epic alone puts it once the bar goes, at 1440 and 390 @firefox @webkit", async ({
   page,
@@ -11615,6 +11643,8 @@ test("a double click or two clicks on a marked row's held Start next while Take 
 // the other hand-offs of this pull request land through `land`, which shows a control partly in
 // sight whole at its nearest edge (components/focus-place.ts:486-503). This row makes the same cut
 // at 1440x900 too.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-26 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): forty-five seeded issues, and two Take out of epic presses read once the box settles.
 test("Take out of epic with the row marked last cut by the table box's bottom edge hands the focus to a control wholly inside every box that clips it, on the project List at 390 and 1440 @firefox @webkit", async ({
   page,
@@ -11793,6 +11823,8 @@ test("Take out of epic with the row marked last cut by the table box's bottom ed
 // the page, as where the press left it (features/project/IssueBoard.tsx:521), so it cannot tell
 // the reader's own click from the card's going. Firefox kept the focus on the card at the click
 // the first Jobs sent, so the row runs in Chromium and WebKit, as the ruling asks.
+// Its engines: the clause of the `webkit` project that names the rows INFRA-3135's round-26
+// tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): two projects of three issues on the Board, and two keyboard moves with held dry runs.
 test("a click that puts the focus on the body while a Board move's dry run is out keeps it there once the move lands, where the same move with no click takes it to the moved card, at 390 @webkit", async ({
   page,
