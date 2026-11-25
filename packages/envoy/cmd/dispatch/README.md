@@ -4414,6 +4414,16 @@ the docs site's HTTP API reference is generated from it.
 `envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types beside it (`internal/dispatch/api/routes_shapes.go`) and nothing else;
 `--out <path>` writes it to a file and `--check` compares the committed `packages/contracts/schemas/dispatch-openapi.json` with a fresh render, printing a unified diff and exiting 1 when the two differ.
 The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
+Each route is a file of its own in `internal/dispatch/api`, `route_<path>+<method>.go` (`internal/dispatch/routefile` names it), holding one `declareRoute(routeDecl{...})` that states every fact of the route (`routeDecl` in `routes_table.go`).
+A branch made before routes moved into files adopts that layout in its merge of main with the adopter, run from `packages/envoy` of a checkout that holds it, with the branch's worktree on a clean tree:
+
+```sh
+go run ./cmd/dispatch-route-adopt -C <the branch's worktree>             # merges main: origin/main, or main@origin under jj
+go run ./cmd/dispatch-route-adopt -C <the branch's worktree> <revision>  # or merges that revision
+```
+
+It makes the merge itself, so do not merge first: it refuses a tree that is mid-merge or holds a change, naming the commands that return it (`git merge --abort`; under jj `jj abandon @`, then `jj edit` of the merge's first parent) and what they cost.
+It reads both sides and the merge base before it merges, writes the branch's route changes into route files, takes `routes_table.go` and `routes_shapes.go` from main, and lists what is left for the person; its package comment (`cmd/dispatch-route-adopt/main.go`) gives every step.
 The list below is a summary.
 An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
 /v1/issues","hint":"GET /api/v1 lists every route"}`, never the dashboard shell.
