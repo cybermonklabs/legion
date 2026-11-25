@@ -1541,11 +1541,9 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 		}
 	}
 
-	// The keyword check goes through the fixture's handler, whose store is the shared pool and
-	// not the one connection above, so the search below is still the first on that connection.
 	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
 	response, err := served.runSearch(context.Background(),
-		searchParameters{text: "wibbleflorp", project: project, limit: searchDefaultLimit})
+		searchParameters{text: "wibbleflorp", project: project, limit: searchDefaultLimit, who: everyReader})
 	if err != nil {
 		t.Fatalf("the first scoped search on the connection holding that plan: %v, want the joined statement's page", err)
 	}
