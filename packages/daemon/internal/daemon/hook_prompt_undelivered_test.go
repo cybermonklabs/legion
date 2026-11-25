@@ -176,8 +176,8 @@ func TestAHookPromptNoSessionHoldsWaitsForTheRoleInsideTheHour(t *testing.T) {
 	}
 }
 
-// Once the hour after its row was made has passed with no session holding its role, the prompt's
-// row finishes, and a Dispatch message on the issue names it, in the form of the hook's own firing
+// Once the hour after its row was made has passed, the prompt's row finishes before anything
+// publishes it, and a Dispatch message on the issue names it, in the form of the hook's own firing
 // message: the hook, the role and the issue, why the prompt ended, the move back it was written
 // for and its words, and that no session got them and nothing sends them again. The message is
 // held for an hour from the prompt's end, so later prompts of the role join it. The control is the
@@ -189,8 +189,8 @@ func TestAHookPromptNoSessionHeldForAnHourEndsWithAMessageOnTheIssue(t *testing.
 
 	ended := drainAt(t, runner, 0, "drain the hook prompt")
 
-	if attempts, delivered := publisher.snapshot(); attempts != 1 || len(delivered) != 0 {
-		t.Fatalf("publish attempts = %d with %d delivered, want the one refused attempt", attempts, len(delivered))
+	if attempts, delivered := publisher.snapshot(); attempts != 0 || len(delivered) != 0 {
+		t.Fatalf("publish attempts = %d with %d delivered, want none for a prompt past its hour", attempts, len(delivered))
 	}
 	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
 		t.Fatalf("hook-prompt rows left = %d, want the row finished", left)
@@ -202,7 +202,7 @@ func TestAHookPromptNoSessionHeldForAnHourEndsWithAMessageOnTheIssue(t *testing.
 	t.Logf("the message on the issue: %s", held[0].body)
 	requireSays(t, held[0].body, "Legion hook prompts to the implementer of LEGION-208 were not delivered.",
 		"Legion hook back-to-implementing fired at 3 moves back: reviewing to implementing.",
-		"no session held the implementer's role in the hour after the hook fired", firedHook.Prompt,
+		"the hour after the hook fired passed and no session of the implementer took it", firedHook.Prompt,
 		"No session of the implementer received", "will not send")
 	requireDueAt(t, held[0], ended.Add(time.Hour), "the message")
 }
@@ -288,7 +288,7 @@ func TestTheHookPromptsOfOneRoleThatEndWithinAnHourShareOneMessage(t *testing.T)
 		t.Fatalf("the outbox holds messages %+v, want the implementer's and the tester's", held)
 	}
 	requireSays(t, held[0].body, "Legion hook prompts to the implementer of LEGION-208 were not delivered.",
-		firedHook.Prompt, "no session held the implementer's role in the hour after the hook fired",
+		firedHook.Prompt, "the hour after the hook fired passed and no session of the implementer took it",
 		loopHook.Prompt, "the implementer's claim is failed, so no session of it will hold the role again")
 	requireDueAt(t, held[0], opened.Add(time.Hour), "the implementer's message, with its second prompt")
 	requireSays(t, held[1].body, "Legion hook prompts to the tester of LEGION-208 were not delivered.", testerHook.Prompt)

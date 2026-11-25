@@ -2198,6 +2198,12 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	if err != nil {
 		return err
 	}
+	// A prompt past its hour, or to a role whose claim failed or was retired, is ended before
+	// anything wakes or publishes, so no session is handed a prompt the hour has passed for and
+	// no parked wake holds the row past its hour (hookPromptEnded).
+	if ended := r.hookPromptEnded(row, payload, token); ended != nil {
+		return ended
+	}
 	// A role whose pod was released is not "no live session holds the role": its session is
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and the
 	// row's first attempt after that resume has launched publishes (wakeForDelivery). A launch the
@@ -2259,17 +2265,54 @@ func (e *hookPromptUndelivered) Unwrap() error { return e.cause }
 // publish whose answer was lost is stored once, under the row's own key (record.OutboxKey), which
 // every attempt sends.
 func (r *outbox) hookPromptUnheld(row record.OutboxRow, payload record.HookPrompt, token claim.Token, cause error) error {
+	if ended := r.hookPromptEnded(row, payload, token); ended != nil {
+		ended.cause = errors.Join(ended.cause, cause)
+		return ended
+	}
+	return wait.Errorf("the %s hook's prompt for %s waits for a session to hold its %s's role: %w", payload.Hook, row.Issue, payload.Role, cause)
+}
+
+// errHookPromptPastItsHour and errHookPromptRoleNotComing are the causes hookPromptEnded gives a
+// prompt it ends before any attempt to publish it.
+var (
+	errHookPromptPastItsHour   = errors.New("the hour after the hook fired has passed")
+	errHookPromptRoleNotComing = errors.New("the role's claim failed or was retired")
+)
+
+// hookPromptEnded is the end of a hook prompt's row that no attempt to publish it can change, and
+// nil while the prompt may still be delivered. It runs before anything wakes the role or
+// publishes, and again after a publish meets no holder (hookPromptUnheld). Two ends:
+//   - A role whose claim has failed or was retired gets no session that holds the role again.
+//   - A prompt whose hour has passed: hookPromptHoldBound from the later of the row's making and
+//     the role's last ready (supervise.Claim.LastReady). So the hour a woken session has is its
+//     own, as the kept copy's was counted from its publish. While the role's wake is in flight
+//     (its claim released, or launching with the wake pacing holding the launch), the row waits
+//     for the woken session, as the architect's ruling has it: the row waits while the role is
+//     being woken, and the hour does not end it then.
+//
+// Either way the row ends undelivered (hookPromptUndelivered) with the message on the issue. So a
+// session that held the role all along is not handed a prompt past its hour, and a failed or
+// retired role is never published to.
+func (r *outbox) hookPromptEnded(row record.OutboxRow, payload record.HookPrompt, token claim.Token) *hookPromptUndelivered {
+	start := row.CreatedAt
 	if r.supervisor != nil {
-		if held := r.supervisedClaim(token); supervise.FailedOrRetired(held.State) {
-			return &hookPromptUndelivered{cause: cause,
+		held := r.supervisedClaim(token)
+		if supervise.FailedOrRetired(held.State) {
+			return &hookPromptUndelivered{cause: errHookPromptRoleNotComing,
 				why: fmt.Sprintf("the %s's claim is %s, so no session of it will hold the role again", payload.Role, held.State)}
 		}
+		if held.Released() || held.State == supervise.StateLaunching {
+			return nil
+		}
+		if held.LastReady.After(start) {
+			start = held.LastReady
+		}
 	}
-	if r.now().Sub(row.CreatedAt) < hookPromptHoldBound {
-		return wait.Errorf("the %s hook's prompt for %s waits for a session to hold its %s's role: %w", payload.Hook, row.Issue, payload.Role, cause)
+	if r.now().Sub(start) >= hookPromptHoldBound {
+		return &hookPromptUndelivered{cause: errHookPromptPastItsHour,
+			why: fmt.Sprintf("the hour after the hook fired passed and no session of the %s took it", payload.Role)}
 	}
-	return &hookPromptUndelivered{cause: cause,
-		why: fmt.Sprintf("no session held the %s's role in the hour after the hook fired", payload.Role)}
+	return nil
 }
 
 // hookPromptMessageWindow is how long the message on an issue that names its undelivered hook
@@ -2280,16 +2323,20 @@ const hookPromptMessageWindow = time.Hour
 
 // tellHookPromptUndelivered names prompt, which ended undelivered for why, in the message on issue
 // for its role's undelivered prompts, inside tx, and answers when that message posts. A Dispatch
-// message row of issue held for that role (record.Store.HeldMessage, its body opening with
-// hookPromptsOpening) gets the prompt added to it; with none, a new message row is written, due
-// hookPromptMessageWindow from now, which opens the role's window. The row is the window's whole
-// state, so a daemon that restarts inside the window adds to the same message. A held row that
-// is no message this function wrote (its body does not end as hookPromptsUndelivered ends it)
-// is left as it is, and a message of its own is written.
+// message row of issue that is that role's open window (record.Store.HeldMessage: its body opens
+// with hookPromptsOpening, no post has tried it, and it was made in the last
+// hookPromptMessageWindow) gets the prompt added to it. With none, a new message row is written,
+// made now on the daemon's clock and due hookPromptMessageWindow from now, which opens the role's
+// window. The row is the window's whole state, so a daemon that restarts inside the window adds
+// to the same message, and the window's lock, which HeldMessage takes first, keeps two finishes
+// from opening two. A row a post already tried is closed, even while it is held for its retry,
+// since that retry may find the post made. A held row that is no message this function wrote
+// (its body does not end as hookPromptsUndelivered ends it) is left as it is, and a message of its
+// own is written.
 func (r *outbox) tellHookPromptUndelivered(ctx context.Context, tx pgx.Tx, issue string, prompt record.HookPrompt, why string) (time.Time, error) {
 	now := r.now().UTC()
 	paragraph := hookPromptParagraph(prompt, why)
-	held, open, err := r.records.HeldMessage(ctx, tx, issue, hookPromptsOpening(issue, prompt.Role), now)
+	held, open, err := r.records.HeldMessage(ctx, tx, issue, hookPromptsOpening(issue, prompt.Role), now, now.Add(-hookPromptMessageWindow))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -2308,6 +2355,7 @@ func (r *outbox) tellHookPromptUndelivered(ctx context.Context, tx pgx.Tx, issue
 	if err != nil {
 		return time.Time{}, err
 	}
+	row.CreatedAt = now
 	return row.NextAt, r.records.Enqueue(ctx, tx, row)
 }
 

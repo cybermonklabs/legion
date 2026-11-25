@@ -162,9 +162,9 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 // a holder that did not confirm the prompt in time can take it on the next attempt, a holder that
 // does not advertise the delivery mode can be replaced by another session on the role, and a
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
-// A role with no live holder is a wait while the hour after the row was made runs, and past that
-// hour a failure no retry repairs, which finishes the row with a message on the issue
-// (permanentRefusal, finishRefused).
+// A role with no live holder is a wait while the hour after the row was made runs. Past that hour
+// the row ends before it publishes, a failure no retry repairs, which finishes the row with a
+// message on the issue (hookPromptEnded, permanentRefusal, finishRefused).
 func TestAHookPromptRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -195,8 +195,8 @@ func TestAHookPromptRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 		t.Fatalf("the hook prompt no session holds, inside the hour = %v, want a wait on the no-holder answer", err)
 	}
 	row.CreatedAt = time.Now().Add(-time.Hour - time.Minute)
-	if err := runner.execute(ctx, row); !errors.Is(err, notify.ErrNoHolder) || errors.Is(err, wait.ErrWaiting) || !permanentRefusal(row, err) {
-		t.Fatalf("the hook prompt no session held for an hour = %v, want a failure no retry repairs, which ends the row", err)
+	if err := runner.execute(ctx, row); !errors.Is(err, errHookPromptPastItsHour) || errors.Is(err, wait.ErrWaiting) || !permanentRefusal(row, err) {
+		t.Fatalf("the hook prompt past its hour = %v, want a failure no retry repairs, which ends the row", err)
 	}
 }
 
