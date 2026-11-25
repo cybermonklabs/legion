@@ -108,7 +108,9 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 		if err == nil {
 			t.Fatalf("a write that holds its connection %s under a %s bound answered nil, want it cut", held, write)
 		}
-		if took := time.Since(started); took > held {
+		took := time.Since(started)
+		t.Logf("the slow write was cut after %s", took)
+		if took > held {
 			t.Fatalf("the slow write was cut after %s, want at about its %s bound, before the database's %s", took, write, held)
 		}
 	})

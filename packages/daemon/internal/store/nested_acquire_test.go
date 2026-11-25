@@ -41,6 +41,7 @@ const refusalLine = "second pooled connection requested while one is held"
 // request the guard did not refuse would have nothing to be served with and would wait, and so
 // would the call after a hold whose connection the pool never got back.
 func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
+	t.Parallel()
 	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
 	pool := store.Pool()
 	logged := captureLog(t, pool)
