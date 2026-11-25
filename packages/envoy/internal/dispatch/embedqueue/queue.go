@@ -62,16 +62,6 @@ const (
 	batchPause = 200 * time.Millisecond
 )
 
-// renewClaimInterval is the longest a claimRenewal goes without re-extending its claim on every
-// row it still protects (claimRenewal.renew) - during a wait longer than this, a reservation's on
-// the token budget (reserveTokens) or the pace's before an Embed call (embedDocuments) -
-// comfortably inside claimWindow so a renewal always lands before the claim it is refreshing could
-// lapse. A call that could outlive the claim renews it sooner (claimRenewal.renew's need). A var,
-// not a const alongside claimWindow above, so a test can shrink it well below claimWindow's own 2
-// minutes and observe a renewal firing in milliseconds rather than needing to wait out the real
-// interval.
-var renewClaimInterval = claimWindow / 2
-
 // Deps are the durable state and embedding dependencies for the queue.
 type Deps struct {
 	Store    *store.Store
@@ -103,14 +93,14 @@ type Deps struct {
 }
 
 // Paced returns d with its embedder paced: d keeps an embed.RateLimitedEmbedder around Embedder,
-// each of whose calls the queue bounds (boundedCall), as its pace (Deps.pace), which every Embed
-// call the queue makes goes through (embedDocuments). Embedder stays as given: the queue reads
-// only its Identity and Limits, which the pace answers the same. A wrapper of the embedder
-// (metrics, tracing) goes in Embedder before Paced, so it sits inside the pace and sees every
+// each of whose calls the queue bounds at callBound (embed.Bounded), as its pace (Deps.pace),
+// which every Embed call the queue makes goes through (embedDocuments). Embedder stays as given:
+// the queue reads only its Identity and Limits, which the pace answers the same. A wrapper of the
+// embedder (metrics, tracing) goes in Embedder before Paced, so it sits inside the pace and sees every
 // call. A nil Embedder stays nil, so Run still starts nothing for it.
 func (d Deps) Paced() Deps {
 	if d.Embedder != nil {
-		d.pace = embed.NewRateLimitedEmbedder(boundedCall{d.Embedder})
+		d.pace = embed.NewRateLimitedEmbedder(embed.Bounded(d.Embedder, callBound))
 	}
 	return d
 }
@@ -141,7 +131,7 @@ func (p *proof) answered() <-chan struct{} {
 
 // embedDocuments embeds texts as documents with the configured embedder and, when the call
 // succeeds, records that the embedder works (Deps.proven). Every Embed call this package makes
-// goes through it, the canaries' included, and each ends at callBound (boundedCall). With a pace
+// goes through it, the canaries' included, and each ends at callBound (embed.Bounded). With a pace
 // (Deps.pace, which cmd/dispatch sets through Paced) the call waits on it first, at its slowest
 // retry.MaxDelay (5 minutes), longer than claimWindow, so that wait renews renewal's claim as a
 // reservation's wait does (waitOutDebt): unrenewed, the claim would lapse mid-wait, and another
@@ -161,7 +151,7 @@ func (d Deps) embedDocuments(ctx context.Context, texts []string, renewal *claim
 			return ctx.Err() == nil
 		})
 	} else {
-		vectors, err = boundedCall{d.Embedder}.Embed(ctx, texts, embed.InputDocument)
+		vectors, err = embed.Bounded(d.Embedder, callBound).Embed(ctx, texts, embed.InputDocument)
 	}
 	if err == nil {
 		d.proven.record()

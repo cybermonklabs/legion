@@ -36,8 +36,8 @@ const (
 	// embedqueue's callBound, the only bound a Bedrock call has, only while Bedrock embeds at least
 	// bedrockMaxBatchBytes ÷ callBound tokens a second: at one token a byte, the most a group can
 	// cost, 320,000 in 60 s, about 5,300, a third of Azure's slowest measured rate (16,152). If
-	// Bedrock is slower, the largest group runs out at the bound, which is an outage (embedqueue's
-	// boundedCall), and is bisected until each half fits (bisectSplit): a budget set too large
+	// Bedrock is slower, the largest group runs out at the bound, which is an outage (Bounded),
+	// and is bisected until each half fits (embedqueue's bisectSplit): a budget set too large
 	// costs wasted calls and their token reservations, not rows. What embedqueue's rows prove is the
 	// grouping: a text that would cross the edge starts the next group whole, never cut to fit, and
 	// no group past the budget reaches the call.

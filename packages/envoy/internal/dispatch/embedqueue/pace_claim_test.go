@@ -15,18 +15,20 @@ import (
 // A call the shared pace holds at its slowest, retry.MaxDelay (5 minutes, past claimWindow's 2),
 // keeps its rows claimed through the whole wait, however late after the claim's last renewal the
 // wait starts: each renewal comes renewClaimInterval (half claimWindow) after the one before it,
-// and the call goes out no later than that after the last, so another process's scan cannot take
-// the rows mid-wait and embed them again. A canary that meets an outage drives the pace there
-// (confirmSoloFailure). The rows run on a synctest fake clock, where the wait takes no real time
-// and no Postgres statement may run, so each renewal is recorded (claimRenewal.extend) rather than
-// written. With the wait's first renewal a whole slice after the wait began, a wait that began
-// 59.9 s after a renewal renewed first 119.9 s after it, 0.1 s inside claimWindow.
+// and the call goes out with a claim young enough to run to callBound, so another process's scan
+// cannot take the rows mid-wait or mid-call and embed them again. A canary that meets an outage
+// drives the pace there (confirmSoloFailure). The rows run on a synctest fake clock, where the wait
+// takes no real time and no Postgres statement may run, so each renewal is recorded
+// (claimRenewal.extend) rather than written. A claim 45 s old or older is renewed as the call is
+// made, before the pace (embedDocuments), so the latest a wait starts after a renewal is just
+// under that: with the wait's first renewal a whole slice after the wait began, a wait that began
+// 44.9 s after a renewal renewed first 104.9 s after it.
 func TestAClaimIsRenewedThroughThePacesWaitAtItsSlowest(t *testing.T) {
-	for _, late := range []time.Duration{0, renewClaimInterval / 2, renewClaimInterval - 100*time.Millisecond} {
+	for _, late := range []time.Duration{0, renewClaimInterval / 2, latestWait} {
 		t.Run(fmt.Sprintf("the wait starts %v after the last renewal", late), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				inner := &fakeEmbedder{}
-				requireRenewedThroughTheSlowestWait(t, Deps{Embedder: inner}.Paced(), late)
+				requireRenewedThroughThePacesWait(t, Deps{Embedder: inner}.Paced(), retry.MaxDelay, late)
 				if len(inner.calls) != 2 {
 					t.Errorf("the embedder got %d calls, want 2", len(inner.calls))
 				}
@@ -35,66 +37,66 @@ func TestAClaimIsRenewedThroughThePacesWaitAtItsSlowest(t *testing.T) {
 	}
 }
 
-// A wrapper of the embedder (metrics, tracing) leaves the queue's pace in force, wherever it goes.
-// Given to Paced, it sits inside the pace and sees every call. Put around Embedder after Paced, it
-// is not on the call path, since the queue calls its pace (Deps.pace), but Embedder's type is then
-// the wrapper's: a queue that found its pace by Embedder's type lost it there, and the claim's
-// renewal through the pace's wait and the canary's back-off both stopped with nothing failing. In
-// either place the wait renews the claim and a canary that meets an outage backs the pace off.
-func TestAWrappedEmbedderIsStillPaced(t *testing.T) {
-	for _, place := range []struct {
-		name string
-		wrap func(inner embed.Embedder) (Deps, *passThrough)
-		// calls is how many of the queue's two calls reach the wrapper.
-		calls int
-	}{
-		{"given to Paced", func(inner embed.Embedder) (Deps, *passThrough) {
-			wrapper := &passThrough{Embedder: inner}
-			return Deps{Embedder: wrapper}.Paced(), wrapper
-		}, 2},
-		{"put around Embedder after Paced", func(inner embed.Embedder) (Deps, *passThrough) {
-			deps := Deps{Embedder: inner}.Paced()
-			wrapper := &passThrough{Embedder: deps.Embedder}
-			deps.Embedder = wrapper
-			return deps, wrapper
-		}, 0},
-	} {
-		t.Run(place.name+": the pace's wait renews the claim", func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				deps, wrapper := place.wrap(&fakeEmbedder{})
-				requireRenewedThroughTheSlowestWait(t, deps, renewClaimInterval-100*time.Millisecond)
-				if wrapper.calls != place.calls {
-					t.Errorf("the wrapper saw %d calls, want %d", wrapper.calls, place.calls)
-				}
-			})
-		})
-		t.Run(place.name+": a canary that meets an outage backs the pace off", func(t *testing.T) {
-			database := storetest.Open(t)
-			seedIssue(t, database, "WRAP", "WRAP-1", "Title of WRAP-1")
-			deps, wrapper := place.wrap(&fakeEmbedder{err: simulatedOutage{}})
-			deps.Store = database
-			pace := deps.pace.Interval()
-			succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
-			if err != nil || succeeded != 0 || failed != 1 || blocked || throttled {
-				t.Fatalf("ProcessBatch = %d, %d, %v, %v, %v; want 0, 1, not blocked, not throttled", succeeded, failed, blocked, throttled, err)
-			}
-			if wrapper.calls != place.calls {
-				t.Errorf("the wrapper saw %d calls, want %d", wrapper.calls, place.calls)
-			}
-			if got := deps.pace.Interval(); got != 2*pace {
-				t.Errorf("the canary's outage left the pace at %v, want it backed off from %v to %v", got, pace, 2*pace)
-			}
-		})
-	}
+// latestWait is the latest a wait can start after the claim's last renewal: a claim
+// claimWindow-callBound-callSlack (45 s) old or older is renewed as the call is made.
+const latestWait = claimWindow - 60*time.Second - callSlack - 100*time.Millisecond
+
+// A call the pace holds 48 s, from a claim 11.9 s old, goes out with the claim renewed. The wait
+// renews nothing, since its renewal falls due at renewClaimInterval and the wait ends at 59.9 s,
+// so only the renewal as the call goes out (embedDocuments, needing callBound and callSlack)
+// keeps the claim young enough. Unrenewed, the call went out with the claim 59.9 s old, past
+// claimWindow less callBound less callSlack, and a call run to callBound ended with it 119.9 s old.
+func TestACallThePaceHeldRenewsItsClaimAsItGoesOut(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		requireRenewedThroughThePacesWait(t, Deps{Embedder: &fakeEmbedder{}}.Paced(), 48*time.Second, 11900*time.Millisecond)
+	})
 }
 
-// requireRenewedThroughTheSlowestWait backs deps' pace off to its slowest, then sends a call whose
-// claim was last renewed late before it, and requires each renewal through the pace's wait, and the
-// call itself, to come no later than renewClaimInterval after the renewal before it.
-func requireRenewedThroughTheSlowestWait(t *testing.T, deps Deps, late time.Duration) {
+// A wrapper of the embedder (metrics, tracing) given to Paced sits inside the pace and sees every
+// call, and the pace stays in force: the wait renews the claim, and a canary that meets an outage
+// backs the pace off.
+func TestAWrappedEmbedderIsStillPaced(t *testing.T) {
+	paced := func(inner embed.Embedder) (Deps, *passThrough) {
+		wrapper := &passThrough{Embedder: inner}
+		return Deps{Embedder: wrapper}.Paced(), wrapper
+	}
+	t.Run("the pace's wait renews the claim", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			deps, wrapper := paced(&fakeEmbedder{})
+			requireRenewedThroughThePacesWait(t, deps, retry.MaxDelay, latestWait)
+			if wrapper.calls != 2 {
+				t.Errorf("the wrapper saw %d calls, want 2", wrapper.calls)
+			}
+		})
+	})
+	t.Run("a canary that meets an outage backs the pace off", func(t *testing.T) {
+		database := storetest.Open(t)
+		seedIssue(t, database, "WRAP", "WRAP-1", "Title of WRAP-1")
+		deps, wrapper := paced(&fakeEmbedder{err: simulatedOutage{}})
+		deps.Store = database
+		pace := deps.pace.Interval()
+		succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+		if err != nil || succeeded != 0 || failed != 1 || blocked || throttled {
+			t.Fatalf("ProcessBatch = %d, %d, %v, %v, %v; want 0, 1, not blocked, not throttled", succeeded, failed, blocked, throttled, err)
+		}
+		if wrapper.calls != 2 {
+			t.Errorf("the wrapper saw %d calls, want 2", wrapper.calls)
+		}
+		if got := deps.pace.Interval(); got != 2*pace {
+			t.Errorf("the canary's outage left the pace at %v, want it backed off from %v to %v", got, pace, 2*pace)
+		}
+	})
+}
+
+// requireRenewedThroughThePacesWait backs deps' pace off to interval, then sends a call whose claim
+// was last renewed late before it. It requires each renewal through the pace's wait to come no
+// later than renewClaimInterval after the renewal before it, and the call to go out no later than
+// claimWindow less callBound less callSlack after the last, so a call run to callBound ends with
+// its claim no older than claimWindow less callSlack.
+func requireRenewedThroughThePacesWait(t *testing.T, deps Deps, interval, late time.Duration) {
 	t.Helper()
 	ctx := context.Background()
-	backOffPace(t, deps, retry.MaxDelay)
+	backOffPace(t, deps, interval)
 	started := time.Now()
 	renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "pace", text: "second"}}, started.Add(-late))
 	claimed := []time.Time{renewal.last}
@@ -106,13 +108,17 @@ func requireRenewedThroughTheSlowestWait(t *testing.T, deps Deps, late time.Dura
 		t.Fatalf("second call: %v", err)
 	}
 	called := time.Now()
-	if waited := called.Sub(started); waited != retry.MaxDelay {
-		t.Fatalf("the second call went out after %v; want after the pace's slowest, %v", waited, retry.MaxDelay)
+	if waited := called.Sub(started); waited != interval {
+		t.Fatalf("the second call went out after %v; want after the pace's %v", waited, interval)
 	}
 	for i, until := range append(claimed[1:], called) {
-		if gap := until.Sub(claimed[i]); gap > renewClaimInterval {
-			t.Errorf("the claim renewed at %v was next renewed or sent at %v, %v later: past renewClaimInterval (%v), within %v of claimWindow (%v); renewals at %v",
-				claimed[i].Sub(started), until.Sub(started), gap, renewClaimInterval, claimWindow-gap, claimWindow, offsets(claimed, started))
+		bound := renewClaimInterval
+		if i == len(claimed)-1 {
+			bound = claimWindow - callBound - callSlack
+		}
+		if gap := until.Sub(claimed[i]); gap > bound {
+			t.Errorf("the claim renewed at %v was next renewed or sent at %v, %v later: past %v; renewals at %v",
+				claimed[i].Sub(started), until.Sub(started), gap, bound, offsets(claimed, started))
 		}
 	}
 }

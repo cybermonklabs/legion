@@ -2,6 +2,7 @@ package embed
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -194,4 +195,29 @@ func (r *RateLimitedEmbedder) setInterval(d time.Duration) {
 	defer r.mu.Unlock()
 	r.interval = d
 	r.limiter.SetLimit(rate.Every(d))
+}
+
+// Bounded returns inner with each of its calls ended at bound through the call's context, whatever
+// the place: embedqueue bounds every call it makes so, at its callBound, inside its
+// RateLimitedEmbedder. A call the bound ended while its caller's context was live ran out of time,
+// which is an outage (IsOutage), as a call that ran out of time inside a client is: it does not
+// speed RateLimitedEmbedder up as an answered call does, and embedqueue's canary that meets it backs
+// the pace off. Identity and Limits are inner's.
+func Bounded(inner Embedder, bound time.Duration) Embedder {
+	return bounded{Embedder: inner, bound: bound}
+}
+
+type bounded struct {
+	Embedder
+	bound time.Duration
+}
+
+func (b bounded) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
+	call, cancel := context.WithTimeout(ctx, b.bound)
+	defer cancel()
+	vectors, err := b.Embedder.Embed(call, texts, inputType)
+	if err != nil && ctx.Err() == nil && call.Err() != nil && !IsOutage(err) && !IsThrottled(err) {
+		return nil, &outageError{fmt.Errorf("the call ran past its %v bound: %w", b.bound, err)}
+	}
+	return vectors, err
 }

@@ -2,7 +2,6 @@ package embedqueue
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"math"
 	"time"
@@ -10,17 +9,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
 
-// callBound is the most one Embed call this queue makes may take, whatever the place: boundedCall
-// ends the call there through its context. It is Azure's own request timeout (azureRequestTimeout,
-// 60 s); Bedrock's SDK sets no bound of its own. Half claimWindow, it leaves a call that starts
-// with a fresh claim the other half to end in. A var, as renewClaimInterval is, so a test can
-// shrink it and see a call end at its bound in milliseconds.
+// callBound is the most one Embed call this queue makes may take, whatever the place:
+// embed.Bounded ends the call there through its context. It is Azure's own request timeout
+// (azureRequestTimeout, 60 s); Bedrock's SDK sets no bound of its own. Half claimWindow, it leaves
+// a call that starts with a fresh claim the other half to end in. A var, as renewClaimInterval is,
+// so a test can shrink it and see a call end at its bound in milliseconds.
 var callBound = 60 * time.Second
 
 // callSlack is how much of its claim a call that runs to callBound must still have when it ends,
 // for what runs before the next renewal: the call's unwinding once its context ends, the commit,
 // the next group's token reservation (reserveTokens' UPDATE), and a late timer on a loaded host.
 const callSlack = 15 * time.Second
+
+// renewClaimInterval is the longest a claimRenewal goes without re-extending its claim on every
+// row it still protects (claimRenewal.renew) - during a wait longer than this, a reservation's on
+// the token budget (reserveTokens) or the pace's before an Embed call (embedDocuments) -
+// comfortably inside claimWindow so a renewal always lands before the claim it is refreshing could
+// lapse. A call that could outlive the claim renews it sooner (claimRenewal.renew's need). A var,
+// not a const as claimWindow is, so a test can shrink it well below claimWindow's own 2 minutes
+// and observe a renewal firing in milliseconds rather than needing to wait out the real interval.
+var renewClaimInterval = claimWindow / 2
 
 // claimRenewal re-extends scanPending's claim on every row of the original top-level batch a
 // ProcessBatch call is working through - not just whatever subtree bisection is currently in,
@@ -78,32 +86,6 @@ func (c *claimRenewal) due(need time.Duration) time.Duration {
 	}
 	return max(min(claimWindow-need, renewClaimInterval)-time.Since(c.last), 0)
 }
-
-// boundedCall is an embedder each of whose calls the queue ends at callBound through the call's
-// context, whatever the place: Deps.Paced puts it inside the pace, and embedDocuments wraps an
-// unpaced embedder in it. A call the bound ended while its caller's context was live ran out of
-// time, which is an outage (embed.IsOutage), as a call that ran out of time inside the client is:
-// it does not speed the pace up as an answered call does, and a canary that meets it backs the
-// pace off.
-type boundedCall struct{ embed.Embedder }
-
-func (b boundedCall) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
-	call, cancel := context.WithTimeout(ctx, callBound)
-	defer cancel()
-	vectors, err := b.Embedder.Embed(call, texts, inputType)
-	if err != nil && ctx.Err() == nil && call.Err() != nil && !embed.IsOutage(err) && !embed.IsThrottled(err) {
-		return nil, callRanOut{fmt.Errorf("the call ran past the embedding queue's %v bound: %w", callBound, err)}
-	}
-	return vectors, err
-}
-
-// callRanOut marks a call boundedCall ended at callBound for embed.IsOutage, keeping its error's
-// text and letting errors.Is/As reach it.
-type callRanOut struct{ err error }
-
-func (e callRanOut) Error() string { return e.err.Error() }
-func (e callRanOut) Unwrap() error { return e.err }
-func (callRanOut) Outage() bool    { return true }
 
 // extendClaim pushes next_attempt_at of each of rows claimWindow past now, keeping scanPending's
 // claim on them.
@@ -231,13 +213,13 @@ func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int,
 // waitOutDebt is the wait loop of reserveTokens and of the pace's wait before an Embed call
 // (embedDocuments). Each slice of the wait ends when renewal's claim next falls due (due, with no
 // need of its own: renewClaimInterval after its last renewal however long before the wait that
-// one was), and the renewal is made there (renew), and once more when the wait ends if it is due
-// then. So through a wait each renewal comes renewClaimInterval, half claimWindow, after the one
-// before it, late only by the timer's own lateness, and the claim never runs out mid-wait. The
-// renewals' own time counts toward the wait, so the wait ends no sooner than wait after it began,
-// and later only by a renewal still running then and the one made as it ends: a renewal that
-// itself took renewClaimInterval leaves the claim due at once, and the next is made at once, as the
-// rule asks. A nil renewal (a call that holds no claim) sleeps the wait out whole.
+// one was), and the renewal is made there (renew). So through a wait each renewal comes
+// renewClaimInterval, half claimWindow, after the one before it, late only by the timer's own
+// lateness, and the claim never runs out mid-wait; the call that follows renews it as it goes out
+// (embedDocuments). The renewals' own time counts toward the wait, so the wait ends no sooner than
+// wait after it began, and later only by a renewal still running then: a renewal that itself took
+// renewClaimInterval leaves the claim due at once, and the next is made at once, as the rule asks.
+// A nil renewal (a call that holds no claim) sleeps the wait out whole.
 func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal) {
 	end := time.Now().Add(wait)
 	for time.Until(end) > 0 && ctx.Err() == nil {
@@ -246,5 +228,4 @@ func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal)
 			return
 		}
 	}
-	renewal.renew(ctx, 0)
 }

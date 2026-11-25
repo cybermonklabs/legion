@@ -177,7 +177,8 @@ func IsThrottled(err error) bool {
 
 // IsOutage reports whether err is the model service failing to answer now in a way that is no
 // throttle (azureStatusError: a 408, or a 5xx but the 503 that is Azure's capacity throttle;
-// Bedrock's bedrockOutageErrorCodes; and a call of either client that ran out of time, timedOut).
+// Bedrock's bedrockOutageErrorCodes; a call of either client that ran out of time, timedOut; and
+// a call Bounded ended at its bound).
 // Such an answer is either the service failing or one text it fails on every time (one too slow
 // to embed in the call's time among them), and only embedqueue can tell them apart: it still
 // bisects the batch and confirms a row's own failure with its canary, which fails too while the

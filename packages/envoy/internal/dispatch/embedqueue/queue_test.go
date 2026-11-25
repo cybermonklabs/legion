@@ -648,7 +648,8 @@ func TestReserveTokensSharesItsBudgetAcrossConnections(t *testing.T) {
 // one minute's token ceiling to wait out), so waitOutDebt must renew the claim partway through a
 // long wait, not only before or after it. renewClaimInterval is shrunk well below its real one
 // minute so the test itself takes a little over a second, not several minutes, while exercising
-// the identical loop: a claim renewed just before the wait is renewed again inside it.
+// the identical loop: a claim renewed just before the wait is renewed again inside it, before the
+// wait ends, and that renewal reaches the database.
 func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "LONG", "LONG-1", "A title")
@@ -656,12 +657,19 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 	const interval = 300 * time.Millisecond
 	shortenForTest(t, &renewClaimInterval, interval)
 	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "LONG-1", contentHash: contentHashOf(t, database, "issue", "LONG-1")}}, time.Now())
-
+	var renewed []time.Duration
+	write := renewal.extend
 	before := time.Now()
-	waitOutDebt(ctx, 4*interval, renewal)
+	renewal.extend = func(ctx context.Context, rows []pendingRow) error {
+		renewed = append(renewed, time.Since(before))
+		return write(ctx, rows)
+	}
 
-	if !renewal.last.After(before) {
-		t.Error("renewal.last was never updated - waitOutDebt never actually renewed during its wait")
+	waitOutDebt(ctx, 4*interval, renewal)
+	ended := time.Since(before)
+
+	if len(renewed) == 0 || renewed[0] >= ended-interval {
+		t.Errorf("renewals at %v in a wait that ended at %v; want one inside the wait, an interval or more before its end", renewed, ended)
 	}
 	var nextAttempt time.Time
 	if err := database.Pool.QueryRow(ctx,
