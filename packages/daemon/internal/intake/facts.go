@@ -464,12 +464,12 @@ func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
 // DispatchResultChanged is a change of what Dispatch computes for the checks of Key's
 // Verification document, at Seq in Key's event log: a result recorded against one of them
 // (result.recorded, with its id, its check's block id and its verdict), a retraction of one
-// (result.retracted, with no verdict), or a pull request that reached Key or left it
-// (issue.pull_request_attribution_changed, with no result and no check). Dispatch appends a
-// result's events on the issue whose document holds the check, whichever issue the result was
-// recorded on, so Key is the issue whose close the change may decide. None of them decides a
-// check: the read of the checks does (record.CloseRead), which each queues for an issue whose
-// close waits.
+// (result.retracted, with no verdict), a pull request that reached Key or left it
+// (issue.pull_request_attribution_changed), or a new deploy of a program a live check of Key reads
+// (deploy.recorded), the last two with no result and no check. Dispatch appends a result's events
+// on the issue whose document holds the check, whichever issue the result was recorded on, so Key
+// is the issue whose close the change may decide. None of them decides a check: the read of the
+// checks does (record.CloseRead), which each queues for an issue whose close waits.
 type DispatchResultChanged struct {
 	Key      string
 	Seq      int64
@@ -947,6 +947,25 @@ type MergeQueueReadDone struct {
 }
 
 func (f MergeQueueReadDone) namedIssue() (string, bool) { return f.Issue, true }
+
+// CloseChecksRead is the outbox's read of Dispatch's states for the close of Issue
+// (record.CloseRead), carried back as a fact: never decoded from an event. Generation is the
+// generation the read was queued for, and ReadAt the moment its row began its first Dispatch call,
+// so a read in flight across an entry into verifying is not taken as a read after it. Answer is
+// what Dispatch answered, in the layout the close's stored read keeps (record.CheckReadAnswer): the
+// results, the results at the newest merge's final head where the close needs them, the issue's
+// children, and the Verification document's approval. It is nil where the read failed, and Failure
+// then says why. The workflow stores it as the issue's newest read (record.CheckRead) and judges
+// the close on it.
+type CloseChecksRead struct {
+	Issue      string
+	Generation uint64
+	ReadAt     time.Time
+	Failure    string
+	Answer     *record.CheckReadAnswer
+}
+
+func (f CloseChecksRead) namedIssue() (string, bool) { return f.Issue, true }
 
 // ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
 // finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for

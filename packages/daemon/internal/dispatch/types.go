@@ -350,13 +350,26 @@ type CheckBasis struct {
 // values). Results is the ids of the results that decide the answer, where the rule that answers
 // names them, newest first, and Commit is their commit, "" where Results is empty. A before_merge
 // check carries a subject for each head a pass must stand at: each open pull request's head, or,
-// where none is open, the newest merged one's final head.
+// where none is open, the newest merged one's final head. Deploy is the current deploy of the
+// program a live check reads (subject production or graph), nil for a check of code and for a live
+// check whose program Dispatch holds no deploy of.
 type PassStands struct {
 	Answer   string              `json:"answer"`
 	Reason   string              `json:"reason,omitempty"`
 	Subjects []PassStandsSubject `json:"subjects,omitempty"`
 	Results  []string            `json:"results,omitempty"`
 	Commit   string              `json:"commit,omitempty"`
+	Deploy   *CheckDeploy        `json:"deploy,omitempty"`
+}
+
+// CheckDeploy is the current deploy of the program a live check reads, as Dispatch names it beside
+// the check's branch bases (its model.CheckDeploy): the program, the commit it runs, and when that
+// build was deployed. A result of the check counts only at that commit, recorded at or after
+// DeployedAt.
+type CheckDeploy struct {
+	Program    string    `json:"program"`
+	Commit     string    `json:"commit"`
+	DeployedAt time.Time `json:"deployed_at"`
 }
 
 // PassStandsSubject is one head a before_merge check's pass must stand at, its Basis, and the
@@ -378,13 +391,19 @@ const (
 
 // The reasons of PassStands and PassStandsSubject, as Dispatch spells them: the newest result that
 // counts is a fail; no result counts; a pass and a fail count at one commit; the newest result is
-// one Dispatch could not place; and a read Dispatch makes did not answer.
+// one Dispatch could not place; and a read Dispatch makes did not answer. A live check has four
+// more: it names no program; Dispatch holds no deploy of its program; the current deploy does not
+// hold the merge; and no result counts at the current deploy.
 const (
-	PassStandsReasonFail        = "fail"
-	PassStandsReasonNoResult    = "no_result"
-	PassStandsReasonPassAndFail = "pass_and_fail"
-	PassStandsReasonNotPlaced   = "not_placed"
-	PassStandsReasonReadFailed  = "read_failed"
+	PassStandsReasonFail               = "fail"
+	PassStandsReasonNoResult           = "no_result"
+	PassStandsReasonPassAndFail        = "pass_and_fail"
+	PassStandsReasonNotPlaced          = "not_placed"
+	PassStandsReasonReadFailed         = "read_failed"
+	PassStandsReasonProgramNotNamed    = "program_not_named"
+	PassStandsReasonNoDeploy           = "no_deploy"
+	PassStandsReasonDeployNotMerged    = "deploy_not_merged"
+	PassStandsReasonNoResultFromDeploy = "no_result_from_deploy"
 )
 
 // The kinds of CheckBasis, as Dispatch spells them.

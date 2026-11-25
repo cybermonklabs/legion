@@ -7,14 +7,16 @@ import (
 	"testing"
 )
 
-// A result recorded against a check of an issue's Verification document, a retraction of one, and
-// a move of one of the issue's pull requests are each a fact of the issue Dispatch appends them
-// on, which for a result is the issue whose document holds the check, whichever issue the result
-// was recorded on. result.recorded carries its result id, its check, its verdict and its sequence;
+// A result recorded against a check of an issue's Verification document, a retraction of one, a
+// move of one of the issue's pull requests, and a new deploy of a program a live check of the
+// issue reads are each a fact of the issue Dispatch appends them on, which for a result is the
+// issue whose document holds the check, whichever issue the result was recorded on.
+// result.recorded carries its result id, its check, its verdict and its sequence;
 // result.retracted its result id, its check and its sequence, with no verdict; and
-// issue.pull_request_attribution_changed its issue and its sequence alone. Each decodes the same
-// from the live stream and from the issue's event log, which the boot catch-up reads. A result
-// event that names no result or no check still wakes its issue, with what it could not read named.
+// issue.pull_request_attribution_changed and deploy.recorded their issue and their sequence alone.
+// Each decodes the same from the live stream and from the issue's event log, which the boot
+// catch-up reads. A result event that names no result or no check still wakes its issue, with
+// what it could not read named.
 func TestAResultEventIsAFactOfItsIssue(t *testing.T) {
 	tester := map[string]any{"kind": "session", "id": "session-tester"}
 	person := map[string]any{"kind": "user", "id": "alice"}
@@ -50,6 +52,11 @@ func TestAResultEventIsAFactOfItsIssue(t *testing.T) {
 		name: "a pull request that left the issue", eventType: "issue.pull_request_attribution_changed", actor: attribution,
 		payload: map[string]any{"repo": "acme/widgets", "number": 5, "url": "https://github.com/acme/widgets/pull/5",
 			"from": "LEGION-7", "to": "LEGION-9", "source": "link"},
+		want: DispatchResultChanged{Key: "LEGION-7", Seq: 12},
+	}, {
+		name: "a deploy of a program a live check reads", eventType: "deploy.recorded", actor: tester,
+		payload: map[string]any{"repo": "acme/widgets", "program": "widgets-api", "commit": commit,
+			"deployed_at": "2026-11-25T08:00:00Z", "source": "route"},
 		want: DispatchResultChanged{Key: "LEGION-7", Seq: 12},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
