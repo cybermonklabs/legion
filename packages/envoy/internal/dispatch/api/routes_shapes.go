@@ -216,6 +216,12 @@ type issueListQuery struct {
 	// issue above them states, over every project; `none` lists those that advance no live
 	// priority and `any` those that advance one, which is every other issue.
 	Advances []string `query:"advances"`
+	// Own, `true`, keeps, of the issues the Advances values answer, those whose own row names a
+	// priority a value matches and no issue above them carries it: a child that only inherits a
+	// priority, or restates one an issue above it carries, is left out, and `none`, which
+	// matches no priority, keeps nothing. Without an Advances value it filters nothing.
+	// `advances=any&own=true` over backlog and icebox is the second fault of GET /api/v1/priorities.
+	Own bool `query:"own"`
 	// Moved, `true`, adds moved_at and moved_by to each row standing in backlog or icebox: when
 	// the issue was moved there and who moved it. A listing without it reads neither.
 	Moved bool `query:"moved"`

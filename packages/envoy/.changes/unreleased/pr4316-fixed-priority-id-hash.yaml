@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  `POST /api/v1/priorities` writes a priority for every title. A body that names no `id`, whose
+  title holds no ASCII letter or digit, or whose slug the cut leaves as `none` or `any`, now takes
+  the id `priority-` and the first 12 lower-case hex characters of the SHA-256 of the title's UTF-8
+  bytes. Such a create answered `400 PRIORITY_INPUT` before, so the New priority form, which sends
+  no id, could not write a title like `???` or `None`. An `id` the caller names as `none` or `any`
+  is still refused `400 PRIORITY_INPUT`.
