@@ -17,6 +17,7 @@ import (
 // needs the failure to name the fatal error: a wait that missed it would fail only at the test's
 // deadline, naming that instead.
 func TestAServerThatCannotOpenAListenerFailsItsStartAtOnce(t *testing.T) {
+	t.Parallel()
 	held, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("hold a port for the server's leafnode listener: %v", err)
@@ -44,6 +45,8 @@ func TestAServerThatCannotOpenAListenerFailsItsStartAtOnce(t *testing.T) {
 // its client reaches. It counts the starts, so a server some earlier test had started cannot pass
 // for one the second asker started.
 func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T) {
+	// Not parallel: it takes the package's shared server aside and sets startShared, which every
+	// other test's URL reads, to a start that fails once.
 	sharedMu.Lock()
 	aside, asideCleanup := shared, sharedCleanup
 	shared, sharedCleanup = nil, nil
@@ -102,6 +105,7 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 // row failed on every run before it asked awaitReady. Linux and gVisor alike refuse a second listener
 // on one address and port when neither sets SO_REUSEPORT, which net.Listen does not.
 func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
+	t.Parallel()
 	held, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("hold a port for the server's profiler: %v", err)
@@ -135,6 +139,7 @@ func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
 // would fail the new start at once. The row plants a fatal line in a running server's log, stops
 // it and starts it again, which must answer.
 func TestARestartedServerForgetsAFatalErrorOfItsEarlierRun(t *testing.T) {
+	t.Parallel()
 	server := start(t, "", []string{"-js"})
 	server.log.Fatalf("a planted fatal error of the earlier run")
 	server.Stop(t)

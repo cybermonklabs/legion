@@ -56,6 +56,7 @@ func (p *probes) ReadyForConnections(d time.Duration) bool {
 // the test's deadline. With 40 ms left, a probe of the full retry interval, 100 ms, would run past
 // the deadline, where go test's -timeout panics with every goroutine's stack instead.
 func TestAReadinessWaitAsksNoProbeLongerThanWhatIsLeft(t *testing.T) {
+	t.Parallel()
 	const window = 40 * time.Millisecond
 	server := &probes{}
 	var err error
@@ -93,6 +94,8 @@ func (d *dials) dial(_ string, options ...natsgo.Option) (*natsgo.Conn, error) {
 // A wait that dials gives no dial longer than what is left of it, so it fails by name before the
 // test's deadline. With 450 ms left, a dial of the full second would run past the deadline.
 func TestADialWaitGivesNoDialLongerThanWhatIsLeft(t *testing.T) {
+	// Not parallel: it sets dialNATS, the dial of every Connect, awaitAuth and awaitSeed in the
+	// process, to its rows' planted dial (dialNATS = server.dial).
 	const window = 450 * time.Millisecond
 	for _, row := range []struct {
 		name string
@@ -164,6 +167,8 @@ func silentServers(t *testing.T, n int) string {
 // turn, so three such servers with 600 ms left would take 1.8 s, past the test's deadline 1.2 s
 // away. The row dials real listeners, through nats.go's own connect.
 func TestAConnectToSilentServersEndsWithTheWait(t *testing.T) {
+	// Not parallel: a tight wall-clock bound: the connect's wait ends 600 ms after it begins, and the
+	// row fails it at 1.2 s, a margin a test running beside it can take.
 	const window = 600 * time.Millisecond
 	url := silentServers(t, 3)
 	begun := time.Now()
@@ -183,6 +188,8 @@ func TestAConnectToSilentServersEndsWithTheWait(t *testing.T) {
 // lost, so a regression fails the row by name rather than hanging it to the binary's timeout; the
 // listener's cleanup then closes the held connection.
 func TestAConnectToASilentWebSocketServerEndsWithTheWait(t *testing.T) {
+	// Not parallel: a tight wall-clock bound: the connect's wait ends 600 ms after it begins, and the
+	// row fails it at 1.2 s, a margin a test running beside it can take.
 	const window = 600 * time.Millisecond
 	url := strings.Replace(silentServers(t, 1), "nats://", "wss://", 1)
 	begun := time.Now()
@@ -207,6 +214,8 @@ func TestAConnectToASilentWebSocketServerEndsWithTheWait(t *testing.T) {
 // past the end time out. The row connects with 1 s left, then publishes and flushes 1.2 s after it
 // began, past the wait's end and short of the test's deadline.
 func TestAConnectionAWaitMadeKeepsWorkingPastTheWaitsEnd(t *testing.T) {
+	// Not parallel: a tight wall-clock bound: the connect, JetStream's answer included, must end
+	// within the wait's 1 s.
 	const window = time.Second
 	server := start(t, "", []string{"-js"})
 	begun := time.Now()
@@ -229,6 +238,8 @@ func TestAConnectionAWaitMadeKeepsWorkingPastTheWaitsEnd(t *testing.T) {
 // the server never answers fails the wait by name before the test's deadline, where nats.go's own
 // 5 s for a request would run past it.
 func TestAJetStreamWaitEndsEveryRequestWithTheWait(t *testing.T) {
+	// Not parallel: a tight wall-clock bound: a request's context may end at most 200 ms past the
+	// wait's own end, the time between two readings of the clock.
 	const window = 400 * time.Millisecond
 	var ends []time.Time
 	tb := heldWait(t, window, func(tb testing.TB) {
@@ -285,6 +296,8 @@ func heldJetStream(t *testing.T) *Server {
 // A bucket wait on a member whose stream lookups go unanswered fails by name before the test's
 // deadline: each lookup's context ends with the wait, where the lookup's own 10 s would run past it.
 func TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime(t *testing.T) {
+	// Not parallel: a tight wall-clock bound: the bucket wait ends 2 s after it begins, and the row
+	// fails it at 4 s.
 	const window = 2 * time.Second
 	cluster := &Cluster{Servers: []*Server{heldJetStream(t)}}
 	begun := time.Now()

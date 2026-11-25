@@ -12,6 +12,7 @@ import (
 // StartClusterConfig gives every member the configuration it is passed: each admits a user its
 // authorization holds and refuses one it does not, and its no_auth_user lets the cluster start.
 func TestEveryClusterMemberTakesTheConfigItIsGiven(t *testing.T) {
+	t.Parallel()
 	seed, public := User(t)
 	stranger, _ := User(t)
 	_, fallback := User(t)
@@ -31,6 +32,7 @@ func TestEveryClusterMemberTakesTheConfigItIsGiven(t *testing.T) {
 // A three-copy stream on the cluster keeps a leader and takes a publish with the member that led
 // it stopped, and that member, started again on its own store and URLs, rejoins and catches up.
 func TestAThreeCopyStreamKeepsALeaderAndTakesAPublishWithOneMemberStopped(t *testing.T) {
+	t.Parallel()
 	cluster := StartCluster(t, 3)
 	conn := connectCluster(t, cluster)
 	js, err := conn.JetStream(natsgo.MaxWait(jetStreamWait))
@@ -88,6 +90,7 @@ func connectCluster(t *testing.T, cluster *Cluster) *natsgo.Conn {
 // forces on every session. The client knows only the URLs it was given, since the members
 // advertise none of their own.
 func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
+	t.Parallel()
 	cluster := StartCluster(t, 3)
 	conn, err := natsgo.Connect(cluster.URL(),
 		natsgo.DontRandomize(),

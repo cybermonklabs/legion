@@ -16,6 +16,7 @@ import (
 // The callout fixture sends the authorization of a client it has no static user for to the auth
 // service, encrypted to the service's key, and admits a listed static user without asking.
 func TestTheCalloutFixtureSendsUnknownClientsToTheService(t *testing.T) {
+	t.Parallel()
 	keys := testnats.NewCalloutKeys(t)
 	staticSeed, staticKey := testnats.User(t)
 	url := testnats.StartWithCallout(t, keys, testnats.StaticUser{
@@ -32,6 +33,7 @@ func TestTheCalloutFixtureSendsUnknownClientsToTheService(t *testing.T) {
 // from a member the service is not connected to never reaches it (the members are not routed), or
 // when the stream cannot hold three copies (JetStream is not clustered across them).
 func TestTheCalloutClusterSendsUnknownClientsToTheServiceFromEveryMember(t *testing.T) {
+	t.Parallel()
 	keys := testnats.NewCalloutKeys(t)
 	staticSeed, staticKey := testnats.User(t)
 	cluster := testnats.StartClusterWithCallout(t, 3, keys, testnats.StaticUser{

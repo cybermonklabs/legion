@@ -32,6 +32,7 @@ func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected,
 // once and every dial is refused while it stays cut. Restore lets the client reconnect, and a new
 // client connect, through the same URL.
 func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
+	t.Parallel()
 	proxy := StartProxy(t, URL(t))
 	conn, disconnected, reconnected := proxiedClient(t, proxy)
 	if err := conn.FlushTimeout(requestWait(t)); err != nil {
@@ -81,6 +82,8 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 // reach a subscriber, and a flush gets no answer. Restore delivers what was held, and the
 // connection that stayed open answers again.
 func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T) {
+	// Not parallel: a tight wall-clock bound: the publish the freeze held must reach the subscriber
+	// within 2 s of the restore.
 	uri := URL(t)
 	proxy := StartProxy(t, uri)
 	conn, disconnected, _ := proxiedClient(t, proxy)
@@ -128,6 +131,7 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 
 // ProxyLatency adds its round trip to every round trip through the proxy.
 func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
+	t.Parallel()
 	const rtt = 200 * time.Millisecond
 	proxy := StartProxy(t, URL(t), ProxyLatency(rtt))
 	conn, _, _ := proxiedClient(t, proxy)
@@ -145,6 +149,7 @@ func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
 // it sleeps for it, so the last read of the payload, up to proxyReadBuffer bytes, crosses
 // uncharged; the bound allows exactly that and nothing more.
 func TestAProxyWithARateMovesNoFasterThanIt(t *testing.T) {
+	t.Parallel()
 	const rate = 200_000
 	uri := URL(t)
 	proxy := StartProxy(t, uri, ProxyRate(rate))

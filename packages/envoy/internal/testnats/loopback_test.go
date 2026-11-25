@@ -19,6 +19,7 @@ import (
 // does, every 200 ms; each listener's control is the same client at the listener's own address,
 // which reaches the server.
 func TestAClientDialingThisServersPortOnTheSharedLoopbackDoesNotReachIt(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("only Linux routes the whole of 127.0.0.0/8 to the loopback; elsewhere every server here listens on 127.0.0.1")
 	}
@@ -82,6 +83,7 @@ func TestAClientDialingThisServersPortOnTheSharedLoopbackDoesNotReachIt(t *testi
 // being held (HoldReconnect, AnswersWithinAttempt). The control is the same client at the relay's
 // own address, whose dial and CONNECT the hold counts and whose CONNECT it holds.
 func TestAClientDialingTheHoldsRelayPortOnTheSharedLoopbackIsNoHeldAttempt(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("only Linux routes the whole of 127.0.0.0/8 to the loopback; elsewhere every server here listens on 127.0.0.1")
 	}

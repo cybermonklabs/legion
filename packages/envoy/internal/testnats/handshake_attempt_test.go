@@ -53,6 +53,7 @@ const (
 // binary's deadline, less heldAttemptSpare, so no span of the attempt ends the row; the cleanup's
 // Release ends the attempt.
 func TestAnswersWithinAttemptPassesACallThatNeedsNoLock(t *testing.T) {
+	t.Parallel()
 	hold := StartHandshakeHold(t, URL(t))
 	conn := heldAttemptConn(t, hold, testwait.Remaining(t, heldAttemptSpare))
 	hold.HoldReconnect(t, conn)
@@ -78,6 +79,7 @@ const attemptHeld = "the child's handshake attempt is held"
 // that hangs is ended by its alarm, with its goroutines printed, and this row's failure is still to
 // come.
 func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
+	t.Parallel()
 	childTimeout := testwait.Remaining(t, heldAttemptSpare+childReportSpare)
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, heldAttemptSpare))
 	defer cancel()
@@ -109,6 +111,7 @@ func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
 // TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt: it measures a call that waits for nats.go's
 // lock. It runs only when the parent re-executes this binary.
 func TestAnswersWithinAttemptChild(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(attemptChildEnv) == "" {
 		t.Skip(attemptChildEnv + " is not set: this test is the child of TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt")
 	}

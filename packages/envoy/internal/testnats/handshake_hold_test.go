@@ -23,6 +23,7 @@ import (
 // the proxy and returns without the lock fails the try; a release that does not let the lock go
 // fails the publish's return.
 func TestHoldWriteLockReturnsHoldingTheConnectionLock(t *testing.T) {
+	t.Parallel()
 	uri := URL(t)
 	hold := StartHandshakeHold(t, uri)
 	conn, disconnected, _ := proxiedClient(t, hold.Proxy)
@@ -67,6 +68,7 @@ func TestHoldWriteLockReturnsHoldingTheConnectionLock(t *testing.T) {
 // is HoldWriteLock on the same rig: its lock is the row's own, so the read still waits after the
 // close, which shows that the rig tells the two apart.
 func TestHoldStalledWriteHoldsTheLockWithAWriteTheSocketsCloseEnds(t *testing.T) {
+	t.Parallel()
 	RequireSocketQueues(t)
 	for _, stalled := range []bool{true, false} {
 		name := "HoldStalledWrite"
@@ -141,6 +143,7 @@ const hookWentOn = "the hook's goroutine went on after HoldWriteLock"
 // rather than the test, and the child would log that HoldWriteLock never returned. The child runs
 // under -timeout 45s, so its guard passes about 15 s in.
 func TestHoldWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
+	t.Parallel()
 	child := exec.Command(os.Args[0], "-test.run=^TestHoldWriteLockOnAHooksGoroutineChild$", "-test.timeout=45s", "-test.v")
 	child.Env = append(os.Environ(), holdChildEnv+"=1")
 	output, err := child.CombinedOutput()
@@ -172,10 +175,13 @@ func TestHoldWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 // no more than the guard's spare away, so the second row's HoldWriteLock finds it spent. It runs only
 // when the parent re-executes this binary.
 func TestHoldWriteLockOnAHooksGoroutineChild(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(holdChildEnv) == "" {
 		t.Skip(holdChildEnv + " is not set: this test is the child of TestHoldWriteLockOnAHooksGoroutineFailsByNameAndReturns")
 	}
 	uri := URL(t)
+	// The subtests run in order: the first holds the lock until the binary's deadline is no more
+	// than the guard's spare away, which the second needs.
 	t.Run("the guard passes", func(t *testing.T) {
 		hold := StartHandshakeHold(t, uri)
 		conn, _, _ := proxiedClient(t, hold.Proxy)
@@ -229,6 +235,7 @@ func holdOnAHooksGoroutine(t *testing.T, hold *HandshakeHold, conn *natsgo.Conn)
 //   - Under the hold, a client that sends its CONNECT closes the channel, and is counted as one
 //     more dial and one attempt.
 func TestAHoldCountsAnAttemptAtItsConnectNotAtItsDial(t *testing.T) {
+	t.Parallel()
 	_, uri := Start(t)
 	hold := StartHandshakeHold(t, uri)
 	const connect = "CONNECT {\"verbose\":false,\"pedantic\":false}\r\n"
