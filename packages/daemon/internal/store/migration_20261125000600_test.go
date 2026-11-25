@@ -8,13 +8,13 @@ import (
 
 // failedLooksVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const failedLooksVersion = 20261124131010
+const failedLooksVersion = 20261125000600
 
 // failedLooksRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
 const failedLooksRelease = "the release that backs a production check off a checking role that keeps failing"
 
-// 20261124131010 adds production_checks.failed_looks, the looks in a row whose checking role's
+// 20261125000600 adds production_checks.failed_looks, the looks in a row whose checking role's
 // claim failed, at its default, 0, on every check the table holds, and the release before's
 // insert, which names none of it, still lands at 0, while its upsert of a check this release
 // counted leaves the count as it stands. Its way back, the last paragraph of the migration's
@@ -84,7 +84,7 @@ func TestTheFailedLooksComeAtZeroAndTheirWayBackLetsThemComeAgain(t *testing.T) 
 	queue("check_look", `{"look": 2, "wakeAt": "kept"}`)
 
 	exec(wayBackOf(t, failedLooksVersion, failedLooksRelease))
-	const version = `select count(*)::text from schema_version where version = 20261124131010`
+	const version = `select count(*)::text from schema_version where version = 20261125000600`
 	if got := append(rowsAsText(t, store, column), rowsAsText(t, store, version)...); !reflect.DeepEqual(got, []string{"0", "0"}) {
 		t.Fatalf("after the way back the column and the version row = %v, want neither", got)
 	}

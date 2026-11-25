@@ -16,7 +16,7 @@ body: |-
   last pod ended and when the next look retries the claim, and a failure between looks, which
   used to tell nobody, sends one too. An operator's `legion claims retry` and the controller's
   `fresh_session` still give the whole budget. The count of failed looks is kept in a new column,
-  `production_checks.failed_looks` (migration `20261124131010_production_check_failed_looks`),
+  `production_checks.failed_looks` (migration `20261125000600_production_check_failed_looks`),
   and each queued `check_wake` row now carries the wake it was queued for (`wakeAt`); a rollback
   runs the way back in that migration's header first, with every daemon of the database stopped,
   which also takes `wakeAt` off the queued rows, a key the release before refuses.

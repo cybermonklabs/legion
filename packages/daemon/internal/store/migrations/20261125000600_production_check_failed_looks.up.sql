@@ -1,4 +1,4 @@
--- 20261124131010_production_check_failed_looks.up.sql — a production check backs off a checking
+-- 20261125000600_production_check_failed_looks.up.sql — a production check backs off a checking
 -- role that keeps failing.
 --
 -- production_checks.failed_looks is record.ProductionCheck.FailedLooks: the looks in a row whose
@@ -45,6 +45,6 @@
 -- begin;
 -- update outbox set payload = payload - 'wakeAt' where kind = 'check_wake' and payload ? 'wakeAt';
 -- alter table production_checks drop column if exists failed_looks;
--- delete from schema_version where version = 20261124131010;
+-- delete from schema_version where version = 20261125000600;
 -- commit;
 alter table production_checks add column failed_looks integer not null default 0 check (failed_looks >= 0);
