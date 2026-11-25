@@ -72,7 +72,7 @@ func FillScopes(ctx context.Context, tx pgx.Tx, scopes []Scope) (int64, error) {
 				from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as scope(kind, id, project, parties)
 				where graph_nodes.kind = scope.kind and graph_nodes.id = scope.id
 				  and graph_nodes.project_key is null and graph_nodes.parties is null
-				  and (scope.project is not null or scope.parties is not null)
+				  and (scope.project is not null or scope.parties is not null) and `+KeptHeadRows+`
 				returning graph_nodes.kind, graph_nodes.id, graph_nodes.project_key, graph_nodes.parties,
 					graph_nodes.made_at, graph_nodes.made_by, graph_nodes.source_event
 			),
@@ -83,6 +83,7 @@ func FillScopes(ctx context.Context, tx pgx.Tx, scopes []Scope) (int64, error) {
 				       '`+KindValue+`', coalesce(project_key, array_to_string(parties, ' ')),
 				       made_at, made_by, source_event, null::bigint, true
 				from filled
+				where `+KeptHeadRows+`
 				order by kind, id
 				on conflict do nothing
 			)

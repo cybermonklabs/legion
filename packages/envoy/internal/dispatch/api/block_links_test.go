@@ -87,6 +87,7 @@ func compareBlockLinks(t *testing.T, stage string, got []model.BlockLink, want [
 // nodes; rollout.md plays no role, so it is a room of its own, whose ref_key keys its blocks' nodes
 // (R5 of this branch's spec).
 func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	holdIt := ":::callout{#hold-it kind=\"note\" title=\"\"}\nHold it.\n:::"
@@ -155,6 +156,7 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 // A document with none answers an empty list, never null. The spec is a fragment of its issue's
 // room, whose tree keys its blocks' nodes.
 func TestBlockLinksListALinkWithinOneDocument(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue, blockRef := createShipItSpec(t, handler, "CORE")
@@ -188,6 +190,7 @@ func TestBlockLinksListALinkWithinOneDocument(t *testing.T) {
 // Each end must name a document: a block, an issue or no reference at all is 400, and a document
 // that does not exist is 404.
 func TestBlockLinksRefuseAnEndThatIsNotADocument(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue, blockRef := createShipItSpec(t, handler, "CORE")

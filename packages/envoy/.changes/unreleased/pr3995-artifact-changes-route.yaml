@@ -1,0 +1,23 @@
+kind: Added
+custom:
+  Issue: pr3995
+body: |-
+  Dispatch's `GET /api/v1/artifacts/{id}/changes?from=<n>&to=<m>` answers what changed between two
+  stored versions of one document: `decision_only`, true when the two versions differ only in ask
+  blocks; `unchanged`, true when the two versions differ in nothing any section or block holds, as
+  two identical versions do; `sections`, each top-level unit whose text differs, that moved, or
+  that one version alone holds; and `blocks`, each typed block other than an ask block that
+  differs, by its `#id` and type. Exactly one of the three holds, so a change set that is neither
+  decision-only nor unchanged always names a section or a block. A unit is a `##` section, named by
+  its heading's text (no markdown syntax, read from the parse, so a heading stored in setext form
+  opens its section too) and its occurrence, or a run of the text outside every `##` section, such as the title or
+  the text under a `#` heading, named with the heading "" and its place: `before_first_section`,
+  or `after_section` with `after_heading` and `after_occurrence` naming the `##` section directly
+  before it. Each unit and block is marked `changed`, `added` or `removed`, and a unit that keeps
+  its text and changes its place among the document's units is marked `moved`, so a version that
+  only reorders sections, or moves a section across a `#` heading, names what moved. The route
+  reads both versions from their stored markdown, so it does not wait for the block index. It
+  answers `404 ARTIFACT_NOT_FOUND` for an id that names no artifact, `400 NOT_DOCUMENT` for an
+  artifact that is an image or a file and not a document, `400 INVALID_VERSION` when `from` is not below `to`
+  or a number is not a positive version number of at most 2147483647, and `404 NOT_FOUND` for a
+  version the document does not have.

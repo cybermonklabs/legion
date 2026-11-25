@@ -16,10 +16,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // relatedOwnerKeys is the issue each related item stands for, in order.
@@ -93,6 +96,7 @@ func readRelatedCheckRows(t *testing.T, database *store.Store, where string, arg
 // for the rare words, so it lists that one item and none of the thirty that share only the common
 // word. The old query ORed every word of the text and listed common-word matches beside it.
 func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RARE")
 	var common []string
@@ -127,6 +131,7 @@ func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) 
 // listed the repeater first. The meaning stage answers here with no item near the text's
 // meaning, so its order is its keyword arms'.
 func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []struct {
 		name    string
 		options testServerOptions
@@ -145,7 +150,7 @@ func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
 			holder := createSearchIssue(t, handler, "COORD", "Zymurgy ledger quokka", "")
 			refreshTermStats(t, database, "COORD")
 
-			suggestions := directServer(deps).relatedCheck(context.Background(), relatedInput{project: "COORD", text: "Zymurgy ledger quokka marmot"})
+			suggestions := meaningVerdictServer(t, deps).relatedCheck(context.Background(), relatedInput{project: "COORD", text: "Zymurgy ledger quokka marmot"})
 			if suggestions.Search != stage.search {
 				t.Fatalf("suggestions = %+v, want searched by %s", suggestions, stage.search)
 			}
@@ -164,30 +169,68 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 	return handler, database, directServer(deps)
 }
 
+// meaningVerdictBound is the bound a case gives the related-item check when its verdict is what
+// the check's meaning stage found: what the test binary's deadline leaves less
+// binaryDeadlineMargin (testwait.Remaining), in place of production's relatedMeaningAllowance
+// and crossProjectGrace (withRelatedBound). Under production's bounds a loaded machine's meaning
+// stage answered after three seconds, and the check answered by keywords alone and offered
+// nothing of another project, so the case failed on the machine's speed and not on what the stage
+// found. Under this one the stage's own answer decides; a stage that never answers still ends the
+// check, with the keyword stage's answer, which fails the case by name. The bound counts from each
+// check's start: a direct server reads it just before its checks (meaningVerdictServer), a
+// registered one when it is built (testServerOptions.relatedBound), where a check that starts more
+// than binaryDeadlineMargin after the build and never answers outlasts the binary's deadline, and
+// go test's own timeout names the case instead.
+//
+// Production's bounds keep rows of their own:
+// TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly and the second check of
+// TestCrossProjectRelatedWithoutAnEmbeddingOffersNothing hold the three-second meaning allowance,
+// and TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer the grace.
+func meaningVerdictBound(t *testing.T) time.Duration {
+	t.Helper()
+	return testwait.Remaining(t, binaryDeadlineMargin)
+}
+
+// withRelatedBound gives s's related-item check bound for its meaning allowance and its wait for
+// the cross-project leg (meaningBound, crossProjectWait), and bound plus the time production leaves
+// the keyword stage past the meaning allowance for its own allowance (suggestionTimeout). The
+// meaning deadline still comes first, so a meaning stage that never answers ends the check by
+// keywords, saying the meaning search did not answer, as in production; with both at bound the
+// check's own deadline would fall a moment later and race it. Zero leaves s on production's
+// bounds. It answers s.
+func (s *server) withRelatedBound(bound time.Duration) *server {
+	if bound != 0 {
+		s.meaningBound, s.crossProjectWait = bound, bound
+		s.suggestionTimeout = bound + relatedCheckAllowance - relatedMeaningAllowance
+	}
+	return s
+}
+
+// meaningVerdictServer is a direct server on deps whose related-item check runs under
+// meaningVerdictBound, read now.
+func meaningVerdictServer(t *testing.T, deps Deps) *server {
+	t.Helper()
+	return directServer(deps).withRelatedBound(meaningVerdictBound(t))
+}
+
 // binaryDeadlineMargin is what binaryDeadlineGuard leaves of the test binary's deadline for the
 // failed case's cleanups - releasing a held read, closing its servers and dropping its database
-// - and for the binary's own end: the margin throughputWait leaves for the socket rig's.
+// - and for the binary's own end: the margin testwait's Until and Receive leave.
 const binaryDeadlineMargin = 30 * time.Second
 
-// binaryDeadlineGuard fires binaryDeadlineMargin before the test binary's deadline, and never
-// when the binary runs without one (-timeout 0). A case that waits on something only the code
-// under test ends - the related-item check's answer, a leg's read - selects on it, so code that
-// never ends the wait fails that case by name, and leaves the binary's timeout to the package's
-// later tests. It bounds no measurement: it fires only where the wait would otherwise last as
-// long as the binary. A deadline that leaves no more than the margin to begin with fails at once,
-// by name, as throughputWait's does.
+// binaryDeadlineGuard fires binaryDeadlineMargin before the test binary's deadline
+// (testwait.Remaining), and never when the binary runs without one (-timeout 0). A case that waits
+// on something only the code under test ends - the related-item check's answer, a leg's read -
+// selects on it, so code that never ends the wait fails that case by name, and leaves the binary's
+// timeout to the package's later tests. It bounds no measurement: it fires only where the wait
+// would otherwise last as long as the binary. A deadline that leaves no more than the margin to
+// begin with fails at once, by name.
 func binaryDeadlineGuard(t *testing.T) <-chan time.Time {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
+	if _, bounded := t.Deadline(); !bounded {
 		return nil
 	}
-	left := time.Until(deadline) - binaryDeadlineMargin
-	if left <= 0 {
-		t.Fatalf("the test binary's deadline leaves %s, not more than binaryDeadlineMargin (%s): this looks like a misconfigured run; raise -timeout",
-			time.Until(deadline).Round(time.Millisecond), binaryDeadlineMargin)
-	}
-	timer := time.NewTimer(left)
+	timer := time.NewTimer(testwait.Remaining(t, binaryDeadlineMargin))
 	t.Cleanup(func() { timer.Stop() })
 	return timer.C
 }
@@ -233,6 +276,7 @@ func (e *deadlineEmbedder) Embed(ctx context.Context, texts []string, inputType 
 // An item whose meaning matches and which holds none of the text's words is found by the meaning
 // search, and the result says it searched by meaning and keywords.
 func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) {
+	t.Parallel()
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Archive snapshots finish late"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -244,7 +288,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) 
 	key := createSearchIssue(t, handler, "MEAN", title, spec)
 	processAllPending(t, database, embedder)
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MEAN", text: text})
+	suggestions := srv.withRelatedBound(meaningVerdictBound(t)).relatedCheck(context.Background(), relatedInput{project: "MEAN", text: text})
 	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" || suggestions.SearchNote != "" {
 		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
 	}
@@ -266,6 +310,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) 
 // The keyword-only run first is what says the page really is crowded: every item it lists is one
 // of the ten, so the meaning-only item is reached by the meaning leg and by nothing else.
 func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testing.T) {
+	t.Parallel()
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	// One word per crowding item, each held by that item alone, so the picker chooses all ten: it
 	// drops a word no item of the project holds and a word more than a tenth of the project holds
@@ -303,7 +348,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 		}
 	}
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text})
+	suggestions := srv.withRelatedBound(meaningVerdictBound(t)).relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text})
 	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" || suggestions.SearchNote != "" {
 		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
 	}
@@ -319,6 +364,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 // by meaning and keywords. Left out after the page instead, the ten take every place in it and
 // the keeper, eleventh by vector, is never seen (INFRA-1160).
 func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
+	t.Parallel()
 	const text = "Archive snapshots finish late"
 	const keeperTitle = "Our own nightly backup cousin"
 	arc := func(angle float64) []float32 { return angledVector(math.Cos(angle), 1) }
@@ -336,7 +382,12 @@ func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
 	keeper := createSearchIssue(t, handler, "MWIN", keeperTitle, "")
 	processAllPending(t, database, embedder)
 
+	srv.withRelatedBound(meaningVerdictBound(t))
 	crowded := srv.relatedCheck(context.Background(), relatedInput{project: "MWIN", text: text})
+	if crowded.Outcome != relatedFound || crowded.Search != relatedMeaningAndKeywords ||
+		crowded.SearchNote != "" || len(crowded.Related) != suggestionRelatedCount {
+		t.Fatalf("the check with nothing excluded = %+v, want %d nearer issues found by meaning and keywords: an empty keyword fallback would prove nothing about the meaning window", crowded, suggestionRelatedCount)
+	}
 	if owners := relatedOwnerKeys(crowded.Related); slices.Contains(owners, keeper) {
 		t.Fatalf("related owners with nothing excluded = %v, want %s behind the %d nearer issues", owners, keeper, len(excluded))
 	}
@@ -351,12 +402,13 @@ func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
 
 // A failing embedder leaves the check its keyword search, and the result says so and why.
 func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{err: errors.New("model service throttled")}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MFAIL")
 	key := createSearchIssue(t, handler, "MFAIL", "Nightly backups overrun their window", "")
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MFAIL", text: "Nightly snapshots finish late"})
+	suggestions := srv.withRelatedBound(meaningVerdictBound(t)).relatedCheck(context.Background(), relatedInput{project: "MFAIL", text: "Nightly snapshots finish late"})
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "the text could not be embedded for meaning search" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, the embedding having failed", suggestions)
@@ -374,8 +426,10 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 // out: a check that waited for that fails by name before the binary's deadline. The case starts
 // the check at a moment it reads, and the embedder records its context's deadline, so that the
 // meaning search ran to the meaning allowance from the check's start is a value the case
-// compares rather than a time it measures.
+// compares rather than a time it measures. The span that must reach the meaning allowance is the
+// check's own, from the start it was handed to its return, read on the goroutine that ran it.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{delay: time.Minute}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MSLOW")
@@ -385,11 +439,13 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	srv.suggestionTimeout = time.Hour
 
 	started := time.Now()
+	var answeredAt time.Time
 	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
 		answer, _ := srv.runRelatedCheck(context.Background(), relatedInput{project: "MSLOW", text: "Nightly snapshots finish late"}, started)
+		answeredAt = time.Now()
 		return answer
 	})
-	elapsed := time.Since(started)
+	elapsed := answeredAt.Sub(started)
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "meaning search did not answer within 3s" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, meaning search having run out of time", suggestions)
@@ -424,6 +480,7 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 // TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan), and without JIT, which the disabled
 // plans' inflated costs would otherwise spend seconds compiling.
 func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t *testing.T) {
+	t.Parallel()
 	const text = "Find what this is about"
 	const nearer = 60
 	arc := func(angle float64) []float32 { return angledVector(math.Cos(angle), 1) }
@@ -454,7 +511,7 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 	indexDeps := deps
 	indexDeps.Store = indexStore
 
-	suggestions := directServer(indexDeps).relatedCheck(context.Background(), relatedInput{project: "MINE", text: text})
+	suggestions := meaningVerdictServer(t, indexDeps).relatedCheck(context.Background(), relatedInput{project: "MINE", text: text})
 	if suggestions.Search != "meaning_and_keywords" {
 		t.Fatalf("suggestions = %+v, want the meaning search to have answered", suggestions)
 	}
@@ -464,8 +521,10 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 }
 
 // A keyword stage held a second, well past the old 300 ms bound, still answers within the
-// check's allowance.
+// check's allowance, and only once the lock is released: it has not answered while the lock is
+// held.
 func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SLOW")
 	key := createSearchIssue(t, handler, "SLOW", "Quarterly zymurgy ledger drifts", "")
@@ -479,19 +538,20 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	if _, err := lockTx.Exec(context.Background(), "lock table search_term_stats in access exclusive mode"); err != nil {
 		t.Fatalf("lock search_term_stats: %v", err)
 	}
-	started := time.Now()
 	answered := make(chan *model.Suggestions, 1)
 	go func() {
 		answered <- srv.relatedCheck(context.Background(), relatedInput{project: "SLOW", text: "Zymurgy ledger totals drift"})
 	}()
 	time.Sleep(time.Second)
+	select {
+	case early := <-answered:
+		t.Fatalf("the check answered (%+v) while the lock it reads behind was still held", early)
+	default:
+	}
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
 	suggestions := <-answered
-	if elapsed := time.Since(started); elapsed < time.Second {
-		t.Fatalf("the check answered in %s, before the lock it reads behind was released", elapsed)
-	}
 	if suggestions.Outcome != "found" || !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("suggestions = %+v, want %s found once the lock was released", suggestions, key)
 	}
@@ -500,6 +560,7 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 // A keyword stage held past the allowance answers that the check was not made, for time, and the
 // check is recorded so.
 func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "STUCK")
 	createSearchIssue(t, handler, "STUCK", "Quarterly zymurgy ledger drifts", "")
@@ -551,6 +612,7 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 // ends, is not made because the request ended, and is recorded as cancelled: it did not run out of
 // time, so the records route must not count it as skipped for time.
 func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "GONE")
 	createSearchIssue(t, handler, "GONE", "Quarterly zymurgy ledger drifts", "")
@@ -580,27 +642,18 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 			record: true,
 		})
 	}()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	waitUntil(t, "the check's pick to wait on the term statistics", func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read lock waits: %v", err)
 		}
-		if waiting > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the check's pick never waited on the term statistics")
-		}
-	}
+		return waiting > 0
+	})
 	endRequest()
-	var suggestions *model.Suggestions
-	select {
-	case suggestions = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the check did not answer within 10s of its request ending")
-	}
+	suggestions := testwait.Receive(t, "the check's answer once its request ended", answered)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
@@ -623,6 +676,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 // left off, each block's check would read its context's end as the request that ran it going away
 // and record cancelled, which the records route does not count as skipped for time.
 func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "DBTO")
 	createSearchIssue(t, handler, "DBTO", "Quarterly zymurgy ledger drifts", "")
@@ -692,6 +746,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 // When the record's second runs out, pgx cancels its statement, so the row is lost unless it is
 // tried again: it is written once the lock is released.
 func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "MIGR")
 	createSearchIssue(t, handler, "MIGR", "Quarterly zymurgy ledger drifts", "")
@@ -721,13 +776,10 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	// only once it had failed, so an insert started more than half that before is the first.
 	poll := func(what string, done func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for !done() {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: not within 5s", what)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		testwait.UntilPolling(t, 20*time.Millisecond, what, func() (bool, bool) {
+			held := done()
+			return held, held
+		})
 	}
 	var answered time.Time
 	if err := database.Pool.QueryRow(context.Background(), "select clock_timestamp()").Scan(&answered); err != nil {
@@ -766,6 +818,7 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 // wait open. The retry is counted with that work: the wait neither returns while the retry still
 // holds its row nor panics, and the row is written once the lock holding it up is released.
 func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.T) {
+	t.Parallel()
 	handler, database, _, srv := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SHUT")
 	createSearchIssue(t, handler, "SHUT", "Quarterly zymurgy ledger drifts", "")
@@ -809,13 +862,8 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
-	select {
-	case recovered := <-waited:
-		if recovered != nil {
-			t.Fatalf("the shutdown wait panicked: %v", recovered)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shutdown wait did not return within 10s of the lock's release")
+	if recovered := testwait.Receive(t, "the shutdown wait's return once the lock was released", waited); recovered != nil {
+		t.Fatalf("the shutdown wait panicked: %v", recovered)
 	}
 	rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and outcome = 'not_made'", source)
 	if len(rows) != 1 || deref(rows[0].Reason) != "timeout" {
@@ -826,6 +874,7 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 // A text with no word to search for, blank or stopwords alone, answers that no check was made
 // and why, never nothing.
 func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "BLANK")
 	createSearchIssue(t, handler, "BLANK", "Is it to be or not to be", "")
@@ -849,6 +898,7 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 // bound here is the case's (nearCopyVerdictBound), so the title matches are the gate's verdict
 // and not the machine's having answered inside production's 500 ms.
 func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t)})
 	createSuggestionProject(t, handler, "FORCE")
 	const title = "Archive search drops rows past offset fifty"
@@ -876,6 +926,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 
 // An issue create whose write-advice read fails still answers its check, on advice of its own.
 func TestCreateIssueKeepsTheCheckWhenWriteAdviceFails(t *testing.T) {
+	t.Parallel()
 	handler, _ := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "ADVISSUE")
 	spec := ""
@@ -966,6 +1017,7 @@ func checkThroughJSON(t *testing.T, srv *server, input relatedInput) testSuggest
 // chosen, on the item the ask route's check lists. Only the person who gave the current answer
 // may change it, so both answers are alice's; the time, the option and the text tell them apart.
 func TestRelatedCheckShowsTheLatestAnswer(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "LATEST")
 	first := fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}, "text": "Keep the brass one."})
 	latest := fixture.answer(t, "twice", "alice", map[string]any{
@@ -993,6 +1045,7 @@ func TestRelatedCheckShowsTheLatestAnswer(t *testing.T) {
 
 // An answer that chose no option says so with an empty list, never null.
 func TestRelatedCheckShowsAnAnswerWithNoOptionChosen(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "NOOPT")
 	fixture.answer(t, "no-option", "alice", map[string]any{"selected": []string{}, "text": "Neither; use enamel."})
 
@@ -1018,6 +1071,7 @@ func TestRelatedCheckShowsAnAnswerWithNoOptionChosen(t *testing.T) {
 
 // An ask closed with no answer carries its resolution and no answer.
 func TestRelatedCheckShowsAnAskClosedWithNoAnswer(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "CLOSED")
 	if response := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/asks/"+fixture.asks["closed"]+"/resolve", map[string]any{
 		"kind": "resolved", "reason": "The roster settles it.",
@@ -1035,6 +1089,7 @@ func TestRelatedCheckShowsAnAskClosedWithNoAnswer(t *testing.T) {
 
 // An open ask says it is open.
 func TestRelatedCheckShowsAnOpenAsk(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "OPENASK")
 	suggestions := checkThroughJSON(t, fixture.srv, relatedInput{project: "OPENASK", text: "Should the balloon cross the fjord?"})
 	item := relatedAsk(t, suggestions, fixture.asks["open"])
@@ -1048,22 +1103,22 @@ func TestRelatedCheckShowsAnOpenAsk(t *testing.T) {
 // events locked past the read's deadline, keeping the states already read would show that ask as
 // closed with no answer.
 func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "PARTIAL")
 	fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}})
 	retractedAnswer := fixture.answer(t, "closed", "alice", map[string]any{"selected": []string{"Steel"}, "text": "Steel pilots."})
-	if _, err := fixture.database.Pool.Exec(context.Background(), `
-		update asks
-		set state = 'resolved', answer = null,
-		    resolution = jsonb_build_object(
-		      'kind', 'retracted',
-		      'reason', 'removed from the document in version 2',
-		      'actor', jsonb_build_object('kind', 'system', 'id', 'document-settlement'),
-		      'at', now()
-		    )
-		where id = $1
-	`, fixture.asks["closed"]); err != nil {
-		t.Fatalf("retract the answered ask: %v", err)
+	// The retraction a release before's document settlement wrote, as the decisions step's
+	// catch-up states it (asks.Recorded): on the ask's node, which every read of an answer reads,
+	// and on its row, with the answer left only in its ask.answered event.
+	retraction := model.AskResolution{
+		Kind:   "retracted",
+		Reason: "removed from the document in version 2",
+		Actor:  model.Actor{Kind: "system", ID: "document-settlement"},
+		At:     time.Now().UTC(),
 	}
+	retracted := asks.Recorded(asks.StateResolved, nil, &retraction)
+	retracted.Who, retracted.At, retracted.Event = retraction.Actor, retraction.At, graphstore.NoEvent
+	settleAskAsTheCatchUp(t, fixture.database, fixture.asks["closed"], retracted)
 	var results []model.SearchResult
 	for _, name := range []string{"twice", "closed"} {
 		var issueKey string
@@ -1142,6 +1197,7 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 // An issue matched through its title and through its spec fills one place, so the other places go
 // to other owners.
 func TestRelatedCheckListsOneItemPerOwner(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "OWNER")
 	key := createSearchIssue(t, handler, "OWNER", "Zymurgy ledger drifts", "The zymurgy ledger drifts every quarter.")
@@ -1154,6 +1210,7 @@ func TestRelatedCheckListsOneItemPerOwner(t *testing.T) {
 
 // Every issue and ask check is recorded with how it went: a found, a none and a not-made one.
 func TestRelatedCheckRecordsEachCheck(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "REC")
 	existing := createSearchIssue(t, handler, "REC", "Zymurgy ledger drifts", "")
@@ -1216,19 +1273,15 @@ func TestRelatedCheckRecordsEachCheck(t *testing.T) {
 // A create naming a GitHub issue Dispatch already holds creates nothing, so it makes no check, and
 // says so; the check is recorded as not made.
 func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createSuggestionProject(t, handler, "EXT")
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "EXT",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", response.Code, response.Body.String())
-	}
-	first := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12"}, "alice")
+	first := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12", "project": "EXT"}, "alice")
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first create: status=%d body=%s", first.Code, first.Body.String())
 	}
 	key := decodeBody[model.Issue](t, first).Key
-	again := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12"}, "alice")
+	again := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12", "project": "EXT"}, "alice")
 	if again.Code != http.StatusOK {
 		t.Fatalf("second create: status=%d body=%s", again.Code, again.Body.String())
 	}
@@ -1252,6 +1305,7 @@ func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
 // Keyword-only, because the ordering between an issue and its document is the keyword legs'
 // and needs no model: the embedder is configured only because the check's server takes one.
 func TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument(t *testing.T) {
+	t.Parallel()
 	const title = "Astrolabe drift spoils the mooring calibration"
 	const spec = "The astrolabe drifts during the quadrant sweep and the mooring calibration is spoiled."
 	const text = "Astrolabe drift during mooring"
@@ -1300,6 +1354,7 @@ func TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument(t *testing.T) {
 // Keyword-only, as the document test is: the ordering under test is the keyword leg's and needs
 // no model; the embedder is configured only because the check's server takes one.
 func TestRelatedCheckKeepsAnOpenAskOverTheIssueThatOwnsIt(t *testing.T) {
+	t.Parallel()
 	const title = "Sextant backlash on the tender"
 	const spec = "The sextant backlash grows while the tender rides at anchor."
 	const question = "Should the sextant backlash be measured before the harbour survey?"
@@ -1373,6 +1428,7 @@ func openRelatedAsk(t *testing.T, handler http.Handler, issue, question string) 
 // Keyword-only, as the two tests above are: the ordering under test is the keyword leg's and
 // needs no model; the embedder is configured only because the check's server takes one.
 func TestRelatedCheckKeepsAnOpenAskWhoseDocumentRowArrivesFirst(t *testing.T) {
+	t.Parallel()
 	const title = "Theodolite gimbal on the tender"
 	const spec = "The theodolite gimbal slips while the capstan is wound."
 	const question = "Should the theodolite gimbal be freed before the capstan is wound?"
@@ -1469,6 +1525,7 @@ func addRelatedDocument(t *testing.T, handler http.Handler, issue, name, content
 // tests are: the ordering under test is the keyword leg's and needs no model; the embedder is
 // configured only because the check's server takes one.
 func TestRelatedCheckKeepsTheBetterRankedOfAnIssuesTwoDocuments(t *testing.T) {
+	t.Parallel()
 	const title = "Tender upkeep on the slipway"
 	const widerDocument = "The binnacle verdigris reaches the chronometer escapement in the damp."
 	const narrowerDocument = "The binnacle verdigris is wiped from the brass at each change of watch."
@@ -1535,6 +1592,7 @@ func TestRelatedCheckKeepsTheBetterRankedOfAnIssuesTwoDocuments(t *testing.T) {
 // reads its ask states from the pool first, and an id that no ask row carries leaves Ask nil,
 // which is all these cases need.
 func TestRelatedCheckKeepsOneRowPerOwnerInEveryArrivalOrder(t *testing.T) {
+	t.Parallel()
 	_, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	for _, test := range []struct {

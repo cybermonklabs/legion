@@ -1,3 +1,4 @@
+import type { TreeFilter } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
@@ -11,6 +12,7 @@ import {
   nodeWords,
   type ParentLine,
   type TreeNode,
+  type TreeViews,
 } from "./issue-tree";
 import {
   type FILTER_SIGNAL_WORDS,
@@ -19,13 +21,13 @@ import {
   type NodeType,
   type Preset,
 } from "./page-words";
-import { readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
-import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-read";
+import { nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on, and the four filters, as views of the one tree.
  *
- * With no filter on - Conversation - the view is the whole tree, folded to the frontier by the
+ * With no filter on - Conversation - the view is the whole tree, every node of it unfolded by the
  * outline (`tree-fold.ts`). The words filter (`?q=`) narrows it to the nodes whose words hold
  * what is typed together with the chain above each, which is drawn faint and marked as context
  * (`data-node-context`), so a match is read where it stands in the conversation.
@@ -59,12 +61,18 @@ import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-re
  * signals the filter row draws (`IssuePresets.tsx`) and the unit tests all read the same model.
  */
 
-/** One of the four filters: every control of the row but Conversation, which turns them off. */
-export type Filter = Exclude<Preset, "conversation">;
+/** The four filters, each a control of the row that draws the tree's nodes of its own kinds (R2):
+ *  every control but Conversation, which turns them off, and the views that are no filter -
+ *  Graph (R10), and Dashboard, Threads and Documents once their parts add them. */
+const FILTERS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly Preset[];
 
-/** Whether `preset` is a filter rather than the page with no filter on. */
+/** One of the four filters (`FILTERS`). */
+export type Filter = (typeof FILTERS)[number];
+
+/** Whether `preset` is a filter rather than the page with no filter on or a view that is no
+ *  filter: Graph draws the whole tree read, and no version control (R10). */
 export function isFilter(preset: Preset): preset is Filter {
-  return preset !== "conversation";
+  return (FILTERS as readonly Preset[]).includes(preset);
 }
 
 /** The kinds each filter draws as rows of its own (R2). */
@@ -74,12 +82,6 @@ const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   spec: ["requirement"],
   verification: ["check", "result"],
 };
-
-/** The kinds `filter` draws as rows of its own (`ROW_KINDS`), for a part that draws a filter's
- *  rows itself, so it reads them here rather than holding a copy. */
-export function rowKindsOf(filter: Filter): readonly NodeType[] {
-  return ROW_KINDS[filter];
-}
 
 /** The kinds a filter draws as context: rows that place its own, faint and marked, and drawn
  *  whether or not anything of the filter's sits under them (R2's "each requirement as
@@ -100,6 +102,13 @@ const COUNTED_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   verification: ["check"],
 };
 
+/** Whether `filter` draws a node at every placement the tree has it: Verification draws a check
+ *  under every requirement it serves, as the outline does; every other filter draws a node at
+ *  its own place alone. */
+function drawsEveryPlacement(filter: Filter): boolean {
+  return filter === "verification";
+}
+
 /** No node named by the address, which is every address but a deep link's. */
 const EMPTY: ReadonlySet<string> = new Set();
 
@@ -108,13 +117,9 @@ export interface PresetView {
   /** The ids of the rows drawn as context: with no filter on, the chain above a match of the
    *  words filter; under Verification, each requirement. */
   readonly context: ReadonlySet<string>;
-  /** Whether this view is filtered at all: false for the page with no filter on and no words
-   *  typed, whose fold is the frontier's alone (R1). While one is, every branch the view kept
-   *  is drawn open (`IssueTree.tsx`): a filter exists to show what it matched, and the fold may
-   *  not hide it. */
-  readonly filtering: boolean;
   /** The decisions and constraints of the view read each row carries as a line of its own, by
-   *  the row's id: never rows (R4). Empty where the view is read off the tree. */
+   *  the row's id: in the view read of Spec, Verification or Plan, a decision or a constraint is
+   *  a line of a row and never a row itself. Empty where the view is read off the tree. */
   readonly lines: ReadonlyMap<string, readonly PresetLine[]>;
   /** How many distinct nodes of the view's main kind it draws: a check drawn under two
    *  requirements is one node, so this is what the control's own count says. */
@@ -126,9 +131,11 @@ export interface PresetView {
   readonly rootRow: boolean;
 }
 
-/** A node of a view read drawn as a line of a row rather than as a row (R4): a decision whose
+/** A node of a view read drawn as a line of a row, never as a row itself, which is how the view
+ *  read of Spec, Verification or Plan draws a decision and a constraint: a decision whose
  *  `shaped` tuple names the row's node, or a constraint the row's node's `constrained_by` tuple
- *  names. Later parts of the page draw them. */
+ *  names. Later parts of the page draw these lines. The Decisions filter and the outline draw a
+ *  decision as a row of its own. */
 export interface PresetLine {
   /** The node's id: a decision's block id (`block_id`), and the view read's id of any other. */
   readonly id: string;
@@ -153,19 +160,28 @@ function kindOf(node: TreeNode): NodeType | undefined {
 
 /** Whether `node`'s words hold `wanted`, which is already lowercased; `""` holds everywhere.
  *  The words are the ones a reader reads (`nodeWords`, R1, R4's "the nodes whose words hold
- *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. */
+ *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. A
+ *  post its author deleted holds none: its text is the deleted line as the model writes it
+ *  (`tree-drafts.ts`'s `deletedPostLine`), naming the actor by a short id and the time as stored,
+ *  and its row draws the page's own deleted line in its place (`NodeRow.tsx`'s `DeletedLine`), so
+ *  no word typed finds it (INFRA-1523, R3). */
 function holds(node: TreeNode, wanted: string): boolean {
-  return wanted === "" || nodeWords(node).toLowerCase().includes(wanted);
+  return (
+    wanted === "" ||
+    (node.deletedAt === undefined && nodeWords(node).toLowerCase().includes(wanted))
+  );
 }
 
 /**
  * The tree as `preset`, `query` and the address's own node leave it. With no filter on the root
  * is always drawn, because an issue whose words filter matches nothing still has to say so
- * somewhere, and it is context whenever nothing matched it.
+ * somewhere, and it is context whenever nothing matched it. Graph, a view and no filter (R10), is
+ * drawn so too, from Graph's read: every node the page draws as a row, each check and plan task
+ * under each requirement it serves as well.
  *
  * `memo` is the spec's summary callout, which the head draws as the issue's three sentences
  * (R8) and which is no row of the conversation (c-tree: "The memo callout is not a row of the
- * outline"), unless an address names it.
+ * outline"), nor of Graph, unless an address names it.
  */
 export function presetView(
   root: TreeNode,
@@ -175,7 +191,9 @@ export function presetView(
   memo?: string
 ): PresetView {
   const wanted = query.trim().toLowerCase();
-  if (!isFilter(preset)) return conversationView(root, wanted, named, memo);
+  if (!isFilter(preset)) {
+    return conversationView(root, wanted, named, memo, preset === "conversation");
+  }
   // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members.
   if (preset === "decisions") return filterView(root, preset, wanted, named);
   const held = root.views?.[preset];
@@ -184,13 +202,107 @@ export function presetView(
     : heldFilterView(root, preset, held, wanted, named);
 }
 
-/** The page with no filter on: the whole tree but the memo, or under a words filter each match
- *  with the chain above it as context. */
+/** The kinds Conversation draws no row of (R9), each with the filter whose rows they are, which
+ *  an address of one opens in Conversation's place (`filterOfUndrawn`): a plan task's Plan and a
+ *  result's Verification. The answer may hold one as an ancestor of a row, which is drawn whole
+ *  with its kind. A constraint is a line on each requirement it constrains, and no step drafts
+ *  one (`tree-read/tree-nodes.ts`). */
+const NO_CONVERSATION_ROW: Readonly<Partial<Record<NodeType, Filter>>> = {
+  plan_task: "plan",
+  result: "verification",
+};
+
+/** The filter an address of `node` opens in Conversation's place, where Conversation draws no row
+ *  of it (R9): a plan task's Plan and a result's Verification, where it holds no node a row
+ *  stands for. Undefined for every node Conversation draws as a row. */
+export function filterOfUndrawn(node: TreeNode): Filter | undefined {
+  return node.children.length === 0 ? NO_CONVERSATION_ROW[node.type] : undefined;
+}
+
+/** The filters whose held view answer an address of a block Conversation's read holds no node of
+ *  is looked up in, in this order (`filterHolding`): Decisions' view is the decisions read. */
+const VIEW_FILTERS = ["spec", "verification", "plan"] as const satisfies readonly Filter[];
+
+/**
+ * The filter whose view answer the page holds (`TreeNode.views`) answers the block `target` names
+ * as a node of that filter's own kinds (`ROW_KINDS`): the filter an address of a node
+ * Conversation's read does not hold opens at that node (R9), a plan task's Plan, a result's
+ * Verification. Undefined where no held view answers it.
+ */
+export function filterHolding(
+  views: TreeViews | undefined,
+  target: BlockTarget
+): Filter | undefined {
+  return VIEW_FILTERS.find((filter) => answerHolds(views?.[filter], target, ROW_KINDS[filter]));
+}
+
+/** The block an address names: its id, and the document that holds it where the address names
+ *  one (`issue-address.ts`' block `AddressTarget`). */
+interface BlockTarget {
+  readonly document?: string;
+  readonly id: string;
+}
+
+/** Whether `answer` holds the block `target` names as a node of one of `kinds`, or of any kind
+ *  where none is given: the node whose block id is `target.id`, in the document `target.document`
+ *  names where it names one. Graph draws every node of its read (R10), so an address of a block
+ *  Conversation's read holds none of opens Graph where Graph's read, as the page holds it,
+ *  answers the block. */
+export function answerHolds(
+  answer: TreeAnswer | undefined,
+  target: BlockTarget,
+  kinds?: readonly NodeType[]
+): boolean {
+  return (answer?.nodes ?? []).some(
+    (node) =>
+      (kinds === undefined || (kinds as readonly string[]).includes(node.supertag)) &&
+      blockIdOfNode(node) === target.id &&
+      (target.document === undefined || node.document?.slug === target.document)
+  );
+}
+
+/** The filter a row's kind tag opens its node in (R9): a criterion or a statement in Spec, a
+ *  check in Verification, a decision in Decisions. Undefined for every other node, whose tag
+ *  opens nothing: a requirement that is no statement and a check that is no check of the
+ *  Verification document (`kindOf`) among them. */
+export function tagFilter(node: TreeNode): Filter | undefined {
+  if (node.type === "criterion") return "spec";
+  switch (kindOf(node)) {
+    case "requirement":
+      return "spec";
+    case "check":
+      return "verification";
+    case "decision":
+      return "decisions";
+    default:
+      return undefined;
+  }
+}
+
+/** The kinds of a turn of the conversation, which a message's thread holds under it. */
+const TURN_KINDS: readonly NodeType[] = ["comment", "message"];
+
+/** Whether `node` is a message under which a node it produced stands - any node but a turn of
+ *  its thread - which Conversation draws as one context row with its kind (R9): the thread's
+ *  reply is written in Threads, so its row takes none. */
+export function isThreadContext(node: Pick<TreeNode, "children" | "type">): boolean {
+  return node.type === "message" && node.children.some((child) => !TURN_KINDS.includes(child.type));
+}
+
+/**
+ * The page with no filter on, or Graph: the whole tree but the memo, or under a words filter each
+ * match with the chain above it as context. In Conversation (`conversation`), which draws
+ * Conversation's read and nothing else (R9), a result and a plan task are no row
+ * (`NO_CONVERSATION_ROW`) but where a row stands under one or the address names it, and a message
+ * under which a node it produced stands - any node but a turn of its thread - is one context row
+ * with its kind. Graph draws every node of the tree as a row.
+ */
 function conversationView(
   root: TreeNode,
   wanted: string,
   named: ReadonlySet<string>,
-  memo: string | undefined
+  memo: string | undefined,
+  conversation: boolean
 ): PresetView {
   const context = new Set<string>();
   const matched = new Set<string>();
@@ -199,18 +311,25 @@ function conversationView(
     const children = node.children
       .map(prune)
       .filter((child): child is TreeNode => child !== undefined);
+    if (
+      conversation &&
+      NO_CONVERSATION_ROW[node.type] !== undefined &&
+      children.length === 0 &&
+      !named.has(node.id)
+    ) {
+      return undefined;
+    }
     const own = named.has(node.id) || holds(node, wanted);
     if (!own && children.length === 0) return undefined;
     if (own) matched.add(node.id);
     else context.add(node.id);
+    if (conversation && isThreadContext({ children, type: node.type })) context.add(node.id);
     return { ...node, children, held: heldBy(children) };
   };
-  const filtering = wanted !== "";
   const pruned = prune(root);
   if (pruned !== undefined) {
     return {
       context,
-      filtering,
       lines: NO_LINES,
       matches: matched.size,
       root: pruned,
@@ -221,12 +340,49 @@ function conversationView(
   context.add(root.id);
   return {
     context,
-    filtering,
     lines: NO_LINES,
     matches: 0,
     root: { ...root, children: [], held: 0 },
     rootRow: true,
   };
+}
+
+/** What one node of the tree gives a filter at its place: the rows its branch draws there, and
+ *  whether the node is itself one of them. */
+interface Lifted {
+  readonly drawn: boolean;
+  readonly rows: TreeNode[];
+}
+
+/**
+ * The rows `node`'s branch gives a filter at the place `node` stands in the tree, in the tree's
+ * order: the row `rowOf` draws `node` as, given what each of its children gave, or, where it
+ * draws none, the rows of the branch at `node`'s place (`liftPast`). A transclusion gives a
+ * filter nothing unless the filter draws every placement.
+ */
+function lift(
+  node: TreeNode,
+  everyPlacement: boolean,
+  rowOf: (node: TreeNode, parts: readonly Lifted[]) => TreeNode | undefined
+): Lifted {
+  if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
+  const parts = node.children.map((child) => lift(child, everyPlacement, rowOf));
+  const row = rowOf(node, parts);
+  return row === undefined
+    ? { drawn: false, rows: liftPast(node, parts) }
+    : { drawn: true, rows: [row] };
+}
+
+/** The rows `parts` give the place of `node`, which the filter draws as no row: each row of its
+ *  own children carrying it as its parent's line (`lineOfParent`), so a drawn node whose parent
+ *  is no row is drawn where that parent stood, and each row from deeper as it came. */
+function liftPast(node: TreeNode, parts: readonly Lifted[]): TreeNode[] {
+  const line = parts.some((part) => part.drawn) ? lineOfParent(node) : undefined;
+  return parts.flatMap((part) =>
+    part.drawn && line !== undefined
+      ? part.rows.map((row) => ({ ...row, parentLine: line }))
+      : part.rows
+  );
 }
 
 /** One filter over the tree: its kinds as rows, each other parent a line on its child's row. */
@@ -239,17 +395,10 @@ function filterView(
   const rows = ROW_KINDS[filter];
   const contextKinds = CONTEXT_KINDS[filter];
   const counted = COUNTED_KINDS[filter];
-  // Verification draws a check under every requirement it serves, as the outline does; every
-  // other filter draws a node at its own place alone.
-  const everyPlacement = filter === "verification";
   const context = new Set<string>();
   const matched = new Set<string>();
-  // The rows `node` gives the view, and whether `node` is itself one of them: either the node
-  // with its own rows under it, or, where it is no row, the rows of its branch lifted to where
-  // it stood.
-  const lift = (node: TreeNode): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
-    if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
-    const parts = node.children.map(lift);
+  // The row `node` is, with the rows of its branch under it, where the filter draws it.
+  const rowOf = (node: TreeNode, parts: readonly Lifted[]): TreeNode | undefined => {
     // A `requirement` or `check` block of a document that does not play that part is of no
     // kind a filter draws (`kindOf`): it is a row only where the address names it, and counted
     // nowhere.
@@ -261,23 +410,17 @@ function filterView(
       kind !== undefined &&
       contextKinds.includes(kind) &&
       (wanted === "" || holds(node, wanted) || parts.some((part) => part.rows.length > 0));
-    const drawn = own || placing;
-    const line = drawn || !parts.some((part) => part.drawn) ? undefined : lineOfParent(node);
-    const below = parts.flatMap((part) =>
-      part.drawn && line !== undefined
-        ? part.rows.map((row) => ({ ...row, parentLine: line }))
-        : part.rows
-    );
-    if (!drawn) return { drawn: false, rows: below };
+    if (!own && !placing) return undefined;
     if (own && kind !== undefined && counted.includes(kind)) matched.add(node.id);
     if (placing) context.add(node.id);
-    return { drawn: true, rows: [{ ...node, children: below, held: heldBy(below) }] };
+    const below = parts.flatMap((part) => part.rows);
+    return { ...node, children: below, held: heldBy(below) };
   };
+  const everyPlacement = drawsEveryPlacement(filter);
   // The issue is no row of a filter, and no row's parent line: the page is the issue.
-  const top = root.children.flatMap((child) => lift(child).rows);
+  const top = root.children.flatMap((child) => lift(child, everyPlacement, rowOf).rows);
   return {
     context,
-    filtering: true,
     lines: NO_LINES,
     matches: matched.size,
     root: { ...root, children: top, held: heldBy(top) },
@@ -286,7 +429,7 @@ function filterView(
 }
 
 /**
- * One filter drawn from its view read (`TreeNode.views`, R4): the nodes the view's query took of
+ * One filter drawn from its view read (`TreeNode.views`): the nodes the view's query took of
  * the filter's row kinds, each drawn as the tree's node of the same identity (`treeIdOfNode`),
  * so a row reads as it does in the outline, under the row the read places it under, else at the
  * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. Verification
@@ -295,8 +438,9 @@ function filterView(
  * node of an issue under this one - is no row, and neither is the memo, a callout. A decision and
  * a constraint are never rows: each is a line of the row its tie names (`PresetView.lines`). The
  * words filter keeps the rows whose words hold it, as `filterView` keeps them, and a node the
- * address names is drawn whatever the filter, from the view where it holds the node and from the
- * tree where not.
+ * address names is drawn whatever the filter: from the view where the view holds it as a row, and
+ * else where `filterView` draws it, at each place the tree has it, under the nearest row of the
+ * view above it there or at the top, in the tree's order among the view's rows there.
  */
 function heldFilterView(
   root: TreeNode,
@@ -306,13 +450,12 @@ function heldFilterView(
   named: ReadonlySet<string>
 ): PresetView {
   // Each node of the tree the read drew, by its id and by the read's id, at its first placement,
-  // and each placement by its id and the node it stands under; each node by its own id, with its
-  // parent. A view's node is matched by its id; a node the view does not hold, by the read's.
+  // and each placement by its id and the node it stands under. A view's node is matched by its
+  // id; a node the view does not hold, by the read's.
   const fromRead = new Map<string, TreeNode>();
   const byRead = new Map<string, TreeNode>();
   const ofRead = new Map<string, TreeNode[]>();
   const placements = new Map<string, TreeNode>();
-  const byId = new Map<string, { readonly node: TreeNode; readonly parent: TreeNode }>();
   const index = (parent: TreeNode): void => {
     for (const child of parent.children) {
       if (child.readId !== undefined) {
@@ -325,7 +468,6 @@ function heldFilterView(
         if (!byRead.has(child.readId)) byRead.set(child.readId, child);
         placements.set(`${child.id} ${parent.id}`, child);
       }
-      if (!byId.has(child.id)) byId.set(child.id, { node: child, parent });
       index(child);
     }
   };
@@ -375,7 +517,7 @@ function heldFilterView(
     const id = treeOf.get(node)?.id;
     if (id !== undefined && parent !== undefined && rowIds.has(parent)) homes.set(id, [parent]);
   }
-  for (const tuple of filter === "verification" ? (answer.tuples ?? []) : []) {
+  for (const tuple of drawsEveryPlacement(filter) ? (answer.tuples ?? []) : []) {
     const to = treeNodeOf(tuple.to.id)?.id;
     const from = treeNodeOf(tuple.from.id)?.id;
     if (tuple.kind !== "serves" || to === undefined || from === undefined || !rowIds.has(to)) {
@@ -400,13 +542,84 @@ function heldFilterView(
   const context = new Set<string>();
   const matched = new Set<string>();
   const drawnIds = new Set<string>();
+  // The tree as `filterView` lifts it (`lift`), with the view's rows and the nodes the address
+  // names as its rows: so a named node that is no row of the view stands where `filterView`
+  // draws it, at each place the tree has it (every placement under Verification, as there),
+  // under the nearest row of the view above it or at the top, carrying its parent's line where
+  // that parent is no row. What the tree holds under each placement of a row of the view is kept
+  // by that placement (`liftedAt`), and by the row's id at its first placement the lift reaches
+  // (`liftedOf`), for a placement it stops at: under Spec and Plan it stops at a transclusion,
+  // which can come first in the tree's order. An address that names no node, or only rows of the
+  // view, lifts nothing: the view read places every row.
+  const liftedAt = new Map<TreeNode, readonly Lifted[]>();
+  const liftedOf = new Map<string, readonly Lifted[]>();
+  const treeRowOf = (node: TreeNode, parts: readonly Lifted[]): TreeNode | undefined => {
+    if (rowIds.has(node.id)) {
+      liftedAt.set(node, parts);
+      if (!liftedOf.has(node.id)) liftedOf.set(node.id, parts);
+      return node;
+    }
+    // A named node with what its branch gave, which `amongView` draws (`namedRow`).
+    return named.has(node.id)
+      ? { ...node, children: parts.flatMap((part) => part.rows) }
+      : undefined;
+  };
+  const liftedTop = [...named].every((id) => rowIds.has(id))
+    ? undefined
+    : root.children.map((child) => lift(child, drawsEveryPlacement(filter), treeRowOf));
+  // The rows the view draws at one place, each of `nodes` drawn by `drawNode`, with each node the
+  // address names that the tree holds at that place (`lifted`), in the tree's order: before the
+  // first of the view's rows here that comes after it in the tree, else after them all. A row of
+  // the view among what the tree holds there only marks that order: the view read places it.
+  const amongView = (
+    nodes: readonly TreeAnswerNode[],
+    lifted: readonly Lifted[] | undefined,
+    drawNode: (node: TreeAnswerNode) => Lifted
+  ): Lifted[] => {
+    if (lifted === undefined) return nodes.map(drawNode);
+    const here = new Set(nodes.map((node) => treeOf.get(node)?.id));
+    const before = new Map<string, Lifted[]>();
+    let waiting: Lifted[] = [];
+    const reach = (id: string): void => {
+      if (waiting.length === 0 || !here.has(id) || before.has(id)) return;
+      before.set(id, waiting);
+      waiting = [];
+    };
+    // A named node's row as drawn, counted where its kind is counted: each row of the view the
+    // tree holds in its branch is none of its rows, and is reached in turn after it (`inside`).
+    const namedRow = (row: TreeNode, inside: string[]): TreeNode => {
+      if (counted.includes(row.type)) matched.add(row.id);
+      const children = row.children.flatMap((child) => {
+        if (!rowIds.has(child.id)) return [namedRow(child, inside)];
+        inside.push(child.id);
+        return [];
+      });
+      return { ...row, children, held: heldBy(children) };
+    };
+    for (const part of lifted) {
+      for (const row of part.rows) {
+        if (rowIds.has(row.id)) {
+          reach(row.id);
+          continue;
+        }
+        const inside: string[] = [];
+        waiting.push({ drawn: part.drawn, rows: [namedRow(row, inside)] });
+        for (const id of inside) reach(id);
+      }
+    }
+    const drawn = nodes.flatMap((node) => [
+      ...(before.get(treeOf.get(node)?.id ?? "") ?? []),
+      drawNode(node),
+    ]);
+    return [...drawn, ...waiting];
+  };
   // As `filterView`'s `lift`: the node with its own rows under it, or, where it is no row, the
-  // rows of its branch at its place, each carrying it as its parent's line.
+  // rows of its branch at its place (`liftPast`).
   const draw = (
     node: TreeAnswerNode,
     home: TreeNode | undefined,
     above: ReadonlySet<string>
-  ): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
+  ): Lifted => {
     const held = treeOf.get(node);
     const tree =
       (home === undefined || held === undefined
@@ -414,52 +627,41 @@ function heldFilterView(
         : placements.get(`${held.id} ${home.id}`)) ?? held;
     if (tree === undefined || above.has(tree.id)) return { drawn: false, rows: [] };
     const inner = new Set([...above, tree.id]);
-    const parts = (below.get(tree.id) ?? []).map((child) => draw(child, tree, inner));
+    const lifted = liftedAt.get(tree) ?? liftedOf.get(tree.id);
+    const parts = amongView(below.get(tree.id) ?? [], lifted, (child) => draw(child, tree, inner));
     const own = named.has(tree.id) || (node.role === "query" && holds(tree, wanted));
     const placing =
       !own &&
       node.role !== "query" &&
       (wanted === "" || holds(tree, wanted) || parts.some((part) => part.rows.length > 0));
-    const drawn = own || placing;
-    const line = drawn || !parts.some((part) => part.drawn) ? undefined : lineOfParent(tree);
-    const kept = parts.flatMap((part) =>
-      part.drawn && line !== undefined
-        ? part.rows.map((row) => ({ ...row, parentLine: line }))
-        : part.rows
-    );
-    if (!drawn) return { drawn: false, rows: kept };
+    if (!own && !placing) return { drawn: false, rows: liftPast(tree, parts) };
     if (own && counted.includes(tree.type)) matched.add(tree.id);
     if (placing) context.add(tree.id);
     drawnIds.add(tree.id);
+    const kept = parts.flatMap((part) => part.rows);
     return { drawn: true, rows: [{ ...tree, children: kept, held: heldBy(kept) }] };
   };
-  const drawnTop = top.flatMap((node) => {
+  const drawTop = (node: TreeAnswerNode): Lifted => {
     const part = draw(node, undefined, new Set());
     const line = part.drawn ? viewParentLine(node, root, parentOf.get(node)) : undefined;
-    return line === undefined ? part.rows : part.rows.map((row) => ({ ...row, parentLine: line }));
-  });
-  // A node the address names that the view does not draw, from the tree, at the top.
-  const addressed = [...named].flatMap((id) => {
-    const found = drawnIds.has(id) ? undefined : byId.get(id);
-    if (found === undefined) return [];
-    if (counted.includes(found.node.type)) matched.add(id);
-    const line = found.parent === root ? undefined : lineOfParent(found.parent);
-    return [
-      {
-        ...found.node,
-        children: [],
-        held: 0,
-        ...(line === undefined ? {} : { parentLine: line }),
-      },
-    ];
-  });
-  const children = [...drawnTop, ...addressed];
+    return line === undefined
+      ? part
+      : { drawn: true, rows: part.rows.map((row) => ({ ...row, parentLine: line })) };
+  };
+  const children = amongView(top, liftedTop, drawTop).flatMap((part) => part.rows);
+  // The view says by its own read alone whether nodes remain to read (`TreeNode.moreToRead`),
+  // never by the outline read's mark on the root.
+  const { moreToRead: _outline, ...issueNode } = root;
   return {
     context,
-    filtering: true,
     lines: viewLines(answer, treeNodeOf, drawnIds),
     matches: matched.size,
-    root: { ...root, children, held: heldBy(children) },
+    root: {
+      ...issueNode,
+      children,
+      held: heldBy(children),
+      ...(nextTreeCursor(answer) === undefined ? {} : { moreToRead: true }),
+    },
     rootRow: false,
   };
 }
@@ -536,6 +738,11 @@ function lineOfParent(node: TreeNode): ParentLine {
     // The parent's own address, which makes its line the link a reader follows to it (R18, and
     // R26: a step's row reaches the statement it serves).
     ...(node.reference === undefined ? {} : { reference: node.reference }),
+    // A comment's or a message's marks, which its child's row draws with the line
+    // (INFRA-1523, R2 and R3).
+    ...(node.deletedAt === undefined ? {} : { deletedAt: node.deletedAt }),
+    ...(node.deletedBy === undefined ? {} : { deletedBy: node.deletedBy }),
+    ...(node.editedAt === undefined ? {} : { editedAt: node.editedAt }),
     type: node.type,
   };
 }
@@ -557,6 +764,9 @@ export interface PresetSignal {
   /** The part of the count that asks something of the reader, with the word it is drawn with:
    *  the checks that failed, the decisions waiting for the reader's review. */
   readonly flag?: { readonly count: number; readonly word: keyof typeof FILTER_SIGNAL_WORDS };
+  /** Whether the read the count is read from holds nodes no page read yet holds, so the count is
+   *  of the nodes loaded and carries "+" (R15, `TreeNode.moreToRead`). */
+  readonly more?: true;
   /** The noun the count is drawn in, where the picture draws one ("13 steps"). */
   readonly unit?: keyof typeof FILTER_SIGNAL_WORDS;
 }
@@ -573,14 +783,20 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
   return found.size;
 }
 
-/** The signal each filter's control draws under `query`, which its count follows. */
+/** The signal each filter's control draws under `query`, which its count follows. A count read
+ *  from a read that names a next page carries "+" (`PresetSignal.more`): the held view's own read
+ *  for a filter whose view is held, and the tree's for every other. */
 export function filterSignals(
   root: TreeNode,
   query: string
 ): Readonly<Record<Filter, PresetSignal>> {
   const view = (filter: Filter) => presetView(root, filter, query);
-  // Once a filter's view read is held, its count is that read's own nodes of its main kind whose
-  // words hold the query (R4); until then, what the view read off the tree draws.
+  const more = (answer: TreeAnswer | undefined): Pick<PresetSignal, "more"> =>
+    (answer === undefined ? root.moreToRead === true : nextTreeCursor(answer) !== undefined)
+      ? { more: true }
+      : {};
+  // Once a filter's view read is held, its count is the held view's own nodes of its main kind
+  // whose words hold the query; until then, what the view read off the tree draws.
   const count = (filter: TreeFilter): number => {
     const held = root.views?.[filter];
     if (held === undefined) return view(filter).matches;
@@ -615,12 +831,14 @@ export function filterSignals(
     decisions: {
       count: decisions.matches,
       ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
+      ...more(undefined),
     },
-    plan: { count: count("plan"), unit: "steps" },
-    spec: { count: count("spec") },
+    plan: { count: count("plan"), ...more(root.views?.plan), unit: "steps" },
+    spec: { count: count("spec"), ...more(root.views?.spec) },
     verification: {
       count: count("verification"),
       ...(failing === 0 ? {} : { flag: { count: failing, word: "failing" } }),
+      ...more(root.views?.verification),
     },
   };
 }

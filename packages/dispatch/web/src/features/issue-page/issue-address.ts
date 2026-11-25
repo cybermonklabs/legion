@@ -1,7 +1,8 @@
 import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
 
 import type { Ask, Comment, MessageRead } from "../../api/types";
-import { buildIssuePath, type IssueRoute } from "../refs/routes";
+import { blockFragment } from "../refs/block-reference";
+import { buildIssuePath, type IssueRoute, parseNodeReference } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
@@ -70,6 +71,9 @@ export interface IssueAddress {
   /** Whether the address opens the node menu, which `/artifacts` does (R20). */
   readonly nodeMenu: boolean;
   readonly preset: Preset;
+  /** The node Graph's address roots Graph at (`/graph/<node id>`), by the id the tree draws it by
+   *  (`TreeNode.id`); absent on every other address (R10). */
+  readonly zoom?: string;
   /** The node the address names, which the page unfolds the path to and focuses (R19). */
   readonly target: AddressTarget | undefined;
   /** The version the address pins (`?v=`): of the document it opens, and otherwise of the
@@ -77,30 +81,35 @@ export interface IssueAddress {
   readonly version: number | undefined;
 }
 
-/** Which filter each kind of route opens (R20). Every route not named here is the page with no
- *  filter on, Conversation, whose own address is the issue's. */
+/** Which filter each kind of route opens (R20), and Graph's own route, Graph (R10). Every route
+ *  not named here is the page with no filter on, Conversation, whose own address is the issue's. */
 const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
   decisions: "decisions",
+  graph: "graph",
   plan: "plan",
   spec: "spec",
   verification: "verification",
 };
 
 /** The address of `preset` on `key`, which is the address its own control carries (R2, R20):
- *  each filter its old tab's, and Conversation, the page with no filter on, the issue's own. */
+ *  each filter its old tab's, Graph its own (`/graph`), and Conversation, the page with no
+ *  filter on, the issue's own. */
 export function presetPath(key: string, preset: Preset): string {
   return buildIssuePath(preset === "conversation" ? { key, kind: "issue" } : { key, kind: preset });
 }
 
-/** The address of the row of the node whose id in the tree read is `readId` on the page of the
- *  issue `key`: the outline's, at its `?node=` (`issueAddress`), after the words filter `filter`
- *  (`?q=`) where one is given. A lens chip (`lenses/NodeLink.tsx`), a store address in a row's
- *  words (`lenses/store-words.ts`) and the landing of a lens just invoked (`lenses/lens-reads.ts`)
- *  link that row by it, and a store link's path is checked against it. */
-export function outlineRowPath(key: string, readId: string, filter?: string): string {
-  const query = new URLSearchParams(filter === undefined ? {} : { q: filter });
-  query.set("node", readId);
-  return `${presetPath(key, "conversation")}?${query}`;
+/** The address that opens `preset` at `node`: the view's own address with the `#b-` fragment of
+ *  the block the node's reference names, which the view lands on as on any block its address
+ *  names (`issueAddress`). Undefined for a node whose reference names no block of an issue. */
+export function presetNodePath(
+  preset: Preset,
+  node: Pick<TreeNode, "reference">
+): string | undefined {
+  const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
+  if (route === undefined || !("key" in route) || !("block" in route)) return undefined;
+  return route.block === undefined
+    ? undefined
+    : `${presetPath(route.key, preset)}${blockFragment(route.block.id)}`;
 }
 
 /** A positive integer `?v=` holds, or undefined for anything else. */
@@ -224,6 +233,7 @@ export function issueAddress(
           : named
         : { id: documentItem.id, kind: "item" },
     version,
+    ...(route.kind === "graph" && route.node !== undefined ? { zoom: route.node } : {}),
   };
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A closed issue's document settles like any other, and its settlement changes no ask of the
@@ -121,18 +123,14 @@ func documentOwesSettlement(t *testing.T, database *store.Store, document string
 }
 
 // awaitSettledVersionHolding waits until document owes no settlement and its latest version holds
-// part, and answers that version's markdown.
+// part, and answers that version's markdown. Its one bound is the test binary's deadline
+// (testwait.UntilPolling), and its failure prints the latest version it read.
 func awaitSettledVersionHolding(t *testing.T, handler http.Handler, database *store.Store, document, part string) string {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	return testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("document %s to settle a version holding %q (its latest version)", document, part), func() (string, bool) {
 		_, version := documentTexts(t, handler, document)
-		if strings.Contains(version, part) && !documentOwesSettlement(t, database, document) {
-			return version
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("document %s never settled a version holding %q; its latest version reads:\n%s", document, part, version)
-		}
-	}
+		return version, strings.Contains(version, part) && !documentOwesSettlement(t, database, document)
+	})
 }
 
 // A settlement that runs after an issue's close leaves every ask of the issue as the close left
@@ -144,6 +142,7 @@ func awaitSettledVersionHolding(t *testing.T, handler http.Handler, database *st
 // of the server-owned ask attributes, and the text an agent reads shows the withdrawn decision and
 // the third block resolved, and the answered decision answered.
 func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A settlement after the close", closedSettlementSpec)
 	spec := issue.PrimaryArtifactID
@@ -224,6 +223,7 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 // opens the block's ask, credited to the recorded author, and the text an agent reads shows it
 // open.
 func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An ask block across a close", "Context\n")
@@ -272,17 +272,13 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
-	var opened model.Ask
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	opened := testwait.UntilPolling(t, 20*time.Millisecond, "the reopened issue's settlement to open the block's ask (the ask last read)", func() (model.Ask, bool) {
+		var ask model.Ask
 		if id := findBlockAsk(t, handler, issue.Key, spec, "closed-decision"); id != "" {
-			if opened = readBlockAsk(t, handler, id); opened.State == "open" {
-				break
-			}
+			ask = readBlockAsk(t, handler, id)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the reopened issue's settlement never opened the block's ask (latest read %+v)", opened)
-		}
-	}
+		return ask, ask.State == "open"
+	})
 	if !opened.Author.SameAs(author) {
 		t.Fatalf("the block's ask is credited to %+v, want %+v, its recorded author", opened.Author, author)
 	}

@@ -97,6 +97,7 @@ func TestRoleLaneWithNeitherQueueGroupGrantedIsAnError(t *testing.T) {
 // A client counts each slow consumer its connection reports: a core subscription narrowed to one
 // pending message, its handler held, falls behind at the third message.
 func TestClientCountsSlowConsumers(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	client, err := bus.Connect([]string{uri})
 	if err != nil {

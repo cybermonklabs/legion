@@ -16,9 +16,9 @@ import (
 // holder ends, the runner finishes. This is what dispatch_rollout_rehearsal.sh, which holds one
 // table at a time, cannot see across tables.
 func TestSearchMigrationsLockOneTableAtATime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 55)
+	store := openMigratedTestStore(t, 55)
 	holder, err := store.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin holder: %v", err)

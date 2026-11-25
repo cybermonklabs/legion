@@ -12,10 +12,10 @@ import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 
 /**
- * A row's words keep the link the reader is on through a read of the tree again (decision 385).
- * A later read hands a row the same words in objects of its own, which paint nothing again;
- * where the words do change, the new link of the same address takes the focus back; and a reader
- * who put the focus on nothing is given none.
+ * A row's words keep the link the reader is on through a read of the tree again. A later read
+ * hands a row the same words in objects of its own, which paint nothing again; where the words do
+ * change, the new link of the same address takes the focus back; and a reader who put the focus
+ * on nothing is given none.
  */
 
 beforeAll(async () => {
@@ -140,10 +140,9 @@ test("a reader who put the focus on nothing is given none by a paint of other wo
   }
 });
 
-// A store address the words name by its node (decision 388, `lenses/store-words.ts`) is a link
-// holding the address, which the body's reference pass leaves alone, and its row's path as its
-// title. The row makes the path its address: the link opens that row, with the node's name as
-// its words, and is no reference link.
+// A store address the words name by its node is a link holding the address, which the body's
+// reference pass leaves alone, and its row's path as its title. The row makes the path its
+// address: the link opens that row, with the node's name as its words, and is no reference link.
 test("a store address named in a row's words links to its node's row by the node's name", async () => {
   const address = "dispatch://risk/d4000000-0000-4000-8000-000000000004";
   const path = "/issues/CORE-1?node=d4000000-0000-4000-8000-000000000004";
@@ -186,7 +185,7 @@ test("a store address named in a row's words links to its node's row by the node
 
 // A link to a store address takes its title as its address only where the title is the very path
 // a name's link holds: the outline of the page's issue at the `?node=` of that address's node
-// (`lenses/store-words.ts`' `storeLinkPath`). An author's own title on such a link - another
+// (`lenses/store-link.ts`' `storeLinkPath`). An author's own title on such a link - another
 // issue's page, or this issue's at another node - is no address, and the link opens nothing.
 test("a link to a store address opens no path an author wrote as its title", async () => {
   const address = "dispatch://risk/d4000000-0000-4000-8000-000000000004";
@@ -229,9 +228,9 @@ test("a link to a store address opens no path an author wrote as its title", asy
   }
 });
 
-// A store link to a finding names the finding's row by its read id, which `addressOf` builds the
-// finding's address from: the lens's id and the block id after a `#`, or the block id alone. Both
-// open the row; a read id whose part before its `#` is another lens's opens nothing.
+// A store link to a finding names the finding's row by its read id, which `storeAddressOf` builds
+// the finding's address from: the lens's id and the block id after a `#`, or the block id alone.
+// Both open the row; a read id whose part before its `#` is another lens's opens nothing.
 test("a store link to a finding opens its row by either form of its read id", async () => {
   const lens = "c3000000-0000-4000-8000-000000000003";
   const address = `dispatch://lens/${lens}#b-first`;
@@ -274,9 +273,9 @@ test("a store link to a finding opens its row by either form of its read id", as
   }
 });
 
-// A text with no reading of the server's that names a node is read to one paragraph of its plain
-// words, its other addresses as written (`lenses/store-words.ts`): the row's link pass links them,
-// as it links a text drawn as stored.
+// A text with no reading of the server's that names a node is drawn from one paragraph of its
+// plain words, the name's link among them and its other addresses as written: the row's link
+// pass links those, as it links a text drawn as stored.
 test("a block address beside a named store address is linked by the row's link pass", async () => {
   const address = "dispatch://risk/d4000000-0000-4000-8000-000000000004";
   const path = "/issues/CORE-1?node=d4000000-0000-4000-8000-000000000004";

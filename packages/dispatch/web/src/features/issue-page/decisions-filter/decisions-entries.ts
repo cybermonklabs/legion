@@ -4,14 +4,13 @@ import { useCallback, useMemo } from "react";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
-import { isDecisionEntry } from "../../issue/decision-entries";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { wordsOf } from "../../refs/tree-fragment";
 import { decisionChanges } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueAsksQuery, issueCommentsQuery } from "../useIssueTree";
+import { issueAskThreadsQuery, issueCommentsQuery } from "../useIssueTree";
 import {
   askIdOf,
   type DecisionsEntry,
@@ -21,19 +20,20 @@ import {
 } from "./decisions-parts";
 
 /**
- * The one seam between today's reads and the Decisions view: it turns the decisions read, the
- * issue's asks and its comments into the view's parts, so no other file of the view names a
- * read. Once the server's decisions model gives the view its entries, that model's read replaces
- * this module and leaves the view as it is.
+ * The one seam between today's reads and the Decisions view: it turns the decisions read's
+ * entries, the issue's asks and its comments into the view's parts, so no other file of the view
+ * names a read. The decisions read answers each decision as an entry of its node (`entries`): an
+ * agent's decision a `decision` block of the spec or of another of the issue's documents, a
+ * person's the answered ask itself, which the view reads as the page's tree reads them
+ * (`tree-read/tree-nodes.ts`).
  *
  * The reads are the ones the page's tree is built from: the three reads the tree reads, under
  * the keys `useIssueTree.ts` reads them by, the asks by the tree's own definition of that read
- * (`issueAsksQuery`), so the view adds no request of its own. Each takes the tree's freshness
- * too (`EVENT_FRESH`), whose own doc gives the reason. No document plays the decisions part,
- * since decisions are nodes of the spec, so no blocks of one are read: a Change stands under the
- * first decision whose words hold its quote (`decision-review.ts`). A read that holds no
- * decisions, or that has not answered yet, gives no decision and no error: the view draws the
- * questions alone.
+ * (`issueAskThreadsQuery`), so the view adds no request. Each takes the tree's freshness
+ * too (`EVENT_FRESH`), whose own doc gives the reason. No document's blocks are read, as the
+ * tree reads none: a Change stands under the first decision whose words hold its quote
+ * (`decision-review.ts`). A read that holds no decisions, or that has not answered yet, gives no
+ * decision and no error: the view draws the questions alone.
  *
  * The view draws four parts. A decision another person made is no part of its own: it stands
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
@@ -65,19 +65,20 @@ import {
  * already holds keeps that answer, which the view still draws from, so it is not among the
  * refused; nor are the comments, which only move a decision between parts.
  *
- * The seam says too which decisions are a person's write-up of an answered question
- * (`writeUps`) - a person's entry whose `from_ask` names an answered ask of this issue, whose
- * decision entry the seam leaves out of every part - and which questions each one restates: an
- * address naming a write-up lands on the row of a question it answers, and only the decisions
- * read and the asks can tell a write-up from a person's decision of its own.
+ * The seam says too which nodes are a write-up of an answered question (`writeUps`) and which
+ * question each one restates: a `reading` node the tree places under an answered ask
+ * (`tree-read/tree-nodes.ts`'s `draftReading`), which restates the person's answer, and which
+ * the view draws no row for (R9), so an address naming one lands on the row of the question it
+ * answers. The asks read says which ask is answered and the tree read where each reading
+ * stands, so only with both can the seam tell.
  *
  * The hook is the module's one export and its answer's type is its own, so the read that
  * replaces this module has one name to give the view and nothing else of it to keep.
  */
 
 /** The two reads that say which entries there are, in the order the body says which of them
- *  stands refused. */
-type DecisionsRead = "decisions" | "asks";
+ *  stands refused, each by the key the outline draws its line under (`outline-reads.ts`). */
+type DecisionsRead = "issue-decisions" | "asks";
 
 /** The seam's answer: the view's parts, and beside them whether the reads that say which
  *  entries there are hold their answers, which of them stands refused, which runs now and how
@@ -105,12 +106,11 @@ interface DecisionsEntries {
    *  (`standsFailed`): it holds no answer, and a fetch of it failed since it last held one. A read
    *  stays here while it runs again, until it answers. */
   readonly unreadable: readonly DecisionsRead[];
-  /** Each person's write-up of an answered question, by its decision node's id, with the node ids
-   *  of the answered questions it restates. A write-up is a decision node whose entry in the
-   *  decisions read is a person's entry whose `from_ask` names an answered ask of this issue. The
-   *  list draws no row for a write-up, so an address naming one lands on the row of a question it
-   *  answers. Undefined while the asks read holds no answer and is not refused: until it answers,
-   *  an answer it brings may make any person's decision a write-up. */
+  /** Each write-up of an answered question of this issue - a `reading` node the tree places
+   *  under an answered ask - by its node's id, with the node id of the question it restates. The
+   *  list draws no row for a write-up, so an address naming one lands on the row of the question
+   *  it answers. Undefined while the asks read or the decisions read holds no answer and is not
+   *  refused: until both answer, the tree may not yet place a reading under the ask it reads. */
   readonly writeUps: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 }
 
@@ -132,7 +132,7 @@ export function useDecisionsEntries({
 }): DecisionsEntries {
   const decisionsRead = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const decisions = decisionsRead.data;
-  const asksRead = useQuery({ ...issueAsksQuery(issue.key), ...EVENT_FRESH });
+  const asksRead = useQuery({ ...issueAskThreadsQuery(issue.key), ...EVENT_FRESH });
   const asks = asksRead.data;
   // The issue's comments, which hold the changes a person asked of a decision
   // (`decision-review.ts`), under the key the tree reads them by (`issueCommentsQuery`).
@@ -148,7 +148,7 @@ export function useDecisionsEntries({
   const asksRefused = standsFailed(asksRead);
   const unreadable = useMemo<readonly DecisionsRead[]>(
     () => [
-      ...(decisionsRefused ? (["decisions"] as const) : []),
+      ...(decisionsRefused ? (["issue-decisions"] as const) : []),
       ...(asksRefused ? (["asks"] as const) : []),
     ],
     [asksRefused, decisionsRefused]
@@ -157,7 +157,7 @@ export function useDecisionsEntries({
   const asksFetching = asksRead.isFetching;
   const retrying = useMemo<readonly DecisionsRead[]>(
     () => [
-      ...(decisionsFetching ? (["decisions"] as const) : []),
+      ...(decisionsFetching ? (["issue-decisions"] as const) : []),
       ...(asksFetching ? (["asks"] as const) : []),
     ],
     [asksFetching, decisionsFetching]
@@ -165,7 +165,7 @@ export function useDecisionsEntries({
   const decisionsFailures = decisionsRead.errorUpdateCount;
   const asksFailures = asksRead.errorUpdateCount;
   const failures = useMemo<Readonly<Record<DecisionsRead, number>>>(
-    () => ({ asks: asksFailures, decisions: decisionsFailures }),
+    () => ({ asks: asksFailures, "issue-decisions": decisionsFailures }),
     [asksFailures, decisionsFailures]
   );
   // Each read is asked again by its own query, so a Retry asks for that read and no other.
@@ -173,7 +173,7 @@ export function useDecisionsEntries({
   const refetchAsks = asksRead.refetch;
   const retry = useCallback(
     (read: DecisionsRead) => {
-      void (read === "decisions" ? refetchDecisions() : refetchAsks());
+      void (read === "issue-decisions" ? refetchDecisions() : refetchAsks());
     },
     [refetchAsks, refetchDecisions]
   );
@@ -185,69 +185,52 @@ export function useDecisionsEntries({
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
   // a line, so the line rule it is handed is the reading's words, as G's tests hand it.
   const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
-  // The write-ups, read as the model reads the decisions read (`decisionsParts`), from its
-  // entries: an answered question is an ask the tree holds with an answer on it, named by the
-  // ask's own id, which is how an entry names the question it settles (`from_ask`), and a
-  // decision's row is the one its node's address names. A write-up is a person's entry that names
-  // an answered ask of this issue: under the model a person's decision is the answered ask
-  // itself, so the entry restates it. A node drawn under two parents is one node, read at its
-  // first placement in the reading order, as the model reads it (`placements`).
-  const writeUps = useMemo(() => {
-    if (asks === undefined && !asksRefused) return undefined;
-    const questions = new Map<string, string>();
-    const decided: TreeNode[] = [];
-    for (const { node } of placements(root).values()) {
-      const id = askIdOf(node);
-      if (id !== undefined && node.answer !== undefined) questions.set(id, node.id);
-      if (node.type === "decision") decided.push(node);
-    }
-    const rows = new Map(
-      (decisions?.entries ?? []).filter(isDecisionEntry).map((row) => [row.ref, row])
-    );
+  // Each write-up of an answered question the tree holds, by its node's id, with the question it
+  // restates: a `reading` node at its first placement in the reading order, which is where the
+  // tree places it (`placements`), under an ask that holds an answer, the ask the tree read
+  // names it a reading of (`tree-read/tree-nodes.ts`'s `draftReading`).
+  const restating = useMemo(() => {
+    const placed = placements(root);
     const found = new Map<string, ReadonlySet<string>>();
-    for (const node of decided) {
-      const row = rows.get(node.reference ?? "");
-      if (row?.kind !== "person") continue;
-      const restated = (row.from_ask ?? []).flatMap((ask) => questions.get(ask) ?? []);
-      if (restated.length > 0) found.set(node.id, new Set(restated));
+    for (const { node, parent } of placed.values()) {
+      if (node.type !== "reading" || parent === undefined) continue;
+      const held = placed.get(parent.id)?.node;
+      if (held === undefined || askIdOf(held) === undefined || held.answer === undefined) continue;
+      found.set(node.id, new Set([held.id]));
     }
     return found;
-  }, [asks, asksRefused, decisions, root]);
-  // The model's parts, from its inputs alone: how a read stands is no input of the model, and
-  // neither are the write-ups, so while only those change it is not worked out again.
-  const model = useMemo(
-    () =>
-      decisionsParts({
-        asks,
-        changes,
-        decisions,
-        issueKey: issue.key,
-        nodeIdOf,
-        reader,
-        root,
-        view,
-      }),
-    [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view]
-  );
-  // The view's parts, from the model and the write-ups once the asks read tells them: while only
-  // how a read stands changes, the parts keep their identity and nothing the body works out from
-  // them is worked out again. A write-up is no entry of its own (R2, R9): the question it
-  // restates is the person's decision, so its decision entry leaves every part.
+  }, [root]);
+  // From the model's inputs alone: how a read stands is no input of the model, so while only
+  // that changes the parts keep their identity and nothing the body works out from them is
+  // worked out again. A write-up the address names is no row of the view (R9): the model draws
+  // it as the node the address names (`named`), and it is left out here.
   const parts = useMemo<DecisionsParts>(() => {
-    const own = <Entry extends DecisionsEntry>(entries: readonly Entry[]): Entry[] =>
-      entries.filter((entry) => entry.kind !== "decision" || !writeUps?.has(entry.node.id));
-    const yours =
-      model.others.length === 0
-        ? model.yours
-        : newestFirst([...model.yours, ...model.others], root);
+    const model = decisionsParts({
+      asks,
+      changes,
+      decisions,
+      issueKey: issue.key,
+      nodeIdOf,
+      reader,
+      root,
+      view,
+    });
     return {
       ...model,
-      agents: own(model.agents),
+      named: model.named.filter((entry) => !restating.has(entry.node.id)),
       others: [],
-      review: own(model.review),
-      yours: own(yours),
+      yours:
+        model.others.length === 0
+          ? model.yours
+          : newestFirst([...model.yours, ...model.others], root),
     };
-  }, [model, root, writeUps]);
+  }, [asks, changes, decisions, issue.key, nodeIdOf, reader, restating, root, view]);
+  // Until the asks read and the decisions read have answered, or stand refused, the tree may not
+  // yet place a reading under the answered ask it reads, so no write-up is told yet.
+  const writeUps =
+    (asks === undefined && !asksRefused) || (decisions === undefined && !decisionsRefused)
+      ? undefined
+      : restating;
   return { failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 

@@ -9,7 +9,7 @@ import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
   type IssueTreeView,
-  issueAsksQuery,
+  issueAskThreadsQuery,
   issueCommentsQuery,
   issueMessagesQuery,
   useIssueTree,
@@ -17,10 +17,10 @@ import {
 
 /** One line the outline draws over the tree (`FailedReadLine`), with a Retry. A read the rows
  *  come from has one while it stands failed (`standsFailed`), and its Retry asks that read alone
- *  again. The names reads have one line between them, which stands while their count of failures
- *  is above 0 (`IssueTreeView.namesFailure`): while a read under a new set of addresses is out as
- *  well, though no names read stands failed then. Its Retry asks again every names read that
- *  holds no answer under its set, a first read of a new set included. */
+ *  again. The names read has one line, which stands while its count of failures is above 0
+ *  (`IssueTreeView.namesFailure`): while its read under a new set of addresses is out as well,
+ *  though it does not stand failed then. Its Retry asks the names read again while it holds no
+ *  answer under its set, a first read of a new set included. */
 export interface FailedRead {
   /** Whether the questions come from the read, as of the reads here they come from the asks':
    *  the issue's own read brings its open asks too (`tree-read/tree-nodes.ts`'s `asksOf`), so a
@@ -43,12 +43,12 @@ export interface FailedRead {
    *  goes to the first such line, the questions' before it (`bringsQuestions`), where one
    *  stands failed (`IssueTree`'s opening), and the names place no row. */
   readonly placesRows: boolean;
-  /** Asks that read alone again; the names line's asks again every names read that holds no
+  /** Asks that read alone again; the names line's asks the names read again while it holds no
    *  answer under its set of addresses (`NamesFailure.retry`). */
   readonly retry: () => void;
   /** Whether the read runs again (TanStack Query's `isFetching`); for the names line, whether
-   *  one of the names reads that hold no answer under their set runs, again or as a first read
-   *  of a new set (`NamesFailure.retrying`). */
+   *  the names read runs while it holds no answer under its set, again or as a first read of a
+   *  new set (`NamesFailure.retrying`). */
   readonly retrying: boolean;
 }
 
@@ -144,7 +144,7 @@ function sixReads(key: string) {
       bringsQuestions: true,
       line: "asks",
       message: STATE_LINES.asks_unreadable,
-      query: { ...issueAsksQuery(key), ...EVENT_FRESH },
+      query: { ...issueAskThreadsQuery(key), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
@@ -215,14 +215,13 @@ function failedLines(
  * stands failed holds nothing either (`standsFailed`): the page cannot say what it would have
  * held, so the outline says that the read failed (`failed`). One whose refresh failed holds the
  * answer it had, which its rows are drawn from, and says nothing. The names' line stands while
- * the names reads' count of failures is above 0 (`IssueTreeView.namesFailure`): from a failure of
- * a names read that holds no answer under its set of addresses until every one of them holds
- * one, so it stays while a read under a new set is out, though no names read stands failed then -
- * the tree draws the names an older set's read gave meanwhile. Its Retry asks again every names
- * read that holds no answer under its set, a first read of a new set included, and no other read,
- * and the line is busy while one of those runs (`retrying`). Whether the names are held is the
- * tree's own answer (`IssueTreeView.namesHeld`). The conversation's reads are kept too, which
- * tell a turn the outline leaves out (`useAddressFallback`).
+ * the one names read's count of failures is above 0 (`IssueTreeView.namesFailure`): from a
+ * failure while it holds no answer under its set of addresses until it holds one, so it stays
+ * while its read under a new set is out - the tree draws the names an older set's answer gave
+ * meanwhile. Its Retry asks that read again, and no other read, and the line is busy while it
+ * runs (`retrying`). Whether the names are held is the tree's own answer
+ * (`IssueTreeView.namesHeld`). The conversation's reads are kept too, which tell a turn the
+ * outline leaves out (`useAddressFallback`).
  */
 export function useOutlineReads(issue: IssueDetails): OutlineReads {
   // The tree read's `pending` and `failed` are `useIssueTree`'s, under its key, so they cost no

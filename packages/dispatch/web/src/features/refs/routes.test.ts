@@ -282,9 +282,9 @@ test("a block names nothing on a versioned document, an issue or a malformed pin
 // A block of a comment or an issue message is named under its item, by a `dispatch://` reference
 // or the issue item's page, and its target id is `<item kind>/<item id>#<block id>`: a comment
 // block can be pinned to a revision of its comment, and opens the live comment at the block; a
-// message never changes, so a pinned message block names nothing. A document page's `#b-` names a
-// block of the document, so a `?comment=` page names the comment whatever its fragment, and a
-// project document's comment block opens its comment with no fragment.
+// message records no revisions, so a pinned message block names nothing. A document page's `#b-`
+// names a block of the document, so a `?comment=` page names the comment whatever its fragment,
+// and a project document's comment block opens its comment with no fragment.
 test("a block of a comment or a message is named under its item, as the server reads it", () => {
   const origin = "https://dispatch.test";
   const comment = "11111111-1111-4111-8111-111111111111";
@@ -685,6 +685,24 @@ test("the plan tab owns its path, its reference and its short form", () => {
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/plan"));
   expect(
     referenceRouteFromHref("https://dispatch.test/issues/CORE-1/plan", "https://dispatch.test")
+  ).toEqual(route);
+});
+
+// Graph, the new issue page's view of the whole tree read, owns its path and Graph zoomed to one
+// node its own: each is the issue's route with Graph on, and its reference is the issue's.
+test("the graph view owns its path, zoomed to a node too, and its reference is the issue's", () => {
+  const route = { key: "CORE-1", kind: "graph" as const };
+  const zoomed = { key: "CORE-1", kind: "graph" as const, node: "spec#b-r1" };
+
+  expect(parseIssuePath("/issues/CORE-1/graph")).toEqual(route);
+  expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/graph"));
+  expect(parseIssuePath("/issues/CORE-1/graph/spec%23b-r1")).toEqual(zoomed);
+  expect(buildIssuePath(zoomed)).toBe(browserPath("issues/CORE-1/graph/spec%23b-r1"));
+  expect(parseIssuePath("/issues/CORE-1/graph/%E0%A4%A")).toBeUndefined();
+  expect(buildDispatchReference(zoomed)).toBe("dispatch://CORE-1");
+  expect(shortForm(route)).toBe("CORE-1");
+  expect(
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/graph", "https://dispatch.test")
   ).toEqual(route);
 });
 

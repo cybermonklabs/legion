@@ -127,7 +127,7 @@ peer_text() {
 }
 
 # peer_watch: runs until it is stopped, adding to `peer_seen` each ping and reply the peer is
-# shown for the first time, with the time it was first seen.
+# shown for the first time, with the time it was first seen, looked at every pause.
 # shellcheck disable=SC2329 # started in the background by peer_start
 peer_watch() {
   local text rest word n stamped
@@ -149,7 +149,7 @@ peer_watch() {
         esac
       done
     done
-    sleep 1
+    pause
   done
 }
 
@@ -172,7 +172,7 @@ peer_start() {
     while [ -z "$ready" ] && [ "$(now)" -lt "$deadline" ]; do
       case $(tmux -S "$peer_tmux" capture-pane -p -J -S -5000 -t outside-e2e-peer 2>/dev/null) in
         *"outside-e2e-peer-$nonce"*) ready=yes ;;
-        *) sleep 1 ;;
+        *) pause ;;
       esac
     done
     omp_clear_screens "$peer_tmux" outside-e2e-peer
@@ -205,7 +205,7 @@ peer_start() {
     deadline=$(($(now) + 60))
     while [ "$(now)" -lt "$deadline" ]; do
       case $(cat "$work/peer.log") in *'"ready":true'* | *'"unknown"'*) break ;; esac
-      sleep 1
+      pause
     done
     case $(cat "$work/peer.log") in
       *'"ready":true'*) ;;
@@ -256,7 +256,7 @@ foreign_start() {
   deadline=$(($(now) + 60))
   while [ "$(now)" -lt "$deadline" ]; do
     case $(cat "$work/foreign.log") in *'"foreign":"'* | *'"unknown"'*) break ;; esac
-    sleep 1
+    pause
   done
   case $(cat "$work/foreign.log") in
     *'"foreign":"'*'"registered":2'*'"listed":true'*'"edge_admits":false'*) ;;

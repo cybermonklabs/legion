@@ -15,6 +15,7 @@ import (
 // that attribute. It reads with the attribute's default, as the browser editor reads it, and the
 // rendering writes that default. A tree built without the attribute validates and renders the same.
 func TestATypedBlockMissingADefaultedAttributeReadsAsItsDefault(t *testing.T) {
+	t.Parallel()
 	const want = ":::callout{#callout-1 kind=\"note\" title=\"\"}\nBody.\n:::\n"
 	tree, err := Parse(":::callout{#callout-1 kind=\"warning\" title=\"Read this\"}\nBody.\n:::\n")
 	if err != nil {
@@ -63,6 +64,7 @@ func TestATypedBlockMissingADefaultedAttributeReadsAsItsDefault(t *testing.T) {
 // The manifest names every node and mark of the Proof schema, and this package's node and mark
 // sets are the manifest's.
 func TestTheManifestNamesEveryNodeAndMarkThisPackageKnows(t *testing.T) {
+	t.Parallel()
 	wantNodes := []string{
 		"blockquote", "bullet_list", "code_block", "doc", "footnote_definition", "footnote_reference",
 		"frontmatter", "hardbreak", "heading", "hr", "html", "image", "list_item", "ordered_list",
@@ -286,7 +288,9 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// element version 4 adds has a row of its own (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree).
+// elements versions 4 and 5 add each have a row of their own
+// (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
+// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -373,6 +377,55 @@ func TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree(t *testing.T
 	}
 }
 
+// The plan_task block's steps attribute, which manifest version 5 adds (the steps an owner's plan
+// task runs, in order), is staged by its own numbers in the same way: this build reads and writes
+// it, and a build at version 4 - the release before it - declares the plan_task block but not the
+// attribute, so it reads and writes a plan task without one, creates none carrying it and reads a
+// stored plan task carrying one as an element it does not know (ErrUnknownElement, answered 409
+// DOC_NEWER_CONTENT).
+func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T) {
+	const adds = 5
+	attribute := Element{Kind: AttributeElement, Block: "plan_task", Name: "steps"}
+	versions, declared := attribute.Versions()
+	if !declared || versions.Since != adds || versions.CreatableSince != adds {
+		t.Fatalf("attribute steps of plan_task = %+v, %t; want since and creatable_since %d", versions, declared, adds)
+	}
+	if SchemaVersion() < adds {
+		t.Fatalf("SchemaVersion() = %d, below the version %d that adds steps", SchemaVersion(), adds)
+	}
+	const markdown = ":::plan_task{#b-t1 steps=\"implementer reviewer\"}\nBody.\n:::\n"
+	const withoutSteps = ":::plan_task{#b-t1}\nBody.\n:::\n"
+	stored, err := Parse(markdown)
+	if err != nil {
+		t.Fatalf("this build reads a plan task carrying steps: %v", err)
+	}
+	if _, err := ParseForWrite(markdown, nil); err != nil {
+		t.Fatalf("this build writes a plan task carrying steps: %v", err)
+	}
+
+	before := adds - 1
+	restore, err := UseManifestForTest(manifestAsOf(t, before))
+	if err != nil {
+		t.Fatalf("install the manifest as of version %d: %v", before, err)
+	}
+	t.Cleanup(restore)
+	if !IsTypedBlock("plan_task") {
+		t.Fatalf("a build at version %d does not declare the plan_task block, which version 3 adds", before)
+	}
+	if _, err := Parse(withoutSteps); err != nil {
+		t.Errorf("a build at version %d reading a plan task without steps = %v, want no error", before, err)
+	}
+	if _, err := ParseForWrite(withoutSteps, nil); err != nil {
+		t.Errorf("a build at version %d writing a plan task without steps = %v, want no error", before, err)
+	}
+	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), "steps") {
+		t.Errorf("a build at version %d writing a plan task carrying steps = %v, want ErrUnknownElement naming it", before, err)
+	}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
+		t.Errorf("a build at version %d reading a stored plan task carrying steps = %v, want ErrUnknownElement", before, err)
+	}
+}
+
 // storeManifestAhead is the manifest a store one version ahead of this build holds: the
 // embedded one with its version raised by one and change applied to it. The build installs it
 // through Install, which reads it as asOfVersion leaves it, so each case here is a rollback -
@@ -408,12 +461,25 @@ func changeManifestAttribute(t *testing.T, value *BlockSchema, block, attribute 
 }
 
 // installStoreManifest installs value as the server installs what it read from the store, and
-// puts this build's own manifest back when the test ends.
+// puts this build's own manifest back when the test ends. The manifest is the whole process's
+// (active), so a test that calls this runs alone (runsAlone).
 func installStoreManifest(t *testing.T, value BlockSchema) error {
 	t.Helper()
+	runsAlone(t)
 	previous := active.Load()
 	t.Cleanup(previous.install)
 	return Install(value)
+}
+
+// runsAlone makes the testing package refuse t as a parallel test, now and later: t.Setenv fails
+// a test that has called t.Parallel, or whose parent has, and t.Parallel fails a test that has
+// called t.Setenv. Every helper that swaps the process-wide manifest or block schema calls it, so
+// a test that swaps either cannot run beside the tests that read it, and cannot restore it out of
+// order with another swapper (pmdoctest.UseBlockSchema keeps the same rule). Nothing reads the
+// variable.
+func runsAlone(t testing.TB) {
+	t.Helper()
+	t.Setenv("PMDOC_TEST_SWAPS_THE_BLOCK_SCHEMA", "1")
 }
 
 // A store whose enum default a newer release moved to a choice it added installs on the build

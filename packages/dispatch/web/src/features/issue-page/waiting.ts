@@ -1,6 +1,11 @@
 import type { IssueDecisions, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import { type ChangeComment, decisionChangeComments, inReviewList } from "./decision-review";
+import {
+  type ChangeComment,
+  decisionChangeComments,
+  deletedPostIds,
+  inReviewList,
+} from "./decision-review";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -66,9 +71,13 @@ export function waitingOnReader(
     );
   const asks = open.length - approvals.length;
   // The decisions a Change waits on, each by its address: a decision node's from the tree read
-  // alone, as the outline finds it, so the two agree while the comments read is out or older.
+  // alone, as the outline finds it, so the two agree while the comments read is out or older. A
+  // Change its author deleted asks nothing any more, as in the outline (`decisionNodeChanges`).
+  const deleted = deletedPostIds(comments);
   const changed = new Set(
-    decisionChangeComments(decisions, comments, issue, undefined, tree).values()
+    [...decisionChangeComments(decisions, comments, issue, undefined, tree)]
+      .filter(([comment]) => !deleted.has(comment))
+      .map(([, decision]) => decision)
   );
   // An ask's entry never waits for review (`waiting_review`), so only an agent's decision counts.
   const reviewing =

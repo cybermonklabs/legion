@@ -146,7 +146,7 @@ function invoked(kindId: string): LensInvoked {
 }
 
 /** The rows as `IssueTree` hands them to `TreeRows`, each at the top level: the row a focus
- *  lands in is the focused one, and its acts are drawn while it is. */
+ *  lands in is the focused one. */
 function Rows({ isClosed = false, nodes }: { isClosed?: boolean; nodes: readonly TreeNode[] }) {
   const [focused, setFocused] = useState<string | undefined>(undefined);
   const rows: DrawnRow[] = nodes.map((each) => ({ kind: "node", level: 1, node: each, trail: [] }));
@@ -155,15 +155,12 @@ function Rows({ isClosed = false, nodes }: { isClosed?: boolean; nodes: readonly
     <TreeRows
       artifacts={new Map()}
       context={new Set()}
-      cycle={0}
       editing={undefined}
       focused={focused}
       isClosed={isClosed}
       onFocus={(row) => setFocused(row)}
-      onOpenDeeper={() => {}}
-      onPin={() => {}}
+      onPage={() => {}}
       onToggle={() => {}}
-      pinned={new Set()}
       rows={rows}
       tabStop={first === undefined ? undefined : rowKeyOf(first)}
       threads={new Map()}

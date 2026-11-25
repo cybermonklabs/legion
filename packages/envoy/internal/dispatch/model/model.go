@@ -30,6 +30,14 @@ const (
 // slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
 var Scopes = []string{ScopePerson, ScopeApprove}
 
+// ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
+// a credential's scopes, and a read-only personal token's set holds it: POST
+// /api/v1/me/agent-tokens takes it as a mint word and keeps it in agent_read_tokens.scopes, the
+// token list names it, and PATCH /api/v1/me/agent-tokens/{id} refuses it. No credential holds it
+// as a scope: Credential.ReadOnly marks the credential, Credential.Scopes never carries the word,
+// and no route requires it, so no recorded act names it either.
+const ScopeRead = "read"
+
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
 // which credential made it and not only whom it was made for: Session is the session a
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
@@ -72,15 +80,30 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
-	// one the secrets broker minted from a read entry, naming a service and a session and no
-	// person and no project. Dispatch serves it on the routes its read list names
-	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
-	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
-	// Scopes: those are what a route can require of a credential, and read meets no route's
-	// requirement; it narrows what this credential may call rather than widening it. False for
-	// every other credential.
+	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
+	// its verifier decided is read-only (ciphertoken.Caller.ReadOnly), which the secrets broker
+	// minted from a read entry or narrowed to reading because its trade asked for read; and a
+	// read-only personal token, a row of agent_read_tokens, which a person made holding read
+	// alone or beside person (personalTokenActor in internal/dispatch/api). Dispatch answers it
+	// 403 READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
+	// before anything else the route does. The scope itself is not among Scopes: those are what a
+	// route can require of a credential, and read meets no route's requirement; it narrows what
+	// this credential may call rather than widening it. whoami lists it as ScopeRead after
+	// Scopes. False for every other credential: a cookie, the deployment's shared token, a
+	// service-account token, and a broker-issued or personal token that may write.
 	ReadOnly bool
+	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
+	// the zero time for a credential that names no cut. Only a read-only credential carries one.
+	Cut time.Time
+	// ProjectScope is a broker-issued token's project scope as the broker answered it, read as
+	// its base word (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry
+	// mapped, `person` for one acting as its person or for a machine nobody signed in on, `none`
+	// for the read entry's token; a token narrowed to reading carries the word it narrows, with
+	// ReadOnly beside it. It is what tells a token that names a service and no person apart: a
+	// `named` one is an account entry's that names no person, whose writes are recorded under its
+	// account (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in
+	// on, which writes nothing. Empty for every other credential.
+	ProjectScope string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -289,6 +312,31 @@ func DecodeAnchor(data []byte, anchor *Anchor) error {
 	return nil
 }
 
+// DeletedPostMark reads a post's deleted_at and deleted_by columns into the mark every read of
+// a deleted comment or message carries - the comment and message rows themselves, the event
+// log's payloads, the Inbox's reply rows, a session's answers, the body history, the reference
+// graph's comment and message nodes and their blocks' nodes (refs/graph.go,
+// refs/item_block_nodes.go), the block a reply quotes (refs.ReplyBlocks), an id prefix's
+// candidates (refs/prefix.go) and a search hit (api.stampSearchPostMarks) - so that one decode
+// stands behind all of them and no read of a deleted post can answer a mark of another shape.
+// Both are nil for a post that stands, the time is answered in UTC as every other time a read
+// answers is, and an author that deleted the post is read as the actor it was stored as. A mark
+// with no actor stored (deleted_by null, which no delete of this build writes) is the time alone.
+func DeletedPostMark(at *time.Time, by []byte) (*time.Time, *Actor, error) {
+	if at == nil {
+		return nil, nil, nil
+	}
+	deleted := at.UTC()
+	if len(by) == 0 {
+		return &deleted, nil, nil
+	}
+	var actor Actor
+	if err := json.Unmarshal(by, &actor); err != nil {
+		return nil, nil, fmt.Errorf("decode the actor that deleted a post: %w", err)
+	}
+	return &deleted, &actor, nil
+}
+
 // AnchorInput selects document text by quote or identifies a browser-owned mark.
 type AnchorInput struct {
 	// Artifact is required: an anchor naming no document is refused (400 INVALID_ANCHOR,
@@ -316,8 +364,20 @@ type Project struct {
 	// person must approve before the tree's work runs. The empty list is a deployment that
 	// gates nothing and a deployment that has not published yet alike: neither holds a step
 	// waiting for a person, so a reader need not tell them apart.
-	GatedSteps []string  `json:"gated_steps"`
-	CreatedAt  time.Time `json:"created_at"`
+	GatedSteps []string `json:"gated_steps"`
+	// DefaultRepo is the repository, owner/name, an issue of this project resolves to when
+	// neither the issue nor an issue above it names one (refs.IssueRepoResolved). It is set
+	// and cleared by PUT /api/v1/projects/{key}/default-repository. A project with none
+	// carries no member, so a client that does not know the member reads the same project.
+	DefaultRepo *string `json:"default_repo,omitempty"`
+	// ProvenSessions is the project's setting that a session's credential must prove the
+	// session: when it is on, an architect's write of an issue's spec or Verification document
+	// passes only on a credential that proves the architect's session, and a role-holder
+	// publication only on one that proves legion-daemon:<project>
+	// (PUT and DELETE /api/v1/projects/{key}/proven-sessions). Off by default, and always
+	// present, so a reader never has to tell an absent setting from one that is off.
+	ProvenSessions bool      `json:"proven_sessions"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // GatedStepCriteria and GatedStepSpec are the two design-gate steps Project.GatedSteps names,
@@ -473,12 +533,11 @@ type PriorityIssue struct {
 	MovedBy   *Actor         `json:"moved_by"`
 }
 
-// RepoProject assigns an external repository to a native Dispatch project. Default marks the one
-// mapping of the project an issue with no repository of its own, and none on its parent chain,
-// resolves to; at most one mapping of a project is its default. RenamedTo is the full
-// `owner/name` this repository is called today, null for one that was never renamed: Dispatch
-// holds both names of one repository, and the canonical name is what this field reads, else the
-// repository's own (refs.CanonicalRepo).
+// RepoProject is one row of repo_projects. GET /api/v1/settings/repo-projects answers the rows
+// as the last release left them, and nothing writes them now. Default marks the row that was its
+// project's default repository. This release's migration copied it to the project's
+// default_repo. RenamedTo is the full `owner/name` this repository is called today, null for one
+// that was never renamed: the boot reads these pairs once (store.ReadRepoRenames).
 type RepoProject struct {
 	Repo      string    `json:"repo"`
 	Project   string    `json:"project"`
@@ -524,12 +583,13 @@ type ExternalLink struct {
 }
 
 // IssueComponents is an issue's effective component attachment, resolved on
-// read: the nearest ancestor with its own attachment (either mode) decides,
-// and InheritedFrom names it when that ancestor is not the issue itself. Mode
-// "inherit" with no InheritedFrom means no issue on the parent chain chose —
-// the issue is unassigned. IDs is the effective set of live component ids;
-// Unknown the effective member ids a re-import has since retired (kept, never
-// dropped). Reason is set for mode "none".
+// read: the nearest ancestor of the issue's own project with its own
+// attachment (either mode) decides, and InheritedFrom names it when that
+// ancestor is not the issue itself. Mode "inherit" with no InheritedFrom means
+// no issue of its project on the parent chain chose — the issue is unassigned.
+// IDs is the effective set of live component ids; Unknown the effective member
+// ids a re-import has since retired (kept, never dropped). Reason is set for
+// mode "none".
 type IssueComponents struct {
 	Mode          string   `json:"mode"`
 	IDs           []string `json:"ids"`
@@ -629,10 +689,11 @@ type Issue struct {
 	ExternalLinks    []ExternalLink  `json:"external_links"`
 	Route            *string         `json:"route"`
 	// Repo is the issue's own repository, owner/name: any repository GitHub could hold, whether
-	// or not a project maps it; nil when it inherits.
+	// or not it is any project's default; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
-	// nearest ancestor's, else its project's default mapping, else nil.
+	// nearest ancestor's in its own project, else its project's default repository
+	// (Project.DefaultRepo), else nil.
 	ResolvedRepo      *string    `json:"resolved_repo"`
 	CreatedBy         *Actor     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -842,9 +903,26 @@ type SearchResult struct {
 	SnippetTree DisplayTree `json:"snippet_tree,omitempty"`
 	Rank        float64     `json:"rank"`
 	Href        string      `json:"href"`
+	// EditedAt is the time a comment's or a message's author last edited it, absent on a hit of
+	// another kind and on a post never edited.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy are the mark of a comment or a message its author deleted, as the
+	// reads of the post itself carry them (Comment, Message), absent on a hit of another kind and
+	// on a post that stands. The delete clears the body and drops the post's windows in the same
+	// transaction (api's clearDeletedPostBody, refs.TombstoneItem), so neither arm finds the
+	// post once it commits. The mark is the backstop for a hit that reaches a deleted post all
+	// the same, which no path of this build produces: such a hit's Snippet is empty, and the mark
+	// is what tells its reader the post is deleted rather than blank.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy *Actor     `json:"deleted_by,omitempty"`
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
+	// Author is who wrote a comment, a message or an ask hit, read from the item's row once
+	// GET /api/v1/search ran (api.attachAskStates, api.attachItemAuthors), so a reader of the hit
+	// alone can say who said it. It is nil on an issue hit and a document hit, and on an item
+	// removed after the search ran.
+	Author *Actor `json:"author,omitempty"`
 }
 
 // SearchQueryReading is how GET /api/v1/search read the words it was given: Operators names the
@@ -1207,9 +1285,10 @@ type ArchitectureTreeComponent struct {
 }
 
 // ArchitectureTreeIssue is an issue counted for a component. Attached is how:
-// "direct" (its own row names the component), "inherited" (an ancestor's row
-// does), or "contained" (its effective set names a component this one
-// contains; Via is that component). When several apply the strongest wins.
+// "direct" (its own row names the component), "inherited" (the row of an
+// ancestor in its own project does), or "contained" (its effective set names
+// a component this one contains; Via is that component). When several apply
+// the strongest wins.
 type ArchitectureTreeIssue struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -1230,7 +1309,7 @@ type ArchitectureTreeIssueRef struct {
 }
 
 // ArchitectureTreeNone is an issue declared not architectural, with the reason
-// and, when the declaration is an ancestor's, that ancestor.
+// and, when the declaration is an ancestor's in its own project, that ancestor.
 type ArchitectureTreeNone struct {
 	Key           string  `json:"key"`
 	Title         string  `json:"title"`
@@ -1682,13 +1761,31 @@ type CheckCI struct {
 // marks, in document order, and one Gaps line per gap, which `dispatch read --issue` prints
 // after `Coverage: `. HasPlan says whether the issue has a plan document; before it has one, a
 // requirement with no plan task is no gap, since the plan comes after the spec's approval.
-// Nothing is ever refused for a gap.
+// Nothing is ever refused for a gap. OwedDocuments names each document of the issue that owes its
+// block index (OwedDocument), absent where none does: a check or a requirement of such a document
+// may not be counted yet, so the read drops none of them in silence.
 type IssueCoverage struct {
 	Issue          string                `json:"issue"`
 	SpecArtifactID string                `json:"spec_artifact_id"`
 	HasPlan        bool                  `json:"has_plan"`
 	Requirements   []RequirementCoverage `json:"requirements"`
 	Gaps           []string              `json:"gaps"`
+	OwedDocuments  []OwedDocument        `json:"owed_documents,omitempty"`
+}
+
+// OwedDocument is one document of an issue that owes its block index, by either mark the
+// block-index reconciliation lists a document by: its document_block_versions.version null, as
+// every version's insert leaves it until a pass indexes it, or store_owed_at set, this build's own
+// mark. ArtifactID is the document, and Version its newest version, whose blocks wait: a document
+// of an issue room, or the room's tree artifact, waits for the pass over the whole room. The
+// coverage read and the tree read each name every such document of the issue, so a check or a
+// requirement the block index has not reached yet is never dropped in
+// silence: an upload or a create whose written tree does not render as its version's markdown,
+// and a write to an issue room whose own fragment reads otherwise than its version, write no node
+// of them until the reconciliation indexes the document.
+type OwedDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // RequirementCoverage is one `requirement` block of an issue's spec and what serves it: the
@@ -1938,6 +2035,44 @@ type Version struct {
 	Size   *int    `json:"size,omitempty"`
 	MIME   *string `json:"mime,omitempty"`
 	SHA256 *string `json:"sha256,omitempty"`
+	// Digest is what an approval of a document's version covers, the value
+	// artifact_version_text_sha256 answers for it and a review's content_sha256 pins: the digest of
+	// the record of its query where the pass that stated the version recorded one on its
+	// version_renders row, and else the sha256 of its stored markdown, so a version of a document no
+	// query covers answers its markdown's. The version read and the artifact read's version list
+	// answer it; every other read of a version, and a file's or an image's version, answers none.
+	Digest *string `json:"digest,omitempty"`
+	// Token is a file's or an image's version token (FileVersionToken): what an upload replacing
+	// that version names as its precondition's document token, and what `dispatch doc-read`
+	// prints for it. Every read of a version row states it (StateFileTokens). A document's version
+	// carries none here, since a document's token is its live tree's (GET
+	// /api/v1/artifacts/{id}/text).
+	Token *string `json:"token,omitempty"`
+}
+
+// FileVersionToken is the token of a file's or an image's version whose bytes have the SHA-256
+// sha (hex), written as a document token is. It is the one place the token is made, for the
+// reads that state it and the upload that checks it, so what `dispatch doc-read` prints is what
+// the upload compares.
+func FileVersionToken(sha string) string {
+	return "sha256:" + sha
+}
+
+// StateFileTokens sets each version's Token from its SHA256 where kind, the artifact's, is a
+// file or an image, for versions read from their rows. A document's versions get none whatever
+// their rows hold: a document's token is its live tree's, and a hash its row held would be no
+// token an upload of it takes. A file's version stored with no hash gets none either, so an
+// upload naming a token for it is refused.
+func StateFileTokens(kind string, versions []Version) {
+	if kind != "file" && kind != "image" {
+		return
+	}
+	for index := range versions {
+		if sha := versions[index].SHA256; sha != nil {
+			token := FileVersionToken(*sha)
+			versions[index].Token = &token
+		}
+	}
 }
 
 // VersionSize is the SQL a version's Size is selected with, over artifact_versions aliased v. A
@@ -2154,8 +2289,9 @@ type AskEventPayload struct {
 	Restored bool `json:"restored,omitempty"`
 	// ThreadLogins is carried by ask.opened, ask.answered and ask.resolved: every login with a
 	// Replies row (user_threads) on the ask's thread once the write is in, read in its own
-	// transaction (events.ThreadLogins), so a viewer knows whether their Inbox can have moved.
-	// Absent on every other ask event; [] when nobody has a row.
+	// transaction (events.ThreadLogins), so a viewer knows whether their Inbox can have moved;
+	// [] when nobody has a row. ask.asked_of carries the two people the hand-on moved the ask
+	// between instead (api/ask_asked_of.go, movedLogins). Absent on every other ask event.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
 }
 
@@ -2365,13 +2501,19 @@ type OpenAskDocument struct {
 	Name    string `json:"name"`
 }
 
-// MyAnswerReply is the reply carried by a row in a person's answer history.
+// MyAnswerReply is the reply carried by a row in a person's answer history. EditedAt is the time
+// its author last edited it, absent on a reply never edited. DeletedAt and DeletedBy mark a reply
+// its author deleted: Body is then empty, and the row says that the post is deleted rather than
+// showing an empty line.
 type MyAnswerReply struct {
 	ID   string `json:"id"`
 	Body string `json:"body"`
 	// BodyTree is the ProseMirror tree Body is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
-	BodyTree DisplayTree `json:"body_tree,omitempty"`
+	BodyTree  DisplayTree `json:"body_tree,omitempty"`
+	EditedAt  *time.Time  `json:"edited_at,omitempty"`
+	DeletedAt *time.Time  `json:"deleted_at,omitempty"`
+	DeletedBy *Actor      `json:"deleted_by,omitempty"`
 }
 
 // MyAnswerRow is one answer or reply written by the caller, newest first.
@@ -2403,13 +2545,16 @@ type MyAnswersResponse struct {
 
 // MyReplyReply is the newest write someone else made in a thread on the Replies page: a reply (a
 // comment or a message), or the ask's answer, whose ID is the ask's, whose author is the answerer
-// and whose first line is the answer's options and text.
+// and whose first line is the answer's options and text. DeletedAt and DeletedBy mark a reply
+// its author deleted, whose FirstLine is then empty.
 type MyReplyReply struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"`
-	Author    Actor     `json:"author"`
-	FirstLine string    `json:"first_line"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string     `json:"id"`
+	Kind      string     `json:"kind"`
+	Author    Actor      `json:"author"`
+	FirstLine string     `json:"first_line"`
+	CreatedAt time.Time  `json:"created_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy *Actor     `json:"deleted_by,omitempty"`
 }
 
 // MyReplySession is the agent session an Agent row's thread was sent to: the session's id and the
@@ -2435,9 +2580,17 @@ type MyReplyRow struct {
 	// Priority is the owning issue's coarse priority, absent on a row with no issue or none set.
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
-	Project *string      `json:"project,omitempty"`
-	Subject string       `json:"subject"`
-	Reply   MyReplyReply `json:"reply"`
+	Project *string `json:"project,omitempty"`
+	Subject string  `json:"subject"`
+	// EditedAt is the time the author of the thread's root post last edited it, absent on a root
+	// never edited. An ask's thread has no such root and never carries it.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy mark a thread whose root post its author deleted: Subject is then
+	// empty, and the row says that the post is deleted rather than showing an empty line. An
+	// ask's thread has no such root and never carries them.
+	DeletedAt *time.Time   `json:"deleted_at,omitempty"`
+	DeletedBy *Actor       `json:"deleted_by,omitempty"`
+	Reply     MyReplyReply `json:"reply"`
 	// ReadThrough is the caller's read mark on the thread (user_threads.read_through), absent on
 	// an Agent row, whose replies are read by id rather than by a mark.
 	ReadThrough *time.Time `json:"read_through,omitempty"`
@@ -2527,16 +2680,21 @@ type SessionAnswerAsk struct {
 // a decline the person wrote no note with). DispatchWords is set only on a decline of an ask the
 // session wrote or follows: the words Dispatch wrote for the asking agent (DeclineDispatchWords),
 // kept apart from the person's note so no reader has to cut one out of the other. Selected and
-// Replaced are an answer's, each omitted when empty or false; EditedAt is an edited comment's;
-// Ask is set on an answer, on a decline and on a reply in an ask's thread. Owner and Ref are nil
-// for a direct message, which is on no issue and has no dispatch:// address; Href is then
+// Replaced are an answer's, each omitted when empty or false; EditedAt is an edited comment's or
+// message's, and DeletedAt with DeletedBy mark a post its author deleted, whose Text is then
+// empty; Ask is set on an answer, on a decline and on a reply in an ask's thread. Owner and Ref
+// are nil for a direct message, which is on no issue and has no dispatch:// address; Href is then
 // /agents/<session>/live.
 type SessionAnswer struct {
-	Kind          string            `json:"kind"`
-	Relation      string            `json:"relation"`
-	ID            string            `json:"id"`
-	At            time.Time         `json:"at"`
-	EditedAt      *time.Time        `json:"edited_at,omitempty"`
+	Kind     string     `json:"kind"`
+	Relation string     `json:"relation"`
+	ID       string     `json:"id"`
+	At       time.Time  `json:"at"`
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy are the mark of a deleted comment or message: Text is then empty,
+	// and a reader meets the post as deleted rather than as an empty line.
+	DeletedAt     *time.Time        `json:"deleted_at,omitempty"`
+	DeletedBy     *Actor            `json:"deleted_by,omitempty"`
 	Author        Actor             `json:"author"`
 	Text          string            `json:"text"`
 	DispatchWords string            `json:"dispatch_words,omitempty"`
@@ -3080,11 +3238,16 @@ type Comment struct {
 	// agent. The ask's WaitingOn follows its newest reply's Turn except where an approval request
 	// overrides it (moved, or handed back after this reply). Nil on replies under a closed ask
 	// (nothing is waiting) and on every other comment.
-	Turn       *string           `json:"turn"`
-	Resolved   bool              `json:"resolved"`
-	ResolvedBy *Actor            `json:"resolved_by"`
-	ResolvedAt *string           `json:"resolved_at"`
-	EditedAt   *string           `json:"edited_at"`
+	Turn       *string `json:"turn"`
+	Resolved   bool    `json:"resolved"`
+	ResolvedBy *Actor  `json:"resolved_by"`
+	ResolvedAt *string `json:"resolved_at"`
+	EditedAt   *string `json:"edited_at"`
+	// DeletedAt and DeletedBy mark a comment its author deleted: the body is cleared, the body
+	// it held is kept in post_body_history, and every read of the comment gives the mark and no
+	// body. Nil on every comment that stands.
+	DeletedAt  *time.Time        `json:"deleted_at"`
+	DeletedBy  *Actor            `json:"deleted_by"`
 	Suggestion *Suggestion       `json:"suggestion"`
 	CreatedAt  time.Time         `json:"created_at"`
 	Mentions   []Mention         `json:"mentions"`
@@ -3101,20 +3264,38 @@ type Comment struct {
 // reference (none for a block of a direct message, which has no address), its id, its stored
 // excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
+//
+// EditedAt, DeletedAt and DeletedBy are the marks of the quoted post, read from its own row, so a
+// read that prints the reply without its parent (GET /api/v1/comments/{id} or GET
+// /api/v1/issues/{key}/messages/{id} of the reply) still says the post was edited or deleted.
+// EditedAt is the time its author last edited it, absent on a post nobody edited, as the delete
+// mark is absent while the post stands: contracts' ReplyBlockSchema is held to this shape's
+// document (dispatch-api-owned.ts) and must read a frame written before a mark as it did
+// (dispatch-inbound-parity.test.ts), which together leave a mark optional, never null. DeletedAt
+// and DeletedBy mark a comment or a message its author deleted: the delete clears every excerpt
+// its blocks stored (refs.TombstoneItem), so the block reads removed with no text, and the mark
+// is what says the post itself is gone rather than the one block. All three are absent on a part
+// of an ask, which no correction marks. An event's reply_block keeps the marks the write that
+// appended it read. A reply's delete event (comment.deleted, message.deleted) carries the block
+// with every field but its text, which is empty: a delete event carries no text of another post.
 type ReplyBlock struct {
-	Node    string `json:"node"`
-	Ref     string `json:"ref,omitempty"`
-	BlockID string `json:"block_id"`
-	Text    string `json:"text"`
-	Removed bool   `json:"removed"`
+	Node      string     `json:"node"`
+	Ref       string     `json:"ref,omitempty"`
+	BlockID   string     `json:"block_id"`
+	Text      string     `json:"text"`
+	Removed   bool       `json:"removed"`
+	EditedAt  *time.Time `json:"edited_at,omitempty"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy *Actor     `json:"deleted_by,omitempty"`
 }
 
 // ItemBlocks is the answer of GET /api/v1/comments/{id}/blocks and GET
 // /api/v1/messages/{id}/blocks: the comment or message as a graph node, the comment's revision (a
-// message, which is never edited, has none), whether its blocks are indexed from the body it
-// stores, and its current blocks in body order. While the item is owed an index, or its index was
-// made from another body than the stored one, Indexed is false and Blocks is empty: a read writes
-// nothing, and the dashboard's editor then edits the comment without carrying block ids.
+// message records none, its author's edit of it included, so it has none), whether its blocks
+// are indexed from the body it stores, and its current blocks in body order. While the item is
+// owed an index, or its index was made from another body than the stored one, Indexed is false
+// and Blocks is empty: a read writes nothing, and the dashboard's editor then edits the comment
+// without carrying block ids.
 type ItemBlocks struct {
 	Item     GraphNode   `json:"item"`
 	Revision *int        `json:"revision,omitempty"`
@@ -3126,8 +3307,10 @@ type ItemBlocks struct {
 // its author wrote it, its reference (none for a block of a direct message, which has no address),
 // and From and To, where it starts and ends in the stored body in UTF-16 code units (a JavaScript
 // string index). A comment block also carries the revision its text last changed in and that
-// revision's time; a message block has neither. Embedding is where meaning search stands on the
-// block (BlockEmbedded, BlockEmbeddingPending, BlockNotEmbedded).
+// revision's time; a message block carries neither, since a message records no revisions and this
+// answer reads no changed time for one: the edit that last rewrote a message's block reaches a
+// reader as that block's graph node, whose ChangedAt it is. Embedding is where meaning search
+// stands on the block (BlockEmbedded, BlockEmbeddingPending, BlockNotEmbedded).
 type ItemBlock struct {
 	ID              string     `json:"id"`
 	Type            string     `json:"type"`
@@ -3306,9 +3489,9 @@ type CommentEventPayload struct {
 	// older than the field wrote.
 	AskSessions []string `json:"ask_sessions,omitzero"`
 	// ThreadRootID is the id of the head of the thread the comment joined, which is also
-	// what Comment.ReplyTo stores for it. Carried by comment.created and by the
-	// comment.answered a delivery callback appends; empty when the comment replies to an
-	// ask or is a root comment.
+	// what Comment.ReplyTo stores for it. Carried by comment.created, by the
+	// comment.answered a delivery callback appends, and by comment.edited and comment.deleted;
+	// empty when the comment replies to an ask or is a root comment.
 	ThreadRootID string `json:"thread_root_id,omitempty"`
 	// SuppressRoute is resolved before the comment event commits, so the outbox can deduplicate
 	// without consulting the live session registry. It names a candidate only: a session the
@@ -3348,10 +3531,28 @@ type CommentEventPayload struct {
 	// ReferenceChangesPayload names the nodes whose inbound reference edges this write moved,
 	// so a reader carrying their batched backlink counts refreshes exactly those rows.
 	ReferenceChangesPayload
-	// ThreadLogins is carried by comment.created and comment.answered: every login with a
-	// Replies row on the comment's thread (its ask, else its root) once the comment is in, read
-	// in its own transaction (events.ThreadLogins). Absent on every other comment event.
+	// ThreadLogins is carried by comment.created, comment.answered, comment.edited and
+	// comment.deleted: every login with a Replies row on the comment's thread (its ask, else its
+	// root), read in the write's own transaction (events.ThreadLogins). Absent on every other
+	// comment event.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
+	// RenamedVersion is carried by comment.deleted alone, of a comment whose accepted suggestion
+	// named a document version after the comment's body: that version as the delete renamed it
+	// (api's renameAcceptedVersion), so a reader holding the document's versions gives it the name
+	// every read of them now gives. Its name quotes the suggestion's quote and replacement, the
+	// document's own text since the accept, and none of the comment's body. Absent on every other
+	// comment event, on a delete that renamed no version, and on an event a server older than the
+	// field wrote.
+	RenamedVersion *RenamedVersion `json:"renamed_version,omitempty"`
+}
+
+// RenamedVersion is a document version the delete of a comment renamed
+// (CommentEventPayload.RenamedVersion): its document, its number, and the name (Version.Summary)
+// the delete gave it.
+type RenamedVersion struct {
+	ArtifactID string `json:"artifact_id"`
+	Number     int    `json:"number"`
+	Summary    string `json:"summary"`
 }
 
 // Message is a short update, optionally linked to an issue and threaded under another message.
@@ -3364,9 +3565,17 @@ type Message struct {
 	InReplyTo *string `json:"in_reply_to"`
 	// BroadcastID names the broadcast this message is one recipient's copy of, and is null for
 	// every other message.
-	BroadcastID *string           `json:"broadcast_id"`
-	CreatedAt   time.Time         `json:"created_at"`
-	Deliveries  []MessageDelivery `json:"deliveries"`
+	BroadcastID *string   `json:"broadcast_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	// EditedAt is when the author last replaced the body, nil on a message nobody edited. Only
+	// an issue message can be edited; a message with no issue is refused (NOT_AN_ISSUE_MESSAGE).
+	EditedAt *time.Time `json:"edited_at"`
+	// DeletedAt and DeletedBy mark a message its author deleted: the body is cleared, the body
+	// it held is kept in post_body_history, and every read of the message gives the mark and no
+	// body. Nil on every message that stands.
+	DeletedAt  *time.Time        `json:"deleted_at"`
+	DeletedBy  *Actor            `json:"deleted_by"`
+	Deliveries []MessageDelivery `json:"deliveries"`
 	// ReplyBlock is the block of the message this reply answers, when it names one
 	// (in_reply_to_block); null on every other message.
 	ReplyBlock *ReplyBlock `json:"reply_block"`
@@ -3382,10 +3591,13 @@ type MessageDelivery struct {
 	Delivery   string  `json:"delivery"`
 	SessionID  string  `json:"session_id"`
 	EnvelopeID *string `json:"envelope_id"`
-	// Duplicate reports that the stream already held this message when the attempt was sent: an
-	// earlier attempt landed, so this one is a repeat the recipient is not handed again
-	// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). EnvelopeID is then nil: the envelope
-	// this send minted is the one JetStream discarded.
+	// Duplicate reports that the stream already held a message under this attempt's key when the
+	// attempt was sent: an earlier attempt landed, or another sender's message holds the key, so
+	// the stream stored nothing new for this one (DELIVERY_DUPLICATE_WINDOW_MS in
+	// packages/contracts). EnvelopeID is then nil: the copy the stream holds may be an earlier
+	// attempt's or another sender's under the same key, and an older listener answers the envelope
+	// this send minted, which JetStream discarded, so a duplicate's answer is no envelope id to
+	// record.
 	Duplicate bool `json:"duplicate"`
 	// State is "pending" before the send, then "sent" for a message the listener handed to a
 	// running session, "queued" for one it stored for a session it knows that is not running
@@ -3428,7 +3640,9 @@ func ConnectedOnlyColumn(connectedOnly bool) *string {
 
 // MessageEventPayload wraps a Message with the reply target's body preview (first 160
 // characters, ReplyBody), or the preview of the block it names (ReplyBlock), so a reply can
-// render "re: <preview>" without a second lookup.
+// render "re: <preview>" without a second lookup. A reply's message.deleted carries neither
+// preview: no ReplyBody, and the ReplyBlock with its routing fields and no text, since a delete
+// event carries no text of another post.
 type MessageEventPayload struct {
 	Message
 	// BodyTruncated is that Body is the first part of the message's body and not all of it
@@ -3450,7 +3664,8 @@ type MessageEventPayload struct {
 	// thread (its root, up in_reply_to, events.ThreadLogins); on a direct (issue-less)
 	// conversation's, which keeps no Replies row, it is the thread root author's login, the one
 	// Inbox an Agent row of that thread sits in, and [] when no person opened the thread. Carried
-	// by message.created and message.answered; absent on a delivery frame.
+	// by message.created, message.answered, message.edited and message.deleted; absent on a
+	// delivery frame.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
 }
 
@@ -3605,16 +3820,19 @@ type IssueSteps struct {
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
-// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+// an issue whose owner gave no plan, or whose experiment's group takes none from its owner), and
+// its steps in order, each a role or `role:key`.
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
 }
 
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that
-// run's work started (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the
-// owner's document and the version of it the plan was read from (both null for the source
-// default, the default steps of an issue whose owner gave none), and its tasks.
+// run's work started and replaced it at each later version of the owner's plan that Legion took
+// (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the owner's document
+// and the version of it the plan was read from (both null for the source default, the default
+// steps of an issue whose owner gave none, or whose experiment's group takes none from its
+// owner), and its tasks.
 type PlanRecord struct {
 	ID         string     `json:"id"`
 	Issue      string     `json:"issue"`
@@ -3676,15 +3894,15 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one document of an issue's references read (refs.Closure): Artifact is the
-// document its own content links to, always at depth 1, through Via, and Kind and Address are the
-// member's own kind and dispatch:// address - `artifact` and that document's address, or `lens` and
-// the lens's address where the link names a document whose address moved to a lens, as the
-// pre-mortem conversion moves the address of the document it retires to the lens it writes in its
-// place. Artifact is then that retired document, whose versions stay readable. It stays for the
-// clients that read members, beside Links. A server of the release before answers neither Kind
-// nor Address during a roll, so the OpenAPI document marks them optional (`required:"false"`) and
-// a reader takes a member that carries neither as the document Artifact names.
+// ReferenceMember is one member of an issue's references read, always at depth 1: Artifact is a
+// document its own content links to, through Via, and Kind and Address are the member's own kind
+// and dispatch:// address - `artifact` and that document's address, or `lens` and the lens's
+// address where the link names the address of a document that moved to a lens, as the pre-mortem
+// conversion moves the address of the document it retires to the lens it writes in its place.
+// Artifact is then that retired document, whose versions stay readable. It stays for the clients
+// that read members, beside Links. A server of the release before answers neither Kind nor
+// Address during a roll, so the OpenAPI document marks them optional (`required:"false"`) and a
+// reader takes a member that carries neither as the document Artifact names.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
 	Kind     string       `json:"kind" enum:"artifact,lens" required:"false"`
@@ -3738,10 +3956,13 @@ type ArtifactReferences struct {
 // the kinds beside it, which that doc names the id of). The edges into and out of a node are the
 // reads `?to=` and `?from=` of its Ref.
 //
-// Kind is one of the node kinds the read registry holds (refs.VisibilityKinds), and the OpenAPI
-// document closes it over them: a kind a later build registers is a member that build adds, and
-// api's TestTheGraphNodeKindEnumIsTheRegistrysKinds holds the tag to the registry. A reader that
-// meets a kind it does not know skips that node rather than failing on it.
+// Kind is one of the node kinds a read of the graph answers - the kinds the read registry holds a
+// loader for (refs.ResolvableKinds) - and the OpenAPI document closes it over them: a kind a later
+// build resolves is a member that build adds, and api's TestTheGraphNodeKindEnumIsTheRegistrysKinds
+// holds the tag to the registry. A kind the registry holds a predicate for and no loader, a
+// supertag or an attribute of the block schema, is the kind of no node an answer carries, so the
+// enum leaves it out. A reader that meets a kind it does not know skips that node rather than
+// failing on it.
 //
 // Every node carries eight facts, whatever its kind: MadeBy and MadeAt, who made it and when;
 // ChangedBy and ChangedAt, who last changed its own text or fields and when (its maker while
@@ -3767,8 +3988,16 @@ type ArtifactReferences struct {
 // end. Text and Pin are set only on the node a reference read names: Text is a block's
 // whole current text, or a run's whole words, which an edge at the run shows only the head of as
 // its excerpt, and Pin answers a reference pinned to a version.
+//
+// DeletedAt and DeletedBy mark a comment or a message its author deleted, as the reads of the
+// post itself carry them (Comment, Message): the body is cleared, so the node carries no text and
+// the edge naming it no excerpt at all, and the mark is what tells a reader why. Nil on a post
+// that stands and on every node of another kind, none of which a delete marks. EditedAt is the
+// time the author of a comment or a message last edited it, nil on a post never edited and on
+// every node of another kind. A block of a comment or a message carries its post's EditedAt and
+// mark too, so a block quoted from a corrected post says so.
 type GraphNode struct {
-	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,result,risk,role,session,supertag"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`
@@ -3780,6 +4009,9 @@ type GraphNode struct {
 	MadeAt         *time.Time  `json:"made_at"`
 	ChangedBy      []Actor     `json:"changed_by"`
 	ChangedAt      *time.Time  `json:"changed_at"`
+	EditedAt       *time.Time  `json:"edited_at,omitempty"`
+	DeletedAt      *time.Time  `json:"deleted_at,omitempty"`
+	DeletedBy      *Actor      `json:"deleted_by,omitempty"`
 	Parent         *NodeParent `json:"parent"`
 	ParentVersion  *int        `json:"parent_version"`
 	State          string      `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
@@ -3788,8 +4020,11 @@ type GraphNode struct {
 	Pin            *BlockPin   `json:"pin,omitempty"`
 	// Frames is an interaction's frames, each one `frame` value of its node, in sequence, on the
 	// read of the run's own address (refs.Node), and absent for a run that holds none, for a run
-	// at an edge's far end and for every other kind. A server of the release before never sends
-	// it, and `omitempty` keeps every other node's answer byte for byte as it was.
+	// at an edge's far end and for every other kind. A run whose answer is withdrawn - a comment
+	// or an issue message it gave its model has since been deleted - answers the one frame its
+	// stream then writes, the withdrawal at the sequence of its ending, and none of its own (api's
+	// goingWithdrawal). A server of the release before never sends it, and `omitempty` keeps every
+	// other node's answer byte for byte as it was.
 	Frames []GraphFrame `json:"frames,omitempty"`
 }
 
@@ -3906,7 +4141,18 @@ type ReferenceTarget struct {
 	// Ambiguous is true for a reference whose short id two or more items carry in the scope
 	// that the reference names. Such a member is gone, with the name "", and every other
 	// member of the read is answered. The key is left out otherwise.
-	Ambiguous bool        `json:"ambiguous,omitempty"`
+	Ambiguous bool `json:"ambiguous,omitempty"`
+	// EditedAt is the time the author of a comment or a message last edited it, on a member
+	// naming the post or a block of it, as the post's graph node carries it; absent on a post
+	// never edited and on a member of any other kind.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy mark a comment or a message its author deleted, as every read of
+	// the post carries them (Comment, Message). A member naming the post is not gone, since the
+	// post keeps its place, and its name is "", the body the delete cleared; a member naming a
+	// block of it is gone, with no name and no tree, since the delete removed every block, and
+	// the mark says why. Both are absent on a post that stands and on every other kind.
+	DeletedAt *time.Time  `json:"deleted_at,omitempty"`
+	DeletedBy *Actor      `json:"deleted_by,omitempty"`
 	TextTree  DisplayTree `json:"text_tree,omitempty"`
 }
 
@@ -3981,18 +4227,22 @@ type DecisionLink struct {
 // ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is the
 // sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
 // `entries` and the Keep take their members from it, so it stays when the read's old `decisions`
-// member, which answers it whole for one release, goes.
+// member, which answers it whole for one release, goes. Heading, TextTree and Unsure are that
+// member's alone, and go with it.
 type Decision struct {
 	BlockID string `json:"block_id"`
+	// kept for one release: compat-objects
 	Heading string `json:"heading"`
 	Ref     string `json:"ref"`
 	Text    string `json:"text"`
 	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`. A view that lays the decision out paragraph by paragraph takes those
 	// paragraphs from this tree's own top-level blocks, so no reader splits the markdown again.
-	TextTree       DisplayTree    `json:"text_tree,omitempty"`
-	TextSHA256     string         `json:"text_sha256"`
-	Kind           string         `json:"kind"`
+	// kept for one release: compat-objects
+	TextTree   DisplayTree `json:"text_tree,omitempty"`
+	TextSHA256 string      `json:"text_sha256"`
+	Kind       string      `json:"kind"`
+	// kept for one release: compat-objects
 	Unsure         bool           `json:"unsure"`
 	Replaced       bool           `json:"replaced"`
 	Asks           []string       `json:"asks"`

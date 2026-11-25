@@ -37,11 +37,12 @@ var visibilityStateProjections = []projection{
 // node side reads whether the node's column keeps it, so a node at any other visibility is a
 // difference even where its tuple says the same.
 func baseAttributeCensus(name, nodeKind string, narrow func(id string) string, fixed string) projection {
+	// narrowed is narrow's predicate over id, and true where narrow is nil.
 	narrowed := func(id string) string {
 		if narrow == nil {
-			return ""
+			return "true"
 		}
-		return " and " + narrow(id)
+		return narrow(id)
 	}
 	newest := func(attribute string) string {
 		return `(select case when v.asserted then v.to_id end from graph_tuples v
@@ -74,13 +75,13 @@ func baseAttributeCensus(name, nodeKind string, narrow func(id string) string, f
 			from (
 				select distinct t.from_id as id from graph_tuples t
 				where t.from_kind = '` + nodeKind + `' and t.to_kind = '` + graphstore.KindValue + `'
-				  and t.kind in ('` + graphstore.AttributeVisibility + `', '` + graphstore.AttributeState + `')` + narrowed("t.from_id") + `
+				  and ` + kindIn("t.kind", []string{graphstore.AttributeVisibility, graphstore.AttributeState}) + ` and ` + narrowed("t.from_id") + `
 			) keyed
 		) held
 		where held.state is distinct from '` + graphstore.StateGone + `'`,
 		nodes: `
 		select n.id, ` + digest("n.visibility", "n.state") + nodeFixed + `
-		from graph_nodes n where n.kind = '` + nodeKind + `'` + narrowed("n.id"),
+		from graph_nodes n where n.kind = '` + nodeKind + `' and ` + narrowed("n.id"),
 		mayBeEmpty: true,
 	}
 }

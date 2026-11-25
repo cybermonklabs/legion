@@ -702,14 +702,16 @@ type questionBlock struct {
 }
 
 // questionBlocks is every question block markdown declares, in document order, the first of each
-// id: each line that, past its containers' quote and list markers, opens a typed block named ask
-// holding an id, outside fenced code. A fenced example of a directive is code to pmdoc, so a
-// `copied_from` it carries names no question of this document.
+// id: each line that, past its containers' quote, list and footnote markers, opens a typed block
+// named ask holding an id, outside fenced code and outside the front matter the document opens
+// with (frontMatterEnd). A fenced example of a directive is code to pmdoc, and a line of front
+// matter is no markdown to it, so a `copied_from` either carries names no question of this
+// document.
 func questionBlocks(markdown string) []questionBlock {
 	blocks := []questionBlock{}
 	seen := map[string]struct{}{}
 	var fence codeFence
-	for line := range strings.Lines(markdown) {
+	for line := range strings.Lines(markdown[frontMatterEnd(markdown):]) {
 		rest := trimContainerMarkers(line)
 		if fence.run > 0 {
 			if fence.closedBy(rest) {
@@ -731,6 +733,28 @@ func questionBlocks(markdown string) []questionBlock {
 		blocks = append(blocks, block)
 	}
 	return blocks
+}
+
+// frontMatterEnd is where markdown goes on past the front matter it opens with, as pmdoc reads it
+// (parseFrontmatterBlock): a first line that is `---` and any spaces or tabs opens it, and the
+// first later line that is the same closes it. pmdoc keeps it as one node, word for word, so no
+// line of it opens a block. It is 0 where the document opens with none, or with an opener no line
+// closes, which pmdoc's reader answers no front matter for and the renderer never writes: a rule
+// opening a document is written `***`.
+func frontMatterEnd(markdown string) int {
+	end := 0
+	for line := range strings.Lines(markdown) {
+		fence := strings.TrimRight(strings.TrimSuffix(line, "\n"), " \t") == "---"
+		opener := end == 0
+		end += len(line)
+		switch {
+		case opener && !fence:
+			return 0
+		case !opener && fence:
+			return end
+		}
+	}
+	return 0
 }
 
 // codeFence is the fence a fenced code block opened with: its character, a backtick or a tilde,
@@ -780,7 +804,7 @@ func fenceRun(text string) codeFence {
 // (pmdoc.ParseTypedDirectiveOpen), never by a grammar of its own, so this reads a line exactly
 // as the document's own parse reads it: an id written either way (`#id` and `id="…"`,
 // pmdoc.TypedBlockIDAttribute), and no block at all on a line that parser refuses. What stays
-// here is the line and fence scan alone (questionBlocks): refs parses no document.
+// here is the line, fence and front-matter scan alone (questionBlocks): refs parses no document.
 func askBlock(line string) (questionBlock, bool) {
 	name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(line, "\r\n"))
 	if !ok || name != "ask" {
@@ -801,9 +825,13 @@ func askBlock(line string) (questionBlock, bool) {
 	return block, true
 }
 
-// trimContainerMarkers drops the indentation, quote markers (`>`) and list markers (`-`, `*`, `+`,
-// or a number and `.` or `)`, each followed by a space) a block nested in a quote or a list item
-// is written after.
+// trimContainerMarkers drops the indentation, quote markers (`>`), list markers (`-`, `*`, `+`, or
+// a number and `.` or `)`, each followed by a space or a tab) and footnote labels (`[^label]:` with
+// a label that is not blank), each with the spaces and tabs after it, that a block nested in a
+// quote, a list item or a footnote is written after. The renderer writes the first block of a list
+// item or of a footnote's definition on the marker's or the label's line, so a fence opened there
+// is a fence. These are the markers the CLI and the web skip (CONTAINER_MARKER_PATTERN in
+// packages/contracts).
 func trimContainerMarkers(line string) string {
 	for {
 		line = strings.TrimLeft(line, " \t")
@@ -812,6 +840,12 @@ func trimContainerMarkers(line string) string {
 			line = line[1:]
 		case len(line) > 1 && (line[0] == '-' || line[0] == '*' || line[0] == '+') && (line[1] == ' ' || line[1] == '\t'):
 			line = line[2:]
+		case strings.HasPrefix(line, "[^"):
+			label, rest, closed := strings.Cut(line[2:], "]")
+			if !closed || !strings.HasPrefix(rest, ":") || strings.TrimSpace(label) == "" {
+				return line
+			}
+			line = rest[1:]
 		default:
 			digits := 0
 			for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {

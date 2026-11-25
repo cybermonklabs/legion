@@ -29,11 +29,11 @@ interface LineCount {
  * plus, for each failing read, what its `errorUpdateCount` rose by since the last draw at the same
  * key, or the whole of it where the read was not seen at that place or its key's hash differs;
  * while none is failing, it is 0. A read under another key - a names read moved to another set of
- * addresses - is a query of its own, so the refusals it holds are new to the line. An answer
- * leaves `errorUpdateCount` as it is: TanStack sets it to 0 only for a query made afresh or reset.
- * Every read's count and hash are kept at every draw, failing or not, so a read that answers takes
- * nothing out of the count, and a new refusal of another read of the line in the same draw is
- * still counted.
+ * addresses - is a query of its
+ * own, so the refusals it holds are new to the line. An answer leaves `errorUpdateCount` as it is:
+ * TanStack sets it to 0 only for a query made afresh or reset. Every read's count and hash are
+ * kept at every draw, failing or not, so a read that answers takes nothing out of the count, and a
+ * new refusal of another read of the line in the same draw is still counted.
  *
  * `lines` are the same lines, each with the same reads in the same order, on every render. The
  * ref is written during render with that render's state, so a second render of the same state

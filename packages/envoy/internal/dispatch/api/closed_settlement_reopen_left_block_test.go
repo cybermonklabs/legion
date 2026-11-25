@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // leavingDecisionSpec is the spec of
@@ -32,6 +33,7 @@ const leavingDecisionSpec = "Context\n\n" +
 // document owed itself, as the block document of an open ask (docs.MarkReopenOwedAskDocuments).
 // The resumption after the reopen settles it on the open issue.
 func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An ask whose block leaves while closed", leavingDecisionSpec)
@@ -64,16 +66,11 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the closed issue's owed settlements: %v", err)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.UntilPolling(t, 20*time.Millisecond, "the closed issue's settlement to save a version without the deleted block, the document owing none (its latest version)", func() (string, bool) {
 		_, version := documentTexts(t, handler, spec)
-		if strings.Contains(version, "Context") && !strings.Contains(version, "leaving-decision") &&
-			!documentOwesSettlement(t, database, spec) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the closed issue's settlement never saved a version without the deleted block; its latest version reads:\n%s", version)
-		}
-	}
+		return version, strings.Contains(version, "Context") && !strings.Contains(version, "leaving-decision") &&
+			!documentOwesSettlement(t, database, spec)
+	})
 	requireWithdrawn(t, handler, issue.Key, ask, alice)
 	if live, _ := documentTexts(t, handler, spec); !strings.Contains(live, "Context") || strings.Contains(live, "leaving-decision") {
 		t.Fatalf("the closed issue's document reads:\n%s\nwant it without the deleted block", live)
@@ -97,15 +94,10 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
-	var retracted model.Ask
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if retracted = readBlockAsk(t, handler, ask); retracted.State != "open" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the reopened issue's settlement never retracted ask %s, whose block left its document (latest read %+v)", ask, retracted)
-		}
-	}
+	retracted := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the reopened issue's settlement to retract ask %s, whose block left its document (the ask)", ask), func() (model.Ask, bool) {
+		read := readBlockAsk(t, handler, ask)
+		return read, read.State != "open"
+	})
 	// The settlement's retraction, as docs.settlementRetracted reads it: a later return of the
 	// block restores the ask.
 	resolution := retracted.Resolution
@@ -139,6 +131,7 @@ const rewordedDecisionSpec = "Context\n\n" +
 // version written on a fleet of one build, none of the ask's state,
 // which the text an agent reads shows open.
 func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen(t *testing.T) {
+	t.Parallel()
 	f := rewordWithdrawnDecisionWhileClosed(t)
 	ctx := context.Background()
 	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
@@ -171,6 +164,7 @@ func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen
 // read bob, and the resumption settles the document on the open issue: its one ask.edited of the
 // decision is alice's, edited_by alice, and it notifies.
 func TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen(t *testing.T) {
+	t.Parallel()
 	f := rewordWithdrawnDecisionWhileClosed(t)
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -266,19 +260,15 @@ func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 }
 
 // awaitRewordedAsk waits until the settlement after f's reopen has taken the block's question into
-// the restored ask: open, asking rewordedQuestion.
+// the restored ask: open, asking rewordedQuestion. Its one bound is the test binary's deadline
+// (testwait.UntilPolling): a settlement a loaded machine runs late still ends the wait, and its
+// failure prints the ask's state and question as last read.
 func awaitRewordedAsk(t *testing.T, f rewordedWhileClosed) {
 	t.Helper()
-	var restored model.Ask
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if restored = readBlockAsk(t, f.handler, f.ask); restored.State == "open" && restored.Question == rewordedQuestion {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the reopened issue's settlement never took the block's question into ask %s (latest read %s asking %q), want open asking %q",
-				f.ask, restored.State, restored.Question, rewordedQuestion)
-		}
-	}
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the reopened issue's settlement to take the block's question into ask %s: open, asking %q (its state and question)", f.ask, rewordedQuestion), func() (string, bool) {
+		restored := readBlockAsk(t, f.handler, f.ask)
+		return fmt.Sprintf("%s asking %q", restored.State, restored.Question), restored.State == "open" && restored.Question == rewordedQuestion
+	})
 }
 
 // openAskLists are the open-ask lists openAskListsHolding reads: the issue's own open asks, the

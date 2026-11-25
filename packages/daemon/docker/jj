@@ -1,111 +1,485 @@
 #!/bin/sh
 # The jj first on a pod's PATH, /opt/legion/bin/jj (worker.Dockerfile). Every command runs the
-# real jj, /usr/local/bin/jj, with the arguments it was given; what this wrapper adds is one
-# check, and only before a `jj git push`.
+# real jj, /usr/local/bin/jj. What this wrapper adds is that jj's push reaches the remote only
+# through Legion's git wrapper.
 #
-# jj makes a push by shelling out to the `git` its PATH names (`git -c core.fsmonitor=false …
-# --git-dir <dir> push --porcelain --no-verify …`, measured with jj 0.45.1-sami), so Legion's git
-# wrapper is what puts the leak guard's pre-push hook in front of jj's push as well as a role's
-# own. This checks that the git jj would run is that wrapper: the `git` on PATH, and jj's own
-# `git.executable-path`, which jj runs in place of a bare `git` when a configuration file sets it.
-# A jj that would run any other git is refused here, in the shared check's own setup-error words
-# and with its status, rather than pushing text nobody checked.
+# jj makes a push by shelling out to a git (`git -c core.fsmonitor=false … --git-dir <dir> push
+# --porcelain --no-verify …`, measured with jj 0.45.1-sami and 0.46.0-sami): the `git` on its
+# PATH, or the `git.executable-path` its configuration names. Legion's git wrapper is what puts
+# the leak guard's pre-push hook in front of jj's push as well as a role's own. So this wrapper
+# does three things:
+#   - it gives every jj it runs `--config=git.executable-path="<the git wrapper>"`, in front of
+#     the command line as a layer of its own, and, after a command it reads as a push, once more
+#     as the last layer of the command line: a configuration jj reads for one command alone (a
+#     `[[--scope]]` with `--when.commands`) is invisible to any read of the configuration, which
+#     is itself a command, and the command line's own layer outranks every file;
+#   - before a push, it reads the git jj's configuration names, and refuses another git by name,
+#     in the shared check's own setup-error words and with its status;
+#   - it reads the command line as jj does, aliases and the default command expanded, and runs
+#     the line it read. What it cannot read it refuses.
+# It reads no ref, no commit and no other text: jj hands git exact refspecs, and the git wrapper
+# does the whole job from there.
 #
-# The check is the whole of this wrapper. It reads no ref, no commit and no other text: jj hands
-# git exact refspecs, and the git wrapper does the whole job from there.
+# A command is a push when jj runs it as `git push` or `gerrit upload` (which pushes to
+# refs/for/<branch>), and that is more than those words: jj puts an alias's words in place of the
+# command word, expands an alias those words name in turn, and puts `ui.default-command` in front
+# of a command line that names no command. Measured with jj 0.45.1-sami and 0.46.0-sami: an alias,
+# an alias of an alias and a default command, each set in a repository's own configuration beside
+# a `git.executable-path` naming another git, each pushed through that git while the wrapper read
+# only the words it was given. The wrapper expands the line as jj does, and runs its expansion,
+# so jj expands nothing the wrapper did not read: jj reads its aliases with no command to scope
+# them to, and the wrapper reads them through `jj config list`, a command, so a `[[--scope]]` for
+# `config` would otherwise show the wrapper one alias and jj another.
 set -u
 
 real=/usr/local/bin/jj
 wrapper=/opt/legion/bin/git
 
-# jj's subcommand pair, past jj's global options, which clap takes before a subcommand as well as
-# after one. The options whose value is the next argument are `jj --help`'s Global Options; the
-# attached spellings (`-R<path>`, `--repository=<path>`) are one word and need no skip. The
-# repository is kept because the configuration read below must be the one this command would
-# make: a repository's own configuration file can name a `git.executable-path` of its own, and
-# so can the caller's own `--config`, which that read takes as well.
-repository=
-takes=
-first=
-second=
-for arg; do
-  if [ -n "$takes" ]; then
-    if [ "$takes" = repository ]; then
-      repository=$arg
-    fi
-    takes=
-    continue
-  fi
-  case "$arg" in
-    -R | --repository) takes=repository ;;
-    --at-operation | --at-op | --color | --config | --config-file | --config-toml) takes=other ;;
-    -R?*) repository=${arg#-R} ;;
-    --repository=*) repository=${arg#--repository=} ;;
-    -*) ;;
-    *)
-      if [ -z "$first" ]; then
-        first=$arg
-      else
-        second=$arg
-        break
-      fi
-      ;;
-  esac
-done
+# Shell completion: jj runs no command while COMPLETE names a shell (clap's CompleteEnv; measured
+# in jj 0.45.1-sami and 0.46.0-sami, `COMPLETE=bash jj git push` prints the completion script and
+# pushes nothing), and the reads below would answer with completion output too. Empty or `0` is
+# no completion, and the command runs.
+case "${COMPLETE-}" in
+  '' | 0) ;;
+  *) exec "$real" "$@" ;;
+esac
 
-if [ "$first" != git ] || [ "$second" != push ]; then
-  exec "$real" "$@"
-fi
+force="--config=git.executable-path=\"$wrapper\""
 
-found=$(command -v git) || found=
-if [ "$found" != "$wrapper" ]; then
-  echo "LEAK CHECK SETUP ERROR: the push: the git on PATH is ${found:-no git at all}, not Legion's git wrapper $wrapper, so jj's push would reach the remote with no leak check" >&2
-  exit 2
-fi
+# run "$@" runs the real jj with the git wrapper in front of the line, a layer of its own.
+# Consecutive `--config` arguments are one layer, and jj refuses to set a whole table in a layer
+# that sets a key of it ("Would overwrite entire table", in all three versions), so the empty file
+# after it ends that layer, and a caller's `--config 'git={…}'` starts a layer of its own.
+run() {
+  exec "$real" "$force" --config-file=/dev/null "$@"
+}
 
-# --ignore-working-copy because this is a read: a configuration read must not snapshot the
-# working copy of the repository the push is about. The caller's own `--config`, `--config-file`
-# and `--config-toml` go to the read too, in the order they were written and in both spellings
-# of each, because the value the read must answer is the one the push would use: a `jj git push
-# --config git.executable-path=<another git>` names its git on the command line, which outranks
-# every configuration file, and a read without those arguments would answer for a push nobody is
-# making and pass this one through to an unwrapped git. They are selected by rebuilding the
-# positional parameters inside the command substitution, whose subshell has a copy of its own,
-# so the arguments the exec at the end hands jj are the caller's untouched. jj exits non-zero
-# when nothing sets the value, which is the usual case and means the bare `git` above.
-configured=$(
-  keep=
-  left=$#
-  while [ "$left" -gt 0 ]; do
-    arg=$1
-    shift
-    left=$((left - 1))
-    if [ -n "$keep" ]; then
-      keep=
-      set -- "$@" "$arg"
+# The commands jj has built in, by clap's own names: each command's name and every other name
+# clap gives it, hidden ones included (`debug`, `op`, `obslog`, `evolution-log`), which are what
+# jj takes for a built-in command. jj ignores an alias that has one of these names ("Cannot define
+# an alias that overrides the built-in command"), and that warning names the same 51 in jj
+# 0.45.1-sami, 0.46.0-sami and 0.47.1, from an alias set for every name and other name in each
+# version's command list (jj-cli's commands/mod.rs). `jj help` leaves out the hidden ones. So a
+# command line whose command word is one of these, other than a push, runs at once, with no read.
+builtins=' abandon absorb arrange bisect bookmark commit config converge debug describe diff diffedit duplicate edit evolog evolution-log file fix gerrit git help interdiff log metaedit new next obslog op operation parallelize prev rebase redo resolve restore revert root run show sign simplify-parents sparse split squash status tag undo unsign util version workspace '
+
+# command_word "$@" sets at to the position of jj's command word, the first argument that is no
+# global option and no option's value (0 for none), word to that argument, and next to the
+# argument after it that is likewise neither, at position nat: the `push` of `git push`. clap takes
+# the global options before the command word, between its two words and after them. They are `jj
+# --help`'s Global Options, the same in all three versions: those whose value is the next
+# argument, their attached spellings (`-R<path>`, `-R=<path>`, `--repository=<path>`), which are
+# one word, and the flags; clap reads a word that starts `-h` or `-V` as help or version. An empty
+# argument and a lone `-` are command words to jj (clap with external subcommands), so they are to
+# this too.
+#
+# Any other option in front of the command word is one clap does not know, and clap stops there,
+# before the command word: jj then reads no command word, and puts ui.default-command in front of
+# the line. Measured in all three versions, with a repository whose default command is `git push`:
+# `jj -b log` pushes the bookmark log. So for such a line at is 0, as it is for jj. A value clap
+# refuses (`--color=bad`, or a value that starts with `-`) stops clap as well, but jj then refuses
+# the line it puts the default command in front of at that same value, so this takes such a value
+# as clap takes a valid one.
+command_word() {
+  word='' at=0 next='' nat=0 takes='' i=0
+  for arg; do
+    i=$((i + 1))
+    if [ -n "$takes" ]; then
+      takes=
       continue
     fi
     case "$arg" in
-      --config | --config-file | --config-toml)
-        keep=1
-        set -- "$@" "$arg"
+      -R | --repository | --at-operation | --at-op | --color | --config | --config-file) takes=1 ;;
+      -R?* | --repository=* | --at-operation=* | --at-op=* | --color=* | --config=* | --config-file=*) ;;
+      --ignore-working-copy | --no-integrate-operation | --ignore-immutable | --debug | --quiet | --no-pager) ;;
+      -h* | --help | -V* | --version | --) ;;
+      -?*)
+        # After the command word, it is the command's own option.
+        [ "$at" -gt 0 ] || return 0
         ;;
-      --config=* | --config-file=* | --config-toml=*)
-        set -- "$@" "$arg"
+      *)
+        if [ "$at" -eq 0 ]; then
+          word=$arg
+          at=$i
+        else
+          next=$arg
+          nat=$i
+          break
+        fi
         ;;
     esac
   done
-  if [ -n "$repository" ]; then
-    exec "$real" -R "$repository" --ignore-working-copy "$@" config get git.executable-path 2>/dev/null
-  fi
-  exec "$real" --ignore-working-copy "$@" config get git.executable-path 2>/dev/null
-) || configured=
-case "$configured" in
-  "" | git | "$wrapper") ;;
-  *)
-    echo "LEAK CHECK SETUP ERROR: the push: jj's git.executable-path is $configured, not git or Legion's git wrapper $wrapper, so jj's push would reach the remote with no leak check" >&2
-    exit 2
-    ;;
-esac
+}
 
-exec "$real" "$@"
+# occurrences "$@", after command_word "$@", reads the repository and configuration options jj
+# reads on the line, those in front of its first `--`. It sets occ to one entry each,
+# `<id>:<level>:<position>`, and `:<position>` once more for a value that is the next argument: id
+# r for -R and --repository, c for --config, f for --config-file; level 0 in front of the command
+# word, 1 between its two words and 2 after them. It sets dc and df to the deepest level a c and an
+# f are at (-1 for none), and dd to the position of the first `--` (0 for none).
+#
+# The levels are clap's: it keeps a global option's values from the deepest command that has any,
+# and drops the rest, for each option apart, and jj layers what it keeps in the order it is
+# written. Measured in all three versions: `jj --config=a.b=1 config list a --config=a.c=2` lists
+# a.c alone, and so does `jj --config=a.b=1 config --config=a.c=2 list a`. For -R it makes no
+# difference: the last one wins, and the last one is the deepest.
+occurrences() {
+  occ='' dc=-1 df=-1 dd=0 lvl=0 k=0 value='' skip=''
+  for arg; do
+    k=$((k + 1))
+    if [ -n "$skip" ]; then
+      skip=''
+      continue
+    fi
+    if [ -n "$value" ]; then
+      occur "$value:$k"
+      value=''
+      continue
+    fi
+    if [ "$k" -eq "$at" ]; then
+      lvl=1
+      continue
+    fi
+    if [ "$k" -eq "$nat" ]; then
+      lvl=2
+      continue
+    fi
+    case "$arg" in
+      --)
+        dd=$k
+        break
+        ;;
+      -R | --repository) value="r:$lvl:$k" ;;
+      --config) value="c:$lvl:$k" ;;
+      --config-file) value="f:$lvl:$k" ;;
+      --at-operation | --at-op | --color) skip=1 ;;
+      -R?* | --repository=*) occur "r:$lvl:$k" ;;
+      --config=*) occur "c:$lvl:$k" ;;
+      --config-file=*) occur "f:$lvl:$k" ;;
+    esac
+  done
+}
+
+# occur <entry> adds an entry to occ, and its level to dc or df.
+occur() {
+  occ="$occ $1"
+  case "$1" in
+    c:*) [ "$dc" -ge "$lvl" ] || dc=$lvl ;;
+    f:*) [ "$df" -ge "$lvl" ] || df=$lvl ;;
+  esac
+}
+
+# ref_words <entry> sets refs to `"${<position>}"` for each word of an entry: the text `eval "set
+# -- …"` reads the caller's words back by, so none of them is ever read as code.
+ref_words() {
+  set -- "${1#*:*:}"
+  refs=" \"\${${1%%:*}}\""
+  case "$1" in
+    *:*) refs="$refs \"\${${1#*:}}\"" ;;
+  esac
+}
+
+refuse() {
+  echo "LEAK CHECK SETUP ERROR: the push: $1" >&2
+  exit 2
+}
+
+command_word "$@"
+if [ "$at" -gt 0 ]; then
+  case "$word" in
+    git) [ "$next" = push ] || run "$@" ;;
+    gerrit) [ "$next" = upload ] || run "$@" ;;
+    "" | *[!A-Za-z0-9_-]*) ;;
+    *) case "$builtins" in *" $word "*) run "$@" ;; esac ;;
+  esac
+fi
+
+# The expansion, of the wrapper's own arguments, as jj expands them. jj loads aliases and the
+# default command from the configuration it reads before the command line's own options: its
+# defaults, the user's files and the configuration of the repository the working directory is in,
+# and neither from the repository `-R` names nor from a `--config` or `--config-file` argument
+# (measured in both versions: "Command aliases cannot be loaded from -R/--repository path or
+# --config/--config-file arguments"). So these reads run in the working directory with none of the
+# caller's options, and with `--include-defaults`: jj's defaults hold aliases of their own (`st`,
+# `b`, `ci`, `desc` in all three versions), which `jj config list` leaves out without it ("No
+# matching config key"), and which an alias of the same name in a file replaces.
+#
+# One read a key, through a template that prints the key's own entry and nothing else: `D`, the
+# number of words and one word a line for a list, or for a table's `definition`; `E` and the value
+# for a table's `enabled`; nothing for a table's `description`, nor for a key whose name merely
+# ends like one (an alias named `enabled`). A word that holds a line break shows as more lines
+# than its count, and a value that is no list of strings (an alias written as a string, which jj
+# does not run) as `<Error…>` where the count stands: the wrapper refuses both. An alias with
+# `enabled = false`, which jj 0.46 obeys and jj 0.45 does not read, is left to jj, as an alias the
+# wrapper found nothing for is: jj runs it or refuses it, under the git wrapper's last layer.
+nl='
+'
+seen=' '
+via=''
+defaulted=''
+depth=0
+while :; do
+  command_word "$@"
+  if [ "$at" -eq 0 ]; then
+    # No command word, or an option clap does not know in front of it. A help or version flag
+    # makes clap print and stop, before jj puts in a default command (measured: `jj --help` and
+    # `jj --version` push nothing when the default command is a push), so the line runs as it is.
+    for arg; do
+      case "$arg" in
+        -h | --help | -V | --version) run "$@" ;;
+      esac
+    done
+    # Otherwise jj puts ui.default-command in front of the line, or runs `log` when nothing sets
+    # it. One put in already does not come again.
+    if [ -n "$defaulted" ]; then
+      final=open
+      break
+    fi
+    defaulted=1
+    key=ui.default-command
+  else
+    case "$word" in
+      git)
+        final=builtin
+        [ "$next" = push ] && final=push
+        break
+        ;;
+      gerrit)
+        final=builtin
+        [ "$next" = upload ] && final=push
+        break
+        ;;
+      "") refuse "jj's command word is empty, which jj runs as an alias named \"\" and this wrapper does not read" ;;
+      *[!A-Za-z0-9_-]*) refuse "jj's command word '$word' is no built-in command, and it holds characters this wrapper does not read as an alias name, so it cannot tell whether jj runs it as a push" ;;
+    esac
+    case "$builtins" in
+      *" $word "*)
+        final=builtin
+        break
+        ;;
+    esac
+    # jj refuses an alias that expands to itself, but expands a name again where its first
+    # expansion left only options in front of it (`jj q q …` with `aliases.q = ["--quiet"]`), and
+    # starts afresh after the default command. This wrapper follows a name once.
+    case "$seen" in
+      *" $word "*) refuse "jj expands aliases.$word a second time on this command line, which this wrapper does not follow" ;;
+    esac
+    depth=$((depth + 1))
+    [ "$depth" -le 32 ] || refuse "jj expands this command through more than 32 aliases, more than this wrapper reads"
+    seen="$seen$word "
+    key="aliases.$word"
+  fi
+
+  template='if(name == "'"$key"'" || name == "'"$key"'.definition", "D\n" ++ value.as_string_list().len() ++ "\n" ++ value.as_string_list().join("\n") ++ "\n", if(name == "'"$key"'.enabled", "E\n" ++ value ++ "\n", ""))'
+  got=$("$real" --ignore-working-copy config list "$key" --include-defaults -T "$template" 2>/dev/null && echo .) ||
+    refuse "jj could not read $key (\`jj config list $key\` says why), so this wrapper cannot tell whether this command is a push"
+  got=${got%.}
+  state='' defs=0 count=0 n=0 words='' disabled=''
+  while IFS= read -r line; do
+    case "$state" in
+      count)
+        count=$line
+        case "$count" in
+          "" | *[!0-9]*)
+            state=notlist
+            break
+            ;;
+        esac
+        n=0
+        state=words
+        [ "$count" -gt 0 ] || state=''
+        ;;
+      words)
+        if [ "$n" -eq 0 ]; then words=$line; else words="$words$nl$line"; fi
+        n=$((n + 1))
+        [ "$n" -lt "$count" ] || state=''
+        ;;
+      enabled)
+        [ "$line" != false ] || disabled=1
+        state=''
+        ;;
+      *)
+        case "$line" in
+          "") ;;
+          D)
+            defs=$((defs + 1))
+            state=count
+            ;;
+          E) state=enabled ;;
+          *)
+            state=bad
+            break
+            ;;
+        esac
+        ;;
+    esac
+  done <<EOF
+$got
+EOF
+  if [ "$state" = notlist ] && [ "$key" = ui.default-command ]; then
+    # ui.default-command may be one string, which jj runs as one command word.
+    words=$("$real" --ignore-working-copy config get ui.default-command 2>/dev/null) ||
+      refuse "jj could not read ui.default-command, so this wrapper cannot tell whether this command is a push"
+    case "$words" in
+      *"$nl"*) refuse "ui.default-command holds a line break, which this wrapper does not read" ;;
+    esac
+    state='' defs=1 count=1
+  fi
+  case "$state" in
+    notlist) refuse "$key is no list of strings, so this wrapper cannot read it" ;;
+    "") ;;
+    *) refuse "this wrapper cannot read $key: a word of it holds a line break, or jj printed what this wrapper does not expect" ;;
+  esac
+  [ "$defs" -le 1 ] || refuse "this wrapper cannot read $key: a word of it holds a line break"
+  if [ "$defs" -eq 0 ] || [ -n "$disabled" ]; then
+    # Not set: jj runs `log` for no command word, and refuses a command word that is no alias.
+    # Disabled: jj 0.45 runs the alias anyway, and jj 0.46 refuses the word.
+    final=open
+    break
+  fi
+  via="$via, $key"
+  # The command line as jj expands it: the words in place of the command word at position at, or
+  # in front of the whole line where at is 0. Each word goes in as one argument, as read: the
+  # words are appended after the line, and the line is rebuilt once, as text of positional
+  # references that `eval "set -- …"` reads back, so no word is read as code and the rebuild costs
+  # one pass, not one a word.
+  total=$#
+  k=0
+  while [ "$k" -lt "$count" ] && IFS= read -r w; do
+    set -- "$@" "$w"
+    k=$((k + 1))
+  done <<EOF
+$words
+EOF
+  expanded='' k=0
+  while [ "$k" -lt "$count" ]; do
+    k=$((k + 1))
+    expanded="$expanded \"\${$((total + k))}\""
+  done
+  argv=''
+  [ "$at" -gt 0 ] || argv=$expanded
+  k=0
+  while [ "$k" -lt "$total" ]; do
+    k=$((k + 1))
+    if [ "$k" -eq "$at" ]; then
+      argv="$argv$expanded"
+    else
+      argv="$argv \"\${$k}\""
+    fi
+  done
+  eval "set -- $argv"
+done
+
+if [ "$final" = builtin ]; then
+  run "$@"
+fi
+
+occurrences "$@"
+
+if [ "$final" = push ]; then
+  # What jj expanded to reach the push, if anything.
+  how="jj's $word $next"
+  [ -z "$via" ] || how="jj's $word $next (jj runs this command as \`jj $word $next\` through ${via#, })"
+
+  found=$(command -v git) || found=
+  [ "$found" = "$wrapper" ] ||
+    refuse "the git on PATH is ${found:-no git at all}, not Legion's git wrapper $wrapper, so $how would reach the remote with no leak check"
+
+  # The configuration read, which must answer for the push this command would make. It runs with
+  # the repository and configuration options of the expanded command line jj keeps, wherever in
+  # the line they are written, each word as it came and in the order it came, so jj resolves them
+  # as the push will. Measured with jj 0.45.1-sami and 0.46.0-sami: clap takes `-R` and
+  # `--repository` after the command as well as before it, the last of them names the repository
+  # (`jj -R <a> git push -R <b>` pushes from <b>), `-R=<path>` names <path>, and those an alias or
+  # the default command carries count as the caller's own. A read that took the repository only
+  # from in front of `git push`, and kept a `-R=<path>` as the path `=<path>`, answered for a
+  # repository the push did not use, and let the push through to whatever git the push's
+  # repository named. Of `--config` and of `--config-file`, jj keeps those at the deepest level
+  # that has any (occurrences says how), so the read takes those alone: a read that took a
+  # `--config` in front of `git` beside one after it refused a git the push would not read.
+  # `--at-operation` loads the repository at an operation but reads the same configuration, and no
+  # other global option names a configuration, so the read leaves them out. A `--` ends the
+  # options, and the read takes nothing after it: `jj git push` takes no positional argument, so
+  # jj refuses whatever follows one.
+  #
+  # --ignore-working-copy because this is a read: it must not snapshot the working copy of the
+  # repository the push is about. The read cannot see a value scoped to the push's own command,
+  # which the last layer below overrides; it names every other git, so the refusal can say which.
+  #
+  # jj answers `git` when nothing sets the value, its own default: `jj config get
+  # git.executable-path` prints `git` and exits 0 with no configuration at all. So a read that fails
+  # is an error, a `-R` naming no repository for one, and never an unset value. It is refused, after
+  # jj's own error, because a read that answered nothing cannot vouch for the git the push would run.
+  configured=$(
+    kept=''
+    for entry in $occ; do
+      l=${entry#?:}
+      l=${l%%:*}
+      case "$entry" in
+        c:*) [ "$l" -eq "$dc" ] || continue ;;
+        f:*) [ "$l" -eq "$df" ] || continue ;;
+      esac
+      ref_words "$entry"
+      kept="$kept$refs"
+    done
+    eval "set -- $kept"
+    exec "$real" --ignore-working-copy "$@" config get git.executable-path
+  ) || refuse "jj could not read the git.executable-path this push would use, so it cannot be shown to be git or Legion's git wrapper $wrapper, and $how could reach the remote with no leak check"
+  case "$configured" in
+    git | "$wrapper") ;;
+    *) refuse "jj's git.executable-path is ${configured:-empty}, not git or Legion's git wrapper $wrapper, so $how would reach the remote with no leak check" ;;
+  esac
+fi
+
+# A push, or a line whose command jj may still expand (a word this wrapper found no alias for, or
+# no command word at all): the git wrapper goes in once more as the last layer of the line.
+# Consecutive `--config` arguments are one layer, in which a `[[--scope]]` value outranks a plain
+# one, so `--config-file=/dev/null`, an empty file, ends the caller's layer and the git wrapper's
+# stands alone and last.
+#
+# Where it goes. clap keeps each of `--config` and `--config-file` only from the deepest level
+# that has any (occurrences), so the last layer must be at the deepest level the caller's are, or
+# jj drops it, and anywhere deeper jj drops the caller's. On a push, jj runs the line as it is,
+# with nothing more to expand, so the levels are known: the last layer goes at the end of the
+# deepest level that has a caller's `--config` or `--config-file` (in front of the command word
+# where there is none), ahead of the first `--` at level 2, which ends the options. Of the other
+# option, the caller's at a shallower level, which jj alone keeps, are written once more at the
+# start of that level, in their order, so jj keeps them, ahead of the deeper ones as they were.
+# On a line jj may still expand, the levels are not known: the last layer goes at the end, ahead
+# of the first `--`, after any words jj may still put in place of a command word.
+last=" --config-file=/dev/null \"\$force\""
+copies='' after=0
+if [ "$final" = push ]; then
+  layer=0
+  [ "$layer" -ge "$dc" ] || layer=$dc
+  [ "$layer" -ge "$df" ] || layer=$df
+  case "$layer" in
+    0) before=$at ;;
+    1) before=$nat after=$at ;;
+    2) before=$dd after=$nat ;;
+  esac
+  for entry in $occ; do
+    l=${entry#?:}
+    l=${l%%:*}
+    case "$entry" in
+      c:*) [ "$l" -eq "$dc" ] && [ "$dc" -lt "$layer" ] || continue ;;
+      f:*) [ "$l" -eq "$df" ] && [ "$df" -lt "$layer" ] || continue ;;
+      *) continue ;;
+    esac
+    ref_words "$entry"
+    copies="$copies$refs"
+  done
+else
+  before=$dd
+fi
+# The line, as text that `eval "set -- …"` reads back: each of the caller's words by its position.
+argv='' k=0
+while [ "$k" -lt "$#" ]; do
+  k=$((k + 1))
+  [ "$k" -ne "$before" ] || argv="$argv$last"
+  argv="$argv \"\${$k}\""
+  [ "$k" -ne "$after" ] || argv="$argv$copies"
+done
+[ "$before" -gt 0 ] || argv="$argv$last"
+eval "set -- $argv"
+run "$@"

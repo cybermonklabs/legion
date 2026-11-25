@@ -31,6 +31,7 @@ import (
 // TestNoAttributeNodeStoresItsValuesUnderABaseAttribute, which fails naming the colliding
 // attribute node.
 func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
+	t.Parallel()
 	service, document := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour

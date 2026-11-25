@@ -10,7 +10,9 @@ import (
 // repository and a commit's place on one of its branches is believed, this one how long an
 // answer about the pull requests of a commit stands before GitHub is asked again. Its one
 // caller is the results read (api/results_comparison.go, comparisonReader.readThroughHead), which
-// keeps a memo for the span of one request and no policy.
+// keeps a memo for the span of one request and no policy. A writer's read claims a commit here;
+// a read-only caller's read takes no claim and only reads the writer's (Refuses), since it
+// stores nothing and keeps nothing after its request.
 
 // CommitPullReadStaleAfter is how long one commit's read-through stands before another read may
 // run for that commit. Each read costs one GET /repos/{owner}/{repo}/commits/{sha}/pulls, and
@@ -71,7 +73,7 @@ type CommitPullReads struct {
 const commitPullReadSweepAt = 1024
 
 // commitPullKey is the pair one read-through is spent on: a repository, under the canonical name
-// its caller resolved (refs.CanonicalRepo), and a commit.
+// its caller resolved (refs.Renames.Canonical), and a commit.
 type commitPullKey struct {
 	repo string
 	sha  string
@@ -89,7 +91,7 @@ func (c *CommitPullReads) Claim(repoFull, sha string, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := commitPullKey{repo: repoFull, sha: sha}
-	if until, found := c.notBefore[key]; found && now.Before(until) {
+	if c.refusesLocked(key, now) {
 		return false
 	}
 	if c.notBefore == nil {
@@ -103,6 +105,25 @@ func (c *CommitPullReads) Claim(repoFull, sha string, now time.Time) bool {
 	}
 	c.notBefore[key] = now.Add(CommitPullReadStaleAfter)
 	return true
+}
+
+// Refuses reports whether Claim would refuse sha's pull requests in repoFull at now — a claim or a
+// settle holds the pair past now — read under the lock Claim reads the bound under, and records
+// nothing: no claim, and no sweep. A read-only caller's results read asks it where a writer's read
+// claims (api/results_comparison.go, comparisonReader.readThroughHead), so it asks GitHub nothing
+// where a writer's read at that moment would be refused, and leaves every later read's claim as
+// it found it.
+func (c *CommitPullReads) Refuses(repoFull, sha string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.refusesLocked(commitPullKey{repo: repoFull, sha: sha}, now)
+}
+
+// refusesLocked is whether the moment held for key is after now, the one test Claim and Refuses
+// both read the bound by.
+func (c *CommitPullReads) refusesLocked(key commitPullKey, now time.Time) bool {
+	until, found := c.notBefore[key]
+	return found && now.Before(until)
 }
 
 // Settle holds the asking about one repository and commit off for CommitPullSettledFor: GitHub

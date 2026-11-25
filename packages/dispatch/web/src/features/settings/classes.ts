@@ -27,6 +27,17 @@ export const settingsSubmitButton = `min-h-11 rounded-md px-4 py-2 font-medium d
  *  does not compile checks nothing. */
 export const ownerRepoPattern = "[^\\/\\s]+\\/[^\\/\\s]+";
 
+/** What a repository box says about a value it refuses before it sends it: one that is not
+ *  `owner/name` by the box's own pattern. */
+export const NOT_OWNER_NAME = "Write the repository as owner/name.";
+
+/** `pattern` as a test of a whole value, as a field's `pattern` attribute applies it: the check a
+ *  repository box makes before it sends, so a typo shows at the box and not as the server's 400 a
+ *  round trip later. */
+export function wholeValue(pattern: string): RegExp {
+  return new RegExp(`^(?:${pattern})$`);
+}
+
 /** The gap between one Settings section and the next: the spec's step between the parts of a
  *  page. The page owns the rhythm - no section sets an outer margin of its own, which is how
  *  three sections came to line up at 40px by coincidence rather than by rule. */

@@ -39,13 +39,15 @@ import (
 // (model.DecisionLink): its stale is the release before's rule, the decision's own words changed
 // after the tie and the spec node has not changed since they did, which the page of the release
 // before reads too, and its changed_since_tie is R5's, the spec node's text changed after the tie.
-//
-// kept for one release: compat-objects
+// entries and open_questions stay. document and decisions go once no page of the release before
+// reads them (compat-objects).
 type issueDecisions struct {
-	Entries       []decisionEntry  `json:"entries"`
-	Document      *string          `json:"document"`
-	OpenQuestions []issueAskRow    `json:"open_questions"`
-	Decisions     []model.Decision `json:"decisions"`
+	Entries []decisionEntry `json:"entries"`
+	// kept for one release: compat-objects
+	Document      *string       `json:"document"`
+	OpenQuestions []issueAskRow `json:"open_questions"`
+	// kept for one release: compat-objects
+	Decisions []model.Decision `json:"decisions"`
 }
 
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +77,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// kept for one release: compat-objects
 	if answer.Document, err = s.standingDecisionsDocument(r.Context(), key); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -87,6 +90,8 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 // stands (decisions_documents()), and nil once it is retired or where the issue holds none: the
 // Decisions read's old `document` member. Nothing reads
 // the document's text.
+//
+// kept for one release: compat-objects
 func (s *server) standingDecisionsDocument(ctx context.Context, key string) (*string, error) {
 	var issueKey, session *string
 	var project, slug, kind string
@@ -134,32 +139,72 @@ func artifactMissing(err error) bool {
 
 // specOpenQuestions are the issue's open asks whose block is in its spec (refs.AsksOfDocumentSQL),
 // oldest first, in the shape every ask read has (askReadColumns, with the newest reply beside the
-// row). reader is the answer's own, and each row registers its texts with it once the slice has
-// stopped growing: a shaping registers a pointer into the row, and an append that moved the
-// backing array would leave the reader filling trees into memory the answer no longer holds.
+// row). An ask is open as its node holds it (askNodeAnswer.applyTo), which every read of an answer
+// reads (R3), so the statement reads each of the spec's asks and the scan keeps the open ones. An
+// ask's block is in the spec where the spec's block index holds an ask block under its block id
+// (document_blocks, keyed as the ask is): a row that names the spec and a block it no longer
+// holds - one a reopen restored with no block to write, which a later settlement retracts - is no
+// question of it.
+//
+// That index cannot say so while the spec owes it - while the spec is among the documents the
+// coverage read names as owing their block index (queueOwedDocuments), read in the same batch: a
+// version above the bound leaves its blocks to the block-index reconciliation, so an ask block it
+// added is in no document_blocks row yet, and for a spec converted into its issue's room no row
+// says yet which fragment holds the block (refs.AskBlockDocumentSQL). Then the spec's asks are the
+// asks rows of the ask blocks its fragment holds as the text routes read it
+// (docs.API.TextWithAsks), found by the room and those block ids
+// (refs.AsksOfFragmentBlocksSQL), whether or not the index holds them: a question a person can
+// see does not drop out of the read because the index has not caught up, and no ask whose block
+// the spec no longer holds is listed from an index that is behind. Once the index states the
+// spec's version, its rows decide again. Either way one statement reads each ask once, so none
+// is listed twice. reader is the answer's own, and each row registers its texts with it once the
+// slice has stopped growing: a shaping registers a pointer into the row, and an append that moved
+// the backing array would leave the reader filling trees into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	var owed []model.OwedDocument
+	questions := []issueAskRow{}
+	batch := &pgx.Batch{}
+	queueOwedDocuments(batch, key, &owed)
+	batch.Queue(`
 		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.state = 'open' and `+refs.AsksOfDocumentSQL("a", "$2::uuid")+`
+		where a.issue_key = $1 and `+refs.AsksOfDocumentSQL("a", "$2::uuid")+`
+		  and exists (
+			select 1 from document_blocks d
+			where d.artifact_id = a.block_artifact_id and d.block_id = a.block_id and d.type = 'ask')
 		order by a.created_at, a.id
-	`, key, specID)
-	if err != nil {
+	`, key, specID).Query(func(rows pgx.Rows) error {
+		return scanOpenQuestions(rows, &questions)
+	})
+	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 		return nil, err
 	}
-	questions := []issueAskRow{}
-	for rows.Next() {
-		ask, reply, err := scanAskRead(rows)
+	if slices.ContainsFunc(owed, func(document model.OwedDocument) bool { return document.ArtifactID == specID }) {
+		text, err := s.deps.Docs.TextWithAsks(ctx, specID, false)
 		if err != nil {
-			rows.Close()
+			return nil, fmt.Errorf("read the ask blocks of the spec %s, which owes its block index: %w", specID, err)
+		}
+		blocks := make([]string, 0, len(text.Asks))
+		for _, block := range text.Asks {
+			if block.BlockID != "" {
+				blocks = append(blocks, block.BlockID)
+			}
+		}
+		rows, err := s.deps.Store.Pool.Query(ctx, `
+			select `+askReadColumns+` `+askReadFrom+`
+			where a.issue_key = $1 and `+refs.AsksOfFragmentBlocksSQL("a", "$2::uuid", "$3::text[]")+`
+			order by a.created_at, a.id
+		`, key, specID, blocks)
+		if err != nil {
 			return nil, err
 		}
-		questions = append(questions, issueAskRow{Ask: ask, LastReply: reply})
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
+		questions = questions[:0]
+		err = scanOpenQuestions(rows, &questions)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
 	asks := make([]*model.Ask, len(questions))
 	for index := range questions {
@@ -175,6 +220,21 @@ func (s *server) specOpenQuestions(
 		questions[index].shape(reader)
 	}
 	return questions, nil
+}
+
+// scanOpenQuestions appends to questions each ask rows reads (askReadColumns) that is open as its
+// node holds it, in the order rows reads them.
+func scanOpenQuestions(rows pgx.Rows, questions *[]issueAskRow) error {
+	for rows.Next() {
+		ask, reply, err := scanAskRead(rows)
+		if err != nil {
+			return err
+		}
+		if ask.State == "open" {
+			*questions = append(*questions, issueAskRow{Ask: ask, LastReply: reply})
+		}
+	}
+	return rows.Err()
 }
 
 // decisionEntry is one entry of the Decisions read's `entries`: the
@@ -579,7 +639,9 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 	}
 	entries = read
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].before(entries[j]) })
+	// kept for one release: compat-objects
 	decisions := []model.Decision{}
+	// kept for one release: compat-objects
 	for _, entry := range entries {
 		if entry.Kind == "agent" || (entry.Kind == "person" && entry.AnswerState != nil && *entry.AnswerState == "answered") {
 			decisions = append(decisions, byNode[entry.Node])
@@ -589,6 +651,7 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 		reader.text(&entries[index].TextTree, entries[index].Text)
 		reader.textOf(&entries[index].AnswerTree, entries[index].Answer)
 	}
+	// kept for one release: compat-objects
 	for index := range decisions {
 		reader.text(&decisions[index].TextTree, decisions[index].Text)
 	}
@@ -636,49 +699,24 @@ func (entry decisionEntry) at() time.Time {
 }
 
 // readFacts sets the values and relations of entry's node the entries read holds (entryFactKinds),
-// from the JSON list the statement aggregated, or answers which of them does not parse. A
-// declined ask carries its note and no answer, and an ask carries no Keep.
+// from the JSON list the statement aggregated, or answers which of them does not parse: the
+// answer state, as every ask read reads it (askNodeAnswer), and the decision's own. A declined ask
+// carries its note and no answer, and an ask carries no Keep.
 func (entry *decisionEntry) readFacts(encoded []byte) error {
-	var facts []struct {
-		Kind   string `json:"kind"`
-		ToKind string `json:"to_kind"`
-		ToID   string `json:"to_id"`
-	}
+	var facts []nodeFact
 	if err := json.Unmarshal(encoded, &facts); err != nil {
 		return fmt.Errorf("the node's values: %w", err)
 	}
+	var answer askNodeAnswer
 	for _, fact := range facts {
 		value := fact.ToID
-		switch fact.Kind {
-		case graphstore.TupleAnswerState:
-			switch value {
-			case "open", "answered", "resolved":
-				entry.AnswerState = &value
-			default:
-				return fmt.Errorf("answer_state holds %q, which is none of open, answered and resolved", value)
-			}
-		case graphstore.TupleAnswer:
-			entry.Answer = &value
-		case graphstore.TupleSelected:
-			selected := []string{}
-			if err := json.Unmarshal([]byte(value), &selected); err != nil {
-				return fmt.Errorf("selected holds %q, which is no list of labels: %w", value, err)
-			}
-			entry.Selected = selected
-		case graphstore.TupleAnsweredAt:
-			at, err := time.Parse(time.RFC3339Nano, value)
+		if held, err := answer.read(fact.Kind, value); held {
 			if err != nil {
-				return fmt.Errorf("answered_at holds %q, which is no time: %w", value, err)
+				return err
 			}
-			entry.AnsweredAt = &at
-		case graphstore.TupleResolution:
-			var resolution model.AskResolution
-			if err := json.Unmarshal([]byte(value), &resolution); err != nil {
-				return fmt.Errorf("resolution holds %q, which is no resolution: %w", value, err)
-			}
-			entry.Resolution = &resolution
-		case graphstore.TupleAnsweredBy:
-			entry.AnsweredBy = &value
+			continue
+		}
+		switch fact.Kind {
 		case graphstore.TupleDecidedBy:
 			entry.DecidedBy = &decisionDecider{Kind: fact.ToKind, ID: value}
 		case refs.ValueUncertainty:
@@ -692,6 +730,8 @@ func (entry *decisionEntry) readFacts(encoded []byte) error {
 			entry.UncertaintyReason = &value
 		}
 	}
+	entry.AnswerState, entry.Answer, entry.Selected = answer.State, answer.Answer, answer.Selected
+	entry.AnsweredAt, entry.AnsweredBy, entry.Resolution = answer.AnsweredAt, answer.AnsweredBy, answer.Resolution
 	if entry.Resolution != nil && entry.Resolution.Kind == model.AskResolutionDeclined {
 		// D9: a declined ask is an entry of its own, with the person's note, and never an answer.
 		entry.Declined, entry.Kind = true, "declined"
@@ -974,6 +1014,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 			return err
 		}
 		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err
@@ -1097,7 +1138,9 @@ type documentReadInput struct {
 
 // putDocumentRead is PUT /api/v1/me/documents/{id}/read {"version": n}: the caller has read the
 // document through that version. It is the caller's own view state, written as PUT
-// /api/v1/me/issues/{key}/state is, and announces nothing.
+// /api/v1/me/issues/{key}/state is, and announces nothing. The version is 0 or more and fits
+// user_document_reads.version, an integer column (fitsIntegerColumn); anything else is refused
+// 400 INVALID_STATE before the write.
 func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -1108,8 +1151,9 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if input.Version == nil || *input.Version < 0 {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "version must be a whole number that is not negative")
+	if input.Version == nil || *input.Version < 0 || !fitsIntegerColumn(*input.Version) {
+		writeError(w, "INVALID_STATE", http.StatusBadRequest,
+			fmt.Sprintf("version must be a whole number from 0 to %d", maxIntegerColumn))
 		return
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))

@@ -54,7 +54,7 @@ func TestMainRefusesToStartInAClusterWithoutItsRanges(t *testing.T) {
 			out := runRefusedBroker(t, binary, append(airlockEnv(t),
 				"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 				"BROKER_PUBLIC_URL=https://secrets.internal.example",
-				"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"]}]}`),
+				"BROKER_PROFILES_FILE="+profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"]}}]}`),
 				"KUBERNETES_SERVICE_HOST="+row.host,
 				"BROKER_AIRLOCK_CLUSTER_RANGES="+row.ranges,
 			)...)
@@ -121,8 +121,8 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 		"BROKER_K8S_OIDC_AUDIENCE="+podAudience,
 		"BROKER_SERVICE_LOGINS="+service+"="+loginAccount,
 		"BROKER_SERVICES="+service+"="+podAccount,
-		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t,
-			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundHost+`"], "headers": ["authorization"]}]}`),
+		"BROKER_PROFILES_FILE="+profilesFile(t,
+			`{"profiles": [{"name": "`+secretName+`", "proxy": {"hosts": ["`+boundHost+`"], "headers": ["authorization"]}}]}`),
 		"BROKER_AIRLOCK_TEST_RESOLVE="+boundHost+"="+boundAddress,
 		"KUBERNETES_SERVICE_HOST="+clusterServiceHost,
 		"BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20, 198.51.100.0/24",
@@ -179,7 +179,7 @@ func TestMainOutsideAClusterStartsWithoutTheRanges(t *testing.T) {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
-		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"]}]}`),
+		"BROKER_PROFILES_FILE="+profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"]}}]}`),
 		"KUBERNETES_SERVICE_HOST=",
 		"BROKER_AIRLOCK_CLUSTER_RANGES=",
 	)})

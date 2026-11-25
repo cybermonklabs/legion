@@ -1,3 +1,4 @@
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -15,6 +16,7 @@ import type {
   UserState,
 } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
+import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -51,7 +53,8 @@ import {
   useAgentText,
 } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -65,7 +68,7 @@ import { useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { Avatar } from "./Avatar";
-import type { ReplyTarget } from "./composer-model";
+import { type ReplyTarget, replyParentOf } from "./composer-model";
 import {
   buildConversations,
   type CommentDeliveryAttempt,
@@ -81,10 +84,12 @@ import {
 import {
   deliveryMode,
   duplicateText,
+  endedByDeleteText,
   failureGuidance,
   isSafeRetry,
   MODE_LABELS,
   queuedParts,
+  resendable,
   withGuidance,
 } from "./delivery";
 import {
@@ -235,7 +240,8 @@ function ConversationReply({
       author={reply.author}
       body={
         <>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(reply)}
             markdown={reply.body}
             source={textSourceOf("message", reply.id)}
             tree={reply.body_tree}
@@ -244,6 +250,8 @@ function ConversationReply({
         </>
       }
       current={reply.id === currentReplyId}
+      deleted={postDeletion(reply)}
+      edited={reply.edited_at}
       markRef={markRef}
       delivery={
         lastAttempt === undefined
@@ -265,6 +273,8 @@ function ConversationReply({
       quote={{
         author: parent?.author,
         block: reply.reply_block,
+        deleted: postDeletion(parent),
+        edited: parent?.edited_at,
         excerpt: parent?.body ?? "",
         excerptTree: parent?.body_tree,
         to:
@@ -368,10 +378,14 @@ function MessageTurn({
         <div className="min-w-0 flex-1">
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={author} className="font-semibold" inline />
-            <Timestamp at={item.root.created_at} />
+            <span>
+              <Timestamp at={item.root.created_at} />
+              <EditedMark at={item.root.edited_at} deleted={postDeletion(item.root)} />
+            </span>
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(item.root)}
             markdown={item.root.body}
             source={textSourceOf("message", item.root.id)}
             tree={item.root.body_tree}
@@ -380,10 +394,12 @@ function MessageTurn({
         </div>
         <TurnActions>
           <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
-          <ReplyButton
-            disabled={replyDisabled}
-            onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
-          />
+          {postDeletion(item.root) === null ? (
+            <ReplyButton
+              disabled={replyDisabled}
+              onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
+            />
+          ) : null}
           <TurnPin onPin={onPin} pinned={pinned} />
         </TurnActions>
       </div>
@@ -544,16 +560,23 @@ function commentReplyTarget(
 
 function CommentDeliveryList({
   agents,
+  deleted,
   deliveries,
   onRetry,
   retrying,
 }: {
   agents: readonly Agent[] | undefined;
+  /** The comment's deletion, where its author deleted it (`postDeletion`): a deleted comment's
+   *  mention is sent again in no mode (`resendable`). */
+  deleted: PostDeletion | null;
   deliveries: readonly CommentDeliveryAttempt[];
   onRetry: (delivery: CommentDeliveryAttempt) => void;
   retrying: boolean;
 }): ReactNode {
   if (deliveries.length === 0) return null;
+  // Asked once for the comment: every attempt of a deleted comment offers no Retry and earns none
+  // of the guidance that names one, so the attempt its delete ended reads the delete's words alone.
+  const offered = resendable(deleted);
   return (
     <ul
       aria-label="Mention deliveries"
@@ -572,10 +595,14 @@ function CommentDeliveryList({
         // mode under its own key, so it is offered only while `isSafeRetry` holds, and the
         // guidance beside it names that Retry or a new comment, both of which a closed issue
         // takes too.
-        const safeRetry = isSafeRetry(outcome);
+        const safeRetry = offered && isSafeRetry(outcome);
         const canRetry = capabilities === undefined || capabilities.includes(delivery.delivery);
-        const guidance = failureGuidance(outcome, "mention");
+        const guidance = offered ? failureGuidance(outcome, "mention") : undefined;
         const recipient = targetPart(delivery.target);
+        // A send the post's delete ended did not fail: the delete ended it. Its line says so where
+        // the state stands, in the words the targeted message card says it in, as the Pinned and
+        // Activity tabs say it, and says nothing after them.
+        const ended = delivery.state === "failed" && delivery.error === DELETED_POST_DELIVERY_ERROR;
         return (
           <li
             className="flex flex-wrap items-center gap-x-2"
@@ -587,10 +614,12 @@ function CommentDeliveryList({
                 <AgentParts parts={queuedParts(recipient)} />
               ) : delivery.duplicate === true ? (
                 duplicateText
+              ) : ended ? (
+                endedByDeleteText
               ) : (
                 delivery.state
               )}
-              {delivery.error === null
+              {delivery.error === null || ended
                 ? ""
                 : ` · ${guidance === undefined ? delivery.error : withGuidance(delivery.error, guidance)}`}
               {delivery.error === null && guidance !== undefined ? ` · ${guidance}` : ""}
@@ -799,6 +828,7 @@ function CommentTurn({
         renderDeliveries={(comment) => (
           <CommentDeliveryList
             agents={agents}
+            deleted={postDeletion(comment)}
             deliveries={deliveriesFor(comment.id)}
             onRetry={(delivery) => retryGuard.guard(() => retry.mutate(delivery))}
             retrying={retry.isPending}
@@ -828,14 +858,16 @@ function CommentTurn({
           </button>
         )}
         <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "comment" }} />
-        <ReplyButton
-          disabled={replyDisabled}
-          onClick={() => {
-            if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
-              setExpanded(true);
-            }
-          }}
-        />
+        {postDeletion(item.root) === null ? (
+          <ReplyButton
+            disabled={replyDisabled}
+            onClick={() => {
+              if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
+                setExpanded(true);
+              }
+            }}
+          />
+        ) : null}
         <TurnPin onPin={onPin} pinned={pinned} />
       </div>
     </li>
@@ -881,11 +913,15 @@ function TargetedMessageTurn({
         <>
           <p className={`flex flex-wrap items-center gap-x-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={asker} className="font-semibold" inline />
-            <Timestamp at={item.root.created_at} />
+            <span>
+              <Timestamp at={item.root.created_at} />
+              <EditedMark at={item.root.edited_at} deleted={postDeletion(item.root)} />
+            </span>
             <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(item.root)}
             markdown={item.root.body}
             source={textSourceOf("message", item.root.id)}
             tree={item.root.body_tree}
@@ -897,6 +933,7 @@ function TargetedMessageTurn({
       canBtw={capabilities?.includes("btw") !== false}
       canSteer={capabilities?.includes("steer") !== false}
       current={current}
+      deleted={postDeletion(item.root)}
       deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
       header={<Avatar actor={asker} />}
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
@@ -1123,25 +1160,33 @@ export function ConversationTab({
     phone.parked === undefined;
   // A thread reply put away over the docked composer's own draft is out of sight, so the docked
   // composer says it is kept, whose comment it answers, and how to go on with it: that comment's
-  // Reply. Once the list no longer holds the comment, no Reply brings it back, so the docked
-  // composer draws the reply itself, for the reader to read or copy, with Discard my draft. It
-  // offers no Use it here: the docked field holds a draft of its own, which is why the reply was
-  // put away rather than carried there (`usePhoneThread`'s `cancelReply`), and Use it here would
-  // write over it.
+  // Reply. Once the list no longer holds the comment, or holds it deleted - which takes no
+  // reply - no Reply goes on with it, so the docked composer draws the reply itself, for the
+  // reader to read or copy, with Discard my draft, and says which. It offers no Use it here: the
+  // docked field holds a draft of its own, which is why the reply was put away rather than
+  // carried there (`usePhoneThread`'s `cancelReply`), and Use it here would write over it.
   let parkedNotice: ReactNode;
   if (phone.parked !== undefined && phone.replyTo !== null) {
-    parkedNotice = listed.has(phone.replyTo.id) ? (
-      <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
-        <KeptReply actor={phone.replyTo.actor} />
-      </p>
-    ) : (
-      <DraftOffer
-        body={phone.parked.body}
-        drop={{ label: "Discard my draft", press: phone.dropParked }}
-        lead={<GoneReply actor={phone.replyTo.actor} parentKind={phone.replyTo.parentKind} />}
-        replacement={phone.parked.replacement}
-      />
-    );
+    const parkedFor = listed.get(phone.replyTo.id);
+    parkedNotice =
+      parkedFor === "standing" ? (
+        <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
+          <KeptReply actor={phone.replyTo.actor} />
+        </p>
+      ) : (
+        <DraftOffer
+          body={phone.parked.body}
+          drop={{ label: "Discard my draft", press: phone.dropParked }}
+          lead={
+            <GoneReply
+              actor={phone.replyTo.actor}
+              deleted={parkedFor === "deleted"}
+              parentKind={phone.replyTo.parentKind}
+            />
+          }
+          replacement={phone.parked.replacement}
+        />
+      );
   }
   // The list is on the page only once all four reads answer: `loading` and `failed` both hide it
   // (the early returns below) and withhold `latestItemSeq`, so the two cannot drift apart. The
@@ -1164,6 +1209,17 @@ export function ConversationTab({
   // leaves every mode unknown, never "not supported".
   const agents = agentsCurrent ? listedAgents : undefined;
   const scrolledToFocus = useRef<string | undefined>(undefined);
+  // `Jump to latest` is a float of the foot's top layer (`hooks/useFootInset.ts` lists the foot's
+  // layers and the elements in each) while it shows, which is only once the reads have loaded.
+  const jumpShown =
+    !loading &&
+    !failed &&
+    visible &&
+    phoneThread === undefined &&
+    !follow.atTop &&
+    shown.length > 0;
+  const jumpRef = useRef<HTMLButtonElement>(null);
+  useFootInset(jumpRef, jumpShown, "top");
 
   useEffect(() => {
     if (!visible || focus === undefined || scrolledToFocus.current === focus.id) {
@@ -1315,6 +1371,7 @@ export function ConversationTab({
             setOwnSendCount((count) => count + 1);
           }}
           owner={{ issueKey, kind: "issue" }}
+          replyParent={replyParentOf(replyTo, comments.data ?? [], messages.data ?? [])}
           replyTo={replyTo}
         />
       </div>
@@ -1345,26 +1402,23 @@ export function ConversationTab({
       {/* The pill floats at an edge the docked composer leaves free, so it covers none of the
           composer's controls; below `sm` that edge is the right edge of the content column
           itself rather than a margin outside it, which is why a card under the pill is covered
-          at all. Below `sm` the composer sits at the foot of the screen and grows upward (a
-          refusal's Retry or Discard draft with it), and the shell's status corner - the
-          pending-writes indicator and the connection pill (`app.tsx`) - floats above that
-          composer in the same corner, wider than the pill and over it. So the pill rides above
-          whatever the corner publishes in `--foot-status-inset`
-          (`web/src/hooks/useFootInset.ts`), falling back to the composer's own
-          `--foot-composer-inset` while the corner shows nothing and that property is unset, and
-          never below the phone's bottom bar; from `sm` the composer sticks to the top and the
-          pill keeps the foot it has there. The list scrolls behind the pill as it scrolls
-          behind any floating control, so a card crossing that foot band passes under it: while
-          the card is there the pill covers its Accept and Reject, as it covers its Reply and
-          Pin. That cover lasts no longer than the passage - scrolling the card on clears it,
-          and so does the pill's own tap, which jumps to the latest and takes the pill off the
+          at all. The pill is a float of the foot's top layer (`web/src/hooks/useFootInset.ts`
+          lists the foot's layers and the elements in each): it stands 1rem above the status
+          layer's property, which the hook chooses so the pill lies over no foot element and
+          stays on the screen, however a refusal's row grows a composer, and never lower than its
+          floor (`--foot-floor`, which its classes set per breakpoint). The list scrolls behind the
+          pill as it scrolls behind any floating control, so a card crossing that foot band passes
+          under it: while the card is there the pill covers its Accept and Reject, as it covers its
+          Reply and Pin. That cover lasts no longer than the passage - scrolling the card on clears
+          it, and so does the pill's own tap, which jumps to the latest and takes the pill off the
           screen. A thread opened full-screen covers the Conversation the pill acts on, and its
           own composer sits at the foot, so the pill waits for Back. */}
-      {visible && phoneThread === undefined && !follow.atTop && shown.length > 0 ? (
+      {jumpShown ? (
         <button
-          className={`fixed right-6 bottom-[max(5rem,calc(var(--foot-status-inset,var(--foot-composer-inset,0px))_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg sm:bottom-36 xl:bottom-24 ${primaryButtonBg} ${primaryButtonHoverBg}`}
+          className={`fixed right-6 bottom-[max(var(--foot-floor),calc(var(--foot-status-inset,0px)_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg [--foot-floor:5rem] sm:[--foot-floor:9rem] xl:[--foot-floor:6rem] ${primaryButtonBg} ${primaryButtonHoverBg}`}
           data-testid="jump-to-latest"
           onClick={follow.jumpToLatest}
+          ref={jumpRef}
           type="button"
         >
           Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
@@ -1580,6 +1634,7 @@ export function ConversationTab({
                   setOwnSendCount((count) => count + 1);
                 }}
                 owner={{ issueKey, kind: "issue" }}
+                replyParent={replyParentOf(phone.replyTo, comments.data ?? [], messages.data ?? [])}
                 replyTo={phone.replyTo}
               />
             </div>

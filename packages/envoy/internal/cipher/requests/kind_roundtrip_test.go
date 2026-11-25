@@ -24,7 +24,7 @@ import (
 func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *testing.T) {
 	for name, away := range map[string]string{"removed": "", "changed": policy.TypeGoogleLogin} {
 		t.Run(name, func(t *testing.T) {
-			machine, enrollmentID, key, _ := newFixture(t)
+			machine, enrollmentID, key, _ := newAppFixture(t, "QUIET_TYPE_KEY")
 			secret := requestTypeSecret("QUIET_TYPE_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 			retag(t, machine, secret)
 			var githubCalls, googleCalls int
@@ -40,11 +40,11 @@ func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 					return secrets.Minted{Value: "google-access-token"}, nil
 				},
 			}
-			grant, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "QUIET_TYPE_KEY"), "", nil)
+			grant, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "QUIET_TYPE_KEY"), "")
 			if err != nil || grant.GrantID == nil {
 				t.Fatalf("Create = %+v, %v", grant, err)
 			}
-			if release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, nil, ReleaseCall{}); err != nil || release.Values["QUIET_TYPE_KEY"] != "github-installation-token" {
+			if release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, ReleaseCall{}); err != nil || release.Values["QUIET_TYPE_KEY"] != "github-installation-token" {
 				t.Fatalf("Values before the retag = %v, %v; want the GitHub App minter's token", release.Values, err)
 			}
 			moved := secret
@@ -59,7 +59,7 @@ func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 			}
 			retag(t, machine, moved)
 			retag(t, machine, secret)
-			release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, nil, ReleaseCall{})
+			release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, ReleaseCall{})
 			if err != nil || release.Values["QUIET_TYPE_KEY"] != "github-installation-token" {
 				t.Fatalf("Values once the type is back, with no release while it was away = %v, %v; want the GitHub App minter's token: the grant is as it was", release.Values, err)
 			}
@@ -97,13 +97,13 @@ func TestAMaxGrantLoweredAndRaisedWithNoReleaseBetweenLeavesTheGrantAsItWas(t *t
 		},
 	}
 	retag(t, machine, requestTypeSecret("QUIET_BOUNDED_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, "1h"))
-	long, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "QUIET_BOUNDED_LOGIN"), "", nil)
+	long, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "QUIET_BOUNDED_LOGIN"), "")
 	if err != nil || long.GrantID == nil {
 		t.Fatalf("Create(1h) = %+v, %v", long, err)
 	}
 	retag(t, machine, requestTypeSecret("QUIET_BOUNDED_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, "30m"))
 	retag(t, machine, requestTypeSecret("QUIET_BOUNDED_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, "1h"))
-	release, err := machine.Values(t.Context(), *long.GrantID, enrollmentID, nil, ReleaseCall{})
+	release, err := machine.Values(t.Context(), *long.GrantID, enrollmentID, ReleaseCall{})
 	if err != nil || release.Values["QUIET_BOUNDED_LOGIN"] != "google-access-token" {
 		t.Fatalf("Values(1h) once max-grant is 1h again, with no release while it was 30m = %v, %v; want the Google login minter's token: the grant is as it was", release.Values, err)
 	}

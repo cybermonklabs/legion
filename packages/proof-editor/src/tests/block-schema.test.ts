@@ -427,7 +427,7 @@ await test('a block pointer attribute reads and writes exactly the values the sh
 await test('a parent names one conversation item or block, a size is days, and a needs names no conversation', async () => {
   const comment = 'dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111';
   const parent = { kind: 'block[]', items: ['ask', 'comment', 'message'] } as const;
-  const schema = { version: 6, types: [
+  const schema = { version: 7, types: [
     { name: 'criterion', content: 'paragraph+', render: 'host', attributes: { parent } },
     { name: 'plan_task', content: 'paragraph+', render: 'host', attributes: {
       needs: { kind: 'block[]', targets: ['plan_task'], items: ['issue'] },
@@ -467,15 +467,15 @@ await test('a parent names one conversation item or block, a size is days, and a
     { kind: 'block[]', items: ['artifact'] },
     { kind: 'string', items: ['comment'] },
   ]) {
-    const refused = { version: 6, types: [{ name: 'claim', content: 'paragraph+', render: 'host', attributes: { parent: attribute } }] };
+    const refused = { version: 7, types: [{ name: 'claim', content: 'paragraph+', render: 'host', attributes: { parent: attribute } }] };
     assert(thrownBy(() => validateBlockSchema(refused as unknown as BlockSchema)) !== undefined, `${JSON.stringify(attribute)} was accepted`);
   }
 });
 
 await test('an editor writes an issue into a needs only from the version that creates that item kind', async () => {
-  const needs = { kind: 'block[]', targets: ['plan_task'], items: ['issue'], item_versions: { issue: { since: 5, creatable_since: 6 } } } as const;
+  const needs = { kind: 'block[]', targets: ['plan_task'], items: ['issue'], item_versions: { issue: { since: 6, creatable_since: 7 } } } as const;
   const atVersion = (version: number) => ({ version, types: [{ name: 'plan_task', content: 'paragraph+', render: 'host', attributes: { needs } }] }) as unknown as BlockSchema;
-  for (const [version, takesIssue] of [[5, false], [6, true]] as const) {
+  for (const [version, takesIssue] of [[6, false], [7, true]] as const) {
     const schema = atVersion(version);
     const proof = await createHeadlessProof({ blockSchema: schema });
     let state = EditorState.create({ schema: proof.schema, doc: proof.parseMarkdown(':::plan_task{#t1}\nFirst.\n:::\n\n:::plan_task{#t2}\nThen.\n:::\n') });
@@ -583,10 +583,10 @@ await test('a pasted typed block carrying a refused block pointer is not read as
   assert(rule.getAttrs(section({ 'data-proof-block-attr-serves': 'dispatch://CORE-1/artifact/spec#b-x' })) === false, 'a refused pointer was parsed as the typed block');
 });
 
-// The shapes of the version-5 schema the rules below read: a decision and an ask that a reading
+// The shapes of the version-6 schema the rules below read: a decision and an ask that a reading
 // closes, an ask attribute, and attributes markdown never carries.
 const readingSchema = {
-  version: 5,
+  version: 6,
   types: [
     {
       name: 'ask',

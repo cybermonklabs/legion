@@ -1,3 +1,4 @@
+/** the Spec view reads the server's stored decisions, ties and results */
 import type { Locator } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
@@ -53,6 +54,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusRow,
   focusThePage,
   longWords,
@@ -1160,6 +1162,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
     // From the outline, `t s` leaves the focus on a statement of the view's tree, on screen.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("s");
@@ -1287,12 +1290,13 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
 });
 
 // R7 and R9: the Spec view opened at its own address while neither read its statements come
-// from can be read - the spec's blocks and the coverage, which names each statement - draws the
-// statements' line saying so and no row, and that line's Retry takes the focus: nothing else
-// holds it on a fresh load, Tab from the tree never reaches the line, and the stage the page
-// draws the view in gives a focus left on nothing to a failed read's Retry where the view draws
-// no row (`slots/stage.tsx`'s `ViewStage`). With the coverage answered the view draws a row for
-// each statement it names, and the stage gives the focus to the tab-stop row instead.
+// from can be read - the tree read, which holds the spec's blocks and each statement, with each
+// view of it, and the coverage, which names each statement - draws the statements' line saying so
+// and no row, and that line's Retry takes the focus: nothing else holds it on a fresh load, Tab
+// from the tree never reaches the line, and the stage the page draws the view in gives a focus
+// left on nothing to a failed read's Retry where the view draws no row (`slots/stage.tsx`'s
+// `ViewStage`). With the tree read answered the view draws a row for each statement it holds,
+// and the stage gives the focus to the tab-stop row instead.
 // SLOW(>=2s): a seeded issue and a load of the Spec view with two reads refused, waited on until
 // the refused reads' line is drawn.
 test("the Spec view opened at its address with its statements' reads refused puts the focus on their Retry", async ({
@@ -1301,11 +1305,11 @@ test("the Spec view opened at its address with its statements' reads refused put
   await phase(browser, seedNoChildren, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const refused = new Set([
-      `/api/v1/artifacts/${seeded.specArtifactId}/blocks`,
+      `/api/v1/issues/${seeded.key}/tree`,
       `/api/v1/issues/${seeded.key}/coverage`,
     ]);
-    // Every read of the spec's blocks and of the coverage is refused, from the page's first load
-    // on.
+    // Every read of the tree, a view of it included, and of the coverage is refused, from the
+    // page's first load on.
     await page.route(
       (url) => refused.has(url.pathname),
       (route) =>

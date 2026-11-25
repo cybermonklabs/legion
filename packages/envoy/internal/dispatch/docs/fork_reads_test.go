@@ -205,7 +205,9 @@ func newForkReadsRoom(t *testing.T) (*Service, string) {
 }
 
 // forkReadsMode is a write that forks a room (warm), or the store with no room holding the
-// document (cold). A cold case closes the room first; its publish loads it again.
+// document (cold). A cold case closes the room first, and its publish loads none: it arms the
+// document's settlement, whose warm-up would load the room as a browser's open would, and this
+// service's settlement waits an hour (newForkReadsRoom).
 type forkReadsMode struct {
 	name string
 	cold bool
@@ -285,6 +287,7 @@ func requireForkReads(t *testing.T, what string, got, want forkReads) {
 // rendering, a mark already written is no change and keeps both, and a document outside the
 // schema answers its own refusal, which a read of it answers too.
 func TestForkReadsAMarkQuoteAnswersItsAnchorAndAVersionAfterItReusesItsRendering(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newForkReadsRoom(t)
 	checks := checkRenderings(service)
 	topLevel := map[string]bool{}
@@ -571,6 +574,7 @@ func runForkSteps(t *testing.T, service *Service, artifactID string, checks *ren
 // whose fork stands where its one read left it, so every rendering after that commit is still
 // reused. Each version records the state its own transaction wrote.
 func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newForkReadsRoom(t)
 	checks := checkRenderings(service)
 	markQuote := func(kind MarkKind, id, quote string) forkStep {

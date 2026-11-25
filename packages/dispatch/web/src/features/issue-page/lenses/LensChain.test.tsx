@@ -131,23 +131,20 @@ const NOBODY_RECORDED = {
 };
 
 /** One row the way the tree draws it: unfocused until a focus lands inside it, unless it starts
- *  focused, and then the focused row, with its body open. */
+ *  focused. */
 function LensRow({ drawn, focused: start = false }: { drawn: TreeNode; focused?: boolean }) {
   const [focused, setFocused] = useState(start);
   return (
     <NodeRow
       author={NOBODY_RECORDED}
-      body={focused}
       context={false}
       focused={focused}
       isClosed={false}
       level={1}
       node={drawn}
       onFocus={() => setFocused(true)}
-      onPin={() => {}}
       onToggle={() => {}}
       ownAnswer={false}
-      pinned={false}
       rowKey="row"
       tabStop={false}
     />

@@ -14,6 +14,7 @@ import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
 import { useFollowing } from "./following";
 import { ViewDecisionsSlot } from "./view-decisions";
+import { ViewGraphSlot } from "./view-graph";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
 import { ViewVerificationSlot } from "./view-verification";
@@ -74,23 +75,33 @@ export function StageSlot({
   // The following of the address whose first call from the view the stage took, which takes no
   // other call in it, and the following for which the view said its tree draws no node the
   // address names (`ViewSlotProps.onAddressDrawn`): the body is drawn in the view's place for the
-  // rest of that following.
+  // rest of that following. With it, whether the focus was the view's as the view said so: in the
+  // box the view is drawn in (`viewBox`), or held by nothing, as where the view's Retry left the
+  // page with its line in the render in which the read it asked again answered.
   const told = useRef<string | undefined>(undefined);
-  const [undrawn, setUndrawn] = useState<string | undefined>(undefined);
+  const [undrawn, setUndrawn] = useState<{ following: string; viewsFocus: boolean }>();
+  const viewBox = useRef<HTMLDivElement>(null);
   const onAddressDrawn = useCallback(
     (drawn: boolean) => {
       if (!beside || told.current === following) return;
       told.current = following;
-      if (!drawn) setUndrawn(following);
+      if (drawn) return;
+      const box = viewBox.current;
+      const viewsFocus = focusIsLoose(box) || box?.contains(document.activeElement) === true;
+      setUndrawn({ following, viewsFocus });
     },
     [beside, following]
   );
   // The reader's acts since the address was followed (`ReaderActsWatch`), watched from the
   // following's drawing whichever slot is drawn and handed to the body, so a body drawn in the
   // view's place reads an act made while the view was drawn, as one made before its row drew
-  // (`IssueTree`'s `addressActs`, `BodySlot`'s `takesFocus`).
+  // (`IssueTree`'s `addressActs`, `BodySlot`'s `takesFocus`): a control pressed outside the stage
+  // keeps the focus. Where the focus was the view's, nothing outside the view holds it once the
+  // body is drawn: the stage hands that body none, and it watches from its own first draw, so it
+  // lands as it does where the reader made no act, a press on blank space included.
   const acts = useRef<AbortController | undefined>(undefined);
-  const outline = beside && (!filled[preset] || undrawn === following);
+  const swapped = undrawn?.following === following;
+  const outline = beside && (!filled[preset] || swapped);
   const View = outline ? undefined : views[preset];
   return (
     <ViewReadProvider issue={props.issue} preset={preset}>
@@ -98,10 +109,10 @@ export function StageSlot({
         <ReaderActsWatch into={acts} key={following} />
         {View === undefined ? (
           <StageBox>
-            <BodySlot {...props} acts={acts} />
+            <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
           </StageBox>
         ) : (
-          <ViewStage key={preset}>
+          <ViewStage box={viewBox} key={preset}>
             <View {...props} onAddressDrawn={onAddressDrawn} />
           </ViewStage>
         )}
@@ -134,6 +145,8 @@ export type ViewSlots = Readonly<Record<Preset, ((props: ViewSlotProps) => React
 export const VIEW_SLOTS: ViewSlots = {
   conversation: undefined,
   decisions: ViewDecisionsSlot,
+  // Graph draws Graph's read whole as one outline, through the outline's own rows (R10).
+  graph: ViewGraphSlot,
   plan: ViewPlanSlot,
   spec: ViewSpecSlot,
   verification: ViewVerificationSlot,
@@ -152,6 +165,8 @@ export type SlotsFilled = Readonly<Record<Preset, boolean>>;
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
   decisions: true,
+  // Graph draws its tree here too (`view-graph.tsx`), so it is filled.
+  graph: true,
   plan: true,
   spec: true,
   verification: true,
@@ -187,8 +202,16 @@ const SLOT_TREE = '[role="tree"]';
  * stage's box does (`StageBox`), and the view draws its own measure. The stage draws one for each
  * view, keyed on it, so a view turned on is a new one, which takes the focus once.
  */
-export function ViewStage({ children }: { children: ReactNode }): ReactNode {
-  const box = useRef<HTMLDivElement>(null);
+export function ViewStage({
+  box: given,
+  children,
+}: {
+  /** The box's element, for a caller that reads it too (`StageSlot`); else the stage's own. */
+  box?: RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}): ReactNode {
+  const own = useRef<HTMLDivElement>(null);
+  const box = given ?? own;
   useEffect(() => {
     const stage = box.current;
     if (stage === null) return;
@@ -266,7 +289,7 @@ export function ViewStage({ children }: { children: ReactNode }): ReactNode {
       stage.removeEventListener("focusin", treeFocused);
       for (const frame of ending) cancelAnimationFrame(frame);
     };
-  }, []);
+  }, [box]);
   return <StageBox box={box}>{children}</StageBox>;
 }
 

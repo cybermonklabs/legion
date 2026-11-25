@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -217,30 +215,20 @@ func BlockDocumentSQL(alias string) string {
 }
 
 // BlockDocumentOrSQL is BlockDocumentSQL with fallback, SQL text answering a uuid, in place of the
-// row's own artifact where no issue_room_blocks row names the block: a reader that found a block's
-// node in a document of an issue room before the room's block index reached it - a document that
-// owes that index, whose typed nodes the typed-node pass placed in it (PlanDecisionNodes) -
-// passes that document, which is the only record of it, and the row's own artifact after it.
+// row's own artifact where no issue_room_blocks row names the block (graphstore.RoomBlockRowSQL):
+// a reader that found a block's node in a document of an issue room before the room's block index
+// reached it - a document that owes that index, whose typed nodes the typed-node pass placed in it
+// (PlanDecisionNodes) - passes that document, which is the only record of it, and the row's own
+// artifact after it.
 func BlockDocumentOrSQL(alias, fallback string) string {
-	return `coalesce(` + roomBlockRowSQL(alias+".artifact_id", alias+".block_id") + `, ` + fallback + `)`
-}
-
-// roomBlockRowSQL is the document that the issue_room_blocks row of block block (SQL text) under
-// the tree artifact tree (SQL text answering a uuid) names, as SQL text answering a uuid, null
-// where no row names the block. The table is keyed by block_id_key(block_id) (migration
-// 20261118230000_issue_tree_room_blocks_key), which holds an id of any length, so the row is read
-// through that key, and the id itself is compared beside it.
-func roomBlockRowSQL(tree, block string) string {
-	return `(select room_block.document_id from issue_room_blocks room_block
-		where room_block.tree_artifact_id = ` + tree + ` and block_id_key(room_block.block_id) = block_id_key(` + block + `)
-		  and room_block.block_id = ` + block + `)`
+	return `coalesce(` + graphstore.RoomBlockRowSQL(alias+".artifact_id", alias+".block_id") + `, ` + fallback + `)`
 }
 
 // retiredDocumentSQL is true while the document the uuid SQL expression document names is retired
 // (artifacts.retired_at), and false for a null document. Over the document of a block of an issue
-// room (roomBlockRowSQL, RoomBlockDocumentSQL), which is null for a block of no room, it is true of
-// a block of a retired document of the room: that document's fragment leaves the room's layout
-// (docs' roomLayoutSQL), and the room's passes keep its blocks as its retirement left them
+// room (graphstore.RoomBlockRowSQL, RoomBlockDocumentSQL), which is null for a block of no room, it
+// is true of a block of a retired document of the room: that document's fragment leaves the room's
+// layout (docs' roomLayoutSQL), and the room's passes keep its blocks as its retirement left them
 // (BlockIndexing.retained).
 func retiredDocumentSQL(document string) string {
 	return `exists (select 1 from artifacts retired where retired.id = ` + document + ` and retired.retired_at is not null)`
@@ -249,19 +237,19 @@ func retiredDocumentSQL(document string) string {
 // RoomBlockDocumentSQL is the document whose fragment of the issue room under the tree artifact
 // tree (SQL text answering a uuid) holds, or last held, the block block (SQL text), as SQL text
 // answering a uuid, null where none is on record: the document its issue_room_blocks row names
-// while the room holds the block, else, for a block a version dropped from the room, whose row
-// went with it, the document the last asserted in_document of its node, `<tree ref_key>#<block>`,
-// names, since the block index states a block's membership of each document it moves into and
-// retracts none when the block is dropped. An artifact that is no issue's tree holds no record
-// here. Every reader that takes the document of a room's block that may have left the room - an
-// ask's block (AskBlockDocumentSQL), an erased block (grapherase), a block a write's event names
+// (graphstore.RoomBlockRowSQL) while the room holds the block, else, for a block a version dropped
+// from the room, whose row went with it, the document the last asserted in_document of its node,
+// `<tree ref_key>#<block>`, names, since the block index states a block's membership of each
+// document it moves into and retracts none when the block is dropped. An artifact that is no
+// issue's tree holds no record here. Every reader that takes the document of a room's block that
+// may have left the room - an ask's block (AskBlockDocumentSQL), a block a write's event names
 // (CountedChanges) - takes it from here.
 func RoomBlockDocumentSQL(tree, block string) string {
 	// The node's address is read first, behind a fence, and the tuples are read in a lateral keyed
 	// on it, so they are probed on the node (from_id) and never scanned by kind. An in_document
 	// always runs to an artifact (the join below reads it), so the probe names no to_kind, which
 	// would lead the planner to the inbound indexes.
-	return `coalesce(` + roomBlockRowSQL(tree, block) + `,
+	return `coalesce(` + graphstore.RoomBlockRowSQL(tree, block) + `,
 		(select stood.id
 		 from (select room_tree.ref_key || '#' || ` + block + ` as address from artifacts room_tree
 		       where room_tree.id = ` + tree + ` and room_tree.kind = 'tree' offset 0) node
@@ -344,9 +332,13 @@ func DocumentRoomSQL(document string) string {
 // an issue room, whose versions render that query. No fragment of any room holds it, so no socket
 // opens on it (docs.Service.ServeHTTP), no upload or edit writes it (api's decisionsQueryRefusal),
 // and it is no backlink of its issue (issueOwnArtifact). It is the one SQL of that test, kept in
-// refs, which docs and api both import, so that every reader of it reads this one.
+// refs, which docs and api both import, so that every reader of it reads this one. Its probe of
+// document_rooms ends in `offset 0`, which keeps it a probe of that table's key per row: without
+// it Postgres may read the probe as a hashed subplan over the whole table, as the issue's backlink
+// count did under its generic plan once its attached_to arms bound no predicate of their own
+// (TestBacklinkCountStatementReadsEveryArmThroughAnIndex).
 func DecisionsQuerySQL(alias string) string {
-	return `(` + alias + `.kind = 'doc' and not exists (select 1 from document_rooms moved where moved.artifact_id = ` + alias + `.id)
+	return `(` + alias + `.kind = 'doc' and not exists (select 1 from document_rooms moved where moved.artifact_id = ` + alias + `.id offset 0)
 		and exists (select 1 from graph_nodes node where node.kind = '` + graphstore.KindArtifact + `' and node.id = ` + alias + `.ref_key
 		            and node.supertag = '` + graphstore.SupertagQuery + `'
 		            and node.attributes->>'` + graphstore.AttributeQuery + `' = '` + graphstore.QueryDecisions + `'))`
@@ -928,7 +920,7 @@ func (b *BlockIndexing) planBlockParents(
 			placement.end(index, blockFarEnd{kind: graphstore.KindAsk, id: ask})
 		}
 	}
-	kept, err := placeAuthored(ctx, q, b.artifactID, indexed, record, nodes, &placement, parentIDs, authored)
+	kept, err := placeAuthored(ctx, q, b.artifactID, indexed, record, nodes, &placement, parentIDs, authored, b.outside)
 	if err != nil {
 		return blockPlacement{}, nil, nil, fmt.Errorf("place the authored nodes of %s: %w", b.artifactID, err)
 	}
@@ -1336,7 +1328,7 @@ func authoredFarEnds(ctx context.Context, q Queryer, artifactID string, written,
 // (BlockIndex.placed) and its parent value, the target of the parent attribute's link its pairs
 // hold (BlockIndex.links). So a second indexing of the document in one transaction keeps a node
 // where the first placed it, as a later transaction would.
-func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement *blockPlacement, parentIDs []*string, sources authoredSources) ([]bool, error) {
+func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement *blockPlacement, parentIDs []*string, sources authoredSources, outside map[string]struct{}) ([]bool, error) {
 	var authored []int
 	for index, block := range placement.placed {
 		if authoredType(nodes[block].Type) {
@@ -1385,7 +1377,7 @@ func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed Bl
 	if err != nil {
 		return nil, err
 	}
-	places := authoredPlaces{document: document, nodes: nodes, placement: placement, parentIDs: parentIDs}
+	places := authoredPlaces{document: document, nodes: nodes, placement: placement, parentIDs: parentIDs, outside: outside}
 	kept := make([]bool, len(placement.ids))
 	var placing []int
 	// The blocks no version of this pass holds that kept nodes hang under, whose chains the walk
@@ -1585,7 +1577,9 @@ func PartOfChains(ctx context.Context, q Queryer, starts []string) (map[string][
 // authoredPlaces writes where authored nodes stand into a placement and its projection
 // (placeAuthored). index is each block of the placement by its id, with its index among the
 // version's blocks, and placed each of those blocks' index in the placement, both made the first
-// time a far end names a block of the indexed artifact or the cycle walk climbs a block.
+// time a far end names a block of the indexed artifact or the cycle walk climbs a block. outside is
+// each block of the indexed issue room that stands in a fragment of a document the pass covers no
+// version of (BlockIndexing.outside), nil for a pass over every fragment.
 type authoredPlaces struct {
 	document  IndexedVersion
 	nodes     []model.ArtifactBlock
@@ -1593,6 +1587,7 @@ type authoredPlaces struct {
 	parentIDs []*string
 	index     map[string]int
 	placed    map[int]int
+	outside   map[string]struct{}
 }
 
 // set places the block at index under far: under the block of the version far names, with that
@@ -1763,7 +1758,9 @@ func (p *authoredPlaces) target(ref text.Ref, resolved authoredResolution, above
 		issue = item.Issue
 	case target.Kind == BlockNodeKind:
 		if block, held := p.ownBlock(far); block != "" {
-			return far, held >= 0
+			// A block of another fragment of the room stands, though this pass places none of it.
+			_, stands := p.outside[block]
+			return far, held >= 0 || stands
 		}
 		held, found := resolved.blocks[far.id]
 		if !found {
@@ -2797,9 +2794,18 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 		version := b.versionOf(pair.blockID)
 		createdVersions[i], createdAts[i] = int32(version.Number), version.At
 	}
+	// A scope's kinds and whole blocks are bound as empty lists where it holds none, never as
+	// null: a null kinds list is no scope at all, and an empty one reaches no row by that arm.
 	var scopeKinds, scopeBlocks []string
+	scopeWhole := []string{}
 	if b.scope != nil {
 		scopeKinds, scopeBlocks = b.scope.kinds, b.scope.blocks
+		if scopeKinds == nil {
+			scopeKinds = []string{}
+		}
+		if b.scope.whole != nil {
+			scopeWhole = b.scope.whole
+		}
 	}
 	// The rows of a block the pass retains stay as they stand (BlockIndexing.retained).
 	batch.Queue(fmt.Sprintf("delete the block mentions version %d of %s dropped", b.version, b.artifactID), `
@@ -2807,9 +2813,9 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 		where r.artifact_id = $1 and not exists (
 			select 1 from unnest($2::text[], $3::text[], $4::text[], $5::text[]) as p (block_id, kind, to_kind, to_id)
 			where p.block_id = r.block_id and p.kind = r.kind and p.to_kind = r.to_kind and p.to_id = r.to_id)
-		  and ($6::text[] is null or (r.kind = any($6::text[]) and r.block_id = any($7::text[])))
+		  and ($6::text[] is null or (r.kind = any($6::text[]) and r.block_id = any($7::text[])) or r.block_id = any($9::text[]))
 		  and not (r.block_id = any(coalesce($8::text[], '{}')))
-	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, scopeKinds, scopeBlocks, b.retained)
+	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, scopeKinds, scopeBlocks, b.retained, scopeWhole)
 	if len(pairs) == 0 {
 		return
 	}
@@ -2997,36 +3003,15 @@ func heldBlockParentDifferences(ctx context.Context, q Queryer, refKey, topKind,
 // and no pass that drops a row retracts them.
 type heldLink struct{ kind, toKind, toID string }
 
-// ReadBlockRefKinds reads every tuple kind the block index writes into block_refs
-// (BlockRefKindsSQL): a mention and a pointer of each `block[]` attribute the store's type nodes
-// declare. It is a read of its own, through q, for a statement that binds the kinds rather than
-// selects them: inside that statement the read of the attribute nodes, which no key of
-// graph_nodes names but their kind, would be its one read of graph_nodes that probes no node by
-// its key (TestTheHeldDocumentReadProbesEachMembersNodeOnce, grapherase's
-// TestTheBlockersReadProbesEachStatingNodeOnce).
-func ReadBlockRefKinds(ctx context.Context, q Queryer) ([]string, error) {
-	rows, err := q.Query(ctx, BlockRefKindsSQL)
-	if err != nil {
-		return nil, fmt.Errorf("read the kinds of the links a block index pair writes: %w", err)
-	}
-	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the kinds of the links a block index pair writes: %w", err)
-	}
-	return kinds, nil
-}
-
-// heldLinkKinds reads the kinds of tuple a pair of a version writes into block_refs, the kinds
-// whose links the release before this one drops by deleting their rows: a mention and a pointer
-// of each `block[]` attribute the store's type nodes declare (ReadBlockRefKinds), and a decision's
-// ties, its decided_by, from_ask and shaped (typedKinds, TypedFacts.pairs). It is the census's own
-// reading of the tuples a block_refs row states (graphcensus's DigestedTuple).
-func heldLinkKinds(ctx context.Context, q Queryer) ([]string, error) {
-	kinds, err := ReadBlockRefKinds(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	return append(kinds, typedKinds...), nil
+// heldLinkKinds is true of a tuple t of a kind a pair of a version writes into block_refs, the
+// kinds whose links the release before this one drops by deleting their rows: a mention and a
+// pointer of each `block[]` attribute the store's type nodes declare, which blockRefKinds, a
+// text[] parameter bound to what BlockRefKinds read by a statement of its own in the caller's
+// transaction, holds, and a decision's ties, its decided_by, from_ask and shaped (typedKinds,
+// TypedFacts.pairs). It is the census's own reading of the tuples a block_refs row states
+// (graphcensus's blockRefKinds and tieKinds).
+func heldLinkKinds(blockRefKinds string) string {
+	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + store.QuoteLiterals(typedKinds) + `))`
 }
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
@@ -3043,6 +3028,12 @@ func heldLinkKinds(ctx context.Context, q Queryer) ([]string, error) {
 // decision's or a reading's authored_by, a copy's copied_from. A gone block's pointers are
 // retractGonePointers' to retract.
 //
+// The state read is every state but gone, not live alone: a write marks a block proposed,
+// settled or overtaken, and the index pass keeps such a state unless the pass itself makes the
+// block gone (blockNode). A block in one of those states that another release's version dropped
+// is as gone as a live one, and a read of the live blocks alone would leave it standing in that
+// state for ever, with nothing projecting it.
+//
 // It is the store's own side of the document, and IndexBlocks reads it only where that side is
 // stale (blockStand.stale): another release indexed the document after the store last stated its
 // blocks, and that release deleted the rows of the blocks and the links its version dropped and
@@ -3050,10 +3041,12 @@ func heldLinkKinds(ctx context.Context, q Queryer) ([]string, error) {
 // the version's render: this read is what the store would otherwise go on asserting against it,
 // as heldBlockParentDifferences is for the parents. The members come through
 // graph_tuples_as_of_in in one probe and each member's links through graph_tuples_as_of_out in
-// one probe a block, in one statement, under the kinds heldLinkKinds read first and bound as $2:
-// the links are every kind but two, which proves nothing of graph_tuples_current's predicate, and
-// that index leaves delivered_to out. The value kind is written into the text so the planner can
-// prove each index's partial predicate whatever plan it caches.
+// one probe a block, in one statement: the links are the kinds a version's pairs write
+// (heldLinkKinds), a list that proves nothing of graph_tuples_current's predicate, and that index
+// leaves delivered_to out. The typed kinds and the value kind are written into the text, and the
+// block-reference kinds, read first by a statement of their own in the caller's transaction
+// (BlockRefKinds), are bound as one parameter, so the planner can prove each index's partial
+// predicate whatever plan it caches, and the statement reads no attribute node of graph_nodes.
 //
 // Each member probes its own node through graph_nodes' primary key, in a subquery behind an
 // offset 0 the planner cannot flatten. Joined plainly, the planner took `kind = 'block'` alone
@@ -3062,7 +3055,7 @@ func heldLinkKinds(ctx context.Context, q Queryer) ([]string, error) {
 // that removed 499,500 rows, and a document of 150,000 blocks is the read this pass makes
 // (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
 func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
-	kinds, err := heldLinkKinds(ctx, q)
+	blockRefKinds, err := BlockRefKinds(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -3083,13 +3076,13 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 			from (
 				`+graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
-				  and t.to_kind <> '`+graphstore.KindValue+`' and t.kind = any($2::text[])`)+`
+				  and t.to_kind <> '`+graphstore.KindValue+`' and `+heldLinkKinds(`$2::text[]`))+`
 			) current
 			where current.asserted
 		) held on true
 		where node.state <> '`+graphstore.StateGone+`'
 		order by member.id, held.kind, held.to_kind, held.to_id
-	`, refKey, kinds)
+	`, refKey, blockRefKinds)
 	if err != nil {
 		return nil, fmt.Errorf("read what the store states of the blocks of %s: %w", refKey, err)
 	}

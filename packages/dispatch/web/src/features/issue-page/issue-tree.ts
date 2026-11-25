@@ -11,8 +11,10 @@ import type {
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
+  MessageRead,
   ReferenceTarget,
 } from "../../api/types";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { LensFacts } from "./lenses/lens-drafts";
@@ -26,7 +28,7 @@ import {
   treeContext,
   withShortAddresses,
 } from "./tree-drafts";
-import { askNodeIds, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
+import { askNodeIds, nextTreeCursor, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -78,6 +80,26 @@ export interface NodeChip {
    *  named by its address's short form, the second by the address itself (`NodeRow.tsx`'s
    *  `Chip`). */
   readonly answered: boolean;
+  /** When the author of the comment or message this chip names, or of the post a block it names
+   *  is of, deleted it, as the batched reference read answers it (`ReferenceTarget.deleted_at`);
+   *  absent for every other target. The deleted line is the name of a comment's or a message's
+   *  chip only: a chip naming a block of a deleted post is `gone`, with name `""`, though it
+   *  carries the marks. A view that draws a comment's or a message's chip carrying this draws
+   *  its name, the deleted line, in the deleted line's italic, as a link to the post does
+   *  (`RefLink`), and names the actor from `deletedBy` as the page names an author, as a row's
+   *  chip does (`NodeRow.tsx`'s `Chip`, INFRA-1196's decision 342). */
+  readonly deletedAt?: string;
+  /** Who deleted it (`ReferenceTarget.deleted_by`); absent where `deletedAt` is absent, and where
+   *  the read names nobody. */
+  readonly deletedBy?: Actor;
+  /** When the author of the comment or message this chip names, or of the post a block it names
+   *  is of, last replaced its body (`ReferenceTarget.edited_at`); absent for a post nobody
+   *  edited, for a deleted one and for every other target. The chip's `name` is the words alone:
+   *  a view that draws the name of a chip carrying this must cut the words to its own length
+   *  first and then add ` · edited`, so no cut takes the mark: the row's chip draws the mark as an
+   *  element of its own (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that names the
+   *  post in one string writes it with `editedName`. */
+  readonly editedAt?: string;
   /** Whether nothing answers to this reference now. */
   readonly gone: boolean;
   /** The page's word for the edge this chip is, where the edge has one: a plan task's `needs`
@@ -88,11 +110,15 @@ export interface NodeChip {
    *  read answered with no reading or one that holds no words, the page's word for the block's
    *  kind (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read, and `""`
    *  for another issue's block; a whole document's word on the page, `Spec` and not `spec.md`;
-   *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`); an
-   *  issue's title as its own row's line reads it (`titleWords`); and anything else's name as
-   *  that read answers it. `""` for a block and for anything else until the read answers, and
-   *  for a target that is gone. The page publishes this same name for every link beside the tree
-   *  to draw (`targetNaming`). */
+   *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`), and a
+   *  deleted comment's or message's deleted line (`deletedLineText`), never its emptied body:
+   *  `Deleted by <actor>`, the actor named as `AgentName` names one before the agent registry
+   *  answers (`actorLabelText`), or `Deleted` where the read names nobody; an issue's title as
+   *  its own row's line reads it (`titleWords`); and anything else's name as that read answers
+   *  it. The name is the words alone, an edited post's too: its mark is `editedAt`'s. `""` for a
+   *  block and for anything else until the read answers, and for a target that is gone. The page
+   *  publishes this same name for every link beside the tree to draw, and the edited references
+   *  beside the names (`targetNaming`). */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -144,6 +170,18 @@ export interface NodeOption {
 
 /** The one line a filter's row draws for its node's parent (R2, R1's first-line rule). */
 export interface ParentLine {
+  /** When its author deleted the parent, a comment or a message (`TreeNode.deletedAt`); absent
+   *  for every other parent. Its `line` is then the deleted line as the model writes it, and the
+   *  child's row draws the line from the delete instead, as the parent's own row does
+   *  (`NodeRow.tsx`'s `DeletedLine`, INFRA-1523 R3). */
+  readonly deletedAt?: string;
+  /** Who deleted the parent (`TreeNode.deletedBy`); absent where `deletedAt` is, and where the
+   *  read names nobody. */
+  readonly deletedBy?: Actor;
+  /** When its author last edited the parent, a comment or a message (`TreeNode.editedAt`),
+   *  which the child's row says ` · edited` after the line for (`EditedMark`, INFRA-1523 R2);
+   *  absent for every other parent. */
+  readonly editedAt?: string;
   readonly id: string;
   /** The parent's own first line, cut by R1's rule (`firstLineOf`) from the words of its
    *  reading's first block (`lineWords`) and drawn as `drawnLine` reads it: an ellipsis only
@@ -173,6 +211,24 @@ export interface TreeNode {
   readonly chips: readonly NodeChip[];
   /** What the coverage read counts for a requirement. */
   readonly counts?: NodeCounts;
+  /** The coverage read's own lines a requirement draws in its body where its gaps are, each in the
+   *  page's words (`coverageNotes`): while a document of the issue is still being indexed, that
+   *  document's line, which the server writes in place of every missing check, so the requirement
+   *  is drawn lacking none and says why. Absent where the read holds none. */
+  readonly coverageNotes?: readonly string[];
+  /** When its author deleted this comment or message, as its read stores the time
+   *  (`deleted_at`); absent on every other node. A deleted post keeps its place in the tree and
+   *  holds no part of its body: its `text` is the deleted line (`tree-drafts.ts`'s
+   *  `deletedPostLine`) and it carries no `tree` (INFRA-1523, R3). */
+  readonly deletedAt?: string;
+  /** Who deleted this comment or message (`deleted_by`); absent on every other node, and on a
+   *  delete whose read names nobody. */
+  readonly deletedBy?: Actor;
+  /** When its author last replaced this comment's or message's body (`edited_at`), which a view
+   *  that draws the node's row must say as ` · edited` (`EditedMark`, INFRA-1523, R2); absent on
+   *  a post nobody edited, on a deleted one, whose deleted line already says what became of the
+   *  text, and on every other node. */
+  readonly editedAt?: string;
   /** What the model holds about the node that a row has no line for, drawn in its body. */
   readonly facts: readonly NodeFact[];
   readonly gaps: readonly GapKind[];
@@ -194,6 +250,11 @@ export interface TreeNode {
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
+  /** Whether the read the tree is drawn from holds nodes no page read yet holds: its answer names
+   *  a next page (`cursor`, R15), so a count the page draws over the tree counts the nodes loaded
+   *  and carries "+" (`presets.ts`' `filterSignals`, a folded row's count, a Contents entry's
+   *  marks). On the issue's own node alone, as `views` is, and absent once no page is left. */
+  readonly moreToRead?: true;
   /** Whether this ask takes more than one of its options, which its answer's picks follow. */
   readonly multiple?: true;
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
@@ -230,15 +291,17 @@ export interface TreeNode {
   /** The node's words as the read that carried them holds them: the tree read's `text` for every
    *  node it answers, and a decision's own words, its `decision` block's content (its entry's
    *  `text` with the lines that open and close the block left out), for a decision of the
-   *  decisions read, as stored; the issue's key and title for the issue itself. `""` where the
-   *  model holds none. */
+   *  decisions read, as stored; a deleted comment's and message's deleted line in place of its
+   *  body (`deletedAt`); the issue's key and title for the issue itself. `""` where the model
+   *  holds none. */
   readonly text: string;
   /** The server's reading of `text`, where the read that carried the text sends one: the tree
    *  read's `text_tree` for every node it answers, and a decision's own content (its entry's
    *  `text_tree` with its block's content at the top level) for a decision of the decisions read.
    *  The row draws the node's words from it, so stored markdown is drawn as what it says and the
-   *  browser parses none of it (R20). A node whose read sends none draws `text` as stored.
-   *  Neither the issue nor a child issue carries one: its `text`
+   *  browser parses none of it (R20). A node whose read sends none draws `text` as stored. A
+   *  deleted comment or message carries none (`deletedAt`): its `text` is the deleted line, and
+   *  no reading of its body. Neither the issue nor a child issue carries one: its `text`
    *  names it by its title, which is no markdown, so such a node draws `text` as written, and its
    *  one line is that text with each run of white space one space and each bare address written
    *  short (`lineWords`). */
@@ -324,6 +387,10 @@ export interface IssueTreeReads {
    *  holds no node for is found among (`addDecisions`). */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   readonly issue: IssueDetails;
+  /** The issue's messages with their replies: what a message's author did to one - deleted it or
+   *  last replaced its body - which the tree read answers no mark of
+   *  (`tree-read/tree-nodes.ts`'s `postMarksOf`). The tree read answers each message as a node. */
+  readonly messages?: readonly MessageRead[];
   /** Each check of the Verification document with the results recorded against it. */
   readonly results?: IssueCheckResults;
   /** What every `dispatch://` address the tree holds points at, in one read. */
@@ -681,9 +748,9 @@ export function treeWordsOf(reads: IssueTreeReads): TreeWords {
  * The issue's whole tree, from the reads it was given: the drafts of the tree read
  * (`treeDraftsFrom`), each where the read places it, with the outline's drafts of each decision
  * of today's decisions read that no node of the answer holds (`addDecisions`, while decisions are
- * sections of `decisions.md`). Until the tree read has answered every page
- * (`IssueTreeReads.tree`), the tree is the issue alone, since a node the read places under one
- * not yet read would otherwise be drawn in the wrong place.
+ * sections of `decisions.md`). Until the tree read has answered its first page
+ * (`IssueTreeReads.tree`), the tree is the issue alone. While the answer names a next page the
+ * issue's node says so (`TreeNode.moreToRead`), so each count over the tree carries "+".
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const words = treeWordsOf(reads);
@@ -691,7 +758,8 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   if (tree === undefined) return assemble(reads.issue, [], words.chipOf);
   const drafts = treeDraftsFrom(tree, reads, words);
   addDecisions(drafts, reads, words, () => askNodeIds(drafts, tree, reads));
-  return assemble(reads.issue, [...drafts.values()], words.chipOf);
+  const root = assemble(reads.issue, [...drafts.values()], words.chipOf);
+  return nextTreeCursor(tree) === undefined ? root : { ...root, moreToRead: true };
 }
 
 /**
@@ -701,32 +769,54 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * Both are read from one context in one walk over the targets, so they cannot disagree either.
  *
  * - **`names`**: the name of each target that something answers to now, by its address: the
- *   name a chip naming it draws (`NodeChip.name`). A target whose name is `""` is left out: a
- *   target that is gone, which its chip names by `""` (`treeContext`), and another issue's block
- *   the read sent no reading for, where a link that finds no name reads its own
- *   (`useKnownReferenceName`), and an ambiguous short reference, which its chip names by `""`
- *   too and the page publishes in `ambiguous` instead.
+ *   name a chip naming it draws (`NodeChip.name`), the words alone. A target whose name is `""`
+ *   is left out: a target that is gone, which its chip names by `""` (`treeContext`), and
+ *   another issue's block the read sent no reading for, where a link that finds no name reads
+ *   its own (`useKnownReferenceName`), and an ambiguous short reference, which its chip names by
+ *   `""` too and the page publishes in `ambiguous` instead.
  * - **`ambiguous`**: the references the read answered ambiguous: each writes short an id two or
  *   more targets carry, so it names none of them, and a chip naming it says so
  *   (`NodeChip.ambiguous`). The page publishes them beside its names, so a link tells an
  *   ambiguous reference from a gone one, which has no name either: it draws the first as its
  *   author wrote it and links nothing, where it reads the second's own.
+ * - **`edited`**: the references among `names` whose post its author edited, a comment, a
+ *   message or a block of either (`NodeChip.editedAt`). A link that draws a published name cuts
+ *   it to its own length and then marks it ` · edited`, so no cut takes the mark: a mark
+ *   published inside the name would be cut off a long one. A row's link names the post in one
+ *   string, marked with `editedName` (`row-references.ts`); the row's chip, which draws its own
+ *   `NodeChip.name`, draws the mark as an element of its own with `EditedMark`.
+ * - **`deleted`**: the references among `names` whose comment or message its author deleted, by
+ *   its delete (`NodeChip.deletedAt`, `deletedBy`), each named in `names` by its deleted line. A
+ *   row's words draw that line in the deleted line's italic and name its actor as the page names
+ *   an author, where the published name holds the actor as no registry knows it
+ *   (`RowText.tsx`, INFRA-1196's decision 342); every other link draws the published name.
  *
- * No reference is in both: an ambiguous chip's name is `""`.
+ * No reference is in both `names` and `ambiguous`: an ambiguous chip's name is `""`. Every
+ * reference in `edited` and in `deleted` is in `names`: a name of no words takes no mark, and a
+ * block of a deleted post is gone. None is in both `edited` and `deleted`: a deleted post's chip
+ * carries no edit.
  */
 export function targetNaming(reads: IssueTreeReads): {
   readonly ambiguous: ReadonlySet<string>;
+  readonly deleted: ReadonlyMap<string, PostDeletion>;
+  readonly edited: ReadonlySet<string>;
   readonly names: ReadonlyMap<string, string>;
 } {
   const context = namingContext(reads);
   const ambiguous = new Set<string>();
+  const deleted = new Map<string, PostDeletion>();
+  const edited = new Set<string>();
   const names = new Map<string, string>();
   for (const target of reads.targets ?? []) {
     const chip = context.chipOf(target.ref);
     if (chip.ambiguous === true) ambiguous.add(target.ref);
-    if (chip.name !== "") names.set(target.ref, chip.name);
+    if (chip.name === "") continue;
+    names.set(target.ref, chip.name);
+    if (chip.editedAt !== undefined) edited.add(target.ref);
+    const deletion = postDeletion({ deleted_at: chip.deletedAt, deleted_by: chip.deletedBy });
+    if (deletion !== null) deleted.set(target.ref, deletion);
   }
-  return { ambiguous, names };
+  return { ambiguous, deleted, edited, names };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */
@@ -794,6 +884,10 @@ export function assemble(
       children,
       chips: draft.chips,
       ...(draft.counts === undefined ? {} : { counts: draft.counts }),
+      ...(draft.coverageNotes === undefined ? {} : { coverageNotes: draft.coverageNotes }),
+      ...(draft.deletedAt === undefined ? {} : { deletedAt: draft.deletedAt }),
+      ...(draft.deletedBy === undefined ? {} : { deletedBy: draft.deletedBy }),
+      ...(draft.editedAt === undefined ? {} : { editedAt: draft.editedAt }),
       facts: draft.facts,
       gaps: draft.gaps,
       held: heldBy(children),

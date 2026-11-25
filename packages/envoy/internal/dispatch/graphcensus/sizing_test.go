@@ -18,10 +18,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -35,7 +36,10 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests through the Dispatch harness's Main inside cmdtest.Run, which
+// makes the directory the dispatch-seed binary store_drives_test.go builds is written into and
+// removes it once the tests end.
+func TestMain(m *testing.M) { os.Exit(cmdtest.Run(func() int { return storetest.Main(m) })) }
 
 // sizingCensus runs the store census with its growth pass over database, as
 // `envoy-dispatch census --store --sizing` runs it, and returns everything it printed.
@@ -695,7 +699,7 @@ func resultWrite(t *testing.T, database *store.Store) []string {
 		select kind from graph_tuples
 		where seq > $1 and (from_kind = $2 or not kind = any($3::text[]))
 		order by seq
-	`, before, graphstore.KindResult, graphstorecopy.BaseAttributes())
+	`, before, graphstore.KindResult, graphstoretest.BaseAttributes())
 	if err != nil {
 		t.Fatalf("read the tuples the result's write appended: %v", err)
 	}
@@ -1248,8 +1252,8 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// is taken to hold a definition_version.
 		"version": {tuples: 6, writes: 4}, "version_bytes": {tuples: 3, writes: 1}, "document_part_of": {tuples: 1, writes: 2},
 		"query_version": {tuples: 1, writes: 3},
-		// The scratch document removed in the window held one version; no table dates an erase.
-		"version_removed": {tuples: 1, writes: 1}, "erased_version": {tuples: 1, writes: sizingWindowDays / 7, assumed: true},
+		// The scratch document removed in the window held one version.
+		"version_removed": {tuples: 1, writes: 1},
 		// The comment is alice's first, the delivery records ses_sized and the published copy
 		// ses_copy, and the message.created event is the first to address the role sizer, which
 		// takes a page with it.
@@ -1294,7 +1298,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		// No table holds a kind of the lenses child's yet, so each term reads the writes it
 		// is assumed at, and the tuples its writer appends (storeKinds names each writer).
-		"interaction":      {tuples: 9, writes: 10 * sizingWindowDays, assumed: true},
+		"interaction":      {tuples: 11, writes: 10 * sizingWindowDays, assumed: true},
 		"frame":            {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
 		"interaction_gone": {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		"lens":             {tuples: 11, writes: 2 * sizingWindowDays, assumed: true},
@@ -1474,7 +1478,7 @@ func TestTheSizingRunsOnADatabaseWithNoStore(t *testing.T) {
 	seedSizedHistory(t, database)
 	before := sizingCensus(t, database)
 	if _, err := database.Pool.Exec(context.Background(), `
-		drop table graph_tuples, graph_nodes, graph_erasures cascade;
+		drop table graph_tuples, graph_nodes cascade;
 		alter table comments drop column node_kind cascade, drop column node_address cascade;
 		alter table document_blocks drop column node_kind cascade, drop column node_address cascade,
 			drop column parent_block_id cascade;

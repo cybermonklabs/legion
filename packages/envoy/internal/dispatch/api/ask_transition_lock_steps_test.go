@@ -48,6 +48,7 @@ import (
 // row another transaction inserted and has not committed. Every other write of a step is the
 // path's first of its table, held as that table.
 func TestEveryAskTransitionAndKeepTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
 	for _, writer := range []storeWriter{

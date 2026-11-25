@@ -789,7 +789,8 @@ test("the Verification view draws a check's links, its agent's role and a child'
 });
 
 // Row 4. From the issue's own address `t k` turns the view on with the focus on the issue's row
-// and the view's top on screen, and asks the server for nothing the first load did not; Tab
+// and the view's top on screen, and asks the server for nothing the first load did not but the
+// view's own read of the tree, which a filter sends the first time it is on in a load; Tab
 // alone then reaches the chips, a check's words, the copy control its facts draw and its line of
 // earlier results, in reading order, and Enter works each one; the tree answers the outline's
 // keys, and a press on a result's cell or on a statement's words opens a check's facts; axe finds
@@ -818,7 +819,8 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
 
     // From the issue's own address, with the focus on the page, `t k` turns the view on, leaves
     // the focus on the issue's row inside it with the view's top on screen under the header's
-    // band, and asks the server for nothing the first load did not.
+    // band, and asks the server for nothing the first load did not but the view's read of the
+    // tree (`?view=verification`).
     const traffic = watchApiRequests(page);
     await gotoIssue(page, presetPath(seeded.key, "conversation"));
     await expectLoadSettled(traffic);
@@ -858,8 +860,8 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       traffic.requests
         .filter((request) => !loaded.has(request.path))
         .map((request) => `${request.method} ${request.path}`),
-      "t k sent a request under /api/ to a path the first load did not"
-    ).toEqual([]);
+      "t k sent a request under /api/ to a path the first load did not, beside the view's read"
+    ).toEqual([`GET /api/v1/issues/${seeded.key}/tree?view=verification`]);
 
     // Tab alone, at most 40 presses, reaches each control in reading order, and Enter works it.
     const tabTo = tabWalk(page, 40);

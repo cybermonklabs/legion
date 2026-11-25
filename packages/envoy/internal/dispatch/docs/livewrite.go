@@ -8,6 +8,7 @@ import (
 	"slices"
 	"weak"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
@@ -143,6 +144,12 @@ type liveWrite struct {
 	// anchorsTree is the tree the transaction's anchors were last refreshed against, so the
 	// version write does not refresh the same tree's anchors a second time.
 	anchorsTree *pmdoc.Node
+	// readTree is the document as the transaction's read of it found it, the tree its first
+	// operation started from (applyLiveWritten), nil until one ran: the tree a version of the
+	// write compares with the block index for the room's removals no settlement holds
+	// (roomReadTree, holdRoomRemovals), since what the transaction's own operations took out is
+	// theirs to hold or refuse (answerDroppedAnsweredAsks).
+	readTree *pmdoc.Node
 	// credits are the authors of the transaction's content changes no version the transaction
 	// wrote lists (Ledger.recordVersion takes out each author a version lists), and creditedBy the
 	// append that recorded each one's latest change, which its pending row names; actor made the
@@ -333,15 +340,27 @@ func (d liveDoc) rewrite(edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) 
 	return rewriteFragment(d.Doc, d.fragment, nil, edit)
 }
 
-// joinLiveWrite returns the transaction's write to room, a room's own id, which a caller holding a
+// joinLiveWrite returns the transaction's write to target's room, which a caller holding a
 // document's id resolves first (targetOf). When the transaction has no write to it yet, it first
 // has every other process holding the room make its updates durable (flushOtherRooms), then takes
 // the room's owner lock, refuses a failed room, and then takes the writer slot (see liveWrite). The
 // read beside that lock says whether the room's issue is closed, which the write keeps
 // (liveWrite.ownerClosed) for its fork read: a comment's anchor on a closed issue forks cold
-// (closedIssueCommentMark, readFork).
-func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, room string) (*liveWrite, error) {
+// (closedIssueCommentMark, readFork). It also says whether the room's own artifact is retired
+// (artifactOwner.Retired) - the document itself, for a document that is its own room - which takes
+// no new text (RetireDocument): such a write is refused with a RetiredDocumentError
+// (retiredWriteRefusal) before it takes the writer slot.
+//
+// A document of an issue room is a fragment of the room, whose own artifact is the issue's tree,
+// so the document's retirement is read apart (refuseRetiredFragment): before the writer slot for
+// the transaction's first write to the room, and again for each later one, since the
+// transaction's one write to the room serves every document of it.
+func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, target liveTarget) (*liveWrite, error) {
+	room := target.room
 	if write := ledger.liveWriteFor(room); write != nil {
+		if err := refuseRetiredFragment(ctx, ledger.tx, target); err != nil {
+			return nil, err
+		}
 		return write, nil
 	}
 	// The flush runs before any lock of the document's: a per-document gate that orders this
@@ -349,8 +368,14 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, room string
 	if err := s.flushOtherRooms(ctx, ledger.tx, room); err != nil {
 		return nil, err
 	}
-	_, open, err := lockArtifactOwner(ctx, ledger.tx, room)
+	owner, open, err := lockArtifactOwner(ctx, ledger.tx, room)
 	if err != nil {
+		return nil, err
+	}
+	if err := retiredWriteRefusal(ctx, ledger.tx, room, owner); err != nil {
+		return nil, err
+	}
+	if err := refuseRetiredFragment(ctx, ledger.tx, target); err != nil {
 		return nil, err
 	}
 	if err := s.awaitRoomRecovery(ctx, room); err != nil {
@@ -362,6 +387,45 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, room string
 	}
 	write.ownerClosed = !open
 	return write, nil
+}
+
+// refuseRetiredFragment refuses a live write into target's document where that document is a
+// fragment of an issue room and is retired (RetireDocument): a RetiredDocumentError naming the
+// document, not the room, and the document's latest saved version (savedVersionNumber), logged as
+// joinLiveWrite logs a retired room's. The issue's room reloads without a retired document's
+// fragment (roomLayoutSQL), so text written into it would be stored where no version and no index
+// reads it.
+//
+// It reads the document's own artifacts.retired_at under the owner lock joinLiveWrite took for the
+// transaction's write to the room (lockArtifactOwner on the room), which is the lock
+// RetireDocument takes for the document (lockArtifactOwner on the document): an issue's room is
+// its tree artifact, whose owner is the issue, and only the issue's own documents join its room
+// (api's issue create and upload, each under the issue's owner lock), so both are
+// store.IssueOwner of that issue. The lock is held to the end of the transaction, so a retirement
+// committed before this read, which reads it, or waits for the write's transaction to end.
+//
+// A document that is its own room is the room, whose retirement joinLiveWrite reads beside the
+// room's owner lock, so it reads nothing here. A document the transaction creates, whose row no
+// read sees before the transaction's write phase, is read as standing, as it is.
+func refuseRetiredFragment(ctx context.Context, tx pgx.Tx, target liveTarget) error {
+	if target.ownRoom() {
+		return nil
+	}
+	var name, slug string
+	var issueKey *string
+	err := tx.QueryRow(ctx, `select name, slug, issue_key from artifacts where id = $1 and retired_at is not null`, target.document).Scan(&name, &slug, &issueKey)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("read whether the document is retired: %w", err)
+	}
+	latest, err := savedVersionNumber(ctx, tx, target.document)
+	if err != nil {
+		return err
+	}
+	slog.Warn("dispatch: refuse a write into a retired document", "document", target.document, "room", target.room)
+	return &RetiredDocumentError{ID: target.document, Name: name, Slug: slug, IssueKey: issueKey, LatestVersion: latest}
 }
 
 // openLiveWrite takes artifactID's writer slot for the transaction, first waiting for the
@@ -607,7 +671,10 @@ func (s *Service) readFork(ctx context.Context, write *liveWrite) (*crdt.Doc, er
 // closedIssueCommentMark is whether write is a comment's anchor on a closed issue: the read
 // beside the owner's lock the transaction took says the issue is closed (joinLiveWrite,
 // liveWrite.ownerClosed), and ctx is one of that comment's anchor operations (commentMarkAnchor,
-// the same test the version and the mark read make, closedIssueCommentAnchor). It is the write
+// the same test the version and the mark read make, closedIssueCommentAnchor) - the reject of the
+// pending suggestion of a comment its author is deleting among them
+// (RejectDeletedCommentSuggestion), which runs under the mark the delete made and takes that
+// suggestion's text out of a closed issue's document with the comment's body. It is the write
 // that forks cold there (readFork says why), and it needs no read of its own for the issue: the
 // owner's answer is already in hand.
 // The other write a closed issue's document takes, the ask states its issue's lifecycle writes
@@ -706,15 +773,19 @@ func (s *Service) warmFork(write *liveWrite, live *crdt.Doc) (*crdt.Doc, error) 
 
 // coldFork returns the fork of a write to a document no room holds, or whose room stands behind
 // head (readFork): the stored document, which is all of it then. It loads no room, which would hold
-// a second copy of the document for as long as the write runs; the room loads when the
-// write is published, from the store, which by then holds the write. A browser's room load takes no
-// lock the write holds (onLoadDocument), so a room can load while this reads the store: a room
-// found once the read is done, and not behind head, is forked from instead (warmFork), and the copy
-// read from the store is dropped undecoded, so the document is never held both in a room and in a
-// fork read from the store. A room that loads after that meets the write at its publish. A
-// comment's anchor on a closed issue keeps the store's copy whatever room it finds
-// (closedIssueCommentMark), as readFork sent it here for: a warm fork would make it store the
-// room's own updates, which the gate refuses on a closed issue.
+// a second copy of the document for as long as the write runs, and the write's publish loads none
+// either, which would hold the document with no reader in it (publishLiveWrite, audit finding 11):
+// the publish arms the document's settlement instead (scheduleSettle), and the room loads when that
+// settlement's warm-up runs (settlement.take) or a browser opens the document, from the store,
+// which after the commit holds the write. A browser's room load takes no lock the write holds
+// (onLoadDocument), so a room can load while this reads the store: a room found once the read is
+// done, and not behind head, is forked from instead (warmFork), and the copy read from the store
+// is dropped undecoded, so the document is never held both in a room and in a fork read from the
+// store. A room that loads after that and before the publish meets the write at its publish, which
+// publishes into a room this process holds, resident or still loading (roomHeld). A comment's
+// anchor on a closed issue keeps the store's copy whatever room it finds (closedIssueCommentMark),
+// as readFork sent it here for: a warm fork would make it store the room's own updates, which the
+// gate refuses on a closed issue.
 //
 // What an upload's version takes out (uploadCapture) is what this read held: the stored updates
 // through the head it loaded (forkHold), and no in-flight credit (forkSeq 0), since a credit no
@@ -1012,9 +1083,11 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 	defer s.finishLiveWrite(write)
 	s.hooks.parkLiveWrite(write.artifactID, PauseAfterCommit)
 	defer s.closeShadow(write)
-	// Committed, the write has no more use for its fork, so the fork goes before the publish,
-	// which loads the room when no room holds the document (coldFork). The room's shadow keeps it
-	// (newShadow).
+	// Committed, the write has no more use for its fork, so the fork goes before the publish.
+	// Where no room holds the document (coldFork) the publish loads none: it arms the document's
+	// settlement, whose warm-up loads the room from the store when it runs, as a browser's open of
+	// the document does. A room's shadow the commit installed keeps the fork (newShadow,
+	// installShadowLocked).
 	if s.checkRendering != nil {
 		s.checkRendering("publish", write)
 	}

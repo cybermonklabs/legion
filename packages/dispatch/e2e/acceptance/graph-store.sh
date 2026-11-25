@@ -5,13 +5,14 @@
 # comment that no session receives, one delivery attempt that fails and one the listener queues
 # for a session that is not running, and then reads the store back and checks each tuple: what
 # each person authored, what reached each session, that a failed or pending attempt earns no
-# tuple and that a queued one earns one. It checks the role, the session and the page, and it holds
-# every read against a table of identities a person wrote into this driver. A message is a node
-# of its project, written with its own create and carrying that node's base attributes, and
-# earns no delivery or authorship tuple in this child - only a comment has a node on the near end
-# of a delivery, and a later change gives a message those tuples - so what the driver reads of
-# the message is its node, the role it reaches and that role's page, and that no other tuple
-# stands on the message itself (G10).
+# tuple and that a queued one earns one, and that a failed one earns its session no node. It
+# checks the role, the session and the page, and it holds every read against a table of
+# identities a person wrote into this driver. A message is a node of its project, written with
+# its own create and carrying that node's base attributes, and earns no delivery or authorship
+# tuple in this child - only a comment has a node on the near end of a delivery, and a later
+# change gives a message those tuples - so what the driver reads of the message is its node, the
+# role it reaches and that role's page, and that no other tuple stands on the message itself
+# (G10).
 #
 # The run writes at least one tuple of every kind it holds, and G14 holds every tuple standing on
 # this run's nodes, of every kind, to the writer, the causing event and a time its record allows:
@@ -672,9 +673,13 @@ want_value G7 "the two tokens answer two people, and each is a person node" "2|2
    where t.kind = 'authored_by' and t.from_kind = 'comment'
      and t.from_id in ('$claimed_comment', '$twin_comment')"
 
-# G8: an attempt that fails earns no tuple. The mention names a session the listener does not
-# hold, so its attempt settles failed; the issue's own route still reaches its session, which is
-# why this reads the tuples of the mentioned session alone.
+# G8: an attempt that fails earns no tuple and no node. The mention names a session the listener
+# does not hold, so its attempt settles failed and pins no session; the issue's own route still
+# reaches its session, which is why this reads the tuples of the mentioned session alone. No other
+# write of this run names the mentioned session, so no node of it may stand: a failed attempt
+# reached nobody (graphstore.QueueReached). With no session pinned, the settle hands the store's
+# writer none, so this read cannot see whether that writer passes over a failed attempt; G12 reads
+# that for an attempt that pins its session.
 dead_session="019a1c09-4444-7000-8000-$(printf '%012d' "$$")"
 readonly dead_session
 comment G8 "a comment mentioning a session the listener does not hold" agent \
@@ -693,6 +698,8 @@ want_value G8 "no delivered_to tuple stands on an attempt the listener did not t
      and not exists (select 1 from comment_deliveries d
                      where d.comment_id::text = t.from_id and d.session_id = t.to_id
                        and d.state in ('sent', 'queued'))"
+want_value G8 "a failed attempt earns no node" 0 \
+  "select count(*) from graph_nodes where kind = 'session' and id = '$dead_session'"
 
 # G9: a delivery to a role ends at the role node and not on a person; the role carries its page
 # and its held_by claim, and the session it resolved to is part_of that role. The outbox resolves
@@ -921,13 +928,18 @@ want_value G11 "the row the release before the store wrote is gone" 0 \
 # is a comment of its own, stored by its comment.answered event, and the answer flips the attempt
 # to sent (api's replyComment). That flip is what makes the attempt a delivery, so the answer's
 # own write states it, under the answering session and its comment.answered event (api's
-# queueAnsweredDelivery): the one writer of a delivered_to beside the outbox.
+# queueAnsweredDelivery): the one writer of a delivered_to beside the outbox. The attempt pins
+# its session, as G8's does not, so its settle hands that session to the store's writer
+# (graphstore.QueueReached), which passes over a failed attempt: the session is no node until the
+# answer records it.
 comment G12 "a comment mentioning a session whose every send the listener refuses" agent \
   "A mention the listener will not carry." "session:$answering_session"
 readonly unanswered_comment="$comment"
 settles G12 "the mention's attempt settles failed against that session" "failed|$answering_session" \
   "select coalesce(max(state || '|' || coalesce(session_id, '')), 'none') from comment_deliveries
    where comment_id = '$unanswered_comment'"
+want_value G12 "the failed attempt earns its session no node before the answer" 0 \
+  "select count(*) from graph_nodes where kind = 'session' and id = '$answering_session'"
 query G12 "read the failed attempt's number" \
   "select max(attempt) from comment_deliveries where comment_id = '$unanswered_comment'"
 readonly answered_attempt="$answer"

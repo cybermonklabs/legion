@@ -14,9 +14,10 @@ import { issueTreeKey } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import { parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
-import { issueAddress, outlineRowPath } from "../issue-address";
+import { issueAddress } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
 import { dropViews } from "../tree-read/tree-read";
+import { outlineRowPath } from "./store-link";
 
 /**
  * The one module of the issue page that names the lens read, the lens catalogue and the

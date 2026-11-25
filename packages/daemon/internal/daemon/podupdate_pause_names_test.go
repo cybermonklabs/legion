@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -41,20 +40,17 @@ func holdInRuntime(t *testing.T) (hold func(context.Context) error, reached <-ch
 
 // heldStartUntilHeld runs the held start of role (heldStartRequest) where holdInRuntime's hold
 // stops the launch inside the runtime. The machine's handle of that start does not return while
-// the hold stands, so the start runs on its own goroutine, and its error is not read. It waits up
-// to 10 s for the launch to reach the runtime (reached, holdInRuntime's channel).
+// the hold stands, so the start runs on its own goroutine, and its error is not read. It waits for
+// the launch to reach the runtime (reached, holdInRuntime's channel) until the test binary's
+// deadline (testwait.Receive), so a launch a loaded machine makes slow is no failure.
 func (r *podUpdateRig) heldStartUntilHeld(role claim.Role, reached <-chan struct{}) {
 	r.t.Helper()
 	m, _ := r.sup.Machine(r.tokens[role])
 	start := r.heldStartRequest(role)
 	go func() {
-		_ = m.Handle(r.ctx, start)
+		_ = m.Handle(r.worker(), start)
 	}()
-	select {
-	case <-reached:
-	case <-time.After(10 * time.Second):
-		r.t.Fatalf("the %s's launch did not reach the runtime", role)
-	}
+	testwait.Receive(r.t, fmt.Sprintf("the %s's launch to reach the runtime", role), reached)
 }
 
 // scriptForgottenSession scripts the next launch of role to forget the role's session
@@ -134,6 +130,7 @@ func (r *podUpdateRig) wantForgottenLaunch() {
 // implementer. What names it is the set of claims that have not answered (unansweredClaims), or
 // the members that a gone pod took work from (lostClaims).
 func TestALiveRoundNamesTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
+	t.Parallel()
 	// The bound ends the wait for the implementer. The replacement through the tester's process is
 	// made at the bound, and the bound's own line names the implementer as a claim that did not
 	// answer. Read through the round's sets alone, the implementer holds nothing, so the answers
@@ -202,6 +199,7 @@ func TestALiveRoundNamesTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
 // for the claims the round asks (waitingClaims), the implementer stops the read. Then the line
 // says that no read was made, and the issue is not told what the reviewer left on the disk.
 func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
+	t.Parallel()
 	const reviewer = claim.RoleReviewer
 	rig := forgottenOwedLaunch(t, suspendedRole(reviewer, supervise.SuspendedByDaemon))
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})

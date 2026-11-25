@@ -122,6 +122,11 @@ const MintedDedupeKeyPattern = "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = "The listener didn't answer within the send window; the message may already have been delivered."
 
+// DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
+// Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
+// and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
+const DeletedPostDeliveryError = "ended by the post's delete"
+
 // StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
 // 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated
 // from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
@@ -202,13 +207,15 @@ const GoingEventEnd = "end"
 const GoingEventError = "error"
 
 // The codes an error frame carries: the run reached its window without an answer, the deployment
-// has no text model configured, and the model service refused or failed. Generated from
-// GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED and
-// GOING_ERROR_ANSWER_FAILED in packages/contracts so the code the server writes and the wording
-// the page keys on it cannot drift apart.
+// has no text model configured, the model service refused or failed, and a post the run was
+// given was deleted after it. Generated from GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+// GOING_ERROR_NO_MODEL_CONFIGURED, GOING_ERROR_ANSWER_FAILED and GOING_ERROR_ANSWER_WITHDRAWN in
+// packages/contracts so the code the server writes and the wording the page keys on it cannot
+// drift apart.
 const GoingErrorAnswerDidNotArrive = "ANSWER_DID_NOT_ARRIVE"
 const GoingErrorNoModelConfigured = "NO_MODEL_CONFIGURED"
 const GoingErrorAnswerFailed = "ANSWER_FAILED"
+const GoingErrorAnswerWithdrawn = "ANSWER_WITHDRAWN"
 
 // GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
 // Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the
@@ -246,10 +253,9 @@ const GoingWordsMax = 2000
 // cannot drift apart.
 const GoingRunWindow = 30000 * time.Millisecond
 
-// GoingRequestTTL is the age past which a process of the release before still deletes a run
-// during a roll. This build reads it nowhere: a run is kept until an erase removes it, since a
-// node of the store is removed by erasure alone. Generated from GOING_REQUEST_TTL_MS in
-// packages/contracts.
+// GoingRequestTTL is how long a run is readable, from its POST, by its going_requests row's
+// created_at: then the sweep states the run's node gone and removes its rows, and the node, its
+// words and its frames stay in the store. Generated from GOING_REQUEST_TTL_MS in packages/contracts.
 const GoingRequestTTL = 3600000 * time.Millisecond
 
 // GoingRunHeader is the request header a write made for a run names the run in: its uuid. The
@@ -272,12 +278,30 @@ const MaxIssueBlockers = 20
 // one number.
 const MaxIssueAdvances = 20
 
+// MaxIssueLabels is the most labels one issue holds, and the most one labels or labels_add input
+// names before deduplication, and IssueLabelMax the longest label, in UTF-16 units. Generated from
+// MAX_ISSUE_LABELS and ISSUE_LABEL_MAX in packages/contracts so the server's refusals and the
+// issue tools' bounds are one number each.
+const MaxIssueLabels = 20
+const IssueLabelMax = 40
+
+// MaxIssueComponents bounds the ids of a components input of mode explicit before deduplication.
+// Generated from MAX_ISSUE_COMPONENTS in packages/contracts so the server's refusal and the issue
+// tools' bound are one number.
+const MaxIssueComponents = 50
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
 // and the `dispatch issues` command's cannot drift apart.
 const MaxIssuePageLimit = 250
 const DefaultIssuePageLimit = 50
+
+// PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
+// GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
+// in packages/contracts so the page the server reads and the full page on which the
+// `dispatch read --history` command names the read of older rows cannot drift apart.
+const PostHistoryPageLimit = 200
 
 // IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
@@ -331,6 +355,7 @@ var DispatchEventTypes = []string{
 	"comment.anchor_refreshed",
 	"comment.answered",
 	"comment.created",
+	"comment.deleted",
 	"comment.delivery",
 	"comment.edited",
 	"comment.reopened",
@@ -347,7 +372,9 @@ var DispatchEventTypes = []string{
 	"message.accepted",
 	"message.answered",
 	"message.created",
+	"message.deleted",
 	"message.delivery",
+	"message.edited",
 	"priority.updated",
 	"project.created",
 	"project.updated",
@@ -487,8 +514,8 @@ const IdempotencyKeyPattern = "^[A-Za-z0-9._:-]{1,128}$"
 
 // The codes of a keyed write's refusals and of a replay whose first answer was not kept: a key
 // used for another request (422), a key whose first request still runs (409), a key whose write
-// landed and whose answer was lost (409), a header that is not a key (400), and a first answer too
-// large to keep. Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
+// landed and whose answer was lost (409), a header that is not a key (400), and a first answer
+// Dispatch gives no copy of (IDEMPOTENCY_ANSWER_NOT_KEPT names when). Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
 // IDEMPOTENCY_KEY_COMMITTED, IDEMPOTENCY_KEY_INVALID and IDEMPOTENCY_ANSWER_NOT_KEPT in
 // packages/contracts so the server's codes and the clients' reading of them cannot drift apart.
 const IdempotencyKeyReused = "KEY_REUSED"
@@ -544,17 +571,25 @@ const DispatchLoginChanged = "LOGIN_CHANGED"
 const IDAmbiguous = "ID_AMBIGUOUS"
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
-// names a session and a service but no person: the machine holding it has signed nobody in.
+// names a session and a service but no person under the project scope person: the machine
+// holding it has signed nobody in.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 
-// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
-// that holds only the scope read, to a route the read list does not name: the route ran nothing,
-// and the request wrote only the row of its spent DPoP proof. Generated from
+// DispatchReadOnlyToken is the code of the 403 for a request by a read-only token (any token that
+// holds read, a broker's or a personal one) to a route outside the read class: the route ran
+// nothing, and the request wrote only the record of the token's use. Generated from
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
+
+// DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
+// carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
+// a past time yet, so the route ran nothing rather than answer with the present. Generated from
+// DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's refusal and every
+// client's reading of it cannot drift apart.
+const DispatchAsOfTokenNotServed = "AS_OF_TOKEN_NOT_SERVED"
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()

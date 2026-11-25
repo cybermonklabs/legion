@@ -1,0 +1,5 @@
+kind: Fixed
+custom:
+  Issue: pr4457
+body: |-
+  While a `github_apps.<role>.token_command` that releases every installation is still running, the boot's key proof logs `… token_command for every installation is still running …`. Before, the line named an empty owner (`for ""`).

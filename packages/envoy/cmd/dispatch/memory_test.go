@@ -52,6 +52,7 @@ const (
 // the production task with it. Each shape runs on a fresh server, so what one leaves resident
 // does not hide what the next costs, and the peak counts the settlement that follows a stored one.
 func TestEveryUploadAtTheCapStaysWithinTheMemoryBound(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	for _, shape := range capShapes() {
 		modes := []string{"json"}
@@ -89,8 +90,11 @@ func TestEveryUploadAtTheCapStaysWithinTheMemoryBound(t *testing.T) {
 // settlement - and then reading it - its text, its blocks, and a websocket load of its room - each
 // hold at most the bound, a read on a server that has not loaded the document. Escaped syntax is
 // among them (escapedAdmittedShapes): a stored document of `\)\_`, which weighed four elements
-// before an escape weighed one, held 256 MiB to read cold.
+// before an escape weighed one, held 256 MiB to read cold. Each row runs its writer and its reader
+// at once, so the test reserves both slots before its first start (dispatchSlots.reserve).
 func TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	memory := newMemoryHarness(t)
 	for _, shape := range append(heaviestAdmittedShapes(t), escapedAdmittedShapes(t)...) {
 		t.Run(shape.name, func(t *testing.T) {
@@ -156,11 +160,9 @@ func appendColdReadMemoryUpdates(t *testing.T, memory *memoryHarness, artifactID
 }
 
 func TestAColdReadOfAHeavyMultiUpdateHistoryStaysWithinTheMemoryBound(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
-	shape := admittedShape{
-		name:     `\)\_`,
-		markdown: heaviestAdmitted(t, func(units int) string { return strings.Repeat(`\)\_`, units) }),
-	}
+	shape := admittedShape{name: `\)\_`, markdown: heaviestAdmittedNamed(t, `\)\_`)}
 	writer := memory.start(t)
 	upload := writer.upload(t, "json", memory.issue, shape.markdown)
 	if upload.status != http.StatusCreated {
@@ -232,8 +234,9 @@ func cloneColdReadArtifact(t *testing.T, memory *memoryHarness, sourceID string,
 // over eleven runs on one 4-CPU machine, and 127 MiB on CI (run 43990897490), under the floor of
 // half the budget this test held it to before (INFRA-3904).
 func TestColdReadCacheEvictionPlateaus(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
-	markdown := heaviestAdmitted(t, func(units int) string { return strings.Repeat("# a\n", units) })
+	markdown := heaviestAdmittedNamed(t, "headings")
 	weight, err := docs.DocumentReadWeightForTest(markdown)
 	if err != nil {
 		t.Fatalf("weigh cache-fill document: %v", err)
@@ -326,8 +329,9 @@ func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 // Two uploads at once hold at most twice the bound together: two of a cap-sized `)_`, which the
 // element limit refuses, and two of the heaviest `)_` document it admits, which are stored.
 func TestTwoUploadsAtOnceStayWithinTheMemoryBound(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
-	heaviest := heaviestAdmitted(t, func(units int) string { return strings.Repeat(")_", units) })
+	heaviest := heaviestAdmittedNamed(t, ")_")
 	for _, pair := range []struct{ name, markdown string }{
 		{name: "cap-sized )_", markdown: fill(")_")},
 		{name: "heaviest admitted )_", markdown: heaviest},
@@ -367,6 +371,7 @@ func TestTwoUploadsAtOnceStayWithinTheMemoryBound(t *testing.T) {
 // reads of a stored `\)\_` held 973 MiB before an escape weighed an element. Four reads at once are
 // logged beside them, the production task being 4,096 MiB.
 func TestConcurrentColdReadsStayWithinTheMemoryBound(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	var shapes []admittedShape
 	for _, shape := range heaviestAdmittedShapes(t) {
@@ -402,6 +407,7 @@ func TestConcurrentColdReadsStayWithinTheMemoryBound(t *testing.T) {
 // a fresh server's idle memory, and is answered. Read with no element limit, a `find` of `- a`
 // lines held over 500 MiB.
 func TestEveryQuoteAtTheCapStaysWithinTheMemoryBound(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	setup := memory.start(t)
 	created := setup.send(t, http.MethodPost, "/api/v1/issues", "application/json",
@@ -462,6 +468,7 @@ func TestEveryQuoteAtTheCapStaysWithinTheMemoryBound(t *testing.T) {
 // thirty-two 900 KB inserts LEGION-481's review grew one document to 29.5 MB with, after which a
 // one-word edit held about a gigabyte.
 func TestAWriteCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	const spec = "Before sentinel.\n"
 	prose := func(bytes int) string { return strings.Repeat("word ", bytes/5) }
@@ -568,6 +575,7 @@ func refusedWithAdvice(answer response) bool {
 // question and options may hold together, so the growth is written here in texts that
 // bound holds.
 func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	// Forty writes of 31,500 characters are 1.26 MB, so the document meets the 1 MiB cap partway
 	// through whichever route writes them.
@@ -654,6 +662,7 @@ func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testin
 // question and options may hold together (INFRA-370), which refuses a longer description - the
 // 920 KB one this test took before - before any of this.
 func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	server := memory.start(t)
 	issue := server.createIssue(t, "Ask text", "Before.\n\n:::ask{#ask-0 urgency=\"med\" multiple=\"false\" state=\"open\"}\nQuestion 0?\n:::\n")
@@ -702,6 +711,7 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 // weighed what it writes back, twenty-four such answers left a 21.6 MB document whose cold text
 // read held 373 MiB, and four reads at once over 1,000 MiB.
 func TestReturnedAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	// Forty answers of 32,000 characters are 1.28 MB, so returning their blocks would take the
 	// document past the 1 MiB cap if settlement wrote every one of them back.
@@ -770,6 +780,7 @@ var sentinelEdit = map[string]any{"op": "replace", "find": "sentinel", "with": "
 // whole. On main thirty-two suggestions of 900 KB took a cold websocket load of their document to
 // 296 MiB, and sixty-four took four cold reads at once to 1,223 MiB.
 func TestTheMarginStaysWithinTheMemoryBound(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	var spec strings.Builder
 	spec.WriteString("Before sentinel.\n\n")
@@ -864,11 +875,15 @@ func TestTheMarginStaysWithinTheMemoryBound(t *testing.T) {
 // What the edit holds without a margin is the element limit's own (logged), which the margin's
 // bounds do not move.
 func TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound(t *testing.T) {
-	memory := newMemoryHarness(t)
+	t.Parallel()
 	replacement := strings.Repeat("a", 255_000)
 	edit := map[string]any{"op": "replace", "find": "word", "with": "wore", "occurrence": 0}
 	for _, shape := range heaviestAdmittedShapes(t) {
 		t.Run(shape.name, func(t *testing.T) {
+			// Each row on a database of its own, so the rows run at the same time: each one's
+			// servers drain and lease that database alone (drainBeforeStart, holdBlockIndexLease).
+			t.Parallel()
+			memory := newMemoryHarness(t)
 			writer := memory.start(t)
 			upload := writer.upload(t, "json", memory.issue, shape.markdown)
 			if upload.status != http.StatusCreated {
@@ -915,6 +930,7 @@ func TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound(t *testing.
 // leave it undecodable is refused with 413 CAP_EXCEEDED, and the stored version before it still
 // reads; without that refusal, the version is taken and every read of the document answers 500.
 func TestVersionsCannotLeaveALiveStateTooLargeToDecode(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	server := memory.start(t)
 	numbered := func(format string) string {
@@ -1024,7 +1040,10 @@ func TestARoleDocumentCannotLeaveItsIssueRoomTooLargeToDecode(t *testing.T) {
 		}
 		return loaded
 	}
-	heaviest := heaviestAdmitted(t, func(units int) string { return strings.Repeat("- a\n", units) })
+	heaviest, err := heaviestAdmitted(func(units int) string { return strings.Repeat("- a\n", units) })
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"plan.md", "verification.md"} {
 		var held, named int
 		count := func() {
@@ -1067,6 +1086,7 @@ func TestARoleDocumentCannotLeaveItsIssueRoomTooLargeToDecode(t *testing.T) {
 // An upload's parse does not count front matter, so a new spec of front matter and the 16,384
 // headings one document may hold is stored, as the headings alone are.
 func TestASpecOfFrontMatterAndTheMostHeadingsIsStored(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	server := memory.start(t)
 	issue := server.createIssue(t, "Front matter", "---\ntitle: a spec\n---\n\n"+strings.Repeat("# a\n", 16_384))
@@ -1083,12 +1103,7 @@ func TestASpecOfFrontMatterAndTheMostHeadingsIsStored(t *testing.T) {
 // above out for every cell would cost the square of the width in strings, and its cube in grid
 // steps.
 func TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound(t *testing.T) {
-	shapes := []admittedShape{{
-		name: "the widest table",
-		markdown: heaviestAdmitted(t, func(cells int) string {
-			return strings.Repeat("| a ", cells) + "|\n" + strings.Repeat("| - ", cells) + "|\n" + strings.Repeat("| b ", cells) + "|\n"
-		}),
-	}}
+	shapes := []admittedShape{{name: widestTableBuild.name, markdown: heaviestAdmittedNamed(t, widestTableBuild.name)}}
 	for _, shape := range heaviestAdmittedShapes(t) {
 		if strings.HasSuffix(shape.name, "table") {
 			shapes = append(shapes, shape)

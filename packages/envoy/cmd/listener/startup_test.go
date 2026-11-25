@@ -34,6 +34,7 @@ import (
 // healthy answer there would let ECS take the replacement for ready before it fans anything out,
 // and a 503 would keep ECS from ever stopping the task that holds the durable.
 func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "v1-bind-window"
 		secret    = "bind-window-secret"
@@ -166,6 +167,7 @@ func assertSessionsMatchTheirSample(t *testing.T, listener *listenerProcess, wan
 // drops that copy by its dedupe key. The messages go straight onto the lane, as an operator's or
 // an earlier listener's do: the publish route forwards a role message itself.
 func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "two-tasks"
 		holderID  = "ses_two_tasks_holder"
@@ -342,6 +344,7 @@ func countRecords(p *listenerProcess, name string, match func(map[string]any) bo
 // It must start healthy over them and serve the ordinary keys beside them: one stored role must not
 // keep every listener from starting.
 func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
@@ -452,6 +455,7 @@ func ciSettled(t *testing.T, client *bus.Client) bool {
 // cache not applicable instead of waiting on it. Seeded with a record any summary loop would settle,
 // it creates no consumer on the CI bucket's stream, publishes no settlement, and reports healthy.
 func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
+	t.Parallel()
 	client := setupTestNATS(t)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
@@ -562,6 +566,7 @@ func do(t *testing.T, request *http.Request) (int, string) {
 // anything. This test holds both halves, so reintroducing that SetDefault reds it. The listener
 // mounts the GitHub route, so all three caches warm up.
 func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
+	t.Parallel()
 	const machineID = "logger-split"
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -660,10 +665,12 @@ func bucketGrant(bucket string) []string {
 }
 
 // grantBeforeKnownSessions is the grant of a listener whose hub's grant does not carry the
-// known-session bucket: every bucket the listener opens (the legion_agents bucket included, whose
-// denied open would cost the start its own 10-second JetStream wait) except the known-session one.
+// known-session bucket: every bucket the listener opens (the legion_agents bucket, whose denied
+// open would cost the start its own 10-second JetStream wait, and the spent-proof bucket every
+// listener opens at start, included) except the known-session one.
 func grantBeforeKnownSessions() []string {
-	return append(listenerGrantBeforeSessionConsumers(), bucketGrant(bus.LegionAgentBucket)...)
+	grant := append(listenerGrantBeforeSessionConsumers(), bucketGrant(bus.LegionAgentBucket)...)
+	return append(grant, bucketGrant(bus.DPoPProofBucket)...)
 }
 
 // v1OpenWithoutTheBucket is how long after it began listening a listener whose NATS user may not

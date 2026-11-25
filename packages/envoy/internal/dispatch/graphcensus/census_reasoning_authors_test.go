@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -77,7 +77,7 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 			Visibility: written.visibility, State: graphstore.StateLive, Project: "CORE",
 			MadeAt: at, MadeBy: written.madeBy, SourceEvent: graphstore.NoEvent,
 		}
-		authors, tuples, err := graphstoretest.AuthoredFacts(node, written.tuples)
+		authors, tuples, err := graphseedtest.AuthoredFacts(node, written.tuples)
 		if err != nil {
 			t.Fatalf("state the author of %s/%s: %v", written.kind, written.id, err)
 		}
@@ -87,7 +87,7 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 			// row and its base attributes are seeded as the reasoning write would store them, and
 			// the rest of what that write states goes through the store's writer.
 			if written.visibility == graphstore.VisibilityAuthor {
-				if err := graphstoretest.SeedAuthorOnly(ctx, tx, node); err != nil {
+				if err := graphseedtest.SeedAuthorOnly(ctx, tx, node); err != nil {
 					return err
 				}
 				return graphstore.Write(ctx, tx, authors, tuples)

@@ -476,6 +476,8 @@ function comment(id: string, createdAt: string): Comment {
     author: { id: "alice", kind: "user" },
     body: `Comment ${id}.`,
     created_at: createdAt,
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id,
@@ -497,7 +499,10 @@ function thread(id: string, createdAt: string): MessageRead {
     body: `Message ${id}.`,
     broadcast_id: null,
     created_at: createdAt,
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
+    edited_at: null,
     id,
     in_reply_to: null,
     issue_key: KEY,
@@ -806,7 +811,11 @@ function answered(fixture: Fixture): IssueTreeReads {
       )
     )
   );
-  return { ...reads, tree: treeAnswer(walk, [...tuples, ...(tied ?? [])], { issue: key }) };
+  return {
+    ...reads,
+    ...(messages === undefined ? {} : { messages }),
+    tree: treeAnswer(walk, [...tuples, ...(tied ?? [])], { issue: key }),
+  };
 }
 
 /** The issue's tree as `buildIssueTree` draws it from the case's reads and the tree read's
@@ -881,6 +890,27 @@ test("a requirement no decision shaped sits under the issue as a node nothing ex
   expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.gaps).toEqual(["no_check"]);
   const settled = blockNodeId(SPEC, "d1");
   expect(placementsOf(root, settled).map((one) => one.parent)).toEqual([KEY]);
+});
+
+// While a document of the issue is still being indexed the coverage read names no requirement as
+// lacking a check, and writes that document's line among its own gaps in their place: each
+// statement carries no gap and that line, in its own words, to draw where its gaps are.
+test("a statement whose coverage waits on a document still being indexed carries its line and no gap", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  const root = treeOf({
+    coverage: {
+      ...coverage([requirement("r1", "The page waits for the index.")]),
+      gaps: [owed],
+      owed_documents: [{ artifact_id: spec.id, version: 12 }],
+    },
+    documents: [{ artifactId: spec.id, blocks: [block("r1", "requirement")] }],
+    issue: issueDetails([spec]),
+  });
+
+  const statement = nodeOf(root, blockNodeId(SPEC, "r1"));
+  expect(statement?.gaps).toEqual([]);
+  expect(statement?.coverageNotes).toEqual([owed]);
 });
 
 // R9: a decision the model marks unsure carries the mark its row says in one word, and one the
@@ -2527,6 +2557,316 @@ test("a question of the issue is drawn among the turns, by the time it was asked
   ]);
 });
 
+/** A delete of a post, as the read of a deleted comment or message carries it: when, and by whom. */
+const DELETION: Pick<Comment, "deleted_at" | "deleted_by"> = {
+  deleted_at: "2026-11-05T12:00:00Z",
+  deleted_by: { id: "alice", kind: "user" },
+};
+
+/** The words a deleted post's author wrote, which the fixtures below leave on the read, though the
+ *  server sends an empty body, so a node that read them would show it. */
+const DELETED_WORDS = "Hold the deploy until Friday.";
+
+/** What a node of a turn holds that a view draws: its marks, its text and reading, and the line
+ *  and the words every place that reads a node reads from it (`lineWords`, `nodeWords`). */
+function turnMarks(node: TreeNode | undefined) {
+  return {
+    deletedAt: node?.deletedAt,
+    deletedBy: node?.deletedBy,
+    editedAt: node?.editedAt,
+    line: node === undefined ? undefined : lineWords(node),
+    text: node?.text,
+    tree: node?.tree,
+    words: node === undefined ? undefined : nodeWords(node),
+  };
+}
+
+// R3 of dispatch://INFRA-1523: a comment its author deleted keeps its place among the turns, and
+// its node holds the deleted line in place of its body and no reading of it, so no line, body or
+// filter reads a word its author wrote, even where the read still carries one. It carries no
+// edit mark: the deleted line already says what became of the text.
+test("a deleted comment keeps its place and holds the deleted line, and no word of its body", () => {
+  const root = treeOf({
+    comments: [
+      comment("c0", "2026-11-04T09:00:00Z"),
+      {
+        ...comment("c1", "2026-11-04T10:00:00Z"),
+        ...DELETION,
+        body: DELETED_WORDS,
+        body_tree: readingOf(DELETED_WORDS),
+        edited_at: "2026-11-05T11:00:00Z",
+      },
+      comment("c2", "2026-11-04T11:00:00Z"),
+    ],
+    issue: issueDetails([]),
+  });
+
+  expect(root.children.map((child) => child.id)).toEqual(["c0", "c1", "c2"]);
+  const line = "Deleted by alice · 2026-11-05T12:00:00Z";
+  const deleted = turnMarks(nodeOf(root, "c1"));
+  expect(deleted).toEqual({
+    deletedAt: "2026-11-05T12:00:00Z",
+    deletedBy: { id: "alice", kind: "user" },
+    editedAt: undefined,
+    line,
+    text: line,
+    tree: undefined,
+    words: line,
+  });
+  expect(nodeOf(root, "c0")?.text).toBe("Comment c0.");
+});
+
+// R3 of dispatch://INFRA-1523: a message its author deleted is the same: its place, the deleted
+// line, no reading. A session's delete names the session as `AgentName` does before the agent
+// registry answers, by its short id, never by its raw id; a delete whose read names nobody says
+// so with no name.
+test("a deleted message keeps its place and holds the deleted line, and no word of its body", () => {
+  const sent = thread("m1", "2026-11-04T10:00:00Z");
+  const unnamed = thread("m2", "2026-11-04T11:00:00Z");
+  const root = treeOf({
+    issue: issueDetails([]),
+    messages: [
+      thread("m0", "2026-11-04T09:00:00Z"),
+      {
+        ...sent,
+        message: {
+          ...sent.message,
+          body: DELETED_WORDS,
+          body_tree: readingOf(DELETED_WORDS),
+          deleted_at: "2026-11-05T12:00:00Z",
+          deleted_by: { id: "planner", kind: "session" },
+        },
+      },
+      {
+        ...unnamed,
+        message: { ...unnamed.message, deleted_at: "2026-11-05T13:00:00Z", deleted_by: null },
+      },
+    ],
+  });
+
+  expect(root.children.map((child) => child.id)).toEqual(["m0", "m1", "m2"]);
+  const line = "Deleted by session:planner… · 2026-11-05T12:00:00Z";
+  const deleted = turnMarks(nodeOf(root, "m1"));
+  expect(deleted).toEqual({
+    deletedAt: "2026-11-05T12:00:00Z",
+    deletedBy: { id: "planner", kind: "session" },
+    editedAt: undefined,
+    line,
+    text: line,
+    tree: undefined,
+    words: line,
+  });
+  const nobody = nodeOf(root, "m2");
+  expect(nobody?.text).toBe("Deleted · 2026-11-05T13:00:00Z");
+  expect(nobody !== undefined && "deletedBy" in nobody).toBe(false);
+  expect(nodeOf(root, "m0")?.text).toBe("Message m0.");
+});
+
+// R2 of dispatch://INFRA-1523: a comment its author edited keeps its words and their reading,
+// and says when it was last edited; one nobody edited carries no mark.
+test("an edited comment keeps its words and its reading, and carries when it was edited", () => {
+  const root = treeOf({
+    comments: [
+      {
+        ...comment("c1", "2026-11-04T10:00:00Z"),
+        body_tree: readingOf("Comment c1."),
+        edited_at: "2026-11-05T11:00:00Z",
+      },
+      comment("c2", "2026-11-04T11:00:00Z"),
+    ],
+    issue: issueDetails([]),
+  });
+
+  expect(turnMarks(nodeOf(root, "c1"))).toEqual({
+    deletedAt: undefined,
+    deletedBy: undefined,
+    editedAt: "2026-11-05T11:00:00Z",
+    line: "Comment c1.",
+    text: "Comment c1.",
+    tree: readingOf("Comment c1."),
+    words: "Comment c1.",
+  });
+  const unedited = nodeOf(root, "c2");
+  expect(unedited !== undefined && "editedAt" in unedited).toBe(false);
+});
+
+// R2 of dispatch://INFRA-1523: a message its author edited is the same.
+test("an edited message keeps its words and its reading, and carries when it was edited", () => {
+  const sent = thread("m1", "2026-11-04T10:00:00Z");
+  const root = treeOf({
+    issue: issueDetails([]),
+    messages: [
+      {
+        ...sent,
+        message: {
+          ...sent.message,
+          body_tree: readingOf("Message m1."),
+          edited_at: "2026-11-05T11:00:00Z",
+        },
+      },
+      thread("m2", "2026-11-04T11:00:00Z"),
+    ],
+  });
+
+  expect(turnMarks(nodeOf(root, "m1"))).toEqual({
+    deletedAt: undefined,
+    deletedBy: undefined,
+    editedAt: "2026-11-05T11:00:00Z",
+    line: "Message m1.",
+    text: "Message m1.",
+    tree: readingOf("Message m1."),
+    words: "Message m1.",
+  });
+  const unedited = nodeOf(root, "m2");
+  expect(unedited !== undefined && "editedAt" in unedited).toBe(false);
+});
+
+// R3 of dispatch://INFRA-1523: a chip naming a comment or a message its author deleted draws
+// the deleted line, as a link to it does (`useReferenceLabel`), and carries the delete's marks,
+// and the page publishes that line as its name, never the words of its body, even where the
+// read still carries them. It says nothing of an edit: the deleted line says what became of the
+// text.
+test("a chip naming a deleted comment or message draws the deleted line and carries its marks", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  for (const kind of ["comment", "message"] as const) {
+    const ref = `dispatch://${KEY}/${kind}/${kind}-9`;
+    const reads = {
+      decisions: decisions([{ ...decision("d1", "Keep it.", []), links: [linkTo(ref, kind)] }]),
+      issue: issueDetails([spec]),
+      targets: [
+        {
+          deleted_at: "2026-11-05T12:00:00Z",
+          deleted_by: { id: "alice", kind: "user" },
+          edited_at: "2026-11-05T11:00:00Z",
+          gone: false,
+          kind,
+          name: DELETED_WORDS,
+          ref,
+        },
+      ],
+    };
+
+    const chips = nodeOf(treeOf(reads), blockNodeId(SPEC, "d1"))?.chips;
+    expect(chips, kind).toEqual([
+      {
+        answered: true,
+        deletedAt: "2026-11-05T12:00:00Z",
+        deletedBy: { id: "alice", kind: "user" },
+        gone: false,
+        name: "Deleted by alice",
+        ref,
+        stale: false,
+      },
+    ]);
+    expect([...targetNaming(reads).names], kind).toEqual([[ref, "Deleted by alice"]]);
+  }
+});
+
+// R3 of dispatch://INFRA-1523, and INFRA-1196's decision 342: beside the deleted line it publishes
+// as a deleted post's name, the page publishes the delete itself (`targetNaming`'s `deleted`), so
+// a row's words draw that line with its actor named as the page names an author, where the name
+// holds the actor as no registry knows it. A post that stands is not among them, and neither is
+// a block of a deleted post, which is gone and named by nothing.
+test("the page publishes a deleted comment or message by its delete, and no post that stands", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const deletion = { at: "2026-11-05T12:00:00Z", by: { id: "alice", kind: "user" } };
+  for (const kind of ["comment", "message"] as const) {
+    const ref = `dispatch://${KEY}/${kind}/${kind}-9`;
+    const block = `${ref}#b-p1`;
+    const standing = `dispatch://${KEY}/${kind}/${kind}-8`;
+    const reads = {
+      decisions: decisions([
+        {
+          ...decision("d1", "Keep it.", []),
+          links: [linkTo(ref, kind), linkTo(block, "block"), linkTo(standing, kind)],
+        },
+      ]),
+      issue: issueDetails([spec]),
+      targets: [
+        { deleted_at: deletion.at, deleted_by: deletion.by, gone: false, kind, name: "", ref },
+        {
+          deleted_at: deletion.at,
+          deleted_by: deletion.by,
+          gone: true,
+          kind: "block",
+          name: "",
+          ref: block,
+        },
+        { gone: false, kind, name: "Ship it.", ref: standing },
+      ],
+    };
+
+    const naming = targetNaming(reads);
+    expect([...naming.names], kind).toEqual([
+      [ref, "Deleted by alice"],
+      [standing, "Ship it."],
+    ]);
+    expect([...naming.deleted], kind).toEqual([[ref, deletion]]);
+  }
+});
+
+// R2 of dispatch://INFRA-1523: a chip naming a comment or a message its author edited, or a
+// block of one, is named by its words alone and carries when it was edited; the page publishes
+// those words as its name and the reference among the edited ones, so a link cuts the words to
+// its own length and marks what the cut left ` · edited`, as a link to it does
+// (`useReferenceLabel`). A post nobody edited carries no mark.
+test("a chip naming an edited comment, message or block of one carries its words and when it was edited", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const block = `dispatch://${KEY}/comment/comment-9#b-p1`;
+  const unedited = `dispatch://${KEY}/comment/comment-8`;
+  for (const kind of ["comment", "message"] as const) {
+    const ref = `dispatch://${KEY}/${kind}/${kind}-9`;
+    const reads = {
+      decisions: decisions([
+        {
+          ...decision("d1", "Keep it.", []),
+          links: [linkTo(ref, kind), linkTo(block, "block"), linkTo(unedited, "comment")],
+        },
+      ]),
+      issue: issueDetails([spec]),
+      targets: [
+        { edited_at: "2026-11-05T11:00:00Z", gone: false, kind, name: "**Hold** it.", ref },
+        {
+          edited_at: "2026-11-05T11:00:00Z",
+          gone: false,
+          kind: "block",
+          name: "Hold the deploy.",
+          ref: block,
+          text_tree: readingOf("Hold the deploy."),
+        },
+        { gone: false, kind: "comment", name: "Ship it.", ref: unedited },
+      ],
+    };
+
+    const chips = nodeOf(treeOf(reads), blockNodeId(SPEC, "d1"))?.chips;
+    expect(
+      chips?.map(({ editedAt, name, ref }) => ({ editedAt, name, ref })),
+      kind
+    ).toEqual([
+      { editedAt: "2026-11-05T11:00:00Z", name: "Hold it.", ref },
+      { editedAt: "2026-11-05T11:00:00Z", name: "Hold the deploy.", ref: block },
+      { editedAt: undefined, name: "Ship it.", ref: unedited },
+    ]);
+    expect(
+      chips?.some((chip) => chip.ref === unedited && "editedAt" in chip),
+      kind
+    ).toBe(false);
+    const naming = targetNaming(reads);
+    expect([...naming.names], kind).toEqual([
+      [ref, "Hold it."],
+      [block, "Hold the deploy."],
+      [unedited, "Ship it."],
+    ]);
+    expect([...naming.edited], kind).toEqual([ref, block]);
+    // A row's link draws the published words, then the mark (`rowReferenceWords`).
+    const [link] = rowReferences(`see ${ref}`, [], naming.ambiguous);
+    if (link === undefined) throw new Error("the text holds one reference");
+    expect(rowReferenceWords(link, naming.names, naming.edited).words, kind).toBe(
+      "Hold it. · edited"
+    );
+  }
+});
+
 // R1, R12: the group of children sits before the conversation however many children there are.
 // A child's place in the issue's order is a fraction of one past the group's, as a block's is in
 // its document, so a thousandth child never reaches the conversation's orders, which are ordered
@@ -2833,6 +3173,8 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
       type: "doc",
     },
     created_at: "2026-11-16T11:12:42.406314Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id: "66fd1e9f-1adb-4c92-b7db-a731dcf223c1",
@@ -2928,13 +3270,14 @@ test("every Change newer than a decision's words is drawn under it", () => {
   expect(nodeOf(root, id)).toMatchObject({ state: "change_requested", waiting: false });
 });
 
-// R3 and R7: a Change sits under the decision it was written in. The anchor names the block the
+// R3 and R7: a Change belongs to the decision it was written in. The anchor names the block the
 // person wrote it in (`Anchor.block_id`), here the paragraph the second decision's block holds,
 // and its quote is words that decision holds; the first decision holds the same words too. So
 // the quote alone cannot say which decision was changed, and the Change must not land on the
 // first decision that holds them: that decision would read Change requested and leave the review
-// list, while the one the person changed would still wait on them.
-test("a Change anchored in one decision is drawn under it, though another decision holds its words", () => {
+// list, while the one the person changed would still wait on them. The read hangs the Change
+// under the second decision's node, on its words, so it is no row (R9): the margin draws it.
+test("a Change anchored in one decision changes it, though another decision holds its words", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const waiting = (id: string, text: string): Decision => ({
     ...decision(id, text, ["r1"]),
@@ -2974,7 +3317,7 @@ test("a Change anchored in one decision is drawn under it, though another decisi
   const changed = blockNodeId(SPEC, "d2");
   const other = blockNodeId(SPEC, "d1");
 
-  expect(placementsOf(root, "c-change").map((one) => one.parent)).toEqual([changed]);
+  expect(placementsOf(root, "c-change"), "a comment on the decision's words").toEqual([]);
   expect(nodeOf(root, changed)).toMatchObject({ state: "change_requested", waiting: false });
   expect(nodeOf(root, other)).toMatchObject({ state: "waiting_review", waiting: true });
 });
@@ -3379,11 +3722,18 @@ test("a check block outside the Verification document draws no state and is coun
     covered: true,
     state: "met",
   });
-  // Nothing under the statement is open, so the fold leaves it folded.
-  expect(treeRows(root).some((row) => row.kind === "node" && row.node.id === planned)).toBe(false);
-  expect(
-    treeRows(root).find((row) => row.kind === "node" && row.node.id === statement)
-  ).toMatchObject({ expanded: false });
+  // No node opens folded (R11): the statement is drawn unfolded, and every node under it, the
+  // check outside the Verification document among them, is a row.
+  const rows = treeRows(root);
+  expect(rows.find((row) => row.kind === "node" && row.node.id === statement)).toMatchObject({
+    expanded: true,
+  });
+  for (const id of [verified, planned]) {
+    expect(
+      rows.some((row) => row.kind === "node" && row.node.id === id),
+      id
+    ).toBe(true);
+  }
 });
 
 /** The state the page reads for the one check of a Verification document: what `payload`

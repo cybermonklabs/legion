@@ -130,6 +130,7 @@ type DecisionStep struct {
 // lists of gated steps that hold `decisions`, and their sum. /healthz answers the sum alone, as
 // `decisions_step_owed` (OwedTotal), which a deploy check reads at zero as the step having nothing
 // left to do; each count logs the three parts beside it (recountOwed).
+// kept for one release: decisions-step
 type DecisionStepOwed struct {
 	DecisionsDocuments int64
 	AnswersLeftSpec    int64
@@ -170,6 +171,8 @@ func (s *DecisionStep) OwedTotal() *int64 {
 //     leaving out a spec whose block index is owed, whose blocks are not known yet - the second
 //     shape's asks stand in a decisions document, which the first part counts;
 //   - a list of gated steps that holds `decisions` is a projects row whose gated_steps does.
+//
+// kept for one release: decisions-step
 func countDecisionStepOwed(ctx context.Context, q graphstore.Queryer) (DecisionStepOwed, error) {
 	var owed DecisionStepOwed
 	if err := q.QueryRow(ctx, `
@@ -205,17 +208,20 @@ func NewDecisionStep(database *store.Store, commit string, logger *slog.Logger) 
 
 // decisionStepLock is the session advisory lock the step's first two phases take ("DDECISNS"), a
 // single 64-bit key apart from every other single-key advisory lock of the server.
+// kept for one release: decisions-step
 const decisionStepLock int64 = 0x4444454349534E53
 
 // decisionRestoreLock is the session advisory lock the step's third phase takes ("DRESTORE"), a
 // single 64-bit key apart from decisionStepLock and every other single-key advisory lock of the
 // server: a pass of the third phase holds it, and never the step's own lock, which a booting
 // process waits for while phase 1 owes a row (Boot).
+// kept for one release: decisions-step
 const decisionRestoreLock int64 = 0x44524553544F5245
 
 // stepConn is the connection the step holds its session locks on, one of the shared pool's, so it
 // is one store.ConnectionsPerProcess already counts, and held names the lock it may hold there
 // now: decisionStepLock, decisionRestoreLock, or 0 for none.
+// kept for one release: decisions-step
 type stepConn struct {
 	conn *pgxpool.Conn
 	held int64
@@ -227,6 +233,7 @@ type stepConn struct {
 // transactions do beside its lock's: no caller in the process waits for a lock of the step's -
 // a tick tries the lock, and a booting process of another server waits for it on a pool of its
 // own - so the two connections cannot close the cycle the nested-acquire guard exists for.
+// kept for one release: decisions-step
 func (s *DecisionStep) acquireStepConn(ctx context.Context) (*stepConn, error) {
 	conn, err := s.database.Pool.Acquire(ctx)
 	if err != nil {
@@ -239,6 +246,7 @@ func (s *DecisionStep) acquireStepConn(ctx context.Context) (*stepConn, error) {
 // connection holds it. key counts as held from before the statement, so a statement that fails
 // leaves release to unlock it, or to close the connection where Postgres does not answer that the
 // unlock freed it.
+// kept for one release: decisions-step
 func (c *stepConn) lock(ctx context.Context, key int64, wait bool) (bool, error) {
 	c.held = key
 	if wait {
@@ -261,6 +269,7 @@ func (c *stepConn) lock(ctx context.Context, key int64, wait bool) (bool, error)
 // through duty.FreeSessionLock, which returns it only once Postgres answers that the unlock freed
 // the lock and closes it otherwise, so a pooled connection that may still hold a lock of the step's
 // serves no later caller and keeps no other process's boot waiting.
+// kept for one release: decisions-step
 func (c *stepConn) release(logger *slog.Logger) {
 	if c.held == 0 {
 		c.conn.Release()
@@ -389,6 +398,7 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 // (decisionRestoreLock) on c, so the pass of phase 3 it is taken for holds no lock a booting
 // process waits for: it waits for the lock where wait, as a command run by hand does, and
 // otherwise tries once, reporting whether it took it, as a tick does.
+// kept for one release: decisions-step
 func (c *stepConn) takeRestoreLock(ctx context.Context, wait bool) (bool, error) {
 	if _, err := c.conn.Exec(ctx, `select pg_advisory_unlock($1)`, decisionStepLock); err != nil {
 		return false, fmt.Errorf("release the decision step's lock: %w", err)
@@ -424,6 +434,7 @@ func (s *DecisionStep) Run(ctx context.Context) {
 }
 
 // decisionStepWork is what a pass's probes found the step's phases owe.
+// kept for one release: decisions-step
 type decisionStepWork struct {
 	// backfill is whether phase 1 has a row to state (graphcensus.AsksOwed).
 	backfill bool
@@ -625,7 +636,9 @@ func scanCaughtUpEvent(row pgx.CollectableRow) (caughtUpEvent, error) {
 	return event, nil
 }
 
-// decisionStepMarksKept bounds the marks of the event log the catch-up keeps (writerFloor).
+// decisionStepMarksKept bounds the marks of the event log the catch-up and the count keep
+// (writerFloor).
+// kept for one release: decisions-step
 const decisionStepMarksKept = 8
 
 // catchUp is phase 2, and reports whether an ask failed. Its window opens at the newest
@@ -813,7 +826,7 @@ func (s *DecisionStep) catchUpAsk(ctx context.Context, askID string, unstated []
 	}
 	defer tx.Rollback(ctx)
 	owners := events.OwnerRows{}
-	owners.Add(issue, document, "ask "+askID)
+	owners.Add(issue, document)
 	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 		return 0, nil, err
 	}

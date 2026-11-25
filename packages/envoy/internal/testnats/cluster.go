@@ -20,8 +20,8 @@ import (
 // route URL.
 type Cluster struct {
 	Servers []*Server
-	// routes are the relays of the members' route ports, member i's at i, which a test in this
-	// package freezes to hold every message between the members.
+	// routes are the relays of the members' route ports, member i's at i, which FreezeRoutes
+	// freezes to hold every message between the members.
 	routes []*relay
 }
 
@@ -109,6 +109,25 @@ func memberName(i int) string { return fmt.Sprintf("n%d", i+1) }
 
 // Name is member i's server_name (Server.Name).
 func (c *Cluster) Name(i int) string { return c.Servers[i].Name() }
+
+// FreezeRoutes stops the members' routes moving bytes, in either direction, and returns the func
+// that thaws them, which runs once however often it is called. Every route keeps its connection,
+// as Server.Freeze keeps a client's: no member hears another until the thaw, so a replicated
+// stream's leader takes a publish its own clients send it and cannot store it, since no follower
+// hears the proposal, and a second publish under the same message id meanwhile is refused as
+// still in process (nats-server's JSStreamDuplicateMessageConflict).
+func (c *Cluster) FreezeRoutes(t testing.TB) func() {
+	t.Helper()
+	thaws := make([]func(), len(c.routes))
+	for i, route := range c.routes {
+		thaws[i] = route.freeze()
+	}
+	return func() {
+		for _, thaw := range thaws {
+			thaw()
+		}
+	}
+}
 
 // Member is the index of the member whose server_name is name, or -1 when none has it.
 func (c *Cluster) Member(name string) int {

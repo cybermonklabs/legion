@@ -15,11 +15,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An answered block ask reads answered in the asks member of its document's text, with who
 // answered and the words, and the markdown beside it carries none of that.
 func TestAnAnsweredBlockAskReadsAnsweredInTheAsksOfItsDocumentsText(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
@@ -57,6 +59,7 @@ func TestAnAnsweredBlockAskReadsAnsweredInTheAsksOfItsDocumentsText(t *testing.T
 }
 
 func TestSearchAskBlockOptionDescription(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -75,46 +78,44 @@ func TestSearchAskBlockOptionDescription(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	ask := testwait.Until(t, "the typed ask block to settle into the inbox (whether the inbox listed it)", func() (model.Ask, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID == nil || *ask.BlockID != "agent-ask" {
-				continue
+			if ask.BlockID != nil && *ask.BlockID == "agent-ask" {
+				return ask, true
 			}
-			if ask.Question != "Should we ship?" || ask.State != "open" || ask.Urgency != "high" ||
-				ask.BlockArtifact == nil || ask.BlockArtifact.ID != issue.PrimaryArtifactID || !ask.BlockArtifact.Primary {
-				t.Fatalf("inbox ask = %#v", ask)
-			}
-			search := searchResponse(t, handler, "q=ship")
-			if len(search.Results) == 0 || search.Results[0].Kind != "ask" ||
-				search.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
-				t.Fatalf("ask search results = %#v", search.Results)
-			}
-			optionSearch := searchResponse(t, handler, "q=review")
-			if len(optionSearch.Results) != 1 || optionSearch.Results[0].Kind != "ask" ||
-				optionSearch.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
-				t.Fatalf("option-label search results = %#v", optionSearch.Results)
-			}
-			text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
-			if text.Code != http.StatusOK || strings.Contains(text.Body.String(), `state=\"answered\"`) {
-				t.Fatalf("agent-owned server state survived in document: status=%d body=%s", text.Code, text.Body.String())
-			}
-			events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
-			if events.Code != http.StatusOK || strings.Contains(events.Body.String(), `"type":"block.repaired"`) {
-				t.Fatalf("agent write emitted a repair event: status=%d body=%s", events.Code, events.Body.String())
-			}
-			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		return model.Ask{}, false
+	})
+	if ask.Question != "Should we ship?" || ask.State != "open" || ask.Urgency != "high" ||
+		ask.BlockArtifact == nil || ask.BlockArtifact.ID != issue.PrimaryArtifactID || !ask.BlockArtifact.Primary {
+		t.Fatalf("inbox ask = %#v", ask)
 	}
-	t.Fatal("typed ask block did not settle into the inbox")
+	search := searchResponse(t, handler, "q=ship")
+	if len(search.Results) == 0 || search.Results[0].Kind != "ask" ||
+		search.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
+		t.Fatalf("ask search results = %#v", search.Results)
+	}
+	optionSearch := searchResponse(t, handler, "q=review")
+	if len(optionSearch.Results) != 1 || optionSearch.Results[0].Kind != "ask" ||
+		optionSearch.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
+		t.Fatalf("option-label search results = %#v", optionSearch.Results)
+	}
+	text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
+	if text.Code != http.StatusOK || strings.Contains(text.Body.String(), `state=\"answered\"`) {
+		t.Fatalf("agent-owned server state survived in document: status=%d body=%s", text.Code, text.Body.String())
+	}
+	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
+	if events.Code != http.StatusOK || strings.Contains(events.Body.String(), `"type":"block.repaired"`) {
+		t.Fatalf("agent write emitted a repair event: status=%d body=%s", events.Code, events.Body.String())
+	}
 }
 
 func TestAskBlockWithoutOptionsSettles(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -133,20 +134,19 @@ func TestAskBlockWithoutOptionsSettles(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write no-option ask: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	waitUntil(t, "the no-option ask to settle into the inbox", func() bool {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
 			if ask.BlockID != nil && *ask.BlockID == "no-options" {
-				return
+				return true
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("no-option ask did not settle")
+		return false
+	})
 }
 
 func TestDocumentRetypeRejectsUnknownTypeAndInvalidAttributes(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Retype validation", "Question\n")
 	blocks := decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice"))
@@ -177,6 +177,7 @@ func TestDocumentRetypeRejectsUnknownTypeAndInvalidAttributes(t *testing.T) {
 // the rule allows is taken, including an option without a label or a question that is only an
 // image, which settlement flags `invalid` and the dashboard shows as a malformed decision.
 func TestUploadsHoldAskBlocksToTheirContentRule(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	ask := func(body string) string {
 		return "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\n" + body + "\n:::\n\nAfter.\n"
@@ -236,6 +237,7 @@ func TestUploadsHoldAskBlocksToTheirContentRule(t *testing.T) {
 }
 
 func TestDocumentEditRejectsInvalidAskBlockAtomically(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -257,20 +259,12 @@ func TestDocumentEditRejectsInvalidAskBlockAtomically(t *testing.T) {
 
 	var askID, question string
 	var optionsJSON []byte
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		err := database.Pool.QueryRow(context.Background(), `
+	waitUntil(t, "the typed ask block to settle into an ask", func() bool {
+		return database.Pool.QueryRow(context.Background(), `
 			select id::text, question, options from asks
 			where `+refs.AsksOfDocumentSQL("asks", "$1::uuid")+` and block_id = 'agent-ask'
-		`, issue.PrimaryArtifactID).Scan(&askID, &question, &optionsJSON)
-		if err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if askID == "" {
-		t.Fatal("typed ask block did not settle")
-	}
+		`, issue.PrimaryArtifactID).Scan(&askID, &question, &optionsJSON) == nil
+	})
 	var versionsBefore int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from artifact_versions where artifact_id = $1
@@ -312,6 +306,7 @@ func TestDocumentEditRejectsInvalidAskBlockAtomically(t *testing.T) {
 }
 
 func TestDocumentEditExplainsRenderedQuoteMiss(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Rendered quote miss", "Use `config` with care.\n")
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
@@ -342,32 +337,38 @@ func TestDocumentEditExplainsRenderedQuoteMiss(t *testing.T) {
 }
 
 // awaitIndexedAskBlock polls the inbox until the ask block with blockID on artifactID is
-// indexed, failing the test when settlement never reaches it.
+// indexed, failing the test when settlement never reaches it. Its one bound is the test binary's
+// deadline (testwait.UntilPolling): a settlement a loaded machine starts late still ends the wait,
+// and its failure names the block ids the inbox last listed.
 func awaitIndexedAskBlock(t *testing.T, handler http.Handler, artifactID, blockID, question string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("ask block %q on %s to be indexed (the inbox's ask blocks)", blockID, artifactID), func() ([]string, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
+		var listed []string
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID == nil || *ask.BlockID != blockID {
+			if ask.BlockID == nil {
+				continue
+			}
+			listed = append(listed, *ask.BlockID)
+			if *ask.BlockID != blockID {
 				continue
 			}
 			if ask.Question != question || ask.State != "open" || ask.BlockArtifact == nil || ask.BlockArtifact.ID != artifactID {
 				t.Fatalf("indexed ask = %#v", ask)
 			}
-			return
+			return listed, true
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("ask block %q on %s was never indexed", blockID, artifactID)
+		return listed, false
+	})
 }
 
 // A spec written at issue creation never passes through a live edit; its ask blocks must still
 // become asks, or an agent that opens an issue with decisions in the spec gets no inbox rows.
 func TestAskBlocksInCreatedSpecAreIndexed(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -382,6 +383,7 @@ func TestAskBlocksInCreatedSpecAreIndexed(t *testing.T) {
 // Uploading a new document version through the artifacts API replaces the text inside the
 // upload's own transaction, which suppresses live settlement; the closer must still run.
 func TestAskBlocksInUploadedSpecVersionAreIndexed(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -406,8 +408,9 @@ func TestAskBlocksInUploadedSpecVersionAreIndexed(t *testing.T) {
 // blocks under their ids. It opens no ask in anyone's Inbox: each copied block shows the state and
 // answer of the ask it was copied from (LEGION-651).
 func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
-	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
@@ -453,14 +456,18 @@ func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
 	copied := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	awaitTextShows(t, handler, copied, "its sources' states", contains(
-		`#rec-answered state="answered" answered_by="alice"`,
-		`copied_from="`+asks["rec-answered"]+`"`,
-		`#rec-resolved state="resolved" copied_from="`+asks["rec-resolved"]+`"`,
-		`#rec-open state="open" copied_from="`+asks["rec-open"]+`"`,
-	), nil)
-	// Settlement of the copy has run; a few more passes would have opened its asks by now.
-	time.Sleep(200 * time.Millisecond)
+	testwait.UntilPolling(t, 20*time.Millisecond, "the copy to show its sources' states (its text as an agent reads it)", func() (string, bool) {
+		text := agentText(t, handler, copied)
+		return text, contains(
+			`#rec-answered state="answered" answered_by="alice"`,
+			`copied_from="`+asks["rec-answered"]+`"`,
+			`#rec-resolved state="resolved" copied_from="`+asks["rec-resolved"]+`"`,
+			`#rec-open state="open" copied_from="`+asks["rec-open"]+`"`,
+		)(text)
+	})
+	// A settlement is what would open the copy's asks: once the copy owes none, no later pass runs
+	// over it that the read below could come before.
+	awaitSettled(t, database, copied)
 	var onCopy []string
 	all := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks", nil, "alice")
 	for _, ask := range decodeBody[[]model.Ask](t, all) {
@@ -491,21 +498,18 @@ func documentTexts(t *testing.T, handler http.Handler, document string) (string,
 }
 
 // awaitDocumentText polls document until its live text and its latest version both hold, failing
-// the test after ten seconds, or at once when either shows refused (nil refuses nothing).
+// the test at once when either shows refused (nil refuses nothing). Its one bound is the test
+// binary's deadline (testwait.UntilPolling), and its failure prints the two texts it last read.
 func awaitDocumentText(t *testing.T, handler http.Handler, document, what string, holds, refused func(string) bool) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	type texts struct{ live, version string }
+	testwait.UntilPolling(t, 20*time.Millisecond, "the document to show "+what+" (its live text and its latest version)", func() (texts, bool) {
 		live, version := documentTexts(t, handler, document)
 		if refused != nil && (refused(live) || refused(version)) {
 			t.Fatalf("the document showed what it must not while waiting for %s; live:\n%s\nlatest version:\n%s", what, live, version)
 		}
-		if holds(live) && holds(version) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the document never showed %s; live:\n%s\nlatest version:\n%s", what, live, version)
-		}
-	}
+		return texts{live, version}, holds(live) && holds(version)
+	})
 }
 
 // awaitVersionText polls document until its latest version holds, failing the test after ten
@@ -627,6 +631,7 @@ func contains(parts ...string) func(string) bool {
 // alone, so no stored version of the copy holds it. The routes settle
 // the copies of the ask they close, so the copy owes nothing after them and holds no ask of its own.
 func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -694,6 +699,7 @@ func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 // copy (SettleCopiesOf), and that settlement opens the copy's own ask for its block rather than
 // writing the answer to a question the copy does not ask into the record.
 func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -759,6 +765,7 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 // gets back the wording the answer was given on. A copy then uploaded with the reworded text holds
 // a question no decision answered and opens its own ask.
 func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -814,6 +821,7 @@ func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t
 // event and on the ask row - never JSON null: the SPA's Conversation tab reads options.length
 // and a null there takes the page down.
 func TestOptionlessAskBlockCarriesEmptyOptionsNotNull(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -850,19 +858,22 @@ type askBlockEventPayload struct {
 }
 
 // awaitAskBlockEvent polls the issue's events until one of eventType names the ask block
-// blockID, failing the test when settlement never emits it.
+// blockID, failing the test when settlement never emits it. Its one bound is the test binary's
+// deadline (testwait.UntilPolling), and its failure prints the event types it last read.
 func awaitAskBlockEvent(t *testing.T, handler http.Handler, issueKey, eventType, blockID string) askBlockEventPayload {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	var found askBlockEventPayload
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("a %s event for ask block %q (the event types the issue's last 50 events held)", eventType, blockID), func() ([]string, bool) {
 		events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issueKey+"/events?limit=50", nil, "alice")
 		if events.Code != http.StatusOK {
 			t.Fatalf("read events: status=%d body=%s", events.Code, events.Body.String())
 		}
+		var types []string
 		for _, event := range decodeBody[[]struct {
 			Type    string          `json:"type"`
 			Payload json.RawMessage `json:"payload"`
 		}](t, events) {
+			types = append(types, event.Type)
 			if event.Type != eventType {
 				continue
 			}
@@ -871,19 +882,20 @@ func awaitAskBlockEvent(t *testing.T, handler http.Handler, issueKey, eventType,
 				t.Fatalf("decode %s payload: %v", eventType, err)
 			}
 			if payload.BlockID != nil && *payload.BlockID == blockID {
-				return payload
+				found = payload
+				return types, true
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("no %s event for ask block %q", eventType, blockID)
-	return askBlockEventPayload{}
+		return types, false
+	})
+	return found
 }
 
 // Settlement runs after the edit's own version has consumed the room's pending authors; the ask
 // it indexes must still be attributed to the session that wrote the block, or the asker can
 // never edit its own ask and nobody can tell who is asking.
 func TestBlockAskIndexedAfterEditKeepsTheWritingActor(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -932,6 +944,7 @@ func TestBlockAskIndexedAfterEditKeepsTheWritingActor(t *testing.T) {
 // Changing a block ask's answer replaces the one its document's text answers: the asks member
 // reads the new choice and none of the old words.
 func TestChangingBlockAskReplacesTheAnswerItsTextAnswers(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	issue, askID := seedBlockAsk(t, handler, "Change typed ask", "decision", transportAsk, "Which transport?")
 	first := readBlockAsk(t, handler, askID)
@@ -974,6 +987,7 @@ func TestChangingBlockAskReplacesTheAnswerItsTextAnswers(t *testing.T) {
 // refuse as markdown. A question that writes bytes is a question, thin as it is: an image, a
 // U+00A0, or words.
 func TestUploadsRefuseAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "AQ", "Asks with no question", "Intro.\n")
 	ask := func(body string) string {

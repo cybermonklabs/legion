@@ -12,7 +12,7 @@ import { OutlineWriterProvider } from "./outline-writer";
 // more than 30 s after the load would read all three again for the writer alone.
 test("a window focus more than 30 s after the load reads the writer's asks, comments and messages no more", async () => {
   const reads = [
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
   ];

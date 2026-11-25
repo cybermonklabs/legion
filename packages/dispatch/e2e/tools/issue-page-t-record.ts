@@ -1,7 +1,7 @@
 /** `bun e2e/tools/issue-page-t-record.ts --recorded-on <commit> [--part <commit> ...]`:
  *  records the rows the new issue page draws from its reads into
- *  `e2e/fixtures/issue-page-t-rows.json`, the fixture the rows of `e2e/issue-page-t.e2e.ts`
- *  compare the tree read's rows with.
+ *  `e2e/fixtures/issue-page-t-rows.json`, the fixture the rows of the
+ *  `e2e/issue-page-t-*.e2e.ts` files compare the tree read's rows with.
  *
  *  What it records. For each of the 14 seeds of `e2e/issue-layout-seed.ts`, in the order that
  *  file writes them, on an emptied database, read by alice with the new page on at 1440 by 900

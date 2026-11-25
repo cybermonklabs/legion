@@ -1,17 +1,26 @@
 import { expect, test } from "bun:test";
 
 import type { DisplayTree, IssueTreeParent } from "../../api/types";
+import { actorLabelText } from "../refs/AgentName";
+import { deletedLineText } from "../refs/post-marks";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
-import { filterSignals, presetView, rowKindsOf } from "./presets";
-import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
-import { everythingOpened } from "./tree-keys";
+import {
+  answerHolds,
+  filterHolding,
+  filterOfUndrawn,
+  filterSignals,
+  isFilter,
+  presetView,
+  tagFilter,
+} from "./presets";
+import { type DrawnRow, treeRows } from "./tree-fold";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on and the four filters as views of the one tree: with no filter on
- * the whole tree, folded to the frontier; under a filter its own kinds as rows and no other, each
+ * the whole tree, every node of it unfolded; under a filter its own kinds as rows and no other, each
  * other parent a line on its child's row.
  */
 
@@ -49,18 +58,17 @@ function statement(
   return node(id, "requirement", children, { statement: true, ...extra });
 }
 
-/** The ids of every row drawn, in reading order; a branch's own row reads as `more:<id>`. */
+/** The ids of every row drawn, in reading order; the row that pages a node's children reads as
+ *  `page:<id>`. */
 function idsOf(rows: readonly DrawnRow[]): string[] {
-  return rows.map((row) => (row.kind === "deeper" ? `more:${row.of.id}` : row.node.id));
+  return rows.map((row) => (row.kind === "page" ? `page:${row.of.id}` : row.node.id));
 }
 
-/** The rows the page draws for `preset` under `query`: a filtered view with every branch it kept
- *  open, which is the fold `IssueTree.tsx` draws, and the issue's own row dropped where the view
- *  draws none. Each row reads as its id and its depth. */
+/** The rows the page draws for `preset` under `query`: every node the view kept, unfolded, which
+ *  is what `IssueTree.tsx` draws, and the issue's own row dropped where the view draws none. */
 function drawn(root: TreeNode, preset: Preset, query = ""): string[] {
   const view = presetView(root, preset, query);
-  const fold = view.filtering ? everythingOpened(view.root) : NOTHING_OPENED;
-  const rows = treeRows(view.root, fold);
+  const rows = treeRows(view.root);
   return idsOf(view.rootRow ? rows : rows.slice(1));
 }
 
@@ -112,14 +120,53 @@ function issue(): TreeNode {
   ]);
 }
 
-test("with no filter on the view is the whole tree, folded to the frontier", () => {
+// R9, R10, R11: with no filter on - Conversation, and Graph, which is no filter - the view is the
+// whole tree the outline read answers, every node of it unfolded. Graph draws every node;
+// Conversation draws Conversation's read, which holds no result and no plan task, so a result or
+// a plan task the tree holds - every one, before the read takes `?kind=` - is no row of it.
+test("with no filter on the view is the whole tree, every node of it unfolded", () => {
   const root = issue();
-  const view = presetView(root, "conversation", "");
-  expect(view.filtering).toBe(false);
-  expect(view.rootRow).toBe(true);
-  // Exactly the fold the page draws with nothing narrowing it.
-  expect(drawn(root, "conversation")).toEqual(idsOf(treeRows(root)));
-  expect(parentLines(view.root)).toEqual({});
+  for (const preset of ["conversation", "graph"] as const) {
+    const view = presetView(root, preset, "");
+    expect(view.rootRow).toBe(true);
+    expect(parentLines(view.root)).toEqual({});
+  }
+  // Exactly the rows the page draws with nothing narrowing it: every node.
+  expect(drawn(root, "graph")).toEqual(nodesUnder(root).map((one) => one.id));
+  expect(drawn(root, "graph")).toEqual(idsOf(treeRows(root)));
+  const conversation = presetView(root, "conversation", "").root;
+  expect([...new Set(nodesUnder(conversation).map((one) => one.type))].sort()).toEqual([
+    "ask",
+    "check",
+    "comment",
+    "decision",
+    "issue",
+    "requirement",
+  ]);
+});
+
+/** Every node under `root`, `root` first, each before its children. */
+function nodesUnder(root: TreeNode): TreeNode[] {
+  return [root, ...root.children.flatMap(nodesUnder)];
+}
+
+// R10, R12: Graph is a view and no filter: it draws the whole tree as the page with no filter on
+// does, the issue its first row, every branch as the fold leaves it and every node of every kind,
+// and it has no count of its own among the filters' signals.
+test("Graph is no filter", () => {
+  const root = issue();
+  expect(isFilter("graph")).toBe(false);
+  expect(isFilter("conversation")).toBe(false);
+  expect((["spec", "verification", "plan", "decisions"] as const).every(isFilter)).toBe(true);
+  const view = presetView(root, "graph", "");
+  expect(view).toMatchObject({ lines: new Map(), rootRow: true });
+  expect(nodesUnder(view.root).map((one) => one.id)).toEqual(nodesUnder(root).map((one) => one.id));
+  expect(Object.keys(filterSignals(root, "")).sort()).toEqual([
+    "decisions",
+    "plan",
+    "spec",
+    "verification",
+  ]);
 });
 
 // R8, c-tree: the spec's summary callout is the head's three sentences and no row of the
@@ -135,12 +182,14 @@ test("with no filter on the spec's memo callout is no row, unless the address na
   ]);
 });
 
-test("a filter by words with no filter on opens the path down to what it matched", () => {
+// Graph, which draws every node, finds a plan task by its words with the chain above it as
+// context; Conversation, which draws no plan task, finds none.
+test("a filter by words with no filter on draws the path down to what it matched", () => {
   const root = issue();
-  const view = presetView(root, "conversation", "b-t2");
-  expect(view.filtering).toBe(true);
+  const view = presetView(root, "graph", "b-t2");
   expect([...view.context]).toEqual(["comment-1", "CORE-1"]);
-  expect(drawn(root, "conversation", "b-t2")).toEqual(["CORE-1", "comment-1", "plan#b-t2"]);
+  expect(drawn(root, "graph", "b-t2")).toEqual(["CORE-1", "comment-1", "plan#b-t2"]);
+  expect(drawn(root, "conversation", "b-t2")).toEqual(["CORE-1"]);
 });
 
 test("Spec draws the requirements as rows, the issue as none, and the ask above one as its line", () => {
@@ -198,13 +247,52 @@ test("Decisions draws the asks and decisions, a decision under its ask and anoth
 test("a node the address names is drawn whatever the filter", () => {
   const root = issue();
   const view = presetView(root, "spec", "", new Set(["comment-1"]));
-  expect(idsOf(treeRows(view.root, everythingOpened(view.root))).slice(1)).toEqual([
-    "spec#b-r1",
-    "spec#b-r2",
-    "comment-1",
-  ]);
+  expect(idsOf(treeRows(view.root)).slice(1)).toEqual(["spec#b-r1", "spec#b-r2", "comment-1"]);
   // It is drawn and not counted: the count is the filter's own kind.
   expect(view.matches).toBe(2);
+});
+
+// R9: an address that names a node Conversation draws no row of opens the filter of its kind at
+// it, and a row's kind tag opens a criterion or a statement in Spec, a check in Verification and
+// a decision in Decisions.
+test("a node Conversation draws no row of opens its filter, and a kind tag its own view", () => {
+  const result = node("result-1", "result");
+  expect(filterOfUndrawn(node("plan#b-t1", "plan_task"))).toBe("plan");
+  expect(filterOfUndrawn(result)).toBe("verification");
+  // A plan task Conversation draws as the ancestor of a row is a row of it.
+  expect(filterOfUndrawn(node("plan#b-t1", "plan_task", [node("c1", "comment")]))).toBeUndefined();
+  expect(filterOfUndrawn(node("comment-1", "comment"))).toBeUndefined();
+  expect(tagFilter(node("spec#b-k1", "criterion"))).toBe("spec");
+  expect(tagFilter(statement("spec#b-r1"))).toBe("spec");
+  expect(tagFilter(node("plan#b-r1", "requirement"))).toBeUndefined();
+  expect(tagFilter(node("v#b-c1", "check", [], { state: "passed" }))).toBe("verification");
+  expect(tagFilter(node("plan#b-c1", "check"))).toBeUndefined();
+  expect(tagFilter(node("d1", "decision"))).toBe("decisions");
+  expect(tagFilter(node("ask-1", "ask"))).toBeUndefined();
+  expect(tagFilter(result)).toBeUndefined();
+});
+
+// R9: a block Conversation's read holds no node of opens the filter whose held view answer holds
+// it as one of that filter's own kinds, in the document its address names where it names one;
+// where no held view holds it, no filter does.
+test("a block Conversation's read does not hold opens the filter whose view answer holds it", () => {
+  const placed = (slug: string) => ({ artifact_id: `artifact-${slug}`, position: 0, slug });
+  const views = {
+    plan: treeAnswer([
+      treeNode("r1", "requirement", null, { document: placed("spec-md"), in: "spec-md" }),
+      treeNode("t1", "plan_task", null, { document: placed("plan-md"), in: "plan-md" }),
+    ]),
+  };
+  expect(filterHolding(views, { id: "t1" })).toBe("plan");
+  expect(filterHolding(views, { document: "plan-md", id: "t1" })).toBe("plan");
+  expect(filterHolding(views, { document: "spec-md", id: "t1" })).toBeUndefined();
+  // A node the view holds as context of its own kinds is no node of that filter's.
+  expect(filterHolding(views, { id: "r1" })).toBeUndefined();
+  expect(filterHolding(undefined, { id: "t1" })).toBeUndefined();
+  // Graph draws every node of its read, so a read the page holds answers a block of any kind.
+  expect(answerHolds(views.plan, { id: "r1" })).toBe(true);
+  expect(answerHolds(views.plan, { document: "plan-md", id: "r1" })).toBe(false);
+  expect(answerHolds(undefined, { id: "r1" })).toBe(false);
 });
 
 test("each filter's signal is its count, with what of it asks something of the reader", () => {
@@ -216,6 +304,35 @@ test("each filter's signal is its count, with what of it asks something of the r
   });
   // A filter by words narrows every count with it.
   expect(filterSignals(issue(), "b-t2").plan.count).toBe(1);
+});
+
+// R15: a count the page draws over the outline or a view counts the nodes loaded, and carries "+"
+// while the read it is read from names a next page, since the page's `remaining` is not split by
+// filter: a count read off the tree by the outline read's mark on the issue, and a held view's
+// count, and the root the view draws, by that view's own read, whatever the outline read says.
+// Once no page is left, no count carries it.
+test("a count carries + while a cursor remains", () => {
+  expect(filterSignals({ ...issue(), moreToRead: true }, "")).toEqual({
+    decisions: { count: 4, flag: { count: 1, word: "to_review" }, more: true },
+    plan: { count: 2, more: true, unit: "steps" },
+    spec: { count: 2, more: true },
+    verification: { count: 1, flag: { count: 1, word: "failing" }, more: true },
+  });
+  const paged = treeAnswer([viewNode("t1", "plan_task", "query")], [], {
+    converted: true,
+    cursor: "page-2",
+    view: "plan",
+  });
+  const whole: TreeAnswer = { ...paged, cursor: null };
+  const outlineDone = { ...issue(), views: { plan: paged } };
+  expect(filterSignals(outlineDone, "").plan).toEqual({ count: 1, more: true, unit: "steps" });
+  expect(filterSignals(outlineDone, "").spec).toEqual({ count: 2 });
+  expect(presetView(outlineDone, "plan", "").root.moreToRead).toBe(true);
+  const viewDone = { ...issue(), moreToRead: true as const, views: { plan: whole } };
+  expect(filterSignals(viewDone, "").plan).toEqual({ count: 1, unit: "steps" });
+  expect(presetView(viewDone, "plan", "").root.moreToRead).toBeUndefined();
+  expect(presetView(viewDone, "conversation", "").root.moreToRead).toBe(true);
+  expect(filterSignals(issue(), "").spec).toEqual({ count: 2 });
 });
 
 // R35: "to review" counts the review list alone. A decision that waits and is tied to no
@@ -268,6 +385,37 @@ test("a parent line carries the parent's own address", () => {
       type: "requirement",
     },
     { id: "comment-1", line: "comment-1", type: "comment" },
+  ]);
+});
+
+// R2 and R3 of dispatch://INFRA-1523: a parent the filter draws as no row is a comment or a
+// message its author may have corrected, so its line carries the parent's marks - when and by
+// whom it was deleted, when it was edited - and its child's row draws them with the line. A
+// parent nobody corrected carries none.
+test("a parent line carries a deleted or an edited parent's marks", () => {
+  const by = { id: "alice", kind: "user" };
+  const root = node("CORE-1", "issue", [
+    node("comment-1", "comment", [node("plan#b-t1", "plan_task")], {
+      deletedAt: "2026-11-05T12:00:00Z",
+      deletedBy: by,
+      text: "Deleted by alice · 2026-11-05T12:00:00Z",
+    }),
+    node("message-1", "message", [node("plan#b-t2", "plan_task")], {
+      editedAt: "2026-11-05T13:00:00Z",
+    }),
+    node("comment-2", "comment", [node("plan#b-t3", "plan_task")]),
+  ]);
+  const lines = presetView(root, "plan", "").root.children.map((task) => task.parentLine);
+  expect(lines).toEqual([
+    {
+      deletedAt: "2026-11-05T12:00:00Z",
+      deletedBy: by,
+      id: "comment-1",
+      line: "Deleted by alice · 2026-11-05T12:00:00Z",
+      type: "comment",
+    },
+    { editedAt: "2026-11-05T13:00:00Z", id: "message-1", line: "message-1", type: "message" },
+    { id: "comment-2", line: "comment-2", type: "comment" },
   ]);
 });
 
@@ -575,7 +723,331 @@ test("a view's row carries the line of the parent of the kind its view names whe
   ).toEqual([["plan-md#b-t1", "spec#b-a1"]]);
 });
 
-// Another part draws the Decisions filter's rows itself and reads its kinds from here.
-test("the Decisions filter's row kinds are the asks and the decisions", () => {
-  expect(rowKindsOf("decisions")).toEqual(["ask", "decision"]);
+// The page holds the tree read and a filter's view read as each answers, in either order, so a
+// filter is drawn first from either, and what it draws for the node an address names must not
+// turn on which answered first. A node the address names that is no row of the filter stands
+// under the nearest row of the filter above it in the tree, and at the top only where no row
+// stands above it, whether the filter is drawn from its view read or off the tree: under
+// Verification a plan task the tree places under a statement stands under that statement, where
+// the view draws the statement's checks alone, never at the top as a row of its own.
+test("a node the address names stands where the tree places it, whether its filter's view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r1")],
+    { view: "verification" }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        statement(
+          "spec#b-r1",
+          [
+            node("verification#b-c1", "check", [], {
+              readId: "CORE-1/verification#c1",
+              state: "failed",
+            }),
+            node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+          ],
+          { readId: "CORE-1/spec#r1" }
+        ),
+        node("comment-1", "comment", [
+          node("plan#b-t2", "plan_task", [], { readId: "CORE-1/plan#t2" }),
+        ]),
+      ],
+      views === undefined ? {} : { views }
+    );
+  // Each top row by its id, the ids of the rows under it, and the id of its parent's line.
+  const placed = (root: TreeNode, id: string) =>
+    presetView(root, "verification", "", new Set([id])).root.children.map((row) => [
+      row.id,
+      row.children.map((child) => child.id),
+      row.parentLine?.id,
+    ]);
+
+  expect(placed(tree({ verification }), "plan#b-t1")).toEqual([
+    ["spec#b-r1", ["verification#b-c1", "plan#b-t1"], undefined],
+  ]);
+  expect(placed(tree({ verification }), "plan#b-t2")).toEqual([
+    ["spec#b-r1", ["verification#b-c1"], undefined],
+    ["plan#b-t2", [], "comment-1"],
+  ]);
+  for (const id of ["plan#b-t1", "plan#b-t2"]) {
+    expect(placed(tree({ verification }), id)).toEqual(placed(tree(undefined), id));
+  }
+});
+
+// A node the address names that no row of the view stands above is a row of the view's top, at
+// its place in the tree's order, whichever read lands first: the view must not move it after
+// the view's own rows once its read lands. Here the tree walks an ask holding the named comment
+// before the statement r1.
+test("a node the address names with no row above it keeps the tree's order among the view's top rows, whether its filter's view read is held or not", () => {
+  const spec: TreeAnswer = treeAnswer(
+    [viewNode("r1", "requirement", "query", { in: "spec" })],
+    [],
+    {
+      view: "spec",
+    }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        node("ask-1", "ask", [node("comment-x", "comment", [], { readId: "comment-x" })], {
+          readId: "ask-1",
+        }),
+        statement("spec#b-r1", [], { readId: "CORE-1/spec#r1" }),
+      ],
+      views === undefined ? {} : { views }
+    );
+  const top = (root: TreeNode) =>
+    presetView(root, "spec", "", new Set(["comment-x"])).root.children.map((row) => [
+      row.id,
+      row.parentLine?.id,
+    ]);
+
+  expect(top(tree(undefined))).toEqual([
+    ["comment-x", "ask-1"],
+    ["spec#b-r1", undefined],
+  ]);
+  expect(top(tree({ spec })), "the named comment's place once the Spec view read is held").toEqual(
+    top(tree(undefined))
+  );
+});
+
+/** Each top row `preset` draws with the address naming `id`, nested: its id, the id of its
+ *  parent's line, and the rows under it. */
+type Shape = [string, string | undefined, Shape[]];
+function shapeOf(root: TreeNode, preset: Preset, id: string): Shape[] {
+  const shape = (row: TreeNode): Shape => [row.id, row.parentLine?.id, row.children.map(shape)];
+  return presetView(root, preset, "", new Set([id])).root.children.map(shape);
+}
+
+// Verification draws a node at every placement the tree has, so a node the address names that
+// the tree places under two statements, the second a transclusion, stands under both whichever
+// read lands first: the view read must not drop its second placement.
+test("under Verification a node the address names stands under each statement the tree places it under, whether its view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("r2", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r1"), treeTuple("serves", "c1", "r2")],
+    { view: "verification" }
+  );
+  const check = (transcluded: boolean) =>
+    node("verification#b-c1", "check", [], {
+      readId: "CORE-1/verification#c1",
+      state: "failed",
+      transcluded,
+    });
+  const task = (transcluded: boolean) =>
+    node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1", transcluded });
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        statement("spec#b-r1", [check(false), task(false)], { readId: "CORE-1/spec#r1" }),
+        statement("spec#b-r2", [check(true), task(true)], { readId: "CORE-1/spec#r2" }),
+      ],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "verification", "plan#b-t1")).toEqual([
+    [
+      "spec#b-r1",
+      undefined,
+      [
+        ["verification#b-c1", undefined, []],
+        ["plan#b-t1", undefined, []],
+      ],
+    ],
+    [
+      "spec#b-r2",
+      undefined,
+      [
+        ["verification#b-c1", undefined, []],
+        ["plan#b-t1", undefined, []],
+      ],
+    ],
+  ]);
+  expect(
+    shapeOf(tree({ verification }), "verification", "plan#b-t1"),
+    "the named task's places once the Verification view read is held"
+  ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
+});
+
+// A node the address names stands at each place the tree has it, whichever read lands first.
+// Here the tree places the plan task t1 first under a comment, with no row above it, and again
+// under the statement r2: Verification draws it at the top with the comment as its line, and
+// under r2 after r2's check.
+test("a node the address names stands at each place the tree has it, the first with no row above it, whether its filter's view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r2", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r2")],
+    { view: "verification" }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        node("comment-1", "comment", [
+          node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+        ]),
+        statement(
+          "spec#b-r2",
+          [
+            node("verification#b-c1", "check", [], {
+              readId: "CORE-1/verification#c1",
+              state: "failed",
+            }),
+            node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1", transcluded: true }),
+          ],
+          { readId: "CORE-1/spec#r2" }
+        ),
+      ],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "verification", "plan#b-t1")).toEqual([
+    ["plan#b-t1", "comment-1", []],
+    [
+      "spec#b-r2",
+      undefined,
+      [
+        ["verification#b-c1", undefined, []],
+        ["plan#b-t1", undefined, []],
+      ],
+    ],
+  ]);
+  expect(
+    shapeOf(tree({ verification }), "verification", "plan#b-t1"),
+    "the named task's places once the Verification view read is held"
+  ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
+});
+
+// Under a row, a node the address names keeps the tree's order among that row's rows, whichever
+// read lands first. Here the tree walks the plan task t1 before the check c1 under the statement
+// r1, so Verification draws t1 before c1, not after the rows the view read places there.
+test("a node the address names under a row keeps the tree's order among that row's rows, whether its filter's view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r1")],
+    { view: "verification" }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        statement(
+          "spec#b-r1",
+          [
+            node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+            node("verification#b-c1", "check", [], {
+              readId: "CORE-1/verification#c1",
+              state: "failed",
+            }),
+          ],
+          { readId: "CORE-1/spec#r1" }
+        ),
+      ],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "verification", "plan#b-t1")).toEqual([
+    [
+      "spec#b-r1",
+      undefined,
+      [
+        ["plan#b-t1", undefined, []],
+        ["verification#b-c1", undefined, []],
+      ],
+    ],
+  ]);
+  expect(
+    shapeOf(tree({ verification }), "verification", "plan#b-t1"),
+    "the named task's place once the Verification view read is held"
+  ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
+});
+
+// Under Spec and Plan the tree's lift stops at a transclusion, and a row the view read draws
+// stands at its first placement in the tree's order, which can be one. A node the address names
+// under that row stands under it all the same, whichever read lands first. Here the tree
+// transcludes the plan task t1 under the statement r1 before t1's own place under the issue, with
+// the named comment under each placement.
+test("a node the address names under a row whose first placement is a transclusion stands under that row, whether its filter's view read is held or not", () => {
+  const plan: TreeAnswer = treeAnswer([viewNode("t1", "plan_task", "query", { in: "plan" })], [], {
+    view: "plan",
+  });
+  const task = (transcluded: boolean) =>
+    node(
+      "plan#b-t1",
+      "plan_task",
+      [node("comment-x", "comment", [], { readId: "comment-x", transcluded })],
+      { readId: "CORE-1/plan#t1", transcluded }
+    );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [statement("spec#b-r1", [task(true)], { readId: "CORE-1/spec#r1" }), task(false)],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "plan", "comment-x")).toEqual([
+    ["plan#b-t1", undefined, [["comment-x", undefined, []]]],
+  ]);
+  expect(
+    shapeOf(tree({ plan }), "plan", "comment-x"),
+    "the named comment's place once the Plan view read is held"
+  ).toEqual(shapeOf(tree(undefined), "plan", "comment-x"));
+});
+
+// The architect's ruling of 2026-11-20 07:52Z on dispatch://INFRA-1523: a deleted post's node holds
+// its deleted line as its text, as the model writes it (`tree-drafts.ts`'s `deletedPostLine`): a
+// session named by its short id and the time as stored, which its row draws as neither, since the
+// row draws the page's own deleted line (`DeletedLine`). A deleted post has no words of its own
+// left, so the words filter matches it by none: not by the session's id, the raw time or the
+// line's words. A post nobody deleted still matches by its words.
+test("the words filter matches a deleted post by no words", () => {
+  const session = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" } as const;
+  const deletion = { at: "2026-11-05T12:00:00Z", by: session };
+  const root = node("CORE-1", "issue", [
+    node("comment-1", "comment", [], {
+      deletedAt: deletion.at,
+      deletedBy: session,
+      text: `${deletedLineText(deletion, { label: actorLabelText })} · ${deletion.at}`,
+    }),
+    node("comment-2", "comment", [], { text: "Ship it on Friday." }),
+  ]);
+  const queries = [actorLabelText(session), "0f8e", "2026-11-05T12", "deleted by", "friday"];
+  expect(
+    Object.fromEntries(
+      queries.map((query) => [
+        query,
+        drawn(root, "conversation", query).filter((id) => id.startsWith("comment")),
+      ])
+    )
+  ).toEqual({
+    [actorLabelText(session)]: [],
+    "0f8e": [],
+    "2026-11-05T12": [],
+    "deleted by": [],
+    friday: ["comment-2"],
+  });
 });

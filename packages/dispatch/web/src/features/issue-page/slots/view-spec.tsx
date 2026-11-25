@@ -12,6 +12,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
+import { NextViewPage } from "../tree-read/view-read";
 import { useIssueTree } from "../useIssueTree";
 
 /**
@@ -27,9 +28,9 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
   // The body watches the reads it draws from itself, under the keys the tree fills, so it waits
-  // on those alone (`SpecFilterBody`). The names reads are the tree's, and the view draws from
-  // them too - the three sentences, and the name of every reference a plain line cites - so
-  // their line's state while they stand failed (`namesFailure`) is passed on for the body to draw.
+  // on those alone (`SpecFilterBody`). The names read is the tree's, and the view draws from it
+  // too - the name of every reference the three sentences and a plain line cite - so its line's
+  // state while it stands failed (`namesFailure`) is passed on for the body to draw.
   const { namesFailure, root } = useIssueTree(issue);
   // Who is reading, so a decision of theirs reads as their own words (R5).
   const viewer = useQuery(whoAmIQuery()).data?.login;
@@ -61,6 +62,8 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
           root={root}
           view={view.root}
         />
+        {/* While the view read answers a next page, the control that reads it (R15). */}
+        <NextViewPage filter="spec" issueKey={issue.key} />
       </div>
     </NoTooltips>
   );

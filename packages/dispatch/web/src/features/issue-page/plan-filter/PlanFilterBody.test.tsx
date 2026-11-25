@@ -38,8 +38,8 @@ import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId } from "../tree-drafts";
 import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
-import { issueTreeQuery, type TreeAnswerNode } from "../tree-read/tree-read";
-import { issueAsksQuery } from "../useIssueTree";
+import { outlineQuery, type TreeAnswerNode } from "../tree-read/tree-read";
+import { issueAskThreadsQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
@@ -62,8 +62,8 @@ const KEY = "CORE-1";
 const PLAN = "plan-md";
 const SPEC = "spec-md";
 
-/** happy-dom answers every media query against its own window; the tree reads one to tell the
- *  width it is read at (`IssueTree.tsx`'s `ZOOMED_TREE_QUERY`), so a test sets it. */
+/** happy-dom answers every media query against its own window; the page reads them to tell the
+ *  width it is read at, so a test sets it. */
 function setViewport(width: number): void {
   window.matchMedia = ((query: string) => {
     const max = /max-width:\s*([\d.]+)px/.exec(query)?.[1];
@@ -262,7 +262,6 @@ function renderBody(
                   artifacts={artifacts}
                   context={new Set()}
                   emptyLine={EMPTY_STATE_LINES.plan}
-                  filtering
                   focusReveal
                   holdsEscape={false}
                   isClosed={false}
@@ -719,11 +718,11 @@ function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClie
     document: null,
     open_questions: [],
   });
-  client.setQueryData(issueAsksQuery(KEY).queryKey, []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   if (specHeld) {
     client.setQueryData(
-      issueTreeQuery(KEY).queryKey,
+      outlineQuery(KEY, "conversation").queryKey,
       treeAnswer([taskBlock("t1", 0), taskBlock("t2", 1)])
     );
   }
@@ -905,7 +904,7 @@ test("a refused read's line stays drawn while its Retry waits for the network", 
     });
     onlineManager.setOnline(false);
     await userEvent.click(retryOf(view, "statements"));
-    const state = () => client.getQueryState(issueTreeQuery(KEY).queryKey);
+    const state = () => client.getQueryState(outlineQuery(KEY, "conversation").queryKey);
     await waitFor(() =>
       expect(state()?.fetchStatus, "Retry offline does not hold the spec's blocks read").toBe(
         "paused"

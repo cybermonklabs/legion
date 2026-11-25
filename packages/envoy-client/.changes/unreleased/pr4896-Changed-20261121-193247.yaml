@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `dispatch whoami` under a credential that acts for no person says an issue created without an
+  assignee takes its parent's assignee only when the parent is in the same project, else the
+  project's default assignee, as Dispatch now decides.
+time: 2026-11-21T19:32:47Z
+custom:
+    Issue: pr4896

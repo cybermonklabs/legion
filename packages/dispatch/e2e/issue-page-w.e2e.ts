@@ -1,3 +1,6 @@
+/** lenses, risks and constraints are written through the server's routes and drawn from its
+ *  tree read */
+
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { LineName } from "../web/src/features/issue-page/lenses/LensLines";
 import {

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // rebuildUpdateItems is the number of paragraphs each update of oversizedHistory adds; eleven of
@@ -75,6 +76,10 @@ func rebuildDocument(t *testing.T, service *Service, artifactID string, markdown
 // Until the rebuild's transaction ends its room refuses loads and a second rebuild, which would
 // read the old history the transaction has not yet replaced; once it commits, the room opens.
 func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
+	// Not parallel: under the race detector this test grows the binary by about 1.3 GB
+	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
+	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB. It also
+	// lets the cold read's fold run past coldReadTimeout (letTheColdFoldFinish).
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	persistence := NewPgVersioned(database)
@@ -85,11 +90,12 @@ func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
 	}
 
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown rebuilt service: %v", err)
 		}
 	})
+	letTheColdFoldFinish(t)
 	// The read meets the history that does not decode itself, the state a rebuild repairs.
 	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) {
 		t.Fatalf("read over-cap history: %v, want ErrDocumentUnloadable", err)
@@ -158,6 +164,7 @@ func refusedDeleteRangeUpdate(client, clock, length uint64) []byte {
 // ygo will not make must still name the document unloadable, which tells the caller the document
 // is the one a person decides to rebuild, rather than a server fault it should retry past.
 func TestAStoredHistoryYgoRefusesFromItsClocksCannotLoad(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
@@ -187,7 +194,7 @@ func TestAStoredHistoryYgoRefusesFromItsClocksCannotLoad(t *testing.T) {
 	}
 
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown service: %v", err)
 		}
@@ -203,6 +210,7 @@ func TestAStoredHistoryYgoRefusesFromItsClocksCannotLoad(t *testing.T) {
 // document. A read that offers no rebuild for this cause would be the other way to keep the answer
 // true, and the test accepts it; what it refuses is an offered rebuild that then fails.
 func TestTheRebuildAStoredHistoryYgoRefusesIsOfferedRestoresTheDocument(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
@@ -227,7 +235,7 @@ func TestTheRebuildAStoredHistoryYgoRefusesIsOfferedRestoresTheDocument(t *testi
 	}
 
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown service: %v", err)
 		}
@@ -267,7 +275,7 @@ func TestRebuildingADocumentOfAnIssueRoomReplacesTheRoomsHistory(t *testing.T) {
 		t.Fatalf("store the update an earlier release took: %v", err)
 	}
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown service: %v", err)
 		}
@@ -303,6 +311,7 @@ func TestRebuildingADocumentOfAnIssueRoomReplacesTheRoomsHistory(t *testing.T) {
 // refuses rebuilding it without changing durable history. The refusal names what a rebuild would
 // discard, names no other repair, and tells the caller to stop and ask a person.
 func TestRebuildDocumentRefusesALiveRoom(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -360,6 +369,7 @@ func (s *rebuildCaptureStore) RebuildTx(ctx context.Context, tx pgx.Tx, room str
 }
 
 func TestRebuildDocumentWritesThroughItsInjectedPersistence(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	persist := &rebuildCaptureStore{
@@ -367,7 +377,7 @@ func TestRebuildDocumentWritesThroughItsInjectedPersistence(t *testing.T) {
 		invalid:        true,
 	}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	replacement := "replacement\n"
 	if _, _, err := rebuildDocument(t, service, artifactID, &replacement); err != nil {
 		t.Fatalf("rebuild document: %v", err)
@@ -382,6 +392,7 @@ func TestRebuildDocumentWritesThroughItsInjectedPersistence(t *testing.T) {
 // paragraphs, past the 65,536 elements one write may make - stored before that bound, or grown past
 // it by browser edits - rebuilds whole.
 func TestARebuildFromTheLatestVersionRestoresItWhateverItWeighs(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	heavy := strings.Repeat("a\n\n", 16_384) + "a\n"
@@ -392,7 +403,7 @@ func TestARebuildFromTheLatestVersionRestoresItWhateverItWeighs(t *testing.T) {
 		t.Fatalf("store a version past the element limit: %v", err)
 	}
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	if _, _, err := rebuildDocument(t, service, artifactID, nil); err != nil {
 		t.Fatalf("rebuild from a version past the element limit: %v", err)
 	}
@@ -410,7 +421,7 @@ func storeLatestVersion(t *testing.T, database *store.Store, artifactID, markdow
 		t.Fatalf("store the latest version: %v", err)
 	}
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
 
@@ -419,6 +430,7 @@ func storeLatestVersion(t *testing.T, database *store.Store, artifactID, markdow
 // content (ErrDocNewerContent), as every read of the document is, and not invalid markdown of the
 // caller's. Nothing is replaced.
 func TestARebuildFromAVersionHoldingNewerContentIsRefusedAsNewerContent(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	newer := "before\n\n:::" + UnknownElementForTest + "{#newer-1}\nWritten by a newer build.\n:::\n"
@@ -440,7 +452,7 @@ func TestARebuildFromAVersionHoldingAnElementThisBuildCannotCreateRestoresIt(t *
 	if err != nil {
 		t.Fatalf("stage the future block as not creatable: %v", err)
 	}
-	t.Cleanup(restore)
+	testcleanup.Add(t, restore)
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	staged := "before\n\n:::future{#future-1}\nBody.\n:::\n"
@@ -458,6 +470,10 @@ func TestARebuildFromAVersionHoldingAnElementThisBuildCannotCreateRestoresIt(t *
 // the route answers it 413 CAP_EXCEEDED rather than 500. 160,000 empty list items make about 1.12
 // million items, from 320 KB of markdown, and replace no history.
 func TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge(t *testing.T) {
+	// Not parallel: alone under the race detector it holds 509 to 623 MB of live heap after a
+	// collection, and its heap reaches 0.95 to 1.19 GB (build-cluster runs legion-race-docssoak-1
+	// and -3); with the detector's shadow of it that is about three times as much, so beside the
+	// package's other tests it would take the binary toward the step's 8 GB RACE_MEM_LIMIT_KB.
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	items := strings.Repeat("-\n", 160_000)
@@ -478,7 +494,7 @@ func TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge(t *testing.T) {
 	before := history(t)
 	persist := &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	_, _, err := rebuildDocument(t, service, artifactID, nil)
 	if !errors.Is(err, ErrDocumentTooLarge) || !strings.HasPrefix(err.Error(), "document too large to store: ") || !strings.Contains(err.Error(), fmt.Sprintf("exceed the %d", maxUpdateItems)) {
 		t.Fatalf("rebuild from a version past ygo's item cap: %v, want ErrDocumentTooLarge naming the cap, unwrapped", err)
@@ -493,11 +509,12 @@ func TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge(t *testing.T) {
 // headings of exactly 1 MiB, which render as 1,064,959 bytes, are refused and replace no history;
 // the same headings two bytes shorter rebuild the document.
 func TestARebuildFromSuppliedMarkdownIsWeighedAsANewDocument(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	persist := &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	headings := func(width int) string {
 		return strings.Repeat("# "+strings.Repeat("a", width-3)+"\n", 16_384)
 	}
@@ -527,10 +544,11 @@ func TestARebuildFromSuppliedMarkdownIsWeighedAsANewDocument(t *testing.T) {
 // question. A replacement that leaves the ask as it was stores, as every ask rule here is held to
 // the asks a write makes or changes (refuseChangedAsks).
 func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown: %v", err)
 		}
@@ -561,7 +579,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	// The rebuild path runs for a document that does not load, which is the maintenance case:
 	// rebuildCaptureStore{invalid: true} is how rebuild_test stands one up.
 	rebuilding := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := rebuilding.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown rebuilding service: %v", err)
 		}
@@ -577,7 +595,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	var invalid *ErrInvalidAskBlock
 	third := createDocument(t, database, "")
 	fresh := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := fresh.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown fresh service: %v", err)
 		}
@@ -628,6 +646,7 @@ func corruptStoredHistory(t *testing.T, database *store.Store, artifactID string
 // in-process refusal says: the saved version a rebuild would discard every edit after, and that
 // the caller stops and asks a person, with no other repair, such as a replacement from markdown.
 func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -663,6 +682,7 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 // rebuild discards every edit after and tells the caller to stop and ask a person, rather than
 // to rebuild again.
 func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -690,9 +710,7 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 			})
 		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, roomWait(t)); waiting < 2 {
-		t.Fatalf("%d of the two rebuilds reached the issue's owner lock", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(ctx); err != nil {
 		t.Fatalf("release the issue's owner lock: %v", err)
 	}

@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestAnIssueMovedWhileBootListsIsStillAdmitted reads the captured event through ../intake/testdata
+
 import (
 	"bufio"
 	"bytes"
@@ -27,7 +29,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -51,6 +52,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -59,19 +61,36 @@ import (
 
 const testOperatorToken = "operator-bearer-for-daemon-tests"
 
-// testDSN is the one database this run's tests write in, made by TestMain on the devbox and CI
-// Postgres LEGION_TEST_PG_DSN names (testdb.RunDatabaseMain). The daemon has no in-memory mode:
-// what it does on a boot is what its store recorded, and a boot migrates Legion's schema into
-// whatever database it is given, so the run owns one rather than sharing the server's. A test
-// that sets LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it set.
+// testDSN is the database a test's daemons write in: a clone of the package's migrated template
+// (testpg.Clone), one per test, so a test's rows, its advisory locks (the one lock every fact
+// applies under among them) and its daemons' sweeps are its own, and tests run beside each other.
+// Two calls with one t answer the one clone: a test that boots two daemons, of one project or of
+// two, boots them on one database. A pool opened on it, the daemon's under test among them, holds
+// testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it keeps
+// (testdb.PoolBounded). The daemon has no in-memory mode: what it does on a boot is what its store
+// recorded, and a boot migrates Legion's schema into whatever database it is given, which on a
+// clone of the migrated template finds nothing left to do. A test that sets LEGION_TEST_PG_DSN
+// itself, to a server its own test needs, gets the value it set.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip(testdb.SkipMessage)
 	}
-	return testdb.RunDatabaseFor(dsn)
+	if dsn != processDSN {
+		return dsn
+	}
+	if clone, ok := testClones.Load(t); ok {
+		return clone.(string)
+	}
+	clone := testpg.Clone(t, "legion_daemon_run")
+	testClones.Store(t, clone)
+	t.Cleanup(func() { testClones.Delete(t) })
+	return clone
 }
+
+// testClones is each running test's database (testDSN), by its *testing.T.
+var testClones sync.Map
 
 // shortTempDir is a state directory short enough for the worker stream's unix socket: a socket
 // path is bounded at 108 bytes, and t.TempDir() spells the whole test name. The budget asked of
@@ -83,7 +102,8 @@ func shortTempDir(t *testing.T) string {
 
 // testConfig is a daemon of its own: its project name is unique, so the boots and claims it
 // records are its own, its port is one nothing else holds, and its state directory is its alone.
-// Every limit and timeout is the shipped default.
+// Every limit and timeout is the shipped default, `review_round_cap` among them: a pane's `legion`
+// tool reads GET /legion/v1/state through the daemon API contract, which takes a positive cap alone.
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	stateDir := shortTempDir(t)
@@ -106,6 +126,7 @@ func testConfig(t *testing.T) config.Config {
 		StateDir:                                stateDir,
 		Runtime:                                 config.Runtime{Name: "tmux"},
 		AdmissionCap:                            4,
+		ReviewRoundCap:                          config.DefaultReviewRoundCap,
 		DaemonURL:                               "http://127.0.0.1:" + strconv.Itoa(port),
 		WorkerStreamPort:                        0,
 		WorkerBootTimeout:                       120 * time.Second,
@@ -159,6 +180,7 @@ func randomSuffix(t *testing.T) string {
 // port is never held — nothing is handed out for it — since the listener resolves port 0 itself
 // at bind time; the daemon still ends up serving a real, dialable address.
 func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
@@ -184,30 +206,39 @@ func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
 	}
 }
 
-// heldPorts are the listeners holdPortOn holds, by address, until a daemon takes one (heldListen).
+// heldPorts are the listeners holdPortAt holds, by address, until a daemon takes one (heldListen).
 var heldPorts = struct {
 	sync.Mutex
 	byAddress map[string]net.Listener
 }{byAddress: map[string]net.Listener{}}
 
-// holdPortOn listens on a free port of host for t and returns it. The listener is held until a
-// daemon of t's takes it through heldListen, or t ends. It is held under net.JoinHostPort(host,
-// port), the address the daemon builds from bind, not the listener's Addr(): Go reports a 0.0.0.0
-// listener as [::]:<port>, the dual-stack wildcard.
+// holdPortOn listens on a free port of host for t and returns it (holdPortAt).
 func holdPortOn(t *testing.T, host string) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	return holdPortAt(t, host, 0)
+}
+
+// holdPortAt listens on port of host for t, a free one where port is 0, and returns the port it
+// holds. The listener is held until a daemon of t's takes it through heldListen, or t ends, whose
+// cleanup drops it only while it is still the one held for its address. It is held under
+// net.JoinHostPort(host, port), the address the daemon builds from bind, not the listener's
+// Addr(): Go reports a 0.0.0.0 listener as [::]:<port>, the dual-stack wildcard.
+func holdPortAt(t *testing.T, host string, port int) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
-		t.Fatalf("hold a free port on %s: %v", host, err)
+		t.Fatalf("hold the port %d (0 for a free one) on %s: %v", port, host, err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
+	port = listener.Addr().(*net.TCPAddr).Port
 	address := net.JoinHostPort(host, strconv.Itoa(port))
 	heldPorts.Lock()
 	heldPorts.byAddress[address] = listener
 	heldPorts.Unlock()
 	t.Cleanup(func() {
 		heldPorts.Lock()
-		delete(heldPorts.byAddress, address)
+		if heldPorts.byAddress[address] == listener {
+			delete(heldPorts.byAddress, address)
+		}
 		heldPorts.Unlock()
 		_ = listener.Close()
 	})
@@ -242,6 +273,41 @@ func heldSocket(t *testing.T) (*os.File, int) {
 	}
 	t.Cleanup(func() { _ = file.Close() })
 	return file, port
+}
+
+// takeHeldSocket takes the listener holdPortAt holds for address (heldListen) and returns a
+// descriptor of its own for that listening socket, closed when t ends: the descriptor is taken
+// before the listener closes, so the port is held throughout, and a test can hand it to one daemon
+// after another (heldSocketListen).
+func takeHeldSocket(t *testing.T, address string) *os.File {
+	t.Helper()
+	listener, err := heldListen("tcp", address)
+	if err != nil {
+		t.Fatalf("take the held port %s: %v", address, err)
+	}
+	file, err := listener.(*net.TCPListener).File()
+	_ = listener.Close()
+	if err != nil {
+		t.Fatalf("take the descriptor of %s: %v", address, err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+// heldSocketListen is the listen of a daemon on the loopback socket on port that the test holds
+// (heldSocket, takeHeldSocket) for longer than that daemon lives: each call takes a listener of a
+// descriptor of its own (net.FileListener), which the daemon closes when it stops, while the test's
+// descriptor keeps the socket listening, so a daemon started again on the port finds it never let
+// go. A call for any other address is refused rather than bound, as heldListen refuses an address
+// nothing holds.
+func heldSocketListen(socket *os.File, port int) func(network, address string) (net.Listener, error) {
+	held := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	return func(network, address string) (net.Listener, error) {
+		if network != "tcp" || address != held {
+			return nil, &net.AddrError{Err: "the test holds no socket for " + network + " there, only for tcp " + held, Addr: address}
+		}
+		return net.FileListener(socket)
+	}
 }
 
 // rebindHeldPorts hands cfg a freshly held API port. A daemon that has stopped closed the
@@ -286,6 +352,8 @@ type stillClock struct{}
 func (stillClock) Now() time.Time { return time.Now() }
 
 func (stillClock) AfterFunc(time.Duration, func()) supervise.Cancel { return stopped{} }
+
+func (stillClock) At(time.Time, func()) supervise.Cancel { return stopped{} }
 
 func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
@@ -349,6 +417,7 @@ func boots(t *testing.T, cfg config.Config) (int, time.Time) {
 // arrives before the store opens ends the start with nothing recorded
 // (TestRunStopsAtOnceWhileItWaitsToOpenItsStore).
 func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 
 	if err := runStoppedOnceItsStoreIsOpen(cfg); err != nil {
@@ -395,6 +464,7 @@ func runStoppedOnceItsStoreIsOpen(cfg config.Config) error {
 // (c-boot-db-retry case 5). The waits between the attempts are a millisecond here; the number of
 // attempts is the production policy's.
 func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.PostgresDSN = secretDSN("127.0.0.1:1")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
@@ -442,109 +512,6 @@ func secretDSN(address string) string {
 	return (&url.URL{Scheme: "postgres", User: url.UserPassword("legion", "hunter2"), Host: address, Path: "/legion", RawQuery: "sslmode=disable"}).String()
 }
 
-// pgConnection is what pgProxy does with one connection it accepts.
-type pgConnection int
-
-const (
-	// forwardConnection relays the connection to the Postgres behind the proxy, both ways.
-	forwardConnection pgConnection = iota
-	// resetConnection ends the connection with a TCP reset (SO_LINGER 0) as soon as it is accepted.
-	resetConnection
-	// silentConnection holds the connection open and never answers it.
-	silentConnection
-)
-
-// pgProxy is dsn's Postgres reached through a TCP proxy on 127.0.0.1 that does with the n-th
-// connection it accepts what plan[n] says, and forwards every connection after the plan's last.
-// The URL it returns is dsn at the proxy's address with sslmode=disable: under pgx's default,
-// prefer, one attempt to open the store can open a TLS connection and then a plain one, and a
-// test of the attempts counts one connection to each. The proxy and every connection through it
-// close when the test ends.
-func pgProxy(t *testing.T, dsn string, plan ...pgConnection) string {
-	t.Helper()
-	upstream, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("read the address of the Postgres behind the proxy: %v", err)
-	}
-	server := net.JoinHostPort(upstream.Host, strconv.Itoa(int(upstream.Port)))
-	proxied, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("parse the URL of the Postgres behind the proxy: %v", err)
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for the Postgres proxy: %v", err)
-	}
-	var mu sync.Mutex
-	var held []net.Conn
-	closed := false
-	// hold keeps conns until the test ends, or closes them at once when it has.
-	hold := func(conns ...net.Conn) bool {
-		mu.Lock()
-		defer mu.Unlock()
-		if closed {
-			for _, conn := range conns {
-				_ = conn.Close()
-			}
-			return false
-		}
-		held = append(held, conns...)
-		return true
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-		mu.Lock()
-		defer mu.Unlock()
-		closed = true
-		for _, conn := range held {
-			_ = conn.Close()
-		}
-	})
-	go func() {
-		for n := 0; ; n++ {
-			client, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			handling := forwardConnection
-			if n < len(plan) {
-				handling = plan[n]
-			}
-			switch handling {
-			case resetConnection:
-				_ = client.(*net.TCPConn).SetLinger(0)
-				_ = client.Close()
-			case silentConnection:
-				hold(client)
-			default:
-				go func() {
-					postgres, err := net.Dial("tcp", server)
-					if err != nil {
-						_ = client.Close()
-						return
-					}
-					if !hold(client, postgres) {
-						return
-					}
-					go func() {
-						_, _ = io.Copy(postgres, client)
-						_ = postgres.Close()
-						_ = client.Close()
-					}()
-					_, _ = io.Copy(client, postgres)
-					_ = postgres.Close()
-					_ = client.Close()
-				}()
-			}
-		}
-	}()
-	proxied.Host = listener.Addr().String()
-	query := proxied.Query()
-	query.Set("sslmode", "disable")
-	proxied.RawQuery = query.Encode()
-	return proxied.String()
-}
-
 // refusingPostgres answers each connection's startup message with one FATAL ErrorResponse of code
 // and message, as a Postgres that refuses the connection answers it, and returns its address and
 // the count of the connections it has accepted.
@@ -589,8 +556,9 @@ func storeOpenWaits(t *testing.T, logs string) []map[string]any {
 // serves (c-boot-db-retry case 1). Each wait is logged with its attempt, its wait and the reset,
 // after one line that names the bound of the attempts.
 func TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
-	cfg.PostgresDSN = pgProxy(t, cfg.PostgresDSN, resetConnection, resetConnection)
+	cfg.PostgresDSN = testdb.Outage(t, cfg.PostgresDSN, testdb.Reset, testdb.Reset).DSN
 	proxy, err := url.Parse(cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -627,6 +595,7 @@ func TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets(t *testing.T) {
 // exits at its first refusal (c-boot-db-retry case 3): one connection and no wait, and the
 // refusal names the host and not the password.
 func TestRunExitsAtOnceWhenPostgresRefusesThePassword(t *testing.T) {
+	t.Parallel()
 	address, connections := refusingPostgres(t, "28P01", `password authentication failed for user "legion"`)
 	cfg := testConfig(t)
 	cfg.PostgresDSN = secretDSN(address)
@@ -666,6 +635,7 @@ func TestRunExitsAtOnceWhenPostgresRefusesThePassword(t *testing.T) {
 // cleanly (c-boot-db-retry case 6): run returns nil, names the stop in its log, and records no
 // boot.
 func TestRunStopsAtOnceWhileItWaitsToOpenItsStore(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	// The store the start would have recorded its boot in, which boots reads.
 	recorded := cfg
@@ -720,6 +690,7 @@ func TestRunStopsAtOnceWhileItWaitsToOpenItsStore(t *testing.T) {
 // row for it would inflate `daemon.boots` — the value `legion state` answers with and the stage
 // gate asserts on.
 func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
 	// The listener testConfig holds for the port is the other listener: the daemon binds the port
@@ -744,6 +715,7 @@ func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 // the same — the not-configured line under no setting, and the configured line, which names the
 // setting's repository and checker, under the deployment's.
 func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                      string
 		setting                   leakguard.Setting
@@ -776,6 +748,7 @@ func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
 // port the kernel chose and held from then on: the daemon serves its API on that socket without
 // binding an address of its own, and its boot line names the address it serves on.
 func TestRunServesTheSocketItIsHandedAndLogsItsAddress(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	file, _ := heldSocket(t)
 	// The descriptor `legion start` inherits is a bare number no *os.File owns, which Adopt closes.
@@ -816,6 +789,7 @@ func TestRunServesTheSocketItIsHandedAndLogsItsAddress(t *testing.T) {
 // The API the daemon serves answers from the store it just migrated: this is the whole of
 // `legion state` and of the plugin's read.
 func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 
@@ -850,6 +824,7 @@ func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
 // with a PEM and no Dispatch, so no workflow opens and no token is minted (openWorkflow); the body
 // shows the Apps' ids and neither the key nor the store's DSN.
 func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
+	t.Parallel()
 	const privateKey = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
 	cfg := testConfig(t)
 	cfg.ReviewRoundCap = 5
@@ -891,6 +866,7 @@ func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 // route applies it with (intake.ApplyFact): the API-only daemon this harness boots carries no
 // workflow runtime, and so no lane that would run the rows the test seeds.
 func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
 	ctx := context.Background()
@@ -909,7 +885,7 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, held); err != nil {
 			return err
 		}
@@ -987,6 +963,7 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 // its turn are the whole of what is under test; nothing else of the boot's is armed anywhere near
 // as soon, the boot timeout being two minutes out and the probe interval thirty seconds.
 func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	// Thirty wakes a minute, one at a time: the wake behind the burst's waits one two-second
 	// interval and the part of one the daemon's jitter draws (openSupervision's rand.N), which is
@@ -1064,6 +1041,7 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 // holding is then out. Without this lane a state read during a re-admission wave would show an
 // empty queue while every architect of it still waited.
 func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-6"
 	ctx := context.Background()
@@ -1080,7 +1058,7 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	// written rather than that moment less a few hundred nanoseconds.
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	due := now.Add(30 * time.Second)
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		root := runningRoot(issue, phase.Implementing)
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
@@ -1127,6 +1105,7 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 // daemon still shows the controller and still mints its grants — a restart does not cut the
 // operator's controller off, as the shipped state file did not.
 func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 	if state := d.state(); state.ControllerLocator != nil {
@@ -1195,21 +1174,39 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log.
+// startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
+// against a boot that never serves, not its speed, so it is a minute, or the test binary's own
+// deadline less a second (testwait.Bounded): a fixed 10 s failed a test about the stranded report (1 of
+// 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
+// other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
+	return startDaemonWithin(t, cfg, o, log, testwait.Bounded(t, time.Minute, time.Second))
 }
 
 // startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
 // within the given time. A test that points its workflow at no GitHub of its own gets
 // repositoriesGitHub, so every launch on a repository reads its default branch from a stand-in
 // rather than from github.com.
+//
+// The daemon's own log is kept beside log, and printed when the test fails, its stop included,
+// since a test's own logger is most often quietLogger. Once the daemon answers /healthz, the test
+// logs how long that took and when each boot stage began (bootStages), so a run's output says
+// what the boots of its tests spent their time on.
 func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.Logger, within time.Duration) *daemon {
 	t.Helper()
 	if o.githubAPI == "" {
 		o.githubAPI = repositoriesGitHub(t)
 	}
+	kept := &syncBuffer{}
+	log = slog.New(slog.NewMultiHandler(log.Handler(), slog.NewJSONHandler(kept, nil)))
+	// Registered before the stop, so it runs after it.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the daemon's log:\n%s", kept.String())
+		}
+	})
+	started := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	// One transport for every request, so the test can close its own connections before it asks
 	// the daemon to stop: net/http gives an idle connection five seconds before a Shutdown may
@@ -1245,7 +1242,26 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 	}) {
 		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
 	}
+	t.Logf("the daemon answered /healthz %s after it started; boot stages: %s", time.Since(started).Round(time.Millisecond), bootStages(kept.String(), started))
 	return d
+}
+
+// bootStages is when each boot stage (`legion workflow boot stage`) began in log, a JSON log, after
+// started: "store +0.12s, config +0.31s, ...", in the order the daemon logged them.
+func bootStages(log string, started time.Time) string {
+	var stages []string
+	for line := range strings.Lines(log) {
+		var entry struct {
+			Time  time.Time `json:"time"`
+			Msg   string    `json:"msg"`
+			Stage string    `json:"stage"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil || entry.Msg != "legion workflow boot stage" {
+			continue
+		}
+		stages = append(stages, fmt.Sprintf("%s +%.2fs", entry.Stage, entry.Time.Sub(started).Seconds()))
+	}
+	return strings.Join(stages, ", ")
 }
 
 // repositoriesGitHub is GitHub's REST API answering a read of any repository,
@@ -1632,6 +1648,7 @@ func errorLines(logged string) []string {
 // an operator to install: a project works in each repository both role Apps reach, so a missing
 // App refuses no boot (INFRA-4401 A2), and the record is left as it is.
 func TestABootOverARecordOnARepositoryAnAppIsNotInstalledOnNamesTheApp(t *testing.T) {
+	t.Parallel()
 	tokens := &workflowTokenRecorder{missing: map[string]bool{"review acme/widgets": true}}
 	_, _, entry := bootOverALiveTree(t, "acme/widgets", tokens, repositoriesGitHub(t), quietLogger())
 	if entry.Apps == nil || !entry.Apps.Implement || entry.Apps.Review || entry.ReadError != "" {
@@ -1649,6 +1666,7 @@ func TestABootOverARecordOnARepositoryAnAppIsNotInstalledOnNamesTheApp(t *testin
 // repository's, said once at WARN, which says a live record names it and when the refresher reads
 // it again.
 func TestABootOverARecordWhoseInstallationReadFailsAnswersItsState(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("read whether the implement App is installed on acme/widgets failed (403)")
 	tokens := &workflowTokenRecorder{failing: map[string]error{"implement acme/widgets": failure}}
 	var logged syncBuffer
@@ -1675,6 +1693,7 @@ func TestABootOverARecordWhoseInstallationReadFailsAnswersItsState(t *testing.T)
 // (INFRA-4401 P4; dispatch://INFRA-4401 check a-go, item 4): the daemon then exits before its
 // state names the repository.
 func TestABootOverARecordOnAMissingRepositoryServes(t *testing.T) {
+	t.Parallel()
 	missing := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
@@ -1713,6 +1732,7 @@ func TestABootOverARecordOnAMissingRepositoryServes(t *testing.T) {
 // readPairNames). Control: with either warning back (the boot's warning of a trailer repository,
 // or of a pair naming a repository the project does not serve), a WARN line names it.
 func TestNoBootWarningNamesTheTrailerSettingOrARename(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	if cfg.Projects == nil {
 		cfg.Projects = map[string]config.Project{}
@@ -1753,6 +1773,7 @@ const servesNoRepositoryLine = "the daemon serves no repository until an issue n
 // (dispatch://INFRA-4401 check a-go, item 11). Controls: with the line deleted, the first case
 // finds no such line; with the line logged whatever the live records name, the second finds one.
 func TestABootWithNoLiveRecordSaysItServesNoRepository(t *testing.T) {
+	t.Parallel()
 	t.Run("no live record", func(t *testing.T) {
 		cfg := workflowConfig(t, workflowNATS(t))
 		var logged syncBuffer
@@ -1780,6 +1801,7 @@ func TestABootWithNoLiveRecordSaysItServesNoRepository(t *testing.T) {
 // The workflow has to assemble every integration boundary before opening its API. The order in
 // this log is the boot sequence operators rely on when an external dependency refuses.
 func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	tokens := &workflowTokenRecorder{}
 	var logged syncBuffer
@@ -1851,6 +1873,7 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 // so boot creates the consumers before it lists: what the listing missed, the consumer delivers.
 // The admitted issue's branch is then created under the GitHub root the daemon was given.
 func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
+	t.Parallel()
 	natsURL := workflowNATS(t)
 	js := workflowJetStream(t, natsURL)
 	captured, err := os.ReadFile("../intake/testdata/dispatch/issue-updated.json")
@@ -1968,6 +1991,7 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 // With no notification stream the daemon would boot with no intake, and nothing Dispatch or GitHub
 // says would ever reach it. Boot refuses instead, naming the stream, before the API answers.
 func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
+	t.Parallel()
 	natsURL := workflowNATS(t)
 	if err := workflowJetStream(t, natsURL).DeleteStream(context.Background(), "ENVOY_NOTIFICATIONS"); err != nil {
 		t.Fatalf("delete the notification stream: %v", err)
@@ -1996,6 +2020,7 @@ func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
 // Intake ending while the daemon runs (here its durable consumer is deleted) stops the daemon with
 // that error, instead of the daemon serving on with nothing reading Dispatch or GitHub.
 func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
+	t.Parallel()
 	natsURL := workflowNATS(t)
 	cfg := workflowConfig(t, natsURL)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2040,6 +2065,7 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 // the outage, not just the adapter TestReadinessAttempt (readiness_test.go) already covers in
 // isolation.
 func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
+	// Not parallel: it writes the package variable readinessRetry (fastReadiness).
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	natsURL := workflowNATS(t)
 	var requests atomic.Int64
@@ -2087,13 +2113,9 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 func workflowConfigOn(t *testing.T, natsURL string, board func(t *testing.T, project string) string) config.Config {
 	t.Helper()
 	cfg := testConfig(t)
-	// Boot reads this process's environment, so the real gh is named here: the first gh on a
-	// machine's PATH may be a script, which boot refuses (RefuseScriptGH).
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LEGION_GH_PATH", executable)
+	// Boot reads this process's environment for the real gh, which TestMain names once for every
+	// test (LEGION_GH_PATH): the first gh on a machine's PATH may be a script, which boot refuses
+	// (RefuseScriptGH).
 	cfg.DispatchURL = board(t, cfg.Project)
 	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
 	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(workflowDispatchToken+"\n"), 0o600); err != nil {
@@ -2272,6 +2294,7 @@ func workflowNATS(t *testing.T) string {
 // The `runtime.tmux` block's take_over reaches the tmux runtime as the value the runtime knows,
 // and a block without it, or no block, takes nothing over.
 func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux", Tmux: &config.Tmux{TakeOver: config.TakeOverKubernetes}}}
 	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).TakeOver; got != tmux.TakeOverKubernetes {
 		t.Errorf("TakeOver = %q, want %q", got, tmux.TakeOverKubernetes)
@@ -2287,6 +2310,7 @@ func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
 // Every launch secret's pointer is a pane variable the operator may not set
 // (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch.
 func TestEveryLaunchSecretsPointerIsRefusedAsAPaneVariable(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED"}
 	names := launchSecretNames(cfg, lookup(nil))
 	if len(names) != 2 {

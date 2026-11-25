@@ -13,10 +13,11 @@ import (
 // entry as Host, kept separate from MachineID (always the registering listener's own machine,
 // never the caller's), which decides which listener fans a topic out to the session.
 func TestSessionEntryFromSubscribe_CarriesHost(t *testing.T) {
+	t.Parallel()
 	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{
 		SessionID: "ses_z",
 		Host:      "example-host-a",
-	}, "example-listener", sessionDeliveryOutcome{})
+	}, "example-listener", sessionDeliveryOutcome{}, nil)
 
 	if got.Host != "example-host-a" {
 		t.Fatalf("expected Host to be carried from the subscribe body, got %+v", got)
@@ -27,10 +28,11 @@ func TestSessionEntryFromSubscribe_CarriesHost(t *testing.T) {
 }
 
 func TestSessionEntryFromSubscribe_DefaultsHostEmpty(t *testing.T) {
+	t.Parallel()
 	// An older plugin's registration has no "host" key; sessionEntryFromSubscribe must not
 	// invent one: an empty Host is what sends the session list's display to MachineID
 	// (HostOrMachine).
-	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{SessionID: "ses_old"}, "example-listener", sessionDeliveryOutcome{})
+	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{SessionID: "ses_old"}, "example-listener", sessionDeliveryOutcome{}, nil)
 
 	if got.Host != "" {
 		t.Fatalf("expected Host to stay empty for a payload without the field, got %+v", got)
@@ -41,6 +43,7 @@ func TestSessionEntryFromSubscribe_DefaultsHostEmpty(t *testing.T) {
 // entry: Dispatch draws a machine's panes from what the entry holds and from nothing else, so a
 // member lost here is a pane drawn wrong.
 func TestSessionEntryFromSubscribe_CarriesTmuxPlace(t *testing.T) {
+	t.Parallel()
 	var body listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{
 		"session_id":"ses_tmux",
@@ -53,7 +56,7 @@ func TestSessionEntryFromSubscribe_CarriesTmuxPlace(t *testing.T) {
 		t.Fatalf("decode subscribe body: %v", err)
 	}
 
-	got := sessionEntryFromSubscribe(body, "example-listener", sessionDeliveryOutcome{})
+	got := sessionEntryFromSubscribe(body, "example-listener", sessionDeliveryOutcome{}, nil)
 
 	want := session.TmuxPlace{
 		Socket:      "/tmp/tmux-1000/default",
@@ -76,6 +79,7 @@ func TestSessionEntryFromSubscribe_CarriesTmuxPlace(t *testing.T) {
 // "tmux_place" key - and both must leave the entry's place nil. An empty place would put a pane
 // on the Agents page that no tmux server knows.
 func TestSessionEntryFromSubscribe_DefaultsTmuxPlaceNil(t *testing.T) {
+	t.Parallel()
 	for name, payload := range map[string]string{
 		"a session outside tmux":           `{"session_id":"ses_plain","host":"example-host-a"}`,
 		"a plugin that predates the field": `{"session_id":"ses_old","self_subscribed":true}`,
@@ -86,7 +90,7 @@ func TestSessionEntryFromSubscribe_DefaultsTmuxPlaceNil(t *testing.T) {
 				t.Fatalf("decode subscribe body: %v", err)
 			}
 
-			got := sessionEntryFromSubscribe(body, "example-listener", sessionDeliveryOutcome{})
+			got := sessionEntryFromSubscribe(body, "example-listener", sessionDeliveryOutcome{}, nil)
 
 			if got.TmuxPlace != nil {
 				t.Fatalf("entry place = %+v, want nil for a body that names none", got.TmuxPlace)
@@ -98,11 +102,12 @@ func TestSessionEntryFromSubscribe_DefaultsTmuxPlaceNil(t *testing.T) {
 // The plugin a session registers through and that plugin's build reach the session entry, with
 // the surrounding space a session id loses dropped too.
 func TestSessionEntryFromSubscribe_CarriesThePluginAndItsVersionTrimmed(t *testing.T) {
+	t.Parallel()
 	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{
 		SessionID:     "ses_plugin",
 		Plugin:        " @sjawhar/pi-envoy\n",
 		PluginVersion: "\t11.0.0 ",
-	}, "example-listener", sessionDeliveryOutcome{})
+	}, "example-listener", sessionDeliveryOutcome{}, nil)
 
 	if got.Plugin != "@sjawhar/pi-envoy" || got.PluginVersion != "11.0.0" {
 		t.Fatalf("expected plugin @sjawhar/pi-envoy at 11.0.0, got %+v", got)
@@ -110,8 +115,9 @@ func TestSessionEntryFromSubscribe_CarriesThePluginAndItsVersionTrimmed(t *testi
 }
 
 func TestSessionEntryFromSubscribe_DefaultsThePluginAndItsVersionEmpty(t *testing.T) {
+	t.Parallel()
 	// A plugin predating the fields sends neither key; the entry invents neither.
-	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{SessionID: "ses_old"}, "example-listener", sessionDeliveryOutcome{})
+	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{SessionID: "ses_old"}, "example-listener", sessionDeliveryOutcome{}, nil)
 
 	if got.Plugin != "" || got.PluginVersion != "" {
 		t.Fatalf("expected no plugin for a payload without the fields, got %+v", got)
@@ -121,10 +127,11 @@ func TestSessionEntryFromSubscribe_DefaultsThePluginAndItsVersionEmpty(t *testin
 // The client instance id reaches the session entry, where a soft claim naming a predecessor
 // session reads it to tell that predecessor's own instance from another instance's live session.
 func TestSessionEntryFromSubscribe_CarriesTheClientInstanceID(t *testing.T) {
+	t.Parallel()
 	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{
 		SessionID:        "ses_instance",
 		ClientInstanceID: "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a",
-	}, "example-listener", sessionDeliveryOutcome{})
+	}, "example-listener", sessionDeliveryOutcome{}, nil)
 
 	if got.ClientInstanceID != "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a" {
 		t.Fatalf("expected the client instance id to be carried from the subscribe body, got %+v", got)
@@ -134,10 +141,11 @@ func TestSessionEntryFromSubscribe_CarriesTheClientInstanceID(t *testing.T) {
 // The id is compared as stored (session.InstanceMatches trims nothing), so the surrounding space
 // a session id loses is dropped here, where the wire value enters the entry.
 func TestSessionEntryFromSubscribe_TrimsTheClientInstanceID(t *testing.T) {
+	t.Parallel()
 	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{
 		SessionID:        "ses_instance_spaced",
 		ClientInstanceID: " \t4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a\n",
-	}, "example-listener", sessionDeliveryOutcome{})
+	}, "example-listener", sessionDeliveryOutcome{}, nil)
 
 	if got.ClientInstanceID != "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a" {
 		t.Fatalf("expected the client instance id to be trimmed, got %q", got.ClientInstanceID)
@@ -145,11 +153,12 @@ func TestSessionEntryFromSubscribe_TrimsTheClientInstanceID(t *testing.T) {
 }
 
 func TestSessionEntryFromSubscribe_DefaultsTheClientInstanceIDEmpty(t *testing.T) {
+	t.Parallel()
 	// A client predating the field sends no key; the entry invents none, and the empty id is
 	// what keeps the old soft-claim rule for it (session.InstanceMatches). The same empty id is
 	// written over any id a previous registration stored, since the entry is built fresh from
 	// the body.
-	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{SessionID: "ses_old"}, "example-listener", sessionDeliveryOutcome{})
+	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{SessionID: "ses_old"}, "example-listener", sessionDeliveryOutcome{}, nil)
 
 	if got.ClientInstanceID != "" {
 		t.Fatalf("expected no client instance id for a payload without the field, got %+v", got)
@@ -157,6 +166,7 @@ func TestSessionEntryFromSubscribe_DefaultsTheClientInstanceIDEmpty(t *testing.T
 }
 
 func TestSessionEntryFromSubscribe_CarriesSelfSubscribedFlag(t *testing.T) {
+	t.Parallel()
 	// Given
 	var body listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{"session_id":"ses_omp","self_subscribed":true}`), &body); err != nil {
@@ -164,7 +174,7 @@ func TestSessionEntryFromSubscribe_CarriesSelfSubscribedFlag(t *testing.T) {
 	}
 
 	// When
-	entry, err := json.Marshal(sessionEntryFromSubscribe(body, "devbox-sami", sessionDeliveryOutcome{}))
+	entry, err := json.Marshal(sessionEntryFromSubscribe(body, "devbox-sami", sessionDeliveryOutcome{}, nil))
 	if err != nil {
 		t.Fatalf("encode session entry: %v", err)
 	}

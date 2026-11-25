@@ -14,6 +14,8 @@ import type {
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { isDecisionEntry } from "../issue/decision-entries";
+import { type AgentText, actorLabelText } from "../refs/AgentName";
+import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { referenceSpans } from "../refs/reference-spans";
 import {
   buildDispatchReference,
@@ -26,6 +28,7 @@ import { type TextSource, textSourceOf } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import {
   blockIdOfNode,
+  type DecisionContent,
   decisionChangeComments,
   decisionChanges,
   decisionContent,
@@ -94,6 +97,15 @@ export interface Draft {
    *  absent on every other draft, a statement of the spec drawn before that read answers among
    *  them. */
   counts?: NodeCounts;
+  /** The coverage read's own lines a requirement it holds draws in its body
+   *  (`TreeNode.coverageNotes`); absent where the read holds none, and on every other draft. */
+  coverageNotes?: string[];
+  /** When its author deleted this comment or message (`TreeNode.deletedAt`). */
+  deletedAt?: string;
+  /** Who deleted it, where the read names them (`TreeNode.deletedBy`). */
+  deletedBy?: Actor;
+  /** When its author last replaced this comment's or message's body (`TreeNode.editedAt`). */
+  editedAt?: string;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
   gaps: GapKind[];
@@ -216,6 +228,25 @@ export function coverageStatements(
   };
 }
 
+/** How the model names the actor of a delete: as `AgentName` names one before the agent
+ *  registry answers (`actorLabelText`), since the model is pure and reads no registry. */
+const ACTOR: Pick<AgentText, "label"> = { label: actorLabelText };
+
+/**
+ * The line a deleted comment's or message's node holds in place of its body: the words
+ * `DeletedBody` (`refs/PostBody.tsx`) prints where the body was, `Deleted by <who> · <when>`, or
+ * `Deleted · <when>` for a delete whose read names nobody (`deletedLineText`). The model is pure
+ * and reads no agent registry and no clock, so `<who>` is the actor as `AgentName` names one
+ * before the registry answers (`actorLabelText`: a person's login, a session's stamped title
+ * else its short id), and `<when>` is the time the read stores (`deleted_at`) as it stores it,
+ * never an age; a view that draws the line itself names the actor from `deletedBy` and draws
+ * the time from `deletedAt`. It is made from the delete alone, so it holds no part of the body
+ * even where a read still carries one.
+ */
+export function deletedPostLine(deleted: PostDeletion): string {
+  return `${deletedLineText(deleted, ACTOR)} · ${deleted.at}`;
+}
+
 /**
  * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
  * for a node draws, from the server's reading of the node's words: `buildIssueTree` and
@@ -253,10 +284,22 @@ export function coverageStatements(
  *   `""`, as a block is, which the chip draws as not yet named.
  * - **Anything else** by the read's `name` for it. An ask's, a comment's and a message's name is
  *   the question or the body as stored, which is markdown whose marks are no word of it (R21),
- *   so it is read to plain words (`plainWords`). A component's name is a title too, which is no
- *   markdown, and is left as the read gives it, its addresses as written: the short form is the
- *   rule of a line that draws an issue's or a child issue's title, and no node of the tree is a
- *   component, so no row's line reads its name.
+ *   so it is read to plain words (`plainWords`). A comment or a message the read marks deleted
+ *   (`ReferenceTarget.deleted_at`) is named by the deleted line's words (`deletedLineText`),
+ *   never by the emptied body, which is no words at all, as a link to it is
+ *   (`reference-target.ts`'s `useReferenceLabel`); the model reads no agent registry, so the
+ *   line names the actor as `AgentName` does before the registry answers (`actorLabelText`),
+ *   where a link names a listed session by its registry title. A component's name is a title
+ *   too, which is no markdown, and is left as the read gives it, its addresses as written: the
+ *   short form is the rule of a line that draws an issue's or a child issue's title, and no node
+ *   of the tree is a component, so no row's line reads its name.
+ *
+ * A chip carries the marks the read answers for a post (`NodeChip.deletedAt`, `deletedBy`,
+ * `editedAt`), and its name is the words alone: a place that draws the name of an edited one, a
+ * comment, a message or a block of either, cuts the words to its own length and marks what the
+ * cut left, so no cut takes the mark. The row's chip draws the mark as an element of its own
+ * (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that names the post in one string
+ * writes it with `editedName`.
  */
 export function treeContext(
   reads: IssueTreeReads,
@@ -289,7 +332,11 @@ export function treeContext(
       child.title,
     ]),
   ]);
-  const nameOf = (reference: string, target: ReferenceTarget | undefined): string => {
+  const nameOf = (
+    reference: string,
+    target: ReferenceTarget | undefined,
+    deleted: PostDeletion | null
+  ): string => {
     const route = parseNodeReference(reference);
     const block = route !== undefined && "block" in route ? route.block : undefined;
     if (block !== undefined || target?.kind === "block") {
@@ -307,7 +354,7 @@ export function treeContext(
       return documentWord(reads.issue, route.key === key ? documents.get(route.slug) : undefined);
     }
     if (target?.kind === "ask" || target?.kind === "comment" || target?.kind === "message") {
-      return plainWords(target.name, target);
+      return deleted === null ? plainWords(target.name, target) : deletedLineText(deleted, ACTOR);
     }
     if (target?.kind === "issue") return titleWords(titles.get(reference) ?? target.name);
     return blockWords(target?.name ?? "");
@@ -323,11 +370,18 @@ export function treeContext(
       if (held !== undefined) return held;
       const target = names.get(reference);
       const gone = target?.gone ?? false;
+      const deleted = postDeletion(target);
+      // A deleted post's deleted line already says what became of its text, so it carries no
+      // edit mark.
+      const edited = deleted === null ? target?.edited_at : undefined;
       const chip: NodeChip = {
         ...(target?.ambiguous === true ? { ambiguous: true } : {}),
         answered: target !== undefined,
+        ...(deleted === null ? {} : { deletedAt: deleted.at }),
+        ...(deleted === null || deleted.by === null ? {} : { deletedBy: deleted.by }),
+        ...(edited === undefined ? {} : { editedAt: edited }),
         gone,
-        name: gone ? "" : nameOf(reference, target),
+        name: gone ? "" : nameOf(reference, target, deleted),
         ref: reference,
       };
       chips.set(reference, chip);
@@ -633,6 +687,54 @@ export function askState(ask: Ask): AskState | undefined {
   return words[token] === undefined ? undefined : (token as AskState);
 }
 
+/** Each text source (`textSourceOf`) a row was handed, by its kind, since one object can stand
+ *  for more than one - an ask block's reading is its ask's text and a block of its document - and
+ *  then by the object the row draws: the reading of its words, else the node or the entry it was
+ *  drafted from. A re-read whose answer is unchanged keeps each of these objects, and one whose
+ *  node changed beside its words keeps the node's reading, so every build of the drafts hands a
+ *  row the source object it handed it before, and the row's words are not drawn again for a
+ *  source that only looks new; and a source goes when that object does. */
+const recordSources: Readonly<Record<TextSource["kind"], WeakMap<object, TextSource>>> = {
+  artifact: new WeakMap(),
+  ask: new WeakMap(),
+  comment: new WeakMap(),
+  message: new WeakMap(),
+};
+
+/** The text source of record `id` of `kind` (`textSourceOf`) for `drawn`, the object the row it
+ *  is handed to draws - its reading, else the node or the entry it is drafted from: the one
+ *  object `recordSources` holds for that object and kind, made again only where `id` is not the
+ *  one it was made with, since the reads an id is found through can change while the object
+ *  stays; none where there is no id, as `textSourceOf` answers. */
+export function stableSourceOf(
+  drawn: object,
+  kind: TextSource["kind"],
+  id: string | undefined
+): TextSource | undefined {
+  if (id === undefined) return undefined;
+  const sources = recordSources[kind];
+  const kept = sources.get(drawn);
+  if (kept?.id === id) return kept;
+  const source = textSourceOf(kind, id);
+  if (source === undefined) return undefined;
+  sources.set(drawn, source);
+  return source;
+}
+
+/** Each decision's own content (`decisionContent`), by the entry it was read from: a re-read
+ *  whose answer is unchanged keeps the entry's object, and so a row is handed the words it was
+ *  handed before. */
+const decisionContents = new WeakMap<DecisionEntry, DecisionContent>();
+
+function stableDecisionContent(decision: DecisionEntry): DecisionContent {
+  let own = decisionContents.get(decision);
+  if (own === undefined) {
+    own = decisionContent(decision);
+    decisionContents.set(decision, own);
+  }
+  return own;
+}
+
 /**
  * Each agent's decision of the decisions read that no node of the tree read holds
  * (`decisionNodes`) - a section of the issue's `decisions.md` a server of the release before
@@ -738,8 +840,8 @@ export function addDecisions(
     if (decider !== undefined) draft.author = decider;
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
-    const own = decisionContent(decision);
-    draft.source = textSourceOf("artifact", decisionDocumentId(reads.issue, decision));
+    const own = stableDecisionContent(decision);
+    draft.source = stableSourceOf(decision, "artifact", decisionDocumentId(reads.issue, decision));
     draft.text = own.text;
     draft.tree = own.tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape

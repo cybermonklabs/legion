@@ -768,6 +768,13 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			return v.fetchArgs()
 		}
 	}
+	// timedOut is how the error of a fetch that ran out of its time begins: its git command, whose
+	// first flags are the four pack settings (workspace.PackWindowConfig) as `-c` pairs.
+	timedOut := "command timed out: git"
+	for _, pair := range workspace.PackWindowConfig() {
+		timedOut += " -c " + pair[0] + "=" + pair[1]
+	}
+	timedOut += " -c gc.auto=0 -c maintenance.auto=false --git-dir="
 	for _, tc := range []struct {
 		name string
 		// fetch prepares the volume, its git, its cache, the clock and the environment, and
@@ -794,13 +801,15 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			return failing("fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111\nerror: file://"+v.env["WINIT_REMOTE"]+" did not send all necessary objects\n", 1)(t, v, clock)
 		}, code: 1, says: "fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111"},
 		{name: "an attempt that runs out of its time", fetch: func(t *testing.T, v *issueVolume, _ *instantClock) []string {
-			v.env["WINIT_FETCH_SLEEP"] = "30"
+			// The fetch from GitHub sleeps past any test binary's deadline, so only the bound's stop
+			// ends it: a stop a loaded machine makes late still comes before the sleep ends.
+			v.env["WINIT_FETCH_SLEEP"] = "86400"
 			args := v.refetchArgs(t)
 			saved := fetchBound
 			fetchBound = time.Second
 			t.Cleanup(func() { fetchBound = saved })
 			return args
-		}, code: 3, says: "command timed out: git -c gc.auto=0 -c maintenance.auto=false --git-dir="},
+		}, code: 3, says: timedOut},
 		{name: "a read of the provisioning token before a retry that fails", fetch: func(t *testing.T, v *issueVolume, clock *instantClock) []string {
 			args := failing(http408Failure, 128)(t, v, clock)
 			clock.atFirstWait = func() {
@@ -850,7 +859,7 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			clock := useInstantClock(t)
 			v := newIssueVolume(t).withRemote(t, "main")
 			args := tc.fetch(t, v, clock)
-			code, stdout, stderr := runWorkspaceInitHere(args)
+			code, stdout, stderr := workspaceInitAnswered(t, "workspace-init fetch ("+tc.name+")", args)
 			if code != tc.code || !strings.Contains(stderr, tc.says) {
 				t.Fatalf("exit %d, stderr %q, stdout %q; want %d naming %q", code, stderr, stdout, tc.code, tc.says)
 			}

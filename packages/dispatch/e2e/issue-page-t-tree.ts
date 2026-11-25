@@ -4,6 +4,7 @@ import type { IssueDecisions, IssueTreeRead } from "../web/src/api/types";
 import type { Filter } from "../web/src/features/issue-page/presets";
 import {
   mergeTreePages,
+  nextTreeCursor,
   type TreeIdReads,
   treeIdOf,
 } from "../web/src/features/issue-page/tree-read/tree-nodes";
@@ -14,13 +15,13 @@ import { issueHeader } from "./issue-page-p";
 import type { ApiRequest } from "./traffic";
 
 /**
- * What the rows of `e2e/issue-page-t.e2e.ts` read of what the page received besides what it
- * drew, the gates they check first, and what the page draws beside the rows. These helpers are
- * kept apart from the row readers of `e2e/issue-page-t.ts`, which the recorder
+ * What the rows of the `e2e/issue-page-t-*.e2e.ts` files read of what the page received
+ * besides what it drew, the gates they check first, and what the page draws beside the rows.
+ * These helpers are kept apart from the row readers of `e2e/issue-page-t.ts`, which the recorder
  * (`e2e/tools/issue-page-t-record.ts`) loads on a base that holds F's page and not the tree read:
  * what reads the tree read names its modules and its answer's types, which that base does not
- * hold, so it is here, with every other helper the recorder does not read with, so that file
- * loads no more than the recorder needs.
+ * hold, so it is here, so that file loads no more than the recorder needs; the steps and
+ * comparisons the rows share are in `e2e/issue-page-t-rows.ts`.
  *
  * `treeAnswerOf` and `viewAnswerOf` keep each answer of the tree read
  * (`GET /api/v1/issues/{key}/tree`) and of one of its views (`?view=`), every page of a read
@@ -145,17 +146,20 @@ function watchTreeRoute(page: Page, view: TreeView | null): TreeAnswerWatch {
 }
 
 /** The newest read every page of which has answered: a read starts at a page its request sent no
- *  cursor for, and goes on with each page whose cursor the page before it answered. */
+ *  cursor for, goes on with each page whose cursor the page before it named, and ends at a page
+ *  that names none, each by the page's own rule (`nextTreeCursor`). */
 function newestRead(received: readonly ReceivedPage[]): IssueTreeRead | undefined {
   const reads: IssueTreeRead[][] = [];
   for (const { cursor, page } of [...received].sort((a, b) => a.arrived - b.arrived)) {
     const read = reads[reads.length - 1];
     if (cursor === null) reads.push([page]);
-    else if (read !== undefined && read[read.length - 1]?.cursor === cursor) read.push(page);
+    else if (read !== undefined && nextTreeCursor(read[read.length - 1]) === cursor) {
+      read.push(page);
+    }
   }
   for (let at = reads.length - 1; at >= 0; at -= 1) {
     const [first, ...rest] = reads[at] ?? [];
-    if (first !== undefined && (rest[rest.length - 1] ?? first).cursor === null) {
+    if (first !== undefined && nextTreeCursor(rest[rest.length - 1] ?? first) === undefined) {
       return mergeTreePages([first, ...rest]);
     }
   }
@@ -560,5 +564,19 @@ export function drawnNodes(page: Page): Promise<DrawnNode[]> {
         type: element.dataset.nodeType ?? "",
       })
     )
+  );
+}
+
+/** Whether the link `href` goes to a node `names` holds: a block by its fragment (`#b-<id>`), a
+ *  block by its row id, the link's last path segment followed by its fragment (`<slug>#b-<id>`,
+ *  as `/issues/<KEY>/artifacts/<slug>#b-<id>` ends), an ask by its address (`/asks/<id>`). */
+export function linksTo(href: string, names: readonly string[]): boolean {
+  const url = new URL(href, "http://links.invalid");
+  // A row id always ends in a block's fragment, so a link with none is no block's row id.
+  const rowId = url.hash.startsWith("#b-")
+    ? `${url.pathname.slice(url.pathname.lastIndexOf("/") + 1)}${url.hash}`
+    : null;
+  return names.some(
+    (name) => url.hash === `#b-${name}` || rowId === name || url.pathname.endsWith(`/asks/${name}`)
   );
 }

@@ -24,7 +24,7 @@ import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
-import { gatedStepEntries } from "../issue/gated-steps";
+import { gatedStepEntries, isProjectRoot } from "../issue/gated-steps";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
@@ -85,12 +85,14 @@ export function IssuePropertiesRow({
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
-  // as, and the decisions the tree read answers as nodes, with each Change it hangs under one -
-  // and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`), but for the
-  // tree read, which keeps its own (`TREE_FRESH`): events refresh them, never their age
-  // (decision 180). Staleness is per observer, so each read here takes that rule too, and the
-  // count costs no request of its own (`waiting.ts`). A Change of a decision no node holds is
-  // read by its quote, as `decision-review.ts` reads it with no blocks read.
+  // as, and the tree read, which the outline keeps fresh by its own rule (`TREE_FRESH`), whose
+  // decision nodes hang the Changes written on them, which say which decision a Change belongs
+  // to - and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`): events
+  // refresh them, never their age (decision 180). Staleness is per observer, so each read here
+  // takes that rule too, and the count costs no request of its own (`waiting.ts`). Until a
+  // decision's node is held the count reads the Changes asked of it by their quotes, as
+  // `decision-review.ts` does with no blocks read; a Change in a document the outline does not
+  // read is read by its quote alone, as the tree places it.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
@@ -122,11 +124,11 @@ export function IssuePropertiesRow({
   const agentsTurn = openAsks.length - waitingOnHuman(openAsks).length;
   // The one shared read of the projects, under the key the shell's sidebar and the search
   // palette already hold, kept fresh by the feed's events as the count's reads are
-  // (`EVENT_FRESH`), so a header mounted again does not send it a second time. Only a root issue
-  // has gated steps at all (`gatedStepEntries`), so a child does not ask for the list, and while
-  // the read is pending or failed the issue draws its one chip rather than claiming a gate it has
-  // not read.
-  const projects = useQuery({ ...projectsQuery(), ...EVENT_FRESH, enabled: issue.parent === null });
+  // (`EVENT_FRESH`), so a header mounted again does not send it a second time. Only a root of the
+  // issue's project has gated steps at all (`isProjectRoot`: no parent, or a parent of another
+  // project), so a child does not ask for the list, and while the read is pending or failed the
+  // issue draws its one chip rather than claiming a gate it has not read.
+  const projects = useQuery({ ...projectsQuery(), ...EVENT_FRESH, enabled: isProjectRoot(issue) });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn

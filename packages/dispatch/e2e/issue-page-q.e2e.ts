@@ -18,6 +18,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   expectRowGroups,
   expectRowLayouts,
   focusRow,
@@ -106,11 +107,12 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 const VIOLET = "rgb(124, 58, 237)";
 const PAPER = "rgb(255, 255, 255)";
 
-// c-decisions. Clause by clause, at 1440 px and at 390 px. What waits on the decisions model
-// and is not read here: an agent decision's author (`decided_by`), its level of uncertainty and
-// its reason, the reading under an agent's decision, and the `shaped` tuple itself (today's tie
-// is a decision block's link to a spec block). What waits on the conversion of issues: the
-// unconverted issue, `?view=decisions`, and "the page makes no request to /decisions".
+// c-decisions. Clause by clause, at 1440 px and at 390 px. Each decision is a `decision` block of
+// the spec, whose `shaped` attribute is its tie and whose `from_ask` names the question it
+// settles (`issue-layout-seed-text.ts`'s `decisionsPart`). What is not read here: an agent
+// decision's author (`decided_by`), its level of uncertainty and its reason, and the reading
+// under an agent's decision. What waits on the conversion of issues: the unconverted issue,
+// `?view=decisions`, and "the page makes no request to /decisions".
 // SLOW(>=2s): the whole issue seeded with three more writes, the view loaded and read at two
 // widths with a focus and the foot's unfolding waited on each time, then the outline loaded.
 test("the Decisions filter draws its four parts and quotes the person's answer", async ({
@@ -129,7 +131,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     const headings = {
       agents: squeezed(`3 ${DECISIONS_WORDS.agents_many}`),
       open_questions: squeezed(`${DECISIONS_WORDS.parts.open_questions} 1`),
-      review: squeezed(`${DECISIONS_WORDS.parts.review} 2`),
+      review: squeezed(`${DECISIONS_WORDS.parts.review} 3`),
       yours: squeezed(`${DECISIONS_WORDS.parts.yours} 4`),
     };
     const parts = async () =>
@@ -141,13 +143,15 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
       const at = `at ${size.width} px`;
       await page.setViewportSize(size);
       await openPreset(page, seeded.key, "decisions");
-      // Four parts under their own headings, in this order: the open question first, the two
-      // decisions waiting for review newest first, the reader's own decisions newest first -
-      // the one kept, the question declined, the two answered - and the foot, folded. This is
-      // the row's first reading, so a page whose view draws nothing fails here.
+      // Four parts under their own headings, in this order: the open question first, the three
+      // decisions waiting for review newest first - the two the seed wrote in one edit in the
+      // order the outline draws them, the one under no question before the one that settles the
+      // answered question - the reader's own decisions newest first - the one kept, the question
+      // declined, the two answered - and the foot, folded. This is the row's first reading, so a
+      // page whose view draws nothing fails here.
       await expect.poll(parts, { message: `the four parts ${at}` }).toEqual([
         { count: "1", heading: headings.open_questions, part: "open_questions", rows: [open] },
-        { count: "2", heading: headings.review, part: "review", rows: [D(5), D(0)] },
+        { count: "3", heading: headings.review, part: "review", rows: [D(5), D(0), D(1)] },
         {
           count: "4",
           heading: headings.yours,
@@ -190,8 +194,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
       });
 
       // The answered ask draws its question and options; with the focus on it, the person's
-      // answer character for character as the store holds it, by who answered, with no reading
-      // under it: the section of decisions.md that restates it is no row of the filter.
+      // answer character for character as the store holds it, by who answered.
       const asked = nodeRow(page, seeded.optionedAskId).first();
       await asked.focus();
       await expect
@@ -206,7 +209,9 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
         rowOf(await drawnRows(page), seeded.optionedAskId)?.answerAuthor,
         `the answered ask does not name who answered ${at}`
       ).toBe(stored?.user);
-      expect(await nodeRow(page, D(1)).count(), `the reading is a row of the filter ${at}`).toBe(0);
+      // The decision that settles the seed's answered question (`from_ask`) is an agent's own:
+      // one row, of the review list as read above, and drawn nowhere in the answer's place.
+      expect(await nodeRow(page, D(1)).count(), `the settling decision's rows ${at}`).toBe(1);
 
       // The three states, as words: waiting for review, kept with the keeper's name, replaced.
       await decisionsFoot(page).click();
@@ -232,12 +237,13 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
         CONTROL_LABELS.unsure
       );
 
-      // The person's decision that shaped three statements is one entry with one node id - the
-      // answer itself - and it reaches each of the three; the agent's reaches its two.
+      // The person's decision is one entry with one node id - the answered ask itself - and the
+      // agent's decision that settles it reaches each of the three statements it shaped; the
+      // first decision reaches its two.
       expect(await nodeRow(page, seeded.answeredAskId).count()).toBe(1);
       await expect(
-        nodeRow(page, seeded.answeredAskId).locator("[data-decision-statement] a"),
-        `the person's decision does not reach the three statements it shaped ${at}`
+        nodeRow(page, D(1)).locator("[data-decision-statement] a"),
+        `the decision that settles the answered question does not reach the three statements it shaped ${at}`
       ).toHaveCount(3);
       await expect(nodeRow(page, D(0)).locator("[data-decision-statement] a")).toHaveCount(2);
 
@@ -256,13 +262,14 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     }
 
     // The same three words wherever a decision is drawn: with no filter on too, where the
-    // section that restates the person's answer hangs under the ask it answers. The tree is
+    // decision that settles the person's answer hangs under the ask it settles. The tree is
     // drawn with the issue alone and the decisions and the asks arrive after it, each maybe
     // folded where it lands, so the facts are read again, every branch unfolded first, until
     // the reads are in.
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(
         async () => {
@@ -289,8 +296,8 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
   });
 });
 
-// c-review-list, the rule for what waits on the reader's review. What waits on the decisions
-// model: the `shaped` tuple itself; today's tie is a decision block's link to a block of the spec.
+// c-review-list, the rule for what waits on the reader's review. A tie is a decision block's
+// `shaped` attribute naming a block of the spec, which the seed writes in its words as well.
 // SLOW(>=2s): a seeded issue whose view is loaded and read at two widths with the foot's
 // unfolding waited on each time, then the outline loaded with two rows focused.
 test("only a decision that changed a statement waits for review @phone", async ({ browser }) => {
@@ -355,6 +362,7 @@ test("only a decision that changed a statement waits for review @phone", async (
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
     for (const block of [seeded.tiedToNote, seeded.untied]) {
       const row = await focusRow(page, id(block));
@@ -476,6 +484,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     // lands, so the facts are read again, every branch unfolded first, until the reads are in.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(
         async () => {
@@ -594,10 +603,10 @@ test("the Decisions view draws Keep and Change on each decision that waits, and 
       state: "kept",
       stateWord: `${NODE_STATE_WORDS.decision.kept} alice`,
     });
-    const kept = ((await getIssueDecisions(seeded.key)).decisions ?? []).find(
-      (decision) => decision.block_id === seeded.tiedNewer
-    )?.kept;
-    expect(kept?.kept_by, "the server holds no Keep by alice of the newer decision").toBe("alice");
+    const kept = ((await getIssueDecisions(seeded.key)).entries ?? []).find(
+      (entry) => entry.document?.block_id === seeded.tiedNewer
+    )?.kept_by;
+    expect(kept, "the server holds no Keep by alice of the newer decision").toBe("alice");
     await expect
       .poll(() => focusedNodeId(page), {
         message: `Keep did not leave the focus on the next decision that waits ${at}`,
@@ -889,7 +898,7 @@ const FALLBACK_LINES = {
 // the outline drawn in the view's place lands on the node's row as the conversation's address
 // does, with the focus on that row. A plan task that serves a statement stands for such a node
 // here: the tree places a comment under what it answers and never under the block it is anchored
-// to (`tree-drafts.ts`'s `addTurns`), so the seed holds no comment under a statement.
+// to (`tree-read/tree-nodes.ts`, by its `parent`), so the seed holds no comment under a statement.
 //
 // Then the Decisions view, with three addresses that name nothing the issue holds, each opened by
 // a load of its own: the gone comment, a `#b-` fragment naming a block no node carries, and that

@@ -8,6 +8,7 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { ownTree, ownWords } from "../issue/decision-text";
+import { postDeletion } from "../refs/post-marks";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { DocumentBlocks } from "./issue-tree";
@@ -40,7 +41,10 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * newest is the change the decision waits on (`decisionChanges`). The decision then waits on its
  * agent, not on the reader: it says it was changed, and it leaves the review list and every count
  * of what waits on the reader. Once the agent edits the decision, every change is older than its
- * words and the decision waits for review again.
+ * words and the decision waits for review again. A change its author deleted is no longer asked
+ * for: it stays drawn under the decision, as the deleted line (`tree-drafts.ts`'s `addTurns`), but
+ * no decision waits on it (`decisionChanges`), so a decision whose every change was deleted waits
+ * for review again.
  *
  * What a decision's block holds is every block of its document whose markdown range lies inside
  * the decision's own (`ArtifactBlock.from`, `to`), the decision's block itself among them, in the
@@ -58,8 +62,12 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * blocks: the change is then the first decision's whose words hold the quote.
  */
 
-/** The fields of a comment this module reads. */
-export type ChangeComment = Pick<Comment, "anchor" | "author" | "body" | "created_at" | "id">;
+/** The fields of a comment this module reads, and when its author last edited it, which the
+ *  Decisions view draws a Change with (`decisions-parts.ts`'s `DecisionChange`). */
+export type ChangeComment = Pick<
+  Comment,
+  "anchor" | "author" | "body" | "created_at" | "deleted_at" | "edited_at" | "id"
+>;
 
 /** The fields of a decision this module reads: an entry of the decisions read. */
 type ChangedDecision = Pick<
@@ -100,6 +108,12 @@ export function inReviewList(
   );
 }
 
+/** A decision's own words and its own reading (`decisionContent`). */
+export interface DecisionContent {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+}
+
 /**
  * What `decision` says: the decisions read answers a decision's text as its one `decision` block
  * (`decisionread`'s words, the block rendered alone) and the server's reading of it as that
@@ -109,10 +123,9 @@ export function inReviewList(
  * its own already. `tree` is absent where the read sent no reading. Every reader of a decision's
  * words reads them here: the tree's node (`tree-drafts.ts`) and a Change's quote (`anchorQuote`).
  */
-export function decisionContent(decision: Pick<DecisionEntry, "text" | "text_tree">): {
-  readonly text: string;
-  readonly tree?: DisplayTree;
-} {
+export function decisionContent(
+  decision: Pick<DecisionEntry, "text" | "text_tree">
+): DecisionContent {
   const text = ownWords(decision.text);
   const tree = ownTree(decision.text_tree);
   return tree === undefined ? { text } : { text, tree };
@@ -233,19 +246,20 @@ function nodeChangeComments(tree: TreeAnswer | undefined): Map<TreeAnswerNode, T
 }
 
 /**
- * The node each node of the read hangs under: the nearest node before it in the read's order that
- * its `parent` names, since a parent comes before its children; else the first node of that id.
- * The outline places a node by the same rule (`tree-read/tree-nodes.ts`' `parentsIn`), so a
- * Change is the comment the outline draws under its decision.
+ * The node each node of `order` hangs under: the nearest node before it in `order` that its
+ * `parent` names, since a parent comes before its children; else the first node of that id,
+ * among `first` where the caller hands it, else among `order`. The outline places a node by this
+ * rule (`tree-read/tree-nodes.ts`), so a Change is the comment the outline draws under its
+ * decision: it walks the answer in an order of its own, and hands the answer's first node of
+ * each id.
  */
-function parentsIn(nodes: readonly TreeAnswerNode[]): Map<TreeAnswerNode, TreeAnswerNode> {
-  const first = new Map<string, TreeAnswerNode>();
-  for (const node of nodes) {
-    if (!first.has(node.id)) first.set(node.id, node);
-  }
+export function parentsIn(
+  order: readonly TreeAnswerNode[],
+  first: ReadonlyMap<string, TreeAnswerNode> = firstOfEachId(order)
+): Map<TreeAnswerNode, TreeAnswerNode> {
   const parents = new Map<TreeAnswerNode, TreeAnswerNode>();
   const latest = new Map<string, TreeAnswerNode>();
-  for (const node of nodes) {
+  for (const node of order) {
     const parent =
       node.parent === null ? undefined : (latest.get(node.parent.id) ?? first.get(node.parent.id));
     if (parent !== undefined) parents.set(node, parent);
@@ -254,20 +268,35 @@ function parentsIn(nodes: readonly TreeAnswerNode[]): Map<TreeAnswerNode, TreeAn
   return parents;
 }
 
+/** Each node of `nodes` by its id, the first where two share one: the node of an id `parentsIn`
+ *  falls back to, and the one the outline looks a read id up by (`tree-read/tree-nodes.ts`). */
+export function firstOfEachId(nodes: readonly TreeAnswerNode[]): Map<string, TreeAnswerNode> {
+  const first = new Map<string, TreeAnswerNode>();
+  for (const node of nodes) {
+    if (!first.has(node.id)) first.set(node.id, node);
+  }
+  return first;
+}
+
 /**
  * The Change each decision node waits on, by the id `idOf` gives the node: the newest of the
- * Changes the read hangs under it (`nodeChangeComments`). The outline (`tree-read/tree-nodes.ts`)
- * names each node by its tree id (`treeIdOfNode`), so two decision nodes of one block id in two
- * documents are two decisions there; a caller that names no id reads the node's own id in the
- * read. The outline and the header's count (`waiting.ts`, through `decisionChangeComments`) read
- * this one rule.
+ * Changes the read hangs under it (`nodeChangeComments`) that its author has not deleted
+ * (`deleted`, the comments the page's comments read says were: the tree read answers a deleted
+ * comment with no body and no mark). A deleted Change keeps its place under the decision, as the
+ * read puts it, and asks nothing any more, as `decisionChanges` has it for a Change found by its
+ * quote. The outline (`tree-read/tree-nodes.ts`) names each node by its tree id
+ * (`treeIdOfNode`), so two decision nodes of one block id in two documents are two decisions
+ * there; a caller that names no id reads the node's own id in the read. The outline and the
+ * header's count (`waiting.ts`, through `decisionChangeComments`) read this one rule.
  */
 export function decisionNodeChanges(
   answer: TreeAnswer,
-  idOf: (node: TreeAnswerNode) => string = (node) => node.id
+  idOf: (node: TreeAnswerNode) => string = (node) => node.id,
+  deleted: ReadonlySet<string> = NO_DELETED
 ): ReadonlyMap<string, TreeAnswerNode> {
   const changes = new Map<string, TreeAnswerNode>();
   for (const [comment, decision] of nodeChangeComments(answer)) {
+    if (deleted.has(comment.id)) continue;
     const id = idOf(decision);
     const held = changes.get(id);
     // Every Change holds a time (`nodeChangeComments`).
@@ -276,6 +305,21 @@ export function decisionNodeChanges(
     }
   }
   return changes;
+}
+
+/** No comment is known deleted: the same empty set on every call. */
+const NO_DELETED: ReadonlySet<string> = new Set();
+
+/** The ids of the comments among `comments` that their author deleted (`postDeletion`): the
+ *  Changes that ask nothing any more, whichever way a Change is found. */
+export function deletedPostIds(
+  comments: readonly Pick<ChangeComment, "deleted_at" | "id">[] | undefined
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const comment of comments ?? []) {
+    if (postDeletion(comment) !== null) ids.add(comment.id);
+  }
+  return ids.size === 0 ? NO_DELETED : ids;
 }
 
 /**
@@ -393,8 +437,11 @@ function sectionsOf(
 /**
  * The change each decision waits on, by the decision's own address (`DecisionEntry.ref`): the
  * newest of the changes a person asked of it (`decisionChangeComments`, which `placed` holds where
- * the caller has read it already). `documents` are the blocks of the issue's documents the page
- * has read, `undefined` where it has read none. A decision with none is not held.
+ * the caller has read it already) that its author has not deleted. A deleted change keeps its
+ * place under the decision (`decisionChangeComments` still holds it), but asks nothing any more: a
+ * decision whose every change was deleted waits for review again, as it did before the first.
+ * `documents` are the blocks of the issue's documents the page has read, `undefined` where it has
+ * read none. A decision with none is not held.
  */
 export function decisionChanges(
   decisions: Pick<IssueDecisions, "entries"> | undefined,
@@ -411,7 +458,7 @@ export function decisionChanges(
   const changes = new Map<string, ChangeComment>();
   for (const comment of comments ?? []) {
     const ref = placed.get(comment.id);
-    if (ref === undefined) continue;
+    if (ref === undefined || postDeletion(comment) !== null) continue;
     const held = changes.get(ref);
     if (held === undefined || compareTimestamps(comment.created_at, held.created_at) > 0) {
       changes.set(ref, comment);

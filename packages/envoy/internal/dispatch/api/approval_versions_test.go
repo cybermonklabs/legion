@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An approval request remains one conversation across document versions. A version move keeps its
@@ -29,6 +31,7 @@ import (
 // the requesting agent. Handing the revision back updates the same card and makes the human its
 // next actor again.
 func TestApprovalRequestFollowsDocumentVersions(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
@@ -141,6 +144,7 @@ func TestApprovalRequestFollowsDocumentVersions(t *testing.T) {
 // thread records neither, and the next human reply takes the turn back on every read, the Inbox's
 // order and the comment's own event included.
 func TestApprovalHandBackWaitsOnTheHuman(t *testing.T) {
+	t.Parallel()
 	for _, flow := range []struct {
 		name     string
 		move     bool
@@ -313,6 +317,7 @@ func TestApprovalHandBackWaitsOnTheHuman(t *testing.T) {
 // so it adds no entry to the card's edit history, and an answer the human started from the card
 // before the hand-back is saved rather than refused ASK_EDITED.
 func TestARewordlessHandBackKeepsTheQuestionsRevision(t *testing.T) {
+	t.Parallel()
 	for _, flow := range []struct {
 		name    string
 		move    bool
@@ -407,6 +412,7 @@ func TestARewordlessHandBackKeepsTheQuestionsRevision(t *testing.T) {
 // The test parks the hand-back after it has taken the owner row, with a lock on the ask row that
 // OpenApprovalAsk waits for, then starts the human's comment, which queues on the owner row.
 func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, deps := newInteractionDeps(t, nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Racing hand-back", "A spec")
@@ -443,7 +449,7 @@ func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 	handBackHandler, handBackPID := oneConnectionHandler(t, deps)
 	handedBack := make(chan *httptest.ResponseRecorder, 1)
 	go func() { handedBack <- approvalRequest(handBackHandler) }()
-	if response, early := storetest.WaitForQueuedBehind(t, hold, handBackPID, handedBack, 10*time.Second); early {
+	if response, early := storetest.WaitForQueuedBehind(t, hold, handBackPID, handedBack); early {
 		t.Fatalf("the hand-back answered %d before it queued behind the ask row: %s", response.Code, response.Body.String())
 	}
 	commentHandler, commentPID := oneConnectionHandler(t, deps)
@@ -452,7 +458,7 @@ func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 		commented <- dispatchRequest(t, commentHandler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
 			map[string]any{"ask_id": askID, "body": "And the backoff?"}, "alice")
 	}()
-	if response, early := storetest.WaitForQueuedBehind(t, hold, commentPID, commented, 10*time.Second); early {
+	if response, early := storetest.WaitForQueuedBehind(t, hold, commentPID, commented); early {
 		t.Fatalf("the comment answered %d before it queued behind the owner row: %s", response.Code, response.Body.String())
 	}
 	if err := hold.Rollback(ctx); err != nil {
@@ -505,6 +511,7 @@ func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 // not been handed back. The action answers that same open card and pins its review to the version
 // the human saw, rather than resolving the card and losing its thread.
 func TestHeaderReviewAnswersMovedApprovalAskBeforeTheAgentHandsItBack(t *testing.T) {
+	t.Parallel()
 	for _, review := range []struct {
 		name   string
 		state  string
@@ -573,6 +580,7 @@ func TestHeaderReviewAnswersMovedApprovalAskBeforeTheAgentHandsItBack(t *testing
 // settlement names the latest known browser editor, or SettlementActor when the browser edit was
 // ambiguous.
 func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
+	t.Parallel()
 	asker := model.Actor{Kind: "session", ID: sessionActor()["id"].(string)}
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -679,20 +687,21 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 				t.Fatalf("revise document: %v", err)
 			}
 			waitForArtifactVersion(t, doc.handler, doc.artifactID, 2)
-			deadline := time.After(5 * time.Second)
-			for {
-				select {
-				case event, ok := <-published:
-					if !ok {
-						t.Fatal("the document service closed the subscription before settlement published the moved approval")
+			waitUntil(t, "settlement to publish an ask.edited for "+doc.askID, func() bool {
+				for {
+					select {
+					case event, ok := <-published:
+						if !ok {
+							t.Fatal("the document service closed the subscription before settlement published the moved approval")
+						}
+						if payload, isAsk := event.Payload.(model.AskEditEventPayload); isAsk && event.Type == "ask.edited" && payload.ID == doc.askID {
+							return true
+						}
+					default:
+						return false
 					}
-					if payload, isAsk := event.Payload.(model.AskEditEventPayload); isAsk && event.Type == "ask.edited" && payload.ID == doc.askID {
-						return
-					}
-				case <-deadline:
-					t.Fatalf("settlement published no ask.edited for %s", doc.askID)
 				}
-			}
+			})
 		}, 1, alice, true},
 		{"a named version", time.Hour, func(t *testing.T, doc *document) {
 			if _, err := replaceDocumentText(doc.database, doc.documentService, doc.artifactID, "A revised spec", alice); err != nil {
@@ -944,7 +953,9 @@ type eventDelivery struct {
 }
 
 // eventDeliveries runs the outbox until it has published every eventType event whose payload's id
-// is id (an ask's, or a comment's), and returns what each one reached, oldest first.
+// is id (an ask's, or a comment's), and returns what each one reached, oldest first. That wait's
+// one bound is the test binary's deadline (testwait.Until): an outbox a loaded machine runs late
+// still ends it, and its failure prints the counts last read.
 func eventDeliveries(t *testing.T, database *store.Store, eventType, id string) []eventDelivery {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -965,21 +976,14 @@ func eventDeliveries(t *testing.T, database *store.Store, eventType, id string) 
 		<-stopped
 	}()
 	const about = `from events where type = $1 and payload->>'id' = $2`
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the outbox to publish every %s event for %s (the count unpublished of the count in all)", eventType, id), func() (string, bool) {
 		var unpublished, total int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) filter (where published_at is null), count(*) `+about,
 			eventType, id).Scan(&unpublished, &total); err != nil {
 			t.Fatalf("count %s events for %s: %v", eventType, id, err)
 		}
-		if total > 0 && unpublished == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d of %d %s events for %s unpublished", unpublished, total, eventType, id)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d of %d unpublished", unpublished, total), total > 0 && unpublished == 0
+	})
 	rows, err := database.Pool.Query(context.Background(), `select notify, published_destinations `+about+` order by id`, eventType, id)
 	if err != nil {
 		t.Fatalf("read %s deliveries for %s: %v", eventType, id, err)

@@ -108,7 +108,11 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 		anchor.BlockID = &anchored.BlockID
 	}
 
-	snapshot, err := s.deps.Docs.SnapshotVersion(ctx, artifact.ID, actor)
+	// Nothing the pin's transaction does after this version reads its block index or its record:
+	// the anchor's block id came from the rendering the mark was written into (docs.Anchored), so a
+	// version above the bound leaves its blocks to the block-index reconciliation, and a carry to it
+	// pins its stored markdown's digest (docs.WithDeferredBlockIndex).
+	snapshot, err := s.deps.Docs.SnapshotVersion(docs.WithDeferredBlockIndex(ctx), artifact.ID, actor)
 	if err != nil {
 		return &anchor, artifact.Name, nil, err
 	}

@@ -23,7 +23,7 @@ import (
 // at the same head, which again no webhook carries, settles again.
 func TestAPassSettlesAHeadNoWebhookReached(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "failure", otherApp, "2026-11-05T03:01:00Z"),
@@ -73,7 +73,7 @@ func TestAPassSettlesAHeadNoWebhookReached(t *testing.T) {
 // running one, and the listener publishes the settlement the daemon was waiting for.
 func TestAPassSettlesAHeadWhoseCompletionWebhookNeverCame(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
 
@@ -146,19 +146,19 @@ func TestAPassSettlesAHeadWhoseCompletionWebhookNeverCame(t *testing.T) {
 	}
 }
 
-// A repository neither a mapping nor an issue names is not read, and a repository two rows name
-// -- the name it had and the name it has -- is read once, because GitHub answers both rows with
-// one id.
+// A repository neither a project's default nor an issue names is not read, and a repository two
+// defaults name -- the name it had and the name it has -- is read once, because GitHub answers
+// both names with one id.
 func TestAPassReadsEachCoveredRepositoryOnce(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
-	h.mapRepository("acme/widgets-old")
+	h.seedProjectDefault(rowRepository)
+	h.seedProjectDefault("acme/widgets-old")
 	h.listHead()
-	// Both rows resolve to the one repository GitHub holds, under the name it has now.
+	// Both names resolve to the one repository GitHub holds, under the name it has now.
 	h.github.setRepository("acme/widgets-old", gitHubRepository, repositoryID)
-	// A repository of the same App that no mapping and no issue names.
-	h.github.setRepository("acme/unmapped", "Acme/Unmapped", 777)
-	h.github.setPullRequests("Acme/Unmapped", fakePull{number: 3, sha: headSHA})
+	// A repository of the same App that no project's default and no issue names.
+	h.github.setRepository("acme/unnamed", "Acme/Unnamed", 777)
+	h.github.setPullRequests("Acme/Unnamed", fakePull{number: 3, sha: headSHA})
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
@@ -166,12 +166,12 @@ func TestAPassReadsEachCoveredRepositoryOnce(t *testing.T) {
 	h.pass()
 
 	for _, request := range h.github.received() {
-		if strings.Contains(strings.ToLower(request.url), "unmapped") {
-			t.Fatalf("the pass read a repository no mapping and no issue names: %s %s", request.method, request.url)
+		if strings.Contains(strings.ToLower(request.url), "unnamed") {
+			t.Fatalf("the pass read a repository no project's default and no issue names: %s %s", request.method, request.url)
 		}
 	}
 	if asked := h.queriesFor(gitHubRepository); asked != 1 {
-		t.Fatalf("%s was queried %d times, want once for two rows naming it", gitHubRepository, asked)
+		t.Fatalf("%s was queried %d times, want once for two defaults naming it", gitHubRepository, asked)
 	}
 	if sent := h.github.countPath(fmt.Sprintf("/repos/%s/commits/%s/check-runs", gitHubRepository, headSHA)); sent != 0 {
 		t.Fatalf("the head's check runs were read over REST %d times, want none: the query answered the head whole", sent)
@@ -186,7 +186,7 @@ func TestAPassReadsEachCoveredRepositoryOnce(t *testing.T) {
 // not completed.
 func TestAQueuedSuiteIsNotRecordedAndTheHeadStillSettles(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
@@ -215,34 +215,35 @@ func TestAQueuedSuiteIsNotRecordedAndTheHeadStillSettles(t *testing.T) {
 	}
 }
 
-// A run that is queued or in progress is not recorded either: nothing takes a check out of a
-// record, so one recorded while it is running would hold the head for ever if it never finished.
-func TestARunningRunIsNotRecordedAndTheHeadStillSettles(t *testing.T) {
+// A run that is queued or in progress is recorded, as its webhook would have recorded it, and
+// holds the head: GitHub has not finished the head's CI, so a settlement on its one completed
+// check would claim the head done while two of its checks still run.
+func TestARunningRunIsRecordedAndHoldsTheHead(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
-		checkRun(2, "flaky", "queued", "", otherApp, ""),
-		checkRun(3, "slow", "in_progress", "", otherApp, "2026-11-05T03:01:02Z"),
+		unfinished(checkRun(2, "flaky", "queued", "", otherApp, "")),
+		unfinished(checkRun(3, "slow", "in_progress", "", otherApp, "2026-11-05T03:01:02Z")),
 	)
 	settlements := h.subscribe()
 
 	h.pass()
 
-	settled := h.settlement(settlements, "with a queued and a running run at the head")
-	if settled.SHA != headSHA || settled.Passed.Count != 1 || settled.Failed.Count != 0 {
-		t.Fatalf("settlement = %+v, want the head settled on its one completed check", settled)
-	}
+	h.noSettlement(settlements, "with a queued and a running run at the head")
 	state, _, ok := h.record()
 	if !ok {
 		t.Fatal("the head has no record")
 	}
-	if len(state.Checks) != 1 {
-		t.Fatalf("the record holds %+v, want the completed check alone", state.Checks)
+	if len(state.Checks) != 3 {
+		t.Fatalf("the record holds %+v, want all three runs", state.Checks)
 	}
-	if _, held := state.Checks["ci-ok"]; !held {
-		t.Fatalf("the record holds %+v, want ci-ok", state.Checks)
+	if got := state.Checks["flaky"]; got.Status != "queued" {
+		t.Fatalf("the record holds flaky as %+v, want it queued", got)
+	}
+	if got := state.Checks["slow"]; got.Status != "in_progress" {
+		t.Fatalf("the record holds slow as %+v, want it in_progress", got)
 	}
 }
 
@@ -251,7 +252,7 @@ func TestARunningRunIsNotRecordedAndTheHeadStillSettles(t *testing.T) {
 // published.
 func TestAPassOverRecordedChecksChangesNothing(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")
 	suite := checkSuite(900, "completed", "success", otherApp, "2026-11-05T03:01:05Z")
@@ -301,7 +302,7 @@ func TestOnlyTheReviewAppsVerdictIsRecorded(t *testing.T) {
 
 	t.Run("with the review App's id", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
-		h.mapRepository(rowRepository)
+		h.seedProjectDefault(rowRepository)
 		h.listHead()
 		h.github.setCheckRuns(gitHubRepository, headSHA, runs...)
 
@@ -326,7 +327,7 @@ func TestOnlyTheReviewAppsVerdictIsRecorded(t *testing.T) {
 
 	t.Run("with no review App id", func(t *testing.T) {
 		h := newHarness(t, "")
-		h.mapRepository(rowRepository)
+		h.seedProjectDefault(rowRepository)
 		h.listHead()
 		h.github.setCheckRuns(gitHubRepository, headSHA, runs...)
 
@@ -357,7 +358,7 @@ func TestOnlyTheReviewAppsVerdictIsRecorded(t *testing.T) {
 // REST, which is where the ETags and this rule live.
 func TestAHeadWhoseRecordIsGoneIsReadInFullAgain(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -406,7 +407,7 @@ func TestAHeadWhoseRecordIsGoneIsReadInFullAgain(t *testing.T) {
 // the counts it has always carried, and the GraphQL and REST counts beside them.
 func TestThePassLineCountsWhatThePassDid(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
@@ -429,7 +430,7 @@ func TestThePassLineCountsWhatThePassDid(t *testing.T) {
 		"head_requests":      0,
 		"heads_not_modified": 0,
 		"records":            1,
-		"mappings_skipped":   0,
+		"defaults_skipped":   0,
 		"heads_too_large":    0,
 		"graphql_queries":    1,
 		"graphql_points":     1,
@@ -476,8 +477,8 @@ func TestThePassLineCountsWhatThePassDid(t *testing.T) {
 // changes nothing. Pull request 8, of the other repository, was opened since, and its
 // completed run is the one record this pass changes.
 func TestThePassLineTellsItsPagesHeadsAndRecordsApart(t *testing.T) {
-	// The second mapped repository, and the two heads beside the harness's own: the one whose
-	// every observation the record holds already, and the one with a run to record.
+	// The second project's default repository, and the two heads beside the harness's own: the
+	// one whose every observation the record holds already, and the one with a run to record.
 	const (
 		otherRow          = "acme/tools"
 		otherRepository   = "Acme/Tools"
@@ -487,8 +488,8 @@ func TestThePassLineTellsItsPagesHeadsAndRecordsApart(t *testing.T) {
 		changedHeadSHA   = "b1c0ffee1234567890abcdef1234567890abcdef"
 	)
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
-	h.mapRepository(otherRow)
+	h.seedProjectDefault(rowRepository)
+	h.seedProjectDefault(otherRow)
 	h.github.setRepository(rowRepository, gitHubRepository, repositoryID)
 	h.github.setRepository(otherRow, otherRepository, otherRepositoryID)
 	h.github.setPullRequests(gitHubRepository,
@@ -534,7 +535,7 @@ func TestThePassLineTellsItsPagesHeadsAndRecordsApart(t *testing.T) {
 		"heads":              3,
 		"heads_not_modified": 1,
 		"records":            1,
-		"mappings_skipped":   0,
+		"defaults_skipped":   0,
 		"heads_too_large":    0,
 		"graphql_queries":    2,
 		"graphql_points":     2,
@@ -580,7 +581,7 @@ func atHead(repository, sha string, item object) object {
 // line names the scope and when the limit ends.
 func TestALimitInForceEndsThePassBeforeItReadsGitHub(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	if err := h.reconciler.Limits.Record(h.ctx, "app", 10*time.Minute); err != nil {
 		t.Fatalf("record a limit on the App: %v", err)
@@ -610,7 +611,7 @@ func TestALimitInForceEndsThePassBeforeItReadsGitHub(t *testing.T) {
 func TestARateLimitedAnswerStopsThePass(t *testing.T) {
 	t.Run("at a head's REST read", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
-		h.mapRepository(rowRepository)
+		h.seedProjectDefault(rowRepository)
 		h.listHead()
 		// The query cannot answer this head, so the pass reads it over REST, which is where
 		// GitHub's REST limit answers it.
@@ -642,7 +643,7 @@ func TestARateLimitedAnswerStopsThePass(t *testing.T) {
 
 	t.Run("at the first request of all", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
-		h.mapRepository(rowRepository)
+		h.seedProjectDefault(rowRepository)
 		h.listHead()
 		h.github.rateLimitEverything()
 
@@ -652,8 +653,8 @@ func TestARateLimitedAnswerStopsThePass(t *testing.T) {
 		if line["rate_limited"] != true {
 			t.Fatalf("the pass line reports rate_limited = %v, want true: %v", line["rate_limited"], line)
 		}
-		if got := number(t, line, "mappings_skipped"); got != 0 {
-			t.Fatalf("the pass skipped %d mappings; a rate limit stops the pass, it does not skip a repository: %v", got, line)
+		if got := number(t, line, "defaults_skipped"); got != 0 {
+			t.Fatalf("the pass skipped %d repositories; a rate limit stops the pass, it does not skip a repository: %v", got, line)
 		}
 		if got := number(t, line, "heads"); got != 0 {
 			t.Fatalf("the pass read %d heads under a rate limit: %v", got, line)
@@ -667,7 +668,7 @@ func TestARateLimitedAnswerStopsThePass(t *testing.T) {
 // send an alarm looking for a limit nobody recorded.
 func TestTheStopNamesTheScopeTheReadWasBudgetedUnder(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.rateLimitNext("/repos/" + rowRepository)
 
@@ -743,10 +744,10 @@ func (h *harness) recordReads() *readRecorder {
 func TestEachPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	reads := h.recordReads()
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
-	// The first request of a pass looks the installation of the mapped repository up, for the
-	// token every read of it is made with.
+	// The first request of a pass looks the installation of the project's default repository up,
+	// for the token every read of it is made with.
 	installation := "/repos/" + rowRepository + "/installation"
 	h.github.answerStatus(installation, http.StatusServiceUnavailable)
 
@@ -789,7 +790,8 @@ func TestEachPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	for _, row := range []struct {
 		name string
-		// arrange sets up the mapping, GitHub's answers and the shared limits before the pass.
+		// arrange sets up the project's default, GitHub's answers and the shared limits before the
+		// pass.
 		arrange func(h *harness)
 		// pass runs the one pass; nil is h.pass.
 		pass func(h *harness)
@@ -798,16 +800,16 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 		// causeHas is what the cause of a failed attempt must name.
 		causeHas []string
 	}{{
-		name: "a mapped repository the App is not installed on",
+		name: "a project's default repository the App is not installed on",
 		arrange: func(h *harness) {
 			// The stand-in knows no repository under the row, so the installation lookup is 404.
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 		},
 		causeHas: []string{"not installed", rowRepository},
 	}, {
-		name: "a mapped repository the App is not installed on, on a pass that holds GitHub's earlier answer",
+		name: "a project's default repository the App is not installed on, on a pass that holds GitHub's earlier answer",
 		arrange: func(h *harness) {
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			// A pass before the one measured asks GitHub and holds its answer, so the measured pass
 			// asks GitHub nothing about the repository and must still note the fault it stands for.
 			measured := h.reconciler.GitHubReads
@@ -819,7 +821,7 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	}, {
 		name: "a repository only an issue names that the App is not installed on",
 		arrange: func(h *harness) {
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.issueInRepository(uninstalledRow)
 			h.listHead()
 			h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -830,14 +832,14 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	}, {
 		name: "a repository whose identity GitHub answers 404",
 		arrange: func(h *harness) {
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.github.hideRepository(rowRepository)
 		},
 		causeHas: []string{"cannot read the repository", rowRepository},
 	}, {
 		name: "a repository GitHub names with no owner",
 		arrange: func(h *harness) {
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			// A full_name that is not owner/name: an empty one is no answer at all (identify).
 			h.github.setRepository(rowRepository, gitHubName, repositoryID)
 		},
@@ -845,7 +847,7 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	}, {
 		name: "open pull requests GitHub refuses after it refused the query",
 		arrange: func(h *harness) {
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.listHead()
 			h.github.answerStatus("/graphql", http.StatusUnprocessableEntity)
 			h.github.answerStatus("/repos/"+gitHubRepository+"/pulls", http.StatusUnprocessableEntity)
@@ -854,7 +856,7 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	}, {
 		name: "a head whose check runs GitHub refuses",
 		arrange: func(h *harness) {
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.listHead()
 			// The query cannot answer the head's checks, so the pass reads them over REST.
 			h.github.refuseChecks(gitHubRepository, headSHA)
@@ -885,7 +887,7 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	}, {
 		name: "a limit in force when the pass starts",
 		arrange: func(h *harness) {
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.listHead()
 			if err := h.reconciler.Limits.Record(h.ctx, githubapp.AppScope, 10*time.Minute); err != nil {
 				h.t.Fatalf("record a limit on the App: %v", err)
@@ -895,7 +897,7 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	}, {
 		name: "a query GitHub gave up on whose repository the listing reads",
 		arrange: func(h *harness) {
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.listHead()
 			h.github.answerStatus("/graphql", http.StatusBadGateway)
 		},
@@ -903,7 +905,7 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	}, {
 		name: "a pass its caller cancelled",
 		arrange: func(h *harness) {
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.listHead()
 			// GitHub holds its answer about the repository past the moment the caller cancels.
 			h.github.stall("/repos/"+rowRepository, time.Minute)
@@ -971,11 +973,16 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 // webhookBody is one GitHub webhook body carrying payload as its event, with the repository and
 // the pull request GitHub names for it: the delivery the listener would have had.
 func webhookBody(event string, payload object) string {
+	return webhookFor(event, payload, 7)
+}
+
+// webhookFor is webhookBody for a run of pull request number.
+func webhookFor(event string, payload object, number int64) string {
 	// The webhook attributes the object to its pull request as GitHub's own delivery does; a
 	// listing carries no such field, which is why the pass takes the number from the pull
 	// request it read the head of. It is no part of the observation either body maps to, so the
 	// webhook's and the listing's are still the same observation.
-	attributed := object{"pull_requests": []any{object{"number": 7}}}
+	attributed := object{"pull_requests": []any{object{"number": number}}}
 	for key, value := range payload {
 		attributed[key] = value
 	}

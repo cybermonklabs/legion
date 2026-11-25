@@ -347,13 +347,15 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 //
 // seen names the acting credential, bound by the read these arms belong to: an ask the acting
 // person may not see cites nothing here, and neither does a part that cites one of the
-// document's blocks the acting person may not see.
+// document's blocks the acting person may not see. Each predicate is bound where the gate keeps
+// it (gatedKind, authorOnlyGate): the block's is, and an ask's is not, since the store reserves
+// no ask for its author, so every ask is one the acting person may see.
 func asksCitingTheDocument(param, seen string) string {
 	ask := `'` + string(ItemAsk) + `', r.ask_id::text, max(r.created_at), max(r.source_seq), `
-	visibleAsk := ` and ` + VisibleKind(string(ItemAsk), `r.ask_id::text`, seen)
+	visibleAsk := gatedKind(string(ItemAsk), `r.ask_id::text`, seen)
 	return `select r.kind, ` + ask + `null::text
 		from ` + itemBlockLinks(ItemAsk) + `
-		where ` + itemBlockCurrent + visibleAsk + ` and r.to_kind = 'artifact' and r.to_id = ` + param + `
+		where ` + itemBlockCurrent + ` and ` + visibleAsk + ` and r.to_kind = 'artifact' and r.to_id = ` + param + `
 		group by r.kind, r.ask_id
 		union all
 		select r.kind, ` + ask + `r.to_id
@@ -361,9 +363,9 @@ func asksCitingTheDocument(param, seen string) string {
 		cross join lateral (
 			select r.kind, r.ask_id, r.created_at, r.source_seq, r.to_id
 			from ` + itemBlockLinks(ItemAsk) + `
-			where ` + itemBlockCurrent + visibleAsk + ` and r.to_kind = 'block' and r.to_id = k.node_id
-			  and ` + VisibleKind("block", "r.to_id", seen) + `
+			where ` + itemBlockCurrent + ` and ` + visibleAsk + ` and r.to_kind = 'block' and r.to_id = k.node_id
 		) r
+		where ` + gatedKind("block", "k.node_id", seen) + `
 		group by r.kind, r.ask_id, r.to_id
 		union all
 		select r.kind, ` + ask + `resolved.node_id
@@ -371,11 +373,10 @@ func asksCitingTheDocument(param, seen string) string {
 		cross join lateral (
 			select r.kind, r.ask_id, r.created_at, r.source_seq, r.to_id
 			from ` + itemBlockLinks(ItemAsk) + `
-			where ` + itemBlockCurrent + visibleAsk + ` and r.to_kind = 'block' and r.to_id = k.address
+			where ` + itemBlockCurrent + ` and ` + visibleAsk + ` and r.to_kind = 'block' and r.to_id = k.address
 		) r
 		cross join lateral (select ` + ResolvedBlockSQL("r.to_id") + ` as node_id) resolved
-		where resolved.node_id in ` + documentBlockIDs(param) + `
-		  and ` + VisibleKind("block", "resolved.node_id", seen) + `
+		where resolved.node_id in ` + documentBlockIDs(param) + ` and ` + gatedKind("block", "resolved.node_id", seen) + `
 		group by r.kind, r.ask_id, resolved.node_id`
 }
 

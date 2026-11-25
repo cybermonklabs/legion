@@ -204,7 +204,7 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 			) held
 			left join graph_nodes n on n.kind = held.from_kind and n.id = held.from_id
 			where held.asserted and held.from_kind <> '`+graphstore.KindIssue+`' and below.depth < $2
-			  and `+VisibleNode("held.from_kind", "held.from_id", "$3")+`
+			  and `+VisibleNodeOfRow("held.from_kind", "held.from_id", "n", "$3")+`
 		)
 		select found.issue, found.parent, found.id, found.root, found.overtaken,
 		       case when sized.asserted then sized.value end

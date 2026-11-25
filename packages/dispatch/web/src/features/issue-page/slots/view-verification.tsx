@@ -12,6 +12,7 @@ import { NoTooltips } from "../NoTooltips";
 import { blocksKey, useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
 import { type TreeBlocksRead, useTreeReadRunning } from "../tree-read/tree-read";
+import { NextViewPage } from "../tree-read/view-read";
 import {
   type FailedRead,
   queryTyped,
@@ -56,9 +57,8 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   );
   // Whether the view draws a row of the node the address names, which the stage is told by the
   // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
-  // coverage read, the results read and the tree read, which holds the Verification document's
-  // blocks and the statements, whether or not the results read holds a check
-  // (`useVerificationReads`). Where the view may tell, the body says whether
+  // coverage read, the results read and, whether or not the results read holds a check, the tree
+  // read (`useVerificationReads`'s `blocks`). Where the view may tell, the body says whether
   // it draws the node, with the reader's chip applied (`addressed`, one value while the node and
   // the call stay the same): a statement, a check under a statement it draws, a check that serves
   // none or a row of its own, but under a chip only that state's statements and their checks, and
@@ -84,6 +84,8 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
           view={view.root}
           whole={whole}
         />
+        {/* While the view read answers a next page, the control that reads it (R15). */}
+        <NextViewPage filter="verification" issueKey={issue.key} />
       </div>
     </NoTooltips>
   );
@@ -92,9 +94,9 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
 /**
  * The reads the Verification view is drawn from, as its body takes them (the `checks` and
  * `reads` of `VerificationFilterBody`): the coverage read, the results read with the issue's
- * checks, the Verification document's blocks it hands in with whether the tree read they are in
- * runs, and how the three stand. Both reads are the slot's own observers, apart from
- * `useIssueTree`'s of the same keys, so what they fetch is read by their own options alone.
+ * checks, the Verification document's blocks it is handed, and how the three stand. Both reads are
+ * the slot's own observers, apart from `useIssueTree`'s of the same keys, so what they fetch is
+ * read by their own options alone.
  */
 export function useVerificationReads(
   issueKey: string,
@@ -122,12 +124,12 @@ export function useVerificationReads(
   // `verificationDocument`), and names it in a field of its own (`verification_artifact_id`),
   // which no line here reads. It must agree with the document whose blocks
   // `useIssueTree` reads, which that hook finds from the issue read (`roleDocument`); no other
-  // document's blocks place a check. The slot hands those blocks in from its `useIssueTree`
-  // (`blocks`, the tree read's), with whether that read runs (`useTreeReadRunning`), so it sends
-  // no request of its own and sees whatever `useIssueTree`'s observer fetches; its `refetch`
-  // still fetches, which is what Retry asks. The tree read holds the statements too, so the view
-  // waits on it whether or not the results read holds a check, and a read of it refused before
-  // it first answered is a line of its own, with that read's own error and Retry.
+  // document's blocks place a check. The slot hands those blocks in (`blocks`, the tree read's),
+  // with whether that read runs, so it sends no request of its own and sees whatever
+  // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
+  // The tree read holds the statements too, so the view waits on it whether or not the results
+  // read holds a check, and a read of it refused before it first answered is a line of its own,
+  // with that read's own error and Retry.
   // Each read has answered where it holds data, and not by its status: a background refetch
   // that fails sets TanStack Query's status to error and keeps the data it last answered, and
   // the query cache keeps that data when the stage mounts this slot again as the reader comes

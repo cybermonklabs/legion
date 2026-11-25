@@ -68,8 +68,8 @@ import {
   treeTuple,
   wholeTreeOnly,
 } from "../tree-read/tree-fixtures";
-import { issueTreeQuery, type TreeAnswer } from "../tree-read/tree-read";
-import { issueAsksQuery } from "../useIssueTree";
+import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
+import { issueAskThreadsQuery } from "../useIssueTree";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -141,8 +141,8 @@ function TreeReads({ issue }: { issue: IssueDetails }): ReactNode {
   useQuery(issueCoverageQuery(issue.key));
   useQuery(issueDecisionsQuery(issue.key, true));
   useQuery(issueResultsQuery(issue.key));
-  useQuery(issueAsksQuery(issue.key));
-  useQuery(issueTreeQuery(issue.key));
+  useQuery(issueAskThreadsQuery(issue.key));
+  useQuery(outlineQuery(issue.key, "conversation"));
   return null;
 }
 
@@ -151,7 +151,7 @@ type ReadState = "answered" | "failed" | "out";
 
 /** The spies on the page's reads that the body reads, so a case can answer one again. */
 interface Reads {
-  readonly asks: Mock<typeof api.listIssueAsks>;
+  readonly asks: Mock<typeof api.listIssueAskThreads>;
   readonly blocks: Mock<typeof api.getIssueTree>;
   readonly coverage: Mock<typeof api.getIssueCoverage>;
   readonly decisions: Mock<typeof api.getIssueDecisions>;
@@ -242,7 +242,7 @@ function drawBody(
     defaultOptions: { queries: { retry: false, staleTime } },
   });
   const spies = {
-    asks: spyOn(api, "listIssueAsks"),
+    asks: spyOn(api, "listIssueAskThreads"),
     blocks: spyOn(api, "getIssueTree"),
     coverage: spyOn(api, "getIssueCoverage"),
     decisions: spyOn(api, "getIssueDecisions"),
@@ -275,13 +275,13 @@ function drawBody(
     spies.coverage.mockResolvedValue(coverageRead([]));
   });
   settle(asks, spies.asks, () => {
-    client.setQueryData(["asks", KEY], []);
+    client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
     spies.asks.mockResolvedValue([]);
   });
   // The tree read holds every document's blocks, so it stands as `verification` says where a
   // case names it, and else as `blocks`.
   settle(verification ?? blocks, spies.blocks, () => {
-    client.setQueryData(issueTreeQuery(KEY).queryKey, NO_NODES);
+    client.setQueryData(outlineQuery(KEY, "conversation").queryKey, NO_NODES);
     spies.blocks.mockResolvedValue(NO_NODES);
   });
   const read: Reads = {
@@ -896,10 +896,10 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
   client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   client.setQueryData(["comments", KEY], TWO_THREADS);
   client.setQueryData(["issue-messages", KEY], []);
-  client.setQueryData(issueTreeQuery(KEY).queryKey, threadsTree());
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threadsTree());
   const trees = answerThreadsTree();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const view = render(
@@ -940,9 +940,9 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
   }
 });
 
-// The names reads are the page's tree's, read last, once no read the tree is built from is still
-// out, and the Spec view draws from them too: the issue's three sentences, and the name of every
-// reference a plain line cites. A refused names read says so in its own line, after the lines of
+// The names read is the page's tree's, read last, once no read the tree is built from is still
+// out, and the Spec view draws from it too: the name of every reference the issue's three
+// sentences and a plain line cite. A refused names read says so in its own line, after the lines of
 // the view's own reads, as the outline draws it last, and its Retry asks the names again. The
 // stage is the page's own with the Spec view's slot as filled, which reads the tree and passes
 // the names' line on to the body; with that line dropped, "In short" stood as a bare heading and
@@ -958,10 +958,10 @@ test("a failed names read says so in its own line, after the view's own, and its
   client.setQueryData(["whoami"], { kind: "user", login: READER });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
-  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   client.setQueryData(["comments", KEY], TWO_THREADS);
   client.setQueryData(["issue-messages", KEY], []);
-  client.setQueryData(issueTreeQuery(KEY).queryKey, threadsTree());
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threadsTree());
   const trees = answerThreadsTree();
   const decisions = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("offline"));
   const names = spyOn(api, "getReferenceTargets").mockRejectedValue(new Error("offline"));
@@ -1980,7 +1980,7 @@ test("a line's alert is said again for a new refusal of one read where another o
   });
   const coverage = issueCoverageQuery(KEY).queryKey;
   // The spec's blocks are the tree read's.
-  const blocks = issueTreeQuery(KEY).queryKey;
+  const blocks = outlineQuery(KEY, "conversation").queryKey;
   let notifications: HeldNotifications | undefined;
   try {
     // Both reads are refused once before the alert is taken, so it is the alert drawn for both

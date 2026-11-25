@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -76,6 +77,8 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// a second one (store/pool.go): inside the transaction every person would read as holding
 	// no scope, which is the refusal this route must not make.
 	person := s.callerHoldsScope(r, model.ScopePerson)
+	// The one project the credential may write, read before the transaction for the same reason.
+	callerProject, _ := s.callerProject(r)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -100,7 +103,23 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The pre-handler check held the result's own issue to a scoped caller's project, and the
+	// check's issue, which the retraction is appended to, can be of another project, reached
+	// through a parent of another project. Such a caller is refused it here, before it takes that
+	// issue's owner lock.
+	if err := refuseCheckOutsideCallerProject(r.Context(), tx, callerProject, result.CheckIssueKey); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := store.LockOwner(r.Context(), tx, store.IssueOwner(result.CheckIssueKey)); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The retraction moves the record of the check's issue's Verification query, which takes a
+	// version in its issue's room once the retraction is written (reviseQueriesUnder). That room's
+	// lock comes here, after the owner lock and before the event's owner row and every write
+	// (docs.LockQueryRooms).
+	if err := docs.LockQueryRooms(r.Context(), tx, result.CheckIssueKey); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -144,6 +163,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq, CreatedAt: createdAt,
 	}
 	if err := writeCheckResultRetraction(r.Context(), tx, &retraction, held, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.reviseQueriesUnder(r.Context(), tx, result.CheckIssueKey, actor, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -326,6 +349,7 @@ func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *mode
 		}
 		graphstore.QueueWrite(b, nil, []graphstore.Tuple{graphstore.ResultRetracted(
 			retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)})
+		graphstore.QueueHeads(b, []graphstore.NodeKey{{Kind: graphstore.KindResult, ID: retraction.ResultID}})
 		return nil
 	})
 }

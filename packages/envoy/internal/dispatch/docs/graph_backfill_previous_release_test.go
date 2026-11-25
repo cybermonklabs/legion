@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,7 @@ import (
 // that drain, and this build's reconciliation must then state every parent, as its part_of tuple
 // and as the parent_block_id the seed's own indexing computed.
 func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -172,6 +174,7 @@ func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *t
 // pass lists the document no more. Where the stand is at the version, the lower rule has nothing
 // to do, and a pass that listed the document would lose the fence and list it again every tick.
 func TestALowerRulesDrainLeavesAHigherRulesMark(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
@@ -220,6 +223,7 @@ func TestALowerRulesDrainLeavesAHigherRulesMark(t *testing.T) {
 // version, indexes it at that version and clears the mark: the mark is of a rule its pass owes
 // everything of (R13).
 func TestAHigherRulesPassListsAndClearsALowerRulesMark(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
@@ -253,6 +257,7 @@ func TestAHigherRulesPassListsAndClearsALowerRulesMark(t *testing.T) {
 // stands. Each statement is read as its writer runs it, and run over a document it marks: one
 // whose store stands below its version.
 func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	lowerRule := refs.BlockIndexMarkingRule
 	higherRule := lowerRule + 1
@@ -355,14 +360,22 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // markingStatementDigests is, for each value refs.BlockIndexMarkingRule has held, the digest of the
 // statements that decide what a build of that rule marks (markingStatements), as TestGoldenDigest
 // (internal/broker/policy/load_test.go) pins its digest. A change to those statements is a change
-// of what a pass owes, which raises the rule and records the new digest here beside the old.
+// of what a pass owes, which raises the rule and records the new digest here beside the old. The
+// digest is taken over each statement's words joined by single spaces, so a statement's layout -
+// its line breaks and indentation, which the text it splices in from another place gives it -
+// moves no digest, and a change of any word does.
 //
 // Rule 1's digest was re-recorded when the node store's project columns joined these statements:
 // they read and write each comment's and each block's project beside what they read before
 // (refs.CommentsNamingNoNode, graphcensus.BlockRowsStatement, the node write of
 // refs.CommentWrite.Queue). Those columns move no row in or out of what a pass owes, and no build
 // of rule 1 has shipped with the statements before them, so the rule stays 1 and its digest is
-// re-recorded rather than raised.
+// re-recorded rather than raised. It was re-recorded again when the store's write path
+// (graphstore.QueueWrite) began reading the types of the nodes it writes (queueSupertagCheck),
+// which refs.CommentWrite.Queue now sends first, renumbering the statements after it, while its
+// node move and its append changed in whitespace alone: that read writes nothing and refuses a
+// comment write only where the store holds no live supertag row of comment, person or session,
+// rows migration 20261109051232 seeds, so it too moves no row in or out of what a pass owes.
 //
 // It was re-recorded again when main's #4883 made store.LatestEventID a scalar subquery,
 // `(select currval(...))`, which the node write of refs.CommentWrite.Queue names as each comment
@@ -372,14 +385,76 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // re-recorded for the same reason: with the old text its statements give the one it recorded
 // before.
 //
+// It was re-recorded once more when the digest came to fold each statement's whitespace and to
+// cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
+// statement moved a row in or out of what a pass owes. Rule 2's was re-recorded with it, the
+// fence of rule 2 writing stated_version and stated_rule beside store_version. The digest of rule
+// 1 recorded then on this change, 2f925616f2b946b6c37e9949f50a72ff2ced0050ac34426c0b14efe0b7a0e3cb,
+// holds that change and the supertag read above together: the statements are the folded ones with
+// that read added before the node write of refs.CommentWrite.Queue, and nothing else.
+//
+// A change of words that keeps every statement's rows keeps the rule, and records its digest in
+// place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
+// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea on main, from
+// 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954 on #4173's branch, whose
+// statements also read the project columns above, and from the digest above on this change, whose
+// statements also hold the supertag read: the backfill's block selection
+// (graphcensus.BlockRowsStatement) wrote its version lookups `caused as materialized (`, a planner
+// hint that runs them once per batch, which changes the statement's plan and not its rows
+// (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot walks a seed
+// with the word and without it, under both plan-cache modes, and holds the two to the same rows).
+// The documents a pass of rule 1 marks are the same, so a build of either text beside the other
+// reads rule 1's cursors, horizons and marks as its own rightly. The digest below holds the word
+// and the supertag read together: the statements are the ones of the digest above with the word
+// added, which are #4173's branch's with the word,
+// c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3, with the supertag read added,
+// and nothing else.
+//
 // Rule 2's statements are this branch's: a pass records the rule and the version it stated a
 // document by (stated_rule, stated_version), and the backfill and the tick mark a document no
 // pass of their rule has stated at its version (refs.UnstatedBlockIndexSQL) beside rule 1's test
 // of a mark (refs.OwedMarkAbsent), and the backfill's block mark keeps the time of a mark already
 // standing. Rule 1's entry is the sibling branch's, as it records it.
+//
+// Rule 2's digest moved twice by changes of words that keep every statement's rows, from
+// 58b60662b0ca419685451c8ed20174f7a39235aec9f59e5e889ec071642a03d4. The head projection
+// (graphstore.QueueHeads) moved the statements refs.CommentWrite.Queue sends: the node insert, the
+// node update and the tuple append each carry graphstore's KeptHeadRows,
+// `(select set_config('dispatch.head_rows', 'kept', true)) is not null`, in the WHERE of the rows
+// they write, which is true of every row, since set_config answers the value it sets, so each
+// writes the rows it wrote before; and the write sends one statement more, the head rows of the
+// comment's node, which writes issue_head_nodes alone. Neither marks a document, writes another
+// comment or moves the revision fence. And #4790's `caused as materialized (` in
+// graphcensus.BlockRowsStatement, above, changes its plan and not its rows. With the word taken
+// out the statements give 12211e11e636debb9207fa401899ed8f2b0b773b78fec3e24718a19f725ecd04, and with
+// the head projection's predicates and statement taken out as well, the digest recorded before.
+//
+// It moved a third time, from 3ddf78835ff68e4647d98580cbd6b7ff370c1369234f8eb0996b9bee56a064b1,
+// when the head rows came to hold what the tree read's comment page reads: the head-rows statement
+// that refs.CommentWrite.Queue sends (graphstore.QueueHeads) reads each comment's row and each
+// comment block's row and text beside the node, and writes those columns of issue_head_nodes, and it
+// claims the rows kept as the other statements do. It still writes issue_head_nodes alone, so it
+// marks no document, writes no other comment and moves no revision fence; no other marking
+// statement changed with it.
+//
+// It moved a fourth time, from 876f8ff389464b286100702428b8fb5218b74f78f43e0345e549f82f1cf553cb,
+// when the head rows came to hold a comment's marks beside what its page reads (main's #3512: when
+// its author last edited it, and when and by whom it was deleted): the same head-rows statement
+// reads the comment's edited_at, deleted_at and deleted_by for the comment and for each of its
+// blocks, and writes them into three more columns of issue_head_nodes. It still writes
+// issue_head_nodes alone; no other marking statement changed with it.
+//
+// It moved a fifth time, from 349ad57c4983da437d4904a67c55aad25864f849b28ae1b86998c179d3fcd005,
+// when the head mark triggers of the conversation tables came to fire inside the statement that
+// writes the row rather than at the commit: the update that names each comment's node on its row,
+// which refs.CommentWrite.Queue sends after the node write, carries graphstore's KeptHeadRows in its
+// WHERE as the node write's statements do, which is true of every row, so it names the nodes it
+// named before. It still marks no document, writes no other comment and moves no revision fence; no
+// other marking statement changed with it, and with the predicate taken out the statements give the
+// digest recorded before.
 var markingStatementDigests = map[int]string{
-	1: "646218ee6bbd08e2be3542bf8d02a30c9d934a0191338816fcbb043054ee3c2e",
-	2: "73cde9ca52ffda818093f87269ec683b479ae7d22fabe8bd2e0311cf2331a953",
+	1: "2d31bf086bf3f1960b792517ad5744f180da731f220cb4c48a838b2bf8a03700",
+	2: "ff98e8c680479fa8b9b29a1ff1f44c48b723dcfa7eab0f97bcb36decbbfd8226",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -388,9 +463,10 @@ var markingStatementDigests = map[int]string{
 // beside a build of the old ones, during a roll or after a rollback, would otherwise read each
 // other's cursors, horizons and marks as their own.
 func TestTheMarkingRuleNamesTheStatementsItMarksWith(t *testing.T) {
+	t.Parallel()
 	digest := sha256.New()
 	for _, statement := range markingStatements(t) {
-		fmt.Fprintf(digest, "%s\x00%s\x00", statement.name, statement.sql)
+		fmt.Fprintf(digest, "%s\x00%s\x00", statement.name, strings.Join(strings.Fields(statement.sql), " "))
 	}
 	got := hex.EncodeToString(digest.Sum(nil))
 	if want := markingStatementDigests[refs.BlockIndexMarkingRule]; got != want {
@@ -408,10 +484,13 @@ type namedStatement struct{ name, sql string }
 // write's statements (refs.CommentWrite.Queue), the backfill's block selection
 // (graphcensus.BlockRowsStatement) and its read of a batch's rows again under the locks
 // (graphcensus.HeldBlockRowsStatement), the backfill's marks (graphcensus.BlockBatchMarkStatement,
-// graphcensus.StaleDocumentsStatement, graphcensus.StaleBatchMarkStatement), and the two marks of
-// a debt (oweDocumentIndexStatement, refs.RebuildMarkStatement). The two refs functions are run
-// against a stand-in that records what they send and answers nothing, so no copy of their text is
-// read.
+// graphcensus.StaleDocumentsStatement, graphcensus.StaleBatchMarkStatement), the two marks of
+// a debt (oweDocumentIndexStatement, refs.RebuildMarkStatement), the condition under which a build
+// lists a marked document as owed (refs.OwedMarkListed), which the owed listing, its re-read under
+// the owner's lock and the backlog all read, and the revision fence that decides whether a pass
+// wins and clears a mark (refs.RevisionFenceStatement). The two refs functions that send
+// statements are run against a stand-in that records what they send and answers nothing, so no
+// copy of their text is read.
 func markingStatements(t *testing.T) []namedStatement {
 	t.Helper()
 	ctx := context.Background()
@@ -456,6 +535,8 @@ func markingStatements(t *testing.T) []namedStatement {
 		namedStatement{"graphcensus.StaleBatchMarkStatement", graphcensus.StaleBatchMarkStatement},
 		namedStatement{"docs.oweDocumentIndexStatement", oweDocumentIndexStatement},
 		namedStatement{"refs.RebuildMarkStatement", refs.RebuildMarkStatement},
+		namedStatement{"refs.OwedMarkListed", refs.OwedMarkListed("b", "$1::integer")},
+		namedStatement{"refs.RevisionFenceStatement", refs.RevisionFenceStatement},
 	)
 }
 

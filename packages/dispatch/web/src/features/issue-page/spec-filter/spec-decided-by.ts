@@ -313,7 +313,7 @@ function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
 
 /** Each ask of the tree by the id a decision names it with (`Decision.asks`), which is the ask's
  *  own id and not the id of the row it is drawn as: an ask the server indexed from a block of a
- *  document is drawn as that block (`tree-drafts.ts`'s `addAsks`). */
+ *  document is drawn as that block (`tree-read/tree-nodes.ts`' `draftAsk`). */
 function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, TreeNode> {
   const asks = new Map<string, TreeNode>();
   for (const node of nodes.values()) {

@@ -4,8 +4,12 @@
   "license": "Apache-2.0",
   "description": "Codex CLI plugin for Legion's Envoy bus and Dispatch",
   "type": "module",
+  "bin": {
+    "dispatch": "bin/dispatch"
+  },
   "files": [
     ".codex-plugin/**",
+    "bin/**",
     "dist/**",
     "hooks/**",
     "skills/**",

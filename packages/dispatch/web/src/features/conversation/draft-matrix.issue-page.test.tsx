@@ -175,7 +175,6 @@ async function openIssuePage(
   ];
   // The header's own reads, each answered with the API's empty shape.
   answerRequests(
-    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
     http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([]))
   );
   const createComment = spyOn(api, "createComment");

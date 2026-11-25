@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,14 +16,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An issue's close races the writers of its asks and documents. Each race below ends in one of
 // the orders the issue's row allows, never in a mixture of them, and never in a deadlock.
-
-// raceDeadline bounds every request a race starts: a deadlock fails the test here instead of
-// hanging it.
-const raceDeadline = 10 * time.Second
 
 // A resolution of an open ask and the close of its issue, released together, serialise on the
 // issue's row. Either the resolution commits first, so the ask keeps the resolver's record and the
@@ -30,6 +28,7 @@ const raceDeadline = 10 * time.Second
 // 409 ISSUE_CLOSED and the ask reads withdrawn naming the closer. Either way the ask has exactly
 // one ask.resolved event, and an ask block's block reads resolved, as its row does.
 func TestClosingAnIssueAgainstAConcurrentResolveLeavesOneRecord(t *testing.T) {
+	t.Parallel()
 	resolver := model.Actor{Kind: "session", ID: sessionActor()["id"].(string)}
 	for _, block := range []bool{false, true} {
 		name := "a plain ask"
@@ -123,6 +122,7 @@ func (d *afterCloseSettlementDocs) SettleIssueDocuments(ctx context.Context, iss
 // The close's sweep writes the copy from its source's row instead, so it reads resolved, as the
 // source does, without waiting for that settlement.
 func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -155,6 +155,7 @@ func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t
 // another build serves, for that build's pages (docs' rollWindowAskAttributes), so the test
 // registers a process of each of two builds and reads the copy's live tree.
 func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
+	t.Parallel()
 	// An hour, so the settlement the resolution arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	registerTwoBuilds(t, f.database)
@@ -186,6 +187,7 @@ func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
 // state only while another build serves, so the test registers a process of each of two builds and
 // reads the copy's live tree.
 func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -228,6 +230,7 @@ func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t
 // rollWindowAskAttributes), so the test registers a process of each of two builds and reads the
 // copy's live tree.
 func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
+	t.Parallel()
 	// An hour, so the settlement the answer arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	registerTwoBuilds(t, f.database)
@@ -251,6 +254,7 @@ func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 // as the asks member of the text an agent reads shows it from the store, and the close leaves that
 // text as it was.
 func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		// An hour, so the only settlements are the ones this test runs.
@@ -394,6 +398,7 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 // edit's own version holds none of the block's state, the next differs from it only in the
 // block's opener showing it resolved, and the text an agent reads shows the block resolved.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	// hold names the room whose next settlement is held at its owner row, until release: the room
 	// the spec is edited in (documentRoomOf), which a settlement locks.
@@ -433,11 +438,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write the ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	select {
-	case <-held:
-	case <-time.After(raceDeadline):
-		t.Fatal("the ask block's settlement never started")
-	}
+	testwait.Receive(t, "the ask block's settlement to start", held)
 	if id := findBlockAsk(t, handler, issue.Key, spec, "late-decision"); id != "" {
 		t.Fatalf("the ask block is ask %s while its settlement is held", id)
 	}
@@ -457,11 +458,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	default:
 	}
 	releaseSettlement()
-	select {
-	case <-closing:
-	case <-time.After(raceDeadline):
-		t.Fatalf("the close did not answer within %v of the settlement's release", raceDeadline)
-	}
+	testwait.Receive(t, "the close's answer once the settlement was released", closing)
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
@@ -512,6 +509,7 @@ func versionMarkdowns(t *testing.T, database *store.Store, document string) []st
 // written a moment before is indexed as an ask credited to its writer, and the document owes no
 // settlement afterwards, whatever becomes of the close.
 func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
+	t.Parallel()
 	// cancelOn names the room whose next settlement cancels the close's request once it holds
 	// the issue's row: the room the spec is edited in (documentRoomOf), which a settlement locks.
 	var cancelOn atomic.Pointer[string]
@@ -566,8 +564,9 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 	awaitSettled(t, database, spec)
 }
 
-// awaitRequests releases start, then waits up to raceDeadline for requests, failing the test
-// when they do not all answer: a deadlock between them.
+// awaitRequests releases start, then waits for requests to answer. Its one bound is the test
+// binary's deadline (testwait.Receive): a deadlock between them fails the test by name, and a pair
+// a loaded machine merely slows still answers.
 func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, what string) {
 	t.Helper()
 	answered := make(chan struct{})
@@ -576,9 +575,61 @@ func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, 
 		close(answered)
 	}()
 	close(start)
-	select {
-	case <-answered:
-	case <-time.After(raceDeadline):
-		t.Fatalf("%s did not both answer within %v", what, raceDeadline)
+	testwait.Receive(t, what+" both to answer", answered)
+}
+
+// holdLock opens a transaction that runs lock and keeps it until the returned release runs, so a
+// test can stop requests at a known point and let them through together.
+func holdLock(t *testing.T, database *store.Store, lock string, args ...any) (release func()) {
+	t.Helper()
+	tx, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the holding transaction: %v", err)
 	}
+	if _, err := tx.Exec(context.Background(), lock, args...); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("take %q: %v", lock, err)
+	}
+	released := false
+	release = func() {
+		if !released {
+			released = true
+			_ = tx.Rollback(context.Background())
+		}
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// lockWaiters counts the backends of this test's own database that wait on a lock. Scoped to
+// current_database() because one Postgres serves every test in the package.
+func lockWaiters(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var waiting int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pg_stat_activity
+		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+	`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity: %v", err)
+	}
+	return waiting
+}
+
+// awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
+// Its one bound is the test binary's deadline (testwait.UntilPolling): a request a loaded machine
+// runs late still ends the wait, and its failure prints the count last read.
+func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
+	t.Helper()
+	testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("%d request(s) to wait on a lock (the count waiting)", count), func() (int, bool) {
+		waiting := lockWaiters(t, database)
+		return waiting, waiting >= count
+	})
+}
+
+// awaitAnswer waits for the answer of the request what names on answered. Its one bound is the
+// test binary's deadline (testwait.Receive): a request a loaded machine answers late passes, and
+// one that never answers fails the test by name.
+func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
+	t.Helper()
+	return testwait.Receive(t, what+" to answer", answered)
 }

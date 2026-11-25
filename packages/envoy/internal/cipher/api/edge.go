@@ -154,7 +154,8 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 				return
 			}
 			// A gate refuses before any bucket is spent, so at whatever rate a caller on the
-			// internet chooses: its refusal is counted with port="edge" and writes no line.
+			// internet chooses: its refusal is counted with port="edge" and writes no refusal
+			// line (the edge's access log, outside this mux, still writes its request's line).
 			answer.FromContext(r.Context()).NoteQuiet()
 		})
 	}

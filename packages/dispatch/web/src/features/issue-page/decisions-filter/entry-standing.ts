@@ -7,7 +7,7 @@ import type { DecisionsEntry, NamedEntry } from "./decisions-parts";
  * it out again: the row reads `token` for its `data-node-state` and its margin's state, and the
  * panel reads `words` for the facts of the focused node.
  */
-export interface EntryStanding {
+interface EntryStanding {
   /** The state's token: an ask's own `state`, and a decision's standing with the reader. */
   readonly token: NodeState;
   /** The page's word for the token (`nodeStateWord`), then a space and the name of the person

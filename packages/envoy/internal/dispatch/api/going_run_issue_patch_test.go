@@ -13,7 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -25,6 +25,7 @@ import (
 // PATCH of other labels, which names the issue once, so the run was admitted and the first
 // write's none is the write's own.
 func TestAPatchForARunThatChangesNoFieldNamesNoChange(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()
@@ -79,6 +80,7 @@ func TestAPatchForARunThatChangesNoFieldNamesNoChange(t *testing.T) {
 // does. A second PATCH of the issue for the run moves nothing of the node and appends no second
 // changed_by_run.
 func TestAPatchForARunGivesAnIssueWithNoNodeTheNodeTheBackfillGivesIt(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()
@@ -124,7 +126,7 @@ func TestAPatchForARunGivesAnIssueWithNoNodeTheNodeTheBackfillGivesIt(t *testing
 			return string(data)
 		}
 		var lines []string
-		for _, attribute := range graphstorecopy.BaseAttributes() {
+		for _, attribute := range graphstoretest.BaseAttributes() {
 			stated, err := graphstore.History(ctx, database.Pool, graphstore.KindIssue, issue, attribute)
 			if err != nil {
 				t.Fatalf("read the %s of the issue's node %s: %v", attribute, what, err)

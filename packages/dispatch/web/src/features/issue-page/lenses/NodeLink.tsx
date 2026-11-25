@@ -3,9 +3,9 @@ import { Link, useParams } from "react-router-dom";
 
 import { pageMutedText } from "../../../theme/classes";
 import { isPlainClick } from "../../refs/picture-lightbox";
-import { outlineRowPath } from "../issue-address";
 import { authorText, pageChrome } from "../page-structure";
 import type { LensChip } from "./lens-drafts";
+import { outlineRowPath } from "./store-link";
 
 /**
  * One chip of a lens line: a lens, a check or a constraint, by its words; or a node a fact line

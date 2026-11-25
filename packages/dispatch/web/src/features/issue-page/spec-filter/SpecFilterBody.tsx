@@ -75,7 +75,7 @@ import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { issueTreeQuery, useTreeRead, useTreeReadRunning } from "../tree-read/tree-read";
-import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
+import { issueAskThreadsQuery, type NamesFailure } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
@@ -152,10 +152,10 @@ export function SpecFilterBody({
    *  (`slots/view-spec.tsx`). */
   holdsEscape: boolean;
   issue: IssueDetails;
-  /** The names reads' line while they stand failed (`IssueTreeView.namesFailure`), which the
-   *  slot passes from the page's tree: those reads are the tree's own, and the view draws from
-   *  them too - the three sentences, and the name of every reference a plain line cites. None
-   *  while they do not stand failed. */
+  /** The names read's line while it stands failed (`IssueTreeView.namesFailure`), which the
+   *  slot passes from the page's tree: that read is the tree's own, and the view draws from it
+   *  too - the name of every reference the three sentences and a plain line cite. None while it
+   *  does not stand failed. */
   namesFailure?: NamesFailure;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
@@ -189,7 +189,7 @@ export function SpecFilterBody({
   const treeQuery = issueTreeQuery(issue.key);
   const resultsQuery = issueResultsQuery(issue.key);
   const decisionsQuery = issueDecisionsQuery(issue.key, true);
-  const asksQuery = issueAsksQuery(issue.key);
+  const asksQuery = issueAskThreadsQuery(issue.key);
   const coverageRead = useQuery(treeRead(coverageQuery));
   const { blocksOf } = useTreeRead(issue);
   // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`): what a line
@@ -238,7 +238,7 @@ export function SpecFilterBody({
   // Each read of a line is paired with its key's hash (`lineRead`), and each line carries how
   // many times its reads have been refused since it last stood (`useLineRefusals`), which keys
   // its alert.
-  // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
+  // The names read's line (`namesFailure`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
   const lines = [
@@ -458,7 +458,6 @@ export function SpecFilterBody({
     },
     onEditEnd: NOTHING,
     onFold: NOTHING,
-    onOpenDeeper: NOTHING,
     onPin: NOTHING,
     // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
     // holds. `q` walks the open questions, which the asks read brings, so the flag is
@@ -487,7 +486,6 @@ export function SpecFilterBody({
       if (path !== undefined) navigate(path);
     },
     onZoom: NOTHING,
-    oneNodeAtATime: false,
     readsHeld: asksHeld,
     rows,
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no
@@ -504,7 +502,7 @@ export function SpecFilterBody({
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
           the stage says one (`FailedReadLine`): over the tree and never in it, since an alert
           inside a tree would break the tree's own structure of rows. The view's own reads'
-          lines come first, and the names reads' line last, as the outline draws it. The stage
+          lines come first, and the names read's line last, as the outline draws it. The stage
           gives a focus left on nothing to a line's Retry where the view draws no row, and moves
           it on to the next line, the tab-stop row or the tree as a line that held it leaves
           (`slots/stage.tsx`). */}
@@ -527,8 +525,8 @@ export function SpecFilterBody({
       ))}
       {namesFailure === undefined ? null : (
         <FailedReadLine
-          // The names reads' count of failures (`NamesFailure.failure`), which changes only with
-          // a new failure, and their Retry, which asks again each of them that holds no answer.
+          // The names read's count of failures (`NamesFailure.failure`), which changes only with
+          // a new failure, and its Retry, which asks it again while it holds no answer.
           failure={namesFailure.failure}
           key="names"
           message={STATE_LINES.names_unreadable}

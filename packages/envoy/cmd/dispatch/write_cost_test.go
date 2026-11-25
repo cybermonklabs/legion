@@ -4,17 +4,17 @@
 
 package main
 
-// This change's check c-write-cost: no write path this child changes gets slower.
-//
-// The test is TestNoWritePathThisChildChangesGetsSlower at the end of this file; everything
-// above it is the corpus it writes and the paths it measures (writeCostPaths). graph_cost_test.go
-// holds the two arms, the clock and the order statistic the two cost measurements share.
+// The write corpus and paths a write cost tool of this tag uses: the corpus, the document
+// generator, and the paths measured (writeCostPaths). #3178's check c-write-cost, which drove
+// them, is gone from main; the INFRA-1098 tree's branches use writeCostNesting and
+// costStoreCounts. graph_cost_test.go holds the two arms, the clock and the order statistic.
+// cost_bounds_test.go, which carries no build tag, holds the 8,001-block path's allowance
+// (writeCostOverAllowance) to its rule with no database and no arm.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -52,10 +52,11 @@ const (
 	// writeCostSession is the session every measured delivery record is addressed to; the stub
 	// Envoy listener answers for it (costEnvoy).
 	writeCostSession = "session:s1"
-	// writeCostAbsolute is the bound the 8,001-block request carries beyond the relative one:
-	// IndexDocumentReferences already spends 347 ms on that version inside a request measured
-	// at 939 to 1,130 ms (docs/reference_excerpts.go), so a change inside the 100 ms relative
-	// budget can still put that request over its own bound. The run asserts both.
+	// writeCostAbsolute is the bound the 8,001-block request carries beyond its ratio and its
+	// rise (writeCostOverAllowance): IndexDocumentReferences already spends 347 ms on that
+	// version inside a request measured at 939 to 1,130 ms (docs/reference_excerpts.go), so a
+	// change inside the allowance this path is held to can still put that request over its own
+	// bound. The run asserts all three.
 	//
 	// That reading was taken off gVisor. This pod runs syscall-heavy work 2.2 to 3.8 times
 	// slower, and the commit before this child measures this path at 1.9 to 4.4 seconds here,
@@ -289,19 +290,56 @@ func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration
 
 // ───── the run ────────────────────────────────────────────────────────────
 
+// The ratios the request paths are held to: each path's deciding statistic at this child over
+// the same statistic at the commit before this child. The rewrite of all 1,999 blocks is held to
+// what each store row it writes may cost instead (writeCostRewriteRowBudget), and the tick to no
+// verdict at all. A ratio rather than a rise in milliseconds, because a rise cannot catch a path
+// that gets 1.8 times slower while it stays under its budget, which is how the stated negative
+// control, a part_of tuple for every block of the document, passed. What decides that control is
+// the count of the tuples the edit appends (writeCostEditTuples).
+//
+// Each bound is the worst ratio of three clean runs of 2026-11-22 times 1.1, rounded up to the
+// next 0.25. The runs are the Jobs infra-1149-i16-wc-clean1-r7zl6, infra-1149-i16-wc-clean2-75fxf
+// and infra-1149-i16-wc-clean3-r5wbd, each of 772fb8e06f40 against 7a56b1c7eeeb in a builds Job
+// of 8 CPUs:
+//
+//	path                                          statistic  clean 1  clean 2  clean 3  worst  bound
+//	comment create                                p99        1.38     1.29     1.25     1.38   1.75
+//	comment delivery record                       p99        0.96     0.99     0.98     0.99   1.25
+//	document version, one changed block of 1,999  p50        1.48     1.16     1.16     1.48   1.75
+//	document version, 8,001 blocks                p50        0.91     0.49     0.53     0.91   1.25
+//
+// The 8,001-block path keeps, beside its ratio, the rise of at most 100 ms (costBudget) it was
+// held to before it carried one, and the lower of the two allowances decides
+// (writeCostOverAllowance). That is what keeps every bound at least as strict as Verification
+// version 150's, which held this path to that rise and to no ratio: a ratio allows a path of
+// seconds a rise of hundreds of milliseconds, and at the 845.3 to 1,299.9 ms the commit before
+// this child read on this path in the three runs above, 1.25 alone would have allowed a rise of
+// 211 to 325 ms where the rise bound allows 100. Below a commit before of 400 ms the ratio is the
+// lower and decides; above it the rise does. Its ratio (writeCostOverRatio), its rise
+// (costBudget) and the rule that takes the lower are in cost_bounds_test.go.
+//
+// When a change moves a path, its bound is measured again the same way, over three clean runs,
+// and never edited by hand.
+const (
+	writeCostCommentCreateRatio  = 1.75
+	writeCostDeliveryRecordRatio = 1.25
+	writeCostEditRatio           = 1.75
+)
+
 // writeCostPath is one of the paths writeCostPaths lists, as the run measures it on either arm.
 type writeCostPath struct {
 	name string
-	// absolute is the bound this path carries beyond the relative one, zero for a path that
-	// carries none.
+	// absolute is the bound this path carries beyond its ratio, zero for a path that carries
+	// none.
 	absolute time.Duration
-	// budget is the relative allowance this path carries where it is not the shared one, and
-	// perStoreRow is the allowance for each store row the path writes, where the path is judged
-	// that way instead. A rewrite makes every block of the document new to the index, so a
-	// total would refuse the model rather than test it: the rows are what the model requires,
-	// and the cost of one row is the store's own efficiency, which is the half that can
-	// regress.
-	budget      time.Duration
+	// ratio is the bound on this path's deciding statistic at this child over the same
+	// statistic at the commit before this child (the ratios above), and perStoreRow is the
+	// allowance for each store row the path writes, where the path is judged that way instead.
+	// A rewrite makes every block of the document new to the index, so a total would refuse
+	// the model rather than test it: the rows are what the model requires, and the cost of one
+	// row is the store's own efficiency, which is the half that can regress.
+	ratio       float64
 	perStoreRow time.Duration
 	// readings is how many readings this path takes on each arm, which follows what the path
 	// costs. A path of tens of milliseconds takes costReadReadings, because p99 by nearest rank
@@ -316,247 +354,28 @@ type writeCostPath struct {
 
 func writeCostPaths() []writeCostPath {
 	return []writeCostPath{
-		{name: "comment create", readings: costReadReadings, take: writeCostCommentCreate},
-		{name: "comment delivery record", readings: costReadReadings, take: writeCostDeliveryRecord},
+		{name: "comment create", ratio: writeCostCommentCreateRatio, readings: costReadReadings, take: writeCostCommentCreate},
+		{name: "comment delivery record", ratio: writeCostDeliveryRecordRatio, readings: costReadReadings, take: writeCostDeliveryRecord},
 		// The edit a person makes: one block of a 1,999-block document moved, the rest carried
 		// across the version by their own ids. This is the shape Dispatch serves all day.
-		{name: "document version, one changed block of 1,999", budget: writeCostEditBudget, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
+		{name: "document version, one changed block of 1,999", ratio: writeCostEditRatio, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 			return writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, run, writeCostUnderBlocks/2)
 		}},
 		// The whole document rewritten, every block new to the index: a bulk action, rare and
 		// started by a person who asked for it, measured apart from the edit above because a
-		// path that writes four thousand node rows cannot be within a hundred milliseconds of
-		// one that writes none.
+		// path that writes four thousand node rows cannot be held to a ratio of one that writes
+		// none.
 		{name: "document version, 1,999 blocks rewritten", perStoreRow: writeCostRewriteRowBudget, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 			return writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, run, -1)
 		}},
-		{name: writeCostOverPath, absolute: writeCostAbsolute, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
+		// The 8,001-block version is held to two allowances at once, its ratio and the 100 ms
+		// rise (costBudget) it was held to before it carried a ratio, and the lower of the two
+		// decides (writeCostOverAllowance), so no bound on it got weaker than Verification version
+		// 150's. It carries the 1 s absolute bound beside them (writeCostAbsolute).
+		{name: writeCostOverPath, absolute: writeCostAbsolute, ratio: writeCostOverRatio, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 			return writeCostVersion(t, corpus, "over.md", writeCostOverBlocks, run, -1)
 		}},
 		{name: writeCostTickPath, readings: costWriteRuns, take: writeCostTick},
-	}
-}
-
-// No write path this child changes gets slower.
-//
-// Every write path writeCostPaths lists is measured at this child's head and at the commit this
-// branch forked from, in one run, interleaved, over one corpus written to each arm by one seeding
-// pass: a comment create, a comment delivery record, a document version of 1,999 blocks with one
-// block changed, one of the same document with every block rewritten, one of 8,001 blocks and
-// one reconciliation tick. Every reading is printed, so a swinging one is visible rather than
-// hidden in a summary, and the statistic each path is held to is a real order statistic by
-// nearest rank. How many readings a path takes, and which statistic decides it, follows what
-// the path costs. The two comment paths cost tens of milliseconds, so they take 200 readings
-// and their p99, the 198th, decides: at twenty readings the p99 is the slowest of them, and one
-// scheduling hiccup of this pod would decide the cell - measured here, where eighteen quiet
-// readings of a comment create, 17.0 to 32.1 ms, were failed by two of 85.9 and 100.5. The
-// document versions and the tick cost seconds, so they keep the 20 readings R18 fixes, because
-// 200 readings of a 40-second tick is hours of wall time for nothing, and their p50 decides
-// with their p99 printed beside it.
-//
-// The tick is held to no relative budget at all: the deferral exists to move the index out of
-// the request, so the loop always spends on a document what the request did not, and holding it
-// to a commit that deferred nothing of the kind would refuse the design rather than test it.
-// e2e/acceptance/graph-sizing.sh holds it to one gate that measures it against the work it is
-// given - it drains no slower than deferred work arrives - and prints, as a reading that gates
-// nothing, the seconds it spends on a document beside those the request path spends indexing the
-// same document itself; this run prints its cost beside them.
-//
-// A path whose p99 rises by more than 100 ms fails. The 8,001-block path carries a second bound,
-// 1 s absolute, because IndexDocumentReferences already spends 347 ms on that version inside a
-// request measured at 939 to 1,130 ms: a change inside the relative budget can still put that
-// request over its own bound. The failure says which of the two bounds it broke, and an absolute
-// failure with the relative one passing says so in as many words, because that case is the
-// architect's to decide and not the implementer's to fix.
-//
-// A breakdown of one of these requests, part by part, is read the same way and never from two or
-// three readings. Go charges a collection to whichever goroutine is allocating while it runs, so
-// a part's wall time is its own work plus whatever the collector did inside it, and the part
-// that allocates most collects most. The parse of the 1,999-block upload
-// (upload.ReplaceText's startTree+markdown: the live tree read, rendered, and the upload parsed)
-// is that part: it allocates about 24 MB on either arm, of the 82.0 MB this child's whole
-// request allocates and the 48.2 MB the commit before it allocates. Measured inside both servers
-// over 20 interleaved readings of the edit shape, that parse read 109.5 ms here against 85.3 ms
-// there - but it carried a collection in 14 of the 20 readings here and in 1 of the 20 there,
-// and over the readings that carried none it read 82.0 ms here against 85.3 ms there. The parse
-// does the same work at both commits; what this child changed is that its request makes 1.7
-// times the garbage, almost all of it outside the parse, so the collector runs inside nearly
-// every request rather than one in five. A part read over three readings states where the
-// collector fell, not what the part does.
-func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
-	t.Log(costGVisorNote)
-	t.Log("how each arm is driven: both arms are server processes of their own build, each serving " +
-		"a database of its own which that build migrated at boot, and each is driven over its own " +
-		"HTTP API by this test, which encodes every request body before the clock starts and reads " +
-		"every answer to its end before it stops. The reconciliation tick is a request on neither " +
-		"arm: it is measured on each arm's own loop, from the first document that pass committed to " +
-		"the last, with the pass's own lease held while the batch was written so that no tick ran " +
-		"over a half-written batch.")
-	for _, recorded := range writeCostRecorded {
-		t.Logf("already recorded in the source tree: %s", recorded)
-	}
-
-	listener := costEnvoy(t)
-	listener.Accept(true)
-	head, base := startCostArms(t, listener.URL)
-	arms := []*costArm{head, base}
-	corpora := map[*costArm]*writeCostCorpus{}
-	for _, arm := range arms {
-		corpora[arm] = seedWriteCost(t, arm)
-	}
-	// This child's arm is measured in the state a deployment serves after the backfill: every
-	// projection row beside its node, which is the state in which graph_edges answers that row
-	// from the tuple arm.
-	costRunBackfill(t, head)
-	for _, arm := range arms {
-		costBlockIndexDrained(t, arm, 10*time.Minute)
-		requireWriteCostShapes(t, corpora[arm])
-		t.Logf("%s: the corpus holds %d comment(s), %d document block(s) and %d block reference(s)%s",
-			arm.name,
-			arm.count(t, `select count(*) from comments`),
-			arm.count(t, `select count(*) from document_blocks`),
-			arm.count(t, `select count(*) from block_refs`),
-			costStoreCounts(t, arm))
-	}
-	requireWriteCostReachesTheStore(t, head, corpora[head])
-	readings := map[string]map[*costArm]costReading{}
-	for _, path := range writeCostPaths() {
-		// The request paths are measured with the block-index pass held off on both arms,
-		// so no tick of either server's own runs inside a measured window: the versions these
-		// writes leave owed are indexed after the window, not inside it. The tick path takes
-		// that lease itself, for the window in which it writes its batch.
-		var held []func()
-		if path.name != writeCostTickPath {
-			for _, arm := range arms {
-				held = append(held, costHoldBlockIndex(t, arm))
-			}
-		}
-		readings[path.name] = costInterleaved(t, path.name, "", path.readings, arms, func(arm *costArm, run int) time.Duration {
-			return path.take(t, corpora[arm], run)
-		})
-		for _, release := range held {
-			release()
-		}
-		if path.name != writeCostTickPath {
-			for _, arm := range arms {
-				costBlockIndexDrained(t, arm, 10*time.Minute)
-			}
-		}
-	}
-
-	ordered := []costReading{}
-	for _, path := range writeCostPaths() {
-		ordered = append(ordered, readings[path.name][head], readings[path.name][base])
-	}
-	costTableOf(t, ordered)
-	rewriteRows := writeCostWhereTheTimeWent(t, arms, corpora)
-	writeCostWhatTheEditWrote(t, arms, corpora)
-	// The 8,001-block path takes 20 readings, so its verdict below is read from its p50, and
-	// this line is read from the same figure: two statements about one bound that disagreed
-	// would tell a reader nothing.
-	absolute := readings[writeCostOverPath][head]
-	bound, from := writeCostAbsoluteBound(readings[writeCostOverPath][base])
-	against, verdict := bound.String(), "passed"
-	switch {
-	case bound == 0:
-		against, verdict = "no bound here", "not bounded"
-	case absolute.p50() >= bound:
-		verdict = "FAILED"
-	}
-	t.Logf("the 8,001-block request's own absolute bound: p50 %.1f ms against %s - %s (p99 %.1f ms). The bound is %s. The readings already in the "+
-		"source tree, beside it: 234, 239 and 252 ms for 1,999 blocks indexed in its own write, 144, 145 and 157 ms for "+
-		"2,001 blocks whose index the write defers, and 347 ms inside IndexDocumentReferences for 8,001 blocks, of a "+
-		"request total of 939-1,130 ms (docs/reference_excerpts.go).",
-		costMilliseconds(absolute.p50()), against, verdict, costMilliseconds(absolute.p99()), from)
-
-	for _, path := range writeCostPaths() {
-		here, before := readings[path.name][head], readings[path.name][base]
-		if path.name == writeCostTickPath {
-			// The tick is held to no relative budget, and the reason is the deferral itself.
-			// A document past the threshold leaves its index to the loop, so the loop spends
-			// on it what the request did not: measured on this pod, 0.33 s to write and defer
-			// against 1.44 s to drain. Holding that to the commit before this child, which
-			// deferred nothing of the kind, would refuse the design rather than test it. What
-			// the loop is held to instead is c-growth's one gate, which measures it against
-			// the work it is given rather than against a request that skipped the work: it
-			// drains no slower than deferred work arrives. The seconds it spends on a document
-			// beside those the request path spends indexing the same document are a reading
-			// there and gate nothing. Its cost is printed here so a reader sees what the
-			// design chose.
-			t.Logf("%s: p50 %.1f ms at this child against %.1f ms at the commit before it (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). "+
-				"This path carries no relative budget: the deferral exists to move the index out of the request, so the loop spends what the request did not, "+
-				"and e2e/acceptance/graph-sizing.sh holds it to the one gate that measures it against the work it is given.",
-				path.name, costMilliseconds(here.p50()), costMilliseconds(before.p50()),
-				costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings)
-			continue
-		}
-		// Which statistic decides, and why it is not the same for every path. A path of tens of
-		// milliseconds takes 200 readings, where the 99th is the 198th and so is a reading with
-		// others above it: its p99 decides. A path of seconds takes 20, where the 99th is the
-		// slowest of them, and the slowest of twenty readings of a 40-second tick is a statement
-		// about this pod's worst moment rather than about the path: its p50 decides, and its p99
-		// is printed beside it for the reader. The line below states the rule each path took and
-		// the reason, from the path's own count of readings and the rank its p99 falls at.
-		statistic, here99, before99 := "p99", here.p99(), before.p99()
-		rank := int(math.Ceil(0.99 * float64(path.readings)))
-		rule := fmt.Sprintf("p99 decides, because this path costs tens of milliseconds and takes %d readings, "+
-			"so its p99 by nearest rank is reading %d of them with %d slower beside it, and no one hiccup of this pod moves it",
-			path.readings, rank, path.readings-rank)
-		if path.readings < costReadReadings {
-			statistic, here99, before99 = "p50", here.p50(), before.p50()
-			rule = fmt.Sprintf("p50 decides, because this path costs seconds and takes %d readings, where its p99 by nearest rank "+
-				"is reading %d of them, the slowest, which one hiccup of this pod decides, and %d readings of a path of seconds "+
-				"would be hours of wall time; its p99 is printed beside the p50 so a reader sees the tail it carries",
-				path.readings, rank, costReadReadings)
-		}
-		if path.absolute > 0 {
-			// The bound this environment allows: the stated one where the commit before this
-			// child measures inside it, and none at all where it does not, since a bound a
-			// build this change has not touched already breaks is a statement about the pod
-			// and not about the change.
-			path.absolute, _ = writeCostAbsoluteBound(before)
-		}
-		rise := here99 - before99
-		// The allowance this path carries. A rewrite is judged on the cost of one store row
-		// rather than on its total, because it writes about 14,000 rows the commit before this
-		// child writes none of: the rows are what the model requires, and what can regress is
-		// the cost of one of them. The rows come from the run's own instrumented rewrite above.
-		allowance, measured := path.budget, "the rise"
-		if allowance == 0 {
-			allowance = costBudget
-		}
-		if path.perStoreRow > 0 {
-			if rewriteRows <= 0 {
-				t.Errorf("%s: the run read no store rows for this path, so its cost a row cannot be measured", path.name)
-				continue
-			}
-			allowance = path.perStoreRow * time.Duration(rewriteRows)
-			measured = fmt.Sprintf("the rise over the %d store row(s) it writes, %.3f ms a row against the %s a row this path allows",
-				rewriteRows, costMilliseconds(rise)/float64(rewriteRows), path.perStoreRow)
-		}
-		relative := rise <= allowance
-		absolute := path.absolute == 0 || here99 < path.absolute
-		t.Logf("%s: %s %.1f ms at this child against %.1f ms at the commit before it, a rise of %.1f ms against the %s budget (%s)%s (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). The rule this path is read by: %s.",
-			path.name, statistic, costMilliseconds(here99), costMilliseconds(before99),
-			costMilliseconds(rise), allowance, measured, costAbsoluteNote(path.absolute, here99),
-			costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings, rule)
-		if !relative {
-			t.Errorf("%s: %s %.1f ms at this child against %.1f ms at the commit before this child, a rise of %.1f ms, over the %s budget (%s) (this child's readings %s; the commit before's %s)",
-				path.name, statistic, costMilliseconds(here99), costMilliseconds(before99),
-				costMilliseconds(rise), allowance, measured, here.printed(), before.printed())
-		}
-		if !absolute {
-			t.Errorf("%s: %s %.1f ms at this child, at or above the %s this request is held to (this child's readings %s)",
-				path.name, statistic, costMilliseconds(here99), path.absolute, here.printed())
-		}
-		if !absolute && relative {
-			t.Errorf("%s: the absolute bound failed while the relative one passed. This request costs %.1f ms at this child "+
-				"and %.1f ms at the commit before this child (%s), a rise of %.1f ms, which is inside the %s relative budget, and "+
-				"what it broke is the request's own %s bound. This child did not make it slower, so the bound is the "+
-				"architect's call and not an implementer's to fix.",
-				path.name, costMilliseconds(here99), costMilliseconds(before99), statistic,
-				costMilliseconds(rise), allowance, path.absolute)
-		}
 	}
 }
 
@@ -635,7 +454,8 @@ func writeCostWhereTheTimeWent(t *testing.T, arms []*costArm, corpora map[*costA
 // document's rows of document_blocks and block_refs, the document_block_texts rows it appended,
 // and on this child's arm the nodes of those blocks and the tuples it appended out of them. The
 // edit is the measured path's own (writeCostVersion with one item changed), written here and not
-// timed against anything.
+// timed against anything. On this child's arm the tuples it appended must be the tuples of the
+// changed block alone (writeCostEditTuples), and a count of any other size fails the run.
 //
 // The rewrite above was the document's last version, and it moved every item, so an edit written
 // straight after it would move every item back. A first edit brings the document to the edit's
@@ -673,6 +493,15 @@ func writeCostWhatTheEditWrote(t *testing.T, arms []*costArm, corpora map[*costA
 		}
 		t.Logf("%s: one edit of one block of the 1,999-block document took %.1f ms and wrote these rows, each before and after:%s",
 			arm.name, costMilliseconds(taken), printed.String())
+		// The commit before this child has no graph_tuples, so only this child's arm is held
+		// to the count.
+		if !arm.head {
+			continue
+		}
+		if appended := len(after.appended["graph_tuples"]); appended != writeCostEditTuples {
+			t.Errorf("one edit of one block of the 1,999-block document appended %d graph_tuples row(s), want %d: the tuples of the changed block alone%s",
+				appended, writeCostEditTuples, printed.String())
+		}
 	}
 }
 
@@ -680,6 +509,16 @@ func writeCostWhatTheEditWrote(t *testing.T, arms []*costArm, corpora map[*costA
 // handful; a table past this is an edit that moved more than one block, and the count printed
 // beside it says so without the run printing two thousand rows.
 const writeCostPrintedRows = 20
+
+// writeCostEditTuples is how many graph_tuples rows one edit of one block of the 1,999-block
+// document appends on this child's arm: the tuples of the changed block alone. They are the
+// changed item's new block's in_document, part_of, visibility and state = live, and the dropped
+// block's state = gone. It was measured on 2026-11-22 in Job infra-1149-i16-rows-clean-v5zz4 at
+// 772fb8e06f40, where the stated control, a part_of tuple for every block of the document (refs'
+// planBlockParents), appended 2,003 in Job infra-1149-i16-rows-control-qphjc. The count is what
+// decides that control, which a ratio of time may still pass: a part_of stated again for every
+// block appends thousands of rows where the changed block alone appends 5.
+const writeCostEditTuples = 5
 
 // writeCostEditRows is what one document's version is read to have written. rows holds, by
 // table, every row of the document that a later version may change or delete, keyed by what
@@ -951,7 +790,7 @@ func createCostIssue(t *testing.T, arm *costArm, project, title string) string {
 
 // costUploadDocument writes one version of a document by name and answers its artifact id. A
 // second write of the same name is the next version of that document, which is the document
-// version write path, and names the token of the version it replaces.
+// version write path.
 func costUploadDocument(t *testing.T, arm *costArm, issue, name, content string) string {
 	t.Helper()
 	body := arm.server.documentUpload(t, issue, name, content, dispatchTestLogin)
@@ -1152,15 +991,16 @@ func costDocumentText(blocks, deep, pointers int, targets []string, revision, ch
 // gVisor; this pod runs syscall-heavy work 2.2 to 3.8 times slower, and where the commit before
 // this child already measures above the stated bound on this path, holding this child to it
 // would fail it for the pod rather than for the change. The path then carries no absolute
-// bound at all - zero, which is what the caller reads as "unbounded" - and the relative budget
-// alone decides whether this child made the path slower. Answering that commit's own reading
-// instead would hold this child to being faster than it, which is a bound nobody stated.
+// bound at all - zero, which is what the caller reads as "unbounded" - and its ratio and its
+// rise alone (writeCostOverAllowance) decide whether this child made the path slower. Answering
+// that commit's own reading instead would hold this child to being faster than it, which is a
+// bound nobody stated.
 func writeCostAbsoluteBound(before costReading) (time.Duration, string) {
 	if before.p50() <= writeCostAbsolute {
 		return writeCostAbsolute, fmt.Sprintf("the stated %s, which the commit before this child measures inside at %.1f ms",
 			writeCostAbsolute, costMilliseconds(before.p50()))
 	}
-	return 0, fmt.Sprintf("no absolute bound - the relative budget alone decides. The commit before this child, which this "+
+	return 0, fmt.Sprintf("no absolute bound - the ratio and the rise alone decide. The commit before this child, which this "+
 		"change has not touched, already measures %.1f ms here, above the stated %s: this pod runs syscall-heavy work 2.2 to "+
 		"3.8 times slower than the machine the stated bound was read on",
 		costMilliseconds(before.p50()), writeCostAbsolute)

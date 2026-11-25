@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -20,6 +22,35 @@ import (
 // declinedResolution is the SQL predicate, on a resolution the events carry, that holds for an
 // ask a person declined to answer (model.AskResolutionDeclined).
 const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
+
+// nodeAnswer is the answer of the ask a as every read of an answer shows it (R3), as
+// model.AskAnswer's JSON without its act: where the row names its node (asks.node_kind), the answer
+// the node holds on an ask it holds answered - its words, its selection, its time and its person,
+// each fact that stands read through the store's one reading of the log
+// (graphstore.CurrentTupleRead), as api's askNodeAnswerColumn reads them - and null on an ask it
+// holds otherwise; and the row's own answer where the row names no node, its answer's one record
+// until the boot step's backfill marks it. The node holds no act, so scan lays the row's on it
+// where the row holds the same person's answer at the same time, as api's askNodeAnswer.applyTo
+// does. api's reader is not this package's to import (api imports it), so the statement is written
+// here over the same facts.
+var nodeAnswer = `case when a.node_kind is null then a.answer else (
+		select case when f.state = '` + asks.StateAnswered + `' then jsonb_build_object(
+			'user', f.answered_by, 'selected', coalesce(f.selected::jsonb, '[]'::jsonb), 'text', f.answer, 'at', f.answered_at) end
+		from (
+			select max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnswerState + `') as state,
+			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnswer + `') as answer,
+			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleSelected + `') as selected,
+			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredAt + `') as answered_at,
+			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredBy + `') as answered_by
+			from (` + graphstore.CurrentTupleRead(
+	`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
+	`t.kind, t.to_id, t.asserted`,
+	`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = a.id::text and t.kind in ('`+
+		graphstore.TupleAnswerState+`', '`+graphstore.TupleAnswer+`', '`+graphstore.TupleSelected+`', '`+
+		graphstore.TupleAnsweredAt+`', '`+graphstore.TupleAnsweredBy+`')`) + `) n
+			where n.asserted
+		) f
+	) end`
 
 // ownsAsk is the SQL predicate, on the ask that the alias a names, that holds when the session $1
 // owns that ask: it wrote the ask (asks.author) or follows it, read through ask_followers' primary
@@ -64,15 +95,17 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 // and no such transaction runs for an hour.
 //
 // Each source names a row by its id, and each kind's ids are a set, so an item reached several ways
-// is one row. Every row is then read at its current words: an ask's current answer (asks.answer)
-// when that answer's own time is in the window, a comment's current body, a message's body. A
-// decline is read from its ask.resolved event instead, since that event is where the read already
-// keeps the rows whose published_destinations hold the session's topic, which is what makes "each
-// session the delivery reached" the set this lists; the asks row gives it only the ask's question,
-// the issue or document the ask is on, and whether the session owns the ask. A comment or message
-// an agent or the system wrote is left out by its author; an answer is a person's by
-// construction. The ids are compared as text, through the asks_id_text, comments_id_text and
-// messages_id_text indexes, so a payload id that is not a uuid cannot fail the read.
+// is one row. Every row is then read at its current words: an ask's current answer, as its node
+// holds it (nodeAnswer), when that answer's own time is in the window, a comment's current body, a
+// message's body, each with the time of its edit and the mark of its delete, so a reader meets a
+// post its author withdrew as deleted and not as an empty line. A decline is read from its
+// ask.resolved event instead, since that event is where the read already keeps the rows whose
+// published_destinations hold the session's topic, which is what makes "each session the delivery
+// reached" the set this lists; the asks row gives it only the ask's question, the issue or
+// document the ask is on, and whether the session owns the ask. A comment or message an agent or
+// the system wrote is left out by its author; an answer is a person's by construction. The ids are
+// compared as text, through the asks_id_text, comments_id_text and messages_id_text indexes, so a
+// payload id that is not a uuid cannot fail the read.
 //
 // owns, on the three arms that name an ask, says whether the session owns that ask (ownsAsk): the
 // answer's ask, the decline's ask, and the ask whose thread a comment is in (none outside one).
@@ -86,8 +119,9 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 // asks' ask.answered events by their payload id alone (events_ask_payload_id) and is materialized,
 // so the actor check runs on those few rows: with it inside the scan, the planner ANDs in
 // events_person_words_with_declines, whose predicate the check implies, and reads every entry of
-// that index for each ask.
-const query = `
+// that index for each ask. row_answer is the row's own answer beside it, whose act scan lays on the
+// node's answer; it is null on every other arm.
+var query = `
 	with reached as (
 		select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution
 		from events e
@@ -134,9 +168,9 @@ const query = `
 		where md.session_id = $1 and md.state in ` + model.DeliveryTakenStatesSQL + `
 		  and md.created_at >= $2 - interval '1 hour'
 	)
-	select 'answer' as kind, a.id::text as id, (a.answer->>'at')::timestamptz as at,
-	       null::timestamptz as edited_at, null::jsonb as author, null::text as body,
-	       null::text as dispatch_words, a.answer,
+	select 'answer' as kind, a.id::text as id, (n.answer->>'at')::timestamptz as at,
+	       null::timestamptz as edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by,
+	       null::jsonb as author, null::text as body, null::text as dispatch_words, n.answer, a.answer as row_answer,
 	       (select count(distinct ae.answer->>'at') from answer_events ae
 	         where ae.id = x.id and ae.actor->>'kind' = 'user' and ae.actor->>'id' = ae.answer->>'user') > 1 as replaced,
 	       a.id::text as ask_id, a.question as ask_question,
@@ -146,11 +180,12 @@ const query = `
 	       ` + ownsAsk + ` as owns
 	from answer_ids x
 	join asks a on a.id::text = x.id
+	cross join lateral (select ` + nodeAnswer + ` as answer) n
 	left join issues i on i.key = a.issue_key
 	left join artifacts ar on ar.id = a.artifact_id
-	where a.answer is not null and (a.answer->>'at')::timestamptz >= $2
+	where n.answer is not null and (n.answer->>'at')::timestamptz >= $2
 	union all
-	select 'comment', c.id::text, c.created_at, c.edited_at, c.author, c.body, null, null, false,
+	select 'comment', c.id::text, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.author, c.body, null, null, null, false,
 	       a.id::text, a.question,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       x.mentioned,
@@ -165,7 +200,7 @@ const query = `
 	left join artifacts ar on ar.id = c.artifact_id
 	where c.author->>'kind' = 'user' and c.created_at >= $2
 	union all
-	select 'message', m.id::text, m.created_at, null, m.author, m.body, null, null, false,
+	select 'message', m.id::text, m.created_at, m.edited_at, m.deleted_at, m.deleted_by, m.author, m.body, null, null, null, false,
 	       null, null,
 	       i.key, i.title, null, null, null,
 	       false, false, false,
@@ -180,9 +215,9 @@ const query = `
 	-- A decline has no answer to take a time from, so it sits at the resolution's own time, and
 	-- that time, not the event's, is what the window holds it to: the event is written moments
 	-- after the resolution it carries.
-	select 'declined', a.id::text, (x.resolution->>'at')::timestamptz, null,
+	select 'declined', a.id::text, (x.resolution->>'at')::timestamptz, null, null, null,
 	       x.resolution->'actor', x.resolution->>'reason', x.resolution->>'dispatch_words',
-	       null, false,
+	       null, null, false,
 	       a.id::text, a.question,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       false, false, false,
@@ -196,8 +231,8 @@ const query = `
 	order by at desc, id desc`
 
 // List lists what people wrote that Dispatch delivered to session since since, newest first by
-// time, then by id descending: an ask's current answer, a comment at its current body, a message,
-// or a person's decline of an ask, each (kind, id) once (query).
+// time, then by id descending: an ask's current answer, a comment or a message at its current
+// body with the mark of a delete, or a person's decline of an ask, each (kind, id) once (query).
 //
 // An item reached several ways carries one relation, the most specific to the session, in this
 // order of precedence. A session owns an ask when it wrote the ask or follows it (ownsAsk), and
@@ -233,25 +268,43 @@ func List(ctx context.Context, pool *store.Pool, session string, since time.Time
 func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 	var (
 		item                                               model.SessionAnswer
-		author, answer                                     []byte
+		author, answer, rowAnswer, deletedBy               []byte
+		deletedAt                                          *time.Time
 		body, dispatchWords, askID, askQuestion            *string
 		issueKey, issueTitle, docProject, docSlug, docName *string
 		mentioned, inCommentThread, onDocument             bool
 		repliesToSession, owns                             bool
 	)
 	if err := row.Scan(
-		&item.Kind, &item.ID, &item.At, &item.EditedAt, &author, &body, &dispatchWords, &answer,
-		&item.Replaced,
+		&item.Kind, &item.ID, &item.At, &item.EditedAt, &deletedAt, &deletedBy,
+		&author, &body, &dispatchWords, &answer, &rowAnswer, &item.Replaced,
 		&askID, &askQuestion, &issueKey, &issueTitle, &docProject, &docSlug, &docName,
 		&mentioned, &inCommentThread, &onDocument, &repliesToSession, &owns,
 	); err != nil {
 		return model.SessionAnswer{}, err
+	}
+	// The mark of a deleted post, as every other read of one carries it: the time in UTC and
+	// the actor that deleted it, from the one decode that stands behind them all.
+	var err error
+	if item.DeletedAt, item.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.SessionAnswer{}, fmt.Errorf("%s %s: %w", item.Kind, item.ID, err)
 	}
 	switch item.Kind {
 	case model.SessionAnswerKindAnswer:
 		var current model.AskAnswer
 		if err := json.Unmarshal(answer, &current); err != nil {
 			return model.SessionAnswer{}, fmt.Errorf("decode ask %s answer: %w", item.ID, err)
+		}
+		// The node holds no act: the answer carries the row's where the row holds the node's own
+		// answer, the same person's at the same time, as api's askNodeAnswer.applyTo lays it.
+		if current.Act == nil && len(rowAnswer) > 0 {
+			var row model.AskAnswer
+			if err := json.Unmarshal(rowAnswer, &row); err != nil {
+				return model.SessionAnswer{}, fmt.Errorf("decode ask %s row answer: %w", item.ID, err)
+			}
+			if row.At.Equal(current.At) && model.CanonicalLogin(row.User) == current.User {
+				current.Act = row.Act
+			}
 		}
 		item.Relation = model.SessionAnswerRelationAnsweredAnAsk
 		if owns {

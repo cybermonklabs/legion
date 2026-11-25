@@ -30,8 +30,9 @@ import { type ApiRequests, expectLoadSettled } from "./traffic";
  * the readers and locators of `e2e/issue-page-g.ts`, copying none of them. This file holds what
  * the recorder (`e2e/tools/issue-page-t-record.ts`) reads the page with, and the recorder runs on
  * a base that holds F's page and not the tree read, so nothing here names a module of the tree
- * read or a type of its answer: what reads the tree read, the rows' gates, and every other helper
- * only the rows read with are in `e2e/issue-page-t-tree.ts`.
+ * read or a type of its answer: what reads the tree read and the rows' gates are in
+ * `e2e/issue-page-t-tree.ts`, and the steps and comparisons the rows share are in
+ * `e2e/issue-page-t-rows.ts`.
  *
  * `drawnRowReadings` reads every `[data-node-row]` of `[data-issue-page]` as `NodeRow.tsx`
  * draws it, in drawing order, with one `page.evaluate` for all the rows and, where it reads the

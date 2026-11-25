@@ -42,7 +42,11 @@ func TestTheObjectBatchDistinguishesReplacedRowsWithTheSameCreationTime(t *testi
 	}
 }
 
-func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
+// A comment batch reads its rows again under the comment's owner lock (CommentsNamingNoNode), so a
+// second run's cached batch writes nothing for a comment whose row, node and tuples went after the
+// first run wrote them. No path of the tree deletes a comment's row or a node, so the test takes
+// them out itself, under the issue's owner lock.
+func TestAStaleCommentBatchDoesNotRestoreARemovedComment(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
@@ -65,35 +69,30 @@ func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
 	if first != 1 {
 		t.Fatalf("the first run's batch counts %d row(s) written, want 1: the comment stood unmarked", first)
 	}
-	// The erase takes the issue's owner lock, deletes the stamped row, then erases its node and
-	// tuples.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		if err := store.LockOwners(ctx, tx, store.IssueOwner("IDEN-1")); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `select 1 from graph_nodes where kind = 'comment' and id = $1 for update`, id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `delete from comments where id = $1`, id); err != nil {
 			return err
 		}
-		var seqs []int64
-		if err := tx.QueryRow(ctx, `select array_agg(seq) from graph_tuples where from_kind = 'comment' and from_id = $1`, id).Scan(&seqs); err != nil {
-			return err
-		}
-		return graphstore.EraseNode(ctx, tx, graphstore.KindComment, id, seqs)
+		_, err := tx.Exec(ctx, `
+			with tuples as (delete from graph_tuples where (from_kind = 'comment' and from_id = $1) or (to_kind = 'comment' and to_id = $1))
+			delete from graph_nodes where kind = 'comment' and id = $1
+		`, id)
+		return err
 	}); err != nil {
-		t.Fatalf("erase the first run's comment: %v", err)
+		t.Fatalf("take the first run's comment away: %v", err)
 	}
 	written, _, _, err := writeCommentBatch(ctx, database, ids, causes)
 	if err != nil {
 		t.Fatalf("write the second run's cached batch: %v", err)
 	}
 	if written != 0 {
-		t.Errorf("the stale batch counts %d row(s) written, want 0: the comment it read was erased before it wrote", written)
+		t.Errorf("the stale batch counts %d row(s) written, want 0: the comment it read went before it wrote", written)
 	}
 	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, id); err != nil || held {
-		t.Errorf("the stale batch restored node %+v (held %t, %v) without its erased comment row; want no node", node, held, err)
+		t.Errorf("the stale batch restored node %+v (held %t, %v) without its comment row; want no node", node, held, err)
 	}
 }
 
@@ -136,10 +135,10 @@ func TestTheCommentBatchLeavesTheCallersBatch(t *testing.T) {
 }
 
 // ObjectRowStands answers whether an issue's, a document's, an ask's or a message's row stands at
-// an id, which the erase reads under the node's lock. An ask's and a message's row is keyed by a
-// uuid, so an id that is no uuid names no row and answers false with no error, rather than abort
-// the erase's transaction on the cast; a uuid names its row when one stands there, and none when
-// none does.
+// an id, which the sweep of an orphaned document's node reads under the node's lock
+// (StateOrphanedGone). An ask's and a message's row is keyed by a uuid, so an id that is no uuid
+// names no row and answers false with no error, rather than abort its caller's transaction on the
+// cast; a uuid names its row when one stands there, and none when none does.
 //
 // Its control is the uuid test taken out: the id that is no uuid then fails the read.
 func TestObjectRowStandsReadsTheRowsOfAnAskAndAMessage(t *testing.T) {

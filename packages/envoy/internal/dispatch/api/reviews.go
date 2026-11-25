@@ -90,12 +90,15 @@ const latestReviewsStatement = `
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
 // document of each open request naming one of these documents, so a request that covers a spec
-// and its Verification document is found by either and reported on both.
-const openApprovalAsksStatement = `
+// and its Verification document is found by either and reported on both. A request is open as the
+// Inbox picks an ask (askOpenOf): the row's state keeps the read on the indexes of open asks, and
+// the node's decides. It is a var, not a const, because askOpenOf builds its read of the ask's
+// node from graphstore.CurrentTupleRead.
+var openApprovalAsksStatement = `
 		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
 		from asks a` + lastReplyJoin + `
 		cross join lateral jsonb_array_elements(a.approval -> 'documents') document
-		where a.kind = 'approval' and a.state = 'open'
+		where a.kind = 'approval' and ` + askOpenOf("a") + `
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
 	`
@@ -556,8 +559,10 @@ type approvalRequestResponse struct {
 	Approval   artifactApprovalRead `json:"approval"`
 	// Coverage is one line per requirement of the spec with no check, as the approver reads
 	// them (coverage.go); never a missing plan task, since the plan comes after the
-	// approval, and empty for any document that is not an issue's spec. A gap refuses
-	// nothing: the request is recorded as it always was.
+	// approval, and empty for any document that is not an issue's spec. While a document of
+	// the issue owes its block index it names no requirement as lacking a check, and carries
+	// one line per such document in their place (owedGap). A gap refuses nothing: the request
+	// is recorded as it always was.
 	Coverage []string `json:"coverage"`
 	// CoverageUnread says the spec's coverage could not be read, so the empty Coverage is
 	// no answer about it. The request is recorded either way.
@@ -928,6 +933,7 @@ func (s *server) openApprovalAsk(
 	follow := asks.PlanFollowNewAsk(ask.ID, actor, ask.CreatedAt)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(askNode))
 		_, err := follow.Queue(b, graphstore.LatestEvent)
 		return err
 	}); err != nil {
@@ -1046,6 +1052,7 @@ func (s *server) renewApprovalAsk(
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, held, heldCause)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
 		return nil, err

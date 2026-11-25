@@ -444,9 +444,7 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 			_, results[i] = register(t, database, "c1", setting)
 		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
-		t.Fatalf("%d registrations queued behind the held registry within 10 s, want both", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the registry: %v", err)
 	}
@@ -573,8 +571,8 @@ func prunedRow(t *testing.T, tx pgx.Tx, id string) {
 }
 
 // livePeer writes the row of a live process holding setting straight into the registry, past
-// Register's check, as a process registered while ours had dropped out of Live leaves it: at this
-// build's owner lock protocol (store.OwnerLockProtocol), as Register writes it.
+// Register's check, as a process registered while ours had dropped out of Live leaves it: with
+// this build's owner lock protocol, as Register writes it.
 func livePeer(t *testing.T, tx pgx.Tx, setting string) string {
 	t.Helper()
 	var id string

@@ -45,7 +45,7 @@ const (
 )
 
 // searchCoveragePath is Dispatch's report of what meaning search covers
-// (internal/dispatch/api/routes_table.go:280). It takes a person, a cookie or a bearer, so the
+// (internal/dispatch/api/routes_table.go:604). It takes a person, a cookie or a bearer, so the
 // gate reads it with the deployment's agent bearer like every other call the harness makes.
 const searchCoveragePath = "/api/v1/search/coverage"
 

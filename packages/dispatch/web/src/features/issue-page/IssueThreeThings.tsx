@@ -35,7 +35,7 @@ const LABELS = [
  * not drawn at any width: the Plan and Verification controls' signals say the same.
  *
  * The sentences are the spec's summary as its author wrote them, read from the server's reading
- * of the summary node's whole text (`TreeNode.tree`, the batched reference read's `text_tree`)
+ * of the summary node's whole text (`TreeNode.tree`, the tree read's `text_tree`)
  * and never from the node's stored excerpt (`TreeNode.text`), which is the block's source cut at
  * 480 runes: the reading holds no fence, list marker or emphasis mark to leave out and ends
  * nowhere a cut fell. The tree the page already draws carries it (`specSummary`), so the head

@@ -273,6 +273,8 @@ const change: Comment = {
   author: { id: "alice", kind: "user" },
   body: "Say which pages this covers.",
   created_at: "2026-11-05T11:00:00Z",
+  deleted_at: null,
+  deleted_by: null,
   deliveries: [],
   edited_at: null,
   id: "change-1",
@@ -558,6 +560,44 @@ test("what waits on the reader is their open questions, the review list and thei
   ).toEqual([]);
 });
 
+// R7 and R13, and R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any
+// more, so the decision it was asked of is back on the review list and in the header's count,
+// in the tree as in the count. The deleted Change keeps its place under that decision, drawn as
+// the deleted line, and holds no word of what it asked.
+test("a Change its author deleted leaves its decision on the review list and in the count", () => {
+  const deleted: Comment = {
+    ...change,
+    body: "",
+    deleted_at: "2026-11-05T12:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  const counted = waitingOnReader(
+    issue,
+    "alice",
+    decisions,
+    isCoverageStatement,
+    [deleted],
+    issueTree
+  );
+  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4 });
+
+  const root = buildIssueTree({
+    comments: [deleted],
+    coverage,
+    decisions,
+    issue,
+    tree: issueTree,
+    viewer: "alice",
+  });
+  expect(waitingIn(root)).toEqual(["spec#b-listed", "spec#b-changed", "mine"]);
+  expect(parentsOf(root, deleted.id)).toEqual(["spec#b-changed"]);
+  const node = nodesInOrder(root).find((one) => one.id === deleted.id);
+  expect({ deletedAt: node?.deletedAt, text: node?.text }).toEqual({
+    deletedAt: "2026-11-05T12:00:00Z",
+    text: "Deleted by alice · 2026-11-05T12:00:00Z",
+  });
+});
+
 // R3, R7 and R13: a Change belongs to the decision whose block of the spec holds the block the
 // person wrote it in (`Anchor.block_id`), though another decision holds its words too: the
 // server names the lowest block holding the quote that carries an id, the decision's paragraph
@@ -634,7 +674,9 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
   expect(counted.decisions).toBe(0);
   expect(waitingDecisions).toEqual([]);
   expect(counted.decisions).toBe(waitingDecisions.length);
-  expect(parentsOf(root, moved.id)).toEqual(["spec#b-d2"]);
+  // The Change is on the second decision's words, so it is no row (R9), and that decision reads
+  // changed all the same.
+  expect(parentsOf(root, moved.id)).toEqual([]);
   expect(decisionChangeComments(both, [moved], issue, documents)).toEqual(
     new Map([["c-change", second.ref]])
   );
@@ -786,6 +828,45 @@ test("a Change under its decision node is counted without the decisions document
     [],
   ]);
   expect(waits(answerOf([statement, decisionTreeNode(row)]))).toEqual([1, ["noded"]]);
+});
+
+// Decision 337: a Change its author deleted asks nothing any more, and the tree read answers a
+// deleted comment with no mark of the delete, so the comments read tells it. The decision whose
+// node the read hangs that Change under is back on the review list, in the count as in the tree,
+// and the deleted Change keeps its place under the node, drawn as the deleted line.
+test("a deleted Change under its decision node leaves the decision on the review list and in the count", () => {
+  const row = waitingDecision("noded", ["r1"]);
+  const read = decisionsRead([row]);
+  const asked: Comment = { ...change, anchor: null, id: "c-noded" };
+  const deleted: Comment = {
+    ...asked,
+    body: "",
+    deleted_at: "2026-11-05T12:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  const tree = answerOf([statement, decisionTreeNode(row), commentNode(asked, "noded")]);
+  const root = buildIssueTree({
+    comments: [deleted],
+    coverage,
+    decisions: read,
+    issue,
+    tree,
+    viewer: "alice",
+  });
+  expect([
+    waitingOnReader(issue, "alice", read, isCoverageStatement, [deleted], tree).decisions,
+    waitingIn(root),
+  ]).toEqual([1, ["noded"]]);
+  expect(parentsOf(root, deleted.id)).toEqual(["noded"]);
+  const node = nodesInOrder(root).find((one) => one.id === deleted.id);
+  expect({ deletedAt: node?.deletedAt, text: node?.text }).toEqual({
+    deletedAt: "2026-11-05T12:00:00Z",
+    text: "Deleted by alice · 2026-11-05T12:00:00Z",
+  });
+  // The same Change not deleted is counted, as above.
+  expect(waitingOnReader(issue, "alice", read, isCoverageStatement, [asked], tree).decisions).toBe(
+    0
+  );
 });
 
 // The count and the tree find a decision node's Change in the same place, the comment the tree

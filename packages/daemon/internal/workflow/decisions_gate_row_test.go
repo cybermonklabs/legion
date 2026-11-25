@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -19,7 +20,8 @@ import (
 // the version its shape check pairs it with), and the approval a re-admission kept of the
 // `decisions` step. The gate opens on the two remaining steps, and the root starts its first phase.
 // No gate write is refused: each registration publishes the changed set, and that set leaves the
-// `decisions` row out, since a publication naming it is one the outbox refuses to queue. The
+// `decisions` row out, since a publication naming it is one the outbox refuses to queue; it says
+// each of the two rows it names holds the tree, since the deployment gates both steps. The
 // architect's start task names no approval of the `decisions` step. Afterwards each of the three
 // stored values still stands, since this release deletes none of them.
 func TestADecisionsGateRowIsIgnored(t *testing.T) {
@@ -73,9 +75,17 @@ func TestADecisionsGateRowIsIgnored(t *testing.T) {
 	if err := json.Unmarshal(payload, &published); err != nil {
 		t.Fatalf("decode the design-gates publication of %s: %v", gatedRoot, err)
 	}
-	want := []record.DesignGateDocument{{Step: record.DesignStepCriteria, ArtifactID: criteriaDoc}, {Step: record.DesignStepSpec, ArtifactID: gateDoc}}
-	if len(published.Gates) != len(want) || published.Gates[0] != want[0] || published.Gates[1] != want[1] {
-		t.Fatalf("the published set = %#v, want %#v: the decisions row is left out", published.Gates, want)
+	// The deployment gates both steps (twoSteps), so the steps the tree is gated on are that list
+	// (record.TreeSteps) and each pair is published holding the tree.
+	want := []record.DesignGateDocument{{Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Holds: new(true)},
+		{Step: record.DesignStepSpec, ArtifactID: gateDoc, Holds: new(true)}}
+	if !reflect.DeepEqual(published.Gates, want) {
+		wanted, err := json.Marshal(want)
+		if err != nil {
+			t.Fatalf("encode the wanted set: %v", err)
+		}
+		t.Fatalf("the published payload = %s, want the gates %s: the decisions row is left out, and both rows hold the tree",
+			payload, wanted)
 	}
 
 	seedRecord(t, pool, func(tx pgx.Tx) error {

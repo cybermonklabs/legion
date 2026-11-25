@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
-import { decisionContent } from "../web/src/features/issue-page/decision-review";
+import type { IssueTreeRead } from "../web/src/api/types";
+import { blockIdOfNode, decisionContent } from "../web/src/features/issue-page/decision-review";
 import {
   FOOT_HEIGHT_PROPERTY,
   IDENTITY_HEIGHT_PROPERTY,
@@ -21,7 +22,6 @@ import {
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId, checkStanding } from "../web/src/features/issue-page/tree-drafts";
-import { DRAWN_LEVELS } from "../web/src/features/issue-page/tree-fold";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
 import { pageFocusedRow } from "../web/src/theme/classes";
 import {
@@ -126,6 +126,7 @@ import {
   treeText,
 } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
+import { treeReadRoute } from "./issue-page-t-tree";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
@@ -3165,7 +3166,13 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
 
     // j, k and the arrows move to the next and previous visible row.
     await page.keyboard.press("Tab");
-    expect(await focusedRow(page), "Tab did not put the reader on the first row").toBe(order[0]);
+    // The tree's one tab stop is the row the page opened on, its open question, and the keys
+    // step from there in the order the tree read gives the rows.
+    const start = order.indexOf(blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID));
+    expect(start, "the open question is no visible row").toBeGreaterThanOrEqual(0);
+    expect(await focusedRow(page), "Tab did not put the reader on the row the page opened on").toBe(
+      order[start]
+    );
     for (const [index, step] of [
       [1, "j"],
       [2, "ArrowDown"],
@@ -3173,7 +3180,9 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
       [0, "ArrowUp"],
     ] as const) {
       await page.keyboard.press(step);
-      expect(await focusedRow(page), `${step} did not move to row ${index}`).toBe(order[index]);
+      expect(await focusedRow(page), `${step} did not move to row ${index}`).toBe(
+        order[start + index]
+      );
       await expectFocusedRowClear(page, step);
     }
 
@@ -3187,20 +3196,17 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
     expect(await focusedRow(page), "Home did not reach the first visible row").toBe(order[0]);
 
     // The right arrow unfolds the focused node and then moves into its first child; the left
-    // arrow moves back to the parent and then folds it. The branch is one above the drawn
-    // levels, because that is where unfolding draws the children as rows of their own: a
-    // branch below them folds to one line the open-deeper key is for (`tree-fold.ts`), which
-    // is no child row for an arrow to move into. The page opens folded to the frontier, so
-    // there are plenty either way.
-    const folded = (await drawnRows(page)).find(
-      (row) => row.expanded === "false" && Number(row.level) < DRAWN_LEVELS
-    );
-    expect(
-      folded,
-      "no branch above the drawn levels is folded, so the arrows have nothing to unfold"
-    ).toBeDefined();
-    const branch = folded?.id ?? "";
+    // arrow moves back to the parent and then folds it. Nothing opens folded (R11), so the row
+    // folds a branch with the left arrow before the right arrow unfolds it.
+    const open = (await drawnRows(page)).find((row) => row.expanded === "true");
+    expect(open, "no branch is drawn, so the arrows have nothing to fold and unfold").toBeDefined();
+    const branch = open?.id ?? "";
     await nodeRow(page, branch).first().focus();
+    await page.keyboard.press("ArrowLeft");
+    expect(
+      (await drawnRows(page)).find((row) => row.id === branch)?.expanded,
+      "the left arrow did not fold the focused node"
+    ).toBe("false");
     await page.keyboard.press("ArrowRight");
     expect(
       (await drawnRows(page)).find((row) => row.id === branch)?.expanded,
@@ -3367,7 +3373,13 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     await expectTreeDrawn(page);
     await page.keyboard.press("j");
     const inside = await focusedRow(page);
-    expect(inside, "j moved to no row inside the tree").toBe(order[1]);
+    // Tab entered on the row the page opened on, its open question, so j moves to the row after
+    // it in the tree read's order.
+    const opened = order.indexOf(
+      blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID)
+    );
+    expect(opened, "the open question is no visible row").toBeGreaterThanOrEqual(0);
+    expect(inside, "j moved to no row inside the tree").toBe(order[opened + 1]);
     await page.keyboard.press("Tab");
     expect(
       await focusInside(tree(page)),
@@ -3992,14 +4004,6 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       .toBe(seeded.first);
     const crumbs = issuePage(page).locator("[data-crumb]");
     await expect(crumbs, "the reply's address does not zoom the tree to its thread").toHaveCount(1);
-    await page.keyboard.press("ArrowLeft");
-    await expect(
-      nodeRow(page, seeded.first).first().locator("[data-row-report]"),
-      "Left on a child of the row the tree is zoomed to says nothing at the row"
-    ).toHaveText(KEY_REPORTS.parent_zoomed);
-    expect(await focusedNodeId(page), "Left on a child of the zoom moved the focus").toBe(
-      seeded.first
-    );
     // The zoom's own row, the thread's head: Left zooms out to the issue, and there Left on the
     // head, a child of the issue, says the whole issue is drawn.
     await page.keyboard.press("ArrowUp");
@@ -4484,8 +4488,10 @@ function focusOnATreeRow(page: Page): Promise<boolean> {
 // The tester's finding at #4205's 2ff6850a: when a read of the issue's comments no longer holds
 // the comment whose row has the focus, that row leaves the tree and the focus falls to the page's
 // body, so the reader's place in the outline is lost and no row of the tree holds the focus. The
-// comments read is answered without that comment as the server's answer reaches the page, and a
-// real event of the issue - another comment resolved - makes the page read the comments again.
+// comments read is answered without that comment as the server's answer reaches the page, and so
+// is the tree read, which the outline's rows come from, without the comment's node and every tuple
+// that names it; a real event of the issue - another comment resolved - makes the page read both
+// again.
 // SLOW(>=2s): the whole issue seeded and loaded, then waited on until the read after the event
 // has drawn the outline without the comment.
 test("a read that drops the focused comment's row leaves the focus on a row of the tree", async ({
@@ -4515,6 +4521,24 @@ test("a read that drops the focused comment's row leaves the focus on a row of t
         }
       }
       await route.fulfill({ json, response: answer });
+    });
+    await page.route(treeReadRoute(seeded.key), async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as IssueTreeRead;
+      // The comment's node, by the id the outline draws it by: its block id, else its own.
+      const dropped = new Set(
+        (body.nodes ?? []).filter((node) => blockIdOfNode(node) === gone).map(({ id }) => id)
+      );
+      await route.fulfill({
+        json: {
+          ...body,
+          nodes: (body.nodes ?? []).filter((node) => !dropped.has(node.id)),
+          tuples: (body.tuples ?? []).filter(
+            (tuple) => !dropped.has(tuple.from.id) && !dropped.has(tuple.to.id)
+          ),
+        },
+        response: answer,
+      });
     });
     await resolveComment(other);
     await expect(

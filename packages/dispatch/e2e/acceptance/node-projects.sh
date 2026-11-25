@@ -19,8 +19,8 @@
 # zeros. Last, the writes of a build before this one, which writes no node, during a roll: it
 # creates a document's row at the removed document's address, which the census names `gone` and
 # the backfill gives a live node, then removes that row, which leaves the live node with no row:
-# the census names it `orphaned`, the backfill leaves it, and `envoy-dispatch erase` removes it, so
-# the run leaves its database complete.
+# the census names it `orphaned`, with no in-band cure, and the backfill leaves it, and the run
+# ends there.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), AGENT_SESSION (a session the
@@ -29,7 +29,7 @@
 # writes, which an agent's bearer may not make), DATABASE_URL (the database that server serves,
 # which `envoy-dispatch` reads from its own environment), and `envoy-dispatch` on PATH. It reads
 # this pod's own test database and never a deployment's: it refuses a DATABASE_URL whose host is
-# not loopback, and the nodes it deletes are the ask's this run made and the orphaned document's.
+# not loopback, and the node it deletes is the ask's this run made.
 #
 # Under e2e/acceptance/with-harness.sh, which exports DISPATCH_E2E_PORT, FAKE_ENVOY_PORT and
 # DATABASE_URL and none of the other inputs, the driver is its own caller, so the check that runs
@@ -144,7 +144,7 @@ printf '%s\n' -b "$work/jar" -H "Origin: $origin" >"$work/person.args"
 actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
 
 # Under the harness the driver makes what its inputs would otherwise name (the header says what).
-# The census, the backfill and the erase it runs are this checkout's: it builds envoy-dispatch and
+# The census and the backfill it runs are this checkout's: it builds envoy-dispatch and
 # puts it first on PATH, so an envoy-dispatch installed on the machine, of another build, is never
 # the one under test.
 if [[ -n "$harness" ]]; then
@@ -413,25 +413,7 @@ for run in census backfill; do
   line="$(census_line artifact)"
   [[ "$line" =~ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=1$ ]] ||
     fail "$section" "the artifact census after the $run reads one orphaned node" "${line:-no line for artifact}"
-  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; remove it with: envoy-dispatch erase --node artifact:$scratch_ref" "$work/census" ||
-    fail "$section" "the census after the $run names $scratch_ref orphaned, with the erase that removes it" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone" "$work/census" ||
+    fail "$section" "the census after the $run names $scratch_ref orphaned, with no in-band cure" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 done
-pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with the erase that removes it, and the backfill leaves it"
-
-# erase_node ARGS...: `envoy-dispatch erase ARGS`, the command the census's orphaned line printed,
-# with the database credential and no bearer, its output in $work/erase and its exit status in
-# $erase_code.
-erase_node() {
-  erase_code=0
-  env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
-    envoy-dispatch erase "$@" >"$work/erase" 2>&1 || erase_code=$?
-}
-erase_node --node "artifact:$scratch_ref"
-[[ "$erase_code" == 1 ]] || fail "$section" "list the orphaned node's erase" "exited $erase_code: $(<"$work/erase")"
-digest="$(sed -n 's/^  listing digest: \([0-9a-f]\{64\}\)$/\1/p' "$work/erase")"
-[[ -n "$digest" ]] || fail "$section" "read the orphaned node's listing digest" "$(<"$work/erase")"
-erase_node --node "artifact:$scratch_ref" --confirm "$digest"
-[[ "$erase_code" == 0 ]] || fail "$section" "erase the orphaned node" "exited $erase_code: $(<"$work/erase")"
-query "$section" "no node of $scratch_ref remains" "select count(*) from graph_nodes where kind = 'artifact' and id = '$scratch_ref'"
-[[ "$answer" == 0 ]] || fail "$section" "the erase removes the node of $scratch_ref" "$answer node(s) remain"
-census_complete "$section" "after the erase of $scratch_ref"
+pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with no in-band cure, and the backfill leaves it"

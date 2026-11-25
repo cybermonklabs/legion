@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -24,19 +24,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // runDocumentRoomSync runs documentService's room sync on a listener hub of its own, as
 // cmd/dispatch does, until the test ends, and returns once the hub's first LISTEN stands: a
-// notification committed before that reaches nobody.
+// notification committed before that reaches nobody. Its one bound is the test binary's deadline
+// (testwait.Receive).
 func runDocumentRoomSync(t *testing.T, database *store.Store, documentService *docs.Service) {
 	t.Helper()
 	listening := runDocumentRoomSyncDialing(t, documentService, documentListenerDial(database, documentService))
-	select {
-	case <-listening:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the document service's listener hub never listened")
-	}
+	testwait.Receive(t, "the document service's listener hub to listen", listening)
 }
 
 // documentListenerDial is documentService's listener connection as cmd/dispatch dials it: a
@@ -89,6 +87,7 @@ func runDocumentRoomSyncDialing(
 // the request - a client that has hung up included - can keep a room taking edits from the
 // browsers connected to it.
 func TestClosingAnIssueClosesItsRoomsFromItsCommit(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{
@@ -105,7 +104,7 @@ func TestClosingAnIssueClosesItsRoomsFromItsCommit(t *testing.T) {
 	t.Cleanup(documentServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(documentServer.URL, "http") + "/ws/doc/" + issue.PrimaryArtifactID
-	connection, wsResponse, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, wsResponse, err := dialLive(t, gws.DefaultDialer, wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", wsResponse, err)
 	}
@@ -151,6 +150,7 @@ const slowWithdrawal = 4 * time.Second
 // read-only, holding the keystroke. Here the close holds its transaction open for longer than
 // closeMargin after writing the withdrawn block, and the browser types then.
 func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
+	t.Parallel()
 	wrapper := &peerInsertDocs{}
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -183,22 +183,26 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
 
-	select {
-	case <-peer.connection().Ended:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the close left the browser's room on the other process open")
-	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.Receive(t, "the close to end the browser's room on the other process", peer.connection().Ended)
+	testwait.UntilPolling(t, 20*time.Millisecond, "the keystroke typed while the close's write held the document's lock to be stored (the store's text)", func() (string, bool) {
 		stored := storedDocumentText(t, database, issue.PrimaryArtifactID)
-		if strings.Contains(stored, "typed during the close") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the keystroke typed while the close's write held the document's lock was dropped: the store holds %q", stored)
-		}
-	}
+		return stored, strings.Contains(stored, "typed during the close")
+	})
 	peer.reconnect(t)
-	scope, err := peer.connection().Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), 10*time.Second)
+	// docstest's Authenticate waits under a bound of its own, so it is handed one no run reaches,
+	// and the room's answer is waited for here instead, whose one bound is the test binary's
+	// deadline (testwait.Receive).
+	type authenticated struct {
+		scope string
+		err   error
+	}
+	answered := make(chan authenticated, 1)
+	go func() {
+		scope, err := peer.connection().Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), math.MaxInt64)
+		answered <- authenticated{scope, err}
+	}()
+	reply := testwait.Receive(t, "the room's answer to the reconnected browser's auth token", answered)
+	scope, err := reply.scope, reply.err
 	if err != nil {
 		t.Fatalf("authenticate the reconnected browser: %v", err)
 	}
@@ -208,21 +212,16 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 }
 
 // waitForDocumentLockWaiter returns once a session of database waits on a document's advisory lock
-// (a room's append, lockRoom), failing the test after ten seconds.
+// (a room's append, lockRoom). Its one bound is the test binary's deadline (testwait.UntilPolling).
 func waitForDocumentLockWaiter(t *testing.T, database *store.Store) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	testwait.UntilPolling(t, 10*time.Millisecond, "an append to wait on the document's lock (the sessions waiting)", func() (int, bool) {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%pg_advisory%lock(hashtext($1))%")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no append came to wait on the document's lock")
-		}
-	}
+		return waiting, waiting > 0
+	})
 }
 
 // storedDocumentText renders every stored update of the room artifactID's document is edited in,
@@ -248,16 +247,19 @@ func storedDocumentText(t *testing.T, database *store.Store, artifactID string) 
 }
 
 // waitForDocumentConnectionClose waits for the server to close a connected client's connection.
+// The connection is read on a goroutine under no read deadline, and the wait's one bound is the
+// test binary's deadline (testwait.Receive); the test's cleanup closes a connection the server
+// left open, which ends that goroutine.
 func waitForDocumentConnectionClose(t *testing.T, connection *gws.Conn) {
 	t.Helper()
-	connection.SetReadDeadline(time.Now().Add(10 * time.Second))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			var networkError net.Error
-			if errors.As(err, &networkError) && networkError.Timeout() {
-				t.Fatal("document connection remained open after the issue closed")
+	closed := make(chan error, 1)
+	go func() {
+		for {
+			if _, _, err := connection.ReadMessage(); err != nil {
+				closed <- err
+				return
 			}
-			return
 		}
-	}
+	}()
+	testwait.Receive(t, "the server to close the document connection once the issue closed", closed)
 }

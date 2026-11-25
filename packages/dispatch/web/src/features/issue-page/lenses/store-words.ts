@@ -3,7 +3,6 @@ import { referenceSpans } from "../../refs/reference-spans";
 import { parseIssuePath } from "../../refs/routes";
 import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
-import { outlineRowPath } from "../issue-address";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { storedReading } from "../stored-reading";
 import {
@@ -32,6 +31,7 @@ import {
   storedFacts,
   storedRowWords,
 } from "./lens-drafts";
+import { outlineRowPath } from "./store-link";
 
 /**
  * A store address in a row's words on the issue page (decision 388): `dispatch://lens/<uuid>`,

@@ -46,6 +46,7 @@ func (liveTrees) Claims(context.Context) ([]supervise.Claim, error) { return nil
 // state, as the store holds it after the stop, and hands its answer to a real Sandbox runtime
 // (sandbox.New) over an API that holds the controller's Sandbox, at the periodic sweep's grace.
 func TestTheOrphanSweepKeepsASuspendedControllersSandboxAndDeletesARetiredOnes(t *testing.T) {
+	t.Parallel()
 	controller := claim.ControllerToken("legion")
 	for _, tc := range []struct {
 		state supervise.ClaimState

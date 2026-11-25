@@ -172,6 +172,7 @@ func (s *server) recordWithdrawnAsksTx(ledger *docs.Ledger, issueKey string, pla
 		held := planned.held[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 			return nil
 		}); err != nil {
 			return nil, nil, err
@@ -289,6 +290,7 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		held := restored.held[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 			return nil
 		}); err != nil {
 			return nil, err
@@ -380,7 +382,14 @@ func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	if err != nil {
 		return nil, err
 	}
-	return s.deps.Docs.WriteIssueAskStates(ctx, issueKey, append(current, withdrawing...), actor, true)
+	marked, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, append(current, withdrawing...), actor, true)
+	if err != nil {
+		return nil, err
+	}
+	// The blocks it hands back are the ones it marked resolved, which only a write while another
+	// build serves marks.
+	// kept for one release: roll-window-attributes
+	return marked, nil
 }
 
 // readIssueAsks reads the asks query selects (askRowColumns from askRowFrom), with their opening

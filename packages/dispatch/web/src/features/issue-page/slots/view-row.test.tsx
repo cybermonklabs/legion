@@ -46,7 +46,8 @@ const STATEMENTS: readonly TreeAnswerNode[] = [
   specBlock("r2", "requirement", 1),
 ];
 
-/** The address of the spec's step (`STEP_NODE`), which the names read names it by. */
+/** The address of the spec's step (`STEP_NODE`). The names read is not given it, as it is given
+ *  no node's own address: it names the issue's own key, which the root's words write. */
 const STEP = buildDispatchReference({
   block: { id: "t1" },
   key: KEY,
@@ -77,6 +78,8 @@ function treeOf(comments: readonly Comment[], blocks: readonly TreeAnswerNode[])
 const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
   conversation: "2",
   decisions: "0",
+  // Graph draws no count (R10), which `toEqual` reads as a member that holds none.
+  graph: undefined as never,
   plan: "0",
   spec: "2",
   verification: "0",
@@ -85,12 +88,11 @@ const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
 /** The row's text with each control's name alone, which is all it draws with no signals. */
 const NAMES_ALONE = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join("");
 
-/** Answers every read the row reaches: the tree's six reads, the tree read the outline draws its
- *  rows from - the spec's two statements and the two threads - the reader and the names. No
- *  document's blocks are read. A case changes the answer of the read it holds out or fails. */
+/** Answers every read the row reaches: the tree's six reads, the issue's tree read, the reader
+ *  and the names. A case changes the answer of the read it holds out or fails. */
 function answerReads() {
   return {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     decisions: spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
@@ -248,8 +250,9 @@ test("the view row draws no count while the reader's login is out, and the real 
 // Under a words filter a plan task's or a callout's words came from the names read alone, so
 // until that read answered Plan matched none of the issue's steps and drew 0 as its count, which a
 // names read that failed left for good. Under one the row draws no count, unit word or flag until
-// the names are held, and the real counts once they are. The tree read now answers the step with
-// its words, and the names read names it by them too.
+// the names are held, and the real counts once they are.
+// The tree read now answers the step with its words; the names read is not given its address,
+// and names the issue's own key, which the root's words write.
 test("under a words filter the view row draws no count while the names read is out, and the real counts once it has answered", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -272,7 +275,7 @@ test("under a words filter the view row draws no count while the names read is o
 
     await act(async () =>
       names.resolve({
-        targets: [{ gone: false, kind: "block", name: STEP_WORDS, ref: STEP }],
+        targets: [{ gone: false, kind: "block", name: "Hang the lanterns first.", ref: STEP }],
       })
     );
     await waitFor(() =>
@@ -305,7 +308,7 @@ test("under a words filter the view row keeps drawing its counts while the names
     refs.includes(cited)
       ? held.promise
       : (Promise.resolve({
-          targets: [{ gone: false, kind: "block", name: STEP_WORDS, ref: STEP }],
+          targets: [{ gone: false, kind: "block", name: "Hang the lanterns first.", ref: STEP }],
         }) as never)
   );
   const view = renderViewRow(client, `${presetPath(KEY, "conversation")}?q=lanterns`);
@@ -318,9 +321,9 @@ test("under a words filter the view row keeps drawing its counts while the names
     );
 
     // The comments are read again, and answer a new thread too, by the reader, whose words hold
-    // the filter's word and cite an issue no other node names. The tree read, which the row's
-    // turns come from, is read again with them and answers the thread as a node, as the
-    // comment's event reads both.
+    // the filter's word and cite an issue no other node names.
+    // The tree read, which the row's turns come from, is read again with them and answers the
+    // thread as a node, as the comment's event reads both.
     const comments = [
       ...TWO_THREADS,
       { ...readComment("head-c", 5), body: `Hang the lanterns as ${cited} asks.` },
@@ -358,7 +361,7 @@ test("under a words filter the view row of an issue that holds no node draws no 
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
   const reads = answerReads();
-  // No document holds a block and nobody has commented: the tree read answers the issue alone.
+  // No document holds a block and nobody has commented: the tree is the issue alone.
   reads.tree.mockResolvedValue(treeOf([], []));
   reads.comments.mockResolvedValue([] as never);
   const own = buildDispatchReference({ key: KEY, kind: "issue" });

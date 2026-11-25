@@ -46,7 +46,7 @@ type settlementReconciliation struct {
 	retracted []model.Ask
 	// answeredGone is whether an answered ask of the document has no block in the tree reconciled
 	// - a row no block matched - which alone can make the version a person's removal of its block
-	// (holdSettledRemovals), so a settlement whose tree holds every answered ask's block reads no
+	// (holdRoomRemovals), so a settlement whose tree holds every answered ask's block reads no
 	// removal.
 	answeredGone bool
 	// owedCopies are the other documents showing a copy of an ask this settlement retracts, or of
@@ -100,6 +100,8 @@ type settlementReconciliation struct {
 // block in the tree settlement reconciled, its attributes as settlement found them, the write with
 // the words and the one without them (askReadableWriteWithheld), and the indexes of the repair and
 // of the block.repaired the write made, -1 for none.
+//
+// kept for one release: roll-window-attributes
 type answerInStep struct {
 	node            *pmdoc.Node
 	found           pmdoc.Attrs
@@ -302,6 +304,11 @@ func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, a
 			return err
 		}
 		b.Queue(fmt.Sprintf("state the copies of %s", artifactID), "with "+arms+"\nselect 1", params...)
+		claimed := make([]graphstore.NodeKey, 0, len(claims))
+		for _, claim := range claims {
+			claimed = append(claimed, graphstore.NodeKey{Kind: claim.FromKind, ID: claim.FromID})
+		}
+		graphstore.QueueHeads(b, claimed)
 		return nil
 	}, nil
 }
@@ -401,6 +408,7 @@ func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx p
 			tuples[index].SourceEvent = cause
 		}
 		graphstore.QueueWrite(b, nil, tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
 		return nil
 	}, nil
 }
@@ -470,11 +478,13 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, s
 // answer's words while another build serves (wroteAnswerWords), for withholdAnswersWithoutRoom to
 // weigh. A block that already held the words its write leaves - one whose repair cleared its
 // `invalid` or moved a copy's provenance - keeps them: they are in the document settlement read
-// and add nothing to it, and the release before weighed only a repair that wrote an answer.
-//
-// kept for one release: roll-window-attributes
+// and add nothing to it, and the release before weighed only a repair that wrote an answer. The
+// write stays, settlement's one write to a block of an ask (G1); the record of the words it wrote
+// goes with the roll window.
 func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID string, twoBuilds bool, ask model.Ask, copied string, event *model.Event) bool {
+	// kept for one release: roll-window-attributes
 	found := maps.Clone(node.Attrs)
+	// kept for one release: roll-window-attributes
 	repair, eventAt := len(r.repairs), len(r.events)
 	if event == nil {
 		eventAt = -1
@@ -483,6 +493,7 @@ func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID str
 	if !r.repairAsk(node, blockID, write, event) {
 		return false
 	}
+	// kept for one release: roll-window-attributes
 	if twoBuilds && wroteAnswerWords(found, node) {
 		r.inStep = append(r.inStep, answerInStep{
 			node: node, found: found, write: write, withheld: askReadableWriteWithheld(ask, copied),
@@ -495,6 +506,8 @@ func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID str
 // wroteAnswerWords reports whether node, an ask block a write left, holds an answer's words
 // (answerWords) that found, its attributes before the write, did not: a selection or words found
 // held none of, or held another value of.
+//
+// kept for one release: roll-window-attributes
 func wroteAnswerWords(found pmdoc.Attrs, node *pmdoc.Node) bool {
 	for _, name := range answerWords {
 		value, held := node.Attrs[name]
@@ -839,6 +852,7 @@ func (s *Service) reconcileAskBlocks(
 	// step while another build serves, and the first settlement after its last process left takes
 	// them out.
 	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	twoBuilds := false
 	if len(blocks)+len(invalidBlocks) > 0 {
 		if twoBuilds, err = anotherBuildServes(ctx, tx); err != nil {
@@ -846,8 +860,9 @@ func (s *Service) reconcileAskBlocks(
 		}
 	}
 	// Once the fleet is one build, the attributes a version keeps are written from each ask's node,
-	// each one its node holds no value of taken off (keptAskState, onItsNode); an ask whose state
-	// this settlement writes - one it restores - is written as it states it.
+	// each one its node holds no value of taken off, or from its row where the node is behind it,
+	// before the decisions step's catch-up (keptAskState, keptFromItsNode); an ask whose state this
+	// settlement writes - one it restores - is written as it states it.
 	// kept for one release: stored-ask-state
 	var nodes map[string]askNodeAnswer
 	if !twoBuilds && len(rows)+len(sources) > 0 {
@@ -867,7 +882,7 @@ func (s *Service) reconcileAskBlocks(
 		if twoBuilds {
 			return ask
 		}
-		return onItsNode(ask, nodes)
+		return keptFromItsNode(ask, nodes)
 	}
 	// The sources, with the durable record read above, are what the version this settlement writes
 	// reads the authors of its decisions and readings from (typedSources).
@@ -898,14 +913,19 @@ func (s *Service) reconcileAskBlocks(
 				},
 			))
 		}
-		// kept for one release: stored-ask-state
-		if !twoBuilds {
-			unread := withoutStoredAskAttributes
-			if indexed {
-				unread = keptAskState(shown(ask), "")
-			}
-			reconciled.repair(invalid.node, invalid.id, unread)
+		// Once the fleet is one build, an invalid block keeps none of the attributes a version can
+		// store where it has no ask row (R10), which stays, and an indexed one what a version keeps
+		// of its ask, which goes with that form; the roll window's branch goes with it.
+		// kept for one release: roll-window-attributes
+		if twoBuilds {
+			continue
 		}
+		unread := withoutStoredAskAttributes
+		// kept for one release: stored-ask-state
+		if indexed {
+			unread = keptAskState(shown(ask), "")
+		}
+		reconciled.repair(invalid.node, invalid.id, unread)
 	}
 	// Every ask block of the tree, readable or not, names the ask it is a copy of, or none, for
 	// claimCopies once the version's blocks are indexed.
@@ -1725,9 +1745,8 @@ func clearAskInvalidAttribute(node *pmdoc.Node) bool {
 // that no row indexes: resolved while another build serves (resolveUnindexedAskBlock), and none
 // of the seven attributes a version can store once the fleet is one build, as the close's sweep
 // leaves such a block (unindexedAskResolution). The block reads, so it carries no `invalid`
-// either way.
-//
-// kept for one release: roll-window-attributes
+// either way. The one-build write is R10's and stays; the roll window's branch is
+// unindexedAskResolution's and goes with it.
 func unindexedAskWrite(twoBuilds bool) func(*pmdoc.Node) bool {
 	resolve := unindexedAskResolution(twoBuilds)
 	return func(node *pmdoc.Node) bool {

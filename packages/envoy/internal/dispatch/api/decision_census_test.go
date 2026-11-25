@@ -74,6 +74,7 @@ func requireReadingParent(t *testing.T, database *store.Store, document decision
 // document of the issue, whose block keeps its source's id. A census that read the part_of as it
 // stands reads every such reading as a row and a node that disagree, and refuses.
 func TestTheCensusReadsAReadingInAnAnsweredAskAsTheAskBlocksChild(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -114,6 +115,7 @@ func TestTheCensusReadsAReadingInAnAnsweredAskAsTheAskBlocksChild(t *testing.T) 
 // person's, so a census whose session and person row sides read only those other tables reads
 // both as a live node no row projects.
 func TestTheCensusHoldsAnAgentWhoseOnlyActsAreADecisionAndAReading(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	ctx := context.Background()
 	asBob := func(method, path string, body any) {
@@ -171,6 +173,7 @@ func TestTheCensusHoldsAnAgentWhoseOnlyActsAreADecisionAndAReading(t *testing.T)
 // the reopen; the store's log still holds his answer, and the census reads zero differences
 // before and after, the person kind counting alice, who asked, and bob both times.
 func TestTheCensusHoldsAPersonWhoseAnswerWasTakenOff(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -247,6 +250,7 @@ func incompressibleText(t *testing.T, n int) string {
 // differences where an author arm reading only the rows that name a node would read bob as a
 // live node no row projects.
 func TestTheCensusHoldsTheAuthorOfAnAskPastTheBound(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "LKY")

@@ -30,9 +30,10 @@ import type { PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
 
 /**
- * The view row (R2, R11, R20, and the prototype's view tabs): five
- * controls, Conversation - the page with no view on - then Spec, Verification, Plan and
- * Decisions, each with its signal; and Keys at its right end.
+ * The view row (R2, R11, R20, root R2's one declared list, and the prototype's view tabs): the
+ * controls of `PRESET_ORDER`, Conversation - the page with no view on - then Spec, Verification,
+ * Plan and Decisions, each with its signal, and Graph, the whole tree read, with none (R10, R12);
+ * and Keys at its right end.
  *
  * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
  * At 760 px and below the row is the one control and Outline,
@@ -77,8 +78,9 @@ export function IssuePresets({
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). Undefined while
    *  the counts cannot be read yet (`slots/view-row.tsx` waits for the tree's reads and the
    *  reader's login): then no control draws a signal - no count, no unit word, no flag - and no
-   *  control's description or name points at one, so none names an element that is not drawn. */
-  signals?: Readonly<Record<Preset, PresetSignal>>;
+   *  control's description or name points at one, so none names an element that is not drawn.
+   *  A control it holds no signal for draws none either: Graph, which has no count (R10). */
+  signals?: Readonly<Partial<Record<Preset, PresetSignal>>>;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -141,9 +143,10 @@ export function IssuePresets({
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
     // the next one. The menu reads it in the capture phase, so it marks the press before any
     // listener of the page's that a layer under it added earlier. A dialog open over the row
-    // takes the press wherever the focus is: not yet in it, the frame after it opens, or gone to
-    // the page. Whether one is open is `useDialog`'s registry's answer (`dialogOpen()`), which
-    // also decides which dialog the key closes, as Details' drawer asks it.
+    // takes the press wherever the focus is: on the dialog itself in its first frame, on its
+    // field, or gone to the page after a press on its text. Whether one is open is `useDialog`'s
+    // registry's answer (`dialogOpen()`), which also decides which dialog the key closes, as
+    // Details' drawer asks it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
       if (dialogOpen()) return;
@@ -250,7 +253,9 @@ export function IssuePresets({
               <span data-preset-name="" {...pageChrome}>
                 {PRESET_NAMES[active]}
               </span>
-              {signals === undefined ? null : <Signal preset={active} signal={signals[active]} />}
+              {signals?.[active] === undefined ? null : (
+                <Signal preset={active} signal={signals[active]} />
+              )}
             </span>
             <MenuMark />
           </button>
@@ -262,7 +267,9 @@ export function IssuePresets({
                 <button
                   aria-checked={preset === active}
                   aria-labelledby={
-                    signals === undefined ? nameId(preset) : `${nameId(preset)} ${signalId(preset)}`
+                    signals?.[preset] === undefined
+                      ? nameId(preset)
+                      : `${nameId(preset)} ${signalId(preset)}`
                   }
                   className={`${pageMenuItem} flex items-baseline gap-1.5`}
                   key={preset}
@@ -280,7 +287,7 @@ export function IssuePresets({
                   <span id={nameId(preset)} {...pageChrome}>
                     {PRESET_NAMES[preset]}
                   </span>
-                  {signals === undefined ? null : (
+                  {signals?.[preset] === undefined ? null : (
                     <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
                   )}
                 </button>
@@ -322,7 +329,7 @@ export function IssuePresets({
               key={preset}
             >
               <button
-                aria-describedby={signals === undefined ? undefined : signalId(preset)}
+                aria-describedby={signals?.[preset] === undefined ? undefined : signalId(preset)}
                 aria-labelledby={nameId(preset)}
                 aria-pressed={on}
                 className="pt-[7px] pb-1.5 pl-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-page-ink"
@@ -361,7 +368,7 @@ export function IssuePresets({
                 }}
                 onMouseDown={(event) => event.preventDefault()}
               >
-                {signals === undefined ? null : (
+                {signals?.[preset] === undefined ? null : (
                   <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
                 )}
               </label>
@@ -421,7 +428,8 @@ function step(
  * it asks something of the reader, in the prototype's `.sig` (12 px, the quiet grey; the failed
  * red for what failed and the decision violet for what waits for review, each with its word, so
  * the colour repeats what the word says). The count is the author's number and carries
- * `data-preset-count`, which the checks read it by.
+ * `data-preset-count`, which the checks read it by; it carries "+" while the read it is read
+ * from holds nodes no page read yet holds (`PresetSignal.more`, R15).
  */
 function Signal({
   id,
@@ -437,6 +445,7 @@ function Signal({
     <span className={`text-xs leading-4 font-medium ${pageQuietText}`} id={id}>
       <span data-preset-count={preset} {...authorText}>
         {signal.count}
+        {signal.more === true ? "+" : ""}
       </span>
       {unit === undefined ? null : <span {...pageChrome}> {FILTER_SIGNAL_WORDS[unit]}</span>}
       {flag === undefined ? null : (

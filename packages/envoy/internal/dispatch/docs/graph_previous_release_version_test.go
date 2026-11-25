@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // previousReleaseCommit is the commit a process of the release before this one registers under,
@@ -64,6 +65,7 @@ const (
 // server reads such an event a tick or two later, once the Horizon has proven an observation that
 // saw it.
 func TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -208,6 +210,7 @@ func TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore(t *testing
 // new process reads from where its build's cursor stood through the newest event, and the process
 // here is a new Service of the same commit, as the same build returns.
 func TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore(t *testing.T) {
+	t.Parallel()
 	requireAVersionWrittenWhileNoBuildOfThisCodeServesReachesTheStore(t, "")
 }
 
@@ -223,6 +226,7 @@ func TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore(
 // before it stopped reading (readEventsAfterCursor), and reads from there through the newest
 // event.
 func TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore(t *testing.T) {
+	t.Parallel()
 	requireAVersionWrittenWhileNoBuildOfThisCodeServesReachesTheStore(t, nextBuildCommit)
 }
 
@@ -342,6 +346,7 @@ func requireAVersionWrittenWhileNoBuildOfThisCodeServesReachesTheStore(t *testin
 // give its node, so its cursor stands above the horizon with those events between the two, and
 // then runs the first tick of a second build, which holds no row.
 func TestASecondBuildsFirstTickReadsNoEventBelowTheCursorAnotherBuildLeft(t *testing.T) {
+	t.Parallel()
 	database, first := blockIndexService(t)
 	const slug = "second"
 	document := backfilledDocument(t, database, first, slug)
@@ -396,6 +401,7 @@ func TestASecondBuildsFirstTickReadsNoEventBelowTheCursorAnotherBuildLeft(t *tes
 // rule's backfill is a row of graph_backfill_horizon written as graphcensus's
 // recordBackfillHorizon writes one, since this package cannot run a backfill of another rule.
 func TestABuildOfANewerMarkingRuleReadsFromTheBackfillHorizon(t *testing.T) {
+	t.Parallel()
 	database, older := blockIndexService(t)
 	const slug = "newer"
 	document := backfilledDocument(t, database, older, slug)
@@ -436,6 +442,7 @@ func TestABuildOfANewerMarkingRuleReadsFromTheBackfillHorizon(t *testing.T) {
 // start at the lower rule's horizon and pass over that version (R13). The higher rule's debt and
 // its backfill's horizon stand as in TestABuildOfANewerMarkingRuleReadsFromTheBackfillHorizon.
 func TestAHigherRuleStartsAtItsOwnHorizonAboveALowerRulesBackfill(t *testing.T) {
+	t.Parallel()
 	database, lower := blockIndexService(t)
 	ctx := context.Background()
 	appendIssueEvent(t, database)
@@ -478,6 +485,7 @@ func TestAHigherRuleStartsAtItsOwnHorizonAboveALowerRulesBackfill(t *testing.T) 
 // this build owes: every event below this build's first horizon is left to the backfill of this
 // build's own rule, which reads every row whatever its age when it runs (R13).
 func TestABuildWithOnlyALowerRulesHorizonStartsAtItsSafeHorizon(t *testing.T) {
+	t.Parallel()
 	database, lower := blockIndexService(t)
 	ctx := context.Background()
 	appendIssueEvent(t, database)
@@ -647,6 +655,7 @@ func blockRowOf(t *testing.T, database *store.Store, document string) blockRowSt
 // TestAVersionThePreviousReleaseWritesWhileItHoldsTheLeaseReachesTheStore, so no tick of this build
 // runs between that release's version and its leaving.
 func TestAVersionThePreviousReleaseWritesThatOnlyDropsABlockReachesTheStore(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -800,7 +809,7 @@ func registerProcess(t *testing.T, database *store.Store, commit string) func() 
 			t.Errorf("deregister the process serving commit %q: %v", commit, err)
 		}
 	})
-	t.Cleanup(deregister)
+	testcleanup.Add(t, deregister)
 	return deregister
 }
 
