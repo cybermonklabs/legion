@@ -377,18 +377,18 @@ var storeWriteCallSites = map[string]string{
 	"api/results_retract.go#writeCheckResultRetraction":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultBatch":           "graphcensus#TestTheResultBatchTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultRetractionBatch": "graphcensus#TestTheResultRetractionBatchTakesTheStoreLockOrder",
-	// A query's version a write owes where it moved the query's record or its document's rendering
-	// and wrote that document no version: the version's row, its node
-	// (docs/mutation.go#WriteVersionNode, above) and its version_renders row, and last the node's
-	// facts, through Caused. A recorded result, a retraction and an issue room's settlement write
-	// no such version in their own transaction: their batch marks the issue's queries owed, and the
-	// drain writes the versions in a transaction of its own once they have committed
-	// (drainQueryMark), as the block-index tick does for a mark a write left. It takes the issue's
-	// owner lock, then the lock of its room (docs.LockQueryRooms), reads, and sends one batch: the
-	// rows, the move of an open approval request, a carry, the artifact.version, the clear of the
-	// mark, then one call of Caused under the mark's event and the head rows, after the rows its
-	// path holds, whose order refs' TestCausedTakesTheStoreLockOrder proves.
-	"docs/query_marks.go#drainQueryMark": "refs#TestCausedTakesTheStoreLockOrder",
+	// The drain of the queries a write left owed (docs.Service.drainMark). A recorded result, a
+	// retraction, a node's move or delete and an issue room's settlement write no version of a
+	// query whose record they move: their batch marks the issue's queries owed
+	// (docs.QueueQueryMark), and the drain writes the versions in a transaction of its own once that
+	// batch has committed, so api's tests of those routes hold the route's transaction and not this
+	// one. It takes the issue's owner lock, then the lock of the issue's room (docs.LockQueryRooms),
+	// reads the mark, and sends one batch: each version's row and node (docs/mutation.go#WriteVersionNode,
+	// above), its artifact.version event, the clear of the mark, then one call of QueueCaused under
+	// the mark's event, or at the sentinel where it holds none, and the head rows. docs'
+	// TestTheQueryDrainTakesTheStoreLockOrder runs it and holds each of those steps, the two
+	// advisory locks as pg_locks shows them and the rest by the statement the write waits at.
+	"docs/query_marks.go#drainMark": "docs#TestTheQueryDrainTakesTheStoreLockOrder",
 	// R2's daemon-thread step (docs.DaemonThreadStep): it reads with no lock the blocks that stand
 	// under a message of a thread the Legion daemon's session began, then takes every owner lock of
 	// their issues in one call of store.LockOwners and each of their rooms' locks in room-id order,
