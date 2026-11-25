@@ -166,10 +166,8 @@ function scanAsks(markdown: string, frontMatter: boolean): NewAsk[] {
   // A write's CR LF or lone carriage return is stored as a line feed.
   const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
   const typedOpener = (text: string) => typedOpenerAt(text, 0);
-  return readAskBlocks(lines, { frontMatter, typedOpener }).map(({ opener, body }) => {
-    // readAskBlocks gives only lines that typedOpenerAt reads as an opener, so the id is the one
-    // that opened the block.
-    const id = typedOpenerAt(opener, 0)?.id;
+  return readAskBlocks(lines, { frontMatter, bodies: true, typedOpener }).map(({ frame, body }) => {
+    const { id } = frame;
     const text = body.join("\n").trim();
     return { kind: "block", ...(id === undefined ? {} : { id }), text, opening: openingOf(text) };
   });

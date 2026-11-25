@@ -456,43 +456,56 @@ func holdsKeptAskAttribute(node *pmdoc.Node) bool {
 }
 
 // askBlocksWithAnAsk is the id of each ask block of tree, the document as a write of it read it,
-// that has an ask: one an ask of document indexes (loadAskBlocks), or a readable block
-// readCopiedAskSources reads as a copy of an ask on another document of its owner, as the close's
-// final sweep tells them apart (readIssueAskStateWrites). Every other ask block of tree has no ask
-// row and is no copy of an ask, so once the fleet is one build it keeps none of the eight (R10),
-// whatever its live tree gives it: the state="resolved" a closed issue's settlement or the close's
-// sweep wrote while another build served (resolveUnindexedAskBlock), or what a browser put on it.
-// The rows are read as the caller's transaction, which holds the document owner's lock, reads
-// them, and the owner only where a block no row indexes is left to read the copies of. It opens
-// no ask from what it reads, so it takes no copy lock.
+// that has an ask (askBlockAsks): one an ask of document indexes, or a readable block that is a
+// copy of an ask on another document of its owner, as the close's final sweep tells them apart
+// (readIssueAskStateWrites). Every other ask block of tree has no ask row and is no copy of an
+// ask, so once the fleet is one build it keeps none of the eight (R10), whatever its live tree
+// gives it: the state="resolved" a closed issue's settlement or the close's sweep wrote while
+// another build served (resolveUnindexedAskBlock), or what a browser put on it.
 //
 // kept for one release: stored-ask-state
 func askBlocksWithAnAsk(ctx context.Context, tx pgx.Tx, document string, tree *pmdoc.Node) (map[string]bool, error) {
-	rows, err := loadAskBlocks(ctx, tx, document)
+	rows, sources, err := askBlockAsks(ctx, tx, document, tree)
 	if err != nil {
 		return nil, err
 	}
-	withAsk := make(map[string]bool, len(rows))
+	withAsk := make(map[string]bool, len(rows)+len(sources))
 	for id := range rows {
 		withAsk[id] = true
-	}
-	blocks, _ := readableAskBlocks(tree)
-	unindexed := unindexedAskBlockIDs(blocks, rows)
-	if len(unindexed) == 0 {
-		return withAsk, nil
-	}
-	owner, err := documentOwner(ctx, tx, document)
-	if err != nil {
-		return nil, err
-	}
-	sources, err := readCopiedAskSources(ctx, tx, document, owner, blocks, unindexed)
-	if err != nil {
-		return nil, err
 	}
 	for id := range sources {
 		withAsk[id] = true
 	}
 	return withAsk, nil
+}
+
+// askBlockAsks is the ask each ask block of tree, the document as a write of it read it, has:
+// rows, each ask of document that indexes a block (loadAskBlocks), and sources, the ask on another
+// document of its owner that each readable block no row indexes is a copy of
+// (readCopiedAskSources). The rows are read as the caller's transaction, which holds the document
+// owner's lock, reads them, and the owner only where a block no row indexes is left to read the
+// copies of. It opens no ask from what it reads, so it takes no copy lock.
+//
+// kept for one release: stored-ask-state
+func askBlockAsks(ctx context.Context, tx pgx.Tx, document string, tree *pmdoc.Node) (map[string]model.Ask, map[string]copiedSource, error) {
+	rows, err := loadAskBlocks(ctx, tx, document)
+	if err != nil {
+		return nil, nil, err
+	}
+	blocks, _ := readableAskBlocks(tree)
+	unindexed := unindexedAskBlockIDs(blocks, rows)
+	if len(unindexed) == 0 {
+		return rows, nil, nil
+	}
+	owner, err := documentOwner(ctx, tx, document)
+	if err != nil {
+		return nil, nil, err
+	}
+	sources, err := readCopiedAskSources(ctx, tx, document, owner, blocks, unindexed)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rows, sources, nil
 }
 
 // askReadableWrite is settlement's write to an ask block it reads (readAskBlockStrictly), whose

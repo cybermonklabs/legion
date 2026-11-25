@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/yuin/goldmark/util"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -1146,8 +1147,8 @@ func (scan *blockScan) openItem(parent *scanBlock, line *scanLine) (*scanBlock, 
 func (scan *blockScan) openDirective(parent *scanBlock, line *scanLine, width int, text string) (*scanBlock, bool) {
 	if !strings.HasPrefix(text, ":::") {
 		// A leaf directive (`::name`), and a text directive (`:name{…}`) opening the line.
-		if strings.HasPrefix(text, "::") && len(text) > 2 && directiveNameByte(text[2]) ||
-			len(text) > 1 && directiveNameByte(text[1]) && strings.Contains(text, "{") {
+		if strings.HasPrefix(text, "::") && len(text) > 2 && pmdoc.DirectiveNameByte(text[2]) ||
+			len(text) > 1 && pmdoc.DirectiveNameByte(text[1]) && strings.Contains(text, "{") {
 			return scan.leaf(parent, line), true
 		}
 		return nil, false
@@ -1251,7 +1252,7 @@ func (scan *blockScan) continueBlock(block *scanBlock, line *scanLine) scanConti
 		width, at := line.indent()
 		// A line of at least the fence's colons closes the block, whatever block inside it the line
 		// would otherwise continue (pmdoc's typedDirectiveParser.Continue).
-		if width < 4 && at < len(line.text) && fenceColons(line.text[at:]) >= block.run {
+		if width < 4 && at < len(line.text) && pmdoc.FenceColons(line.text[at:]) >= block.run {
 			line.takeAll()
 			return scanClose
 		}
@@ -1420,9 +1421,10 @@ func quoteMarker(line *scanLine) bool {
 // footnoteLabelEnd is the index after the `]:` of the footnote label at index at of text, as
 // goldmark's footnote parser reads one (extension/footnote.go, through util.FindClosure) and pmdoc
 // keeps it: `[^`, the label, `]`, then `:` at once. A backslash before an ASCII punctuation
-// character escapes that character, so `\]` and `\[` are part of the label, as the renderer writes
-// a label that holds a bracket (pmdoc's escapeFootnoteLabel). An unescaped `[` makes the line no
-// label, and so does a label of nothing but white space. ok is false where no label stands at at.
+// character (util.IsPunct) escapes that character, so `\]` and `\[` are part of the label, as the
+// renderer writes a label that holds a bracket (pmdoc's escapeFootnoteLabel). An unescaped `[`
+// makes the line no label, and so does a blank label (util.IsBlank). ok is false where no label
+// stands at at.
 func footnoteLabelEnd(text string, at int) (end int, ok bool) {
 	if !strings.HasPrefix(text[at:], "[^") {
 		return 0, false
@@ -1432,27 +1434,16 @@ func footnoteLabelEnd(text string, at int) (end int, ok bool) {
 		if text[bracket] == '[' {
 			return 0, false
 		}
-		if text[bracket] == '\\' && bracket+1 < len(text) && asciiPunctuation(text[bracket+1]) {
+		if text[bracket] == '\\' && bracket+1 < len(text) && util.IsPunct(text[bracket+1]) {
 			bracket++
 		}
 	}
-	// The label is blank as goldmark's util.IsBlank reads it: white space alone.
-	if bracket+1 >= len(text) || text[bracket+1] != ':' || strings.Trim(text[at+2:bracket], " \t\r\n\v\f") == "" {
+	// goldmark's white space is the space, the tab, the line feed and the carriage return alone, so
+	// a label of a vertical tab or a form feed is no blank label.
+	if bracket+1 >= len(text) || text[bracket+1] != ':' || util.IsBlank([]byte(text[at+2:bracket])) {
 		return 0, false
 	}
 	return bracket + 2, true
-}
-
-// asciiPunctuation reports whether char is ASCII punctuation, which a backslash before it escapes
-// (goldmark's util.IsPunct).
-func asciiPunctuation(char byte) bool {
-	return char >= '!' && char <= '/' || char >= ':' && char <= '@' || char >= '[' && char <= '`' || char >= '{' && char <= '~'
-}
-
-// directiveNameByte reports whether char can stand in a directive's name (pmdoc's
-// directiveNameByte).
-func directiveNameByte(char byte) bool {
-	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_' || char == '-'
 }
 
 // thematicBreak is goldmark's isThematicBreak: three or more of one of `*`, `-` and `_`, with
@@ -1497,16 +1488,6 @@ func tableDelimiterRow(text string) bool {
 		}
 	}
 	return true
-}
-
-// fenceColons is pmdoc's fenceColons: the colons text holds when they are all it holds but spaces
-// and tabs, and 0 otherwise.
-func fenceColons(text string) int {
-	text = strings.Trim(text, " \t")
-	if text == "" || strings.Trim(text, ":") != "" {
-		return 0
-	}
-	return len(text)
 }
 
 // runOf is how many times char stands in a row at the start of text.
