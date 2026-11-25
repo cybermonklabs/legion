@@ -37,6 +37,7 @@ func (s *settingState) State(ctx context.Context, tx pgx.Tx) (api.State, []super
 // on it next, a migration's long DDL among them (internal/store's apply), which is why the route
 // sets it for its transaction and the pool carries the idle bound instead.
 func TestTheStateRoutesStatementBoundEndsWithItsTransaction(t *testing.T) {
+	t.Parallel()
 	const bound = 2 * time.Second
 	watcher := isolatedOutboxPool(t)
 	application := "legion-daemon-" + strings.ToLower(randomSuffix(t))

@@ -57,8 +57,8 @@ func TestEachStandaloneReadOfTheStoreOpensReadOnlyAndReadsNoID(t *testing.T) {
 			_, err := s.IssueReleaseStop(ctx, "legion", "LEGION-208", 1)
 			return err
 		}},
-		{name: "IssueReleaseSave", run: func(ctx context.Context, s *Store) error {
-			_, err := s.IssueReleaseSave(ctx, "legion", "LEGION-208", 1)
+		{name: "IssueReleaseCheck", run: func(ctx context.Context, s *Store) error {
+			_, err := s.IssueReleaseCheck(ctx, "legion", "LEGION-208", 1)
 			return err
 		}},
 		// The reads that run through ReadOnly, the one form of a standalone read.

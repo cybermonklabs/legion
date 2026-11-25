@@ -38,6 +38,7 @@ import (
 // they would leave the claims running, the reservation unconfirmed, and the tree waiting for
 // admission forever.
 func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name           string
 		withChild      bool
@@ -171,6 +172,7 @@ func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
 // runtime, which provisions each issue's workspace in a pod, it is in the session database the
 // deployment's session_store names, which every tree's pods read.
 func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		inPod bool
@@ -254,6 +256,7 @@ func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 // absent lifecycle, and every close row retried on its backoff forever, logged as a failure each
 // time.
 func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -373,6 +376,7 @@ func (f *carryFixture) run(t *testing.T, what string, attempts int) {
 // lane at the same moment, not at its backoff's retry. A role the new tree has re-pointed and
 // started is that tree's, and the old tree's rows leave it running.
 func TestTheOldTreesStopsReachACarriedRoleItsLingerSuspendMissed(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
 	for _, tc := range []struct {
 		name string
@@ -506,6 +510,7 @@ func TestTheOldTreesStopsReachACarriedRoleItsLingerSuspendMissed(t *testing.T) {
 }
 
 func TestAStartThatFindsAnAlreadySuspendedCarriedClaimDoesNotWakeAnOldTreeClose(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	until := now.Add(-time.Minute)
@@ -540,6 +545,7 @@ func TestAStartThatFindsAnAlreadySuspendedCarriedClaimDoesNotWakeAnOldTreeClose(
 // machine can belong to another daemon during a rolling restart, a machine can already stand in a
 // third tree, and an old close with no claim has nothing to stop.
 func TestALeftTreeStopWaitsForTheMachineOfAStoredClaimInItsTree(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey, thirdTree = "LEGION-207", "LEGION-208", "LEGION-999"
 	for _, tc := range []struct {
 		name string
@@ -645,6 +651,7 @@ func TestALeftTreeStopWaitsForTheMachineOfAStoredClaimInItsTree(t *testing.T) {
 // stop of every role of the issue, so the role is stopped, its session kept, and the old tree's
 // cleanup confirms while the child still waits on its blocker.
 func TestAMoveStopsTheCarriedRoleNoStopRowOfItsOldTreeStillReaches(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// afterMove is a claim the look's in-flight start brings up only once the move has read the

@@ -35,10 +35,14 @@ which is about an answer that says "stored" and stored nothing. This one is abou
   `"%w: index entry of %s: %w"`, so the one sentinel the loop matches tells the caller the write
   did not land and the line tells a reader which write it was. One sentinel per half is two
   identifiers where no code ever matches the second: review round 2 had them removed as dead.
-- **Classify a lost race by the typed error *and* the server's text.** nats.go answers a wrong
-  expected revision as `nats.ErrKeyExists` in some paths and with a message containing
-  `wrong last sequence` in others, so keep both in one `isConflict` function and call it from
-  nowhere else.
+- **Judge a lost conditional write with `bus.IsCASConflict`, by error class, never by text.** It
+  matches `nats.ErrKeyExists` (a Create of a key that is there), `nats.ErrKeyRevisionMismatch` (an
+  Update, or a Delete or Purge with `nats.LastRevision`, at a revision that moved) and JetStream
+  error code 10164. A bucket of three copies answers a write that meets another write of the same
+  key still being replicated with 10164, not the 10071 one copy answers, and `nats.ErrKeyExists`
+  matches 10071 alone, so `errors.Is(err, nats.ErrKeyExists)` reads such a lost Update, Delete or
+  Purge as a failure. A match on the message's text misses an error a wrap cut short (the sweep's
+  `bucketErr` cuts long text). Every caller asks `bus.IsCASConflict` and nothing else.
 - **A write refused inside a scan must stop the scan's progress marker, not just its own key.** The
   caller that sees `written == false` with an error leaves the pass incomplete, so the cursor does
   not pass the key and no marker says the pass covered the bucket.
@@ -46,7 +50,7 @@ which is about an answer that says "stored" and stored nothing. This one is abou
 ## Evidence
 
 - `packages/envoy/internal/dispatch/redeliver/state.go:235-256`: `putRecord`'s three-way switch and
-  its doc, `isConflict` matching `nats.ErrKeyExists` or `wrong last sequence`.
+  its doc, asking `bus.IsCASConflict` (`packages/envoy/internal/bus/kv.go`).
 - `writeRecord` (`index.go:413`) pairs the record write with the index entry and returns the same
   triple to its callers; `errNotWritten` (`index.go:387-391`), wrapped at `index.go:426` and `:447`
   and matched once, at `sweep.go:426`.

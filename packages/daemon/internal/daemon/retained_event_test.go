@@ -85,6 +85,7 @@ func retainedIssueEnvelope(t *testing.T, key string, id, seq int64, status strin
 // snapshot admission holds behind it never stands in for the event's own, actor-bearing write. The
 // daemon's preparation fills a recorded issue's missing repository from its record.
 func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		retained bool
@@ -195,6 +196,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 // that detail shows it, at its sequence; it is never applied with no repository, and never
 // dropped for the boot snapshot to stand in for.
 func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -258,6 +260,7 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 // is not overruled: the redelivery is applied as Dispatch now shows the issue, which records
 // nothing, whatever failed before.
 func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -344,13 +347,18 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 }
 
 // hangGuardAckWait is the AckWait of a test's intake consumers whose preparation reads the store:
-// a hang guard that only a hung read reaches. It is two minutes, or all that is left of the test
-// binary's deadline when that is sooner, so it is always longer than a row's own wait for the
-// event's effect, testwait.Eventually's minute or what is left of that deadline less a second: a
-// read that hangs fails the row by the row's own line, naming what it waited for, while the read
-// is still held, and never by the guard cutting the read and a nak bringing the event back.
+// a hang guard that only a hung read reaches. It is all that is left of the test binary's
+// deadline, and under -timeout 0, which sets none, testwait.Remaining's span no wait reaches, so
+// it is always longer than a row's own wait for the event's effect, testwait.Eventually, which
+// gives up 30 s before that deadline: a read that hangs fails the row by the row's own line,
+// naming what it waited for, while the read is still held, and never by the guard cutting the
+// read and a nak bringing the event back.
 func hangGuardAckWait(t *testing.T) time.Duration {
-	return testwait.Bounded(t, 2*time.Minute, 0)
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		return testwait.Remaining(t)
+	}
+	return time.Until(deadline)
 }
 
 // applyFunc is an intake.Handler of one function.

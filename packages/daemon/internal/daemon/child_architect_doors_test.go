@@ -283,6 +283,7 @@ func (r *childArchitectRig) wantChildsArchitectToldItsIssues(want []string) {
 // child and every issue under it. A child that waits for the issue it is held by gets no architect
 // while it waits: the architect starts with the child's first phase and not with its entry.
 func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
+	t.Parallel()
 	t.Run("release_children", func(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		rig.written("release", childAt("todo", 2))

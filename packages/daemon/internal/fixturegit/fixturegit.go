@@ -56,13 +56,36 @@ func Isolated(tb testing.TB, home string) Runner {
 // is the runner's own. The test fails when PATH holds none.
 func CompiledGit(tb testing.TB) string {
 	tb.Helper()
-	found, _ := lookpath.Others(os.Getenv("PATH"), "git", "")
-	for _, git := range found {
-		if _, compiled, err := lookpath.Kind(git.Path); err == nil && compiled {
-			return git.Path
+	return compiled(tb, "git")
+}
+
+// CompiledJJ is the first jj on the test process's PATH that is a compiled program
+// (lookpath.Kind), for a test that runs the real jj, itself or under a jj wrapper of its own. A
+// machine may put a script of its own in front of jj: a dev box's dotfiles shim reads a push's
+// plan with the first git on PATH and refuses the push when that git answers nothing, as a test's
+// logging stand-in git does, so the push never reaches jj. On CI the first jj is the binary the
+// install-jj action puts at ~/.local/bin/jj. The test fails when PATH holds none.
+func CompiledJJ(tb testing.TB) string {
+	tb.Helper()
+	return compiled(tb, "jj")
+}
+
+// compiled is the first program called name on the test process's PATH that is a compiled
+// program, failing the test, with each one it passed over, where PATH holds none.
+func compiled(tb testing.TB, name string) string {
+	tb.Helper()
+	found, _ := lookpath.Others(os.Getenv("PATH"), name, "")
+	passed := make([]string, 0, len(found))
+	for _, each := range found {
+		if _, isCompiled, err := lookpath.Kind(each.Path); err == nil && isCompiled {
+			return each.Path
 		}
+		passed = append(passed, each.Path)
 	}
-	tb.Fatal("no git on PATH that is a compiled program: this test runs a real git")
+	if len(passed) == 0 {
+		tb.Fatalf("PATH holds no %s at all: this test runs a real %s", name, name)
+	}
+	tb.Fatalf("no %s on PATH is a compiled program, so none is a real %s: %s", name, name, strings.Join(passed, ", "))
 	return ""
 }
 

@@ -274,6 +274,7 @@ func seedControllerClaim(t *testing.T, pool *store.Pool, project, session string
 // Dispatch's answers, and that an issue's release row waiting on its holder holds nothing else of
 // that issue back.
 func TestReleaseClaimRow(t *testing.T) {
+	t.Parallel()
 	t.Run("holders", testReleaseClaimHolders)
 	t.Run("the record", testReleaseClaimRecord)
 	t.Run("answers", testReleaseClaimAnswers)

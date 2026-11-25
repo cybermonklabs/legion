@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -28,12 +29,14 @@ import (
 // TestOpenIssueSuspensionInvariantKeepsTheExceptions enumerates, and an issue whose pod is still
 // working takes none of them. This drives the durable workflow and outbox through phase changes,
 // an awaiting-person hand-back and answer, two child re-entries, boot/tick reconciliation, and a
-// pass of the idle tick with release on: no suspend, no issue-suspend and no idle release may
-// appear at any layer. The release (INFRA-945) is the one exception that acts on an issue still in
-// the workflow, so it is the one this case has to keep out, and it is told from every other stop
-// by its own kind and op: an `issue_release` row and `supervise` rows whose op is `release`,
+// pass of the idle tick with release on: no suspend, no issue-suspend, no step stop and no idle
+// release may appear at any layer. The release (INFRA-945) and the owner's stop of a task are the
+// two exceptions that act on an issue still in the workflow, so they are the ones this case has to
+// keep out, and each is told from every other stop by its own kind and op: an `issue_release` row
+// and `supervise` rows whose op is `release`, and a `supervise` row whose op is `step_stop`,
 // against the `issue_suspend` row and the `suspend` op of a stop that ends a claim's phase.
 func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
+	t.Parallel()
 	const (
 		root     = "LEGION-800"
 		forward  = "LEGION-801"
@@ -163,7 +166,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 		}
 		var stopping int
 		if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = any($1)
-			and (kind in ('issue_suspend', 'issue_release') or (kind = 'supervise' and payload->>'op' in ('suspend', 'release')))`,
+			and (kind in ('issue_suspend', 'issue_release') or (kind = 'supervise' and payload->>'op' in ('suspend', 'step_stop', 'release')))`,
 			[]string{root, forward, backward, running, checking}).Scan(&stopping); err != nil {
 			t.Fatalf("%s: count stopping rows: %v", stage, err)
 		}
@@ -259,13 +262,16 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 
 // TestOpenIssueSuspensionInvariantKeepsTheExceptions enumerates every stop an open issue's claims
 // may take: the tree move that carries a child, the three statuses that take an issue out of the
-// workflow, and the idle release (INFRA-945), the one of them that leaves the issue in the
-// workflow and brings its pod back at the next wake for one of its roles. Each is told from the
-// others by the kind and op it writes. TestTheStoreRecordsWhoSuspendedAClaim covers the
-// operator's real POST /legion/v1/operator/claims/{token}/suspend route, and
+// workflow, the owner's stop of a task, and the idle release (INFRA-945). The stop of a task and
+// the release leave the issue in the workflow: the release brings its pod back at the next wake
+// for one of its roles, and the stopped task's issue stays held until a later version of its plan
+// starts the task again. Each is told from the others by the kind and op it writes.
+// TestTheStoreRecordsWhoSuspendedAClaim covers the operator's real
+// POST /legion/v1/operator/claims/{token}/suspend route, and
 // TestAnOpenIssueThatIsWorkingHasNoClaimStopped that an open issue whose pod is working takes
 // none of these.
 func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
+	t.Parallel()
 
 	t.Run("tree move", func(t *testing.T) {
 		carriedChildStops(t, "LEGION-811", "LEGION-812", func(apply func(string, intake.Fact)) {
@@ -303,7 +309,82 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 		})
 	}
 
-	// The idle release, the exception that acts on an issue still in the workflow: its pod has
+	// The owner's stop of a task stops the process of the step it ran and keeps the session, in
+	// one op of its own, step_stop, so it is told from the suspend of an issue the workflow takes
+	// out: the issue stays in the workflow, held from the step's phase for the stopped task. An
+	// issue with no plan rows has no task to stop, so the same stop writes nothing.
+	for _, planned := range []bool{true, false} {
+		name := "a stopped task"
+		if !planned {
+			name = "a stop of an issue with no plan rows"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			root := record.Issue{Key: "LEGION-830", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-830", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true}
+			putOutboxIssue(t, pool, records, root)
+			architect, err := claim.NewToken("legion", root.Key, claim.RoleArchitect)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()}); err != nil || !planned {
+					return err
+				}
+				v := record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: architect, GivenAt: time.Now()}
+				task := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.",
+					State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}}
+				steps := []record.PlanStep{
+					{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
+					{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
+				}
+				return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+			result, err := intake.ApplyFact(ctx, pool, "test", "stop-task", intake.TaskStopped{Issue: root.Key, Task: "a", By: architect, Generation: root.Generation}, engine)
+			if err != nil {
+				t.Fatalf("stop task a: %v", err)
+			}
+			if planned == (result.Refusal != nil) {
+				t.Fatalf("the stop's refusal = %+v, want one only where the issue has no plan rows", result.Refusal)
+			}
+			ops := map[string]int{}
+			rows, err := pool.Query(ctx, `select case when kind = 'supervise' then 'supervise:' || (payload->>'op') else kind end from outbox where issue = $1
+				and (kind in ('issue_suspend', 'issue_release') or kind = 'supervise')`, root.Key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				var op string
+				if err := rows.Scan(&op); err != nil {
+					t.Fatal(err)
+				}
+				ops[op]++
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]int{}
+			if planned {
+				want["supervise:step_stop"] = 1
+			}
+			if !maps.Equal(ops, want) {
+				t.Fatalf("the stop's stopping rows = %v, want %v: a step_stop of the step's role where a task stopped, and no suspend, issue_close or release", ops, want)
+			}
+			var status string
+			if err := pool.QueryRow(ctx, `select status from issues where key = $1`, root.Key).Scan(&status); err != nil {
+				t.Fatalf("read the stopped issue: %v", err)
+			}
+			if record.OutOfWorkflow(status) {
+				t.Fatalf("the stopped issue is %q, want the stop to have left it in the workflow", status)
+			}
+		})
+	}
+
+	// The idle release, the other exception that acts on an issue still in the workflow: its pod has
 	// had no turn in progress and no turn due for the idle period, so every live claim of it is
 	// suspended with the source `released` and its session kept. It writes neither the `suspend`
 	// op of a stop that ends a phase nor the `issue_close` of an issue that left the workflow,
@@ -317,7 +398,7 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 
 		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
 		if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
-			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", queued)
+			t.Fatalf("queued rows = %v, want the workspace check, the role stop and the teardown and nothing else", queued)
 		}
 		rig.drain(t)
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {

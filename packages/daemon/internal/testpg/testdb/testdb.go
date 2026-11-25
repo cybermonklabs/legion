@@ -8,11 +8,6 @@
 // same as a URL any other client reads. A test that needs the daemon's schema takes
 // internal/testpg's Clone or CloneStore instead, which copy a template that package migrated once.
 //
-// A package whose tests migrate into the database their DSN names, rather than making one per
-// test, takes one database for the whole run instead: RunDatabaseMain from its TestMain, and
-// RunDatabaseFor wherever it reads the DSN. The two mechanisms compose, and a package that needs
-// both nests them (internal/daemon's TestMain).
-//
 // This package imports no package of this module except internal/testwait, which imports none,
 // and nothing added here may import another: migrating the template needs internal/store, so
 // internal/testpg imports it, and a test binary of internal/store that imported internal/testpg
@@ -100,8 +95,8 @@ func PlainDatabase(t testing.TB, prefix string) string {
 // URL and the function that drops it, which also closes the admin connection create opened. Both
 // URLs it connects or points a caller at — the admin database's and the new database's — come
 // from DatabaseURL, and it makes them before it connects, so a DSN whose rewrite names another
-// server ends the call with no connection and no database. Database and RunDatabaseMain are its
-// two callers: one database per test, one per run.
+// server ends the call with no connection and no database. Database is its caller: one database
+// per test.
 func create(dsn, prefix string) (string, func() error, error) {
 	admin, err := DatabaseURL(dsn, "postgres")
 	if err != nil {
@@ -316,10 +311,12 @@ func PoolBounded(server, dsn string) (string, error) {
 
 // rewrite is what a caller of rewriteDSN changes about the DSN it was given: the database the
 // rewrite must name (DatabaseURL), the address it must send the connection to (Delayed,
-// CommitFaults), and the pool keys of its query. With pools set, the rewrite takes every pool key
-// out of the query and appends pool, the raw pairs pgx reads as poolRead: none for DatabaseURL,
-// the server's own or pool_max_conns=PoolConns for PoolBounded. A field left empty is one the
-// rewrite keeps.
+// CommitFaults, Outage), the pool keys of its query, and whether TLS is off. With pools set, the
+// rewrite takes every pool key out of the query and appends pool, the raw pairs pgx reads as
+// poolRead: none for DatabaseURL, the server's own or pool_max_conns=PoolConns for PoolBounded.
+// With plain set, it appends sslmode=disable, which pgx reads over an sslmode the query already
+// holds since it keeps the last of a repeated key (pgconn's parse_url.go), so an attempt makes no
+// TLS connection and falls back to none (Outage). A field left empty is one the rewrite keeps.
 type rewrite struct {
 	database string
 	host     string
@@ -327,6 +324,7 @@ type rewrite struct {
 	pools    bool
 	pool     []string
 	poolRead map[string]string
+	plain    bool
 }
 
 // applied is read with this rewrite in it, which is what pgx must read from the rewritten DSN.
@@ -346,6 +344,9 @@ func (r rewrite) applied(read reading) reading {
 		}
 		maps.Copy(params, r.poolRead)
 		read.params = params
+	}
+	if r.plain {
+		read.settings.tls, read.settings.fallbacks = tlsReading{}, ""
 	}
 	return read
 }
@@ -480,6 +481,12 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 		_, rest := splitPoolPairs(parsed.RawQuery)
 		parsed.RawQuery = strings.Join(append(rest, want.pool...), "&")
 	}
+	if want.plain {
+		if parsed.RawQuery != "" {
+			parsed.RawQuery += "&"
+		}
+		parsed.RawQuery += "sslmode=disable"
+	}
 	rewritten := parsed.String()
 	after, err := pgconn.ParseConfig(rewritten)
 	if err != nil {
@@ -491,78 +498,6 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 			name, moved)
 	}
 	return rewritten, nil
-}
-
-// runServer is the server RunDatabaseMain made the run's database on, named by serverKey, and
-// runDatabase the URL of that database; both are empty until a RunDatabaseMain with
-// LEGION_TEST_PG_DSN set runs.
-var (
-	runServer   string
-	runDatabase string
-)
-
-// serverKey is the part of a DSN that names the server rather than a database on it, so two DSNs
-// that differ only in the database they name have one key. It reads the DSN with
-// pgconn.ParseConfig, the parser DatabaseURL and the driver read it with, so the key is the host,
-// the port and the user pgx connects as. A DSN pgx refuses is its own key: every key below holds
-// two NUL bytes, and a DSN a test read out of its environment holds none, so no refused DSN
-// equals a key.
-func serverKey(dsn string) string {
-	cfg, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		return dsn
-	}
-	return fmt.Sprintf("%s\x00%d\x00%s", cfg.Host, cfg.Port, cfg.User)
-}
-
-// RunDatabaseMain makes one database named <prefix>_<random> for the whole run on the server
-// LEGION_TEST_PG_DSN names, runs run, drops that database and returns run's code; a drop that
-// fails prints why and turns a passing run into exit 1. A package whose tests migrate into the
-// database their DSN names calls it from TestMain, where every test reads the run's database
-// through RunDatabaseFor, so two runs of the package on one server never write each other's rows
-// and neither writes the database that server serves. With LEGION_TEST_PG_DSN unset it makes
-// nothing and returns run(), so those tests skip as they do without a server.
-//
-// It is not internal/testpg's Main, which prepares the template Clone copies: the two are
-// different databases for different needs, and a package that wants both nests them, each under a
-// prefix of its own so a census of either name says which it counted:
-//
-//	os.Exit(testpg.Main("legion_daemon_test", func() int {
-//		return testdb.RunDatabaseMain("legion_daemon_run", m.Run)
-//	}))
-//
-// It takes run rather than *testing.M so that it wraps another TestMain helper.
-func RunDatabaseMain(prefix string, run func() int) int {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		return run()
-	}
-	database, drop, err := create(dsn, prefix)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "make the package's run database: %v\n", err)
-		return 1
-	}
-	runServer, runDatabase = serverKey(dsn), database
-	code := run()
-	if err := drop(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	return code
-}
-
-// RunDatabaseFor is the URL of the database RunDatabaseMain made for this run when dsn names the
-// server that database is on, which is the host, the port and the user pgx reads from both
-// (serverKey), and dsn itself otherwise: a test that points LEGION_TEST_PG_DSN at a server of its
-// own keeps what it set. Without a run database — no RunDatabaseMain, or LEGION_TEST_PG_DSN
-// unset — it is dsn.
-func RunDatabaseFor(dsn string) string {
-	if runDatabase == "" || serverKey(dsn) != runServer {
-		return dsn
-	}
-	return runDatabase
 }
 
 // DSNFile is a 0600 file under the test's temporary directory holding PlainDatabase's URL, as the

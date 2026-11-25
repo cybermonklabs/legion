@@ -169,9 +169,9 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 // tell, since a forged one carries the same subject and no reply. So a message another connection
 // publishes into the inbox with no reply and a Status header of 409 or 503 is still queued, and
 // Next ends the pull on it (the relay then restarts at the ack floor; nothing is acknowledged).
-// The grant that closes it is natsgrant.Session publishing bus.SessionReplies
-// (_INBOX.*.<session id>.>) in place of every _INBOX. subject: a session may then publish to no
-// pull's inbox, _INBOX.<id>.
+// A session's own grant closes it: natsgrant.Session publishes bus.SessionReplies
+// (_INBOX.*.<session id>.>) in place of every _INBOX. subject, so a session publishes to no
+// pull's inbox, _INBOX.<id>. A holder of the shared session user or of a host user still can.
 func (p *SessionPull) receive(msg *nats.Msg) {
 	status, _ := pullStatus(msg)
 	if status == "" && !strings.HasPrefix(msg.Reply, p.ack) {

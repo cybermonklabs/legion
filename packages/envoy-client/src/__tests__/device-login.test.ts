@@ -8,7 +8,7 @@
 // the session; and two processes that trade at once spend one refresh token once, since the
 // broker revokes a login whose rotated refresh token is presented again past its grace.
 
-import { expect, spyOn, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   chmodSync,
   mkdirSync,
@@ -23,10 +23,15 @@ import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { runDispatchCli } from "../dispatch-cli";
 import { dispatchSettings } from "../dispatch-config";
 import { readEnvoyConfig } from "../envoy-config";
 import { deviceLoginStandIns } from "./broker-stand-ins";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const { broker, laptopEnvironment, loginFile, tempDir } = deviceLoginStandIns("device-login");
 
@@ -337,8 +342,10 @@ test("a laptop session's Dispatch credential is its device login's trade, naming
     access_expires_at: new Date(Date.now() + 600_000).toISOString(),
   });
   const env = laptopEnvironment(stub.url, "http://dispatch.test", written.path);
-  const config = readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
-  const resolution = dispatchSettings(env, config, { session: "ses-laptop-1" });
+  const config = await readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, {
+    cwd: tempDir(),
+  });
+  const resolution = await dispatchSettings(env, config, { session: "ses-laptop-1" });
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
   expect(resolution.credential.scheme).toBe("DPoP");
   const headers = await resolution.credential.headers("GET", "http://dispatch.test/api/v1/whoami");

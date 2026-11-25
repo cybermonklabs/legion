@@ -297,8 +297,8 @@ func (p *dispatchProcess) releaseLiveWritePause(t *testing.T, artifactID string,
 // process's event horizon keeps saying it is held back (horizontest.Watch over its stall
 // warnings, reading the holder itself when they fall silent), and fails the test naming what,
 // with the process's output, when the horizon's account ends the wait first. Work behind the
-// horizon, such as an event the process's relay publishes, is as late as the longest transaction
-// open anywhere on the instance, which no fixed deadline bounds.
+// horizon, such as an event the process's relay publishes, is as late as the longest event write
+// open in the process's database, which no fixed deadline bounds.
 func (p *dispatchProcess) pollBehindHorizon(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	horizontest.NewWatch(t, p.stallWarnings(), p.database, horizontest.Dialed(p.databaseURL)).
@@ -4077,7 +4077,7 @@ const (
 // by a table lock this test takes, or by the GitHub listing the fake holds - which is the only way
 // two processes' passes are made to overlap on purpose rather than by luck.
 //
-// Five of the twelve leases are observable here inside a window a test can wait out, and they
+// Five of the fourteen leases are observable here inside a window a test can wait out, and they
 // keep different rules once the hold lets go. webhook-redelivery, block-index and
 // search-term-stats are timer loops whose first pass is immediate, and what this row holds them
 // to is per period: at least one pass across the two processes, and no period served twice.
@@ -4089,7 +4089,7 @@ const (
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
 // two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
 // read before whatever woke it, so after the release each process runs at least one pass and no
-// count is held to one. The other seven are not observable, and this row says so rather than
+// count is held to one. The other nine are not observable, and this row says so rather than
 // pretending: issue-ask-repair's first leased pass is one IssueAskRepairInterval (10 min) in, the
 // boot's repair taking no lease; suggestion-outcomes is held only by the keyed writes'
 // maintenance sweep now (api.RunMaintenanceSweep, the suggestion outcome sweep taking no lease),
@@ -4105,9 +4105,13 @@ const (
 // passes meet is luck too (docs.TestEditNoticeSweepRetriesAHeldLease holds its retry, and
 // docs.TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce what its lease is for);
 // settlement-resumption's period is SettlementResumeInterval (1 min) and each pass is over in
-// milliseconds, so this window holds several of its periods, each served once; and
+// milliseconds, so this window holds several of its periods, each served once;
 // server-processes' prune is one delete on server_processes, the table every process's heartbeat
-// writes every five seconds, so a lock that held the prune would hold the registry itself.
+// writes every five seconds, so a lock that held the prune would hold the registry itself;
+// text-tree-fill's first pass is at each process's start, and on a database whose stored texts
+// already carry their trees it takes one candidate scan and ends done; and parent-status-fix is
+// taken only at a boot with DISPATCH_PARENT_STATUS_RULE on, which this row does not set
+// (api.TestTheFixRunsOnceUnderItsLeaseBesideASecondProcess holds what its lease is for).
 func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	pair := newPair(t)
 	waitOutABucketBoundary(t, time.Hour)
@@ -4198,6 +4202,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 		{"settlement-resumption", "its period is SettlementResumeInterval (1 min), so the window holds several periods, each served once"},
 		{"server-processes", "its pass is one delete on server_processes, which every process's heartbeat writes, so holding it would hold the heartbeats too"},
 		{"text-tree-fill", "its first pass is at each process's start, and on a database whose stored texts already carry their trees it takes one candidate scan and ends done"},
+		{"parent-status-fix", "it is taken only at a boot with DISPATCH_PARENT_STATUS_RULE on, which this row does not set; api.TestTheFixRunsOnceUnderItsLeaseBesideASecondProcess holds its lease"},
 	} {
 		if ran := countLease(pair.a, leaseRan, unobserved.lease) + countLease(pair.b, leaseRan, unobserved.lease); ran > 0 {
 			t.Logf("%s ran %d times in the window, which this row does not hold to a count: %s",
@@ -4222,10 +4227,14 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 	gate := lockTables(t, pair.database, "exclusive", "suggestion_outcome_cursor")
 	pair.start(t, nil)
 
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 60*time.Second); waiting < 2 {
-		t.Fatalf("%d of the two processes' suggestion-outcome passes reached the cursor lock, want both; the loop takes no lease, so neither waits outside the row:\nA:\n%s\nB:\n%s",
-			waiting, pair.a.Output.String(), pair.b.Output.String())
-	}
+	// The wait fails the row by name at the binary's deadline, and the cleanup prints both
+	// processes' output then, as this branch's failure did before the wait had a bound.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("A's output:\n%s\nB's output:\n%s", pair.a.Output.String(), pair.b.Output.String())
+		}
+	})
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor the passes are waiting on: %v", err)
 	}
@@ -4355,7 +4364,7 @@ const multiprocessServerURL = "http://dispatch.multiprocess.test"
 // that started the sign-in, and B answered 400 "invalid or expired state".
 func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, multiprocessServerURL+"/auth/callback")
 	env := cookieSignIn(issuer)
 	env["DISPATCH_SERVER_URL"] = multiprocessServerURL
 	pair := startPair(t, env)
@@ -4424,7 +4433,7 @@ func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 // so no third process with a key of its own serves beside these two.
 func TestASessionMintedOnOneProcessAuthenticatesOnTheOtherUnderOneSigningKey(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	pair.start(t, cookieSignIn(issuer))
 
@@ -4600,7 +4609,7 @@ const (
 // DISPATCH_SIGNING_KEY of two keys was one key, so each process refused the other's cookie.
 func TestAKeyRotationKeepsPeopleSignedInAcrossTwoProcesses(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	pair.a = startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{
 		NATSURL: pair.nats, SigningKey: rotationK1 + " " + rotationK0, Env: cookieSignIn(issuer),
@@ -4732,7 +4741,7 @@ const (
 // expired on its own, so the drop refuses nobody who is still signed in.
 func TestAStagedKeyRotationAcrossThreeAppliesKeepsPeopleSignedIn(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	// Every process of the walk runs the same unstamped build, and only its DISPATCH_SIGNING_KEY
 	// differs, so the binary is built once rather than once per start.
@@ -5440,8 +5449,12 @@ func (typing *typist) disconnected() string {
 // keystroke types the typist's text once and waits until the store has moved past where it stood
 // before the keystroke, or until the typist's socket closed, which is a browser's lot when the
 // room it typed into was closed. A closed socket is noted and reconnected before the next
-// keystroke. It answers an error when the typist cannot be reconnected or the keystroke goes
-// nowhere at all.
+// keystroke. It answers an error when the typist cannot be reconnected, when the store does not
+// come to hold what the reconnected tab holds, or when the keystroke cannot be sent. A keystroke
+// that is sent but is neither stored nor ended with its socket fails the test itself, in the
+// shared wait (testwait.Until), which gives up 30 s before the test binary's deadline naming the
+// typist and the last stored head; the calling row then logs nothing more of its own, neither its
+// room counters nor the keystroke it stopped at.
 func (p *dispatchPair) keystroke(t *testing.T, artifactID string, typing *typist) error {
 	t.Helper()
 	for attempt := 1; ; attempt++ {
@@ -5470,13 +5483,10 @@ func (p *dispatchPair) keystroke(t *testing.T, artifactID string, typing *typist
 			}
 			return fmt.Errorf("%s's keystroke: %w", typing.who, err)
 		}
-		deadline := time.Now().Add(5 * time.Second)
-		for storedHead(t, p, artifactID) <= before && !peerEnded(typing.editor) {
-			if time.Now().After(deadline) {
-				return fmt.Errorf("%s's keystroke was neither stored nor ended with its socket within 5 s", typing.who)
-			}
-			time.Sleep(2 * time.Millisecond)
-		}
+		testwait.Until(t, typing.who+"'s keystroke to be stored or to end with its socket", func() (int64, bool) {
+			stored := storedHead(t, p, artifactID)
+			return stored, stored > before || peerEnded(typing.editor)
+		})
 		return nil
 	}
 }
@@ -5719,14 +5729,10 @@ func TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T) 
 			return
 		}
 		alice, bob := typists[0].editor, typists[1].editor
-		deadline := time.Now().Add(5 * time.Second)
-		for {
+		testwait.Until(t, fmt.Sprintf("both editors to hold %d keystrokes of each", keystrokes/2), func() (string, bool) {
 			seenByAlice, seenByBob := markdown(alice), markdown(bob)
 			if seenByAlice == seenByBob && strings.Count(seenByAlice, "a") == keystrokes/2 && strings.Count(seenByAlice, "b") == keystrokes/2 {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("five seconds after the last keystroke the editors disagree or lost keystrokes: alice on A has %q, bob on B has %q; want both to hold %d of each", seenByAlice, seenByBob, keystrokes/2)
+				return "", true
 			}
 			if err := alice.AskForDocument(); err != nil {
 				t.Fatalf("ask A's room for the document: %v", err)
@@ -5734,8 +5740,8 @@ func TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T) 
 			if err := bob.AskForDocument(); err != nil {
 				t.Fatalf("ask B's room for the document: %v", err)
 			}
-			time.Sleep(20 * time.Millisecond)
-		}
+			return fmt.Sprintf("alice on A has %q, bob on B has %q", seenByAlice, seenByBob), false
+		})
 	})
 
 	// One person types, then the other, each within the settle delay of the last: on one process
@@ -6593,9 +6599,12 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		gate := lockIssue(t, pair.database, issueKey)
 		throughA := pair.a.requestInBackground(http.MethodPost, rebuildPath(artifactID), `{}`, asUser("alice"))
 		throughB := pair.b.requestInBackground(http.MethodPost, rebuildPath(artifactID), `{}`, asUser("alice"))
-		if waiting := storetest.WaitForLockWaiters(t, gate, 2, 30*time.Second); waiting < 2 {
-			t.Fatalf("%d of the two rebuilds reached the issue's row within 30 s:\nA:\n%s\nB:\n%s", waiting, pair.a.Output.String(), pair.b.Output.String())
-		}
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("A's output:\n%s\nB's output:\n%s", pair.a.Output.String(), pair.b.Output.String())
+			}
+		})
+		storetest.WaitForLockWaiters(t, gate, 2)
 		if err := gate.Rollback(context.Background()); err != nil {
 			t.Fatalf("release the issue's row: %v", err)
 		}
@@ -6968,7 +6977,7 @@ const (
 //
 // The handing-over phase is a replacement in which both listeners take requests behind the one
 // address: the registry read reaches the outgoing listener, which still holds the session, and
-// the send reaches its successor, still behind its starting gate (cmd/listener/main.go
+// the send reaches its successor, still behind its starting gate (cmd/listener/starting_gate.go
 // startingGate). It is the one phase in which a send itself meets that gate, because every try
 // reads the registry before it sends.
 func (f *fakeListener) takeOver(refuse, starting, handingOver, unknown time.Duration) {
@@ -7016,7 +7025,7 @@ func (f *fakeListener) sendsGatedUnder(key string) int {
 	return f.gatedSends[key]
 }
 
-// answerStarting answers as the real listener's starting gate does (cmd/listener/main.go
+// answerStarting answers as the real listener's starting gate does (cmd/listener/starting_gate.go
 // startingGate).
 func answerStarting(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusServiceUnavailable)
@@ -8672,10 +8681,10 @@ const keywordFillLostHoldLine = `msg="dispatch: the keyword fill's hold is lost;
 const keywordFillTakeOverWithin = 15*time.Second + 10*time.Second + 5*time.Second
 
 // A killed holder does not release its hold, so its hold lapses and the process that stood by takes
-// it and writes the events written since: within keywordFillTakeOverWithin of the kill, well inside
-// the 60 s bound from a holder's death to the rows of the events written after it. Every batch
-// before the kill is the first process's and every batch after is the second's, and every event
-// has exactly its row.
+// it within keywordFillTakeOverWithin of the kill and writes the events written since, whose rows
+// wait on the event horizon, which waits on the database's open event writes, bounded by the test
+// binary's deadline (textversionstest.AwaitRowsUntil). Every batch before the kill is the first
+// process's and every batch after is the second's, and every event has exactly its row.
 func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -8689,12 +8698,12 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 	second.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
 
 	before := writeKeywordFillComments(t, database, 50)
-	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, before, nil)
 	first.kill(t)
 	killed := time.Now()
 	after := writeKeywordFillComments(t, database, 50)
 	secondHolder := keywordFillHolder(t, second, keywordFillTakeOverWithin-time.Since(killed))
-	textversionstest.AwaitRows(t, database, after, time.Minute-time.Since(killed), nil)
+	textversionstest.AwaitRowsUntil(t, database, after, nil)
 	t.Logf("the second process wrote the events written after the kill %v after it", time.Since(killed).Round(time.Millisecond))
 
 	requireKeywordFillWritersInTurn(t, writes(), firstHolder, secondHolder)
@@ -8782,7 +8791,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 	standby.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
 
 	before := writeKeywordFillComments(t, database, 20)
-	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, before, nil)
 	frozenAt := frozen.signal(t, syscall.SIGSTOP)
 	resumed := false
 	// So a failure never leaves a stopped process behind: the cleanup cmdtest.Start registered
@@ -8796,7 +8805,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 
 	whileFrozen := writeKeywordFillComments(t, database, 20)
 	standbyHolder := keywordFillHolder(t, standby, keywordFillTakeOverWithin-time.Since(frozenAt))
-	textversionstest.AwaitRows(t, database, whileFrozen, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, whileFrozen, nil)
 	t.Logf("the standby took the hold and wrote the events written meanwhile %v after the holder was frozen",
 		time.Since(frozenAt).Round(time.Millisecond))
 
@@ -8814,7 +8823,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 		afterResume = append(afterResume, writeKeywordFillComments(t, database, 5)...)
 		time.Sleep(2500 * time.Millisecond)
 	}
-	textversionstest.AwaitRows(t, database, afterResume, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, afterResume, nil)
 
 	requireKeywordFillWritersInTurn(t, writes(), frozenHolder, standbyHolder)
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(slices.Concat(before, whileFrozen, afterResume)...))
@@ -8958,7 +8967,10 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 			return cursor
 		}
 		testwait.Until(t, "a batch of the keyword fill to wait on its cursor", func() (int, bool) {
-			waiting := storetest.WaitForLockWaiters(t, s.held, 1, 0)
+			waiting, err := storetest.LockWaiters(ctx, s.held)
+			if err != nil {
+				t.Fatal(err)
+			}
 			return waiting, waiting >= 1
 		})
 		next, err := s.database.Pool.Begin(ctx)

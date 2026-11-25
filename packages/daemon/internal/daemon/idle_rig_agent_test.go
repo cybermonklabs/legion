@@ -330,6 +330,7 @@ func writeIdleRigJSON(w http.ResponseWriter, body any) {
 // Run by anything but that launcher it does nothing: with no rig service named in its
 // environment there is no rig to serve.
 func TestIdleRigRoleProcess(t *testing.T) {
+	// Not parallel: it is the idle rig role process and exits the test binary.
 	rig := os.Getenv(idleRigURLVariable)
 	if rig == "" {
 		return
@@ -897,11 +898,11 @@ func (p *idleRigRoleProcess) serve() error {
 			if err := p.prompted(f); err != nil {
 				return err
 			}
-		case shimwire.BundleWorkspace:
-			// The release's save of the workspace's unpushed work. This workspace has none, which
-			// is the empty bundle a clean workspace saves.
-			if err := p.writer.WriteFrame(shimwire.BundleWorkspaceResult{
-				ID: f.ID, OK: true, Head: "0000000000000000000000000000000000000000", At: time.Now().UTC(),
+		case shimwire.WorkspaceWork:
+			// The release's check of the workspace for work origin does not hold. This workspace
+			// holds none: its working copy is empty and every commit under it is on origin.
+			if err := p.writer.WriteFrame(shimwire.WorkspaceWorkResult{
+				ID: f.ID, OK: true, Head: "0000000000000000000000000000000000000000",
 			}); err != nil {
 				return err
 			}

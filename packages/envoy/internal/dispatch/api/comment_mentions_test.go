@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -73,16 +72,16 @@ func settledCommentDeliveries(t *testing.T, database *store.Store, commentID str
 }
 
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts
-// them; want says what done waits for. Its patience covers a whole take-over window and ten
-// seconds past it, because a send on the mention sender's lanes may wait one out after the
-// comment's response - a mention of an ended session does, under a server running the production
-// window (listenerTakeoverWindow) - before its attempt settles.
+// them; want says what done waits for. A send on the mention sender's lanes may wait a take-over
+// window out after the comment's response - a mention of an ended session does, under a server
+// running the production window (listenerTakeoverWindow) - before its attempt settles, so the wait
+// has no bound of its own: it ends on the attempts, and its one bound is the test binary's deadline
+// (testwait.Until), whose failure prints the attempts it last read.
 func waitForCommentDeliveries(
 	t *testing.T, database *store.Store, commentID, want string, done func([]model.CommentDelivery) bool,
 ) []model.CommentDelivery {
 	t.Helper()
-	deadline := time.Now().Add(listenerTakeoverWindow + 10*time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("comment %s's attempts to be %s", commentID, want), func() ([]model.CommentDelivery, bool) {
 		rows, err := database.Pool.Query(context.Background(), `
 			select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 order by target, attempt
 		`, commentID)
@@ -95,17 +94,12 @@ func waitForCommentDeliveries(
 		if err != nil {
 			t.Fatalf("read comment %s attempts: %v", commentID, err)
 		}
-		if done(attempts) {
-			return attempts
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("comment %s attempts = %#v, want %s", commentID, attempts, want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return attempts, done(attempts)
+	})
 }
 
 func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/sessions" {
 			_, _ = w.Write([]byte(`[]`))
@@ -138,6 +132,7 @@ func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
 }
 
 func TestMentionedCommentUsesRequestedOrDefaultDeliveryMode(t *testing.T) {
+	t.Parallel()
 	capabilities := []string{"btw", "steer"}
 	sent := []map[string]any{}
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +213,7 @@ func TestMentionedCommentUsesRequestedOrDefaultDeliveryMode(t *testing.T) {
 }
 
 func TestMentionedCommentRejectsInvalidMentionInput(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTargetedMessageHandler(t, "")
 	issue := createInteractionIssue(t, handler, "TEST", "Mention validation", "before")
 	tooMany := make([]map[string]any, 11)
@@ -244,6 +240,7 @@ func TestMentionedCommentRejectsInvalidMentionInput(t *testing.T) {
 }
 
 func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
+	t.Parallel()
 	roleHolder := "s1"
 	roleLookups := 0
 	sent := []map[string]any{}
@@ -273,7 +270,12 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// The role's lookup must count as answered to pin s1: its bound and the listener client's
+	// window are past any run, so a loaded machine cannot end it before the listener's answer is
+	// read (job 137748743708 did, at 250 ms).
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun, mentionLookupBound: lookupBoundPastAnyRun,
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "Pinned mention", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -297,6 +299,7 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 }
 
 func TestMentionReplyRequiresItsAttemptTargetAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -368,6 +371,7 @@ func TestMentionReplyRequiresItsAttemptTargetAndIsIdempotent(t *testing.T) {
 }
 
 func TestMentionReplyErrorRecordsAttemptWithoutComment(t *testing.T) {
+	t.Parallel()
 	live := true
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1" {
@@ -428,6 +432,7 @@ func TestMentionReplyErrorRecordsAttemptWithoutComment(t *testing.T) {
 }
 
 func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
+	t.Parallel()
 	live := false
 	roleHolder := "s1"
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -537,6 +542,7 @@ func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
 }
 
 func TestCommentMentionReadProjectionIncludesReplyChain(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -581,6 +587,7 @@ func TestCommentMentionReadProjectionIncludesReplyChain(t *testing.T) {
 }
 
 func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
+	t.Parallel()
 	roleLookups := 0
 	sends := 0
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -597,7 +604,11 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// One lookup, answered: its bound and the listener client's window are past any run, so a
+	// loaded machine cannot leave it unanswered and have the sender look the role up a second time.
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun, mentionLookupBound: lookupBoundPastAnyRun,
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "Missing role holder", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -624,6 +635,7 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 // the Inbox row select every reply on ask_id, and the stream keys its refresh on the event's
 // own ask_id.
 func TestCallbackReplyUnderAnAskJoinsTheAskThread(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -701,11 +713,14 @@ func TestCallbackReplyUnderAnAskJoinsTheAskThread(t *testing.T) {
 // in a transaction of the test's own on the test's context, committed only once the comment's
 // write waits behind that lock (storetest.WaitForQueuedBehind, on the one connection the comment
 // runs on). So the comment resolved the route before the move and reads it after the move however
-// slow the machine is. The listener only answers. A move it made itself, inside the lookup, ran
-// on that lookup's request context, which ends when Dispatch stops waiting for the lookup
-// (mentionLookupTimeout, 250 ms): a write slower than that was cancelled, and one that started
-// later than that raced the comment's locked read.
+// slow the machine is. The listener only answers. A move it made itself, inside the lookup, would
+// run on that lookup's request context, which in production ends when Dispatch stops waiting for
+// the lookup (mentionLookupTimeout, 250 ms): a write slower than that was cancelled, and one that
+// started later than that raced the comment's locked read. So the moves are made outside the
+// lookup, and this test's lookups and the listener client's window are past any run, so every
+// resolution here is the listener's answer.
 func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	var lookupsMu sync.Mutex
 	var lookups []string
@@ -736,7 +751,9 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	handler, database, deps := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun, mentionLookupBound: lookupBoundPastAnyRun,
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
 		"route": "role:reviewer",
@@ -763,10 +780,10 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	}
 	// queuedBehind returns once the comment's backend waits behind the route change, and fails the
 	// row when the comment answers first: it never read the route under its lock after the move.
+	// Its one bound is the test binary's deadline (storetest.WaitForQueuedBehind).
 	queuedBehind := func(change pgx.Tx, callPID uint32, answered <-chan *httptest.ResponseRecorder, what string) {
 		t.Helper()
-		within := testwait.Bounded(t, 24*time.Hour, 30*time.Second)
-		if response, early := storetest.WaitForQueuedBehind(t, change, callPID, answered, within); early {
+		if response, early := storetest.WaitForQueuedBehind(t, change, callPID, answered); early {
 			t.Fatalf("%s answered %d before its write waited behind the route change: %s", what, response.Code, response.Body.String())
 		}
 	}
@@ -866,6 +883,7 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 // a suggestion on a closed issue (which still takes every other comment), has to be found first,
 // from the pool, or every doomed request wakes the listener once per mention it names.
 func TestACommentItsOwnerRefusesResolvesNoMention(t *testing.T) {
+	t.Parallel()
 	lookups := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]},` +
 		`{"session_id":"s2","title":"tester","capabilities":["steer"]}]`
@@ -922,6 +940,7 @@ func TestACommentItsOwnerRefusesResolvesNoMention(t *testing.T) {
 // neither the comment's delivery projection nor the issue event log describes the delivery that
 // plainly happened.
 func TestReplyDuringAMentionSendStillRecordsTheDeliveryReceipt(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	replied := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`

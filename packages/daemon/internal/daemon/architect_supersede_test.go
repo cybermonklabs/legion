@@ -26,6 +26,7 @@ import (
 // answeredResumePath puts it. The resume's start reaches the relaunching claim, and the first
 // prompt the architect is sent once it comes up is the resume's task, not entry 1's.
 func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()
@@ -80,6 +81,7 @@ func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *
 // the generation-1 start names that decision, its task is sent and never confirmed, the root is
 // parked and its architect suspended, and the hand-back re-admits it at generation 2.
 func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	ref := r.decide(mainPathAsk)

@@ -45,6 +45,12 @@ func pacedWakes() *wakepace.Limiter {
 	return wakepace.New(testWakeRate, testWakeBurst, rand.N[time.Duration])
 }
 
+// wakePaceOf is the supervise pacing the daemon hands its machines from limiter at the shipped
+// pace: its Reserve and its Interval from that one limiter, as openSupervision takes them.
+func wakePaceOf(limiter *wakepace.Limiter) supervise.WakePace {
+	return supervise.WakePace{Reserve: limiter.Reserve, Interval: limiter.Interval(), Rate: testWakeRate, Burst: testWakeBurst}
+}
+
 // wakeEngine is the workflow engine as the daemon builds it when the pacing is on: its clock held
 // at now, and its Reserve the limiter's (openWorkflow). A nil limiter is the pacing off, which is
 // the daemon giving the engine no Reserve at all.
@@ -164,6 +170,7 @@ func stampCreated(t *testing.T, pool *store.Pool, id int64, at time.Time) {
 // alive used to write forty catch-ups due at once, and forty sessions then read their whole
 // context inside the minute that follows.
 func TestFortyStartsOfRunningArchitectsWriteCatchUpsOnTheLimitersSchedule(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -224,6 +231,7 @@ func TestFortyStartsOfRunningArchitectsWriteCatchUpsOnTheLimitersSchedule(t *tes
 // not the architect being away. A notice waiting on the outbox's backoff beside it is released as
 // it always was.
 func TestAReadyLeavesAPacedCatchUpAtItsOwnMoment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -258,6 +266,7 @@ func TestAReadyLeavesAPacedCatchUpAtItsOwnMoment(t *testing.T) {
 // published after the catch-up and never before it: the architect is woken once, by the catch-up,
 // and reads the later notice in the turn that wake starts.
 func TestALaterNoticeIsPublishedAfterThePacedCatchUpAndNeverBeforeIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -305,6 +314,7 @@ func TestALaterNoticeIsPublishedAfterThePacedCatchUpAndNeverBeforeIt(t *testing.
 // attempts, and every attempt from the seventh is a warning (waitWarnAttempts), so each architect
 // of a wave would leave a column of warnings that say only that the pacing is working.
 func TestTheRowFencedBehindAPacedCatchUpRunsOnceAtItsMoment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -368,6 +378,7 @@ func TestTheRowFencedBehindAPacedCatchUpRunsOnceAtItsMoment(t *testing.T) {
 // writes, which answers a person who is waiting. Both are written while the limiter is spent, so a
 // reservation of their own would be minutes out.
 func TestAnOrdinaryCatchUpAndAHandOversAreNotDelayed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -417,12 +428,13 @@ func assertDueAtOnce(t *testing.T, pool *store.Pool, now time.Time, what string)
 // log finds every wake of a wave, whichever lane caused it, and the pace it names is the one the
 // daemon holds its machines to, read through the supervisor the runner already has.
 func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = supervise.WakePace{Reserve: pacedWakes().Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	sup.deps.WakePace = wakePaceOf(pacedWakes())
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -466,12 +478,13 @@ func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
 // waited=true with a quarter of a second as its waitedFor, where this test wants a line that
 // names no wait at all.
 func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = supervise.WakePace{Reserve: pacedWakes().Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	sup.deps.WakePace = wakePaceOf(pacedWakes())
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -516,12 +529,13 @@ func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
 // The negative control is the carry reverted (noticeAnswered's PacedAt and PacedFrom on the
 // copy): the copy then publishes with no line written, which this test reads at the wake lines.
 func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = supervise.WakePace{Reserve: pacedWakes().Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	sup.deps.WakePace = wakePaceOf(pacedWakes())
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -575,12 +589,13 @@ func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.
 // paced line per minute and builds a window for each), so one retried catch-up inflated both
 // halves of it.
 func TestARetriedPacedCatchUpWritesOneWakeLineWithTheWaitItsReservationGave(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = supervise.WakePace{Reserve: pacedWakes().Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	sup.deps.WakePace = wakePaceOf(pacedWakes())
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -631,6 +646,7 @@ func TestARetriedPacedCatchUpWritesOneWakeLineWithTheWaitItsReservationGave(t *t
 // waited out its backoff after the architect reported ready — the fence holds every later notice
 // of that architect behind it meanwhile.
 func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

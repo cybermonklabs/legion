@@ -1,25 +1,28 @@
-import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import {
   appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
+import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
-// one minute.
-setDefaultTimeout(60_000);
+// one minute, and a wait of a row on its processes (untilRunning) ends 20 s before that.
+const waits = rowWaits(60_000);
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.
@@ -29,7 +32,27 @@ const withoutDocker = skipWithout("docker");
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
 const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
-const work = temporaryDirectory("skill-scenarios-rig");
+/**
+ * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has
+ * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, and
+ * then /tmp. A plain path, because the model route installers and judge-omp write the path of each
+ * key command, and of the key file, into a profile as one plain `!command` word, and refuse any
+ * other character in it (install-model-gateway.sh and install-key-file-model-route.sh at `--dest`,
+ * rig.sh's judge_keys at the key file): under a TMPDIR with a space or a quote in its name, every
+ * row that installs a route failed on that refusal. A tmpfs, because the file's afterAll removes
+ * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
+ * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
+ * beforeEach/afterEach hook timed out" after every row had passed. `need` is about sixteen times
+ * the 1.8 MiB a run held there at its largest (1,392 entries).
+ */
+const memory = memoryRoot({ need: 32 * 1024 * 1024 });
+const workRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
+if (workRoot !== memory) {
+  console.error(
+    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, so the work directory is under /tmp`
+  );
+}
+const work = temporaryDirectory("skill-scenarios-rig", { root: workRoot });
 const operatorHome = path.join(work, "operator-home");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
 // read it would list this directory. It is staged in a hook, below the one the reservation
@@ -207,6 +230,37 @@ describe("install_model_route", () => {
     );
   });
 
+  // An Oh My Pi config that disables a provider by name disables a models.yml block of that name
+  // too, so a box whose gateway block is named `anthropic` would leave the agents no model.
+  test("provider whose block is named after a built-in provider leaves that provider enabled", () => {
+    const dir = profileDir();
+    const file = path.join(work, `models-${profiles}-anthropic.yml`);
+    writeFileSync(
+      file,
+      [
+        "providers:",
+        "  anthropic:",
+        "    baseUrl: http://gateway.internal.example:4000",
+        '    apiKey: "!cat /run/user/1000/box/gateway-key"',
+        "    api: anthropic-messages",
+        "",
+      ].join("\n")
+    );
+    const { code, stderr } = route(dir, {
+      LEGION_E2E_MODEL_ROUTE: "provider",
+      LEGION_E2E_MODEL_PROVIDER_FILE: file,
+      LEGION_E2E_MODEL_PROVIDER: "anthropic",
+    });
+    expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({ code: 0, stderr: "" });
+    const config = readFileSync(
+      path.join(dir, "home/.omp/profiles/skills-test/agent/config.yml"),
+      "utf8"
+    );
+    expect(config).toContain("enabledModels:\n  - anthropic/claude-opus-4-8\n");
+    expect(config).toContain("disabledProviders:\n  - amazon-bedrock\n");
+    expect(config).not.toContain("  - anthropic\n");
+  });
+
   test("provider without LEGION_E2E_MODEL_PROVIDER_FILE fails, naming the variable", () => {
     const dir = profileDir();
     const { code, stderr } = route(dir, {
@@ -319,32 +373,74 @@ describe("a setup that fails after install_model_route", () => {
     expect(existsSync(path.join(kept, "profiles/probe/ready"))).toBe(true);
   });
 
+  /** judge_profiles and its helpers, called on the checkout $1 and the work directory $2. A row
+   * puts an install_model_route definition before it. */
+  const judgeProfiles = [
+    "set -euo pipefail",
+    ...["fail", "on_exit", "drop_unready_keys", "judge_profiles"].map(fn),
+    "checkout_commit() { printf 'fixture parents=base\\n'; }",
+    "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+  ].join("\n");
+
   // Catches: a judge-profile build that fails at its second profile and keeps the first one's key
   // command.
   test("judge_profiles removes both profiles' model-key and marks nothing ready", () => {
     const work = freshDir("judge-route-work");
-    const co = checkout();
+    // The bare profile's route cannot be installed, after the ste profile's is.
     const script = [
-      "set -euo pipefail",
-      ...["fail", "on_exit", "drop_unready_keys", "install_model_route", "judge_profiles"].map(fn),
-      "checkout_commit() { printf 'fixture parents=base\\n'; }",
-      "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+      fn("install_model_route").replace("install_model_route()", "installed_route()"),
+      'install_model_route() { [ "$2" != judge-bare ] || { echo "no route for bare" >&2; return 1; }; installed_route "$@"; }',
+      judgeProfiles,
     ].join("\n");
-    // The bare profile's home cannot be made, after the ste profile's route is installed.
-    appendFileSync(
-      path.join(co, "scripts/e2e/lib/omp-home.sh"),
-      'make_omp_home() { [ "$(basename "$(dirname "$1")")" != bare ] || { echo "no home for bare" >&2; return 1; }; mkdir -p "$1/.omp"; }\n'
-    );
-    const failed = bash(script, [co, work], routeEnv());
+    const failed = bash(script, [checkout(), work], routeEnv());
     expect(failed.code).toBe(1);
-    expect(failed.stderr).toContain("make_omp_home failed for the judge's bare profile");
+    expect(failed.stderr).toContain("the judge's model route (key-file) could not be installed");
     const dir = path.join(work, "judge-profiles");
+    expect(readFileSync(path.join(dir, "bare/install.log"), "utf8")).toBe("no route for bare\n");
     expect(existsSync(path.join(dir, "ste/home/.omp/profiles/judge-ste/agent/models.yml"))).toBe(
       true
     );
     expect(existsSync(path.join(dir, "ste/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "bare/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "ready"))).toBe(false);
+  });
+
+  // Catches: a judge profile that needs jj. No Oh My Pi and no jj runs under a judge's HOME on this
+  // host, yet a home made by make_omp_home read the operator's jj config, so judge-omp failed on a
+  // machine with no jj on PATH ("make_omp_home failed for the judge's ste profile"). Here the
+  // checkout's omp-home.sh is the real one, and the only jj on PATH records its call and fails.
+  test("judge_profiles builds both profiles and runs no jj", () => {
+    const work = freshDir("judge-nojj-work");
+    const co = checkout();
+    cpSync(
+      path.join(root, "scripts/e2e/lib/omp-home.sh"),
+      path.join(co, "scripts/e2e/lib/omp-home.sh")
+    );
+    const bin = freshDir("judge-nojj-bin");
+    const calls = path.join(bin, "jj-calls");
+    writeFileSync(
+      path.join(bin, "jj"),
+      `#!/bin/sh\necho "$*" >>'${calls}'\necho "jj: not on this machine" >&2\nexit 127\n`,
+      { mode: 0o755 }
+    );
+    const built = bash(`${fn("install_model_route")}\n${judgeProfiles}`, [co, work], {
+      ...routeEnv(),
+      PATH: `${bin}:${childEnv.PATH}`,
+    });
+    expect({ code: built.code, stderr: built.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(calls)).toBe(false);
+    const dir = path.join(work, "judge-profiles");
+    for (const kind of ["ste", "bare"]) {
+      expect(
+        existsSync(path.join(dir, `${kind}/home/.omp/profiles/judge-${kind}/agent/models.yml`))
+      ).toBe(true);
+    }
+    expect(
+      existsSync(
+        path.join(dir, "ste/home/.omp/profiles/judge-ste/agent/skills/asd-ste100/SKILL.md")
+      )
+    ).toBe(true);
+    expect(existsSync(path.join(dir, "ready"))).toBe(true);
   });
 });
 
@@ -542,6 +638,144 @@ describe("next_run", () => {
   });
 });
 
+// A batch given SKILL_SCENARIOS_POSTGRES_URL makes each run's database on that server
+// (own_dispatch), and names the server in its notes, its failures and each run's dispatch.json.
+describe("safe_url", () => {
+  const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
+  // Catches: a note, a failure message or a run's dispatch.json that prints the password of a
+  // server the operator gave, in a Postgres URL's user info as libpq reads it (to the first `@`,
+  // a `?` in the password included), in its `password=` or `sslpassword=` parameter (its key
+  // percent-decoded, as libpq reads `%70assword=`), or in a NATS
+  // URL's user info as Go's net/url reads it (to the last `@`); a query left with a dangling `?`
+  // or `&`; a safe_url that changes a URL with no password in it; and a URL pg-url.sh refuses (a
+  // raw `@` in its hosts) printed as it is, where safe_url prints a placeholder.
+  test("safe_url drops the password of a URL and keeps the rest", () => {
+    expect(
+      bash(`. ${JSON.stringify(pgUrl)}\n${fn("safe_url")}\nfor url; do safe_url "$url"; done`, [
+        "postgres://u:p@h:1/d",
+        "postgres://u@h:1/d",
+        "nats://127.0.0.1:4222",
+        "postgres://u:?@127.0.0.1:5433/legion_test",
+        "postgres://u@localhost:5432@10.1.2.3/db",
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable&password=p&application_name=x",
+        "postgresql://u@127.0.0.1:5433/d?sslpassword=p",
+        "postgres://u:p@127.0.0.1:5433/d?password=p&sslmode=disable",
+        "nats://u:p@ss@127.0.0.1:4222",
+        "postgres://u@127.0.0.1:5433/d?%70assword=p&sslmode=disable",
+      ])
+    ).toEqual({
+      code: 0,
+      stdout:
+        "postgres://u@h:1/d\npostgres://u@h:1/d\nnats://127.0.0.1:4222\n" +
+        "postgres://u@127.0.0.1:5433/legion_test\n" +
+        "<a Postgres URL pg-url.sh refuses>\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable&application_name=x\n" +
+        "postgresql://u@127.0.0.1:5433/d\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
+        "nats://u@127.0.0.1:4222\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
+      stderr: "-: refused a Postgres URL: a host holds a raw @ (the URL is not printed)\n",
+    });
+  });
+});
+
+// services_up reads a given SKILL_SCENARIOS_POSTGRES_URL before anything connects to that server
+// or the batch writes the URL anywhere. python3 with libpq: its guards read the URL with this
+// host's libpq (scripts/e2e/lib/loopback-dsn.py), which refuses every URL where it finds none.
+const withoutPython = skipWithout("python3");
+const withoutLibpq =
+  !withoutPython &&
+  Bun.spawnSync([
+    "python3",
+    "-c",
+    "import ctypes.util, sys; sys.exit(ctypes.util.find_library('pq') is None)",
+  ]).exitCode !== 0;
+if (withoutLibpq) {
+  console.warn(
+    `Skipped the services_up rows in ${import.meta.path}. services_up reads a given Postgres ` +
+      `URL with libpq, and ctypes.util.find_library("pq") finds none on this host; install libpq5.`
+  );
+}
+describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
+  const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
+  const loopbackDsn = path.join(root, "scripts/e2e/lib/loopback-dsn.sh");
+  /** services_up given URL and a NATS, in a services directory of its own, with a psql first on
+   * PATH that appends to psql.log each time it runs. until_true runs its command once, so a URL
+   * that passed every check would reach psql at once. Answers services_up's status and standard
+   * error, whether psql ran, and what the services directory holds. */
+  function up(url: string) {
+    const dir = freshDir("services-up");
+    const bin = path.join(dir, "bin");
+    const log = path.join(dir, "psql.log");
+    const services = path.join(dir, "services");
+    mkdirSync(bin);
+    mkdirSync(services);
+    writeFileSync(path.join(bin, "psql"), `#!/bin/sh\necho ran >>${JSON.stringify(log)}\n`, {
+      mode: 0o755,
+    });
+    const result = bash(
+      `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
+        `until_true() { shift 2; "$@"; }\n` +
+        `S=$3\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
+      [pgUrl, loopbackDsn, services],
+      {
+        PATH: `${bin}:${childEnv.PATH}`,
+        SKILL_SCENARIOS_POSTGRES_URL: url,
+        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+      }
+    );
+    return {
+      code: result.code,
+      stderr: result.stderr,
+      psqlRan: existsSync(log),
+      written: readdirSync(services),
+    };
+  }
+  const host = (name: string) =>
+    `SKILL_SCENARIOS_POSTGRES_URL must name 127.0.0.1, localhost or ::1: libpq reads the host ${name}, and each run creates a database there`;
+  const sslpassword =
+    "SKILL_SCENARIOS_POSTGRES_URL holds an sslpassword parameter, a client key's passphrase, whose value this line does not print: pg_sql takes only the password out of the URL it gives psql, so psql's arguments, which every user of this machine can read, would hold the passphrase";
+
+  // Catches: a services_up that connects to, or writes into its services file, a given URL that
+  // its checks refuse, because a check is gone or runs after the write or the first psql: a host
+  // that is not loopback, the `localhost?x@evil.example` shape whose host libpq reads as
+  // evil.example (scripts/e2e/lib/loopback-dsn.sh), a key=value connection string, an
+  // `sslpassword` parameter (its key percent-decoded too), a URL pg-url.sh refuses (a raw `@` in
+  // its path, which pg-url.sh names on its own line first), and a value run_database_url refuses
+  // to write into each run's connection string (a newline, which it refuses in a password the same
+  // way). Each refusal is the one its own check prints, and holds no password.
+  test("refuses a URL the runs cannot use before psql runs or the URL is written", () => {
+    for (const [url, refusal, before = ""] of [
+      ["postgres://u:p@db.example:5432/postgres", host("db.example")],
+      ["postgres://localhost?x:p@evil.example:5432/postgres", host("evil.example")],
+      [
+        "host=127.0.0.1 port=5432 user=u password=p dbname=postgres",
+        "SKILL_SCENARIOS_POSTGRES_URL is not a postgres:// or postgresql:// URL: the batch names the server in its notes and in each run's dispatch.json, and it can take a password out of a URL alone, never out of a key=value connection string",
+      ],
+      ["postgres://u:p@127.0.0.1:5432/postgres?sslmode=require&sslpassword=x", sslpassword],
+      ["postgresql://u@localhost:5432/postgres?%73slpassword=x&sslmode=require", sslpassword],
+      [
+        "postgres://u@127.0.0.1:5432/post@gres",
+        "SKILL_SCENARIOS_POSTGRES_URL is a URL pg-url.sh refuses, for the reason on the line above: pg_sql and safe_url take its password out with pg-url.sh, so the batch could neither reach that server nor name it",
+        "-: refused a Postgres URL: an @ sits between the first / and the ? (the URL is not printed)\n",
+      ],
+      [
+        "postgres://u@localhost:5432/postgres?application_name=x%0A",
+        "SKILL_SCENARIOS_POSTGRES_URL gives application_name U+000A, a character that does not print: it reaches the rewritten connection string, where a caller writes that string into a file, and this refusal prints no value that holds one",
+      ],
+    ]) {
+      expect({ url, ...up(url) }).toEqual({
+        url,
+        code: 1,
+        stderr: `${before}skill-scenarios: ${refusal}\n`,
+        psqlRan: false,
+        written: [],
+      });
+    }
+  });
+});
+
 // run_env_pids names each process whose environment carries a run under DIR, with its start time,
 // for the exit handlers' stop_env_processes. It walks every process's environment, so a machine
 // whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
@@ -608,7 +842,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   test("stops each process of the run its walk names, with the run's sweep's own loop", async () => {
     const dir = freshDir("env-stop");
     const run = runProcess(dir);
-    await untilRunning(run.pid, "sleep");
+    await untilRunning(run.pid, "sleep", waits.end());
     try {
       const rig = path.join(root, "scripts/e2e/lib/rig.sh");
       const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
@@ -918,6 +1152,9 @@ echo done
 // environment. SKILL_SCENARIOS_JUDGE_OMP puts the stand-in where the pinned omp's binary is
 // mounted, so no test needs a model. The checkout's own skills/asd-ste100 is the ste skill.
 describe("judge-omp", () => {
+  // Each row starts one or two judge containers, and a container's start on a loaded host has
+  // taken longer than the file's 60 s bound, so these rows get a bound of their own.
+  const judgeBound = 180_000;
   // Every row that reaches the container needs Docker, so a machine without it (a Legion
   // worker's pod) skips those rows and the rest of the file still runs. GitHub Actions is the
   // exception, as in extensions/controller-start-omp.test.ts: its ubuntu-24.04 runners have
@@ -1066,7 +1303,8 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
           "utf8"
         )
       ).toContain("https://api.anthropic.com");
-    }
+    },
+    judgeBound
   );
 
   // Catches: a judge that reads the run's transcript, other runs or the operator's files beside its
@@ -1092,53 +1330,68 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
         "dbus-set": "denied",
       });
       expect(existsSync(path.join(dir, "new.txt"))).toBe(false);
-    }
+    },
+    judgeBound
   );
 
   // Catches: a bare judge that still loads skills, or a judge-omp that hides omp's failure.
-  test.skipIf(skip)("bare loads no skill, and judge-omp exits with omp's status", () => {
-    const dir = judgeDir();
-    writeFileSync(path.join(dir, "exit-status"), "3\n");
-    const result = judge("bare", dir);
-    expect(result.exitCode).toBe(3);
-    expect(recorded(dir, "argv")).toContain("--no-skills");
-    expect(recorded(dir, "argv")).not.toContain("--skills");
-    expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
-    expect(recorded(dir, "probe")).toContain("read-skill denied");
-    expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
-    expect(
-      existsSync(path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills"))
-    ).toBe(false);
-  });
+  test.skipIf(skip)(
+    "bare loads no skill, and judge-omp exits with omp's status",
+    () => {
+      const dir = judgeDir();
+      writeFileSync(path.join(dir, "exit-status"), "3\n");
+      const result = judge("bare", dir);
+      expect(result.exitCode).toBe(3);
+      expect(recorded(dir, "argv")).toContain("--no-skills");
+      expect(recorded(dir, "argv")).not.toContain("--skills");
+      expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
+      expect(recorded(dir, "probe")).toContain("read-skill denied");
+      expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
+      expect(
+        existsSync(
+          path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills")
+        )
+      ).toBe(false);
+    },
+    judgeBound
+  );
 
   // Catches: a mount two judges share that one can write and the next can read, such as the key
   // command's call record, a path one judge could leave its private input in for another to read.
   // The first judge writes a marker into every directory it can write outside its own directory;
   // the second, of the same kind, looks for one anywhere it can read.
-  test.skipIf(skip)("one judge cannot leave a file that a second judge can read", () => {
-    const first = judgeDir();
-    const env = (word: string) => ({
-      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
-    });
-    expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
-    const second = judgeDir();
-    expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
-    expect(recorded(second, "seek")).toEqual([""]);
-  });
+  test.skipIf(skip)(
+    "one judge cannot leave a file that a second judge can read",
+    () => {
+      const first = judgeDir();
+      const env = (word: string) => ({
+        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
+      });
+      expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
+      const second = judgeDir();
+      expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
+      expect(recorded(second, "seek")).toEqual([""]);
+    },
+    judgeBound
+  );
 
   // Catches: a judge kind the rig has no profile for, a directory with no prompt, and an answer
   // file name that escapes the judge's directory or names another of its files.
-  test("refuses another kind, a directory with no prompt.txt and a bad answer name", () => {
-    expect(judge("plugins", judgeDir()).stderr.toString()).toContain("is ste or bare");
-    expect(judge("ste", freshDir("judging-empty")).stderr.toString()).toContain(
-      "has no prompt.txt"
-    );
-    for (const output of ["../answer.json", "sessions", "prompt.txt", "a/b.json", ""]) {
-      const result = judge("ste", judgeDir(), output);
-      expect(result.exitCode).not.toBe(0);
-      expect(result.stderr.toString()).toContain("is not the name of an answer file");
-    }
-  });
+  test(
+    "refuses another kind, a directory with no prompt.txt and a bad answer name",
+    () => {
+      expect(judge("plugins", judgeDir()).stderr.toString()).toContain("is ste or bare");
+      expect(judge("ste", freshDir("judging-empty")).stderr.toString()).toContain(
+        "has no prompt.txt"
+      );
+      for (const output of ["../answer.json", "sessions", "prompt.txt", "a/b.json", ""]) {
+        const result = judge("ste", judgeDir(), output);
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr.toString()).toContain("is not the name of an answer file");
+      }
+    },
+    judgeBound
+  );
 
   // The gateway route with the real installer and key command, and a stand-in hawk-token first on
   // PATH that mints a JWT and counts each mint. The key command needs the operator's home and
@@ -1219,7 +1472,8 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         });
         expect(existsSync(`${dir}.key`)).toBe(false);
         expect(readFileSync(path.join(dir, "answer.json"), "utf8")).not.toMatch(/eyJ[\w-]*\./);
-      }
+      },
+      judgeBound
     );
 
     // Catches: a token directory or file that others can read while the judge runs. The modes
@@ -1227,13 +1481,17 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     // (`recorded(dir, "mode")`), rather than a watcher's from outside: the stand-in omp sleeps
     // for nothing now, so there is no window for a watcher to look through, and a row that
     // waited for one would be waiting on a sleep.
-    test.skipIf(skip)("the token file is the owner's alone while the judge runs", () => {
-      const dir = gatewayDir();
-      const result = gatewayJudge("bare", dir);
-      expect(judged(result)).toEqual(judgedCleanly);
-      expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
-      expect(existsSync(`${dir}.key`)).toBe(false);
-    });
+    test.skipIf(skip)(
+      "the token file is the owner's alone while the judge runs",
+      () => {
+        const dir = gatewayDir();
+        const result = gatewayJudge("bare", dir);
+        expect(judged(result)).toEqual(judgedCleanly);
+        expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
+        expect(existsSync(`${dir}.key`)).toBe(false);
+      },
+      judgeBound
+    );
 
     // Catches: a token file left behind when the judge fails, and a failed mint that starts the
     // judge anyway.
@@ -1261,44 +1519,56 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
           "judge-omp: the gateway's key command gave no key"
         );
         expect(existsSync(path.join(refused, "answer.json"))).toBe(false);
-      }
+      },
+      judgeBound
     );
   });
 
   // Catches: a judge profile whose built-from records an empty commit line when the rig's root is
   // no checkout, so a judge's model run cannot be traced to the code that built it.
-  test.skipIf(skip)("fails, naming the rig's root, when the root is no checkout", () => {
-    const top = freshDir("judge-root");
-    const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
-    mkdirSync(scripts, { recursive: true });
-    writeFileSync(path.join(scripts, "rig.sh"), readFileSync(path.join(import.meta.dir, "rig.sh")));
-    for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
-      mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
-      writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
-    }
-    mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
-    cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
-      recursive: true,
-    });
-    const rootWork = freshDir("judge-root-work");
-    const result = Bun.spawnSync(
-      ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
-      {
-        env: {
-          ...childEnv,
-          USER: "rig",
-          SKILL_SCENARIOS_WORK: rootWork,
-          SKILL_SCENARIOS_JUDGE_OMP: omp,
-          LEGION_E2E_MODEL_ROUTE: "key-file",
-          LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-          GIT_CEILING_DIRECTORIES: path.dirname(top),
-        },
+  test.skipIf(skip)(
+    "fails, naming the rig's root, when the root is no checkout",
+    () => {
+      const top = freshDir("judge-root");
+      const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
+      mkdirSync(scripts, { recursive: true });
+      writeFileSync(
+        path.join(scripts, "rig.sh"),
+        readFileSync(path.join(import.meta.dir, "rig.sh"))
+      );
+      for (const file of [
+        ".omp-pin",
+        "skills/asd-ste100/SKILL.md",
+        "packages/envoy/scripts/lib/pg-url.sh",
+      ]) {
+        mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
+        writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
       }
-    );
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
-    expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
-  });
+      mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
+      cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
+        recursive: true,
+      });
+      const rootWork = freshDir("judge-root-work");
+      const result = Bun.spawnSync(
+        ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
+        {
+          env: {
+            ...childEnv,
+            USER: "rig",
+            SKILL_SCENARIOS_WORK: rootWork,
+            SKILL_SCENARIOS_JUDGE_OMP: omp,
+            LEGION_E2E_MODEL_ROUTE: "key-file",
+            LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+            GIT_CEILING_DIRECTORIES: path.dirname(top),
+          },
+        }
+      );
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
+      expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
+    },
+    judgeBound
+  );
 });
 
 // A spec run's plan row reads skill://writing-plans, which only a label built with
@@ -1352,5 +1622,98 @@ sleep() { command sleep 0.05; }`;
     expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
       `${bin}/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${run}/sessions\nexit=0\n`
     );
+  });
+});
+
+// The tester-proof world's gh routes (worker_routes), answered by the run's gh stand-in. A tester
+// finds its pull request with the worker prompt's lookup, `gh pr list --repo <the issue's
+// repository> --head legion/<issue> --state open --json number --jq '.[0].number'`
+// (packages/daemon/internal/prompts/go/worker-common.md).
+describe("worker_routes", () => {
+  const pr = {
+    number: 1001,
+    url: "https://github.com/example/widgets/pull/1001",
+    headRefName: "legion/LWEVAL-1",
+    headRefOid: "099b05dc19f7f7e5058e791d16ae05f0b123a2cc",
+    body: "Dispatch: LWEVAL-1",
+  };
+  /** The run directory whose fixtures.json holds worker_routes' routes for `pr`: made by the first
+   * call, inside a test, since the file's work directory is made in a hook, and read by every call
+   * after it, since no call here edits a body. */
+  let run: string | undefined;
+  /** `gh <args>` answered by the gh stand-in from worker_routes' fixtures.json for `pr`. */
+  function gh(...args: string[]) {
+    if (run === undefined) {
+      run = freshDir("worker-routes");
+      const routes = bash(`${fn("worker_routes")}\nworker_routes "$1" >"$2/fixtures.json"`, [
+        JSON.stringify(pr),
+        run,
+      ]);
+      expect(routes).toEqual({ code: 0, stdout: "", stderr: "" });
+    }
+    const result = Bun.spawnSync(
+      [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+      { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+    );
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  }
+
+  // Catches: a world whose stand-in answers the prompt's lookup of the pull request with a 404,
+  // after which a tester took the pull request to be unreachable and left its body unedited; and a
+  // list of the open pull requests with no head that answers none, which tells a tester that lists
+  // the repository's pull requests that none exists.
+  test("a list of the PR's branch, or of no head, lists the PR, picked to the fields asked", () => {
+    expect(
+      gh(
+        "pr",
+        "list",
+        "--repo",
+        "example/widgets",
+        "--head",
+        "legion/LWEVAL-1",
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--jq",
+        ".[0].number"
+      )
+    ).toEqual({ code: 0, stdout: "1001\n", stderr: "" });
+    for (const filter of [
+      ["--head", "legion/LWEVAL-1", "--state", "open"],
+      ["--head=legion/LWEVAL-1", "--state", "open"],
+      ["-H", "legion/LWEVAL-1", "--state", "open"],
+      ["--state", "open"],
+    ]) {
+      expect(gh("pr", "list", ...filter, "--json", "number,headRefOid")).toEqual({
+        code: 0,
+        stdout: `[{"number":1001,"headRefOid":"${pr.headRefOid}"}]\n`,
+        stderr: "",
+      });
+    }
+  });
+
+  // Catches: a list of another branch, or of the closed or merged pull requests (on the PR's own
+  // branch too), that names the fixture's open PR, or that fails where GitHub answers an empty
+  // list.
+  test("a list of any other head, or of closed or merged pull requests, is empty", () => {
+    for (const filter of [
+      ["--head", "legion/LWEVAL-10"],
+      ["--head", "legion/LWEVAL-2"],
+      ["--state", "closed"],
+      ["-s", "merged"],
+      ["--head", "legion/LWEVAL-1", "--state", "closed"],
+      ["--state", "merged", "--head", "legion/LWEVAL-1"],
+    ]) {
+      expect(gh("pr", "list", ...filter, "--json", "number")).toEqual({
+        code: 0,
+        stdout: "[]\n",
+        stderr: "",
+      });
+    }
   });
 });

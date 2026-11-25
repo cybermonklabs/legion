@@ -43,6 +43,10 @@ type Client interface {
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
+	// PlanDocument reads one version of a document with its typed blocks and the issue carrying
+	// it (DocumentVersion): what register_plan reads a plan from at the version its owner gave. A
+	// Dispatch that predates the read with blocks answers ErrNoBlocks.
+	PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error)
 	// ArtifactChanges is what changed in a document between two of its stored versions, as
 	// Dispatch reads the two (GET /api/v1/artifacts/{id}/changes). A Dispatch that answers 404
 	// ARTIFACT_NOT_FOUND there is ErrDocumentNotFound, and its router's 404 `no route for …` or a
@@ -72,7 +76,9 @@ type Client interface {
 	// each field once, so a rating sent again changes nothing.
 	PutStepRating(ctx context.Context, key, id string, write StepWrite, rating PlanRating) error
 	// PutPlan writes the plan one run of the issue carries out onto Dispatch's plan id of the
-	// issue. Dispatch writes each field once, so a plan sent again changes nothing.
+	// issue. Its source, document, version and tasks are one fact: a write whose version is above
+	// the version Dispatch holds replaces all four, and one at or below it changes nothing (a
+	// version left out, the source default, counts as 0), so a plan sent again or late changes nothing.
 	PutPlan(ctx context.Context, key, id string, plan PlanWrite) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
@@ -189,6 +195,9 @@ type IssueSummary struct {
 	Parent     *string
 	Rank       string
 	HandedOver bool
+	// Priority is the issue's own priority as Dispatch serves it: 0 for P0 to 3 for P3, nil for
+	// none. The workflow record keeps it as record.Priority (intake's ListedIssue).
+	Priority *int
 	// Labels is the issue's labels as the listing answers them, in Dispatch's order. The copy of
 	// Dispatch's issues writes them with the rest of the summary (blockers.Observed, or the Issue
 	// a release reads from the summary), and no decision reads them: a decision reads HandedOver.
@@ -219,7 +228,7 @@ func (s IssueSummary) Issue() Issue {
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
 		claim = &Claim{Kind: kind, ID: id}
 	}
-	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Labels: s.Labels, HandedOver: s.HandedOver,
+	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Labels: s.Labels, HandedOver: s.HandedOver,
 		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread}
 }
 
@@ -237,6 +246,8 @@ type Issue struct {
 	HandedOver        bool
 	PrimaryArtifactID string
 	LastSeq           int64
+	// Priority is IssueSummary.Priority.
+	Priority *int
 	// ResolvedRepo is IssueSummary.ResolvedRepo.
 	ResolvedRepo string
 	// BlockedBy is IssueSummary.BlockedBy.
@@ -358,6 +369,36 @@ func (a Approval) LatestReviewer() Actor {
 	}
 	return a.By
 }
+
+// DocumentVersion is one version of a document as the daemon reads a plan from it (PlanDocument on
+// HTTPClient): the document, the issue carrying it (empty for a project document), the version
+// read, and that version's typed blocks in document order. The blocks are the version's own, read
+// from its stored text by Dispatch, never the live document's, so the same version reads the same
+// blocks whenever it is read.
+type DocumentVersion struct {
+	ArtifactID string
+	IssueKey   string
+	Version    int
+	Blocks     []DocumentBlock
+}
+
+// DocumentBlock is one typed block of a document version: its id, which its opening line writes
+// and so stays the same in every version that keeps the block; its type (plan_task, requirement,
+// check, ...); its attributes by name, each value as the opening line writes it (a block[]
+// attribute's references space-separated); and Text, its body: the markdown between its opening
+// line and its closing fence.
+type DocumentBlock struct {
+	ID         string
+	Type       string
+	Attributes map[string]string
+	Text       string
+}
+
+// ErrNoBlocks is PlanDocument's answer to a version read that carries no blocks: a Dispatch of a
+// release before the version read with blocks ignores ?blocks=true and answers the version's text
+// alone. No plan can be read from that Dispatch until it is upgraded; an empty plan is never
+// assumed.
+var ErrNoBlocks = errors.New("Dispatch answered the document version without its blocks: it predates the version read with ?blocks=true")
 
 // ArtifactChanges is what changed in a document from version From to version To, as Dispatch's
 // GET /api/v1/artifacts/{id}/changes answers it (its artifactChanges), whose JSON it decodes as it

@@ -22,6 +22,7 @@ import (
 // creation. A Sever that took the client's lock waited behind that read, and the standby created
 // the durable with the connection still open.
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)
 	tuning := tuningFor(t)
 	tuning.stopBudget = stopBudget
@@ -134,6 +135,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // connection and not the order of events: what the frozen relay had already read of the socket
 // before the sever is beyond the client, and reaches the server once the relay thaws.
 func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	logs := captureIntakeLogs(t)
 	shrinkIntakeFlowControl(t)
 	tuning := tuningFor(t)

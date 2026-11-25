@@ -62,8 +62,8 @@ func TestUpdateStateOfAnswersOneOfTheFourStates(t *testing.T) {
 			c.UpdateTaskedAt, c.UpdateSignalledAt = &askedAt, &answeredAt
 			c.UpdateHead = "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128"
 		}, want: UpdateStateAnswered},
-		// A planner before its first push answers with no head at all, which is the reading
-		// `updateHead` alone cannot tell from a claim nobody ever asked.
+		// A planner step that runs before the branch's first push answers with no head at all,
+		// which is the reading `updateHead` alone cannot tell from a claim nobody ever asked.
 		{name: "the worker answered and reported no head", set: func(c *supervise.Claim) {
 			c.UpdateTaskedAt, c.UpdateSignalledAt = &askedAt, &answeredAt
 		}, want: UpdateStateAnswered},

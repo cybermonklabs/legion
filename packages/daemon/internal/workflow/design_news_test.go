@@ -443,14 +443,17 @@ func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T
 	}
 }
 
-// Planning has no earlier phase to move back to, so a planner's news ends with the planner's own
+// A stale plan is the planner's own work wherever its task places its step, so a planner's news ends with the planner's own
 // answer, as its prompt gives it (prompts/go/planner.md): a stale plan is revised in place and its
 // plan review run again, and a current one gets a comment. No move back is named.
 func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
 	text := RenderNews(plannerHolderNews())
 	t.Logf("the news of a planner:\n%s", text)
 	rule := lastParagraph(text)
-	for _, want := range []string{"read each named section and check at the new version", "Planning has no earlier phase",
+	if strings.Contains(rule, "Planning has no earlier phase") {
+		t.Errorf("the planner's closing rule still says planning has no earlier phase, false for a planner after the implementer: %q", rule)
+	}
+	for _, want := range []string{"read each named section and check at the new version", "A stale plan is your own work wherever your task places your step",
 		"revise `plan.md` in place to match the new version of the design", "run the plan review again", "`dispatch comment` on LEGION-218"} {
 		if !strings.Contains(rule, want) {
 			t.Errorf("the planner's closing rule %q does not say %q", rule, want)
@@ -593,7 +596,7 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 		"- LEGION-212, in reviewing: ":       "told nothing: the approved version holds the same text as the one it took, apart from decision blocks.",
 		"- LEGION-213, in planning: ":        "told nothing: its phase already took the approved version.",
 		"- LEGION-214, in admitted: ":        "told nothing: it has not started, and its first phase starts from the approved version.",
-		"- LEGION-215, in held: ":            "told nothing while it is stopped: the restart that moves it back into its phase carries what it is owed then.",
+		"- LEGION-215, in held: ":            "told nothing while it is held: the release that moves it back into a phase carries what it is owed then.",
 		"- LEGION-216, in done: ":            "told nothing: its work is done.",
 	} {
 		if line := newsLine(t, text, opening); !strings.Contains(line, want) {

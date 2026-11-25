@@ -140,7 +140,8 @@ func reopenWithoutRestoring(t *testing.T, f repairFixture, issue, status string,
 // and the fixture's rooms never idle out (repairRoomsNeverIdleOut), so that close is the only way
 // the rooms empty: a close or reopen that closed none of them fails here by name, with the issue's
 // documents and the rooms still resident when the wait gave up, rather than passing once ygo's
-// idle sweep evicted them.
+// idle sweep evicted them. Its one bound is the test binary's deadline (testwait.Until): a room
+// sync a loaded machine runs late still ends the wait.
 func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	t.Helper()
 	rows, err := f.database.Pool.Query(store.WithTransactionTracking(context.Background()),
@@ -152,20 +153,10 @@ func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	if err != nil {
 		t.Fatalf("list the documents of %s: %v", issue, err)
 	}
-	var resident []string
-	closed := false
-	// Eventually's failure names what it waited for; this logs beside it, as that failure ends
-	// the test, the rooms still resident when the wait gave up.
-	defer func() {
-		if !closed {
-			t.Logf("still resident when the wait for %s's rooms gave up: %v", issue, resident)
-		}
-	}()
-	testwait.Eventually(t, fmt.Sprintf("every room of %s's documents %v to leave residency", issue, documents), func() bool {
-		resident = f.documents.ResidentRooms()
-		return !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) })
+	testwait.Until(t, fmt.Sprintf("every room of %s's documents %v to leave residency (the rooms resident)", issue, documents), func() ([]string, bool) {
+		resident := f.documents.ResidentRooms()
+		return resident, !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) })
 	})
-	closed = true
 }
 
 // appendIssueEvent appends an eventType event of issue naming actor, its payload the issue's
@@ -258,6 +249,7 @@ func captureLogs(t *testing.T) *storetest.LockedLog {
 // stores, dated when the repair ran. A second repair changes nothing, and a later reopen restores
 // them.
 func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closed by an older release", closeDecision)
 	awaitIndexedAskBlock(t, f.handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
@@ -345,6 +337,7 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 
 // Two repairs started together serialise on the issue's row: each ask is withdrawn once.
 func TestTwoRepairsAtOnceWithdrawEachAskOnce(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Repaired twice at once", closeDecision)
 	awaitIndexedAskBlock(t, f.handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
@@ -420,6 +413,7 @@ func TestRepairSkipsAClosedIssueWithNoClosingEvent(t *testing.T) {
 // restoration - gets them back, credited to the actor of the event that reopened it, not to a
 // later editor.
 func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Reopened by an older release", closeDecision)
 	awaitIndexedAskBlock(t, f.handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
@@ -492,6 +486,7 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 // version's artifact.version, which notifies nobody. A closed issue whose document owes no
 // settlement is not touched.
 func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	swept := createInteractionIssue(t, f.handler, "TEST", "Written after its close", "Context\n")
 	untouched := createInteractionIssue(t, f.handler, "OTHER", "Settled after its close", "Context\n")
@@ -508,9 +503,15 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 		}
 	}
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
-	for document, peer := range peers {
+	// Both browsers write before either write is waited for. The append gate stores a browser's
+	// update on a closed issue only when its room took it within docs' closeMargin (2 s) of the
+	// close (observedBeforeClose): a second write made only once the first was stored, which a
+	// loaded machine can take longer than that to do, is refused, never stored and never owed.
+	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)
+	}
+	for document := range peers {
 		awaitOwedSettlement(t, f.database, document)
 		awaitLiveText(t, f.handler, document, "#other-room")
 	}
@@ -553,6 +554,7 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 // settlement was marked before the pass's bound is left for a full pass, while one marked after
 // it is swept.
 func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	stale := createInteractionIssue(t, f.handler, "TEST", "Marked before the bound", "Context\n")
 	fresh := createInteractionIssue(t, f.handler, "OTHER", "Marked after the bound", "Context\n")
@@ -569,9 +571,14 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 		}
 	}
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
-	for document, peer := range peers {
+	// Both browsers write before either write is waited for, as in
+	// TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess: a write made more than docs'
+	// closeMargin after the close is refused.
+	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)
+	}
+	for document := range peers {
 		awaitOwedSettlement(t, f.database, document)
 		awaitLiveText(t, f.handler, document, "#other-room")
 	}
@@ -606,6 +613,7 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 // then an interval pass bounded one interval back, each change nothing, append no update to
 // either document, and leave each document's owed settlement marked when it was.
 func TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument(t *testing.T) {
+	t.Parallel()
 	// An hour, so the only settlement is the one the close through PATCH runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	closed := createInteractionIssue(t, f.handler, "TEST", "Closed by this release", closeDecision)
@@ -706,6 +714,7 @@ func (d *issueAskFailingDocs) takeWrites() map[string]int {
 // pass, bounded by nothing, reaches all three issues; the second reaches the failed issue and the
 // one marked again, never the third.
 func TestARepairPassThatFailsOneIssueStillMovesTheWindowAndRetriesIt(t *testing.T) {
+	t.Parallel()
 	// An hour, so the only settlement is the one each close through PATCH runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	failing := createInteractionIssue(t, f.handler, "FAIL", "Fails every pass", closeDecision)
@@ -769,6 +778,7 @@ func TestARepairPassThatFailsOneIssueStillMovesTheWindowAndRetriesIt(t *testing.
 // ask is still withdrawn with its one ask.resolved, and every block of the document resolves by
 // its dispatch://KEY/spec#b- reference.
 func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closed by an older release", closeDecision)
 	awaitIndexedAskBlock(t, f.handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
@@ -814,23 +824,20 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 		stopLoop()
 		<-loopDone
 	}()
-	var indexed *int
-	var owed int
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.UntilPolling(t, 20*time.Millisecond, "the block-index loop to index the closed issue's document, with no document owed (its indexed version and the count owed)", func() (string, bool) {
+		var indexed *int
+		var owed int
 		if err := f.database.Pool.QueryRow(ctx, `
 			select (select version from document_block_versions where artifact_id = $1),
 			       (select count(*) from document_block_versions where version is null)
 		`, issue.PrimaryArtifactID).Scan(&indexed, &owed); err != nil {
 			t.Fatalf("read the block index: %v", err)
 		}
-		if indexed != nil && owed == 0 {
-			break
+		if indexed == nil {
+			return fmt.Sprintf("not indexed, %d owed", owed), false
 		}
-		if time.Now().After(deadline) {
-			live, _ := documentTexts(t, f.handler, issue.PrimaryArtifactID)
-			t.Fatalf("the block-index loop left the closed issue's document indexed at %v with %d documents owed; live text:\n%s", indexed, owed, live)
-		}
-	}
+		return fmt.Sprintf("indexed at %d, %d owed", *indexed, owed), owed == 0
+	})
 	awaitSettled(t, f.database, issue.PrimaryArtifactID)
 	settled := latest + 1
 	if got := latestVersion(t, f.database, issue.PrimaryArtifactID).Number; got != settled {
@@ -865,37 +872,30 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 	}
 }
 
-// awaitOwedSettlement waits until document owes a settlement.
+// awaitOwedSettlement waits until document owes a settlement. Its one bound is the test binary's
+// deadline (testwait.UntilPolling): a write a loaded machine stores late still ends the wait.
 func awaitOwedSettlement(t *testing.T, database *store.Store, document string) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("document %s to owe a settlement", document), func() (bool, bool) {
 		var owed bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select exists (select 1 from doc_settlements_pending where artifact_id = $1)
 		`, document).Scan(&owed); err != nil {
 			t.Fatalf("read the pending settlement: %v", err)
 		}
-		if owed {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("document %s never owed a settlement", document)
-		}
-	}
+		return owed, owed
+	})
 }
 
-// awaitLiveText waits until document's live text, as this server reads it, holds part.
+// awaitLiveText waits until document's live text, as this server reads it, holds part. Its one
+// bound is the test binary's deadline (testwait.UntilPolling), and its failure prints the live
+// text it last read.
 func awaitLiveText(t *testing.T, handler http.Handler, document, part string) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("document %s's live text to hold %q (its live text)", document, part), func() (string, bool) {
 		live, _ := documentTexts(t, handler, document)
-		if strings.Contains(live, part) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("document %s live text never held %q:\n%s", document, part, live)
-		}
-	}
+		return live, strings.Contains(live, part)
+	})
 }
 
 // storedUpdateCount is how many updates document's stored history holds now.
@@ -911,16 +911,15 @@ func storedUpdateCount(t *testing.T, database *store.Store, document string) int
 
 // awaitStoredUpdates waits until document's stored history holds at least want updates, which is
 // how a test waits for a browser's update to be durable: its room stores it in a batch of its
-// own, after the linger that gathers the room's next keystrokes into the same one.
+// own, after the linger that gathers the room's next keystrokes into the same one. Its one bound
+// is the test binary's deadline (testwait.UntilPolling): a batch a loaded machine stores late
+// still ends the wait, and an append that never lands fails it by name.
 func awaitStoredUpdates(t *testing.T, database *store.Store, document string, want int) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if stored := storedUpdateCount(t, database, document); stored >= want {
-			return
-		} else if time.Now().After(deadline) {
-			t.Fatalf("document %s holds %d stored updates, want %d: an append never landed", document, stored, want)
-		}
-	}
+	testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("document %s to hold %d stored updates, an append landing (the count it holds)", document, want), func() (int, bool) {
+		stored := storedUpdateCount(t, database, document)
+		return stored, stored >= want
+	})
 }
 
 // documentWrites is, for each of documents, how many updates it holds and when its owed

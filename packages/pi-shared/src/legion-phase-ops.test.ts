@@ -153,6 +153,7 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       wake_at: { type: "string" },
       plan_rating: { type: "integer", minimum: 1, maximum: 5 },
       plan_reason: { type: "string" },
+      return_to: { type: "integer", minimum: 1 },
       to: { enum: [...LEGION_PHASE_BACKWARD_TARGETS] },
       reason: { type: "string" },
       round: { type: "string" },
@@ -178,12 +179,12 @@ test("the description sets the host's sentences before and after handoff_complet
   expect(bare).not.toContain("request_backward_move");
   expect(bare.endsWith("role topic with envoy_publish.")).toBe(true);
   expect(placed).toContain(
-    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. handoff_complete (phase workers"
+    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}handoff_complete (phase workers`
   );
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
   expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing. That move counts no review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. That move counts no review round: only a review that requests changes counts one. The controller's read_state returns the daemon's whole state. What a later phase needs"
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
@@ -271,6 +272,22 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", plan_reason: "The plan fit the work." },
       "handoff_complete names plan_reason without plan_rating",
     ],
+    // A failed step names the step its task returns to by its place, 1 for its first, and only a
+    // completion with the verdict fail names one (INVALID_RETURN_TO, RETURN_TO_NEEDS_FAIL).
+    ...[0, -1, 1.5, "2"].map(
+      (returnTo) =>
+        [
+          { op: "handoff_complete", summary: "x", verdict: "fail", return_to: returnTo },
+          "handoff_complete's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first",
+        ] as const
+    ),
+    ...[{ verdict: "pass" }, {}].map(
+      (verdict) =>
+        [
+          { op: "handoff_complete", summary: "x", ...verdict, return_to: 1 },
+          "handoff_complete names return_to without the verdict fail: only the completion of a step that failed, with the verdict fail, names the step its task returns to; send it again without return_to",
+        ] as const
+    ),
     // The pair is the schema's own rule, so it is named with the call's other problems at once.
     [
       { op: "handoff_complete", summary: " ", plan_rating: 4 },
@@ -520,6 +537,36 @@ test("the description names the retro's rating fields, its scale, its skill and 
   }
 });
 
+// Contract 219: a tester's fail names the step its task returns to, `return_to`, which goes on the
+// wire as the daemon's `returnTo`; a completion that names none sends none.
+test("a tester's fail sends return_to as returnTo", async () => {
+  const tester = { ...implementer, role: "tester" as const };
+  const { ops, routes, posted, lookups } = runtime(tester, stateAtPhase("testing"));
+  await expect(
+    executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "The proof is thin.",
+      verdict: "fail",
+      return_to: 1,
+    })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(lookups).toEqual(["testing tester"]);
+  expect(routes).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "The proof is thin.",
+    verdict: "fail",
+    ...REPORT,
+    returnTo: 1,
+  });
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "Red.", verdict: "fail" });
+  expect(posted.at(-1)).not.toHaveProperty("returnTo");
+});
+
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
 // refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in INFRA's sessions alone
 // (dispatch://INFRA-2824). A read that names no issue now reads the claim's own, a read that names
@@ -635,7 +682,7 @@ test("a root architect's handoff_complete is refused as unavailable before its o
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
     new Error(
-      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; ${refusal}`
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; ${refusal}`
     )
   );
   expect(root.routes).toEqual([]);
@@ -658,7 +705,7 @@ test("a field an op does not take is refused naming the fields the op takes", as
     ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
-      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason',
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to',
     ],
   ] as const;
   for (const [input, message] of refusals) {
@@ -886,6 +933,13 @@ test("each wrong shape of a check report is refused before any call, nothing min
       check.ops,
       { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: "tomorrow" },
       "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
+    ],
+    // A report on a production check names no step to return to, whatever its verdict, as the
+    // daemon refuses it (RETURN_TO_NEEDS_FAIL).
+    [
+      check.ops,
+      { op: "handoff_complete", summary: "Looked.", verdict: "fail", return_to: 1 },
+      "handoff_complete's return_to names the step a failed step's task returns to, and a report on a production check names none; send it again without return_to",
     ],
   ] as const) {
     await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(message));

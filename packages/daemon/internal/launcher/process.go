@@ -142,9 +142,8 @@ func statParentAndGroup(root string, pid int) (ppid, pgid int, ok bool) {
 // drain). A pid is recorded as its process starts, under the lock every reap holds for its whole
 // pass, so no pass can read /proc between a child's start and its record. Every child the
 // launcher's process starts and waits for itself, but a generation, starts here: the test
-// database's script (runTestPG), the put-back's jj and git (bundleRestore), the leak-check
-// install's run of the check (checkInstall) and each cache trimmer sweep's deleter
-// (startContainedRemover).
+// database's script (runTestPG), the leak-check install's run of the check (checkInstall) and each
+// cache trimmer sweep's deleter (startContainedRemover).
 // TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every start that process
 // reaches.
 type pidGuard struct {
@@ -175,9 +174,8 @@ func (g *pidGuard) done(pid int) {
 }
 
 // starter is start and done as a procgroup.Starter, for the launcher's own children that run
-// through a package that takes one: the put-back's jj and git (workspace.RunCommand, from
-// restoreWorkspace) and the leak-check install's run of the check (leakguard.InstallServed). Its
-// start takes the guard's lock alone, as start does.
+// through a package that takes one: the leak-check install's run of the check
+// (leakguard.InstallServed). Its start takes the guard's lock alone, as start does.
 func (g *pidGuard) starter() procgroup.Starter {
 	return func(cmd *exec.Cmd) (func(), error) {
 		pid, err := g.start(cmd)
@@ -345,9 +343,8 @@ const namespaceReapPoll = 10 * time.Millisecond
 // leaves the launcher's own children, with their descendants and process groups, alone: its
 // SIGTERM and SIGKILL do not reach them (pidGuard.signalNamespace), its reap passes leave their
 // exits to their own waits, and it waits for none of them (pidGuard.reap). None can run then
-// today, since in the controller's pod the leak-check install runs before the first start and a
-// restore inside a start, which is refused while a generation is still the manager's; the drain
-// leaves them alone all the same, so a step that one day runs then keeps its child.
+// today, since in the controller's pod the leak-check install runs before the first start; the
+// drain leaves them alone all the same, so a step that one day runs then keeps its child.
 func (m *manager) cleanExitedGeneration() {
 	if os.Getpid() != 1 {
 		return

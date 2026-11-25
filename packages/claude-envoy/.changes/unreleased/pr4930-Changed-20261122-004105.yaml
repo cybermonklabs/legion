@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The plugin speaks daemon API contract 220, the number the daemon of the same release declares.
+time: 2026-11-22T00:41:05Z
+custom:
+    Issue: pr4930
