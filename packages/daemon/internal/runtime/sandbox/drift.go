@@ -484,14 +484,19 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
 		drifted = append(drifted, runtime.BreakingDrift+"account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
 	}
-	// The exchange identity's reason (movedExchangeIdentity) opens on the mark too (spec v25): a
-	// launch into a live pod that lacks the identity is refused until the pod's round replaces it
-	// where no transition file is named (runtime.ErrAwaitingPodRound), so a round that kept such a
-	// pod for work on its disk would leave a claim that waits on the pod, where it is the issue's
-	// only claim, with no way to run again. No other reason carries the mark.
+	// The exchange identity's reason (movedExchangeIdentity) opens on the mark only where a launch
+	// into this pod is refused until the pod's round replaces it (spec v26): the deployment sets
+	// dispatch_token_broker, names no dispatch_token_transition_file, and the pod carries no
+	// identity the exchange trades for the claim's role (awaitsPodRound over tradesIn of the live
+	// pod, the condition dispatchCredential refuses on). A round that kept such a pod for work on
+	// its disk would leave a claim that waits on the pod, where it is the issue's only claim, with
+	// no way to run again (runtime.ErrAwaitingPodRound). Any other drift of the exchange identity
+	// is one the roles can keep working under: a token of another lifetime still trades
+	// (carriesExchangeIdentity), and where the identity is missing and no launch is refused, a role
+	// keeps the credential it had or carries the transition token. No other reason carries the mark.
 	for _, moved := range r.driftedInPod(pod, role) {
 		reason := moved.String()
-		if moved.where == agentSecretsExchangeVolume {
+		if moved.where == agentSecretsExchangeVolume && r.awaitsPodRound(r.tradesIn(&pod.Spec, role)) {
 			reason = runtime.BreakingDrift + reason
 		}
 		drifted = append(drifted, reason)
