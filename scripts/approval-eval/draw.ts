@@ -1059,7 +1059,9 @@ async function claimModeOf(
   };
   const taken = await claimOutRefusal(directory, claimRun);
   if (taken !== null) throw new DrawError(taken);
-  const holds = (row: CaseRow): boolean => reserveOf(row) === "held";
+  // A corpus is read under the reserve only while no record ended it (`reserveAccessOf`), so the
+  // claim's draw decides what the reserve holds as it held then, whatever `claim.ts` records now.
+  const holds = (row: CaseRow): boolean => reserveOf(row, null) === "held";
   const grouping = treeGroupingOf(
     corpus.rows,
     trees,
