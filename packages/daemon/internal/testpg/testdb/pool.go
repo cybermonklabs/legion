@@ -130,14 +130,13 @@ func createDatabase(admin *pgxpool.Pool, s shape) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	statement := "create database " + name
-	if s.template != "" {
-		statement += " template " + s.template
-	}
 	// A copy of the template's files. Created the default way, from PostgreSQL 15, every page of
 	// the template goes into the write-ahead log, which docs/testing.md measured and this module
 	// holds itself to ("A database a Go test creates").
-	statement += " strategy file_copy"
+	statement := "create database " + name + " strategy file_copy"
+	if s.template != "" {
+		statement += " template " + s.template
+	}
 	ctx := context.Background()
 	if _, err := admin.Exec(ctx, statement); err != nil {
 		return "", fmt.Errorf("create %s: %w", name, err)
