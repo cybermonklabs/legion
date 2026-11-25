@@ -33,8 +33,10 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -52,16 +54,6 @@ const (
 	oauth2callPath   = modulePath + "/oauth2call"
 	boundaryWrapper  = "BoundTokenSource"
 )
-
-// sortedKeys is set's members in order.
-func sortedKeys(set map[string]bool) []string {
-	keys := make([]string, 0, len(set))
-	for key := range set {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
 
 // library reports whether path is a package of a library whose calls cross the boundary.
 func library(path string) bool {
@@ -237,13 +229,8 @@ func main() {
 	for _, line := range lines {
 		fmt.Println(line)
 	}
-	var paths []string
-	for path := range perPackage {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		fmt.Printf("API\t%s\t%d functions, methods and function variables with an error result\tfor %s\n", path, perPackage[path], strings.Join(sortedKeys(importedFor[path]), ", "))
+	for _, path := range slices.Sorted(maps.Keys(perPackage)) {
+		fmt.Printf("API\t%s\t%d functions, methods and function variables with an error result\tfor %s\n", path, perPackage[path], strings.Join(slices.Sorted(maps.Keys(importedFor[path])), ", "))
 	}
 	for _, target := range loaded.Order {
 		targetFiles, targetRefs := 0, 0
