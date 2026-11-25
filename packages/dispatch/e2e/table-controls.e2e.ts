@@ -89,7 +89,7 @@ import {
 import { focusHolder } from "./focus";
 import { nextFrames, settledScrollTop } from "./frames";
 import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
-import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filter";
+import { assigneeFilter, assigneeOptions, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
 import {
   askCard,
   askControls,
@@ -111,6 +111,7 @@ import {
   seedEveryField,
   sortedIds,
   type ViewRow,
+  valueLabel,
   valuesOf,
 } from "./inbox-view";
 import { focusThePage } from "./issue-page-g";
@@ -268,7 +269,29 @@ async function seedLongInbox(): Promise<void> {
   }
 }
 
-// SLOW(>=2s): twenty-two seeded questions, read at two widths through five states each.
+/** Questions, decisions and reply threads, all in Alice's Inbox and with no credential requests. */
+async function seedInboxHeight(count: number): Promise<void> {
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < count; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Height check ${index}` });
+    await patchIssue(issue.key, { priority: 0 });
+    if (index % 6 === 5) {
+      await seedCommentThread(issue.key, "When is the rollout?", "Tomorrow.");
+    } else {
+      await createAsk(
+        issue.key,
+        {
+          ...(index % 6 === 4 ? { options: [{ label: "Yes" }, { label: "No" }] } : {}),
+          question: `Ready for item ${index}?`,
+          urgency: "blocking",
+        },
+        SURFACE_SESSION
+      );
+    }
+  }
+}
+
+// SLOW(>=2s): twenty-four seeded asks and threads, read at two widths through five states each.
 // k-inbox-height: at 1440x900 and at 1280x800 the top of the Inbox's first item is at most 203 px
 // from the top of the window with no narrowing on, with the filter panel open, with the display
 // menu open, with three narrowings on and with one row selected. A panel and the selection bar
@@ -276,8 +299,10 @@ async function seedLongInbox(): Promise<void> {
 test("k-inbox-height: the Inbox's first item starts within 203 px of the window at 1440x900 and 1280x800, whatever is narrowed, open or selected", async ({
   page,
 }) => {
-  await seedLongInbox();
-  const firstRow = page.locator("[data-inbox-row]").first();
+  const count = 24;
+  await seedInboxHeight(count);
+  const rows = page.locator("[data-inbox-row]");
+  const firstRow = rows.first();
   const main = page.getByTestId("main-content");
   for (const size of [
     { height: 900, width: 1440 },
@@ -294,6 +319,12 @@ test("k-inbox-height: the Inbox's first item starts within 203 px of the window 
     };
     await page.goto("/");
     await expect(firstRow).toBeVisible();
+    await expect(rows).toHaveCount(count);
+    await resetScroll(page, firstRow);
+    const lastBottom = await rows.last().evaluate((node) => node.getBoundingClientRect().bottom);
+    expect(lastBottom, `${at}: the Inbox list is not longer than the window`).toBeGreaterThan(
+      size.height
+    );
     await within("with no narrowing on");
 
     await openFilterPanel(page, main);
@@ -2247,6 +2278,46 @@ async function barChip(
   );
 }
 
+const KEEP_OPTIONS = {
+  assignee: ["unassigned", "alice", "bob", "carol"],
+  priority: ["P0", "P1", "P2", "P3", "none"],
+  project: ["CORE", "MIRROR", "none"],
+  type: ["question", "decision", "approval", "reply", "agent"],
+  urgency: ["blocking", "high", "med", "low", "none"],
+} as const;
+
+/** Every option of the other fields, including values that now have zero rows. */
+async function expectInboxFacetCounts(
+  page: Page,
+  main: Locator,
+  applied: keyof typeof KEEP_OPTIONS,
+  narrowed: readonly ViewRow[]
+): Promise<void> {
+  const panel = await openFilterPanel(page, main);
+  for (const field of Object.keys(KEEP_OPTIONS) as (keyof typeof KEEP_OPTIONS)[]) {
+    if (field === applied) continue;
+    const trigger = panel.getByRole("button", { name: `Filter by ${field}` });
+    await trigger.click();
+    const label = field[0]?.toUpperCase() + field.slice(1);
+    const options = page.getByRole("listbox", { name: `${label} options` }).getByRole("option");
+    const counts = countsOf(narrowed, field);
+    for (const value of KEEP_OPTIONS[field]) {
+      const name = value === "unassigned" ? "Unassigned" : valueLabel(field, value);
+      const detail = field === "assignee" && value === "alice" ? "you, " : "";
+      await expect(
+        options.filter({ has: page.getByText(name, { exact: true }) }),
+        `with ${applied} narrowed: ${label} option ${name} has the wrong row count`
+      ).toHaveAccessibleName(`${name}, ${detail}${counts.get(value) ?? 0} rows`);
+    }
+    await expect(options, `with ${applied} narrowed: all ${label} options`).toHaveCount(
+      KEEP_OPTIONS[field].length
+    );
+    await trigger.click();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  }
+  await closeControlPanel(main);
+}
+
 // SLOW(>=2s): eleven seeded rows worked through every field, sort, grouping and view.
 test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read and clear it had, and Clear filters keeps Blocked on you", async ({
   page,
@@ -2262,8 +2333,8 @@ test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read a
   await page.goto("/?assignee=everyone");
   await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
 
-  // Each of the four fields in turn: only the matching rows are left, and a chip for it is in
-  // the control row.
+  // Each narrowing in turn: only the matching rows are left, a chip is in the bar, and every
+  // option of each other field counts the rows that the narrowing kept.
   for (const [field, value, matches] of [
     ["type", /^Question,/, (row: (typeof rows)[number]) => row.type === "question"],
     ["priority", /^P0,/, (row: (typeof rows)[number]) => row.priority === "P0"],
@@ -2272,43 +2343,31 @@ test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read a
   ] as const) {
     await page.goto("/?assignee=everyone");
     await pickInboxField(page, field, value, main);
-    const expectedIds = rows
-      .filter(matches)
-      .map((row) => row.id)
-      .sort();
+    const narrowed = rows.filter(matches);
+    const expectedIds = narrowed.map((row) => row.id).sort();
     // The list is read once it holds the narrowed count, never in the frame the pick landed in.
     await expect(page.locator("[data-inbox-row]")).toHaveCount(expectedIds.length);
     expect([...(await drawnIds(page))].sort(), `the ${field} field`).toEqual(expectedIds);
     await expect(chips.filter({ hasText: new RegExp(`^${field}`, "i") })).not.toHaveCount(0);
+    await expectInboxFacetCounts(page, main, field, narrowed);
   }
 
-  // The count beside each value of another field is the count under the narrowing that is on.
-  await page.goto("/?assignee=everyone&priority=P0");
-  const fields = await openFilterFields(page);
-  const typeTrigger = page.getByRole("button", { name: "Filter by type" });
-  await typeTrigger.click();
-  const names = await page
-    .getByRole("listbox", { name: "Type options" })
-    .getByRole("option")
-    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label") ?? ""));
-  expect(
-    names.find((name) => name.startsWith("Question")),
-    "the Type counts are not taken under the priority narrowing"
-  ).toBe(
-    `Question, ${rows.filter((row) => row.priority === "P0" && row.type === "question").length} rows`
+  await page.goto("/?assignee=everyone");
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
+  await pickAssignee(page, "bob");
+  await closeAssigneeFilter(page);
+  await expect(
+    chips.and(
+      controlRow(main).getByRole("button", { exact: true, name: "Remove Assignee: bob filter" })
+    ),
+    "picking Bob draws no Assignee: bob chip in the Inbox bar"
+  ).toBeVisible();
+  const bobs = rows.filter((row) => row.assignee === "bob");
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(bobs.length);
+  expect([...(await drawnIds(page))].sort(), "the assignee control").toEqual(
+    bobs.map((row) => row.id).sort()
   );
-  await typeTrigger.click();
-  await expect(fields).toBeVisible();
-  await closeControlPanel(main);
-
-  // The assignee control.
-  await page.goto("/?assignee=bob");
-  const bobsIds = rows
-    .filter((row) => row.assignee === "bob")
-    .map((row) => row.id)
-    .sort();
-  await expect(page.locator("[data-inbox-row]")).toHaveCount(bobsIds.length);
-  expect([...(await drawnIds(page))].sort(), "the assignee control").toEqual(bobsIds);
+  await expectInboxFacetCounts(page, main, "assignee", bobs);
 
   // The six sorts and the seven groupings, worked from the display menu.
   await page.goto("/?assignee=everyone&group=none");
@@ -2825,29 +2884,54 @@ test("k-keep: the Delivery list still answers the keyboard and stays windowed, a
 }) => {
   await page.setViewportSize({ height: 900, width: 1600 });
   await seedDeliveryFixture();
+  // 36 px per row plus 12 rows of overscan on each side (PRList and DataTable). Even a
+  // table as tall as this viewport can draw fewer than half these pull requests.
+  const extra = 120;
+  const seeded = extra + 2;
+  await sql(
+    `INSERT INTO delivery_pull_requests (
+       repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
+     )
+     SELECT 'acme/widgets', 100 + n, 'feat: windowed widget ' || n,
+            'https://github.com/acme/widgets/pull/' || (100 + n), 'octocat',
+            timestamptz '2024-06-01T04:00:00Z' + n * interval '1 minute',
+            timestamptz '2024-06-01T06:00:00Z' + n * interval '1 minute',
+            1, 1, false, null, ARRAY[]::text[], false
+       FROM generate_series(1, ${extra}) AS n`
+  );
   await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
-  const prs = page.locator("tbody tr[data-pr-row]");
-  await expect(prs).toHaveCount(2);
-  await prs.first().focus();
+  const box = control(page.getByTestId("main-content"), CONTROL.dataTable);
+  const prs = box.locator("tbody tr[data-pr-row]");
+  const first = prs.and(box.locator('[data-index="0"]'));
+  const last = prs.and(box.locator(`[data-index="${seeded - 1}"]`));
+  await expect(first).toBeVisible();
+  // The first row has mounted in the shared table, so the count is of its drawn window.
+  expect(await prs.count(), "the Delivery list draws all seeded pull requests").toBeLessThan(
+    seeded
+  );
+  await expect(last, "the last pull request is drawn before scrolling").toHaveCount(0);
+  await box.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  await expect(
+    last,
+    "scrolling the Delivery list does not draw its last pull request"
+  ).toBeVisible();
+  await box.evaluate((node) => {
+    node.scrollTop = 0;
+  });
+  await first.focus();
   await page.keyboard.press("ArrowDown");
   await expect(prs.nth(1)).toBeFocused();
   await page.keyboard.press("ArrowUp");
-  await expect(prs.first()).toBeFocused();
+  await expect(first).toBeFocused();
   await page.keyboard.press("End");
-  await expect(prs.nth(1)).toBeFocused();
+  await expect(last, "End did not focus the last pull request").toBeFocused();
   await page.keyboard.press("Home");
-  await expect(prs.first()).toBeFocused();
+  await expect(first, "Home did not focus the first pull request").toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "Details" })).toBeVisible();
   await page.keyboard.press("Escape");
-  // The rows are drawn inside the shared table's scroll box, which is the thing that windows
-  // them. This fixture holds two pull requests, fewer than any window would cut, so nothing
-  // read here could fail for a window that was lost; what the windowing itself is held to is
-  // the project List's row above, which seeds 60 issues and reads a drawn count under 50.
-  await expect(
-    control(page.getByTestId("main-content"), CONTROL.dataTable).locator("tbody tr[data-pr-row]"),
-    "the Delivery list is not drawn in the shared table"
-  ).toHaveCount(2);
 
   // The global binding that opens each page, and each page's own list binding.
   await seedAgents();
@@ -4186,12 +4270,20 @@ test("k-needs-you: Blocked on you carries what the banner carried, narrows the I
   // Choosing it narrows the list to the asks waiting on her and keeps the credential section; it
   // writes `section=needs-you`, takes `assignee`, the four fields and the search text out, and
   // keeps the sort, the grouping and the view. It draws no chip, and Filter does not count it.
-  await page.goto("/?assignee=bob&type=question&q=lease&sort=urgency&group=waiting-on");
-  await blocked.click();
-  await expect(page).toHaveURL(/[?&]section=needs-you(&|$)/);
-  await expect(page, "Blocked on you left a narrowing or the text on").not.toHaveURL(
-    /[?&](assignee|type|q)=/
+  await page.goto(
+    "/?assignee=bob&type=question&priority=P2&urgency=med&project=CORE&q=lease&sort=urgency&group=waiting-on&show=inbox"
   );
+  await expect(page).toHaveURL(/[?&]show=inbox(&|$)/);
+  await blocked.click();
+  // Inbox is the default view and route writes omit show=inbox. Dismissed is the only other
+  // view and draws no switch, so check the address before checking the pressed switch.
+  await expect(page, "Blocked on you changed the Inbox view").not.toHaveURL(/[?&]show=/);
+  await expect(page).toHaveURL(/[?&]section=needs-you(&|$)/);
+  for (const param of ["assignee", "type", "priority", "urgency", "project", "q"]) {
+    await expect(page, `Blocked on you left ?${param}= on`).not.toHaveURL(
+      new RegExp(`[?&]${param}=`)
+    );
+  }
   await expect(page).toHaveURL(/[?&]sort=urgency(&|$)/);
   await expect(page).toHaveURL(/[?&]group=waiting-on(&|$)/);
   await expect(blocked).toHaveAttribute("aria-pressed", "true");
@@ -4214,6 +4306,12 @@ test("k-needs-you: Blocked on you carries what the banner carried, narrows the I
     control(bar, CONTROL.panelTrigger),
     "Filter counts Blocked on you"
   ).toHaveAccessibleName("Filter");
+  const view = await openDisplay(page, main);
+  await expect(
+    view.getByRole("group", { name: "Show" }).locator('input[value="inbox"]'),
+    "Blocked on you did not keep the Inbox view"
+  ).toBeChecked();
+  await page.keyboard.press("Escape");
 
   // All takes `section` out and changes nothing else: every item shows again.
   await all.click();

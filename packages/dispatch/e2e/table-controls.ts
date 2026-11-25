@@ -1536,26 +1536,15 @@ async function expectInboxBar(
   await closeControlPanel(page.getByTestId("main-content"));
 }
 
-/** `k-bar` on the page `name` at `size`: its design's controls and no other in the layout its
- *  bar's width gives, each button quiet at rest and, at the phone's width, at least 44 px each
- *  way; and on a page with a trigger, **Filter**'s tint and count, **Clear filters** in its group
- *  where the page has one, and its chips in the line, behind `+N more` or - below 640 px - behind
- *  the trigger's badge, each listed at the top of its panel. */
-export async function expectBarDesign(
-  page: Page,
+/** Read exactly this bar's controls and their resting paint, in its own layout. */
+async function expectRestingBar(
+  bar: Locator,
   name: SurfaceName,
-  scene: SurfaceScene,
-  size: { height: number; width: number },
+  where: string,
   phone: boolean
-): Promise<void> {
-  const where = `${name} at ${size.width}x${size.height}`;
-  const surface = await openSurface(page, name, scene, { phone, searchTerm: SURFACE_SEARCH_TERM });
-  const bar = surface.row;
-  // At rest: no narrowing, nothing hovered, nothing focused.
-  await page.mouse.move(size.width - 1, size.height - 1);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  // `openSurface` waited for the page's first row, and the bar takes its layout from its own width
-  // before it first paints, so this reads the layout it settled on, at rest.
+): Promise<BarReading> {
+  await expect(bar, `${where}: no control bar`).toBeVisible();
+  // The bar's own width determines the layout, not the viewport width.
   const rest = await readBar(bar);
   const narrow = rest.width < NARROW_BELOW;
   const said = `${where}: ${saidOf(rest)}`;
@@ -1590,6 +1579,62 @@ export async function expectBarDesign(
       `${said}, buttons under the 44 px floor`
     ).toEqual([]);
   }
+  return rest;
+}
+
+/** The priorities index draws two fault lists and the work table under an expanded priority. */
+async function expandPriorityWork(surface: Surface): Promise<Locator> {
+  await surface.firstRow.getByRole("button", { name: /^Open .*Keep the books whole$/ }).click();
+  const work = surface.root.getByRole("region", {
+    exact: true,
+    name: `Work advancing ${SURFACE_PRIORITY.title}`,
+  });
+  await expect(work.locator("[data-issue-row]").first()).toBeVisible();
+  return work;
+}
+
+async function expectPriorityIssueChips(
+  page: Page,
+  region: Locator,
+  where: string,
+  status: string
+): Promise<void> {
+  const bar = controlRow(region);
+  await settledBar(page, "priority page", bar, 1);
+  const chip = `Remove Status: ${status} filter`;
+  if ((await readBar(bar)).width < NARROW_BELOW) {
+    const panel = await openFilterPanel(page, region);
+    await expect(
+      control(panel, CONTROL.chip).and(panel.getByRole("button", { exact: true, name: chip })),
+      `${where}: Filters lists no ${status} chip`
+    ).toBeVisible();
+    await closeControlPanel(region);
+  } else {
+    const { line, listed } = await chipsOfBar(page, bar, 1, where);
+    expect([...line, ...listed], `${where}: the bar's ${status} chip`).toEqual([chip]);
+  }
+}
+
+/** `k-bar` on the page `name` at `size`: its design's controls and no other in the layout its
+ *  bar's width gives, each button quiet at rest and, at the phone's width, at least 44 px each
+ *  way; and on a page with a trigger, **Filter**'s tint and count, **Clear filters** in its group
+ *  where the page has one, and its chips in the line, behind `+N more` or - below 640 px - behind
+ *  the trigger's badge, each listed at the top of its panel. */
+export async function expectBarDesign(
+  page: Page,
+  name: SurfaceName,
+  scene: SurfaceScene,
+  size: { height: number; width: number },
+  phone: boolean
+): Promise<void> {
+  const where = `${name} at ${size.width}x${size.height}`;
+  const surface = await openSurface(page, name, scene, { phone, searchTerm: SURFACE_SEARCH_TERM });
+  const bar = surface.row;
+  // At rest: no narrowing, nothing hovered, nothing focused.
+  await page.mouse.move(size.width - 1, size.height - 1);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  const rest = await expectRestingBar(bar, name, where, phone);
+  const narrow = rest.width < NARROW_BELOW;
   if (narrow && name === "priorities page") {
     await control(bar, CONTROL.moreMenu).click();
     await expect(
@@ -1604,11 +1649,34 @@ export async function expectBarDesign(
     return;
   }
   if (name === "priorities page") {
-    // No trigger: the chips stand in the line from the first, behind one `+N more`.
-    if (narrow) return;
-    await narrowBar(page, name, scene, surface, 6, phone);
-    const { line, listed } = await chipsOfBar(page, bar, 6, `${where}, six narrowings on`);
-    expect(new Set([...line, ...listed]).size, `${where}: six chips, each once`).toBe(6);
+    // The priorities table's own chips, which have no Filter trigger to stand for them.
+    if (!narrow) {
+      await narrowBar(page, name, scene, surface, 6, phone);
+      const { line, listed } = await chipsOfBar(page, bar, 6, `${where}, six narrowings on`);
+      expect(new Set([...line, ...listed]).size, `${where}: six chips, each once`).toBe(6);
+      await page.goto("/priorities");
+    }
+    const work = await expandPriorityWork(surface);
+    const faultLists = PRIORITIES_TABLES.slice(1).map(
+      (region) => [region, surface.root.getByRole("region", { exact: true, name: region })] as const
+    );
+    const issueLists = [...faultLists, [`Work advancing ${SURFACE_PRIORITY.title}`, work] as const];
+    await page.mouse.move(size.width - 1, size.height - 1);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    for (const [label, region] of issueLists) {
+      await expectRestingBar(controlRow(region), "project List", `${where}, ${label}`, phone);
+    }
+    // These are client-side status filters on the same recorded open-issue listings.
+    await page.goto("/priorities?n.status=in_progress&k.status=backlog&w.status=in_progress");
+    await expandPriorityWork(surface);
+    for (const [label, region] of issueLists) {
+      await expectPriorityIssueChips(
+        page,
+        region,
+        `${where}, ${label}`,
+        label === PRIORITIES_TABLES[2] ? "Backlog" : "In progress"
+      );
+    }
     return;
   }
   if (INBOXES.includes(name)) await expectInboxBar(page, name, bar, rest, phone, where);

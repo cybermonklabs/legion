@@ -22,6 +22,7 @@ import {
   NARROW_BELOW,
 } from "../web/src/components/control-names";
 import { control, controlRow, openFilterPanel } from "./filters";
+import { nextFrames } from "./frames";
 import { stubbed } from "./stub/stub-test";
 import {
   closeControlPanel,
@@ -315,17 +316,30 @@ test("each page draws every shared control its design gives it, and no other @pr
     // page rather than in the surface, so there **View** is read as an item of **More** instead.
     // Below 640 px of a bar with a trigger its chips stand at the top of the Filter panel, which
     // also opens over the page, so there the chip is read in the panel.
-    const width = await surface.row.evaluate((node) => node.getBoundingClientRect().width);
-    const notHere = width < NARROW_BELOW ? CONTROL.barAction : CONTROL.moreMenu;
-    const viewInMore = INBOXES.includes(name) && width < NARROW_BELOW;
-    const chipsInPanel =
-      width < NARROW_BELOW && SURFACE_CONTROLS[name].includes(CONTROL.panelTrigger);
-    const expected = [...SURFACE_CONTROLS[name]]
-      .filter((wanted) => name !== "Artifacts tab" || wanted !== notHere)
-      .filter((wanted) => !viewInMore || wanted !== CONTROL.displayMenu)
-      .filter((wanted) => !chipsInPanel || wanted !== CONTROL.chip)
-      .sort();
-    if (viewInMore) {
+    if (name === "Artifacts tab" && (page.viewportSize()?.width ?? 0) >= 1280) {
+      // The issue page can paint artifact rows before its desktop review margin takes width.
+      await expect(
+        page.getByTestId("desktop-margin-shell"),
+        "the issue's review margin"
+      ).toBeVisible();
+    }
+    const readLayout = async () => {
+      // Let the bar's ResizeObserver apply the layout for its new width after each UI change.
+      await nextFrames(page);
+      const width = await surface.row.evaluate((node) => node.getBoundingClientRect().width);
+      const narrow = width < NARROW_BELOW;
+      const viewInMore = INBOXES.includes(name) && narrow;
+      const chipsInPanel = narrow && SURFACE_CONTROLS[name].includes(CONTROL.panelTrigger);
+      const notHere = narrow ? CONTROL.barAction : CONTROL.moreMenu;
+      const expected = [...SURFACE_CONTROLS[name]]
+        .filter((wanted) => name !== "Artifacts tab" || wanted !== notHere)
+        .filter((wanted) => !viewInMore || wanted !== CONTROL.displayMenu)
+        .filter((wanted) => !chipsInPanel || wanted !== CONTROL.chip)
+        .sort();
+      return { chipsInPanel, expected, viewInMore, width };
+    };
+    const opened = await readLayout();
+    if (opened.viewInMore) {
       await control(surface.row, CONTROL.moreMenu).click();
       await expect(
         page
@@ -339,12 +353,16 @@ test("each page draws every shared control its design gives it, and no other @pr
     // pointed at a copy of a control is named here rather than found missing by the act that
     // would have driven it. The chip and the selection bar are not among them: a chip is drawn
     // only under a narrowing and a selection bar only under a selection.
-    for (const wanted of expected) {
+    const resting = await readLayout();
+    for (const wanted of resting.expected) {
       if (wanted === CONTROL.chip || wanted === CONTROL.selectionBar) continue;
-      await expect(control(surface.root, wanted), `${name} draws no ${wanted}`).not.toHaveCount(0);
+      await expect(
+        control(surface.root, wanted),
+        `${name} (${resting.width}px bar) draws no ${wanted}`
+      ).not.toHaveCount(0);
     }
     await surface.narrow();
-    if (chipsInPanel) {
+    if ((await readLayout()).chipsInPanel) {
       const panel = await openFilterPanel(page, surface.root);
       await expect(
         control(panel, CONTROL.chip),
@@ -353,11 +371,17 @@ test("each page draws every shared control its design gives it, and no other @pr
       await closeControlPanel(surface.root);
     }
     if (surface.select !== undefined) await surface.select();
-    for (const wanted of expected) {
-      await expect(control(surface.root, wanted), `${name} draws no ${wanted}`).not.toHaveCount(0);
+    const final = await readLayout();
+    for (const wanted of final.expected) {
+      await expect(
+        control(surface.root, wanted),
+        `${name} (${final.width}px bar) draws no ${wanted}`
+      ).not.toHaveCount(0);
     }
     const drawn = await drawnControlNames(surface.root);
-    const unexpected = drawn.filter((value) => !expected.includes(value as ControlName)).sort();
+    const unexpected = drawn
+      .filter((value) => !final.expected.includes(value as ControlName))
+      .sort();
     expect(
       unexpected,
       `${name} draws ${unexpected.join(", ")}, which the design does not give it`
