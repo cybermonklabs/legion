@@ -690,8 +690,17 @@ next look. A time less than 60 seconds ahead becomes 60 seconds ahead, and a tim
 check's own bound starts no look of its own, because the look at that bound already stands.
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
 daemon boot, and the daemon reads no deployment's production workflows at all.
-A look is bounded at two hours, and a look nobody reported — its two hours, an operator's hold,
-or a claim that failed to start — starts the next look two hours later. A look that began before
+A look is bounded at two hours, and a look nobody reported — its two hours or an operator's
+hold — starts the next look two hours later. An agent whose claim fails, in a look or after it
+ended, backs the check off: the next look comes two hours later after the first such look, and
+twice as long after each failed look in a row after it (four hours, eight, and so on, never past
+the check's bound), until a look the agent reports sets it back to two hours. That look tries the
+agent once more, with one attempt left of the budget its failure spent, so an agent that cannot
+start is launched once a look rather than a whole budget's worth of times; a failure that spent no
+budget, a provider error's, starts a fresh run. The architect is told of each such failure, with
+its cause, how the agent's last pod ended and when the next look tries it. An operator's
+`legion claims retry` or the controller's fresh session gives the agent its whole budget again.
+A look that began before
 a pause of the project ended counts its two hours from the resume, or from its agent's last ready
 after the resume where that is later, and counts nothing while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen

@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  The daemon API schemas describe contract 296. Each task of `register_plan`'s answer that runs
+  The daemon API schemas describe the contract entry 20261125174555 running-step. Each task of `register_plan`'s answer that runs
   carries `running`, a list of one entry, the act it stands at, with its `kind`, `place` and `role`.
 time: 2026-11-23T05:32:22Z
 custom:

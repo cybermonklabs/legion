@@ -248,7 +248,6 @@ jobs:
       contents: read
       actions: read
       checks: write
-      pull-requests: read
     uses: ./.github/workflows/ci-job-lint.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}

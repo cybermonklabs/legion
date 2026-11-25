@@ -220,15 +220,15 @@ func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	}
 }
 
-// register_plan's answer names the act each running task stands at (contract 296), as a list of
-// one entry (record.StoredPlan.Running gives one for each running task): step 2 of task a, the
-// reviewer. A task that does not run, b, carries no `running` key at all, rather than an empty or
-// a null list.
+// register_plan's answer names the act each running task stands at (the running-step entry), as
+// a list of one entry (record.StoredPlan.Running gives one for each running task): step 2 of task
+// a, the reviewer. A task that does not run, b, carries no `running` key at all, rather than an
+// empty or a null list.
 func TestRegisterPlanNamesTheActEachRunningTaskStandsAt(t *testing.T) {
 	running := []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: claim.RoleReviewer}}
 	answer := PlanRegisterResponse{Plan: registeredPlan(plan.Plan{ArtifactID: planDoc, Version: 3, Tasks: []plan.Task{
 		{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}, {ID: "b"}}}, running)}
-	shaped, _ := shapeAnswer(AnswerPlanRegister, answer, runningStepContract, runningStepContract)
+	shaped, _ := shapeAnswer(AnswerPlanRegister, answer, entryNumber(runningStepContract), entryNumber(runningStepContract))
 	encoded, err := json.Marshal(shaped)
 	if err != nil {
 		t.Fatalf("marshal the answer: %v", err)

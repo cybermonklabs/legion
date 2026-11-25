@@ -2031,7 +2031,7 @@ const legionAnsweredPause = z.object({
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
  * reads when the task's work starts, so it is answered with no step: an empty list, never null.
- * From contract 296 a task that runs also carries `running` (a list of `api.RunningStep`): one
+ * From the contract entry 20261125174555 (running-step) a task that runs also carries `running` (a list of `api.RunningStep`): one
  * entry, the act the task stands at once the version is taken. It names its `kind` (`step`,
  * `retro` or `merge`), its `place` (from 1 for a step, 0 for the retro and the merge) and the
  * `role` whose agent works it. A later version can change only the text of a running task, and
