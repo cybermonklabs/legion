@@ -3,7 +3,7 @@
  * (INFRA-1026): the session's own user turn, a command, a pick or a side turn, and the card every
  * refusal keeps.
  */
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -15,6 +15,7 @@ import {
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
 } from "@legion/envoy-client/dispatch-http"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type ModSession, modSession } from "../src/mod-session"
 import {
@@ -31,6 +32,10 @@ import {
   userTurnStateFile,
 } from "../src/user-turn-state"
 import { settled, waitFor } from "./channel-session-harness"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 const SESSION = "ses_claude"
 const DIRECT = `notifications.agent.${SESSION}`
@@ -185,7 +190,7 @@ async function harness(input: {
     ...(input.commandOutputMs === undefined ? {} : { commandOutputMs: input.commandOutputMs }),
   })
   const router = createUserTurnRouter({
-    dispatch: () =>
+    dispatch: async () =>
       ({
         acceptMessageDelivery: async (id: string, attempt: number) => {
           accepts.push({ id, attempt })

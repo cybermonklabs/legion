@@ -262,9 +262,7 @@ func TestTwoFileUploadsNamingOneTokenTakeOne(t *testing.T) {
 		for _, content := range [][]byte{c.file.second, c.file.third} {
 			go func() { answers <- c.upload(t, content, firstToken) }()
 		}
-		if waiting := storetest.WaitForLockWaiters(t, holder, 2, 10*time.Second); waiting < 2 {
-			t.Fatalf("%d uploads wait behind the %s's lock, want both", waiting, c.owner.name)
-		}
+		storetest.WaitForLockWaiters(t, holder, 2)
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("release the lock: %v", err)
 		}
