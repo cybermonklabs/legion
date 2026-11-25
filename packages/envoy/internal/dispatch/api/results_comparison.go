@@ -144,19 +144,19 @@ type comparisonReader struct {
 	// same caller, and it cannot change within one read.
 	readOnly bool
 	// at is the one commit the reader named, and noCommitNamed where it named none.
-	at           string
-	repos        map[string]repositoryAnswer
-	defaults     map[string]defaultBranchAnswer
-	bases        map[[2]string]comparison
+	at             string
+	repos          map[string]repositoryAnswer
+	defaults       map[string]defaultBranchAnswer
+	bases          map[[2]string]comparison
 	headGeneration uint64
-	linkedBases  map[[3]string]comparison
-	linkedMerges map[string]linkedMergesAnswer
-	mergeSets    map[[2]string]mergeSet
-	merges       map[[3]string]mergeAnswer
-	holdAnswers  map[[3]string]delivery.HoldAnswer
-	readThroughs map[[2]string]struct{}
-	storedHeads  map[[2]string]bool
-	commits      map[[3]string]delivery.BranchAnswer
+	linkedBases    map[[3]string]comparison
+	linkedMerges   map[string]linkedMergesAnswer
+	mergeSets      map[[2]string]mergeSet
+	merges         map[[3]string]mergeAnswer
+	holdAnswers    map[[3]string]delivery.HoldAnswer
+	readThroughs   map[[2]string]struct{}
+	storedHeads    map[[2]string]bool
+	commits        map[[3]string]delivery.BranchAnswer
 	// headCI is the read of each check CI proves at each head it was read at, by the check's block
 	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
 	// subject of it.

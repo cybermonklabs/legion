@@ -95,7 +95,6 @@ func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open, 
 	return bases, subjects
 }
 
-
 // headBasis is one stored pull request head as the surface names it: the commit, the pull
 // request's number, whether it merged (its row is not open, so the commit is its final head),
 // and when Dispatch last learned that head with the kind of time it is. The later of the two

@@ -25,18 +25,18 @@ func TestMergeReadsOfRequestHeadsMatchStoredMergeMetadata(t *testing.T) {
 	changedPlacement.CheckedAt = read(12)
 
 	for _, row := range []struct {
-		name string
-		steps []foldStep
+		name    string
+		steps   []foldStep
 		answers int
 	}{
 		{"a later answer with no merge fields keeps the stored merge", []foldStep{
-			delivered(merged), readThrough(laterWithoutMerge),
+			delivered(merged), answered(laterWithoutMerge),
 		}, 1},
 		{"a refreshed legacy row gains its merge commit and time", []foldStep{
-			delivered(unknownMerge), readThrough(merged),
+			delivered(unknownMerge), answered(merged),
 		}, 1},
 		{"changed merge metadata is not collapsed as an equal answer", []foldStep{
-			readThrough(merged), readThrough(changedPlacement),
+			answered(merged), answered(changedPlacement),
 		}, 2},
 	} {
 		t.Run(row.name, func(t *testing.T) {

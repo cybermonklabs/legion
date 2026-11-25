@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -47,8 +48,8 @@ type resultsHeadsRead struct {
 var resultsHeadsReads = []resultsHeadsRead{
 	{read: "headsAttributedQuery", function: "Attributor.HeadsAttributedTo", statement: "headsAttributedQuery", text: headsAttributedQuery},
 	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery", text: headStoredAtQuery},
-	{read: "MergeOfIssue", function: "Attributor.MergeOfIssue", statement: "mergeOfIssueQuery", text: mergeOfIssueQuery},
-	{read: "MergeIn", function: "Attributor.MergeIn", statement: "mergeInQuery", text: mergeInQuery},
+	{read: "mergeOfIssueQuery", function: "Attributor.MergeOfIssue", statement: "mergeOfIssueQuery", text: mergeOfIssueQuery},
+	{read: "mergeInQuery", function: "Attributor.MergeIn", statement: "mergeInQuery", text: mergeInQuery},
 	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery", text: newestPullRequestHeadQuery},
 	{read: "LandingOf", function: "LandingOf", statement: "landingQuery", text: landingQuery},
 	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestOfQuery", text: mergedPullRequestOfQuery},
@@ -62,6 +63,8 @@ var resultsHeadsReads = []resultsHeadsRead{
 // (Branches.ReadCommitOnBranch). A function is named by its name, and a method as Type.Method.
 var answeredReads = []string{
 	"headsStatement.query",
+	"readMerged",
+	"Attributor.ReadPullRequestHead",
 	"Branches.ReadCommitOnBranch",
 	"Branches.readCommitOnBranch",
 	"mergeLearnedOnBranch",
@@ -910,7 +913,7 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 	var questions []foldQuestion
 	for _, read := range resultsHeadsReads {
 		switch read.read {
-		case "headsAttributedQuery", "MergeOfIssue", "NewestPullRequestHead":
+		case "headsAttributedQuery", "mergeOfIssueQuery", "NewestPullRequestHead":
 			for _, issue := range []string{foldIssue, foldLinkingIssue} {
 				questions = append(questions, foldQuestion{read: read.read, args: []string{issue}})
 			}
@@ -924,7 +927,7 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 					}
 				}
 			}
-		case "MergeIn":
+		case "mergeInQuery":
 			questions = append(questions, foldQuestion{read: read.read, args: []string{foldLinkingIssue, deliveryRepo}})
 		case "LandingOf", "MergedPullRequestOf", "headForRefresh":
 			asked := map[[2]string]bool{}
@@ -1036,10 +1039,10 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 	case "HeadStoredAt":
 		stored, err := HeadStoredAt(ctx, q, args[0], args[1], answers)
 		return fmt.Sprint(stored), err
-	case "MergeOfIssue":
+	case "mergeOfIssueQuery":
 		merged, err := attributor.MergeOfIssue(ctx, q, args[0], answers)
 		return fmt.Sprintf("%+v", merged), err
-	case "MergeIn":
+	case "mergeInQuery":
 		merged, err := attributor.MergeIn(ctx, q, args[0], args[1], answers)
 		return fmt.Sprintf("%+v", merged), err
 	case "NewestPullRequestHead":
@@ -1061,7 +1064,11 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 			return "", err
 		}
 		head, found, err := headForRefresh(ctx, q, args[0], number, answers)
-		return fmt.Sprintf("%+v, %t", head, found), err
+		if err != nil {
+			return "", err
+		}
+		value, err := json.Marshal(head)
+		return fmt.Sprintf("%s, %t", value, found), err
 	}
 	return "", fmt.Errorf("no read answers %s", question.read)
 }

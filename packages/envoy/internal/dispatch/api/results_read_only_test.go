@@ -1132,7 +1132,7 @@ func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) strin
 		}
 		number, _ := strconv.Atoi(r.PathValue("number"))
 		state := ""
-	detail := ""
+		detail := ""
 		script.mu.Lock()
 		if repoOf(r) == parityRepo {
 			detail = script.details[number]
