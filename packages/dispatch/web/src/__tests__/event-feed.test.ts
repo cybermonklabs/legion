@@ -1859,6 +1859,13 @@ test("a priority.updated of a deleted priority refetches no issue read that does
   ]);
 });
 
+// No read of the dashboard carries a project's owner, visibility or access list yet, so a change of
+// them refreshes nothing. The feed knows the type, so it is no unknown one, which would refresh
+// every query.
+test("a project.access_changed refreshes no read", () => {
+  expect(refreshedReads(eventsByType["project.access_changed"])).toEqual([]);
+});
+
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
 const eventsByType: Record<EventType, DispatchEvent> = {
@@ -1931,6 +1938,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     "priority.updated",
     { change: "updated", id: "linkage-closure" },
     { issue_key: null, project: undefined }
+  ),
+  "project.access_changed": event(
+    "project.access_changed",
+    { change: "owner", project: "PROJ" },
+    { issue_key: null, project: "PROJ" }
   ),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),

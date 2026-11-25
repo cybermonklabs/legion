@@ -1,0 +1,28 @@
+-- 20261116081157_session_projects_proven.up.sql — session_projects holds only sessions a
+-- credential proved.
+--
+-- Private projects' R4: a session is one of a project's agents when session_projects records that it
+-- acted in the project (access.SessionClause), which shows it to the project's restricted and listed
+-- viewers. A credential that proves no session (the deployment's shared token, a personal token)
+-- names the session in the request body (api.bearerSessionActor), so a record of every session an
+-- event's actor named would let one holder of a project's token make any other session look like
+-- one of that project's agents. So the writers of session_projects, which a later slice adds (the
+-- record of each appended event and a backfill command), record only a session the event's
+-- credential proved: an act naming the actor's own session and no personal token.
+--
+-- Nothing in this release writes either table, so a database that takes 20261116015736 in this
+-- release holds no row of them, and the two deletes below find none. They empty a database where
+-- an earlier build of this change recorded pairs under the earlier rule, whose rows cannot be told
+-- apart once written. Until the backfill records the pairs again and writes the marker, every pair
+-- left out fails closed: a viewer that is not open sees a session only as its own or through a
+-- project it sees, and an open viewer, which reads every session no pair places in a project it does
+-- not see, reads no session but its own while the marker is absent and any project is private
+-- (access.SessionClause). With no private project an open viewer reads every session, as before.
+--
+-- Both tables are a read model of `events`, small, and written by no reader of a row; each delete
+-- takes its table's lock for as long as it reads its rows.
+--
+-- Its identifier is the UTC moment it was written, as `migrationid` requires of every migration
+-- past the numbered series, which closed at 0161.
+delete from session_projects;
+delete from session_projects_filled;
