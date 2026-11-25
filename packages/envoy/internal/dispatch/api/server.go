@@ -180,6 +180,13 @@ type Deps struct {
 	// stall warning sees it inside its own patience.
 	HorizonStallAfter time.Duration
 	HorizonWarnEvery  time.Duration
+	// HorizonDB is the database the event horizon observes through (horizon): its observations,
+	// the reads beside them, its stall diagnosis and its write of the horizon it proved. Nil is
+	// the store's horizon pool (store.Pool.Horizon), with its fallback to the shared pool, which
+	// every deployment observes through: neither routes.BuildAppContext nor cmd/dispatch sets it.
+	// Only this package's tests set another, so a test that counts a request's statements can tell
+	// the horizon's own from the rest.
+	HorizonDB events.HorizonDB
 	// TestHookTimeout replaces how long a test hook waits for every process's acknowledgement
 	// (testHookTimeout, test_hooks_fanout.go). Zero keeps ten seconds; neither
 	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment with the hooks on and

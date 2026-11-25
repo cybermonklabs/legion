@@ -157,7 +157,6 @@ var oneInboxReaders = []oneInboxReader{
 type oneInboxHere struct {
 	side       *oneInboxSide
 	handler    http.Handler
-	traced     *store.Store
 	statements *meInboxStatements
 	reads      *oneInboxTracer
 }
@@ -252,9 +251,10 @@ func requireOneInboxWriteBoundsMatchPaths(t *testing.T) {
 // bootOneInboxHere builds this build's server in the process over a database of the test's own
 // with JIT off (jitOffStore): a person read from the header the base build is told to trust too,
 // on the untraced pool so a sign-in is no statement of a counted write; the stand-in listener the
-// base build delivers to; and this checkout's commit as its build commit, as every server a
-// two-build check boots carries its own. Its side's server is the handler served on loopback until
-// bootOneInboxThisBuild.
+// base build delivers to; this checkout's commit as its build commit, as every server a two-build
+// check boots carries its own; and an event horizon that marks each statement it runs
+// (markedHorizonPool), so a counted write's statements leave out the horizon's own and no other.
+// Its side's server is the handler served on loopback until bootOneInboxThisBuild.
 func bootOneInboxHere(t *testing.T) *oneInboxHere {
 	t.Helper()
 	database := jitOffStore(t, "this build's database", storetest.Open(t))
@@ -266,10 +266,11 @@ func bootOneInboxHere(t *testing.T) *oneInboxHere {
 		identity:    headerIdentity(database),
 		envoyURL:    standInListener(t),
 		buildCommit: gitOutput(t, ".", "rev-parse", "HEAD"),
+		horizonDB:   markedHorizonPool(t, traced),
 	})
 	return &oneInboxHere{
 		side:    &oneInboxSide{name: "this build", server: serveOnLoopback(t, handler, oneInboxAgentToken), database: database},
-		handler: handler, traced: traced, statements: statements, reads: reads,
+		handler: handler, statements: statements, reads: reads,
 	}
 }
 
@@ -798,7 +799,7 @@ func countOneInboxMoves(t *testing.T, here *oneInboxHere) {
 		if err := database.Pool.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&before); err != nil {
 			t.Fatalf("read the store's last tuple before %s's move %q: %v", move.write, move.what, err)
 		}
-		here.statements.ownStatements(t, here.traced)
+		here.statements.ownStatements()
 		response := countedWrite(t, here.handler, move.method, move.path, move.body, oneInboxHeavy)
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s's move %q: %d %s", move.write, move.what, response.Code, response.Body.String())
@@ -926,5 +927,5 @@ func quietOneInboxStatements(t *testing.T, here *oneInboxHere) []string {
 			last, since = recorded, time.Now()
 		}
 	}
-	return here.statements.ownStatements(t, here.traced)
+	return here.statements.ownStatements()
 }

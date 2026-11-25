@@ -18,8 +18,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -41,9 +41,11 @@ const (
 // every statement the traced pool runs, on whatever context, each statement a batch sends on its
 // own, until the test's call of the handler returns (windowedRead). The caller's identity is resolved
 // on the untraced pool and before that window opens, so a sign-in lookup is no statement of the read.
+// The server's event horizon observes through the traced pool's horizon pool with each statement
+// it sends there marked (markedHorizonPool), so the horizon's own are told from the read's
+// (ownStatements).
 type meInboxRig struct {
 	database   *store.Store
-	traced     *store.Store
 	handler    http.Handler
 	statements *meInboxStatements
 }
@@ -54,24 +56,26 @@ func newMeInboxRig(t *testing.T) *meInboxRig {
 	statements := &meInboxStatements{eachOfABatch: true, windowed: true}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
 	handler, _, _ := newTestServer(t, testServerOptions{
-		store:    traced,
-		identity: meInboxWindowIdentity{HeaderIdentity: headerIdentity(database), statements: statements},
+		store:     traced,
+		identity:  meInboxWindowIdentity{HeaderIdentity: headerIdentity(database), statements: statements},
+		horizonDB: markedHorizonPool(t, traced),
 		// A document's settlement is database work of its own on the traced pool; a delay no
 		// test reaches keeps it out of the read's window.
 		settle: time.Hour,
 	})
-	return &meInboxRig{database: database, traced: traced, handler: handler, statements: statements}
+	return &meInboxRig{database: database, handler: handler, statements: statements}
 }
 
 // windowedRead sends the read as login with the window armed, and answers its response and every
 // statement the traced pool ran from the moment login's credential resolved until the handler
-// returned, on whatever context it ran, less the horizon pool's (ownStatements).
+// returned, on whatever context and whichever connection it ran, less the horizon's own
+// (ownStatements).
 func (rig *meInboxRig) windowedRead(t *testing.T, login string, query url.Values) (*httptest.ResponseRecorder, []string) {
 	t.Helper()
 	rig.statements.arm()
 	response := meInboxRequestAs(t, rig.handler, context.Background(), login, query)
 	rig.statements.closeWindow()
-	return response, rig.statements.ownStatements(t, rig.traced)
+	return response, rig.statements.ownStatements()
 }
 
 // meInboxWindowIdentity is the rig's identity: the header identity, over the untraced store, which
@@ -90,21 +94,24 @@ func (i meInboxWindowIdentity) Login(r *http.Request) (string, error) {
 }
 
 // meInboxStatements records statements a traced pool runs, through a storetest.StatementRecorder,
-// each beside the connection that ran it. windowed records every statement the pool runs while its
-// window is open, whatever context it runs on, so a statement a handler sends on a context of its
-// own is recorded as surely as one on its request's: the test arms the window (arm), the rig's
-// identity opens it once the credential has resolved to a person (openWindow), and the test closes
-// it when the handler has returned (closeWindow). Nothing else of the server runs on the pool in
-// that window: the rig's sign-in reads the untraced pool, a document's settlement waits an hour, and
-// the server's workers - the mention sender's claim refresh, the delivery hub and the event relay -
-// read it only for a mention, a socket or a subscription, none of which the case opens. Otherwise it
-// records the statements of a request marked countedRead, which is what c-p99's
-// statement rule counts (oneInboxHere). A batch is one round trip whatever it holds, so by default
-// it is recorded as the one batch it is; with eachOfABatch it is recorded as each statement it
-// sends, in the order it queued them (pgx.TraceBatchStartData's batch), so a read that sent four
-// statements as one batch is four statements and not one. The horizon's observation runs on its own
-// pool (events.Horizon, store.Pool.Horizon), which is traced too since it is opened from this pool's
-// configuration; ownStatements leaves that pool's connections out.
+// each beside whether the server's event horizon ran it (horizonObservation). windowed records
+// every statement the pool runs while its window is open, whatever context it runs on, so a
+// statement a handler sends on a context of its own is recorded as surely as one on its request's:
+// the test arms the window (arm), the rig's identity opens it once the credential has resolved to
+// a person (openWindow), and the test closes it when the handler has returned (closeWindow).
+// Nothing else of the server runs on the pool in that window: the rig's sign-in reads the untraced
+// pool, a document's settlement waits an hour, and the server's workers - the mention sender's
+// claim refresh, the delivery hub and the event relay - read it only for a mention, a socket or a
+// subscription, none of which the case opens. Otherwise it records the statements of a request
+// marked countedRead, which is what c-p99's statement rule counts (oneInboxHere). A batch is one
+// round trip whatever it holds, so by default it is recorded as the one batch it is; with
+// eachOfABatch it is recorded as each statement it sends, in the order it queued them
+// (pgx.TraceBatchStartData's batch), so a read that sent four statements as one batch is four
+// statements and not one. The horizon observes through a pool of its own (events.Horizon,
+// store.Pool.Horizon), which is traced too since it is opened from this pool's configuration; a
+// rig's horizon marks the context of each statement it sends there (markedHorizonPool), and
+// ownStatements leaves out the statements so marked and no other, so a statement anything else
+// sends on that pool's connections counts.
 type meInboxStatements struct {
 	recorder     storetest.StatementRecorder
 	eachOfABatch bool
@@ -113,7 +120,9 @@ type meInboxStatements struct {
 	// armed is set for the next credential that resolves (arm), and open from then until
 	// closeWindow.
 	armed, open bool
-	conns       []*pgx.Conn
+	// observed is, beside each recorded statement, whether its context carries the horizon's
+	// mark (horizonObservation).
+	observed []bool
 	// taken is how many of the recorded statements ownStatements has answered already.
 	taken int
 }
@@ -148,7 +157,7 @@ func (s *meInboxStatements) record(ctx context.Context, conn *pgx.Conn, sql stri
 		return
 	}
 	s.recorder.TraceQueryStart(ctx, conn, pgx.TraceQueryStartData{SQL: sql})
-	s.conns = append(s.conns, conn)
+	s.observed = append(s.observed, ctx.Value(horizonObservation{}) != nil)
 }
 
 func (s *meInboxStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
@@ -173,25 +182,17 @@ func (s *meInboxStatements) TraceBatchQuery(context.Context, *pgx.Conn, pgx.Trac
 
 func (s *meInboxStatements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
-// ownStatements is every statement recorded since the last call that ran on a connection of the
-// traced request pool, which is every connection but the horizon pool's.
-func (s *meInboxStatements) ownStatements(t *testing.T, traced *store.Store) []string {
-	t.Helper()
-	horizon, err := traced.Pool.Horizon()
-	if err != nil {
-		t.Fatalf("open the traced pool's horizon pool: %v", err)
-	}
-	observers := horizonConnections(t, horizon)
+// ownStatements is every statement recorded since the last call but the horizon's own, those whose
+// context the rig's horizon marked (horizonObservation): every other statement counts, whichever
+// pool's connection ran it, the horizon pool's included.
+func (s *meInboxStatements) ownStatements() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	recorded := s.recorder.Statements()
 	var own []string
-	for index, statement := range recorded {
-		if index < s.taken {
-			continue
-		}
-		if !slices.Contains(observers, s.conns[index]) {
-			own = append(own, statement)
+	for index := s.taken; index < len(recorded); index++ {
+		if !s.observed[index] {
+			own = append(own, recorded[index])
 		}
 	}
 	s.taken = len(recorded)
@@ -212,28 +213,36 @@ func meInboxReadStatements(statements []string) []string {
 	return reads
 }
 
-// horizonConnections is every connection the horizon pool holds, each acquired idle and released.
-// The horizon's observer may still be writing the horizon it proved (events.Horizon's persisted
-// write, which it sends once the observation's waiters have their answer) when the read returns,
-// so a connection the pool holds busy is waited for until it is idle, and every connection that
-// pool opened is among them.
-func horizonConnections(t *testing.T, pool *pgxpool.Pool) []*pgx.Conn {
+// horizonObservation marks the context of each statement the event horizon of a rig's server runs
+// (markedHorizon), and of no other statement.
+type horizonObservation struct{}
+
+// markedHorizon is the pool a rig's event horizon observes through, which sends each statement
+// the horizon runs - its observations, the reads beside them, its stall diagnosis and its write of
+// the horizon it proved - on a context marked horizonObservation. A statement anything else sends
+// on the same pool goes through the pool itself, unmarked.
+type markedHorizon struct{ events.HorizonDB }
+
+func (m markedHorizon) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
+	return m.HorizonDB.SendBatch(context.WithValue(ctx, horizonObservation{}, true), b)
+}
+
+func (m markedHorizon) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return m.HorizonDB.QueryRow(context.WithValue(ctx, horizonObservation{}, true), sql, args...)
+}
+
+// markedHorizonPool is traced's horizon pool, wrapped so each statement the event horizon sends
+// through it is marked (markedHorizon), for a server to observe through (Deps.HorizonDB) so a
+// count of the traced store's statements tells the horizon's own from every other
+// (ownStatements). Both rigs that count a server's statements give their server its horizon
+// through it: the one read's (newMeInboxRig) and c-p99's (bootOneInboxHere).
+func markedHorizonPool(t *testing.T, traced *store.Store) events.HorizonDB {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		held := pool.AcquireAllIdle(context.Background())
-		conns := make([]*pgx.Conn, 0, len(held))
-		for _, conn := range held {
-			conns = append(conns, conn.Conn())
-			conn.Release()
-		}
-		if total := int(pool.Stat().TotalConns()); len(conns) >= total {
-			return conns
-		} else if time.Now().After(deadline) {
-			t.Fatalf("the horizon pool holds %d connections and %d of them idle after 10 s", total, len(conns))
-		}
-		time.Sleep(10 * time.Millisecond)
+	pool, err := traced.Pool.Horizon()
+	if err != nil {
+		t.Fatalf("open the traced store's horizon pool: %v", err)
 	}
+	return markedHorizon{pool}
 }
 
 // readMeInboxAs is one read of GET /api/v1/me/inbox as login, query its query string.
@@ -395,9 +404,9 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 		response, own := rig.windowedRead(t, alice, nil)
 		answer := decodeMeInbox(t, response)
 		// Every statement the traced pool ran from the moment alice's credential resolved until
-		// the handler returned counts, on whatever context it ran, each of a batch on its own, but
-		// for the four that frame the read's statement in its read-only transaction and read
-		// nothing.
+		// the handler returned counts, on whatever context and whichever connection it ran, each of
+		// a batch on its own, but for the horizon's own (ownStatements) and the four that frame the
+		// read's statement in its read-only transaction and read nothing.
 		if reads := meInboxReadStatements(own); len(reads) != 1 {
 			t.Fatalf("the read ran %d statements, want 1; every statement the pool ran while it was served:\n%s", len(reads), strings.Join(own, "\n---\n"))
 		}
