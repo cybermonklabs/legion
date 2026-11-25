@@ -73,7 +73,6 @@ import type {
   ResolveAskInput,
   SearchResponse,
   SessionAnswersResponse,
-  SpecFormFinding,
   SpecFormRead,
   StatusChangeAnswer,
   StatusChangeInput,
@@ -142,10 +141,6 @@ export class DispatchServiceError extends Error {
   readonly issues: DispatchServiceErrorShape["issues"] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
   readonly changed: DispatchServiceErrorShape["changed"] | undefined;
-  /** The texts a `409 SPEC_FORM` refuses, each with its rule, at most 500 of them. */
-  readonly findings: SpecFormFinding[] | undefined;
-  /** On a person's refused approval, the reason a Request changes sends to the author. */
-  readonly changesReason: string | undefined;
   /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
    *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
   readonly hint: string | undefined;
@@ -155,18 +150,12 @@ export class DispatchServiceError extends Error {
     readonly status: number,
     message: string,
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
-     *  its answer's JSON, with its `changes_reason` as `changesReason`, or another refusal whose
-     *  members it keeps. */
+     *  its answer's JSON, or another refusal whose members it keeps. */
     details: {
-      readonly [Member in
-        | "candidates"
-        | "changed"
-        | "current"
-        | "findings"
-        | "hint"
-        | "issues"
-        | "mismatches"]?: DispatchServiceErrorShape[Member] | undefined;
-    } & { readonly changesReason?: string | undefined } = {}
+      readonly [Member in "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches"]?:
+        | DispatchServiceErrorShape[Member]
+        | undefined;
+    } = {}
   ) {
     super(message);
     this.candidates = details.candidates;
@@ -174,8 +163,6 @@ export class DispatchServiceError extends Error {
     this.mismatches = details.mismatches;
     this.issues = details.issues;
     this.changed = details.changed;
-    this.findings = details.findings ?? undefined;
-    this.changesReason = details.changesReason;
     this.hint = details.hint;
   }
 }
@@ -2915,11 +2902,7 @@ export class DispatchClient {
           error.code ?? `HTTP_${response.status}`,
           response.status,
           error.error,
-          {
-            ...error,
-            changesReason: error.changes_reason,
-            hint: typeof error.hint === "string" ? error.hint : undefined,
-          }
+          { ...error, hint: typeof error.hint === "string" ? error.hint : undefined }
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

@@ -13,8 +13,7 @@ body: |-
   `NOT_FOUND: not found` and exits 1, as `dispatch read` does.
   `dispatch spec-form --root <KEY>` lists each issue under that
   root, with the form of its spec and its Verification document. `dispatch request-approval` prints
-  a refusal for the form as `SPEC_FORM: <the refusal>` and exits 1, and the `DispatchServiceError`
-  it throws carries `findings` and `changesReason`. A request that Dispatch records ends with one
+  a refusal for the form as `SPEC_FORM: <the refusal>` and exits 1. A request that Dispatch records ends with one
   line on the form when a root of The Spec covers the document. Both commands print the line of
   each approved document under the root that Dispatch could not read.
 custom:

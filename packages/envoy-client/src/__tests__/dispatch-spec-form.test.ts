@@ -763,7 +763,7 @@ describe("dispatch request-approval and the form of The Spec", () => {
     expect(stdout).toBe(`SPEC_FORM: ${REFUSAL.error}\n`);
   });
 
-  test("the refusal it throws starts with SPEC_FORM and carries the findings", async () => {
+  test("the refusal it throws starts with SPEC_FORM", async () => {
     approval = { kind: "refused", body: REFUSAL };
 
     const error: unknown = await executeDispatchTool({
@@ -783,8 +783,6 @@ describe("dispatch request-approval and the form of The Spec", () => {
     const refusal = error as DispatchServiceError;
     expect(refusal.code).toBe("SPEC_FORM");
     expect(refusal.message).toStartWith("SPEC_FORM: Dispatch refused this approval request");
-    expect(refusal.findings).toEqual(REFUSAL.findings);
-    expect(refusal.changesReason).toBeUndefined();
   });
 
   test("a request Dispatch recorded prints the line on the form that its answer carries", async () => {
