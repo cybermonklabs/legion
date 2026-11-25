@@ -1,5 +1,5 @@
 # The proof-sdk-offline job: a frozen install behind a proxy that answers 504 for every host
-# the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used, which proves the
+# the proof editor's old `github:sjawhar/proof-sdk` route, pinned to a commit, used, which proves the
 # install reaches none of them. It reads what any frozen install reads (bun_job: setup-bun,
 # the manifests, the lockfile, the patches and the tarball the proof editor installs
 # proof-sdk-upstream from), the proxy program its first step starts, and this file.
