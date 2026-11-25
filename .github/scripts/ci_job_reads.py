@@ -510,6 +510,12 @@ CLAUDE_ENVOY_BUILD = reads(
         ("packages/pi-legion/agents/**", "`packages/claude-envoy/scripts/build.ts#buildLegionPlugin` reads each agent of it"),
         ("skills/**", "`packages/claude-envoy/scripts/build.ts#buildLegionPlugin` stages pi-legion's partition of it; packages/claude-envoy/skills/* symlinks into ../../../skills"),
         (".bun-version", "`packages/claude-envoy/scripts/build.ts#pinnedBunVersion` reads the Bun pin"),
+        (f"{FIX}/daemon-api/**", "`packages/claude-envoy/scripts/build.ts#pluginManifest` writes this tree's contract into the "
+                                 "manifest it builds and its bundles inline, `packages/contracts/src/daemon-contract.ts#daemonContract` of the "
+                                 "committed manifest, which names none, for which `packages/contracts/src/daemon-contract.ts#lastReleased` "
+                                 "reads released-contracts.json and `packages/contracts/src/daemon-contract.ts#entryFixtures` lists "
+                                 "contracts/*.json; the glob is the directory's, since contracts/ holds no file until the "
+                                 "first entry lands, and a glob of no file is refused"),
         (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the claude-envoy job runs its extract-built"),
         (".github/workflows/release.yaml", "`packages/claude-envoy/tests/build-inputs.test.ts#.github/workflows/release.yaml's $CLAUDE_ENVOY_VERSION_ARGS carries the build inputs` "
                                            "holds its $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt"),
@@ -523,8 +529,15 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                              "`packages/claude-envoy/tests/answers-claude.test.ts#print` and `packages/claude-envoy/tests/answers-claude.test.ts#streamSession` runs"),
         ("packages/envoy-client/test/**", "`packages/claude-envoy/tests/envoy-channel-stall.test.ts#@legion/envoy-client/test/envoy-stack` and tests/agent-stream-reply-grant.test.ts import modules of that directory, and tsc puts them in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "`packages/claude-envoy/tests/legion-tool.test.ts#withImageManifest` imports it from @legion/pi-shared/test/image-manifest"),
-        (f"{FIX}/daemon-api/**", "`packages/claude-envoy/tests/daemon-api-version.test.ts#daemonApiVersion`, `packages/claude-envoy/tests/legion-claim.test.ts#daemonFixture`, "
-                                 "`packages/claude-envoy/tests/legion-pane-mcp.test.ts#daemonFixture` and `packages/claude-envoy/tests/legion-tool.test.ts#daemonFixture` read it"),
+        (f"{FIX}/daemon-api/**", "`packages/claude-envoy/tests/legion-claim.test.ts#daemonFixture`, `packages/claude-envoy/tests/legion-pane-mcp.test.ts#daemonFixture` "
+                                 "and `packages/claude-envoy/tests/legion-tool.test.ts#daemonFixture` read its responses; "
+                                 "`packages/claude-envoy/tests/daemon-api-version.test.ts#package.json names no daemon API contract, and the plugin speaks this tree's` "
+                                 "reads released-contracts.json and lists contracts/*.json; and `packages/contracts/src/daemon-contract.ts#lastReleased` "
+                                 "and `packages/contracts/src/daemon-contract.ts#entryFixtures` read and list the same two for "
+                                 "`packages/contracts/src/daemon-contract.ts#daemonContract` of the committed manifest, as "
+                                 "`packages/claude-envoy/src/legion-claim.ts#PLUGIN_CONTRACT` and `packages/pi-shared/src/legion-phase-ops.ts#pluginBuildOf` "
+                                 "for `packages/claude-envoy/src/legion-tool.ts#BUILD` take it when a test imports them, and as the "
+                                 "tests' own PLUGIN_CONTRACT takes it"),
         (f"{FIX}/envelope-without-role.json", "`packages/claude-envoy/tests/envelope-role-field.test.ts#envelopeWithoutRole` imports it"),
         ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: `packages/claude-envoy/tests/legion-tool.test.ts#stateAtPhase` imports it from @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
         (".agents/plugins/marketplace.json", "`packages/claude-envoy/tests/envoy-channel-server.test.ts#codexMarketplace` imports it"),
@@ -544,6 +557,9 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                                                             "version is written into all five manifests\" and \"a manifest jq cannot "
                                                             "parse fails the step before the next manifest is written\" copy it into a "
                                                             "root of their own and run it"),
+        ("scripts/daemon-contract.sh", "packages/claude-envoy/tests/release-version.test.ts's releaseRoot copies it beside "
+                                       ".github/scripts/release-claude-envoy-version.sh, which runs it in the test \"the "
+                                       "release's version is written into all five manifests\""),
         (".github/scripts/repo-paths.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's check of the "
                                           "packed tarball passes a listing longer than a pipe holds\" runs it for the repository "
                                           "url, and copies it beside the release's check, which runs it, and release-manifest-repository.test.ts "
@@ -1583,13 +1599,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
-# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The ten static checks of internal/dispatch/api, keyed by their path in this repository: the
+# nine source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all seventeen of their tests in the plain step; they are left out of it instead,
+# below would put all twenty of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
-# tells nobody anything. The exemption is held to the files it is about in three ways, so an
-# eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# tells nobody anything. The exemption is held to the files it is about in three ways, so a
+# twenty-first such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1621,6 +1637,10 @@ TEXT_CHECK_TESTS = {
         "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
+    f"{ENVOY}/internal/dispatch/api/spec_writer_route_guard_test.go": {
+        "TestEveryRouteThatWritesADocumentChecksItsWriter",
+        "TestTheSpecWriterExemptionsStillHold",
+        "TestTheSpecWriterGuardSeesAPlantedWriter"},
 }
 
 # The mention sender's claim model (internal/dispatch/api), keyed by path as TEXT_CHECK_TESTS is:
@@ -1813,12 +1833,27 @@ DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_pack
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
-# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
+# daemon-go's second run of internal/api's shape gate, stamped with HEAD's contract entries in
+# main's merge order (scripts/daemon-contract-order.sh), in two steps. The first,
+# DAEMON_CONTRACT_ORDER_STEP, fetches the history that script reads and writes the stamp as its
+# output; the gate, DAEMON_STAMPED_GATE_STEP, is one go test of the gate's two tests linked with
+# that output. The gate is one line because go-test-step-expansion.py's step reader refuses a
+# step whose $(…) call is not of go-tagged-tests.sh. -ldflags and -run are no form
+# check-ci-filters.sh reduces, so the gate step's whole script is pinned.
+DAEMON_CONTRACT_ORDER_STEP = "Stamp HEAD's contract entries in main's merge order"
+DAEMON_STAMPED_GATE_STEP = "Test the shape gate in main's merge order"
+DAEMON_STAMPED_GATE_SCRIPT = (
+    "go test -count=1 -timeout 1m ./internal/api/ "
+    "\"-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=${{ steps.contract-order.outputs.stamp }}\" "
+    "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
+
+
+# The text-check job: the three modules' text checks, and the twenty tests of the Dispatch API's
+# ten static checks - its nine source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those seventeen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.

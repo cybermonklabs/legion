@@ -14,7 +14,7 @@ import (
 // SupportedContracts, which the shape gate reads too (contract_shapes_test.go), and one below
 // ServingFloor, which contractsFor serves at the floor's restore and its own strip.
 func observedContracts() []int {
-	return append([]int{ServingFloor - 1}, SupportedContracts...)
+	return append([]int{ServingFloor - 1}, SupportedContracts()...)
 }
 
 // observedMembers is the part of a whole state body the observed view carries, read from the
@@ -83,13 +83,13 @@ func observedPart(state State) State {
 	return State{Daemon: state.Daemon, Settings: state.Settings, Admission: state.Admission, Issues: issues}
 }
 
-// The observed view follows the whole state's rule (version.go's 293, shaping.go's observedFor):
-// at every contract this daemon answers, the view's daemon block, settings, admission block and
-// each issue's observed members are the whole state's at that same contract, whether the caller
-// states its contract or the claims of its pod record it. So an older contract keeps its
-// narrowing in both bodies: a caller below stateSeqContract reads no `stateSeq`, `stateId` or
-// `stateRun` in either, a caller below treeContract no `admission.trees` and no issue's `tree`,
-// and a caller below heldContract no `admission.held`.
+// The observed view follows the whole state's rule (stateSeqContract's entry, shaping.go's
+// observedFor): at every contract this daemon answers, the view's daemon block, settings,
+// admission block and each issue's observed members are the whole state's at that same contract,
+// whether the caller states its contract or the claims of its pod record it. So an older contract
+// keeps its narrowing in both bodies: a caller below entryNumber(stateSeqContract) reads no
+// `stateSeq`, `stateId` or `stateRun` in either, a caller below treeContract no `admission.trees`
+// and no issue's `tree`, and a caller below heldContract no `admission.held`.
 //
 // Each state fixture of the shape gate (stateFixtures) is served by one daemon whose observed read
 // answers the part of that state the view carries (observedPart), and both routes are asked by the
@@ -97,9 +97,10 @@ func observedPart(state State) State {
 // own JSON (observedMembers), not from the view's Go value.
 func TestTheObservedViewIsTheWholeStatesMembersAtEveryContract(t *testing.T) {
 	// The narrowings the comparison passes through, so a run that met none of them proves nothing
-	// of the rule: a body below stateSeqContract without `stateSeq` and one at it with the key, and a
-	// body below treeContract without `admission.trees`.
+	// of the rule: a body below entryNumber(stateSeqContract) without `stateSeq` and one at it with
+	// the key, and a body below treeContract without `admission.trees`.
 	var seqHeld, seqServed, treesHeld int
+	seqAdded := entryNumber(stateSeqContract)
 	for i, state := range stateFixtures(t) {
 		for _, caller := range callerKinds {
 			for _, contract := range observedContracts() {
@@ -144,9 +145,9 @@ func TestTheObservedViewIsTheWholeStatesMembersAtEveryContract(t *testing.T) {
 				daemon := want["daemon"].(map[string]any)
 				_, carriesSeq := daemon["stateSeq"]
 				switch {
-				case state.Daemon.StateSeq != nil && contract < stateSeqContract && !carriesSeq:
+				case state.Daemon.StateSeq != nil && contract < seqAdded && !carriesSeq:
 					seqHeld++
-				case state.Daemon.StateSeq != nil && contract >= stateSeqContract && carriesSeq:
+				case state.Daemon.StateSeq != nil && contract >= seqAdded && carriesSeq:
 					seqServed++
 				}
 				if _, carriesTrees := want["admission"].(map[string]any)["trees"]; contract < treeContract && !carriesTrees {

@@ -1736,21 +1736,26 @@ func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
 
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
-// (ProductionCheck.WakeAt), or the retry of a look nobody reported. There is at most one such row
-// per check: it is enqueued once, at the end of a look, and consumed when it fires, and the one
-// deferral that queues another — workflow's checkWakeDue, for an issue back in the workflow —
-// queues it in the transaction that finishes the row it came from. Nothing else wakes a check: no
-// boot, no build and no deploy event reads production any more.
+// (ProductionCheck.WakeAt), or the retry of a look nobody reported. It is enqueued at the end of a
+// look and consumed when it fires. Two writes queue another while it waits, each in the
+// transaction that moves the check's wake: workflow's checkWakeDue, for an issue back in the
+// workflow, which finishes the row it came from, and a failure of the checking role's claim
+// between looks, which names the next look later (workflow's failedBetweenLooks) and leaves the
+// row before it standing. Nothing else wakes a check: no boot, no build and no deploy event reads
+// production any more.
 //
 // Look is the look the check stood at when the wake was named, so a row left over from an earlier
 // look starts nothing; OpenedAt is the check instance it was named for
 // (ProductionCheck.OpenedAt), since a later merge of the same issue replaces the check and counts
-// its looks from one again — zero names no instance and is not fenced. Reason is what the wake
-// is, for the look's wake and the log: the agent's own wake, or the retry of a look nobody
-// reported.
+// its looks from one again — zero names no instance and is not fenced. WakeAt is the wake the row
+// was queued for (ProductionCheck.WakeAt, at the microsecond), so a row whose wake the check no
+// longer records, the one a failure between looks moved, starts nothing either; zero, a row a
+// release before this field queued, is not fenced. Reason is what the wake is, for the look's
+// wake and the log: the agent's own wake, or the retry of a look nobody reported.
 type CheckWakeDue struct {
 	Look     int       `json:"look"`
 	OpenedAt time.Time `json:"openedAt,omitzero"`
+	WakeAt   time.Time `json:"wakeAt,omitzero"`
 	Reason   string    `json:"reason"`
 }
 

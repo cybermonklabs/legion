@@ -980,8 +980,9 @@ const legionIssue = z.object({
  * and never changed, absent while the project has none: a reader that takes this body as its
  * starting point applies only a state message whose `stateId` is this one, since a message of
  * another id is counted in another store and its sequences say nothing of this body's. The three
- * keys of contract 293 are optional because a daemon before that contract writes none of them, and
- * the route strips them from the body it serves a caller below that contract.
+ * keys of daemon API entry 20261125174131 state-seq are optional because a daemon before that
+ * entry writes none of them, and the route strips them from the body it serves a caller below the
+ * entry's number.
  * No plugin code reads a field of it: the controller's boot check read `project` here until it
  * read the health answer instead, and the controller's `read_state` hands the state to its
  * agent whole. So every field is optional, as `LEGION_ANSWER_READS` requires of a field no read
@@ -1537,16 +1538,17 @@ const legionObservedIssue = z.object({
   workers: z.partialRecord(z.string(), z.object({ claim: legionObservedClaim })).optional(),
 });
 
-/** `api.ObservedState`, the body of `GET /legion/v1/state?view=observed` (daemon API contract
- * 293): what Dispatch reads of a daemon, read in the same snapshot as the full state would be.
+/** `api.ObservedState`, the body of `GET /legion/v1/state?view=observed` (daemon API entry
+ * 20261125174131 state-seq): what Dispatch reads of a daemon, read in the same snapshot as the
+ * full state would be.
  * `daemon`, `settings` and `admission` are the full state's own blocks: the same `stateSeq`,
  * `stateId` and `stateRun`, and the same admission block, unfiltered and in the same order, so an
  * issue's place in the line is its index in `admission.waiting` plus one. `issues` lists every
  * issue the full state lists. The daemon serves the view at the caller's contract with the full
  * state's own rule, so at each contract every member is the member the full state serves there:
- * a caller below 293 gets no `stateSeq`, `stateId` or `stateRun` in either answer. A request with
- * any other `view` gets the full state, and the daemon logs a warning for it, because a later
- * version may refuse such a request. */
+ * a caller below the entry's number gets no `stateSeq`, `stateId` or `stateRun` in either answer.
+ * A request with any other `view` gets the full state, and the daemon logs a warning for it,
+ * because a later version may refuse such a request. */
 export const LegionObservedStateResponse = z.object({
   daemon: daemonInfo,
   settings: legionSettings,

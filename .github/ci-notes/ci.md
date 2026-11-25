@@ -705,11 +705,11 @@ workspace's module files are not on it.
 
 ## text_checks: The text checks of the three Go modules, the Dispatch
 
-The text checks of the three Go modules, the Dispatch API's nine static source
+The text checks of the three Go modules, the Dispatch API's ten static source
 checks, and the two pure pins of packages/daemon's supervise table: the tests whose
 subject is a file's words. Their job runs packages/envoy/internal/textcheck,
 packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-which the three Go lanes leave out of their own runs, those checks' seventeen tests
+which the three Go lanes leave out of their own runs, those checks' twenty tests
 by name, and those two pins by name, which the daemon-go plain step skips.
 packages/envoy stays a wide
 root: file_copy_test.go walks every .go file under it (infra included), the API's
@@ -1744,10 +1744,9 @@ would fail `changes`, whose result every job's `if:` reads.
 
 The ci-ok-report step is the whole of this job's GitHub writing: it posts a failing ci-ok
 with `checks: write` and names the run's jobs in it with `actions: read`. `contents: read`
-is the checkout's. `pull-requests: read` is the daemon API contract check's: when it is
-about to refuse a change it reads every open pull request of the repository, with the paths
-each changes, to name a number no other one has taken. The pull request's text is the
-`pr-title` job's, which declares the scopes its own routes read.
+is the checkout's. The daemon API contract check reads no pull request: it fetches its base
+from origin with git, with no token. The pull request's text is the `pr-title` job's, which
+declares the scopes its own routes read.
 
 ## Why every Biome step prints every warning and error
 
@@ -2274,10 +2273,10 @@ in gcp/testdata. The per-target compile runs in the lint job's notices step.
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 
 The checks whose subject is text: each module's internal/textcheck package, the Dispatch API's
-nine static source checks, which read the module's own source, and the two pure pins of
+ten static source checks, which read the module's own source, and the two pure pins of
 packages/daemon's supervise table. None of them opens a database or starts a container, so the
 job carries no service and no `bun install`, and the three Go lanes (daemon-go, envoy-go and envoy-infra-build) leave those
-packages, those seventeen tests and those two pins out of their own runs
+packages, those twenty tests and those two pins out of their own runs
 (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
 walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
 the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,

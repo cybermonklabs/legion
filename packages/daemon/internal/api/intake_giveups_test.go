@@ -712,13 +712,15 @@ func TestTheGiveUpRoutesRefuseAnotherProjectsRecord(t *testing.T) {
 // states its contract in the header, and a pod's claims place no caller at 193 or above
 // (podContracts), so the header is what places a caller below this band. The older caller's log
 // holds one line for each band above its contract (narrowingsExpected), the give-ups' first; a
-// later band's own line is that band's test's to name.
+// later band's own line is that band's test's to name. Both callers read carriedState, the
+// golden's state with the keys each entry adds to it, so an entry's band finds its key to take
+// and writes the line narrowingsExpected counts for it.
 func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
-	if intakeGiveUpsContract > DaemonAPIVersion {
-		t.Fatalf("intakeGiveUpsContract = %d, above DaemonAPIVersion %d: no caller could be served the key", intakeGiveUpsContract, DaemonAPIVersion)
+	if intakeGiveUpsContract > DaemonAPIVersion() {
+		t.Fatalf("intakeGiveUpsContract = %d, above DaemonAPIVersion %d: no caller could be served the key", intakeGiveUpsContract, DaemonAPIVersion())
 	}
-	older, narrowings := stateNarrowedStating(t, populatedState(t), "192.0.2.1:41000", nil, intakeGiveUpsContract-1)
-	current := stateStating(t, stateServer(t, populatedState(t), nil), "192.0.2.1:41000", intakeGiveUpsContract)
+	older, narrowings := stateNarrowedStating(t, carriedState(t), "192.0.2.1:41000", nil, intakeGiveUpsContract-1)
+	current := stateStating(t, stateServer(t, carriedState(t), nil), "192.0.2.1:41000", intakeGiveUpsContract)
 	var olderBody, currentBody map[string]json.RawMessage
 	if err := json.Unmarshal(older, &olderBody); err != nil {
 		t.Fatal(err)
@@ -729,17 +731,17 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if served, carried := olderBody["intakeGiveUps"]; carried {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, which its plugin's schema does not name", intakeGiveUpsContract-1, served)
 	}
-	want, err := json.Marshal(populatedState(t).IntakeGiveUps)
+	want, err := json.Marshal(carriedState(t).IntakeGiveUps)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if served := currentBody["intakeGiveUps"]; !bytes.Equal(served, want) {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
-	// The caller stands below every row of stateNarrowings above it, podHoldContract's and
-	// stateSeqContract's included, so the log holds the line of each of those rows, the give-ups'
-	// line among them, and no other.
-	expected := narrowingsExpected(populatedState(t), intakeGiveUpsContract-1)
+	// The caller stands below every row of stateNarrowings above it, podHoldContract's and each
+	// entry's band included, stateSeqContract's among them, so the log holds the line of each of
+	// those rows, the give-ups' line among them, and no other.
+	expected := narrowingsExpected(carriedState(t), intakeGiveUpsContract-1)
 	if !slices.Contains(expected, "intakeGiveUps") || len(narrowings) != len(expected) {
 		t.Fatalf("the daemon logged %+v for a caller at %d, want one line for each of %v, the give-ups' among them", narrowings, intakeGiveUpsContract-1, expected)
 	}
@@ -749,7 +751,7 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 				i, intakeGiveUpsContract-1, line.Dropped, line.PluginContract, expected[i], intakeGiveUpsContract-1)
 		}
 	}
-	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, narrowingsExpected(populatedState(t), intakeGiveUpsContract-1))
+	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, narrowingsExpected(carriedState(t), intakeGiveUpsContract-1))
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")
 		delete(body, "contract")

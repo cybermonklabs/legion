@@ -19,13 +19,14 @@ body: |-
   that change is published at the deadline. A daemon with no workflow writes no state event.
   `GET /legion/v1/state` serves `daemon.stateSeq`, the sequence of the newest state event its
   snapshot holds, `daemon.stateId`, the id of the store that count is kept in, and
-  `daemon.stateRun`, the id of the daemon run that serves the answer, at daemon API contract 293.
-  `daemon.stateRun` is the `run` of every state message that run publishes, and only a daemon with
-  a workflow serves it. A caller below 293 gets the answer without them. The daemon now refuses a
-  `project` that is not a Dispatch project key (`^[A-Z][A-Z0-9]{1,9}$`, at most ten characters)
-  when it loads its settings, naming the key, before it opens or migrates its store or mints any
-  credential; the keys of `projects` take the same rule. A child's first phase start no longer
-  sends a `phase-finished` notice: its own architect starts with that move and learns of it from
-  its catch-up, and the architect above it gets the `child-status` notice of the start, once.
+  `daemon.stateRun`, the id of the daemon run that serves the answer, at daemon API entry
+  20261125174131 state-seq. `daemon.stateRun` is the `run` of every state message that run
+  publishes, and only a daemon with a workflow serves it. A caller below that entry's number gets
+  the answer without them. The daemon now refuses a `project` that is not a Dispatch project key
+  (`^[A-Z][A-Z0-9]{1,9}$`, at most ten characters) when it loads its settings, naming the key,
+  before it opens or migrates its store or mints any credential; the keys of `projects` take the
+  same rule. A child's first phase start no longer sends a `phase-finished` notice: its own
+  architect starts with that move and learns of it from its catch-up, and the architect above it
+  gets the `child-status` notice of the start, once.
 custom:
   Issue: pr4432

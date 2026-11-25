@@ -90,7 +90,7 @@ func podClaims(contract int) []supervise.Claim {
 	return []supervise.Claim{
 		claimInPod("legion-legion-legion-208-planner", statePodUID, contract),
 		claimInPod("legion-legion-legion-208-implementer", statePodUID, contract),
-		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion),
+		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion()),
 	}
 }
 
@@ -310,9 +310,9 @@ func withoutEntryTimeKeys(t *testing.T, body []byte) []byte {
 }
 
 // withoutStateSeqKey is a state body whose daemon block carries no `stateSeq`, no `stateId` and no
-// `stateRun`, which is what a caller below stateSeqContract is served of a state (api's
-// withoutStateSeq). It serves the table below as withoutQuietKeys does: a row's baseline is the
-// full state with exactly the keys that row's own contract holds back taken out of it.
+// `stateRun`, which is what a caller below entryNumber(stateSeqContract) is served of a state
+// (api's withoutStateSeq). It serves the table below as withoutQuietKeys does: a row's baseline is
+// the full state with exactly the keys that row's own contract holds back taken out of it.
 func withoutStateSeqKey(t *testing.T, body []byte) []byte {
 	t.Helper()
 	var served map[string]any
@@ -747,7 +747,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// served the keys and every older one is not.
 		priority bool
 		// seq is whether the caller is served `daemon.stateSeq`, the sequence of the newest state
-		// event the body's snapshot holds (stateSeqContract, the contract that added it). Every
+		// event the body's snapshot holds (stateSeqContract, the entry that added it). Every
 		// older pod is not served the key; a pod's claims at shapedAnswersContract or above count
 		// in no pod's reckoning (podContracts), so the caller served it is one served this
 		// daemon's own body.
@@ -871,9 +871,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// are no longer equal. A caller at 193 is served the state without `intakeGiveUps` where
 		// it states its contract in the header
 		// (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, seq: true, caches: true, giveUps: true, credential: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, seq: true, caches: true, giveUps: true, credential: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, seq: true, caches: true, giveUps: true, credential: true},
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, seq: true, caches: true, giveUps: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, seq: true, caches: true, giveUps: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, seq: true, caches: true, giveUps: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -1319,7 +1319,7 @@ func TestTheStateRouteServesAPodItsPluginContractsStrandedClaims(t *testing.T) {
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(retiredStrandedContract - 1)},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(retiredStrandedContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), retired: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), retired: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), retired: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(retiredStrandedContract - 1), retired: true},
 	} {
@@ -1350,9 +1350,9 @@ func TestTheRetiredStrandedContractIsTheContractThatAddedTheState(t *testing.T) 
 		t.Fatalf("retiredStrandedContract = %d, want %d, the contract whose entry in version.go added `retired` to a stranded claim's state",
 			retiredStrandedContract, addedRetiredStranded)
 	}
-	if retiredStrandedContract > DaemonAPIVersion {
+	if retiredStrandedContract > DaemonAPIVersion() {
 		t.Fatalf("retiredStrandedContract = %d, above DaemonAPIVersion %d: no caller could be served a retired claim",
-			retiredStrandedContract, DaemonAPIVersion)
+			retiredStrandedContract, DaemonAPIVersion())
 	}
 }
 
@@ -1489,7 +1489,7 @@ func TestTheRepositoriesBlockIsNarrowedBelowItsContract(t *testing.T) {
 		apps bool
 	}{
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract - 1), stated: repositoriesLiveContract - 1, apps: true},
-		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: repositoriesLiveContract - 1, apps: true},
+		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: repositoriesLiveContract - 1, apps: true},
 		{name: "a pod at contract 152, whose schema of the block this one replaced", remote: statePodAddr + ":41000", claims: podClaims(152), apps: true},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod at 152 asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(152), apps: true},
@@ -1583,8 +1583,8 @@ func TestTheRepositoriesContractIsTheContractThatChangedTheBlock(t *testing.T) {
 		t.Fatalf("repositoriesLiveContract = %d, want %d, the contract whose entry in version.go made the block `live`, `caches` and `withoutWebhookApp`",
 			repositoriesLiveContract, changedTheBlock)
 	}
-	if repositoriesLiveContract > DaemonAPIVersion {
+	if repositoriesLiveContract > DaemonAPIVersion() {
 		t.Fatalf("repositoriesLiveContract = %d, above DaemonAPIVersion %d: no caller could be served `live`",
-			repositoriesLiveContract, DaemonAPIVersion)
+			repositoriesLiveContract, DaemonAPIVersion())
 	}
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -26,7 +27,7 @@ func dispatchCredentialServed(t *testing.T, body []byte) (map[string]any, bool) 
 // its own calls run under and the two counts a deployment reads before it removes
 // dispatch_token_transition_file, the time of the last transition launch null before the first.
 func TestTheStateServesTheDaemonsDispatchCredential(t *testing.T) {
-	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 	credential, carried := dispatchCredentialServed(t, body)
 	want := map[string]any{
 		"session": "legion-daemon:LEGION", "transitionLaunches": float64(2),
@@ -45,13 +46,13 @@ func TestTheStateServesTheDaemonsDispatchCredential(t *testing.T) {
 	none := *state.DispatchCredential
 	none.TransitionLaunches, none.LastTransitionLaunchAt = 0, nil
 	state.DispatchCredential = &none
-	credential, _ = dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion)))
+	credential, _ = dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion())))
 	if at, written := credential["lastTransitionLaunchAt"]; !written || at != nil {
 		t.Errorf("a daemon that made no transition launch writes lastTransitionLaunchAt = %v (written %v), want null", at, written)
 	}
 
 	state.DispatchCredential = nil
-	if credential, carried := dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion))); carried {
+	if credential, carried := dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion()))); carried {
 		t.Errorf("a daemon without the setting serves dispatchCredential %v, want no such key", credential)
 	}
 }
@@ -97,11 +98,15 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	if _, carried := dispatchCredentialServed(t, at); !carried {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
-	// A caller at the contract stands below stateSeqContract alone, the one row above it, so the
-	// one line it is written is that row's and none says it dropped dispatchCredential.
-	wantNarrowings(t, narrowings, dispatchCredentialContract, []string{
-		"daemon.stateSeq, daemon.stateId and daemon.stateRun",
-	})
+	// A caller at the contract stands below no frozen row and below the band of each entry alone,
+	// stateSeqContract's among them, so the lines it is written are those bands'
+	// (narrowingsExpected) and none says it dropped dispatchCredential. It holds no entry to be the
+	// newest (R4 of dispatch://INFRA-1569).
+	want := narrowingsExpected(state, dispatchCredentialContract)
+	if slices.Contains(want, "dispatchCredential") {
+		t.Fatalf("a caller at %d expects the lines %v, want none of them the Dispatch credential's", dispatchCredentialContract, want)
+	}
+	wantNarrowings(t, narrowings, dispatchCredentialContract, want)
 
 	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(memoryContract-1))
 	if _, carried := dispatchCredentialServed(t, operator); !carried {
@@ -117,8 +122,8 @@ func TestTheDispatchCredentialContractIsTheContractThatAddedTheKey(t *testing.T)
 		t.Fatalf("dispatchCredentialContract = %d, want %d, the contract whose entry in version.go added `dispatchCredential`",
 			dispatchCredentialContract, addedDispatchCredential)
 	}
-	if dispatchCredentialContract > DaemonAPIVersion {
+	if dispatchCredentialContract > DaemonAPIVersion() {
 		t.Fatalf("dispatchCredentialContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
-			dispatchCredentialContract, DaemonAPIVersion)
+			dispatchCredentialContract, DaemonAPIVersion())
 	}
 }

@@ -635,7 +635,7 @@ type DaemonInfo struct {
 	// this body and every event above it is not, so a reader of the state events starts after this
 	// body at StateSeq + 1, with nothing lost and nothing applied twice. The route's source sets it
 	// on every body, 0 while the project has no state row; it is a pointer so that the one body
-	// without it is the one stateSeqContract's narrowing serves a caller below that contract
+	// without it is the one stateSeqContract's narrowing serves a caller below that entry's number
 	// (withoutStateSeq), not a 0 a reader would take for a sequence.
 	StateSeq *int64 `json:"stateSeq,omitempty"`
 	// StateID is the id of the store the state events are counted in (state_publication.store_id),
@@ -2033,14 +2033,14 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 }
 
 // ObservedState is the observed view of the state route, the body of
-// `GET /legion/v1/state?view=observed` (contract 293): what Dispatch reads of a daemon and nothing
-// more. Daemon, Settings and Admission are the full state's own blocks, read in the same kind of
-// repeatable-read snapshot: the same DaemonInfo, stateSeq, stateId and stateRun included, the same
-// settings, and the same admission block, unfiltered and in the same order. Issues lists every issue
-// the full state lists, and each carries only the members Dispatch observes (ObservedIssue). The
-// route serves it at the caller's contract by the full state's own bands and value strips
-// (shaping.go's observedFor), so at every contract each member is the full state's member at that
-// contract.
+// `GET /legion/v1/state?view=observed` (stateSeqContract's entry): what Dispatch reads of a daemon
+// and nothing more. Daemon, Settings and Admission are the full state's own blocks, read in the
+// same kind of repeatable-read snapshot: the same DaemonInfo, stateSeq, stateId and stateRun
+// included, the same settings, and the same admission block, unfiltered and in the same order.
+// Issues lists every issue the full state lists, and each carries only the members Dispatch
+// observes (ObservedIssue). The route serves it at the caller's contract by the full state's own
+// bands and value strips (shaping.go's observedFor), so at every contract each member is the full
+// state's member at that contract.
 type ObservedState struct {
 	Daemon    DaemonInfo               `json:"daemon"`
 	Settings  Settings                 `json:"settings"`

@@ -222,8 +222,9 @@ func TestALastStartFailureCarriesItsTimeUntilReady(t *testing.T) {
 // implementer, so the band is read on a worker's view as well as the architect's (it narrows
 // each through withEachClaimView). The worker is given it here rather than in the golden state:
 // a worker's lastDeathCause there would be a key no record of a contract below this one holds.
-// The daemon's log names what the narrowed body lost. Such a caller stands below stateSeqContract
-// too, so the log holds that row's line after the cause times' line.
+// The daemon's log names what the narrowed body lost. Such a caller stands below the band of
+// each entry too, stateSeqContract's among them, so the log holds each such band's line after the
+// cause times' line and the Dispatch credential's.
 func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	state := populatedState(t)
 	architect := state.Issues[recordGoldenIssue].Architect
@@ -291,12 +292,18 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// A caller below causeTimesContract is below dispatchCredentialContract and stateSeqContract
-	// too, the two rows above it, so it is told of all three rows, in the table's order.
-	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
-	wantNarrowings(t, narrowings, causeTimesContract-1, []string{
-		"the claim views' lastDeathAt and lastStartFailureAt",
-		"dispatchCredential",
-		"daemon.stateSeq, daemon.stateId and daemon.stateRun",
-	})
+	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
+	// above it, and below the band of each entry, above every frozen row, so it is told of each of
+	// those rows in the table's order: the cause times' first, then the Dispatch credential's, then
+	// each entry's band's (narrowingsExpected). It reads carriedState, so an entry's band finds its
+	// key to take, and it holds no entry to be the newest (R4 of dispatch://INFRA-1569).
+	carried := carriedState(t)
+	_, narrowings := stateNarrowedStating(t, carried, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
+	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
+	want := narrowingsExpected(carried, causeTimesContract-1)
+	if len(want) < 2 || want[0] != dropped || want[1] != "dispatchCredential" {
+		t.Fatalf("a caller at %d expects the lines %v, want one that dropped %q and then one that dropped %q first",
+			causeTimesContract-1, want, dropped, "dispatchCredential")
+	}
+	wantNarrowings(t, narrowings, causeTimesContract-1, want)
 }

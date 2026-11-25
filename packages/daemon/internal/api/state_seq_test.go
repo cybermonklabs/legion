@@ -69,16 +69,16 @@ func daemonKeyServed(t *testing.T, body []byte, key string) (json.RawMessage, bo
 	return raw, carried
 }
 
-// A caller below stateSeqContract is served the daemon block with none of `stateSeq`, `stateId`
-// and `stateRun`, since a plugin built before sjawhar/legion#2788 reads the state with a strict
-// schema that refuses the whole body for a key it does not name. The route places a caller by the
-// contract it states (`Legion-Plugin-Contract`), and a caller that states none by the pod the
-// request came from; a pod's claims at shapedAnswersContract or above are in no pod's reckoning,
-// since every such build states its contract (podContracts), so the pods below the contract here
-// record one below shapedAnswersContract. A caller stating the contract, a pod whose claims record
-// it or no contract, and a caller the daemon cannot place in a pod — the operator's `legion state`,
-// and Dispatch, which reads the sequence, the store id and the run to line the body up with the
-// state events — are served the three keys as the source answered them.
+// A caller below entryNumber(stateSeqContract) is served the daemon block with none of
+// `stateSeq`, `stateId` and `stateRun`, since a plugin built before sjawhar/legion#2788 reads the
+// state with a strict schema that refuses the whole body for a key it does not name. The route
+// places a caller by the contract it states (`Legion-Plugin-Contract`), and a caller that states
+// none by the pod the request came from; a pod's claims at shapedAnswersContract or above are in
+// no pod's reckoning, since every such build states its contract (podContracts), so the pods below
+// the contract here record one below shapedAnswersContract. A caller stating the contract, a pod
+// whose claims record it or no contract, and a caller the daemon cannot place in a pod — the
+// operator's `legion state`, and Dispatch, which reads the sequence, the store id and the run to
+// line the body up with the state events — are served the three keys as the source answered them.
 func TestTheStateSeqIsStrippedBelowItsContract(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(shapedAnswersContract-1))
 	want, carried := stateSeqServed(t, full)
@@ -95,12 +95,12 @@ func TestTheStateSeqIsStrippedBelowItsContract(t *testing.T) {
 		stated  int
 		carried bool
 	}{
-		{name: "a caller stating one contract below it", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: stateSeqContract - 1},
+		{name: "a caller stating one contract below it", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: entryNumber(stateSeqContract) - 1},
 		{name: "a pod below shapedAnswersContract", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1)},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(shapedAnswersContract - 1)},
-		{name: "a caller stating the contract", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: stateSeqContract, carried: true},
-		{name: "a pod at the contract", remote: statePodAddr + ":41000", claims: podClaims(stateSeqContract), carried: true},
+		{name: "a caller stating the contract", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: entryNumber(stateSeqContract), carried: true},
+		{name: "a pod at the contract", remote: statePodAddr + ":41000", claims: podClaims(entryNumber(stateSeqContract)), carried: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), carried: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(shapedAnswersContract - 1), carried: true},
 	} {
@@ -110,7 +110,7 @@ func TestTheStateSeqIsStrippedBelowItsContract(t *testing.T) {
 			id, run := stateIDServed(t, body), stateRunServed(t, body)
 			if !tc.carried {
 				if carried || id != "" || run != "" {
-					t.Errorf("the state %s carries daemon.stateSeq = %d (on the wire = %v), daemon.stateId = %q or daemon.stateRun = %q; the reader before stateSeqContract refuses the three keys", body, seq, carried, id, run)
+					t.Errorf("the state %s carries daemon.stateSeq = %d (on the wire = %v), daemon.stateId = %q or daemon.stateRun = %q; the reader before entryNumber(stateSeqContract) refuses the three keys", body, seq, carried, id, run)
 				}
 				return
 			}
@@ -127,7 +127,7 @@ func TestTheStateSeqIsStrippedBelowItsContract(t *testing.T) {
 func TestAStateSeqOfZeroIsServedAtItsContract(t *testing.T) {
 	state := populatedState(t)
 	state.Daemon.StateSeq = new(int64(0))
-	body := stateFrom(t, state, statePodAddr+":41000", podClaims(stateSeqContract))
+	body := stateFrom(t, state, statePodAddr+":41000", podClaims(entryNumber(stateSeqContract)))
 	if seq, carried := stateSeqServed(t, body); !carried || seq != 0 {
 		t.Fatalf("the state %s carries daemon.stateSeq %d (the key is on the wire = %v), want 0 on the wire", body, seq, carried)
 	}
@@ -149,16 +149,20 @@ func TestTheStateServedToAPodBeforeTheStateSeqContractLeavesTheNextCallersStateW
 	}
 }
 
-// stateSeqContract is the contract whose entry in version.go added the key, and this daemon's own
-// contract is never below it: a caller at this contract is served the sequence.
-func TestTheStateSeqContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedStateSeq = 293
-	if stateSeqContract != addedStateSeq {
-		t.Fatalf("stateSeqContract = %d, want %d, the contract whose entry in version.go added `daemon.stateSeq`",
-			stateSeqContract, addedStateSeq)
+// stateSeqContract is an entry this build registers, so its number is above LastNumberedContract
+// and this daemon's own contract is never below it: a caller at this contract is served the
+// sequence. The registry numbers an id it holds no entry for one above this daemon's own contract
+// (entryNumber), which no caller reaches, so the bound fails where the entry's file registers no
+// entry. No test pins the entry's number, which is L plus the entry's rank in the build's order
+// and moves with that order (R4 of dispatch://INFRA-1569).
+func TestTheStateSeqEntryIsNumberedAtOrBelowTheDaemonsOwnContract(t *testing.T) {
+	added := entryNumber(stateSeqContract)
+	if added <= LastNumberedContract {
+		t.Fatalf("entryNumber(stateSeqContract) = %d, at or below LastNumberedContract %d: an entry's number is above every numbered entry's",
+			added, LastNumberedContract)
 	}
-	if stateSeqContract > DaemonAPIVersion {
-		t.Fatalf("stateSeqContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
-			stateSeqContract, DaemonAPIVersion)
+	if added > DaemonAPIVersion() {
+		t.Fatalf("entryNumber(stateSeqContract) = %d, above DaemonAPIVersion %d: no caller could be served the key",
+			added, DaemonAPIVersion())
 	}
 }
