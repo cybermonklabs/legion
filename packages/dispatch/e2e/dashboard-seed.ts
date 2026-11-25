@@ -343,6 +343,9 @@ export interface DashboardSeed {
     readonly approval: { readonly id: string; readonly version: number };
     /** The question the reader answered, which a person's decision names. */
     readonly answered: string;
+    /** The open question asked at urgency `high` (`byOption`), whose item draws that urgency's
+     *  word beside its kind. */
+    readonly urgent: string;
   };
   readonly decisions: {
     /** The two that wait for the reader's review, oldest first: the Keep goes to `first`, the
@@ -718,6 +721,7 @@ export async function seedDashboard(
         { description: "Oldest at the top.", label: "Oldest first" },
       ],
       question: "Which order does the list take?",
+      urgency: "high",
     },
     asPlanner
   );
@@ -836,6 +840,7 @@ export async function seedDashboard(
       handedOn: handedOn.id,
       inWords: inWords.id,
       replied: replied.id,
+      urgent: byOption.id,
     },
     decisionsDocumentId: written.documentId,
     decisions: {
