@@ -16,7 +16,9 @@
 // way out, as it reads any finding's words. A detail it keeps as a reading gives it, so each comes
 // from one charged reading of a text or from one text that a way out writes. So the judgment reads
 // each text a bounded number of times, however many findings read it, and its work stays in
-// proportion to the judged text.
+// proportion to the judged text. The judgments of the texts of one document can share a Budget
+// (Share), which each reading of any of them takes the bytes of its text from, so their work
+// together also stays within a bound that no document passes, whatever its size.
 //
 // What Read gives can be kept in a variable of the code that read it, as any value of Go can; a
 // copy of a text in a field of the judge's own, read again later, would be read outside the charge.
@@ -83,11 +85,13 @@ func (u Unit) Title() bool {
 // for a finding that stands in it (own) and for one that does not, apart. Each count stays within
 // limit: a reading past it is refused (Read), and one for a finding that stands in the text stops
 // the program where loud is set, as a walk that breaks the bounds that the limit is derived from.
-// A reading within the limit is refused too where refuse says so (Refuse).
+// A reading within the limit is refused too where refuse says so (Refuse), and where the Budget
+// that it shares has no bytes left for it (Share).
 type Texts[K any] struct {
 	limit   int
 	loud    bool
 	refuse  func() bool
+	budget  *Budget
 	entries []entry[K]
 	named   map[name]int32
 }
@@ -119,6 +123,56 @@ func (t *Texts[K]) Refuse(refuse func() bool) {
 	t.refuse = refuse
 }
 
+// Share makes each reading that Read gives take its cost from budget (Budget.take), and Read refuse
+// a reading that budget has no bytes left for, as it refuses one past the limit but with no loud
+// stop and nothing counted. The judgments of the texts of one document share one budget; nil takes
+// nothing.
+func (t *Texts[K]) Share(budget *Budget) {
+	t.budget = budget
+}
+
+// Spent reports whether the budget that t shares refused a reading (Budget.Spent).
+func (t *Texts[K]) Spent() bool {
+	return t.budget.Spent()
+}
+
+// Budget is how many bytes the readings of the judgments that share it may still read together.
+// Each reading costs the bytes of its text and ReadingCost more, for the work of a reading that
+// its bytes do not count. Once a reading costs more than is left, the budget is spent, and it
+// refuses each reading after it, however small, so the findings that a judgment reads the ways out
+// of are the first that ask, in the order of the judgment.
+type Budget struct {
+	left  int
+	spent bool
+}
+
+// ReadingCost is what one reading costs beside the bytes of its text.
+const ReadingCost = 64
+
+// NewBudget is a budget of bytes.
+func NewBudget(bytes int) *Budget {
+	return &Budget{left: bytes}
+}
+
+// Spent reports whether b refused a reading; a nil budget refuses none.
+func (b *Budget) Spent() bool {
+	return b != nil && b.spent
+}
+
+// take takes the cost of a reading of a text of size bytes from b, and reports whether b let it; a
+// nil budget lets each.
+func (b *Budget) take(size int) bool {
+	if b == nil {
+		return true
+	}
+	if cost := size + ReadingCost; b.spent || cost > b.left {
+		b.spent = true
+		return false
+	}
+	b.left -= size + ReadingCost
+	return true
+}
+
 // Name is the unit of text, a sentence of the judged text, of a title (title) or an address of a
 // link or an image (address): the same unit for each sentence of the same words and kind. It reads
 // text once, to know it, as a caller names each place of a text once (the judge's split of a text,
@@ -144,9 +198,10 @@ func (t *Texts[K]) Keep(u Unit, kept K) int {
 }
 
 // Read is one reading of the text that u names, for a finding that stands in it (own) or for one
-// that does not: where the text's count of such readings is under its limit, and Refuse's function
-// does not refuse it, it counts the reading and gives the text and what the judgment keeps of each
-// of its places, in the order of Keep, with the answer yes (ok true); elsewhere it counts nothing
+// that does not: where the text's count of such readings is under its limit, Refuse's function
+// does not refuse it and the budget that t shares lets it (Share), it counts the reading, takes its
+// cost from the budget, and gives the text and what the judgment keeps of each of its places, in
+// the order of Keep, with the answer yes (ok true); elsewhere it counts nothing
 // and gives nothing, with the answer no, so the reader reads nothing of it. A reading past the limit
 // for a finding that stands in the text stops the program where loud is set. A unit that names no
 // text gives nothing. The kept values may be changed in place, as the judge's one reading of each
@@ -168,6 +223,9 @@ func (t *Texts[K]) Read(u Unit, own bool) (text string, kept []K, ok Answer) {
 		return "", nil, false
 	}
 	if t.refuse != nil && t.refuse() {
+		return "", nil, false
+	}
+	if !t.budget.take(len(at.text)) {
 		return "", nil, false
 	}
 	*count++

@@ -359,7 +359,8 @@ func (w *wholeText) load() charge.Answer {
 // that read more than one sentence that the text does not give as many times (wholeText); and what
 // the finding says where the judge did not read it (note): wholeNote where the judge reads the text
 // whole, which it does for the ways out of the first maxJudgedInSentence findings that ask and no
-// more, and elsewhereNote where a reading of a sentence would pass its charge (charge.Texts.Read).
+// more, and where a reading of a sentence was refused (charge.Texts.Read), elsewhereNote for its
+// charge and documentNote for the budget of its document (refusedNote).
 // The sentences of places hold the finding, and those of also only its words (wayJudge.alsoAt). A
 // place that is no sentence of the text, an address or a sentence of a title, changes none of its
 // words. A place of the text that is no sentence of the line, which this reading cannot write,
@@ -404,7 +405,7 @@ func (w *wholeText) passes(finding wayKey, way wayOut, places, also []charge.Uni
 		return true
 	}
 	if !write(places, true) || !write(also, false) {
-		return false, elsewhereNote
+		return false, refusedNote(w.texts)
 	}
 	if passed && len(changed) > 0 {
 		if w.lines && !w.readFor[finding] {
@@ -417,11 +418,11 @@ func (w *wholeText) passes(finding wayKey, way wayOut, places, also []charge.Uni
 			w.readFor[finding] = true
 		}
 		if !w.load() {
-			return false, elsewhereNote
+			return false, refusedNote(w.texts)
 		}
 		var charged charge.Answer
 		if passed, charged = w.writesNoNewFinding(changed); !charged {
-			return false, elsewhereNote
+			return false, refusedNote(w.texts)
 		}
 	}
 	if w.passed == nil {
