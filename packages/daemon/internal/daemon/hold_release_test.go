@@ -95,6 +95,7 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 // released hold finds the give-up committed, since the floor moves only once the message is
 // terminated after that commit.
 func TestPollHoldReleaseReleasesOnceTheEventThatPinnedTheFloorIsGivenUp(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	conn := testnats.Connect(t, workflowNATS(t))

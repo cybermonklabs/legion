@@ -402,8 +402,8 @@ func TestAReleaseKeepsTheSessionALaunchChoseAndRegistered(t *testing.T) {
 // that it released them is asked three times, a second and then two apart, each failure logged at
 // Warn with the attempt and the broker's reason, and the release frees nothing: it answers
 // ErrReleaseUnanswered for a 5xx, and for a 404 from a broker of a build before the route, and
-// ErrReleaseRefused for any other 4xx, a refusal a retry cannot change. A broker that answers at
-// the third attempt lets every name free.
+// ErrReleaseRefused for any other 4xx but a 408 or a 429, a refusal a retry cannot change. A broker
+// that answers at the third attempt lets every name free.
 //
 // The control (the pull request records the run): releaseSessions reading every permanent refusal
 // as one for good fails the 404 row, which answers ErrReleaseRefused.

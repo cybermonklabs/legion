@@ -28,6 +28,7 @@ var noticeParagraphOpening = regexp.MustCompile("^`([a-z-]+)` ")
 // kind, so the list is the code's and not a copy of it. The control is a writer taken out of its
 // paragraph, which this test then names.
 func TestEveryNoticeWriterIsNamedInItsKindsParagraph(t *testing.T) {
+	t.Parallel()
 	writers := noticeWriters(t)
 	paragraphs := noticeParagraphs(t)
 	if len(writers["plan-not-taken"]) == 0 || paragraphs["plan-not-taken"] == "" {

@@ -30,6 +30,7 @@ import (
 // written for the architect that owns the issue and for the controller. Nothing is held: a phase
 // is its worker's, and the root's planner here keeps its phase.
 func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -62,6 +63,7 @@ func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 // architect above it, and that architect takes the child's notices until the daemon starts the
 // child's architect again (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt).
 func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
+	t.Parallel()
 	root := "LEGION-208"
 	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -164,6 +166,7 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // closed issue's production-check look carries no failure record either, since its reason
 // already names the cause.
 func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
+	t.Parallel()
 	const sentence = "the planner's process died with its task outstanding, and its relaunches ran out"
 	failed := func(issue string, role claim.Role) intake.ClaimFailed {
 		return intake.ClaimFailed{Issue: issue, Role: role, Reason: sentence, Cause: supervise.CauseDied,
@@ -281,6 +284,7 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 // issue and to the controller, so a controller that starts after it finds it in the state it reads at boot
 // (issues.<KEY>.holdReason); the retry that ends the hold clears it.
 func TestAnEscalationIsRecordedOnTheHoldForAControllerThatStartsLater(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Planning}, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -308,6 +312,7 @@ func TestAnEscalationIsRecordedOnTheHoldForAControllerThatStartsLater(t *testing
 // texts read as the hold having been escalated at all. An escalation that named no reason
 // carries no such key.
 func TestAnEscalationCarriesTheArchitectsReason(t *testing.T) {
+	t.Parallel()
 	const said = "the tester has failed twice on the same flake; a person should look at the runner"
 	for _, tc := range []struct {
 		name   string
@@ -345,6 +350,7 @@ func TestAnEscalationCarriesTheArchitectsReason(t *testing.T) {
 // A held root moved out of the workflow ends its hold, and an escalation with it: its tree lingers
 // with the root's phase done and no hold reason, so the state never shows a closed root escalated.
 func TestAClosedRootEndsItsHoldAndItsEscalation(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Planning}, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -369,6 +375,7 @@ func TestAClosedRootEndsItsHoldAndItsEscalation(t *testing.T) {
 // closed, the escalation waits on nobody, so the state the controller reads at every start shows
 // the child held with no hold reason.
 func TestAnEscalatedChildOfAClosedTreeKeepsItsHoldButShowsNoEscalation(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	root, from := "LEGION-208", phase.Implementing
@@ -400,6 +407,7 @@ func TestAnEscalatedChildOfAClosedTreeKeepsItsHoldButShowsNoEscalation(t *testin
 // controller. The tree architect's own failed claim holds no phase either, and is still told to the
 // issue's topic and to the controller, lingering or not: nobody inside the tree can act on it.
 func TestALingeringTreesFailedClaimHoldsNothingAndItsArchitectsIsStillTold(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	root, until := "LEGION-208", time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
@@ -434,6 +442,7 @@ func TestALingeringTreesFailedClaimHoldsNothingAndItsArchitectsIsStillTold(t *te
 // it: the retry would start the held phase's worker inside a tree that has left the workflow, so it
 // changes nothing, and re-admission finds the member held from the same phase for the same reason.
 func TestARetryInALingeringTreeKeepsTheHoldAndItsReason(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	root, until := "LEGION-208", time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
@@ -510,6 +519,7 @@ func noticeRows(t *testing.T, pool *pgxpool.Pool) []record.OutboxPayload {
 // A retry's task names the issue's pull request, as a backward move's does, so the restarted
 // worker is told the pull request it works on.
 func TestARetrysTaskNamesThePullRequest(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -546,6 +556,7 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 // which is the whole of R7: the move's own write reaches Dispatch at a status it does not show,
 // or is never queued at all, and the release's is the write the board stands on.
 func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
+	t.Parallel()
 	const root = "LEGION-208"
 	const reason = "Reason: the issue was set to todo while its phase was held."
 	for _, tc := range []struct {
@@ -686,6 +697,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 // architect here, is an agent, and nobody is told; a session that holds none, from outside the
 // tree, has the tree's architect told, in a status-reasserted notice.
 func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
+	t.Parallel()
 	const root = "LEGION-208"
 	for _, tc := range []struct {
 		name string
@@ -782,6 +794,7 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 // step went out waits for that step again and raises nothing (waitForFirstStep;
 // TestAStopBeforeTheFirstStepSettlesThePlanAndStopsItsTask reads where it then stands).
 func TestATodoOnARootWithAHoldNoPlanMadeKeepsTheCountsUntilAReviewRoundSettles(t *testing.T) {
+	t.Parallel()
 	const root = "LEGION-208"
 	// The counts one conflict round and three review rounds that requested changes leave, the
 	// third counted round reaching review_round_cap 3 (recordPass, recordRound); the settled round
@@ -926,6 +939,7 @@ func slotCount(t *testing.T, pool *pgxpool.Pool, issue string) int {
 // controller copy (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt). Nothing here reaches
 // HeldNotice, which is why no hold is ever recorded from either phase.
 func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) {
+	t.Parallel()
 	const root = "LEGION-208"
 	for _, tc := range []struct {
 		name  string

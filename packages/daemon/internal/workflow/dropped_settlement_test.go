@@ -81,6 +81,7 @@ func (laterHandlerFails) Apply(context.Context, pgx.Tx, intake.Fact) (intake.Res
 // settlement it does not apply, so no row finds its line, and the wake reads no head, so the
 // replaced head's settlement wakes the implementer.
 func TestADroppedSettlementLogsWhy(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	// replacedHead is the head the pull request held until a push replaced it with nextHead, and
 	// earlyHead a head whose synchronize has not arrived.

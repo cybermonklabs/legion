@@ -22,6 +22,7 @@ const endedWorkVersion = 20261113082415
 // the migration is read back under both: every row the table already holds takes null.
 // A death's kind round-trips with the record (EndedWork.Death): the out-of-memory note reads it.
 func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
+	t.Parallel()
 	t.Run("the record round-trips with the claim, and its absence is null", func(t *testing.T) {
 		ctx := context.Background()
 		store := migratedStore(t)
