@@ -198,17 +198,12 @@ func (r *pgDiskRig) checkInBackground(t *testing.T, free uint64) <-chan struct{}
 	return checked
 }
 
-// script runs one command of the script by hand, with the environment the launcher gives it.
+// script runs one command of the script by hand, as the launcher runs it (runTestPG), and fails
+// the test with the container's log where the run fails.
 func (r *pgDiskRig) script(t *testing.T, command string) {
 	t.Helper()
-	cmd := exec.Command(testPGProgram, command)
-	cmd.Env = append(os.Environ(),
-		TestPGVariable+"="+r.dsn,
-		testPGDirVariable+"="+r.dir,
-		testPGLogVariable+"="+testPGLog(r.cfg.RolesDir),
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("%s %s: %v: %s", testPGProgram, command, err, out)
+	if err := runTestPG(context.Background(), r.cfg, r.roleLog(), &pidGuard{}, testPGRun{command: command, bound: testPGBound}); err != nil {
+		t.Fatalf("%v\n%s", err, r.log)
 	}
 }
 

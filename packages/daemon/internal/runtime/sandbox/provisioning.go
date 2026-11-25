@@ -119,7 +119,7 @@ func localInitFailure(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated
 // DeletionByTaintManager, is not an end by the kubelet. kubeletFailure, which reads each
 // DisruptionTarget of a Failed pod as the kubelet's, answers another question.
 func endedByKubelet(pod *corev1.Pod) bool {
-	return pod.Status.Reason == "Evicted" || slices.ContainsFunc(pod.Status.Conditions, func(condition corev1.PodCondition) bool {
+	return pod.Status.Reason == evictedReason || slices.ContainsFunc(pod.Status.Conditions, func(condition corev1.PodCondition) bool {
 		return condition.Type == corev1.DisruptionTarget && condition.Reason == corev1.PodReasonTerminationByKubelet
 	})
 }

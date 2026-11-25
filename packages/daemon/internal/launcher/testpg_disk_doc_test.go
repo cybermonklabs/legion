@@ -29,7 +29,7 @@ func TestPGDiskTheGuideNamesTheResetLineAndTheCommandThatShowsIt(t *testing.T) {
 	resetLine := testPGProgram + ": reset"
 	var named bool
 	var commands []string
-	for _, span := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(strings.Join(strings.Fields(flat), " "), -1) {
+	for _, span := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(flat, -1) {
 		named = named || strings.HasPrefix(span[1], resetLine)
 		if strings.HasPrefix(span[1], "kubectl logs ") {
 			commands = append(commands, span[1])

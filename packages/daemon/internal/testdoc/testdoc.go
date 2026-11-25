@@ -8,8 +8,8 @@
 // region of that copy to the guide's lines between the same two markers. A test that read the
 // guide would put the guide in its job's filter, since a declared read applies to every compiled
 // source file of a run, and a documentation-only edit would then start the whole daemon Go lane;
-// a read that walked up to the repository root, as this package's once did, is one the filter
-// check cannot see, so CI would stop running the test on a guide-only edit at all.
+// a read that walked up to the repository root is one the filter check cannot see, so CI would
+// stop running the test on a guide-only edit at all.
 //
 // Region finds the region an extract names by its two markers and fails by naming what it cannot
 // place; ExtractRegions reads an extract into all its regions, which Region and

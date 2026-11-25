@@ -173,16 +173,15 @@ const (
 // runtime's detail (dispatch://INFRA-1117 R9, R11).
 func endDied(observation runtime.Observation) string {
 	account := strconv.Quote(deathAccount(observation))
-	switch plain, kind := plainCause(observation.Cause), observation.Cause.Kind; {
-	case plain == "":
+	plain := plainCause(observation.Cause)
+	if plain == "" {
 		return "the process died: " + account
-	case kind == runtime.DeathDiskLimit:
-		return plain + ". " + diskLimitTask(observation.Cause) + " " + runtimeDetail + account
-	case kind == runtime.DeathDiskRequest:
-		return plain + ". " + diskTask + " " + runtimeDetail + account
-	default:
-		return plain + ". " + runtimeDetail + account
 	}
+	told := plain + ". "
+	if note := diskNote(observation.Cause); note != "" {
+		told += note + " "
+	}
+	return told + runtimeDetail + account
 }
 
 // endRecordedDeath is the cause of a death the previous daemon recorded, read back from the claim

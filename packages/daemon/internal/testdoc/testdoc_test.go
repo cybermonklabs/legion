@@ -9,11 +9,11 @@ import (
 )
 
 // Region answers the region its extract names by both markers, from the line the start marker
-// opens on through the line the end marker finishes on. Ending on the line the marker starts on,
-// as one copy of this reader did, drops the wrapped tail of the last bullet, and the facts that
-// tail carries then read as missing from a guide that states them. Reading another region of the
-// extract than the one both markers name, or taking the blank line that closes a region into it,
-// would hold a test's facts to lines the guide does not carry there.
+// opens on through the line the end marker finishes on. Ending on the line the marker starts on
+// drops the wrapped tail of the last bullet, and the facts that tail carries then read as missing
+// from a guide that states them. Reading another region of the extract than the one both markers
+// name, or taking the blank line that closes a region into it, would hold a test's facts to lines
+// the guide does not carry there.
 func TestRegionReadsTheRegionItsExtractNamesThroughTheLineItsEndMarkerFinishesOn(t *testing.T) {
 	const extract = "# A copy of two regions of a guide.\n" +
 		"\n" +

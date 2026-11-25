@@ -14,8 +14,7 @@
 # evictedReason and endReadingLine and to the facts it must state; packages/daemon/internal/textcheck's
 # TestTheKubernetesDocExtractsAreTheGuidesOwnLines holds each region to the guide's own lines
 # between the same two markers. Splitting it that way is what lets an edit to the guide alone
-# start the text-check run rather than every Go lane: the product test no longer reads the guide
-# at all.
+# start the text-check run rather than every Go lane: the product test does not read the guide.
 #
 # So this file is changed only when one of those regions changes, in the same commit as the
 # guide. A line changed here and not there, or there and not here, fails the text-check half; a
@@ -54,7 +53,7 @@ from: `karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation
 to: and no repacking of its pods.
 `karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation, and every Legion pod carries it whatever its reservation.
 Karpenter therefore consolidates and drifts no node a Legion pod runs on, as before this release.
-So an AWS deployment gains the uncharged resume from this release, and no repacking of its pods.
+So an AWS deployment gains the uncharged continue from this release, and no repacking of its pods.
 
 from: The daemon reads what ended each watched pod where
 to: would be relaunched for ever.

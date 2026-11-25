@@ -97,10 +97,7 @@ func TestAnEndTheDaemonItselfMadeIsChargedTheDeathItAlwaysWas(t *testing.T) {
 		{name: "a relaunch's replacement of the pod", displaced: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t)
-			h.reach(StateReady)
-			h.must(RequestDeliver{Claim: h.token, Task: owedTask})
-			h.wantPrompts(1)
+			h := owingTask(t, queuedClaim(), owedTask)
 
 			h.must(RuntimeObservation{Observation: runtime.Observation{
 				Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),

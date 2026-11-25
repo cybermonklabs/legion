@@ -106,13 +106,7 @@ const (
 // carries (podKind.asksExtendedRunTime) — the controller's pod always, an issue pod only while its
 // reservation is Guaranteed. An issue pod whose cpu or memory request is below its limit carries
 // the second not at all, so Autopilot stops giving it a node of its own and it shares a node and
-// bursts. What a pod the cluster ends keeps is what its roles pushed, or all of its issue's work
-// on a kept volume, and its roles: the daemon continues every role of that pod in its own session
-// with no death and no launch failure charged however often the cluster ends it. An eviction of
-// the pod's own, with no DisruptionTarget condition or over a request, is counted as a stop of each
-// role's process (readEndReading, evictedOverRequest, docs/kubernetes.md, "An end from outside
-// the pod"). A node disk-pressure eviction for the pod's own use of its emptyDir volumes on the
-// node's disk names no container, and is continued as a neighbour's.
+// bursts. evictedOverRequest states which of the cluster's ends of such a pod the daemon charges.
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"

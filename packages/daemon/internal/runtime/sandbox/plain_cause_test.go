@@ -8,7 +8,6 @@ package sandbox
 // whether or not the pod is still in the store when they are checked.
 
 import (
-	"reflect"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -164,8 +163,8 @@ func checkSelfEvictions(t *testing.T, cases []selfEviction) {
 					p.Spec.Volumes = append(p.Spec.Volumes, tc.volumes...)
 					p.Status = status
 				})
-				if end := g.awaitEndReadingRecord(recorded); tc.words != "" && end.cause != tc.words {
-					t.Fatalf("read the end in the words %q, want %q", end.cause, tc.words)
+				if end := g.awaitEndReadingRecord(recorded); tc.words != "" && end.words != tc.words {
+					t.Fatalf("read the end in the words %q, want %q", end.words, tc.words)
 				}
 				if gone {
 					g.leaveTheStore()
@@ -209,11 +208,7 @@ func TestPlainCauseAnOOMKilledRolesContainerCarriesItsMemoryLimit(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := reservedIssuePod(t, rolesReservation())
-			g.update(g.pod(name), func(p *corev1.Pod) { p.Status = tc.status })
-			g.eventually("the pod store to see "+tc.name, func() bool {
-				pod := g.r.storedPod(name)
-				return pod != nil && reflect.DeepEqual(pod.Status, tc.status)
-			})
+			g.editPod(name, "the pod store to see "+tc.name, func(p *corev1.Pod) { p.Status = tc.status })
 			if tc.launcher != nil {
 				g.reportLauncher(workerToken, *tc.launcher)
 			}
@@ -229,12 +224,8 @@ func TestPlainCauseAnOOMKilledRolesContainerCarriesItsMemoryLimit(t *testing.T) 
 		unlimited := rolesReservation()
 		delete(unlimited.Limits, corev1.ResourceMemory)
 		g := reservedIssuePod(t, unlimited)
-		g.update(g.pod(name), func(p *corev1.Pod) {
+		g.editPod(name, "the pod store to see the ended pod", func(p *corev1.Pod) {
 			p.Status = oneContainerStatus(corev1.PodFailed, endedContainer(runtime.IssuePodContainer, outOfMemoryEnd))
-		})
-		g.eventually("the pod store to see the ended pod", func() bool {
-			pod := g.r.storedPod(name)
-			return pod != nil && terminal(pod)
 		})
 
 		obs := g.observed(rolesLocator(workerToken, recorded))

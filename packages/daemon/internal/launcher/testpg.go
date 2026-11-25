@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/sjawhar/legion/daemon/internal/volumestat"
 )
 
 // The pod's own PostgreSQL for tests, which an issue pod's launcher serves when the deployment
@@ -201,17 +201,16 @@ const testPGResetFloor = 2 << 30
 // A test shortens it.
 var testPGResetBound = 5 * time.Minute
 
-// testPGDiskSpace reads the disk dir is on: the bytes free to a process that is not root
-// (f_bavail, which leaves out the blocks the filesystem keeps for root, as the server, which runs
-// as the launcher's user, finds them) and the disk's size. A test replaces it, so a check reads
-// the free bytes its case needs.
+// testPGDiskSpace reads the disk dir is on as volumestat does, the module's one statfs reader: the
+// bytes free to a process that is not root (f_bavail, which leaves out the blocks the filesystem
+// keeps for root, as the server, which runs as the launcher's user, finds them) and the disk's
+// size. A test replaces it, so a check reads the free bytes its case needs.
 var testPGDiskSpace = func(dir string) (free, size uint64, err error) {
-	var stat unix.Statfs_t
-	if err = unix.Statfs(dir, &stat); err != nil {
+	reading, err := volumestat.Read(dir)
+	if err != nil {
 		return 0, 0, err
 	}
-	block := uint64(stat.Bsize)
-	return stat.Bavail * block, stat.Blocks * block, nil
+	return reading.AvailableBytes, reading.SizeBytes, nil
 }
 
 // checkTestPGDisk is one check of a cluster on a disk of its own (Config.TestPostgresDisk), the

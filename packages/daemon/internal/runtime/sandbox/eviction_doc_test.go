@@ -233,7 +233,7 @@ func TestKubernetesDocStatesKarpentersAnnotationStaysOnEveryPod(t *testing.T) {
 		{Fact: "the annotation that stays", Phrase: doNotDisruptAnnotation},
 		{Fact: "that every pod carries it whatever its reservation", Phrase: "every Legion pod carries it whatever its reservation"},
 		{Fact: "that Karpenter disrupts no node a Legion pod runs on", Phrase: "no node a Legion pod runs on"},
-		{Fact: "what an AWS deployment gains", Phrase: "gains the uncharged resume"},
+		{Fact: "what an AWS deployment gains", Phrase: "gains the uncharged continue"},
 		{Fact: "what it does not pay for", Phrase: "no repacking"},
 	})
 }

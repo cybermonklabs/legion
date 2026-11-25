@@ -37,15 +37,8 @@
 # `legion-testpg: reset` to its stdout, the container's log, with the disk's use and every
 # database the old cluster held, moves the cluster aside to data.reset in one rename, makes and
 # starts a new empty cluster, deletes what it moved aside, and appends the same line to the
-# server's log. start makes a cluster whole or not at all: it runs initdb in data.init, beside the
-# data directory, and renames the result into place only once initdb has made it whole, because
-# initdb writes PG_VERSION early (measured on 18: 145 ms into a 3.1 s run), and a data directory
-# holding the PG_VERSION of a cut initdb is one no start ever builds again. So a reset cut at any
-# step after its rename — its own bound, a restart of the roles container, a kill, in its initdb
-# as anywhere else — leaves a data.reset that the next check deletes before it reads the free
-# bytes, at most a part of a cluster in data.init, which the next start deletes before its
-# initdb, and in the data directory either no cluster, which the next check's `ensure` builds as
-# it builds a pod's first, or the new cluster whole, whose start that `ensure` finishes.
+# server's log. reset_locked says what a reset cut at any of those steps leaves, and start how it
+# makes a cluster whole or not at all.
 #
 # initdb's superuser is the OS user (`id -un`, legion). The DSN names another role, created after
 # the server is up with LOGIN CREATEDB CREATEROLE NOSUPERUSER, because a superuser can run
@@ -183,6 +176,14 @@ parse_dsn() {
 	case $database in
 	'' | *[!A-Za-z0-9_]*) die "DSN names database $database, which is no plain identifier" ;;
 	esac
+}
+
+# need_dsn is the first step of ensure and of reset: it refuses an unset LEGION_TEST_PG_DSN and
+# parses the DSN (parse_dsn).
+need_dsn() {
+	[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+		die "LEGION_TEST_PG_DSN is unset: nothing names the server to serve"
+	parse_dsn "$LEGION_TEST_PG_DSN"
 }
 
 # serving: the DSN works — a server answers on the port it names and the role and the database it
@@ -417,9 +418,7 @@ locked() {
 }
 
 ensure() {
-	[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
-		die "LEGION_TEST_PG_DSN is unset: nothing names the server to serve"
-	parse_dsn "$LEGION_TEST_PG_DSN"
+	need_dsn
 	serving && {
 		echo "$name: a server already serves 127.0.0.1:$port"
 		return 0
@@ -464,9 +463,7 @@ human() {
 # so it never runs beside a start: a reset that waits for the lock resets the cluster that start
 # made, and an ensure that waits for a reset finds the new cluster serving.
 reset() {
-	[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
-		die "LEGION_TEST_PG_DSN is unset: nothing names the server to serve"
-	parse_dsn "$LEGION_TEST_PG_DSN"
+	need_dsn
 	locked reset-locked
 }
 

@@ -49,20 +49,18 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // fault of its own: the daemon itself replaced its pod while it ran, to launch another role there
 // (runtime.Observation.Displaced); something outside the pod ended the pod it ran in — the
 // cluster evicted, preempted or shut that pod down, or something deleted it that no act of the
-// daemon's accounts for (runtime.PodEndNotOurs, which endedFromOutside sends here every time);
-// or it was another runtime's process — a Sandbox role process a daemon
-// running the project under kubernetes recorded — that this daemon takes over
-// (`runtime.tmux.take_over`) and cannot see. The
-// observation's detail names which. The process did
-// nothing wrong, so it is recovered as repoint recovers a stale one: nothing is charged, neither a
-// launch failure nor a death with work outstanding, and the claim's session is relaunched at once
-// (replaceProcess). A turn the process was in is lost, and its task goes back to waiting, sent
-// again once the session resumes; a held suspension ends in a suspension. The process is gone, so
-// a compaction running over it is dropped before this runs and its end gives the claim back
-// nothing (judge, compactionLostProcess). It is the one recovery that carries an out-of-memory
-// end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run
-// out of memory before the replacement landed, and the role whose turn that end cut off is told
-// so wherever the end is recovered.
+// daemon's accounts for (runtime.PodEndNotOurs, which endedFromOutside sends here every time); or
+// it was another runtime's process — a Sandbox role process a daemon running the project under
+// kubernetes recorded — that this daemon takes over (`runtime.tmux.take_over`) and cannot see. The
+// observation's detail names which. The process did nothing wrong, so it is recovered as repoint
+// recovers a stale one: nothing is charged, neither a launch failure nor a death with work
+// outstanding, and the claim's session is relaunched at once (replaceProcess). A turn the process
+// was in is lost, and its task goes back to waiting, sent again once the session resumes; a held
+// suspension ends in a suspension. The process is gone, so a compaction running over it is dropped
+// before this runs and its end gives the claim back nothing (judge, compactionLostProcess). It is
+// the one recovery that carries an out-of-memory end's note (runtime.Observation.OutOfMemory),
+// since a pod the daemon replaced can also have run out of memory before the replacement landed,
+// and the role whose turn that end cut off is told so wherever the end is recovered.
 //
 // Every claim the runtime observes is recovered this way, the project controller's included: what
 // decides the recovery is the cause of the end and never the kind of pod or the role in it.

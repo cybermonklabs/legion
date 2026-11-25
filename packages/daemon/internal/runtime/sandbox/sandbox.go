@@ -1032,6 +1032,10 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 // it (suspendOver).
 const daemonSuspendedAct = "the daemon suspended the pod's sandbox"
 
+// daemonDeletedAct is the act the daemon's end of a pod is recorded under (meanToEndPodOf) where
+// that end is a delete of the pod's Sandbox: deleteSandbox's and deleteFenced's.
+const daemonDeletedAct = "the daemon deleted the pod's sandbox"
+
 // setMode sets the Sandbox's operating mode, fenced to the Sandbox read (a JSON patch whose first
 // operation tests the uid): a Sandbox replaced in between is never written. A mode that is not
 // Suspended ends nothing and records nothing; a suspension is written through suspending.
@@ -1462,7 +1466,7 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	}
 	// The pod this Sandbox owns goes with it — the orphan sweep's, a released controller claim's,
 	// a repository cache's — so that end is the daemon's own (meanToEndPod).
-	r.meanToEndPodOf(s, "the daemon deleted the pod's sandbox")
+	r.meanToEndPodOf(s, daemonDeletedAct)
 	name, uid, version := s.Name, s.UID, s.ResourceVersion
 	policy := metav1.DeletePropagationForeground
 	fence := metav1.Preconditions{UID: &uid, ResourceVersion: &version}

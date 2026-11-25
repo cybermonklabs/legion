@@ -63,14 +63,7 @@ func TestARecordedDeathIsToldAtTheBootsRelaunchAsTheDeathWasTold(t *testing.T) {
 				t.Fatalf("premise: the claim records the death as %q, which carries no %q", recorded, runtimeDetail)
 			}
 			told := endDied(row.observation)
-			var note string
-			switch row.observation.Cause.Kind {
-			case runtime.DeathDiskLimit:
-				note = diskLimitTask(row.observation.Cause)
-			case runtime.DeathDiskRequest:
-				note = diskTask
-			}
-			if note != "" {
+			if note := diskNote(row.observation.Cause); note != "" {
 				if !strings.Contains(told, ". "+note+" ") {
 					t.Fatalf("premise: the death is told as %q, which carries no note %q", told, note)
 				}

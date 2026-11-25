@@ -6795,7 +6795,7 @@ On GKE Autopilot the controller's pod and each `Guaranteed` issue pod tends to g
 a `Burstable` issue pod asks for no node of its own and shares one.
 `karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation, and every Legion pod carries it whatever its reservation.
 Karpenter therefore consolidates and drifts no node a Legion pod runs on, as before this release.
-So an AWS deployment gains the uncharged resume from this release, and no repacking of its pods.
+So an AWS deployment gains the uncharged continue from this release, and no repacking of its pods.
 The scheduler puts a pod with a kept volume only in the zones of the first pod that mounted its claim, one zone for a zonal disk and two for a regional disk, wherever else the pool has room ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 The **controller's** pod, whose Sandbox owns its claim, and an issue pod with a kept volume are the pods that wait on a volume when they are relaunched onto another node:
 each one's `ReadWriteOnce` volume must detach from the old node first, which shows as transient `FailedAttachVolume` or `Multi-Attach` events until the old pod is gone; then it runs on.

@@ -172,7 +172,7 @@ func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.res
 // this change goes wrong. What a Burstable issue pod gives up is the seven-day protection: the
 // cluster may end it to repack a node, taking the work its roles did not push unless its disk is
 // a kept volume, and the daemon continues each of its roles in the issue's next pod, but for the
-// ends it counts as the pod's own, which doNotDisruptAnnotation's comment (manifest.go) states.
+// ends it counts as the pod's own (evictedOverRequest).
 func (k issuePod) asksExtendedRunTime(r *Runtime) bool {
 	return guaranteedReservation(k.resources(r))
 }
@@ -279,8 +279,14 @@ func (issuePod) disk(r *Runtime, l launch) ([]volumeClaimTemplate, corev1.Volume
 			ClaimName: IssueClaimName(l.spec.Claim),
 		}}
 	}
-	return nil, corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
-		VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: r.diskSpec(l)},
+	return nil, ephemeralDisk(r.diskSpec(l))
+}
+
+// ephemeralDisk is a generic ephemeral volume whose claim is spec: the kubelet creates the claim
+// when the pod starts and deletes it when the pod goes. Its template carries no metadata (disk).
+func ephemeralDisk(spec corev1.PersistentVolumeClaimSpec) corev1.VolumeSource {
+	return corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
+		VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: spec},
 	}}
 }
 
@@ -516,9 +522,7 @@ func (issuePod) mainVolumes(r *Runtime, l launch) []corev1.Volume {
 	// through either is evicted with every role of the pod.
 	cluster := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 	if size := r.testPostgresDisk; size != nil {
-		cluster = corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
-			VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: claimSpec(r.storageClass, *size, l.kind, l.microVM)},
-		}}
+		cluster = ephemeralDisk(claimSpec(r.storageClass, *size, l.kind, l.microVM))
 	}
 	return append(volumes, corev1.Volume{Name: testPGVolume, VolumeSource: cluster})
 }

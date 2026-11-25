@@ -99,6 +99,19 @@ func diskLimitTask(cause runtime.DeathCause) string {
 	return diskLimitCounts + " " + diskTask
 }
 
+// diskNote is the note that follows a disk eviction's plain sentence in the role's next task
+// (endDied): diskLimitTask for the pod's disk limit, diskTask for its ephemeral-storage request,
+// and "" for every other death.
+func diskNote(cause runtime.DeathCause) string {
+	switch cause.Kind {
+	case runtime.DeathDiskLimit:
+		return diskLimitTask(cause)
+	case runtime.DeathDiskRequest:
+		return diskTask
+	}
+	return ""
+}
+
 // runtimeDetail introduces the runtime's own account of a death behind the plain sentence of its
 // cause (deathCause, endDied), so a reader tells the daemon's words from the runtime's.
 const runtimeDetail = "The runtime's detail: "

@@ -125,7 +125,7 @@ var containerOverRequest = regexp.MustCompile(`Container ([^ ]+) was using ([^ ,
 // pod answers the zero cause: an eviction whose message names no container of this pod over its
 // request is a neighbour's pressure, so the end is read as one from outside the pod (disruption).
 func overRequest(pod *corev1.Pod) runtime.DeathCause {
-	if c := podCondition(pod, corev1.DisruptionTarget); pod.Status.Reason != evictedReason || c == nil || c.Status != corev1.ConditionTrue {
+	if pod.Status.Reason != evictedReason || disruptionTargetOf(pod) == nil {
 		return runtime.DeathCause{}
 	}
 	return namedOverRequest(pod)
@@ -281,13 +281,22 @@ const terminalWithNoClusterEnd = "the pod was terminal and its status names no e
 // answers any non-empty reason, which this excludes, and it reads the image probe's pod, which
 // runs under `restartPolicy: Never` where an issue pod is RestartPolicyAlways.
 func disruption(pod *corev1.Pod) (cause, reason string, ok bool) {
-	if c := podCondition(pod, corev1.DisruptionTarget); c != nil && c.Status == corev1.ConditionTrue {
+	if c := disruptionTargetOf(pod); c != nil {
 		return "the cluster marked the pod a disruption target", c.Reason, true
 	}
 	if slices.Contains(clusterEndedReasons, pod.Status.Reason) {
 		return "the cluster ended the pod", pod.Status.Reason, true
 	}
 	return "", "", false
+}
+
+// disruptionTargetOf is pod's DisruptionTarget condition where it is set true, and nil otherwise:
+// the condition overRequest, disruption and selfEvicted each read.
+func disruptionTargetOf(pod *corev1.Pod) *corev1.PodCondition {
+	if c := podCondition(pod, corev1.DisruptionTarget); c != nil && c.Status == corev1.ConditionTrue {
+		return c
+	}
+	return nil
 }
 
 // selfEvicted is whether the kubelet evicted pod with no DisruptionTarget condition, the end
@@ -297,11 +306,7 @@ func disruption(pod *corev1.Pod) (cause, reason string, ok bool) {
 // readEndReading's cases, and no other caller, can read an eviction under node pressure, which
 // carries the condition, as the pod's own and have it charged.
 func selfEvicted(pod *corev1.Pod) bool {
-	if pod.Status.Reason != evictedReason {
-		return false
-	}
-	c := podCondition(pod, corev1.DisruptionTarget)
-	return c == nil || c.Status != corev1.ConditionTrue
+	return pod.Status.Reason == evictedReason && disruptionTargetOf(pod) == nil
 }
 
 // intendedEnd is one act of the daemon's own that is about to end a pod: the act, in the words the
@@ -310,6 +315,11 @@ func selfEvicted(pod *corev1.Pod) bool {
 type intendedEnd struct {
 	act string
 	at  time.Time
+}
+
+// expired is whether the record has outlived endReadingRecordLife at now, counted from its act.
+func (e intendedEnd) expired(now time.Time) bool {
+	return now.Sub(e.at) >= endReadingRecordLife
 }
 
 // endReading is what the daemon read about the cause of one pod's end: the reading the supervisor
@@ -327,7 +337,7 @@ type intendedEnd struct {
 // none, and the reconciliation that then adopts the pod's claims writes it (tellEndReadings).
 type endReading struct {
 	reading runtime.PodEndReading
-	cause   string
+	words   string
 	reason  string
 	death   runtime.DeathCause
 	name    string
@@ -347,16 +357,16 @@ func (e endReading) expired(now time.Time) bool {
 // with the same cause told in plain words. A later event of the pod read that way changes nothing
 // a claim is answered and writes no line (captureEndReading).
 func (e endReading) sameReading(o endReading) bool {
-	return e.reading == o.reading && e.cause == o.cause && e.death == o.death
+	return e.reading == o.reading && e.words == o.words && e.death == o.death
 }
 
 // detail is what a claim's observation of this end says of it, after the mapping's own detail: the
 // words the reading was made from, with the cluster's reason where there was one.
 func (e endReading) detail() string {
 	if e.reason == "" {
-		return e.cause
+		return e.words
 	}
-	return e.cause + " (" + e.reason + ")"
+	return e.words + " (" + e.reason + ")"
 }
 
 // meanToEndPod records, before an act of the daemon's own that will end the pod uid, that the
@@ -407,7 +417,7 @@ func (r *Runtime) meanToEndPodOf(s *sandbox, act string) {
 func (r *Runtime) takeIntendedEnd(uid string) (string, bool) {
 	intended, ok := r.intendedEnds[uid]
 	delete(r.intendedEnds, uid)
-	if !ok || r.now().Sub(intended.at) >= endReadingRecordLife {
+	if !ok || intended.expired(r.now()) {
 		return "", false
 	}
 	return intended.act, true
@@ -428,7 +438,7 @@ func (r *Runtime) takeIntendedEnd(uid string) (string, bool) {
 // ever. Called with r.mu held.
 func (r *Runtime) pruneEndReadings() {
 	now := r.now()
-	maps.DeleteFunc(r.intendedEnds, func(_ string, e intendedEnd) bool { return now.Sub(e.at) >= endReadingRecordLife })
+	maps.DeleteFunc(r.intendedEnds, func(_ string, e intendedEnd) bool { return e.expired(now) })
 	for uid, e := range r.endReadings {
 		switch {
 		case e.expired(now):
@@ -562,18 +572,18 @@ func readEndReading(pod *corev1.Pod, act string, intended bool) endReading {
 	ownUse := overRequest(pod)
 	switch {
 	case intended:
-		end.reading, end.cause, end.reason = runtime.PodEndOurs, act, pod.Status.Reason
+		end.reading, end.words, end.reason = runtime.PodEndOurs, act, pod.Status.Reason
 	case ownUse.Kind != "":
-		end.cause, end.reason, end.death = evictedOverRequest[ownUse.Kind], reason, ownUse
+		end.words, end.reason, end.death = evictedOverRequest[ownUse.Kind], reason, ownUse
 	case disrupted:
-		end.reading, end.cause, end.reason = runtime.PodEndNotOurs, cause, reason
+		end.reading, end.words, end.reason = runtime.PodEndNotOurs, cause, reason
 	case terminal(pod) && selfEvicted(pod):
 		end.reason, end.death = pod.Status.Reason, selfEvictedCause(pod)
-		end.cause = cmp.Or(evictedOverRequest[end.death.Kind], evictedForItsOwnUse)
+		end.words = cmp.Or(evictedOverRequest[end.death.Kind], evictedForItsOwnUse)
 	case terminal(pod):
-		end.cause, end.reason = terminalWithNoClusterEnd, pod.Status.Reason
+		end.words, end.reason = terminalWithNoClusterEnd, pod.Status.Reason
 	case pod.DeletionTimestamp != nil:
-		end.reading, end.cause = runtime.PodEndNotOurs, deletedByAnother
+		end.reading, end.words = runtime.PodEndNotOurs, deletedByAnother
 	}
 	return end
 }
@@ -625,7 +635,7 @@ func (r *Runtime) logEndReading(uid string, end endReading) bool {
 	if end.reading == "" {
 		return false
 	}
-	ended := make([]string, 0, len(r.watch))
+	var ended []string
 	for token, loc := range r.watch {
 		if loc.Sandbox == nil || loc.Sandbox.PodUID != uid {
 			continue
@@ -643,7 +653,7 @@ func (r *Runtime) logEndReading(uid string, end endReading) bool {
 		write = r.log.Warn
 	}
 	write(endReadingLine, "pod", end.name, "uid", uid, "reading", string(end.reading),
-		"cause", end.cause, "reason", end.reason, "ended", ended)
+		"cause", end.words, "reason", end.reason, "ended", ended)
 	return true
 }
 

@@ -108,13 +108,10 @@ func TestAPodDeletedByNoActOfTheDaemonsIsObservedAsAnEndFromOutsideIt(t *testing
 	name := SandboxName(workerToken)
 	deleted := metav1.NewTime(rigNow)
 	g.update(g.pod(name), func(p *corev1.Pod) { p.DeletionTimestamp = &deleted })
-	if end := g.awaitEndReading(recorded); end.reading != runtime.PodEndNotOurs || end.cause != deletedByAnother {
+	if end := g.awaitEndReading(recorded); end.reading != runtime.PodEndNotOurs || end.words != deletedByAnother {
 		t.Fatalf("read %+v of the pod being deleted, want %s from its deletion timestamp", end, runtime.PodEndNotOurs)
 	}
-	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
-		t.Fatal(err)
-	}
-	g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+	g.leaveTheStore()
 
 	obs := g.observed(rolesLocator(workerToken, recorded))
 
@@ -165,14 +162,8 @@ func TestAnOutsideEndOfAPodStillInTheStoreOutlivesTheTenMinutes(t *testing.T) {
 	}
 
 	g.advance(endReadingRecordLife + 5*time.Minute)
-	g.update(g.pod(name), func(p *corev1.Pod) { podCondition(p, corev1.DisruptionTarget).Message = again })
-	g.eventually("the pod store to see the second eviction", func() bool {
-		pod := g.r.storedPod(name)
-		if pod == nil {
-			return false
-		}
-		c := podCondition(pod, corev1.DisruptionTarget)
-		return c != nil && c.Message == again
+	g.editPod(name, "the pod store to see the second eviction", func(p *corev1.Pod) {
+		podCondition(p, corev1.DisruptionTarget).Message = again
 	})
 	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
 		t.Fatal(err)
@@ -284,8 +275,8 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 		{name: "a disruption target", conditions: []corev1.PodCondition{disruptionTarget("EvictionByEvictionAPI")},
 			want: runtime.PodEndNotOurs, wantReason: "EvictionByEvictionAPI"},
 		{name: "Evicted under node pressure, a disruption target", reason: evictedReason,
-			conditions: []corev1.PodCondition{disruptionTarget("TerminationByKubelet")},
-			want:       runtime.PodEndNotOurs, wantReason: "TerminationByKubelet"},
+			conditions: []corev1.PodCondition{disruptionTarget(corev1.PodReasonTerminationByKubelet)},
+			want:       runtime.PodEndNotOurs, wantReason: corev1.PodReasonTerminationByKubelet},
 		{name: "Evicted over a limit of its own, no disruption target", reason: evictedReason},
 		{name: "Terminated", reason: "Terminated", want: runtime.PodEndNotOurs, wantReason: "Terminated"},
 		{name: "NodeShutdown", reason: "NodeShutdown", want: runtime.PodEndNotOurs, wantReason: "NodeShutdown"},
@@ -295,11 +286,7 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := runningIssuePod(t)
 			name := SandboxName(workerToken)
-			g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus(tc.reason, tc.conditions...) })
-			g.eventually("the pod store to see the ended pod", func() bool {
-				pod := g.r.storedPod(name)
-				return pod != nil && terminal(pod) && pod.Status.Reason == tc.reason
-			})
+			g.editPod(name, "the pod store to see the ended pod", func(p *corev1.Pod) { p.Status = endedPodStatus(tc.reason, tc.conditions...) })
 			if tc.want != "" {
 				if end := g.awaitEndReading(recorded); end.reading != tc.want || end.reason != tc.wantReason {
 					t.Fatalf("read %+v of the ended pod, want %s with the cluster's reason %q", end, tc.want, tc.wantReason)
@@ -349,10 +336,7 @@ func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 			t.Fatalf("read %+v of the suspended sandbox's pod, want %s: a suspension with no record reads as an end from outside the pod",
 				end, runtime.PodEndOurs)
 		}
-		if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
-			t.Fatal(err)
-		}
-		g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+		g.leaveTheStore()
 		obs := g.observed(rolesLocator(workerToken, recorded))
 		if obs.Kind != runtime.Gone || obs.EndReading != runtime.PodEndOurs {
 			t.Fatalf("observed %s EndReading=%q (%s), want Gone %s", obs.Kind, obs.EndReading, obs.Detail, runtime.PodEndOurs)
@@ -422,7 +406,7 @@ func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 		g.spawn(spec)
 
 		end := g.awaitEndReadingRecord(old)
-		if end.reading != runtime.PodEndOurs || !strings.Contains(end.cause, "relabel") {
+		if end.reading != runtime.PodEndOurs || !strings.Contains(end.words, "relabel") {
 			t.Fatalf("read %+v of the pod the relabel suspended, want %s naming the relabel: a suspension with no record reads as an end from outside the pod",
 				end, runtime.PodEndOurs)
 		}
@@ -480,17 +464,17 @@ func TestATerminalPodIsObservedFromItsStatusAloneWhateverDeletionTimestampItCarr
 		name    string
 		status  corev1.PodStatus
 		reading runtime.PodEndReading
-		// cause is the words the end must be read from, where a case names them; reason is the
+		// words are the words the end must be read from, where a case names them; reason is the
 		// reason it must carry, which is the cluster's own where the cluster gave one.
-		cause, reason string
+		words, reason string
 	}{
 		{name: "Evicted over a limit of its own, no disruption target", status: endedPodStatus(evictedReason),
-			cause: evictedForItsOwnUse, reason: evictedReason},
+			words: evictedForItsOwnUse, reason: evictedReason},
 		{name: "a reason that is none of the cluster's own", status: endedPodStatus("UnexpectedAdmissionError"),
-			cause: terminalWithNoClusterEnd, reason: "UnexpectedAdmissionError"},
-		{name: "no reason at all", status: endedPodStatus(""), cause: terminalWithNoClusterEnd},
-		{name: "a disruption target", status: endedPodStatus(evictedReason, disruptionTarget("TerminationByKubelet")),
-			reading: runtime.PodEndNotOurs, reason: "TerminationByKubelet"},
+			words: terminalWithNoClusterEnd, reason: "UnexpectedAdmissionError"},
+		{name: "no reason at all", status: endedPodStatus(""), words: terminalWithNoClusterEnd},
+		{name: "a disruption target", status: endedPodStatus(evictedReason, disruptionTarget(corev1.PodReasonTerminationByKubelet)),
+			reading: runtime.PodEndNotOurs, reason: corev1.PodReasonTerminationByKubelet},
 		{name: "one of the cluster's own reasons", status: endedPodStatus("Preempted"),
 			reading: runtime.PodEndNotOurs, reason: "Preempted"},
 	} {
@@ -504,18 +488,15 @@ func TestATerminalPodIsObservedFromItsStatusAloneWhateverDeletionTimestampItCarr
 			})
 
 			end := g.awaitEndReadingRecord(recorded)
-			if end.reading != tc.reading || end.reason != tc.reason || tc.cause != "" && end.cause != tc.cause {
+			if end.reading != tc.reading || end.reason != tc.reason || tc.words != "" && end.words != tc.words {
 				t.Fatalf("read %+v of the terminal pod under a deletion timestamp, want the reading %q, the reason %q and the words %q",
-					end, tc.reading, tc.reason, tc.cause)
+					end, tc.reading, tc.reason, tc.words)
 			}
 			if _, answered := g.r.endReadingOf(recorded); answered != (tc.reading != "") {
 				t.Fatalf("the end was answered to a caller: %v, want %v; an end read neither way must read as nothing was read",
 					answered, tc.reading != "")
 			}
-			if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
-				t.Fatal(err)
-			}
-			g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+			g.leaveTheStore()
 			obs := g.observed(rolesLocator(workerToken, recorded))
 			if obs.Kind != runtime.Gone || obs.EndReading != tc.reading {
 				t.Fatalf("observed %s EndReading=%q (%s), want Gone EndReading=%q: a pod already terminal is read from its status alone",
@@ -547,7 +528,7 @@ func TestAnEvictionIsThePodsOwnOnlyWithNoDisruptionTargetWhateverAsksFirst(t *te
 		{name: "Evicted with the condition not set true", reason: evictedReason,
 			conditions: []corev1.PodCondition{{Type: corev1.DisruptionTarget, Status: corev1.ConditionFalse}}, want: true},
 		{name: "Evicted under node pressure, a disruption target", reason: evictedReason,
-			conditions: []corev1.PodCondition{disruptionTarget("TerminationByKubelet")}},
+			conditions: []corev1.PodCondition{disruptionTarget(corev1.PodReasonTerminationByKubelet)}},
 		{name: "a disruption target with no reason", conditions: []corev1.PodCondition{disruptionTarget("EvictionByEvictionAPI")}},
 		{name: "a reason that is none of the cluster's own", reason: "UnexpectedAdmissionError"},
 	} {
@@ -574,11 +555,7 @@ func TestAnIntendedEndThatNeverCameExpiresSoTheNextDeathIsCharged(t *testing.T) 
 	act := "the daemon suspended the pod's sandbox to close or release its issue"
 	crash := func(g *rig) {
 		g.t.Helper()
-		g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus("") })
-		g.eventually("the pod store to see the crashed pod", func() bool {
-			pod := g.r.storedPod(name)
-			return pod != nil && terminal(pod)
-		})
+		g.editPod(name, "the pod store to see the crashed pod", func(p *corev1.Pod) { p.Status = endedPodStatus("") })
 	}
 
 	t.Run("while the record stands", func(t *testing.T) {
@@ -587,7 +564,7 @@ func TestAnIntendedEndThatNeverCameExpiresSoTheNextDeathIsCharged(t *testing.T) 
 
 		crash(g)
 
-		if end := g.awaitEndReading(recorded); end.reading != runtime.PodEndOurs || end.cause != act {
+		if end := g.awaitEndReading(recorded); end.reading != runtime.PodEndOurs || end.words != act {
 			t.Fatalf("read %+v of the pod, want %s naming the act the daemon recorded", end, runtime.PodEndOurs)
 		}
 	})
@@ -626,17 +603,12 @@ func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) 
 			tester.Sandbox.PodUID, reviewer.Sandbox.PodUID)
 	}
 	g.update(g.pod(tester.Sandbox.Name), func(p *corev1.Pod) {
-		p.Status = endedPodStatus(evictedReason, disruptionTarget("TerminationByKubelet"))
+		p.Status = endedPodStatus(evictedReason, disruptionTarget(corev1.PodReasonTerminationByKubelet))
 	})
 
 	g.awaitEndReading(tester.Sandbox.PodUID)
 
-	var lines []string
-	for _, line := range strings.Split(logs.String(), "\n") {
-		if strings.Contains(line, endReadingLine) {
-			lines = append(lines, line)
-		}
-	}
+	lines := linesHolding(logs.String(), endReadingLine)
 	if len(lines) != 1 {
 		t.Fatalf("the pod's end was logged %d times, want one line for the pod and not one per role:\n%s", len(lines), logs.String())
 	}
@@ -681,21 +653,21 @@ func TestAPodsEndIsObservedByTheRuleWhicheverOfItsTerminalStatusAndItsDeletionCo
 		name          string
 		first, second func(*corev1.Pod)
 		reading       runtime.PodEndReading
-		cause, reason string
+		words, reason string
 	}{
 		{name: "the terminal status first", first: fail, second: markDeleted,
-			cause: terminalWithNoClusterEnd, reason: refused},
+			words: terminalWithNoClusterEnd, reason: refused},
 		{name: "the deletion of the running pod first", first: markDeleted, second: fail,
-			reading: runtime.PodEndNotOurs, cause: deletedByAnother},
+			reading: runtime.PodEndNotOurs, words: deletedByAnother},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := runningIssuePod(t)
 			name := SandboxName(workerToken)
 			wantRead := func(when string) {
 				t.Helper()
-				if end := g.awaitEndReadingRecord(recorded); end.reading != tc.reading || end.cause != tc.cause || end.reason != tc.reason {
+				if end := g.awaitEndReadingRecord(recorded); end.reading != tc.reading || end.words != tc.words || end.reason != tc.reason {
 					t.Fatalf("%s the pod's end reads %+v, want the reading %q from the words %q and the reason %q",
-						when, end, tc.reading, tc.cause, tc.reason)
+						when, end, tc.reading, tc.words, tc.reason)
 				}
 				if _, answered := g.r.endReadingOf(recorded); answered != (tc.reading != "") {
 					t.Fatalf("%s the end was answered to a caller: %v, want %v; an end read neither way must read as nothing was read",
@@ -706,24 +678,17 @@ func TestAPodsEndIsObservedByTheRuleWhicheverOfItsTerminalStatusAndItsDeletionCo
 			g.update(g.pod(name), tc.first)
 			wantRead("after the first event,")
 
-			g.update(g.pod(name), tc.second)
-			g.eventually("the pod store to see both facts", func() bool {
-				pod := g.r.storedPod(name)
-				return pod != nil && terminal(pod) && pod.DeletionTimestamp != nil
-			})
-			if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
-				t.Fatal(err)
-			}
-			g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+			g.editPod(name, "the pod store to see both facts", tc.second)
+			g.leaveTheStore()
 			wantRead("after the second event and the informer's delete,")
 
 			obs := g.observed(rolesLocator(workerToken, recorded))
 			if obs.Kind != runtime.Gone || obs.EndReading != tc.reading {
 				t.Fatalf("observed %s EndReading=%q (%s), want Gone EndReading=%q", obs.Kind, obs.EndReading, obs.Detail, tc.reading)
 			}
-			if named := strings.Contains(obs.Detail, deletedByAnother); named != (tc.cause == deletedByAnother) {
+			if named := strings.Contains(obs.Detail, deletedByAnother); named != (tc.words == deletedByAnother) {
 				t.Errorf("the observation's detail is %q; it names a deletion no act of the daemon's accounts for: %v, want %v",
-					obs.Detail, named, tc.cause == deletedByAnother)
+					obs.Detail, named, tc.words == deletedByAnother)
 			}
 		})
 	}
@@ -744,7 +709,7 @@ func TestAnEndReadNeitherWayIsReadAgainAtTheEventThatSaysTheClusterEndedIt(t *te
 	name, uid := loc.Sandbox.Name, loc.Sandbox.PodUID
 
 	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus(evictedReason) })
-	if end := g.awaitEndReadingRecord(uid); end.reading != "" || end.cause != evictedForItsOwnUse {
+	if end := g.awaitEndReadingRecord(uid); end.reading != "" || end.words != evictedForItsOwnUse {
 		t.Fatalf("read %+v of the eviction with no condition, want it read neither way in the words %q", end, evictedForItsOwnUse)
 	}
 	g.update(g.pod(name), func(p *corev1.Pod) {
@@ -773,7 +738,7 @@ func TestAReReadOfAnEndTakesNoRecordTheDaemonWroteAfterThePodShowedIt(t *testing
 	g := runningIssuePod(t)
 	name := SandboxName(workerToken)
 	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus("") })
-	if end := g.awaitEndReadingRecord(recorded); end.reading != "" || end.cause != terminalWithNoClusterEnd {
+	if end := g.awaitEndReadingRecord(recorded); end.reading != "" || end.words != terminalWithNoClusterEnd {
 		t.Fatalf("read %+v of the failed pod, want it read neither way in the words %q", end, terminalWithNoClusterEnd)
 	}
 	g.r.meanToEndPod(recorded, daemonSuspendedAct)
@@ -783,7 +748,7 @@ func TestAReReadOfAnEndTakesNoRecordTheDaemonWroteAfterThePodShowedIt(t *testing
 	}
 	g.awaitEndReadingGone(recorded)
 
-	if end := g.awaitEndReadingRecord(recorded); end.reading != "" || end.cause != terminalWithNoClusterEnd {
+	if end := g.awaitEndReadingRecord(recorded); end.reading != "" || end.words != terminalWithNoClusterEnd {
 		t.Fatalf("read %+v of the failed pod at its delete, want it still read neither way in the words %q, not as the act the daemon recorded once the pod had ended",
 			end, terminalWithNoClusterEnd)
 	}
@@ -836,7 +801,7 @@ func TestAReReadThatReadsTheEndNeitherWayInOtherWordsKeepsThemAndWritesNoLine(t 
 	name, uid := loc.Sandbox.Name, loc.Sandbox.PodUID
 
 	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus(refused) })
-	if end := g.awaitEndReadingRecord(uid); end.reading != "" || end.cause != terminalWithNoClusterEnd || end.reason != refused {
+	if end := g.awaitEndReadingRecord(uid); end.reading != "" || end.words != terminalWithNoClusterEnd || end.reason != refused {
 		t.Fatalf("read %+v of the failed pod, want it read neither way in the words %q with the reason %s", end, terminalWithNoClusterEnd, refused)
 	}
 	g.update(g.pod(name), func(p *corev1.Pod) { p.Status.Reason = evictedReason })
@@ -846,7 +811,7 @@ func TestAReReadThatReadsTheEndNeitherWayInOtherWordsKeepsThemAndWritesNoLine(t 
 		g.r.mu.Lock()
 		defer g.r.mu.Unlock()
 		end = g.r.endReadings[uid]
-		return end.cause == evictedForItsOwnUse
+		return end.words == evictedForItsOwnUse
 	})
 	if end.reading != "" || end.reason != evictedReason {
 		t.Fatalf("read %+v of the evicted pod, want it read neither way with the reason %s", end, evictedReason)
