@@ -138,9 +138,10 @@ func backOffPace(t *testing.T, deps Deps, interval time.Duration) {
 // renewal took renewClaimInterval or longer got slices of 0 and never shrank, and one just short of
 // the interval shrank a second a minute here: each ran until the caller's context ended. Each
 // renewal here takes renewClaimInterval and a second, or less a second, on a synctest fake clock,
-// and the wait of three intervals runs under a context with an hour to live. Each renewal must
-// begin once the one before it has ended or renewClaimInterval after that one began, whichever is
-// later: a renewal held back longer lets the claim run out between them.
+// and the wait of three intervals runs under a context with an hour to live. From the claim's last
+// renewal before the wait to the wait's return, each renewal, and the return, must come once the
+// renewal before it has ended or renewClaimInterval after that one began, whichever is later: one
+// held back longer lets the claim run out between them.
 func TestAWaitWhoseRenewalsAreSlowStillEnds(t *testing.T) {
 	for _, took := range []time.Duration{renewClaimInterval + time.Second, renewClaimInterval - time.Second} {
 		t.Run(fmt.Sprintf("each renewal takes %v", took), func(t *testing.T) {
@@ -149,19 +150,20 @@ func TestAWaitWhoseRenewalsAreSlowStillEnds(t *testing.T) {
 				defer cancel()
 				started := time.Now()
 				renewal := newClaimRenewal(Deps{}, []pendingRow{{kind: "issue", id: "slow", text: "slow"}}, started.Add(-renewClaimInterval))
-				var renewed []time.Time
+				renewed := []time.Time{renewal.last}
 				renewal.extend = func(context.Context, []pendingRow) error {
 					renewed = append(renewed, time.Now())
 					time.Sleep(took)
 					return nil
 				}
 				waitOutDebt(ctx, 3*renewClaimInterval, renewal)
+				ended := time.Now()
 				if err := ctx.Err(); err != nil {
-					t.Fatalf("the wait ended only with its context (%v), after %v and %d renewals; want it to end by itself", err, time.Since(started), len(renewed))
+					t.Fatalf("the wait ended only with its context (%v), after %v and %d renewals; want it to end by itself", err, ended.Sub(started), len(renewed)-1)
 				}
-				for i := 1; i < len(renewed); i++ {
-					if gap := renewed[i].Sub(renewed[i-1]); gap > max(took, renewClaimInterval) {
-						t.Errorf("a renewal began %v after the one before it, want at most %v; renewals at %v", gap, max(took, renewClaimInterval), offsets(renewed, started))
+				for i, until := range append(renewed[1:], ended) {
+					if gap := until.Sub(renewed[i]); gap > max(took, renewClaimInterval) {
+						t.Errorf("the claim renewed at %v was next renewed or the wait returned at %v, %v later: want at most %v; renewals at %v", renewed[i].Sub(started), until.Sub(started), gap, max(took, renewClaimInterval), offsets(renewed, started))
 					}
 				}
 			})
