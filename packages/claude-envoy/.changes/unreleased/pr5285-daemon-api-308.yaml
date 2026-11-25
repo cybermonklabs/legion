@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The plugin declares daemon API contract 265.
+    The plugin declares daemon API contract 308.
 time: 2026-11-23T20:00:01Z
 custom:
     Issue: pr5285

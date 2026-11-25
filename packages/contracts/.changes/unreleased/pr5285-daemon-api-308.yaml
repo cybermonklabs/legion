@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    The daemon API fixtures are at contract 308, whose answers are shaped as at 275.
+time: 2026-11-23T20:00:03Z
+custom:
+    Issue: pr5285

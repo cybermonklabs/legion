@@ -3736,7 +3736,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 265: #5285 R6 -- the launcher reads the issue workspace. The release of a pod no
+// 308: #5285 R6 -- the launcher reads the issue workspace. The release of a pod no
 // claim owns and the close of a left pod with no live claim delete a disk only after a read of its
 // workspace found nothing that origin does not hold, and no role process runs in such a pod to read
 // through, so the pod's launcher makes the read (internal/launcher's readWorkspace,
@@ -3831,7 +3831,11 @@ package api
 // b530b5a2 brought main's 250 and 256 (#5349) in below it, and a reading of the head of each of the
 // 485 open pull requests, made between 19:05:17Z and 19:06:17Z, found 257, 261 and 262 declared
 // above main's 256 and 265 by this change's pull request alone. The forward merge of 2026-11-25
-// that brought in e546d760 found main still at 256. That is a reading and never the
-// rule: read main's own number and every open head again at the next forward merge rather than
-// from this line.)
-const DaemonAPIVersion = 265
+// that brought in e546d760 found main still at 256. The forward merges of 2026-11-25 that brought
+// in caa7e4a2 and cdb2baa0 brought main's 275 (#4392) in above 265, so this entry moved to 308: a
+// reading of version.go at the head of each of the 493 open pull requests, made between
+// 13:11:07Z and 13:11:35Z, found 276 to 286, 288 to 301 and 307 declared above main's 275, and
+// the contract ledger held 302 to 306 for heads not yet pushed at those numbers, so nothing
+// declared or held 308. That is a reading and never the rule: read main's own number and every
+// open head again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 308
