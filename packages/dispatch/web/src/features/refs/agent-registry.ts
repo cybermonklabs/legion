@@ -175,7 +175,7 @@ export interface AgentRegistry {
  */
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
-  const { data, error, isError, isPending } = useQuery({
+  const { data, dataUpdatedAt, error, errorUpdatedAt } = useQuery({
     ...agentsQuery(),
     enabled,
     refetchOnMount: false,
@@ -183,9 +183,15 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
   });
   const agents = data ?? EMPTY_AGENTS;
   const lookup = registryLookup(agents);
-  // A failed refetch keeps the last response's data, so the state goes back to unknown while
-  // the cached titles go on naming agents.
-  const known = !(isPending || isError);
+  // What the registry last answered, read from the time of each kind of answer rather than from
+  // the query's own `status`: a read that is out never takes the last answer away. A list that
+  // has only ever failed goes back to pending on each poll, and a view that read that as "no
+  // answer yet" would drop what the last answer settled - the counts a refused list does not
+  // decide, and the page's word that it could not check which claims have lapsed - and draw them
+  // again when the poll lands on the same error. A failed refetch keeps the last response's
+  // data, so the state goes back to unknown while the cached titles go on naming agents.
+  const known = dataUpdatedAt > 0 && dataUpdatedAt >= errorUpdatedAt;
+  const isError = errorUpdatedAt > dataUpdatedAt;
   const refilling = isError && isAgentListRefilling(error);
   return useMemo(
     () => ({

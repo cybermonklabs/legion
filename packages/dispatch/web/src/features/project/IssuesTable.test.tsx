@@ -122,7 +122,7 @@ function table(
     open,
     inMain = false,
   }: {
-    agents?: Promise<Agent[]>;
+    agents?: Promise<Agent[]> | (() => Promise<Agent[]>);
     client?: QueryClient;
     full?: Promise<IssueSummary[]>;
     open?: Promise<IssueSummary[]>;
@@ -155,7 +155,9 @@ function table(
     );
   });
   const state = spyOn(api, "getMyState").mockResolvedValue({});
-  const registry = spyOn(api, "listAgents").mockImplementation(async () => agents ?? []);
+  const registry = spyOn(api, "listAgents").mockImplementation(async () =>
+    typeof agents === "function" ? agents() : (agents ?? [])
+  );
   const viewer = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     login: "alice",
@@ -1841,6 +1843,49 @@ test("with the agent registry refused, the header filters draw every count it do
   const claims = await headerOptions(user, "Claimed by");
   expect(claims).toHaveLength(3);
   expect(claims.filter((name) => /, \d+ issues?$/.test(name))).toEqual(["Nobody, 2 issues"]);
+});
+
+// INFRA-3135, round 28 (the tester's red row `f8722500`): the counts the registry does not decide
+// are drawn once its first read has settled on its error, and a later read of that list takes none
+// of them away. The rows are the same while that read is out - every claim counts as held until a
+// read answers - so nothing the counts stand on has changed, and the page goes on saying it could
+// not check which claims have lapsed.
+test("a later read of a refused agent list keeps the counts it does not decide, and the notice", async () => {
+  const user = userEvent.setup();
+  const refused = Promise.reject(new Error("agent list refused"));
+  refused.catch(() => undefined);
+  const held = Promise.withResolvers<Agent[]>();
+  let reads = 0;
+  const { client } = table(
+    [
+      issue("CORE-1", { assignee: "alice", priority: 1 }),
+      issue("CORE-2", { assignee: "bob", priority: 2 }),
+    ],
+    "?unclaimed=1",
+    {
+      agents: () => {
+        reads += 1;
+        return reads === 1 ? refused : held.promise;
+      },
+    }
+  );
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  await screen.findByTestId("unclaimed-unchecked");
+  expect(await headerOptions(user, "Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
+  // The shell's next poll of the list: its read is out while the filters are read again.
+  await act(async () => {
+    void client.refetchQueries({ queryKey: ["agents"] });
+    await Promise.resolve();
+  });
+  expect(reads).toBe(2);
+  expect(await headerOptions(user, "Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
+  expect(await headerOptions(user, "Priority")).toEqual(["P1, 1 issue", "P2, 1 issue"]);
+  expect(screen.getByTestId("unclaimed-unchecked")).toBeTruthy();
+  // The held read lands before the row ends, so what it draws is this row's own.
+  await act(async () => {
+    held.resolve([]);
+    await held.promise;
+  });
 });
 
 // With Nobody or lapsed picked and `/api/v1/agents` still pending, the listed rows can still
