@@ -4504,6 +4504,14 @@ Each item below names a path with its method and identity, then its purpose.
   and a repository the App is not installed on, or no App key, `503 GITHUB_TOKEN_UNAVAILABLE`.
   A GitHub rate limit is `503 GITHUB_RATE_LIMITED` with `Retry-After` the whole seconds GitHub asked for (at least one), never `502 GITHUB_UPSTREAM` or GitHub's own `403`:
   GitHub's answer to the token mint or to the read, or a limit any process already met under the App or the installation, when GitHub is not asked at all (Running more than one process, above).
+  A person reads a repository when an issue of a project the person sees resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done); an open viewer also reads one that no private project the person does not see owns (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`).
+  A repository mapping and a recorded rename give no project a repository.
+  An issue whose parent chain loops or runs deeper than 32 links resolves to no repository: it neither gives a repository to the people who see its project nor hides one from those who do not.
+  A repository is held by its name alone: once GitHub renames a private project's repository or moves it to another owner, an open viewer reads it under the new name until an issue of that project resolves to the new name.
+  A person who is not an open viewer reads only a repository an issue of a project the person sees resolves to.
+  Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it: no App key still answers that, and a rate limit already held still answers the rate limit.
+  While a project is private, a read GitHub redirects to any repository but the one its path names, as GitHub answers a renamed or transferred repository's old name, is not followed and answers `503 GITHUB_TOKEN_UNAVAILABLE`, as a repository the App is not installed on; a redirect to the same repository in another case is followed.
+  With no private project the proxy follows GitHub's redirects as it always did.
 
 - `/healthz` (GET; none)
 
@@ -4532,15 +4540,17 @@ Each item below names a path with its method and identity, then its purpose.
   - `state` is `succeeded` when the newest recorded attempt sent requests to GitHub and noted no failure, `failed` when it noted one, `no_attempt` while the record holds no attempt of the read, `unknown` until this process's first read of the record succeeds, and `off` where this process does not run the read:
     all four without the App private key, and `webhook_redelivery` and `ci_reconcile` without NATS as well, since `webhookSweeper` and `ciReconciler` build nothing without a NATS client.
     `at` is when that attempt was recorded as its pass ended, by the database's clock, in RFC 3339 UTC, and is `null` unless the state is `succeeded` or `failed`.
-    `cause` is the text of the attempt's first failure, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut;
+    `cause` is the class of the attempt's first failure (`gitHubReadCauseClass`): `status <n>` for the first HTTP status that failure names, which is the status GitHub answered, since the client words an answer it notes as a failure with its status ahead of any body, and `no status` for a failure that names none (a request GitHub never answered, or a failure of the read's own);
     it is `null` unless the state is `failed`, and the entry's Go type sets neither where the state carries none (`gitHubReadEntryOf`).
+    The failure's own text, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut, is `github_read_attempts.cause`.
 
   - The probe sends the database nothing for `github` and waits on nothing:
     it answers from this process's copy of `github_read_attempts` (`githubreads.Copy`), read at start and again each time any process writes a row (Background loops, above), and a read that fails keeps the copy it had.
     So a missing table or a failed read of the record changes neither `db`, `ok` nor the status.
     During a roll the release before this one writes no row, so an entry can be an interval or more old, which `at` shows.
 
-  - A cause can name a repository: the route takes no credential, a GitHub error carries the URL it asked, and Dispatch answers on its private network alone.
+  - `/healthz` never answers a failure's text: the route takes no credential, whoever reaches the port reads it, from outside too where the deployment has an outside origin, and a GitHub error carries the URL it asked, which names the repository the read read, one a private project maps or one GitHub keeps private.
+    So in every deployment, with a private project or none, it answers the class alone, which names no repository, and the operator reads the text in `github_read_attempts`.
 
   - The delivery intakes read GitHub too, for each webhook event (`FetchPullRequest`, `FetchWorkflowRun` and `ListWorkflowRunJobs` in `internal/dispatch/delivery`), and have no entry of their own:
     they report through `delivery_reconcile`, since the delivery reconcile reads the same pull requests and runs with the same App every interval, so a GitHub failure of those reads shows there within one pass.
@@ -4829,6 +4839,8 @@ Each item below names a path with its method and identity, then its purpose.
   A body without `repo`, or a `repo` that is not a repository GitHub could hold, is `400 INVALID_PROJECT` naming `repo`, and an unknown project is `404 PROJECT_NOT_FOUND`.
   The default belongs to the deployment, so a project-scoped credential is refused it with `403 PROJECT_SCOPE_DEPLOYMENT`, the project this path names included.
   It needs no `person` scope: the credential the deployment configured writes it, and so does a person.
+  The project is read as the caller reads it before anything is written: a project the caller does not see is `404 PROJECT_NOT_FOUND`, as a key nobody holds.
+  A `repo` the caller cannot read through the GitHub proxy is `403 REPOSITORY_NOT_AVAILABLE`, naming no project; `null` is never refused.
 
 - `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
 

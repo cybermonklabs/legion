@@ -851,8 +851,10 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 // /healthz names each GitHub read from the value main hands it alone (gitHubReads): off for a read
 // this process does not run, whatever the record holds of it; unknown before the copy of the
 // record has loaded; no_attempt for a read the record holds no attempt of; and succeeded or failed
-// from the attempt it holds, with that attempt's time in UTC, and the cause of a failed one. `at`
-// and `cause` are present and null wherever the state carries neither, and the four keys come in
+// from the attempt it holds, with that attempt's time in UTC, and a failed one's cause by its class
+// alone: the status GitHub answered ("status 503"), or "no status" for a failure that carries
+// none, since the cause's text can name a repository (gitHubReadCauseClass). `at` and `cause` are
+// present and null wherever the state carries neither, and the four keys come in
 // githubreads.Reads' order. A failed read leaves the status 200 and `ok` true, and a database that
 // does not answer leaves the entries as the copy has them beside its 503.
 func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
@@ -886,7 +888,7 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 	fromTheCopy := map[string]map[string]any{
 		"webhook_redelivery":  entry("no_attempt", nil, nil),
 		"architecture_import": entry("succeeded", &succeededAt, nil),
-		"delivery_reconcile":  entry("failed", &failedAt, &cause),
+		"delivery_reconcile":  entry("failed", &failedAt, new("status 503")),
 		"ci_reconcile":        entry("off", nil, nil),
 	}
 
@@ -909,6 +911,15 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 		"architecture_import": entry("unknown", nil, nil),
 		"delivery_reconcile":  entry("unknown", nil, nil),
 		"ci_reconcile":        entry("off", nil, nil),
+	})
+
+	// A failure that carries no status GitHub answered is the class "no status".
+	unanswered := &gitHubReads{recordCopy: loadedGitHubReadCopy(t, []githubreads.Recorded{
+		{Read: githubreads.DeliveryReconcile, At: failedAt, Cause: `GET https://api.github.com/repos/acme/deploy/pulls: dial tcp: lookup api.github.com: no such host`},
+	}), runs: reads.runs}
+	_, health = probeGitHubReads(t, database, unanswered)
+	requireGitHubReads(t, "with a failure that carries no status", health.GitHub, map[string]map[string]any{
+		"delivery_reconcile": entry("failed", &failedAt, new("no status")),
 	})
 }
 
