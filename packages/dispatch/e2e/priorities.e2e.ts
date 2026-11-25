@@ -38,7 +38,7 @@ import { pauseClock } from "./page-clock";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { settledValue } from "./settled";
-import { test as base, expect, type Locator, type Page, rowKey, rowSessionId } from "./test";
+import { test as base, expect, type Locator, type Page, rowKey } from "./test";
 import { asUser } from "./users";
 
 /** This file's `test`: e2e/test.ts's, with the priorities a row wrote taken out again when it
@@ -1772,9 +1772,17 @@ test("a priority's own page writes its title and description and lists only its 
 test("at 1280 by 800 a priority's work table leaves no empty room at its right, and it and each fault tab read a 190-character title whole", async ({
   browser,
 }) => {
-  const seed = await seedPriorities();
-  // The seed's three projects, under the row's own keys (`seedPriorities`).
-  const [core, ops, web] = [rowKey("CORE"), rowKey("OPS"), rowKey("WEB")];
+  // Title's width is what the key, the project and the status leave, so the issue keys drawn
+  // beside the 190-character title are text whose width the reading is taken over: the seed's
+  // `CORE-<n>` keys the readings were taken on, and not a row key's `CORE` and five characters
+  // more, which leave Title too narrow to draw the title whole (CI run 45641555444 at f05f9719).
+  // So the row empties the database before its seed, as a row that measures layout over text of
+  // a fixed width does (docs/testing.md, "Where a Dispatch test belongs"), and draws the seed
+  // under those keys (`MEASURED_SEED`). It empties through `resetDatabase` and signs in after the
+  // emptying, as the phone row below does.
+  await resetDatabase();
+  const seed = await seedPriorities(MEASURED_SEED);
+  const { core, ops, web } = MEASURED_SEED;
   const title =
     "Daemon rollout to every build host, every developer laptop and every review machine, with " +
     "the smoke suite proving each took the build and the roll-back ready for any machine that " +
@@ -1920,9 +1928,8 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right, 
     await expectWhole(workTable, work.key, "a priority's page");
     await expectEightLines(workTable, workLong.key, "a priority's page");
 
-    // The two fault tabs, each list newest first, so the row's own rows stand on its first page
-    // whatever the deployment held before the row: each list is the whole deployment's.
-    await page.goto(`${PRIORITIES_PATH}?n.sort=-updated&k.sort=-updated`);
+    // The two fault tabs.
+    await page.goto(PRIORITIES_PATH);
     await chooseTab(page, "none");
     const noneTable = page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE });
     await expectWhole(noneTable, none.key, "the none tab");
@@ -2443,22 +2450,23 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
   }
   // A claimed issue on each fault tab for each of three holders shaped as production's are: a
   // session named by a long title, one by a title of 55 characters led by an emoji, and one
-  // named by its bare id, which carries no title. Each session is the row's own
-  // (`rowSessionId`): Dispatch keeps a claim under its holder's id.
+  // named by its bare id, which carries no title, so the tab draws the id itself. The ids are the
+  // ones the readings were taken on: the bare one is text whose width the claim is read whole
+  // over, and the row has emptied the database, so no other row's claim stands under them.
   const emoji = "🚀 Legion implementer · INFRA-2947 · build host, rack 42";
   expect([...emoji]).toHaveLength(55);
   const holders = [
     {
-      id: rowSessionId("long title"),
+      id: "019a1c0f-6d4b-7e80-bf39-4a1b5c8d9e0f",
       kind: "session" as const,
       origin: { session_title: "Legion implementer · INFRA-2947 · build host" },
     },
     {
-      id: rowSessionId("emoji title"),
+      id: "019a1c10-7e5c-7f91-8a4b-5b2c6d9e0f10",
       kind: "session" as const,
       origin: { session_title: emoji },
     },
-    { id: rowSessionId("bare id"), kind: "session" as const },
+    { id: "019a1c11-8f6d-7aa2-9b5c-6c3d7e0f1a11", kind: "session" as const },
   ];
   const claimed: { holder: string; backlog: string; unplaced: string }[] = [];
   for (const [at, holder] of holders.entries()) {
