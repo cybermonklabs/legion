@@ -85,7 +85,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			name:      "the project release's read of unpushed work",
 			workspace: func(t *testing.T) string { return t.TempDir() },
 			request: shimwire.ReadUnpushed{
-				ID: "read-1", Issue: "INFRA-3098", TimeoutMs: int(commandBudget.Milliseconds()),
+				ID: "read-1", Issue: "INFRA-3098", TimeoutMs: int(commandBudget(t).Milliseconds()),
 			},
 		},
 	} {
