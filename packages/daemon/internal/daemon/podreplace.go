@@ -203,11 +203,13 @@ func (s *supervision) recordRoundReplacement(ctx context.Context, issue, round, 
 
 // recordedDue is due, a replacement's last word, for the replacement whose record, recorded, the
 // caller wrote before it called the runtime (recordRoundReplacement). The runtime asks it under the
-// pod's launch turn, one statement before the suspension. A last word that refuses takes the
-// record away again (forgetReplacement): the replacement takes nothing, and the next sweep decides
-// the round afresh.
-func (s *supervision) recordedDue(recorded store.PodReplacement, due func(context.Context) error) func(context.Context) error {
+// pod's launch turn, one statement before the suspension, and asked records that it did: a call
+// that answers nil having asked no last word found the pod taken already, and took nothing
+// (replaceForRound). A last word that refuses takes the record away again (forgetReplacement): the
+// replacement takes nothing, and the next sweep decides the round afresh.
+func (s *supervision) recordedDue(recorded store.PodReplacement, asked *bool, due func(context.Context) error) func(context.Context) error {
 	return func(ctx context.Context) error {
+		*asked = true
 		err := due(ctx)
 		if err != nil {
 			s.forgetReplacement(ctx, recorded)
