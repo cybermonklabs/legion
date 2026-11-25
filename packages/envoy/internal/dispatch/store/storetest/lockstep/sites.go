@@ -330,6 +330,12 @@ var storeWriteCallSites = map[string]string{
 	// nodes' anchored_in read again under them, then the tuples that level the two through Write
 	// at the sentinel (graphcensus' TestTheAnchorBatchTakesTheStoreLockOrder).
 	"graphcensus/census_anchors.go#writeAnchorBatch": "graphcensus#TestTheAnchorBatchTakesTheStoreLockOrder",
+	// The backfill's Keep pass (R32 of this branch's spec): the owner rows the batch's Keeps stand
+	// under first, then the Keeps and their decisions' words read again under them, then the
+	// decision_keeps rows whose sum is still the one over the words with shaped, the kept_text_sum
+	// values through Write at the sentinel, and the head rows (graphcensus'
+	// TestTheKeepSumBatchTakesTheStoreLockOrder).
+	"graphcensus/census_keeps.go#writeKeepSumBatch": "graphcensus#TestTheKeepSumBatchTakesTheStoreLockOrder",
 	// The backfill's pass over the references a document makes: the owner rows the batch's
 	// documents stand under first, then the refs rows and their documents' nodes' mentions read
 	// again under them, then the mentions tuples each row owes through Write at the sentinel
@@ -352,20 +358,18 @@ var storeWriteCallSites = map[string]string{
 	"api/results_retract.go#writeCheckResultRetraction":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultBatch":           "graphcensus#TestTheResultBatchTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultRetractionBatch": "graphcensus#TestTheResultRetractionBatchTakesTheStoreLockOrder",
-	// A query's version a write appends where it moved the query's record or its document's
-	// rendering and wrote that document no version (docs.Service.ReviseQueries): once the write's
-	// own statements have run in its transaction, under the issue's owner lock and the lock of its
-	// room, both taken before the write's first statement (docs.LockQueryRooms, right after the
-	// owner's), the version's row, its node (docs/mutation.go#WriteVersionNode, above) and its
-	// version_renders row, and last the node's facts, caused by the event the write appended,
-	// through Caused. A recorded result and a retraction take it under result.recorded and
-	// result.retracted (reviseQueriesUnder), which api's TestEveryApiStoreWriterTakesTheStoreLockOrder
-	// drives through both routes, the room's lock held before their event; an issue room's
-	// settlement takes it once its write phase has run, under the last artifact.version it appended
-	// (reviseQueries), holding its room's lock from its read phase, one call of Caused after the rows
-	// its path holds, whose order refs' TestCausedTakesTheStoreLockOrder proves.
-	"api/results.go#reviseQueriesUnder": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"docs/settlement.go#reviseQueries":  "refs#TestCausedTakesTheStoreLockOrder",
+	// A query's version a write owes where it moved the query's record or its document's rendering
+	// and wrote that document no version: the version's row, its node
+	// (docs/mutation.go#WriteVersionNode, above) and its version_renders row, and last the node's
+	// facts, through Caused. A recorded result, a retraction and an issue room's settlement write
+	// no such version in their own transaction: their batch marks the issue's queries owed, and the
+	// drain writes the versions in a transaction of its own once they have committed
+	// (drainQueryMark), as the block-index tick does for a mark a write left. It takes the issue's
+	// owner lock, then the lock of its room (docs.LockQueryRooms), reads, and sends one batch: the
+	// rows, the move of an open approval request, a carry, the artifact.version, the clear of the
+	// mark, then one call of Caused under the mark's event and the head rows, after the rows its
+	// path holds, whose order refs' TestCausedTakesTheStoreLockOrder proves.
+	"docs/query_marks.go#drainQueryMark": "refs#TestCausedTakesTheStoreLockOrder",
 	// The backfill's passes over the components a process of the release before wrote with no
 	// node (R9 of this branch's spec): the architecture source rows of the batch's projects first,
 	// in ascending (project, id), then the rows read again under them, then the component nodes and

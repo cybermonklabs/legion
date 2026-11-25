@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -406,16 +407,18 @@ func TestARestoreOfTheApprovedRecordPinsItsDigestBeforeItsVersion(t *testing.T) 
 	}
 }
 
-// A version whose text is the text a person approved but whose record has moved since - a result
-// recorded under the document's check - is no restore of what they approved, and carries nothing:
-// the write pins the version's row to the approval's digest, the fill reads the record by its own
-// walk and finds another digest, and the transaction rolls back to the savepoint it took before the
-// version and writes the version, what it states and its row again with no carry. No review and no
-// artifact.approved of the version stand, its row records its own record's digest, and its node
-// is caused by its artifact.version. The edit's answer is read once the write phase has run: the
-// approval request the agent opened is moved to the new version and waits on the agent, which the
-// dropped carry would have answered, and no approval is named superseded, since the approval was
-// stale before the edit (supersededBy).
+// A version whose text is the text a person approved but whose record has moved since is no
+// restore of what they approved, and carries nothing. A result recorded under the document's check
+// moves the record by appended result nodes alone, so its version carries alice's approval (R14);
+// the result's retraction moves a result node that approval holds, so its version carries nothing,
+// and the approval reads stale. Then the write pins the version's row to the carried approval's
+// digest, the fill reads the record by its own walk and finds another digest, and the transaction
+// rolls back to the savepoint it took before the version and writes the version, what it states and
+// its row again with no carry. No review and no artifact.approved of the version stand, its row
+// records its own record's digest, and its node is caused by its artifact.version. The edit's
+// answer is read once the write phase has run: the approval request the agent opened is moved to
+// the new version and waits on the agent, which the dropped carry would have answered, and no
+// approval is named superseded, since the approval was stale before the edit (supersededBy).
 func TestARestoreOfTheApprovedTextOverAMovedRecordCarriesNothing(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	createReferenceAPIProject(t, handler, "PINM")
@@ -427,12 +430,17 @@ func TestARestoreOfTheApprovedTextOverAMovedRecordCarriesNothing(t *testing.T) {
 	if review := reviewDocument(t, handler, verification.id, "alice", "approved", ""); review.ContentSHA256 == nil || *review.ContentSHA256 != pin {
 		t.Fatalf("alice's approval of version %d pins %v, want its record's digest %s", approved.number, review.ContentSHA256, pin)
 	}
-	if recorded := recordResult(t, handler, issue.Key, resultBody("c1", "fail", headCommit, map[string]any{"failed": 1})); recorded.Code != http.StatusCreated {
+	recorded := recordResult(t, handler, issue.Key, resultBody("c1", "fail", headCommit, map[string]any{"failed": 1}))
+	if recorded.Code != http.StatusCreated {
 		t.Fatalf("record a result of c1: status=%d body=%s", recorded.Code, recorded.Body.String())
 	}
+	result := decodeBody[recordedResult](t, recorded).Result
+	if retracted := retractAsPerson(t, handler, result.ID, "The run measured the wrong build."); retracted.Code != http.StatusCreated {
+		t.Fatalf("retract the result: status=%d body=%s", retracted.Code, retracted.Body.String())
+	}
 	moved := newestQueryVersion(t, database, verification.id)
-	if moved.number != approved.number+1 || moved.markdown != approved.markdown {
-		t.Fatalf("the result leaves the Verification document at version %d holding %q, want version %d holding the approved text", moved.number, moved.markdown, approved.number+1)
+	if moved.number != approved.number+2 || moved.markdown != approved.markdown {
+		t.Fatalf("the result and its retraction leave the Verification document at version %d holding %q, want version %d holding the approved text", moved.number, moved.markdown, approved.number+2)
 	}
 	request := requestApproval(t, handler, verification.id)
 	const checkText, changedText = "The list reads the urgent asks first.", "The list reads every ask."
@@ -444,8 +452,11 @@ func TestARestoreOfTheApprovedTextOverAMovedRecordCarriesNothing(t *testing.T) {
 		t.Fatalf("the undo leaves the Verification document at version %d holding %q, want version %d holding the approved text %q",
 			restored.number, restored.markdown, moved.number+2, approved.markdown)
 	}
-	if reviews := contentReviews(t, handler, verification.id); len(reviews) != 1 || reviews[0].Version != approved.number {
-		t.Fatalf("reviews = %#v, want alice's approval of version %d alone: version %d restores the approved text over another record", reviews, approved.number, restored.number)
+	if reviews := contentReviews(t, handler, verification.id); len(reviews) != 2 || slices.ContainsFunc(reviews, func(review model.ArtifactReview) bool {
+		return review.Version != approved.number && review.Version != approved.number+1
+	}) {
+		t.Fatalf("reviews = %#v, want alice's approval of version %d and its carry to the result's version %d alone: version %d restores the approved text over another record",
+			reviews, approved.number, approved.number+1, restored.number)
 	}
 	approval, version := restoreEvents(t, handler, issue.Key, verification.id, restored.number)
 	if approval.Seq != 0 || version.Seq == 0 {
@@ -475,7 +486,7 @@ func TestARestoreOfTheApprovedTextOverAMovedRecordCarriesNothing(t *testing.T) {
 // approves an older version than the request names; the spec's carry then reads the Verification
 // document's carry's queued review, finds both documents approved and answers the request. Where
 // the Verification document's record moved since alice approved it - a result recorded under its
-// check, which appends a version of the same bytes and moves no request (docs' ReviseQueries) -
+// check, which appends a version of the same bytes and moves no request (docs' DrainOwedQueries) -
 // the write phase drops that carry, and the answer the spec's carry decided on its review goes
 // with it: the request stays open, moved to the versions the settlement wrote, and no ask event
 // answers it, while the spec's own carry stands, approval first, naming the request it was given

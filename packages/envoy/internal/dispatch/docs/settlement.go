@@ -117,6 +117,10 @@ type settlement struct {
 	snapshotCursor int64
 	// published are the events this settlement appended, published once its transaction commits.
 	published []model.Event
+	// roomTuples says the pass over an issue room's versions states tuples in this settlement's
+	// write phase (commitRoomVersions), read where it queues the mark of the issue's queries owed
+	// (queueSettledQueryMark).
+	roomTuples bool
 }
 
 // savedNothing reports whether this settlement wrote nothing that a later move of an approval
@@ -1071,19 +1075,22 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			return settleDone, st.abandon(err)
 		}
 	}
+	// An issue room's write can move the record of a query whose document it writes no version of:
+	// a requirement written into the Verification document's fragment moves the spec's record and no
+	// byte of the spec. Such a version is no part of this transaction: its write phase marks the
+	// issue's queries owed last, after the events and the tuples it appends (queueSettledQueryMark),
+	// and the drain writes the versions once the settlement has committed (DrainOwedQueries).
+	marked := false
+	if versioning && len(st.layout) > 0 && st.owner.IssueKey != nil {
+		if err := st.queueSettledQueryMark(ctx, *st.owner.IssueKey, caused, &marked); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	}
 	// The write phase: every statement this settlement decided on, in the order it made them.
 	if err := ledger.runQueue(ctx, nil); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	st.published = ledger.events
-	// An issue room's versions stand in this transaction now, each with the digest of its query's
-	// record its room pass recorded (runQueue); a query whose record the write moved and whose
-	// document it wrote no version of takes one now (reviseQueries).
-	if versioning && len(st.layout) > 0 && st.owner.IssueKey != nil {
-		if err := st.reviseQueries(ctx, *st.owner.IssueKey); err != nil {
-			return settleDone, st.abandon(err)
-		}
-	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the
 	// room's state, and the room updates the settlement stored marked stored (commitSettlement); a
 	// settlement that writes no version takes out none. The room forgets the author of each ask
@@ -1112,7 +1119,17 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.commitFailed(advanced, fmt.Errorf("commit document settlement: %w", err))
 	}
 	st.finishSlots()
+	// The drain writes the versions of the queries this settlement left owed, before its events
+	// are published, and what it appended is published after them, which it follows in the log; a
+	// drain that fails leaves the mark to the block-index tick.
+	var drained []model.Event
+	if marked {
+		drained = s.DrainOwedQueries(ctx, *st.owner.IssueKey)
+	}
 	for _, event := range st.published {
+		s.events.Publish(event)
+	}
+	for _, event := range drained {
 		s.events.Publish(event)
 	}
 	st.reconciliation.logCopiedBlocks(room)
@@ -1133,33 +1150,28 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	return settleDone, settleOutcome{}
 }
 
-// reviseQueries appends, in the settlement's transaction once its write phase has run, a version of
-// each query document of the issue issueKey whose query's record or rendering this settlement's
-// room write moved without writing that document a version: a requirement written into the
-// Verification document's fragment moves the spec's record and no byte of the spec
-// (Service.ReviseQueries). What those versions state is caused by the last artifact.version the
-// settlement appended.
-func (st *settlement) reviseQueries(ctx context.Context, issueKey string) error {
-	revised, err := st.service.ReviseQueries(ctx, st.tx, issueKey, st.credit.versionActor())
-	if err != nil {
-		return err
-	}
-	return store.RunWrite(ctx, st.tx, func(b *store.WriteBatch) error {
-		graphstore.QueueCaused(b, revised, lastVersionEvent(st.published))
-		graphstore.QueueHeads(b, graphstore.HeldHeads(revised))
+// queueSettledQueryMark queues, last in the settlement's write phase, the mark of the queries of
+// the issue issueKey owed a version (QueueQueryMark), caused by the latest event the settlement
+// appended (graphstore.LatestEvent) and the latest tuple it appended, whose writer, the
+// settlement's version actor, the drain names its versions after. The mark's sequence is the last
+// one this session drew, so it is queued only where the write phase appends a tuple before it: the
+// pass over the room's versions states one (roomTuples, commitRoomVersions), or what the events the
+// settlement appends cause holds one (caused, causedByEvent), read when the step runs, after
+// appendEvents' own step read it. A settlement that appends no tuple moves no query's record.
+// marked says, once the write phase has run, whether the issue has converted and so took the mark.
+func (st *settlement) queueSettledQueryMark(ctx context.Context, issueKey string, caused map[int][]*graphstore.Uncaused, marked *bool) error {
+	return write(ctx, st.tx, func(b *store.WriteBatch) error {
+		states := st.roomTuples
+		for _, stated := range caused {
+			for _, held := range stated {
+				states = states || len(held.Tuples) > 0
+			}
+		}
+		if states {
+			QueueQueryMark(b, issueKey, graphstore.LatestEvent, marked)
+		}
 		return nil
 	})
-}
-
-// lastVersionEvent is the id of the last artifact.version of events, the events a settlement's
-// write phase appended, and graphstore.NoEvent where it appended none.
-func lastVersionEvent(events []model.Event) int64 {
-	for index := len(events) - 1; index >= 0; index-- {
-		if events[index].Type == "artifact.version" {
-			return events[index].ID
-		}
-	}
-	return graphstore.NoEvent
 }
 
 // roomVersion is the latest markdown version a document of an issue room holds, as
@@ -1486,6 +1498,13 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		order = append(order, document)
 	}
 	facts := roomFactsByDocument(index, roomReferencesDocument(room, versions, events, order))
+	// The pass's facts are appended after the version events of its own writes, so a pass that
+	// writes a version and states a tuple leaves this session's latest event and latest tuple its
+	// own, which the mark of the issue's queries reads (queueSettledQueryMark).
+	st.roomTuples = false
+	for _, stated := range facts {
+		st.roomTuples = st.roomTuples || len(writes) > 0 && len(stated.Tuples) > 0
+	}
 	// The room's references and its blocks' links name what the pass moved, and the last event
 	// carries them, as a document's one event does.
 	planned := make([]model.Event, len(writes))

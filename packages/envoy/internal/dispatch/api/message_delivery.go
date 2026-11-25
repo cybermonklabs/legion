@@ -1342,7 +1342,7 @@ func followUpRequested(r *http.Request) (bool, error) {
 // step that writes its index and the write of its node (planMessageReply). A follow-up names no
 // block, and its thread and issue are the first reply's, so the plan's serves both rows the route
 // can insert. Nothing of the body and nothing of the reply's own row is read here, so this write
-// holds the transaction id for its own statements alone (INFRA-636).
+// holds the transaction id for its own statements alone, which the xid window tests count.
 func (s *server) insertSessionReply(
 	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {
@@ -1350,20 +1350,25 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	// The reply's node goes in before its row; what that write states is appended in the batch
-	// that appends the message.answered event below (appendCausingEvent).
+	// The reply's node goes in before its row. The node write and the row's insert go to the
+	// server as one batch (store.WriteBatch), the node write first, as createStoredMessage writes
+	// a message's node and row: the node write adds no round trip while the reply holds its
+	// transaction id. What that write states is appended in the batch that appends the
+	// message.answered event below (appendCausingEvent).
+	var reply model.Message
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, plan.node)
+		b.Queue("", `
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8)
+			returning `+messageColumns+`
+		`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt).QueryRow(func(row pgx.Row) error {
+			var err error
+			reply, err = scanMessage(row)
+			return err
+		})
 		return nil
 	}); err != nil {
-		return model.Message{}, model.Event{}, err
-	}
-	reply, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
-		returning `+messageColumns+`
-	`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt))
-	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
 	// The block was read above the route's locks, where this row did not exist yet, so the

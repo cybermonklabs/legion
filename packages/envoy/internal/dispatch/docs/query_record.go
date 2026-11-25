@@ -972,3 +972,27 @@ func writeRecordField(record *bytes.Buffer, field string) {
 	record.WriteByte(' ')
 	record.WriteString(field)
 }
+
+// recordNodeFields is how many fields a record writes of each node it takes (QueryRecord): its
+// address, its type, its parent's address, its rank, its values, its text and its relations.
+const recordNodeFields = 7
+
+// nextRecordEntry is the entry of the first node record holds, the bytes of a query's record from
+// a node's first field on (QueryRecord): that node's recordNodeFields fields, each its byte length,
+// one space and its bytes (writeRecordField); and the record after it. ok is false where record
+// does not open with a whole entry.
+func nextRecordEntry(record []byte) (entry, rest []byte, ok bool) {
+	rest = record
+	for range recordNodeFields {
+		space := bytes.IndexByte(rest, ' ')
+		if space < 1 {
+			return nil, nil, false
+		}
+		length, err := strconv.Atoi(string(rest[:space]))
+		if err != nil || length < 0 || length > len(rest)-space-1 {
+			return nil, nil, false
+		}
+		rest = rest[space+1+length:]
+	}
+	return record[:len(record)-len(rest)], rest, true
+}

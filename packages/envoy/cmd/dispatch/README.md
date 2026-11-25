@@ -165,6 +165,8 @@ An issue imported from GitHub (`POST /api/v1/issues` with `external`) names its 
 No setting seeds a default repository or chooses the project of an import.
 A boot that still sets one of the two settings that did is refused, naming what replaced it (`removedSettings` in `cmd/dispatch/settings.go`).
 
+Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
+
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
@@ -3197,6 +3199,38 @@ that one-release gap is the author's to reason about, and the two-build test (Tw
 The five-second `pgmigrate.LockTimeout` also bites harder under a rolling update than under `Recreate`, which stops the previous pods before the new one boots:
 while a deployment rolls, the old build's connections are still open and still holding locks on the tables the migration wants, so a migration that applies cleanly against an idle database can fail the new pod's boot.
 
+### Giving a project to another owner
+
+Every project has one owner, the full member who changes its access list and whether it is public or private (`projects.owner`).
+An operator gives any project to another full member with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-owner <KEY> <email>
+```
+
+It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` with change `owner`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
+Who owned the project before, and whether that person is still a member, makes no difference.
+It exits 0 once the change commits;
+2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
+and 1 when the database cannot be opened or written.
+No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`), and so is an owner that is empty or not lowercase (the column's check).
+Giving a project to the person who owns it already writes nothing, and the command says so.
+
+Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in.
+An insert that names no owner, every project create included, takes its default assignee as owner (`projects_owner_from_default`).
+A project whose default assignee had never signed in when the migration ran would keep no owner, so the migration's census counts such projects, and a count above `0` refuses the deploy.
+Repair them before it, on the release still serving: give each a default assignee who has signed in with `PUT /api/v1/projects/{key}/default-assignee`, then deploy again.
+They are listed there by the query `20261116015736_project_access.census.sql`'s header gives:
+
+```sql
+select key, default_assignee from projects p
+where not exists (select 1 from people where email = p.default_assignee);
+```
+
+Should a project still have no owner at boot, the boot refuses to serve while any project has none, naming each one by its key, and both repairs, and no person's email, since it writes the refusal to its log (`store.EnsureProjectOwners`, run at boot, before the server serves):
+set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project, each grant recorded as the command's is (`project.access_changed`, written by the actor `{"kind": "system", "id": "DISPATCH_PROJECT_OWNER_FALLBACK"}`);
+or give each one an owner with the command above.
+
 ### Pre-deploy census
 
 `envoy-dispatch census` is run before a new image goes out, with the service's `DATABASE_URL` and under the service's own database credentials, and it is a gate:
@@ -3682,6 +3716,9 @@ The kinds are:
   An edge an old arm answers from an `asks` or `ask_followers` row that names no node — one a process of the release before wrote, or one the ask's writer leaves unmarked because a document it names is past the store's bound, while it writes the ask's node all the same — is no row of these kinds, as that row is none of the kinds above: `ask_parent_edge` and `ask_anchor_edge` count the asks past the bound as `addresses_past_bound`, and `followed_by_edge` the followers past it.
   A deployment holds none of these kinds until somebody writes one, so one with no row and no tuple is no refusal, as a tie kind's is.
 
+- `keep_shaped_sum`, the Keeps of decisions that carry `shaped`, read in Go, since only Go renders a decision's words: its rows are those Keeps' `decision_keeps` rows and its nodes the `kept_text_sum` each one's decision holds now, and a `census: store kind=keep_shaped_sum owed_rows=<n>` line counts the Keeps whose stored sum is the sum of the decision's words with `shaped`, which the backfill's Keep pass (below) rewrites.
+  Such a Keep is no difference: the count reads zero once the pass has run, and a deployment that holds no Keep of such a decision holds no row of the kind, which is no refusal.
+
 - `copied_from`, `moved_to` and `removed_by`, which no table projects, on `census: store-only kind=<kind> tuples=<n> unresolved=<n> left_out=<n>` lines: how many the store states now, how many of those reach a far end that does not resolve — a `copied_from` to an ask node not `gone`; a `moved_to` to a block a `document_blocks` row holds, at once or through at most seven more `moved_to` tuples, so a citation of its near end resolves within the eight a resolver follows (`graphstore.MovedTo`), or to an ask node not `gone`, as a `copied_from` does, which ends the chain (the heading of a section that cites an answered ask a person removed); a `moved_to` from a document's address, which the pre-mortem conversion writes from the document it retires, to the lens it wrote in the document's place, not `gone`, where that move stops; and a `removed_by` to a person node — and how many reach a far end in a document that still owes its block index, which holds no row yet for a block its latest version holds and which the census leaves out.
   An unresolved far end refuses the census; a count does not, and neither does a far end left out.
   The read takes the three kinds' tuples through `graph_tuples_current`, an index of the store's own set, rather than reading `graph_tuples` whole: it walks every block, ask and document node that states a relation (a `moved_to` leaves a block, or the address of a document the pre-mortem conversion retired), one probe of that index per node, and reads each one's tuples of the three kinds through one more probe.
@@ -3824,6 +3861,12 @@ The reconciliation's index pass over a document or an issue room it lists as owe
 A version write of this build whose own index pass drains `store_owed_at` writes them too, all but its own, whose node its write states with its writer and event;
 where more than 100 are missing it writes none of them and owes the document its block index again, so the reconciliation's next tick writes them out of the request (`TestAVersionWriteLeavesMoreMissingVersionNodesThanItsBoundToTheTick`).
 A version that release writes and indexes in one request, of a document this build has already drained, leaves neither mark, and no tick of this build lists the document: that version's node stands at the next run of the backfill.
+
+It then rewrites each Keep a release before this one summed over a decision's words with its `shaped` attribute (R32 of the child that moves issues and their documents): this build leaves `shaped` out of a decision's words in `refs.DecisionWords`, the one function every sum of them goes through, so a write of `shaped` alone stales no Keep, and such a Keep would otherwise read as unmatched although nobody changed a word of its decision.
+For each Keep whose decision carries `shaped` and whose stored sum, its `decision_keeps.text_sha256` or its node's `kept_text_sum`, is the sum of the decision's words with `shaped`, the pass writes the sum of the same words without it, which every read of the decision answers; a Keep whose stored sum is any other keeps it, so a Keep that did not match still does not.
+The words are read as the Decisions read reads them (`decisionread.WordSumsOf`), so the pass is Go and no SQL migration.
+`decision_keeps` takes no marker column, so the old sum is the marker: the pass walks the Keeps batch by batch on the table's primary key, takes each batch's owner rows first, reads its Keeps and their decisions' words again under them, and writes the rows, then the `kept_text_sum` values at no event and by the run, then their head rows; a second run rewrites nothing.
+The report prints its `kind=keep_shaped_sum` line, and every run, the boot's among them, logs `dispatch: backfill keep pass` with `rewrote=` and `remaining=`, since the boot's run writes no pass's report.
 
 A block's parent is the one fact it does not write.
 The parent is the nesting of the rendered version, which no column of `document_blocks` holds, and the version's stored markdown cannot give it either, since a paragraph's id is no part of that text; only the server renders the document the ids belong to.
@@ -4312,6 +4355,8 @@ A forced one also records `forced` with an empty `past` on its `issue.created` e
 
 Each answer the gate gives a create is one row of `near_copy_checks` (`api/near_copy_checks.go`), read through `GET /api/v1/near-copy-checks` and `GET /api/v1/near-copy-checks/{id}`:
 `refused`, `forced`, `nudged`, `passed` or `not_made`, with the reason a check was not made (`bound`, `failed` or `unrecorded`), the candidates it read with their scores, and, for a refused create alone, the spec it refused.
+Each row also holds how long the create waited on the gate's read, its transaction's rollback included (`read_ms`), and the step the read was in when it answered or ended (`read_stage`: `connect`, taking a pool connection and opening the read transaction; `terms`, picking the new text's rarest words; `keys`, reading the lexemes the project's issue keys give; or `score`, scoring the project's open issues, which every answered read ends in), so a `bound` or `failed` row says at which step its read was waiting;
+both are null on a row written before Dispatch recorded them (`20261125005337_near_copy_checks_read_time`).
 A refusal is answered only once its row is known to be written, so every `409 POSSIBLE_DUPLICATE` has its row;
 otherwise the refusal refuses nothing, and the create goes in as `not_made`, reason `unrecorded`, its row written in its own transaction under the id the refusal used, so it replaces a refused row whose insert landed unseen.
 Every other create's row is written after the commit, bounded to one second (`nearCopyRecordTimeout`), and tried once more in the background for up to 30 s (`retryRecord`) when a timeout or a lock stopped it, as a `related_checks` row is;
@@ -6098,7 +6143,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/nodes/{id}/settle` (POST; cookie, trusted header, or bearer)
 
   Settle the proposed node `{id}` names, `{actor?}` (an empty body too): one `state` tuple at `settled`, written by the caller, at no event (`settleNode`).
-  A node the caller may not see under the issue is `404 NOT_FOUND`, the bytes a node nobody wrote answers but for the id. A gone node is `409 NODE_GONE`, naming it.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, the bytes a node nobody wrote answers but for the id.
+  A gone node is `409 NODE_GONE`, naming it.
   A settle on the block of an `:::ask` block returns `409 ASK_HOLDS_STATE` and writes nothing, naming the ask whose node holds the question's state (the block's own ask or the source ask for a copy) or saying no ask holds it yet (`askHoldsState`).
   Any other node not at `proposed` is `409 NODE_NOT_PROPOSED`.
   A person settles any proposal - a browser's cookie, or a token holding the `person` scope, whose settle is written as the person it acts for (`actingPerson`) - and any other caller only a proposal whose recorded author, its `made_by`, is the author its credential proves, by the one author rule (`maySettle`, `graphstore.SameAuthor`, the Go half of `graphstore.AuthorIsSQL`): the same person for a personal token or a broker session that names a person, the same session for a broker session that names none (`model.Actor.Proven`), and the same workload for a pod's service-account token; any other caller is `403 SETTLE_NOT_PERMITTED`, naming the node.
@@ -6253,16 +6299,16 @@ Each item below names a path with its method and identity, then its purpose.
   A closed issue's document is `409 ISSUE_CLOSED`, before any other 409; an issue's plan is `409 PLAN_APPROVED_BY_REVIEW`, as its plan review approves it, and a project `plan.md` is no plan.
   The question is `Approve <name> (version <N>)?`, or `Approve <name> (version <N>) and <name> (version <N>)?` for a request naming two documents, followed by the optional `summary` (blank is `400 SUMMARY_INPUT`;
   past the ask cap at the longest version a request can reach, ten digits, is `400 CAP_EXCEEDED` naming `summary`).
-  A request on a document a human approved earlier names that approval in `ask.approval.approved` (`{version, at, by}`);
-  a first request carries no `approved` key.
-  One open approval row follows every document version in place, rewording its question and emitting `ask.edited`;
-  while its `requested_version` is below the new version it waits on the agent.
-  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one, or with those bytes but for the server-owned attributes of its ask blocks, each block agreeing with its ask, as the version a person's answer, resolve, decline or an issue's reopen writes;
+  A request on a document a human approved earlier names that approval in `ask.approval.approved` (`{version, at, by}`); a first request carries no `approved` key.
+  One open approval row follows every document version in place, rewording its question and emitting `ask.edited`; while its `requested_version` is below the new version it waits on the agent.
+  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one, or with those bytes but for the server-owned attributes of its ask blocks, each block agreeing with its ask, as the version a person's answer, resolve, decline or an issue's reopen writes when that is its whole change;
   a version a route writes (a named version, an upload, an edit) moves it to the agent whatever its bytes.
   Only the first move since the request was opened or handed back notifies, even when a thread reply had already left it waiting on the agent;
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.
-  A person's answer, resolve, decline, close or reopen of an ask writes one version, changing only its block's `state`, `answered_by` and `answered_at`:
+  A person's answer, resolve, decline, close or reopen of an ask writes one version, which changes only its block's `state`, `answered_by` and `answered_at` when that is the version's whole change:
   a standing approval carries to it and the row keeps its turn, but a close withdraws the row and its version carries no approval, until the reopen's carries it.
+  The version carries an approval only when the person's answer, resolve or decline is its whole change.
+  If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
   A second call does one of two things, by what the row waits on:
 
   - Calling this route again while the row waits on the agent - moved, or a thread reply newer than its last hand-back holds the turn - hands it back to the human:

@@ -56,7 +56,7 @@ type API interface {
 	Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger)
 	JoinWrite(ctx context.Context, artifactID string) error
 	NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error)
-	ReviseQueries(ctx context.Context, tx pgx.Tx, issueKey string, writer model.Actor) (graphstore.Uncaused, error)
+	DrainOwedQueries(ctx context.Context, issueKey string) []model.Event
 	Evict(ctx context.Context, artifactID string) error
 	Quiesce(ctx context.Context) error
 }

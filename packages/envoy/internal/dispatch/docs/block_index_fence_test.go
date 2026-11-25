@@ -1199,16 +1199,24 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 // artifact of the room the pass covers no version of. The reconciliation of one document
 // (indexOwedDocument) adds another: under the document's owner lock, where the document holds no
 // markdown version to index, it clears the document's marks and states it at the version it
-// leaves.
+// leaves. The drain of a query mark (queueRevisionStand) sends the fence's own statement, by its
+// name: under the issue's owner lock, in the drain's batch, it stands the index of a version that
+// stores the bytes of the version before it at the new version, where it stood at that one.
 var fencedWriters = []struct{ file, function string }{
 	{"refs/block_stand.go", "func (b BlockIndexing) queueStand("},
 	{"docs/block_index.go", "func (s *Service) indexOwedRoom("},
 	{"docs/block_index.go", "func (s *Service) indexOwedDocument("},
+	{"docs/version_render.go", "func queueRevisionStand("},
 }
 
 // owedRowWrite matches one statement of a Go source file that writes document_block_versions,
 // up to the backtick that ends it.
 var owedRowWrite = regexp.MustCompile("(?is)(insert into|update)\\s+document_block_versions\\b[^`]*")
+
+// fenceStatementSend matches one use of the revision fence's statement by its name
+// (refs.RevisionFenceStatement), which writes a revision into document_block_versions wherever it
+// is sent, though the file that sends it holds none of its text. Its declaration is no send.
+var fenceStatementSend = regexp.MustCompile(`\bRevisionFenceStatement\b`)
 
 // requireOnlyTheFenceWritesTheOwedRow reads the source tree and fails on any statement that
 // writes a revision into document_block_versions outside the fenced writers. Each part of a
@@ -1217,9 +1225,11 @@ var owedRowWrite = regexp.MustCompile("(?is)(insert into|update)\\s+document_blo
 // revision where any part does. A set that assigns the revision null owes the document an index
 // and asserts nothing, so it is allowed wherever it is, and it excuses no other part of its
 // statement: an insert whose column list names `version` is the fence's alone even where its
-// conflict arm sets `version = null`. A backfill or a repair that wrote one would be caught here
-// rather than in production. Each fenced writer must hold such a statement, so the list names no
-// writer that is gone.
+// conflict arm sets `version = null`. A send of the fence's own statement by its name
+// (refs.RevisionFenceStatement, fenceStatementSend) is held to the same writers, so a new caller
+// of it fails here until it is named. A backfill or a repair that wrote one would be caught here
+// rather than in production. Each fenced writer must hold such a statement or such a send, so the
+// list names no writer that is gone.
 func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 	t.Helper()
 	found := 0
@@ -1241,16 +1251,23 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 				continue
 			}
 			found++
-			enclosing := enclosingFunction(text, match[0])
-			fenced := false
-			for index, writer := range fencedWriters {
-				if strings.HasSuffix(filepath.ToSlash(file), writer.file) && strings.HasPrefix(enclosing, writer.function) {
-					fenced, wrote[index] = true, true
-				}
-			}
-			if !fenced {
+			if !heldToTheFence(file, enclosingFunction(text, match[0]), wrote) {
 				t.Errorf("%s writes a revision into document_block_versions in %q, outside the fenced writers %+v:\n%s",
-					file, enclosing, fencedWriters, statement)
+					file, enclosingFunction(text, match[0]), fencedWriters, statement)
+			}
+		}
+		// A send of the fence's statement by its name writes the same revision as its text: each
+		// is held to the fenced writers too, read off the code alone, so a comment naming the
+		// statement sends nothing.
+		code := goLineComment.ReplaceAllString(text, "")
+		for _, match := range fenceStatementSend.FindAllStringIndex(code, -1) {
+			if strings.HasSuffix(code[:match[0]], "var ") {
+				continue
+			}
+			found++
+			if enclosing := enclosingFunction(code, match[0]); !heldToTheFence(file, enclosing, wrote) {
+				t.Errorf("%s sends the revision fence's statement (refs.RevisionFenceStatement) in %q, outside the fenced writers %+v",
+					file, enclosing, fencedWriters)
 			}
 		}
 	}
@@ -1262,6 +1279,18 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 			t.Errorf("%s %s writes no revision into document_block_versions: the fenced writer this test names is not where it looks", writer.file, writer.function)
 		}
 	}
+}
+
+// heldToTheFence reports whether the function enclosing, of file, is one of fencedWriters, and
+// marks it in wrote where it is.
+func heldToTheFence(file, enclosing string, wrote []bool) bool {
+	fenced := false
+	for index, writer := range fencedWriters {
+		if strings.HasSuffix(filepath.ToSlash(file), writer.file) && strings.HasPrefix(enclosing, writer.function) {
+			fenced, wrote[index] = true, true
+		}
+	}
+	return fenced
 }
 
 // outsideTheFence is the writer R23 reads as outside the fence: the item block pass, which writes

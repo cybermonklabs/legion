@@ -12,7 +12,8 @@
 #
 # The base bakes the browsers and every host package they need under /ms-playwright, with
 # PLAYWRIGHT_BROWSERS_PATH pointing at it, and its Playwright version is the one bun.lock
-# resolves (1.64.1, bun.lock:741,1967). .github/scripts/check-playwright-version.sh refuses a
+# resolves (1.64.1: `bun.lock#"@playwright/test@1.64.1"` and `bun.lock#"playwright@1.64.1"`).
+# .github/scripts/check-playwright-version.sh refuses a
 # head where the two disagree: it reads the base FROM below, finds that digest's row, and takes
 # the Playwright release out of that row's upstream tag. The base is this repository's own copy
 # of mcr.microsoft.com/playwright:v1.64.1-noble, row playwright-v1.64.1-noble-2f05f8a7;
@@ -37,7 +38,8 @@ LABEL org.opencontainers.image.description="Playwright v1.64.1-noble with Postgr
 
 # What the base image already carries, read from its own config history and then from the built
 # image rather than guessed: node 26 and npm (NODE_VERSION=26, not 24), yarn, curl, wget, gpg,
-# ca-certificates (so the openssl CLI too, which run-server.sh's `openssl genrsa` needs), git,
+# ca-certificates (so the openssl CLI too, which `packages/dispatch/e2e/run-server.sh#openssl genrsa`
+# needs), git,
 # openssh-client, zstd, `flock` (util-linux is an Ubuntu base package), a `pwuser` at
 # **uid 1001, gid 1001** -- not 1000 -- and the browsers at /ms-playwright. Its apt sources
 # point at azure.archive.ubuntu.com, which this build inherits. A stalled mirror here fails one
@@ -115,8 +117,8 @@ RUN set -eux; \
       # `DejaVuSans.ttf: "DejaVu Sans" "Book"`, and in this base, which carries Playwright's
       # `tools` fonts and no DejaVu at all, it answers
       # `wqy-zenhei.ttc: "WenQuanYi Zen Hei" "Regular"` -- a CJK face with different metrics.
-      # Every layout row of the suite measures text, and one of them
-      # (agent-view.e2e.ts:922, the reasoning link's padded box) failed by 0.8 px in runs
+      # Every layout row of the suite measures text, and one of them, the reasoning link's padded
+      # box (`packages/dispatch/e2e/agent-view.e2e.ts#on a phone the live view keeps a reasoning link's padded box off the line above`), failed by 0.8 px in runs
       # 42338254048, 42339402235 and 42340825955 for exactly that reason. fonts-dejavu-core is
       # 1.1 MB and makes the two machines resolve the same family. The assertion block below is
       # what holds the answer where it has to be.

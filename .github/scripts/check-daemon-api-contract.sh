@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `const DaemonAPIVersion` in packages/daemon/internal/api/version.go is the one number a daemon
+# `packages/daemon/internal/api/version.go#const DaemonAPIVersion` is the one number a daemon
 # and the Legion plugin in its pods must agree on: the boot gate refuses a pair whose numbers
 # differ. So two changes that declare the same number cannot both be right, and the one that lands
 # second has to take another number after its review has already run. Nothing caught that before

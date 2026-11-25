@@ -2563,11 +2563,16 @@ func (r *issueRestore) blockPointer(address string) (string, bool) {
 // document no row names: the block as that document's live tree holds it, under the id it takes,
 // its `shaped` pointers each as it reads once the pass is written (movedPointers), read back as
 // the document's own markdown pipeline makes it. On a fleet of one build it holds what a version
-// of the spec stores of it, as storableVersionTree decides that for the spec (keptAskBlocks). A
-// copy of an ask another document of the issue holds keeps the form a version keeps of its
-// source - the state where that is not open, the answerer and time, and copied_from and
-// copied_from_document - and loses the answer's words and selection and an open state
-// (withoutUnkeptAskAttributes). A block that is no copy loses every attribute a version can store
+// of the spec stores of it, as the spec's settlement and a version of the spec read the ask of the
+// block once it stands there (askBlockAsks). A copy of an ask another document of the issue holds
+// takes the form a version keeps of its source - the state where that is not open, the answerer
+// and time, and copied_from and copied_from_document - as the source's node holds it when the
+// step runs (keptFromItsNode), and holds no answer's words or selection and no open state
+// (keptAskState). The copy's own attributes are not that form: they show the source as the copy's
+// last settlement read it, and an answer or a resolution of the source arms the copy's next
+// settlement for after its commit (SettleCopiesOf), which the step can run before. A block the
+// spec's own row names loses the answer's words and selection and an open state
+// (withoutUnkeptAskAttributes). A block that is neither loses every attribute a version can store
 // (withoutStoredAskAttributes, R10): no ask's state stands behind them, and the settlement after
 // the write opens its ask and writes that state. No row holds its question to build it from, and
 // none names it to rebind.
@@ -2590,23 +2595,33 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock,
 	}
 	// While another build serves, the block keeps the attributes a version can store, which that
 	// build's pages read. The one-build strip of a block that is no copy is R10's and stays; this
-	// branch goes with the roll window, and the lighter strip of a copy goes with the form a
+	// branch goes with the roll window, and the source's form a copy takes goes with the form a
 	// version keeps.
 	// kept for one release: roll-window-attributes
 	if twoBuilds {
 		return movedAskBlock(node, restore)
 	}
-	strip := withoutStoredAskAttributes
 	// kept for one release: stored-ask-state
-	withAsk, err := keptAskBlocks(ctx, r.tx, r.spec.id, &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
+	rows, sources, err := askBlockAsks(ctx, r.tx, r.spec.id, &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
 	if err != nil {
 		return nil, err
 	}
+	_, indexed := rows[restore.id]
+	source, copied := sources[restore.id]
+	switch {
 	// kept for one release: stored-ask-state
-	if withAsk[restore.id] {
-		strip = withoutUnkeptAskAttributes
+	case copied:
+		nodes, err := askNodeAnswers(ctx, r.tx, []string{source.ask.ID})
+		if err != nil {
+			return nil, err
+		}
+		keptAskState(keptFromItsNode(source.ask, nodes), source.document)(node)
+	// kept for one release: stored-ask-state
+	case indexed:
+		withoutUnkeptAskAttributes(node)
+	default:
+		withoutStoredAskAttributes(node)
 	}
-	strip(node)
 	return movedAskBlock(node, restore)
 }
 
