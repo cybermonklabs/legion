@@ -535,7 +535,7 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The tester's one row takes the keyed agent's claim and its step, or is written where none
-	// stands: the primary key of phases holds the step (20261125044726), so an upsert keyed on it
+	// stands: the primary key of phases holds the step (20261125114500), so an upsert keyed on it
 	// would add a second tester row beside one of no step rather than move that one to the step.
 	if _, err := st.Pool().Exec(ctx, `with moved as (update phases set claim = $2, step_task = 'a', step_place = 2
 		where issue = $1 and role = 'tester' returning 1)

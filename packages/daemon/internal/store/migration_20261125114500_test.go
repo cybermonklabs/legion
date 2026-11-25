@@ -11,13 +11,13 @@ import (
 
 // phaseStepKeyVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const phaseStepKeyVersion = 20261125044726
+const phaseStepKeyVersion = 20261125114500
 
 // phaseStepKeyRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
 const phaseStepKeyRelease = "the release that keys a phases row by its step"
 
-// 20261125044726 keys phases by the issue, the role and the step the row runs, so a role that
+// 20261125114500 keys phases by the issue, the role and the step the row runs, so a role that
 // stands at two steps of a task keeps a row for each. Every row the release before left keeps its
 // step, and an issue's rows with no step keep one row for each role. The release before writes a
 // row with an upsert whose conflict target is (issue, role), which no unique index of exactly those
@@ -86,7 +86,7 @@ func TestAPhasesRowIsTheRowOfAStepAndTheWayBackFoldsARolesRows(t *testing.T) {
 	if got := rowsAsText(t, store, `select entry::text from phases where issue = 'LEGION-209'`); !reflect.DeepEqual(got, []string{"2"}) {
 		t.Fatalf("the tester's entry after the release before's upsert = %v, want 2", got)
 	}
-	if got := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261125044726`); !reflect.DeepEqual(got, []string{"0"}) {
+	if got := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261125114500`); !reflect.DeepEqual(got, []string{"0"}) {
 		t.Fatalf("the version rows of the migration after the way back = %v, want none", got)
 	}
 

@@ -1105,7 +1105,7 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does a migration that changes a table a version of the list creates, as
-// 20261124213820 adds a column to 20261117034837's plan_steps and 20261125044726 writes the key
+// 20261124213820 adds a column to 20261117034837's plan_steps and 20261125114500 writes the key
 // of phases over the two columns 20261117034837 adds: left out, it is applied as main's, before
 // that table or those columns exist; and one that replaces an index a version of the list creates,
 // as 20261124213821 replaces 20261105183200's pod_resumes_one_open_per_role. 20261119203047 is the
@@ -1123,7 +1123,7 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
-	20261123212127: true, 20261124213820: true, 20261124213821: true, 20261125044726: true,
+	20261123212127: true, 20261124213820: true, 20261124213821: true, 20261125114500: true,
 }
 
 const idleRelease = 20261101222956
