@@ -187,12 +187,13 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 		t.Fatalf("delete the role bucket: %v", err)
 	}
 	// The longest wait of this package, and the one wait that does not take listenerWaitBound. The
-	// view keeps answering until its watcher has noticed the bucket is gone, which is a sequence of
-	// the watcher's own bounds (internal/kvwatch: a stream probe every streamProbeInterval, the
-	// confirm it waits for at streamConfirmMaxAge, the reread after it at rereadDelay, and the
-	// scan's ScanIdleTimeout, about 21 s together), measured at 20.03 s and 19.98 s over two
-	// whole-package runs under load. Three of those four constants are unexported, so this row
-	// cannot state the sum and derive a bound from it.
+	// view keeps answering until its watcher has noticed the bucket is gone, and what it waits out
+	// is four of nats.go's ordered-consumer heartbeat interval (orderedHeartbeatsInterval, 5 s):
+	// measured at 20.03 s and 19.98 s over two whole-package runs under load, and 20.4 to 20.5 s
+	// over five runs of its own. An independent reading moved each candidate constant in turn:
+	// multiplying internal/kvwatch's four by five left the row at 20.52 s, while the heartbeat at
+	// 15 s gave 60.47 s and at 25 s gave 100.49 s. So the sum of kvwatch's bounds is not what this
+	// row waits out, and the one constant that is lives in a dependency.
 	//
 	// claimsViewNoticesBucketGone is ten times that need, which is the headroom the package's cap
 	// gives every other wait: the minute cap would be barely three times it, near enough that a

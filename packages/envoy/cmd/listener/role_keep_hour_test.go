@@ -160,9 +160,11 @@ func (r *hourRig) letSweepsRun() {
 		if !l.sweepStarted {
 			r.t.Fatalf("listener %d's sweep was waited for before startSweeps started it", i)
 		}
-		// The pass in flight now may have begun before the call; the two after it did not.
+		// The pass in flight now may have begun before the call; the two after it did not. Three
+		// passes need about 600 ms (hourSweepInterval), so the package's own bound leaves this
+		// wait a hundred times what it needs, far past the ten times a wait of its own would take.
 		through := l.sweepPasses.Load() + 3
-		waitFor(r.t, 20*time.Second, fmt.Sprintf("two more passes of listener %d's kept-lane sweep", i), func() bool {
+		waitFor(r.t, fmt.Sprintf("two more passes of listener %d's kept-lane sweep", i), func() bool {
 			return l.sweepPasses.Load() >= through
 		})
 	}
