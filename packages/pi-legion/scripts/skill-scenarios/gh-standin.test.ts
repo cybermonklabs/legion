@@ -16,6 +16,7 @@ const runs = {
   sound: temporaryDirectory("gh-standin-sound", { real: true }),
   unrouted: temporaryDirectory("gh-standin-unrouted", { real: true }),
   refused: temporaryDirectory("gh-standin-refused", { real: true }),
+  moved: temporaryDirectory("gh-standin-moved", { real: true }),
 };
 const review = "^gh api .*pulls/702/reviews";
 
@@ -116,4 +117,56 @@ test("a route that refuses prints GitHub's body unfiltered, then gh's message, a
     'HTTP/2.0 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\nX-Github-Api-Version-Selected: 2022-11-28\r\n\r\n{"message":"Resource not accessible by integration","status":"403"}'
   );
   expect(call).toMatchObject({ route: refusal.match, exit: 1 });
+});
+
+// Catches: a press of a job's re-run that leaves every later read answering the attempt before it,
+// so the role presses again or reads the failed attempt as the head's; a route of one state
+// answering in another; and a move between two turns that the next call does not read.
+test("a press moves the world to its state, and a route with `when` answers only in that state", () => {
+  const routes = [
+    { match: "^gh run rerun 44", when: "", moves: "running", stdout: "" },
+    {
+      match: "^gh run rerun 44",
+      when: "running",
+      stderr: "run 44 cannot be rerun; This workflow is already running\n",
+      exit: 1,
+    },
+    { match: "^gh run view 44", when: "", stdout: "failed" },
+    { match: "^gh run view 44", when: "running", stdout: "running" },
+    { match: "^gh run view 44", when: "settled", stdout: "settled" },
+    { match: "^gh --version", stdout: "gh version 2.98.0" },
+  ];
+  const fixtures = path.join(runs.moved, "fixtures.json");
+  mkdirSync(runs.moved, { recursive: true });
+  writeFileSync(fixtures, JSON.stringify({ routes }));
+  const call = (...args: string[]) => {
+    const result = spawnWithin(
+      { ...SCRIPT_RUN, part: "gh-standin.ts" },
+      ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+      { env: { ...process.env, SKILL_SCENARIO_RUN: runs.moved } }
+    );
+    const recorded = readFileSync(path.join(runs.moved, "calls.jsonl"), "utf8").trim().split("\n");
+    return {
+      code: result.exitCode,
+      out: `${result.stdout.toString()}${result.stderr.toString()}`,
+      state: JSON.parse(recorded.at(-1) ?? "{}").state,
+    };
+  };
+  const read = () => JSON.parse(readFileSync(fixtures, "utf8")).state;
+  expect(call("run", "view", "44")).toEqual({ code: 0, out: "failed\n", state: "" });
+  expect(read()).toBeUndefined();
+  expect(call("run", "rerun", "44", "--failed")).toEqual({ code: 0, out: "", state: "" });
+  expect(read()).toBe("running");
+  expect(call("run", "view", "44")).toEqual({ code: 0, out: "running\n", state: "running" });
+  expect(call("run", "rerun", "44", "--failed")).toEqual({
+    code: 1,
+    out: "run 44 cannot be rerun; This workflow is already running\n",
+    state: "running",
+  });
+  expect(call("--version")).toMatchObject({ code: 0, out: "gh version 2.98.0\n" });
+  // The rig's move between two turns (rig.sh's fix_settle), read by the next call.
+  writeFileSync(fixtures, JSON.stringify({ ...JSON.parse(readFileSync(fixtures, "utf8")), state: "settled" }));
+  expect(call("run", "view", "44")).toEqual({ code: 0, out: "settled\n", state: "settled" });
+  // No route of the state names the press: the stand-in's loud failure, not an answer of another.
+  expect(call("run", "rerun", "44").code).toBe(97);
 });

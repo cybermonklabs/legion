@@ -4960,12 +4960,20 @@ stagings.push(() => {
   });
 });
 
-/** The pass of each fix-judge run named `fix-judge-<world>-head-<n>`, by n. */
+/** The pass of each fix-judge run named `fix-judge-<world>-head-<n>`, by n, held as one object of
+ * each row's first line, so a run that scores otherwise shows every row and each one's conditions. */
 function fixPasses(world: string, passes: Record<number, boolean>) {
-  for (const [n, pass] of Object.entries(passes))
-    expect(rowOf(`fix-judge-${world}-head-${n}`)).toMatch(
-      new RegExp(`^fix-judge-${world}-head-${n}\\tpass=${pass}\\tref=false\\tcase=${world} `)
-    );
+  const rows = Object.keys(passes).map((n) => `fix-judge-${world}-head-${n}`);
+  expect(Object.fromEntries(rows.map((name) => [name, rowOf(name).split("\n")[0]]))).toEqual(
+    Object.fromEntries(
+      Object.entries(passes).map(([n, pass]) => [
+        `fix-judge-${world}-head-${n}`,
+        expect.stringMatching(
+          new RegExp(`^fix-judge-${world}-head-${n}\\tpass=${pass}\\tref=false\\tcase=${world} `)
+        ),
+      ])
+    )
+  );
 }
 
 // Catches: an implementer of a red that is not the change's scored without one of the rule's
