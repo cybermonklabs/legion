@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
 
-import type { CheckBlock } from "../../../api/types";
+import type { CheckBlock, DisplayTree } from "../../../api/types";
 import { wordsOf } from "../../refs/tree-fragment";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
@@ -259,6 +259,64 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
     unsure: true,
   });
   expect(decided?.words).toEqual({ markdown: text, source, tree });
+});
+
+/** The type of every node of `tree`, its own first, each before its children's. */
+function typesIn(tree: DisplayTree | undefined): string[] {
+  if (tree === undefined) return [];
+  const content = Array.isArray(tree.content) ? (tree.content as DisplayTree[]) : [];
+  return [tree.type, ...content.flatMap(typesIn)];
+}
+
+// R5, the tester's finding at e55b07e9 on the real stack: the tree read answers a decision
+// node's text as its whole stored block, the lines that open and close its `decision` directive
+// included, and its reading as that block's, one `decision` node that carries the block's
+// attributes. The cell drew that node, its attributes with it ("DECISION shaped: … replaced
+// false"). It draws the decision's own words and their reading, as the outline's node does
+// (`tree-read/tree-nodes.ts`' `readingOf`), and the because line quotes their first block.
+test("an agent's decision the tree read answers as its whole stored block draws its own words, never its block's attributes", () => {
+  const heading = {
+    attrs: { level: 3 },
+    content: [{ text: "Keep it", type: "text" }],
+    type: "heading",
+  };
+  const paragraph = {
+    content: [{ text: "Keep the model pure. The page reads it.", type: "text" }],
+    type: "paragraph",
+  };
+  const text =
+    `:::decision{#d1 shaped="${statementRef("r1")}" replaced="false"}\n` +
+    "### Keep it\n\nKeep the model pure. The page reads it.\n:::";
+  const cut = { content: [heading, paragraph], type: "doc" };
+  const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1", { text, tree: cut })]), [
+    decision("d1", {
+      text,
+      text_tree: {
+        content: [
+          {
+            attrs: { id: "d1", replaced: "false", shaped: statementRef("r1") },
+            content: [heading, paragraph],
+            type: "decision",
+          },
+        ],
+        type: "doc",
+      },
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
+  ]);
+  const decided = groups[0]?.runs[0]?.decision;
+  expect(decided?.words, "the cell draws the decision's whole stored block").toEqual({
+    markdown: "### Keep it\n\nKeep the model pure. The page reads it.\n",
+    tree: cut,
+  });
+  expect(
+    typesIn(decided?.words?.tree),
+    "the cell draws the block's `decision` node, its attributes with it"
+  ).not.toContain("decision");
+  expect(decided?.quote, "the because line quotes the block's own lines").toBe("Keep it");
 });
 
 // R5: an agent's decision is quoted on the

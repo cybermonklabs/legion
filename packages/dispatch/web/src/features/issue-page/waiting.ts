@@ -1,12 +1,7 @@
-import type { IssueDetails } from "../../api/types";
+import type { Comment, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { askOfNode, type DecisionReads, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
-import {
-  type ChangeComment,
-  decisionNodeChanges,
-  deletedPostIds,
-  inReviewList,
-} from "./decision-review";
+import { decisionNodeChanges, deletedPostIds, inReviewList } from "./decision-review";
 import { askIdsOf, closedReadIds } from "./node-states/node-states";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
@@ -71,7 +66,7 @@ export function waitingOnReader(
   viewer: string | undefined,
   isCoverageStatement: (reference: string) => boolean,
   tree: TreeAnswer | undefined,
-  comments?: readonly Pick<ChangeComment, "deleted_at" | "id">[],
+  comments?: readonly Pick<Comment, "deleted_at" | "id">[],
   asksRead?: DecisionReads["asks"]
 ): WaitingOnReader {
   // Each open ask and node of the tree at or under an overtaken node taken out, the decisions

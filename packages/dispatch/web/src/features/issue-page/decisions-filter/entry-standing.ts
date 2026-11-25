@@ -26,9 +26,9 @@ interface StandingPeople {
  * by", or asked to change, after "Changed by" (`DECISIONS_WORDS.changed_by`), which the page draws
  * in place of the change's own word (R2, R3): the two states whose words lead to a name. Every
  * place that draws a decision's state reads this one rule: the Decisions view (`entryStanding`),
- * the Conversation Details panel (`IssueTree.tsx`'s `focusedNodeOf`) and the Spec view's decision
- * line (`spec-filter/SpecFilterBody.tsx`); the outline's row draws the same (`NodeRow.tsx`'s
- * `RowMargin`).
+ * the outline's row (`NodeRow.tsx`'s `RowMargin`), the Conversation Details panel
+ * (`IssueTree.tsx`'s `focusedNodeOf`) and the Spec view's decision line
+ * (`spec-filter/SpecFilterBody.tsx`).
  */
 export function standingParts(
   token: NodeState,
