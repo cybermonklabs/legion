@@ -453,6 +453,37 @@ func agentNames(named []PlanStep) []claim.Agent {
 	return got
 }
 
+// A name a key held is that key's alone, in every later version and generation: generation 1 names
+// key a implementer, and generation 2's version gives the implementer's step to key b, which takes a
+// name of its own, implementer-2, so it runs in no claim and no session of key a's. The steps of
+// generation 2 are named from the rows of generation 1, so the name is kept across the generation.
+// When key a comes back in generation 2 beside key b, key a keeps implementer and key b again takes
+// implementer-2. The fault: key b, a key of the later generation, takes implementer, the name key a
+// held in the earlier one.
+func TestAKeyOfALaterGenerationTakesNoNameAnEarlierKeyHeld(t *testing.T) {
+	first := ofGeneration(1, NameAgents(nil, nil, nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "tester"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	}))
+	second := NameAgents(first, nil, nil, ofGeneration(2, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "b"},
+		{Task: "t", Position: 2, Role: "tester"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	}))
+	if want := []claim.Agent{"implementer-2", "tester", "reviewer"}; !slices.Equal(agentNames(second), want) {
+		t.Fatalf("the names of generation 2 = %q, want %q: key b takes a name of its own, not implementer, which key a held", agentNames(second), want)
+	}
+	back := NameAgents(first, nil, nil, ofGeneration(2, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "b"},
+		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	}))
+	if want := []claim.Agent{"implementer-2", "implementer", "reviewer"}; !slices.Equal(agentNames(back), want) {
+		t.Fatalf("the names with key a back = %q, want %q: key a keeps implementer and key b takes a name of its own", agentNames(back), want)
+	}
+}
+
 // A key's name is its newest: rows of an earlier generation that named it otherwise do not move it
 // within a generation. Generation 2's default steps are named here from no earlier rows, so key a
 // takes its first role, implementer; the owner's version of that generation keeps that name, and

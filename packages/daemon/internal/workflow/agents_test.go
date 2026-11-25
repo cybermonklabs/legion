@@ -50,6 +50,42 @@ func TestALaterVersionGivesAFreshAgentANameOfItsOwnBesideAKeysName(t *testing.T)
 	}
 }
 
+// A name a key held stays that key's when a later version drops the key: version 1, `implementer
+// tester:k reviewer:k`, names key k tester, and version 2 gives key k's first step to a step with
+// no key or to another key, m. That step's agent would run in the claim tester and resume key k's
+// session; it takes a name of its own, tester-2, and the version is taken. A step with no key
+// beside a key that keeps its name is TestALaterVersionGivesAFreshAgentANameOfItsOwnBesideAKeysName.
+// The fault: the agent at key k's step takes tester, or the version is refused.
+func TestALaterVersionThatDropsAKeyGivesItsNameToNoOtherAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		later []string
+	}{
+		{name: "the key dropped and its step given to no key", later: []string{"implementer", "tester", "reviewer"}},
+		{name: "the key dropped and its step given to another key", later: []string{"implementer", "tester:m", "reviewer"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			apply := applyFacts(t, pool, engine)
+			root := stepRoot(t, pool, phase.Admitted)
+			key, gen := root.Key, root.Generation
+			mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "tester:k", "reviewer:k"))))
+			move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+			if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+				t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+			}
+			if got := agentsOfTask(planStandingOf(t, pool, engine, key, gen).plan, "a"); !slices.Equal(got, []claim.Agent{"implementer", "tester", "tester"}) {
+				t.Fatalf("the agents of version 1 = %q, want implementer, and key k named tester at steps 2 and 3", got)
+			}
+			mustTake(t, "version 2", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", tc.later...))))
+			if got := agentsOfTask(planStandingOf(t, pool, engine, key, gen).plan, "a"); !slices.Equal(got, []claim.Agent{"implementer", "tester-2", "reviewer"}) {
+				t.Fatalf("the agents of version 2 = %q, want implementer, tester-2 at step 2, a name of its own beside key k's tester, and reviewer", got)
+			}
+		})
+	}
+}
+
 // Every start of a step names the agent of that step in one string (record.SuperviseRequest.Agent,
 // plan.Agent.ID), the agent of its key or, for a step with no key, the agent of its task and place,
 // and the claim the start reaches records the agent whose session it holds: the agent of the start

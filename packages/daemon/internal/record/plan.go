@@ -190,13 +190,11 @@ type PlanStep struct {
 	// first form of that migration ran: a row it left holds "" and reads as no name, and the third
 	// pass of NameAgents leaves such a step to its fourth.
 	Agent claim.Agent
-	// LeaveSession is the session the claim of the step's agent recorded when the step was
-	// written, where that agent took a name a key's agent held in an earlier generation, so the
-	// claim's session is that key's: every start of the step's agent carries it
-	// (SuperviseRequest.LeaveSession), and the claim leaves it where it still records it
-	// (supervise's revive). Only the project's default steps set it (workflow's
-	// leaveKeySessions), since an owner's version that would give a key's name to another agent
-	// is refused (UnnamedAgents); every other step holds "".
+	// LeaveSession is the session the claim of the step's agent must not resume: every start of
+	// the step's agent carries it (SuperviseRequest.LeaveSession), and the claim leaves it where it
+	// still records it (supervise's revive). No writer sets it now: NameAgents gives no agent a name
+	// a key held, so every step is written with "", and only a stored row that already holds a
+	// session has its starts carry one.
 	LeaveSession string
 }
 

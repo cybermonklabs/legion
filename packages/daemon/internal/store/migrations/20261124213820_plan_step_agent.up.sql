@@ -9,10 +9,10 @@
 --
 -- plan_steps.leave_session is record.PlanStep.LeaveSession: the session the claim of the step's
 -- agent recorded when the step was written, where that agent takes a name a key's agent held in an
--- earlier generation, so its claim's session is that key's. Only the project's default steps
--- write one (workflow's leaveKeySessions); every start of the step's agent carries it
--- (record.SuperviseRequest.LeaveSession), and the claim leaves it where it still records it. Every
--- other row holds the empty string, and so does every row the table already holds.
+-- earlier generation, so its claim's session is that key's. No writer sets it now, since
+-- record.NameAgents gives no agent a name a key held; every start of the step's agent carries it
+-- (record.SuperviseRequest.LeaveSession), and the claim leaves it where it still records it. Each
+-- row is written with the empty string, which every row the table already holds takes too.
 --
 -- plan_key_names is record.KeyName, the lasting record of every name a key's agent held on an
 -- issue: record.PutPlan writes one row for each step of a key (but the owner's), and
@@ -25,9 +25,7 @@
 -- as the plan tables name none (20261117034837_issue_plans), because an owner can give a plan
 -- before the daemon records its issue, at generation 0, and PutPlan writes this table with it; so
 -- an operator who removes an issue's record by hand removes its rows here too. Each row holds the
--- latest generation whose steps gave the key that name (record.KeyName.Generation), which tells a
--- row with no key that shows the name before the key held it from one written after it (workflow's
--- handedBefore). The table is filled below from the plan_steps rows this migration names.
+-- latest generation whose steps gave the key that name (record.KeyName.Generation). The table is filled below from the plan_steps rows this migration names.
 --
 -- Every row the table already holds is named by the update below with the name record.NameAgents
 -- gave it, where the rows it holds still show that name. A step with no key is named for its role:

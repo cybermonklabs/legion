@@ -40,10 +40,10 @@ import (
 // agent of the session it begins or takes (Claim.SessionAgent, revive).
 //
 // LeaveSession is the session the start's claim must not resume (record.SuperviseRequest's
-// LeaveSession): the session of a key's agent, recorded by the claim of a name that agent held,
-// which a step's agent of a later generation took (workflow's leaveKeySessions). The claim leaves
-// it where it still records it, so that agent starts in a session of its own (revive); a claim
-// that records another session has left it already, and resumes that one.
+// LeaveSession): the session the stored step of the start names (record.PlanStep.LeaveSession),
+// which no writer sets now, since record.NameAgents gives no agent a name a key held. The claim
+// leaves it where it still records it, so the step's agent starts in a session of its own
+// (revive); a claim that records another session has left it already, and resumes that one.
 type StartWork struct {
 	Phase        phase.Phase
 	Generation   uint64

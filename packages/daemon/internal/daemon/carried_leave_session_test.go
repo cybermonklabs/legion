@@ -19,9 +19,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// A child runs the project's default steps after a change of owner, and its tester's step took the
-// name tester, which key k's agent held: the claim of that name records key k's session, ses-key-k,
-// so the step was written to leave it (record.PlanStep.LeaveSession, workflow's leaveKeySessions).
+// A child runs the project's default steps after a change of owner, and its tester's step names
+// ses-key-k, the session of key k's agent that the claim of the name tester records, as the
+// session to leave (record.PlanStep.LeaveSession). No writer sets that field now, so the test
+// writes the step's row with it.
 // Before the tester's first start runs, a person's label carries the child into a tree of its own
 // with its run (admission's orphan carry), which copies its plan to the new generation
 // (record.Store.CarryPlan), and the promotion starts the tester there. That start reads the session
