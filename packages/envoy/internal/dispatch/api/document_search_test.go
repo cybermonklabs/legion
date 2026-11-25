@@ -211,11 +211,11 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 			// that is what the route sends for one (runMeaningSearch).
 			name:      "search, meaning and keywords",
 			statement: searchQueryMeaningScoped,
-			// Main's own meaning statement at df18d9be, written out whole (search_oracle_test.go):
+			// Main's own meaning statement at 497581c7, written out whole (search_oracle_test.go):
 			// the older main's meaning arms read the whole-text rows this release deletes, for the
 			// reason document_search_oracle_test.go gives. It binds the eighteen parameters the
 			// statement does, so it takes the statement's own arguments rather than main's eight.
-			oracle:    mainAtDF18SearchQueryMeaningScoped,
+			oracle:    mainAt4975SearchQueryMeaningScoped,
 			arguments: searchMeaningArguments,
 			holds:     documents,
 		},
@@ -230,7 +230,7 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 		{
 			name:      "the related-item check's meaning stage",
 			statement: relatedMeaningScopedQuery,
-			oracle:    mainAtDF18RelatedMeaningScopedQuery,
+			oracle:    mainAt4975RelatedMeaningScopedQuery,
 			arguments: slices.Concat(relatedMeaning, documentSearchSeen()),
 			holds:     documents,
 		},
@@ -352,7 +352,7 @@ func TestMainsDocumentArmSearchesNoDocumentSearchIndex(t *testing.T) {
 // keyword stage and the related-terms probe - the oracle is that release's text, held in the
 // test rather than built from this package's helpers, so an edit that changed what the document
 // arm returns would move one side and not the other. For the two meaning statements it is
-// main's text at df18d9be, written out whole in the test as well (search_oracle_test.go): the
+// main's text at 497581c7, written out whole in the test as well (search_oracle_test.go): the
 // older main's meaning arms read whole-text vectors this release no longer writes, so its
 // meaning text answers nothing over these rows and would decide nothing.
 func TestEveryDocumentArmAnswersWhatMainsStatementDoes(t *testing.T) {

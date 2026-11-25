@@ -195,7 +195,7 @@ func TestStatementTimings(t *testing.T) {
 	// the exception, and their names say so: this release deletes the whole-text rows four of
 	// the older main's five meaning arms read, so that meaning text measures a statement whose
 	// arms find nothing here, and the pair and report below take main's meaning text at
-	// df18d9be as their before side (search_oracle_test.go), under a name of its own. Those two
+	// 497581c7 as their before side (search_oracle_test.go), under a name of its own. Those two
 	// have no reading common to both schemas: a reader comparing by name across two commits
 	// finds the older main's text under its own name on the old schema, and this schema's
 	// readings under names that say which before text they are.
@@ -219,19 +219,19 @@ func TestStatementTimings(t *testing.T) {
 	runner.Pair(t, "searchQuery, keywords only",
 		benchtime.Statement{SQL: mainSearchQuery, Args: searchArguments},
 		benchtime.Statement{SQL: searchQuery, Args: afterSearchArguments})
-	// The before side is main's meaning statement at df18d9be (mainAtDF18SearchQueryMeaningScoped),
+	// The before side is main's meaning statement at 497581c7 (mainAt4975SearchQueryMeaningScoped),
 	// written out whole, not the older main's frozen meaning text: this release moved meaning
 	// search to one vector per window and deletes the whole-text rows four of the older main's
 	// five meaning arms read, so that text would measure a statement whose arms find nothing.
 	// The older main's own text still measures the pre-release schema, in the Before branch
-	// above, where the window kinds and the covers column do not exist. Main's text at df18d9be
+	// above, where the window kinds and the covers column do not exist. Main's text at 497581c7
 	// binds the same eighteen parameters as this release's, so both sides take the same
 	// arguments.
 	//
 	// Both sides are the scoped shape: afterSearchMeaningArguments binds the subject's project,
 	// and that is the statement search sends for one (runMeaningSearch, meaningProjectScope).
-	runner.Pair(t, "searchQueryMeaning, main's at df18d9be",
-		benchtime.Statement{SQL: mainAtDF18SearchQueryMeaningScoped, Args: afterSearchMeaningArguments},
+	runner.Pair(t, "searchQueryMeaning, main's at 497581c7",
+		benchtime.Statement{SQL: mainAt4975SearchQueryMeaningScoped, Args: afterSearchMeaningArguments},
 		benchtime.Statement{SQL: searchQueryMeaningScoped, Args: afterSearchMeaningArguments})
 	// relatedKeywordQuery and relatedMeaningQuery are gated on the document arm they share
 	// rather than on either whole statement. The arm is the piece whose text differs, and it is
@@ -264,11 +264,11 @@ func TestStatementTimings(t *testing.T) {
 	runner.Report(t, "relatedKeywordQuery, the whole statement",
 		benchtime.Statement{SQL: mainRelatedKeywordQuery, Args: relatedKeywordArguments},
 		benchtime.Statement{SQL: relatedKeywordExcludingQuery, Args: relatedKeywordExcludingArguments})
-	// The before side is main's scoped meaning statement at df18d9be, written out whole, and the
+	// The before side is main's scoped meaning statement at 497581c7, written out whole, and the
 	// after side the scoped excluding shape: relatedArguments binds the subject's project, which
 	// is what the check sends such a call (relatedMeaningStatementFor).
-	runner.Report(t, "relatedMeaningQuery, the whole statement, main's at df18d9be",
-		benchtime.Statement{SQL: mainAtDF18RelatedMeaningScopedQuery, Args: relatedMeaningArguments, Setup: meaningSetup},
+	runner.Report(t, "relatedMeaningQuery, the whole statement, main's at 497581c7",
+		benchtime.Statement{SQL: mainAt4975RelatedMeaningScopedQuery, Args: relatedMeaningArguments, Setup: meaningSetup},
 		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 
 	runner.Pair(t, "relatedProbeSQL",

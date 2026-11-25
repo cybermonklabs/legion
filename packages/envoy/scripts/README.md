@@ -1609,7 +1609,7 @@ before anything reads a row count again. `--requests`, `--body-bytes`, `--artifa
 `TestSearchReadSplitScript` and `TestSearchReadSplitReport` (`internal/dispatch/api/search_split_test.go`)
 split the shared buffer reads of search's keyword statement and meaning statement (INFRA-4864's R4).
 For the rare, the medium and the common word, in the every-project form and the one-project form,
-they compare `main`'s statements at df18d9be (`search_oracle_test.go`) with the head's. Each run is
+they compare `main`'s statements at 497581c7 (`search_oracle_test.go`) with the head's. Each run is
 split into the keyword arms' ranking, the keyword arms' reads of their matches, each meaning arm,
 the page and `CTE q`. The ranking is the keyword arms' reads less those of the same statement with
 a constant rank in place of `ts_rank_cd`. Unlike the measurements above, this one also runs against

@@ -27,9 +27,9 @@ All eight files have these facts in common:
 | `meaning_every.json` | `searchQueryMeaning` | head | every project | `split/plans/medium-every-meaning-head-1.json` |
 | `meaning_joined.json` | `searchQueryMeaningJoined` | head | one project | `split/plans/medium-project-meaning-head-1.json` |
 | `meaning_scoped.json` | `searchQueryMeaningScoped` | head | one project | `split-scoped/plans/medium-project-meaning-head-1.json` |
-| `main_meaning_every.json` | `mainAtDF18SearchQueryMeaning` | `main` | every project | `split/plans/medium-every-meaning-main-1.json` |
-| `main_meaning_joined.json` | `mainAtDF18SearchQueryMeaningJoined` | `main` | one project | `split/plans/medium-project-meaning-main-1.json` |
-| `main_meaning_scoped.json` | `mainAtDF18SearchQueryMeaningScoped` | `main` | one project | `split-scoped/plans/medium-project-meaning-main-1.json` |
+| `main_meaning_every.json` | `searchQueryMeaning` as main ran it at df18d9be (the oracle's text then, since frozen again as `mainAt4975SearchQueryMeaning`) | `main` | every project | `split/plans/medium-every-meaning-main-1.json` |
+| `main_meaning_joined.json` | `searchQueryMeaningJoined` as main ran it at df18d9be (since `mainAt4975SearchQueryMeaningJoined`) | `main` | one project | `split/plans/medium-project-meaning-main-1.json` |
+| `main_meaning_scoped.json` | `searchQueryMeaningScoped` as main ran it at df18d9be (since `mainAt4975SearchQueryMeaningScoped`) | `main` | one project | `split-scoped/plans/medium-project-meaning-main-1.json` |
 
 `main`'s three meaning plans hold the lateral read of `artifact_versions` in their document arm.
 

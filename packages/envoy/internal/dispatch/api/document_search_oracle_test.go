@@ -47,15 +47,15 @@ import (
 // mainSearchQueryMeaningBody's five arms therefore find nothing at all over this release's rows,
 // so a meaning statement built from it decides nothing: it would hold a working statement
 // against a blind one. The equality test's two meaning cases run against main's meaning
-// statements as main ran them at df18d9be instead (mainAtDF18SearchQueryMeaningScoped and
-// mainAtDF18RelatedMeaningScopedQuery, search_oracle_test.go), which read the windows and are
+// statements as main ran them at 497581c7 instead (mainAt4975SearchQueryMeaningScoped and
+// mainAt4975RelatedMeaningScopedQuery, search_oracle_test.go), which read the windows and are
 // written out whole, so no line of either moves with the package's own text.
 // mainSearchQueryMeaningBody is kept for the timing harness, which measures it on a database at
 // the schema before this release, where it is still the text that ran.
 //
 // The end of the file is the meaning document arm's own oracle test (R2a,
 // TestTheMeaningDocumentArmAnswersMainsRowsAndDates), which holds this build's arm to main's arm
-// of df18d9be, the one search_oracle_test.go freezes: these older texts know no window and hold
+// of 497581c7, the one search_oracle_test.go freezes: these older texts know no window and hold
 // no such arm.
 
 // mainSearchKeywordLegs is main's searchKeywordLegs: the five-kind keyword union whose document
@@ -240,7 +240,7 @@ legs as (
 // whole-text embedding kinds ('document', 'comment', 'ask', 'message'), which this release's
 // indexers no longer write and delete as each owner gains a window (migration 20261102233625),
 // so those four answer nothing at all over this release's rows. That is why the equality test
-// holds its two meaning statements against main's meaning statements of df18d9be
+// holds its two meaning statements against main's meaning statements of 497581c7
 // (search_oracle_test.go) rather than against this text, and why this text is left here for the
 // timing harness alone, which measures it on a database at the schema before this release.
 //
@@ -588,7 +588,7 @@ func pairVectorSQL(axis, other, similarity string) string {
 }
 
 // meaningDocumentArmStatement is one meaning statement R2a runs over the date fixture: this
-// build's text and main's at df18d9be (search_oracle_test.go), bound as the caller binds it,
+// build's text and main's at 497581c7 (search_oracle_test.go), bound as the caller binds it,
 // with the project and the updated_since that binding narrows by.
 type meaningDocumentArmStatement struct {
 	name, live, main string
@@ -622,10 +622,10 @@ func (f meaningDocumentDateFixture) statements() []meaningDocumentArmStatement {
 		name, live, main, mainArm string
 		projects                  []string
 	}{
-		{"searchQueryMeaning", searchQueryMeaning, mainAtDF18SearchQueryMeaning, mainAtDF18MeaningDocumentCandidates, []string{""}},
-		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAtDF18SearchQueryMeaningScoped, mainAtDF18MeaningDocumentCandidatesScoped,
+		{"searchQueryMeaning", searchQueryMeaning, mainAt4975SearchQueryMeaning, mainAt4975MeaningDocumentCandidates, []string{""}},
+		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAt4975SearchQueryMeaningScoped, mainAt4975MeaningDocumentCandidatesScoped,
 			[]string{f.project}},
-		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAtDF18SearchQueryMeaningJoined, mainAtDF18MeaningDocumentCandidatesJoined,
+		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAt4975SearchQueryMeaningJoined, mainAt4975MeaningDocumentCandidatesJoined,
 			[]string{"", f.project}},
 	} {
 		for _, project := range search.projects {
@@ -647,18 +647,18 @@ func (f meaningDocumentDateFixture) statements() []meaningDocumentArmStatement {
 		}
 	}
 	return append(statements,
-		meaningDocumentArmStatement{name: "relatedMeaningQuery", live: relatedMeaningQuery, main: mainAtDF18RelatedMeaningQuery,
+		meaningDocumentArmStatement{name: "relatedMeaningQuery", live: relatedMeaningQuery, main: mainAt4975RelatedMeaningQuery,
 			arguments: related("", false)},
-		meaningDocumentArmStatement{name: "relatedMeaningScopedQuery", live: relatedMeaningScopedQuery, main: mainAtDF18RelatedMeaningScopedQuery,
+		meaningDocumentArmStatement{name: "relatedMeaningScopedQuery", live: relatedMeaningScopedQuery, main: mainAt4975RelatedMeaningScopedQuery,
 			project: f.project, arguments: related(f.project, false)},
-		meaningDocumentArmStatement{name: "relatedMeaningJoinedQuery", live: relatedMeaningJoinedQuery, main: mainAtDF18RelatedMeaningJoinedQuery,
+		meaningDocumentArmStatement{name: "relatedMeaningJoinedQuery", live: relatedMeaningJoinedQuery, main: mainAt4975RelatedMeaningJoinedQuery,
 			project: f.project, arguments: related(f.project, false)},
 		meaningDocumentArmStatement{name: "relatedMeaningExcludingQuery", live: relatedMeaningExcludingQuery,
-			main: mainAtDF18RelatedMeaningExcludingQuery, arguments: related("", true)},
+			main: mainAt4975RelatedMeaningExcludingQuery, arguments: related("", true)},
 		meaningDocumentArmStatement{name: "relatedMeaningScopedExcludingQuery", live: relatedMeaningScopedExcludingQuery,
-			main: mainAtDF18RelatedMeaningScopedExcludingQuery, project: f.project, arguments: related(f.project, true)},
+			main: mainAt4975RelatedMeaningScopedExcludingQuery, project: f.project, arguments: related(f.project, true)},
 		meaningDocumentArmStatement{name: "relatedMeaningJoinedExcludingQuery", live: relatedMeaningJoinedExcludingQuery,
-			main: mainAtDF18RelatedMeaningJoinedExcludingQuery, project: f.project, arguments: related(f.project, true)},
+			main: mainAt4975RelatedMeaningJoinedExcludingQuery, project: f.project, arguments: related(f.project, true)},
 	)
 }
 
@@ -776,7 +776,7 @@ func (f meaningDocumentDateFixture) requireDocumentsAndDates(t *testing.T, rows 
 // reads each document's date from document_search.created_at and answers the rows main's arm
 // does, which read the newest version's created_at through a lateral over artifact_versions. Over
 // documents of three versions with different dates, owned by issues and by projects, it runs the
-// arm alone (meaningDocumentArmRows) from this build's statement and from main's at df18d9be,
+// arm alone (meaningDocumentArmRows) from this build's statement and from main's at 497581c7,
 // and compares each row's document, window, date and cosine, for every project scope and with
 // an updated_since between two versions' dates. Then it runs each whole statement, this build's
 // and main's, under the settings the route runs meaning statements under

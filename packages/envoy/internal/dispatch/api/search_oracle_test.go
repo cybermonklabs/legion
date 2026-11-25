@@ -14,13 +14,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// This file holds search's statements as main ran them at df18d9be, the commit INFRA-4864 starts
-// from: the keyword statement searchQuery, search's three meaning statements, the related-item
-// check's six meaning statements, and the meaning document arm of search's three apart. Their
-// meaning document arm reads each document's latest version through a lateral over
-// artifact_versions for its date, and they are the before side this change is held to: the
-// plan tests fail on them, the measurement reads them beside the head's, and the equality tests
-// hold the head's statements to their answers.
+// This file holds search's statements as main ran them at 497581c7, the commit INFRA-4864 last
+// merged: the keyword statement searchQuery, search's three meaning statements, the related-item
+// check's six meaning statements, and the meaning document arm of search's three apart, and the
+// rule main builds each of them for a set of kinds with (mainAt4975Statement). Their meaning
+// document arm reads each document's latest version through a lateral over artifact_versions for
+// its date, and they are the before side this change is held to: the plan tests fail on them,
+// the measurement reads them beside the head's, and the equality tests hold the head's
+// statements to their answers.
+//
+// Main's statements moved after df18d9be, the commit INFRA-4864 started from, so this file was
+// frozen again at 497581c7, the merge base: cybermonklabs/legion#3125 changed the headline window
+// the page tail selects and added the kinds a search can leave out, and #3512 made the comment,
+// ask and message arms' updated_since filters read coalesce(edited_at, created_at).
 //
 // Every piece is written out, including the ones the package builds in Go: refs' visibility
 // predicate (refs.VisibleKind, refs.VisibleEnd) over each statement's own credential parameter,
@@ -32,19 +38,19 @@ import (
 // so every statement is still a constant whose every byte is in this file.
 //
 // These are not the main* oracles of document_search_oracle_test.go, which are the release
-// before document_search and keep their names; the mainAtDF18 prefix says whose these are. They
+// before document_search and keep their names; the mainAt4975 prefix says whose these are. They
 // are frozen: they never follow an edit to the package's statements, since that edit is what
 // they exist to be compared with.
 //
 // The end of the file is R3's oracle test (TestSearchAnswersMainsRowsOrderTotalAndReachable),
-// which holds search's four statements to main's over a corpus whose word matches more items of
-// each kind than any arm's limit.
+// which holds search's four statements to main's, for every set of kinds a request can name, over
+// a corpus whose word matches more items of each kind than any arm's limit.
 
-// mainAtDF18VisibilityHead is the opening of refs' visibility predicate as main rendered it, up
+// mainAt4975VisibilityHead is the opening of refs' visibility predicate as main rendered it, up
 // to its comparison with the acting credential: the read of the node's graph_nodes row and the
 // case that names the node's author. Each statement follows it with the comparison over its own
 // credential parameter and the graph_nodes key of the node it tests.
-const mainAtDF18VisibilityHead = `coalesce((select visible_node.visibility <> 'author' or coalesce(case
+const mainAt4975VisibilityHead = `coalesce((select visible_node.visibility <> 'author' or coalesce(case
 		when coalesce(visible_node.made_by->>'owner', '') <> ''
 			then jsonb_build_object('kind', 'person', 'id', case when 'person' = 'person' then user_threads_login(visible_node.made_by->>'owner') else visible_node.made_by->>'owner' end)
 		when visible_node.made_by->>'kind' = 'user' and coalesce(visible_node.made_by->>'id', '') <> ''
@@ -55,10 +61,11 @@ const mainAtDF18VisibilityHead = `coalesce((select visible_node.visibility <> 'a
 		when coalesce(visible_node.made_by->>'service', '') <> ''
 			then jsonb_build_object('kind', 'service', 'id', case when 'service' = 'person' then user_threads_login(visible_node.made_by->>'service') else visible_node.made_by->>'service' end)`
 
-// mainAtDF18SearchKeywordLegs is main's searchKeywordLegsSQL: the five kinds' keyword arms, the
+// mainAt4975SearchKeywordLegs is main's searchKeywordLegsSQL: the five kinds' keyword arms, the
 // issue kind twice (its matches and the issues the query names by key), each ranked by
-// ts_rank_cd with length normalisation (32).
-const mainAtDF18SearchKeywordLegs = `
+// ts_rank_cd with length normalisation (32). The comment, ask and message arms' updated_since
+// filters read coalesce(edited_at, created_at), as #3512 made them.
+const mainAt4975SearchKeywordLegs = `
   select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
          null::text as window_id, null::text[] as covers,
          i.title as issue_title, i.status as issue_status,
@@ -106,7 +113,7 @@ const mainAtDF18SearchKeywordLegs = `
    where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
   union all
   select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
          coalesce(k.artifact_id, k.block_artifact_id, (case when pg_input_is_valid(k.anchor->>'artifact_id', 'uuid') then (k.anchor->>'artifact_id')::uuid end)), k.id::text, case when exists (select 1 from document_blocks d where d.artifact_id = k.block_artifact_id and d.block_id = k.block_id) then k.block_id end,
@@ -120,7 +127,7 @@ const mainAtDF18SearchKeywordLegs = `
    where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
@@ -130,12 +137,12 @@ const mainAtDF18SearchKeywordLegs = `
    where m.search @@ q.tsq and ($2 = '' or i.project_key = $2)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)`
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)`
 
-// mainAtDF18SearchQuery is main's searchQuery, the keyword statement: searchQOpener(9), then
-// searchQueryBody over mainAtDF18SearchKeywordLegs and searchFusedSQL with the acting credential
+// mainAt4975SearchQuery is main's searchQuery, the keyword statement: searchQOpener(9), then
+// searchQueryBody over mainAt4975SearchKeywordLegs and searchFusedSQL with the acting credential
 // at $15. It takes the fifteen parameters searchQueryArguments binds.
-const mainAtDF18SearchQuery = `
+const mainAt4975SearchQuery = `
 with q as (select
          case when $9 = '' then websearch_to_tsquery('english', $1)
               when $10 = '' then websearch_to_tsquery('english', $9)
@@ -143,8 +150,8 @@ with q as (select
          end as tsq,
          $4::text as term, $11::text[] as own_keys,
          $12::text as status_filter, $13::text as author_filter, $14::timestamptz as updated_since),
-kinds as (select * from (` + mainAtDF18SearchKeywordLegs + `
-) arms where /* visibility predicate: every kind */` + mainAtDF18VisibilityHead + `
+kinds as (select * from (` + mainAt4975SearchKeywordLegs + `
+) arms where /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = case arms.kind when 'document' then 'artifact' else arms.kind end and visible_node.id = case case arms.kind when 'document' then 'artifact' else arms.kind end when 'artifact' then (select store_artifact.ref_key from artifacts store_artifact where store_artifact.id::text = arms.id::text) else arms.id::text end), true)
 ),
@@ -176,11 +183,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english',
-         search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-              else left(txt.text, 4000) end),
-         q.tsq, $5) as headline
+       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -197,11 +200,21 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
+  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
+  -- query's first term, or the text's head. It is selected beside the headline as well, so the
+  -- scan has the very text ts_headline read and can set the headline back into it
+  -- (pmdoc.SearchSnippet).
+  left join lateral (
+    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
+             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
+             else left(txt.text, 4000) end) as text
+  ) src on true
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
-  -- is never edited and keeps no text table (refs/item_blocks.go's table map), so its block is
-  -- ranked on the excerpt its row holds, the block's first refs.BlockExcerptRunes runes.
+  -- records no revisions, so it keeps no text table (refs/item_blocks.go's table map) and its
+  -- block is ranked on the excerpt its row holds, the block's head as refs.BlockExcerpt cuts it,
+  -- which an edit of the message rewrites with the block it changed.
   left join lateral (
     select covered.block_id
       from unnest(r.covers) with ordinality as covered(block_id, ord)
@@ -220,7 +233,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
                                  where x.message_id = r.id::uuid and x.block_id = covered.block_id)
         end as text
       ) block
-     where /* visibility predicate: every kind */` + mainAtDF18VisibilityHead + `
+     where /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = case r.kind when 'document' then 'block' else r.kind || '_block' end and visible_node.id = case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id), true)
      order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
@@ -229,9 +242,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
 `
 
-// mainAtDF18SearchMeaningOpener is main's searchQOpener(12), the q search's three meaning
+// mainAt4975SearchMeaningOpener is main's searchQOpener(12), the q search's three meaning
 // statements open with.
-const mainAtDF18SearchMeaningOpener = `
+const mainAt4975SearchMeaningOpener = `
 with q as (select
          case when $12 = '' then websearch_to_tsquery('english', $1)
               when $13 = '' then websearch_to_tsquery('english', $12)
@@ -241,15 +254,15 @@ with q as (select
          $15::text as status_filter, $16::text as author_filter, $17::timestamptz as updated_since),
 `
 
-// mainAtDF18MeaningDocumentCandidates, mainAtDF18MeaningDocumentCandidatesScoped and
-// mainAtDF18MeaningDocumentCandidatesJoined are main's meaning_document_candidates CTE in search's
+// mainAt4975MeaningDocumentCandidates, mainAt4975MeaningDocumentCandidatesScoped and
+// mainAt4975MeaningDocumentCandidatesJoined are main's meaning_document_candidates CTE in search's
 // three meaning statements (every project, the row's own project_key, and the project read off
 // the document's own row), with the acting credential at $18: the nearest document windows,
 // each joined to its document, and the document's date read from its latest version through a
 // lateral over artifact_versions. Each is the CTE from its name to its closing parenthesis, the
 // text the statement holds between `meaning_issue`'s `),` and `meaning_document`.
 const (
-	mainAtDF18MeaningDocumentCandidates = `meaning_document_candidates as (
+	mainAt4975MeaningDocumentCandidates = `meaning_document_candidates as (
   select a.issue_key, a.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
          coalesce(i.updated_at, v.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
@@ -259,7 +272,7 @@ const (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: artifact */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -268,7 +281,7 @@ const (
    order by e.embedding <=> $9::vector
    limit 1000
 )`
-	mainAtDF18MeaningDocumentCandidatesScoped = `meaning_document_candidates as (
+	mainAt4975MeaningDocumentCandidatesScoped = `meaning_document_candidates as (
   select a.issue_key, a.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
          coalesce(i.updated_at, v.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
@@ -278,7 +291,7 @@ const (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: artifact */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -287,7 +300,7 @@ const (
    order by e.embedding <=> $9::vector
    limit 1000
 )`
-	mainAtDF18MeaningDocumentCandidatesJoined = `meaning_document_candidates as (
+	mainAt4975MeaningDocumentCandidatesJoined = `meaning_document_candidates as (
   select a.issue_key, a.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
          coalesce(i.updated_at, v.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
@@ -297,7 +310,7 @@ const (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11 and ($2 = '' or p.key = $2)
-     and /* visibility predicate: artifact */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -308,21 +321,21 @@ const (
 )`
 )
 
-// mainAtDF18SearchMeaningArms, mainAtDF18SearchMeaningArmsScoped and
-// mainAtDF18SearchMeaningArmsJoined are the five meaning arms of searchQueryMeaningBody as main
+// mainAt4975SearchMeaningArms, mainAt4975SearchMeaningArmsScoped and
+// mainAt4975SearchMeaningArmsJoined are the five meaning arms of searchQueryMeaningBody as main
 // built them for search, in each of the three project scopes, with the acting credential at
 // $18: each kind's candidate CTE and the arm over it, from meaning_issue_candidates through
 // meaning_message. The document arm's candidates are the constants above. The joined scope's
 // comment arm is the one whose joins stand below its candidate limit
 // (searchMeaningCommentArmJoined).
 const (
-	mainAtDF18SearchMeaningArms = `meaning_issue_candidates as (
+	mainAt4975SearchMeaningArms = `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: issue */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -338,7 +351,7 @@ meaning_issue as (
          false as own, r
     from meaning_issue_candidates where r >= $10
 ),
-` + mainAtDF18MeaningDocumentCandidates + `,
+` + mainAt4975MeaningDocumentCandidates + `,
 meaning_document as (
   select distinct on (meaning_document_candidates.id) 'document' as kind, 'meaning' as list, issue_key, case when issue_key is null then id else null::uuid end, id, id::text, null::text,
          window_id, covers,
@@ -352,7 +365,7 @@ meaning_comment_candidates as (
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: comment */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)::text), true)
    order by e.embedding <=> $9::vector
@@ -372,7 +385,7 @@ meaning_comment as (
    where meaning_comment_candidates.r >= $10
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 ),
 meaning_ask_candidates as (
@@ -386,12 +399,12 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: ask */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -411,12 +424,12 @@ meaning_message_candidates as (
     join messages m on m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: message */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -429,13 +442,13 @@ meaning_message as (
    order by meaning_message_candidates.id, r desc, window_id
 ),
 `
-	mainAtDF18SearchMeaningArmsScoped = `meaning_issue_candidates as (
+	mainAt4975SearchMeaningArmsScoped = `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: issue */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -451,7 +464,7 @@ meaning_issue as (
          false as own, r
     from meaning_issue_candidates where r >= $10
 ),
-` + mainAtDF18MeaningDocumentCandidatesScoped + `,
+` + mainAt4975MeaningDocumentCandidatesScoped + `,
 meaning_document as (
   select distinct on (meaning_document_candidates.id) 'document' as kind, 'meaning' as list, issue_key, case when issue_key is null then id else null::uuid end, id, id::text, null::text,
          window_id, covers,
@@ -465,7 +478,7 @@ meaning_comment_candidates as (
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: comment */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)::text), true)
    order by e.embedding <=> $9::vector
@@ -485,7 +498,7 @@ meaning_comment as (
    where meaning_comment_candidates.r >= $10
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 ),
 meaning_ask_candidates as (
@@ -499,12 +512,12 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: ask */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -524,12 +537,12 @@ meaning_message_candidates as (
     join messages m on m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: message */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -542,13 +555,13 @@ meaning_message as (
    order by meaning_message_candidates.id, r desc, window_id
 ),
 `
-	mainAtDF18SearchMeaningArmsJoined = `meaning_issue_candidates as (
+	mainAt4975SearchMeaningArmsJoined = `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
-     and /* visibility predicate: issue */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -564,7 +577,7 @@ meaning_issue as (
          false as own, r
     from meaning_issue_candidates where r >= $10
 ),
-` + mainAtDF18MeaningDocumentCandidatesJoined + `,
+` + mainAt4975MeaningDocumentCandidatesJoined + `,
 meaning_document as (
   select distinct on (meaning_document_candidates.id) 'document' as kind, 'meaning' as list, issue_key, case when issue_key is null then id else null::uuid end, id, id::text, null::text,
          window_id, covers,
@@ -583,12 +596,12 @@ meaning_comment_candidates as (
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
-     and /* visibility predicate: comment */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = c.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -611,12 +624,12 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
-     and /* visibility predicate: ask */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -636,12 +649,12 @@ meaning_message_candidates as (
     join messages m on m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
-     and /* visibility predicate: message */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -656,17 +669,17 @@ meaning_message as (
 `
 )
 
-// mainAtDF18SearchMeaningTail is the rest of searchQueryMeaningBody as main built it for search,
-// the same in all three scopes: kinds over mainAtDF18SearchKeywordLegs and the five meaning arms,
+// mainAt4975SearchMeaningTail is the rest of searchQueryMeaningBody as main built it for search,
+// the same in all three scopes: kinds over mainAt4975SearchKeywordLegs and the five meaning arms,
 // the ranking, searchFusedSQL's fusion, legs_unique, the totals and the page, with the acting
 // credential at $18.
-const mainAtDF18SearchMeaningTail = `kinds as (select * from (` + mainAtDF18SearchKeywordLegs + `
+const mainAt4975SearchMeaningTail = `kinds as (select * from (` + mainAt4975SearchKeywordLegs + `
   union all select * from meaning_issue
   union all select * from meaning_document
   union all select * from meaning_comment
   union all select * from meaning_ask
   union all select * from meaning_message
-) arms where /* visibility predicate: every kind */` + mainAtDF18VisibilityHead + `
+) arms where /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = case arms.kind when 'document' then 'artifact' else arms.kind end and visible_node.id = case case arms.kind when 'document' then 'artifact' else arms.kind end when 'artifact' then (select store_artifact.ref_key from artifacts store_artifact where store_artifact.id::text = arms.id::text) else arms.id::text end), true)
 ),
@@ -703,11 +716,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english',
-         search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-              else left(txt.text, 4000) end),
-         q.tsq, $5) as headline
+       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -724,11 +733,21 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
+  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
+  -- query's first term, or the text's head. It is selected beside the headline as well, so the
+  -- scan has the very text ts_headline read and can set the headline back into it
+  -- (pmdoc.SearchSnippet).
+  left join lateral (
+    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
+             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
+             else left(txt.text, 4000) end) as text
+  ) src on true
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
-  -- is never edited and keeps no text table (refs/item_blocks.go's table map), so its block is
-  -- ranked on the excerpt its row holds, the block's first refs.BlockExcerptRunes runes.
+  -- records no revisions, so it keeps no text table (refs/item_blocks.go's table map) and its
+  -- block is ranked on the excerpt its row holds, the block's head as refs.BlockExcerpt cuts it,
+  -- which an edit of the message rewrites with the block it changed.
   left join lateral (
     select covered.block_id
       from unnest(r.covers) with ordinality as covered(block_id, ord)
@@ -747,7 +766,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
                                  where x.message_id = r.id::uuid and x.block_id = covered.block_id)
         end as text
       ) block
-     where /* visibility predicate: every kind */` + mainAtDF18VisibilityHead + `
+     where /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($18::jsonb)->>'kind', 'id', case when ($18::jsonb)->>'kind' = 'person' then user_threads_login(($18::jsonb)->>'id') else ($18::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = case r.kind when 'document' then 'block' else r.kind || '_block' end and visible_node.id = case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id), true)
      order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
@@ -756,19 +775,73 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
 `
 
-// mainAtDF18SearchQueryMeaning, mainAtDF18SearchQueryMeaningScoped and
-// mainAtDF18SearchQueryMeaningJoined are main's searchQueryMeaning, searchQueryMeaningScoped and
+// mainAt4975SearchQueryMeaning, mainAt4975SearchQueryMeaningScoped and
+// mainAt4975SearchQueryMeaningJoined are main's searchQueryMeaning, searchQueryMeaningScoped and
 // searchQueryMeaningJoined. Each takes the eighteen parameters searchMeaningQueryArguments binds.
 const (
-	mainAtDF18SearchQueryMeaning       = mainAtDF18SearchMeaningOpener + mainAtDF18SearchMeaningArms + mainAtDF18SearchMeaningTail
-	mainAtDF18SearchQueryMeaningScoped = mainAtDF18SearchMeaningOpener + mainAtDF18SearchMeaningArmsScoped + mainAtDF18SearchMeaningTail
-	mainAtDF18SearchQueryMeaningJoined = mainAtDF18SearchMeaningOpener + mainAtDF18SearchMeaningArmsJoined + mainAtDF18SearchMeaningTail
+	mainAt4975SearchQueryMeaning       = mainAt4975SearchMeaningOpener + mainAt4975SearchMeaningArms + mainAt4975SearchMeaningTail
+	mainAt4975SearchQueryMeaningScoped = mainAt4975SearchMeaningOpener + mainAt4975SearchMeaningArmsScoped + mainAt4975SearchMeaningTail
+	mainAt4975SearchQueryMeaningJoined = mainAt4975SearchMeaningOpener + mainAt4975SearchMeaningArmsJoined + mainAt4975SearchMeaningTail
 )
 
-// mainAtDF18RelatedMeaningOpener is main's relatedQOpener followed by relatedTermWeights(12), the
+// mainAt4975KindNames are the five kinds a search can name, by the bit that leaves each out of a
+// set, bit 0 first, spelled as main's builder wrote them. They are written out here and not read
+// from searchIndexedKinds.
+var mainAt4975KindNames = [...]string{"issue", "document", "comment", "ask", "message"}
+
+// mainAt4975KindsFilter is where main's statements filter the kinds CTE's union: the line that
+// closes the derived table and opens its `where`, which each of search's four statements holds
+// once. A statement of a set that leaves kinds out holds the exclusion right after it
+// (mainAt4975Statement).
+const mainAt4975KindsFilter = "\n) arms where "
+
+// mainAt4975Statement is main's text of one of search's four statements for the set of kinds
+// whose bits are set, the kinds the search leaves out, one bit for each of mainAt4975KindNames,
+// bit 0 first: base is main's text of the same statement leaving nothing out
+// (mainAt4975SearchQuery or one of the three mainAt4975SearchQueryMeaning texts). Main builds a
+// set that leaves kinds out as base with `not (kind in ('issue', 'comment')) and `, the left-out
+// kinds in bit order, written between mainAt4975KindsFilter and the visibility predicate, and
+// no other byte of it differs: this is the difference between main's texts of set 0 and of every
+// other set at 497581c7. The set that leaves nothing out is base itself, and the set with every
+// bit set leaves out all five kinds.
+func mainAt4975Statement(base string, set uint8) string {
+	if set >= 1<<len(mainAt4975KindNames) {
+		panic(fmt.Sprintf("mainAt4975Statement: set %d has a bit past the five kinds", set))
+	}
+	if set == 0 {
+		return base
+	}
+	if count := strings.Count(base, mainAt4975KindsFilter); count != 1 {
+		panic(fmt.Sprintf("mainAt4975Statement: the statement holds %q %d times; want once", mainAt4975KindsFilter, count))
+	}
+	var left []string
+	for bit, kind := range mainAt4975KindNames {
+		if set&(1<<bit) != 0 {
+			left = append(left, "'"+kind+"'")
+		}
+	}
+	return strings.Replace(base, mainAt4975KindsFilter,
+		mainAt4975KindsFilter+"not (kind in ("+strings.Join(left, ", ")+")) and ", 1)
+}
+
+// mainAt4975Shapes is one set's four search statements as main builds them: the keyword
+// statement and the three meaning statements, in the order searchStatements holds them.
+type mainAt4975Shapes struct{ keyword, meaningEvery, meaningScoped, meaningJoined string }
+
+// mainAt4975Statements is main's four statements for one set of kinds (mainAt4975Statement).
+func mainAt4975Statements(set uint8) mainAt4975Shapes {
+	return mainAt4975Shapes{
+		keyword:       mainAt4975Statement(mainAt4975SearchQuery, set),
+		meaningEvery:  mainAt4975Statement(mainAt4975SearchQueryMeaning, set),
+		meaningScoped: mainAt4975Statement(mainAt4975SearchQueryMeaningScoped, set),
+		meaningJoined: mainAt4975Statement(mainAt4975SearchQueryMeaningJoined, set),
+	}
+}
+
+// mainAt4975RelatedMeaningOpener is main's relatedQOpener followed by relatedTermWeights(12), the
 // opening the related-item check's six meaning statements share: q over a tsquery already built,
 // and the chosen lexemes' idf at $12 and $13.
-const mainAtDF18RelatedMeaningOpener = `
+const mainAt4975RelatedMeaningOpener = `
 with q as (select $1::tsquery as tsq, $4::text as term, '{}'::text[] as own_keys,
                   ''::text as status_filter, ''::text as author_filter, null::timestamptz as updated_since),
 term_weights as (
@@ -776,10 +849,10 @@ term_weights as (
 ),
 `
 
-// mainAtDF18RelatedKeywordLegs is main's relatedKeywordLegs: mainAtDF18SearchKeywordLegs' arms,
+// mainAt4975RelatedKeywordLegs is main's relatedKeywordLegs: mainAt4975SearchKeywordLegs' arms,
 // each ranked by relatedCoordinationRank, the sum of the idf of the chosen lexemes the row holds
 // plus a thousandth of its normalised ts_rank_cd.
-const mainAtDF18RelatedKeywordLegs = `
+const mainAt4975RelatedKeywordLegs = `
   select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
          null::text as window_id, null::text[] as covers,
          i.title as issue_title, i.status as issue_status,
@@ -827,7 +900,7 @@ const mainAtDF18RelatedKeywordLegs = `
    where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
   union all
   select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
          coalesce(k.artifact_id, k.block_artifact_id, (case when pg_input_is_valid(k.anchor->>'artifact_id', 'uuid') then (k.anchor->>'artifact_id')::uuid end)), k.id::text, case when exists (select 1 from document_blocks d where d.artifact_id = k.block_artifact_id and d.block_id = k.block_id) then k.block_id end,
@@ -841,7 +914,7 @@ const mainAtDF18RelatedKeywordLegs = `
    where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
@@ -851,19 +924,19 @@ const mainAtDF18RelatedKeywordLegs = `
    where m.search @@ q.tsq and ($2 = '' or i.project_key = $2)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)`
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)`
 
-// mainAtDF18RelatedMeaningArms, mainAtDF18RelatedMeaningArmsScoped and
-// mainAtDF18RelatedMeaningArmsJoined are mainAtDF18SearchMeaningArms and its two scopes with the
+// mainAt4975RelatedMeaningArms, mainAt4975RelatedMeaningArmsScoped and
+// mainAt4975RelatedMeaningArmsJoined are mainAt4975SearchMeaningArms and its two scopes with the
 // acting credential at $14, where the related-item check's plain meaning statements bind it.
 const (
-	mainAtDF18RelatedMeaningArms = `meaning_issue_candidates as (
+	mainAt4975RelatedMeaningArms = `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: issue */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -889,7 +962,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: artifact */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -911,7 +984,7 @@ meaning_comment_candidates as (
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: comment */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)::text), true)
    order by e.embedding <=> $9::vector
@@ -931,7 +1004,7 @@ meaning_comment as (
    where meaning_comment_candidates.r >= $10
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 ),
 meaning_ask_candidates as (
@@ -945,12 +1018,12 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: ask */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -970,12 +1043,12 @@ meaning_message_candidates as (
     join messages m on m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: message */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -988,13 +1061,13 @@ meaning_message as (
    order by meaning_message_candidates.id, r desc, window_id
 ),
 `
-	mainAtDF18RelatedMeaningArmsScoped = `meaning_issue_candidates as (
+	mainAt4975RelatedMeaningArmsScoped = `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: issue */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1020,7 +1093,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: artifact */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1042,7 +1115,7 @@ meaning_comment_candidates as (
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: comment */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)::text), true)
    order by e.embedding <=> $9::vector
@@ -1062,7 +1135,7 @@ meaning_comment as (
    where meaning_comment_candidates.r >= $10
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 ),
 meaning_ask_candidates as (
@@ -1076,12 +1149,12 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: ask */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1101,12 +1174,12 @@ meaning_message_candidates as (
     join messages m on m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: message */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1119,13 +1192,13 @@ meaning_message as (
    order by meaning_message_candidates.id, r desc, window_id
 ),
 `
-	mainAtDF18RelatedMeaningArmsJoined = `meaning_issue_candidates as (
+	mainAt4975RelatedMeaningArmsJoined = `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
-     and /* visibility predicate: issue */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1151,7 +1224,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11 and ($2 = '' or p.key = $2)
-     and /* visibility predicate: artifact */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1178,12 +1251,12 @@ meaning_comment_candidates as (
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
-     and /* visibility predicate: comment */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = c.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1206,12 +1279,12 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
-     and /* visibility predicate: ask */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1231,12 +1304,12 @@ meaning_message_candidates as (
     join messages m on m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
-     and /* visibility predicate: message */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1251,16 +1324,16 @@ meaning_message as (
 `
 )
 
-// mainAtDF18RelatedMeaningTail is mainAtDF18SearchMeaningTail as the related-item check's plain
-// meaning statements end: over mainAtDF18RelatedKeywordLegs, fused by relatedFusedSQL's
+// mainAt4975RelatedMeaningTail is mainAt4975SearchMeaningTail as the related-item check's plain
+// meaning statements end: over mainAt4975RelatedKeywordLegs, fused by relatedFusedSQL's
 // reciprocal rank fusion, with the acting credential at $14.
-const mainAtDF18RelatedMeaningTail = `kinds as (select * from (` + mainAtDF18RelatedKeywordLegs + `
+const mainAt4975RelatedMeaningTail = `kinds as (select * from (` + mainAt4975RelatedKeywordLegs + `
   union all select * from meaning_issue
   union all select * from meaning_document
   union all select * from meaning_comment
   union all select * from meaning_ask
   union all select * from meaning_message
-) arms where /* visibility predicate: every kind */` + mainAtDF18VisibilityHead + `
+) arms where /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = case arms.kind when 'document' then 'artifact' else arms.kind end and visible_node.id = case case arms.kind when 'document' then 'artifact' else arms.kind end when 'artifact' then (select store_artifact.ref_key from artifacts store_artifact where store_artifact.id::text = arms.id::text) else arms.id::text end), true)
 ),
@@ -1295,11 +1368,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english',
-         search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-              else left(txt.text, 4000) end),
-         q.tsq, $5) as headline
+       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -1316,11 +1385,21 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
+  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
+  -- query's first term, or the text's head. It is selected beside the headline as well, so the
+  -- scan has the very text ts_headline read and can set the headline back into it
+  -- (pmdoc.SearchSnippet).
+  left join lateral (
+    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
+             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
+             else left(txt.text, 4000) end) as text
+  ) src on true
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
-  -- is never edited and keeps no text table (refs/item_blocks.go's table map), so its block is
-  -- ranked on the excerpt its row holds, the block's first refs.BlockExcerptRunes runes.
+  -- records no revisions, so it keeps no text table (refs/item_blocks.go's table map) and its
+  -- block is ranked on the excerpt its row holds, the block's head as refs.BlockExcerpt cuts it,
+  -- which an edit of the message rewrites with the block it changed.
   left join lateral (
     select covered.block_id
       from unnest(r.covers) with ordinality as covered(block_id, ord)
@@ -1339,7 +1418,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
                                  where x.message_id = r.id::uuid and x.block_id = covered.block_id)
         end as text
       ) block
-     where /* visibility predicate: every kind */` + mainAtDF18VisibilityHead + `
+     where /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($14::jsonb)->>'kind', 'id', case when ($14::jsonb)->>'kind' = 'person' then user_threads_login(($14::jsonb)->>'id') else ($14::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = case r.kind when 'document' then 'block' else r.kind || '_block' end and visible_node.id = case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id), true)
      order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
@@ -1348,28 +1427,28 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
 `
 
-// mainAtDF18RelatedMeaningQuery, mainAtDF18RelatedMeaningScopedQuery and
-// mainAtDF18RelatedMeaningJoinedQuery are main's relatedMeaningQuery, relatedMeaningScopedQuery
+// mainAt4975RelatedMeaningQuery, mainAt4975RelatedMeaningScopedQuery and
+// mainAt4975RelatedMeaningJoinedQuery are main's relatedMeaningQuery, relatedMeaningScopedQuery
 // and relatedMeaningJoinedQuery: the related-item check's meaning stage for a check that leaves
 // nothing out, over the fourteen parameters relatedSearch binds it.
 const (
-	mainAtDF18RelatedMeaningQuery       = mainAtDF18RelatedMeaningOpener + mainAtDF18RelatedMeaningArms + mainAtDF18RelatedMeaningTail
-	mainAtDF18RelatedMeaningScopedQuery = mainAtDF18RelatedMeaningOpener + mainAtDF18RelatedMeaningArmsScoped + mainAtDF18RelatedMeaningTail
-	mainAtDF18RelatedMeaningJoinedQuery = mainAtDF18RelatedMeaningOpener + mainAtDF18RelatedMeaningArmsJoined + mainAtDF18RelatedMeaningTail
+	mainAt4975RelatedMeaningQuery       = mainAt4975RelatedMeaningOpener + mainAt4975RelatedMeaningArms + mainAt4975RelatedMeaningTail
+	mainAt4975RelatedMeaningScopedQuery = mainAt4975RelatedMeaningOpener + mainAt4975RelatedMeaningArmsScoped + mainAt4975RelatedMeaningTail
+	mainAt4975RelatedMeaningJoinedQuery = mainAt4975RelatedMeaningOpener + mainAt4975RelatedMeaningArmsJoined + mainAt4975RelatedMeaningTail
 )
 
-// mainAtDF18RelatedMeaningExcludingArms, mainAtDF18RelatedMeaningExcludingArmsScoped and
-// mainAtDF18RelatedMeaningExcludingArmsJoined are mainAtDF18SearchMeaningArms and its two scopes
+// mainAt4975RelatedMeaningExcludingArms, mainAt4975RelatedMeaningExcludingArmsScoped and
+// mainAt4975RelatedMeaningExcludingArmsJoined are mainAt4975SearchMeaningArms and its two scopes
 // with the acting credential at $15, where the related-item check's excluding meaning statements
 // bind it, the owners they leave out being $14.
 const (
-	mainAtDF18RelatedMeaningExcludingArms = `meaning_issue_candidates as (
+	mainAt4975RelatedMeaningExcludingArms = `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: issue */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1395,7 +1474,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: artifact */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1417,7 +1496,7 @@ meaning_comment_candidates as (
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: comment */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)::text), true)
    order by e.embedding <=> $9::vector
@@ -1437,7 +1516,7 @@ meaning_comment as (
    where meaning_comment_candidates.r >= $10
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 ),
 meaning_ask_candidates as (
@@ -1451,12 +1530,12 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: ask */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1476,12 +1555,12 @@ meaning_message_candidates as (
     join messages m on m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11
-     and /* visibility predicate: message */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1494,13 +1573,13 @@ meaning_message as (
    order by meaning_message_candidates.id, r desc, window_id
 ),
 `
-	mainAtDF18RelatedMeaningExcludingArmsScoped = `meaning_issue_candidates as (
+	mainAt4975RelatedMeaningExcludingArmsScoped = `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: issue */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1526,7 +1605,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: artifact */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1548,7 +1627,7 @@ meaning_comment_candidates as (
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: comment */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)::text), true)
    order by e.embedding <=> $9::vector
@@ -1568,7 +1647,7 @@ meaning_comment as (
    where meaning_comment_candidates.r >= $10
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 ),
 meaning_ask_candidates as (
@@ -1582,12 +1661,12 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: ask */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1607,12 +1686,12 @@ meaning_message_candidates as (
     join messages m on m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11 and e.project_key = $2
-     and /* visibility predicate: message */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1625,13 +1704,13 @@ meaning_message as (
    order by meaning_message_candidates.id, r desc, window_id
 ),
 `
-	mainAtDF18RelatedMeaningExcludingArmsJoined = `meaning_issue_candidates as (
+	mainAt4975RelatedMeaningExcludingArmsJoined = `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
-     and /* visibility predicate: issue */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1657,7 +1736,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11 and ($2 = '' or p.key = $2)
-     and /* visibility predicate: artifact */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true)
      and (q.status_filter = '' or i.status = q.status_filter)
@@ -1684,12 +1763,12 @@ meaning_comment_candidates as (
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
-     and /* visibility predicate: comment */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = c.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or c.author->>'id' = q.author_filter)
-     and (q.updated_since is null or c.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1712,12 +1791,12 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
-     and /* visibility predicate: ask */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or k.author->>'id' = q.author_filter)
-     and (q.updated_since is null or k.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1737,12 +1816,12 @@ meaning_message_candidates as (
     join messages m on m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
-     and /* visibility predicate: message */` + mainAtDF18VisibilityHead + `
+     and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true)
      and (q.status_filter = '' or i.status = q.status_filter)
      and (q.author_filter = '' or m.author->>'id' = q.author_filter)
-     and (q.updated_since is null or m.created_at >= q.updated_since)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
    order by e.embedding <=> $9::vector
    limit 1000
 ),
@@ -1757,9 +1836,9 @@ meaning_message as (
 `
 )
 
-// mainAtDF18RelatedMeaningExcludingTail is mainAtDF18RelatedMeaningTail with relatedExcludedOwners'
+// mainAt4975RelatedMeaningExcludingTail is mainAt4975RelatedMeaningTail with relatedExcludedOwners'
 // filter over the owners at $14 in kinds and the acting credential at $15.
-const mainAtDF18RelatedMeaningExcludingTail = `kinds as (select * from (` + mainAtDF18RelatedKeywordLegs + `
+const mainAt4975RelatedMeaningExcludingTail = `kinds as (select * from (` + mainAt4975RelatedKeywordLegs + `
   union all select * from meaning_issue
   union all select * from meaning_document
   union all select * from meaning_comment
@@ -1768,7 +1847,7 @@ const mainAtDF18RelatedMeaningExcludingTail = `kinds as (select * from (` + main
 ) arms where not (coalesce(case when owner_artifact_id is null then 'issue:' || issue_key
                      else 'document:' || owner_artifact_id end, '') = any($14::text[])
       or (kind = 'document' and 'document:' || id = any($14::text[]))
-      or (kind = 'ask' and 'ask:' || id = any($14::text[]))) and /* visibility predicate: every kind */` + mainAtDF18VisibilityHead + `
+      or (kind = 'ask' and 'ask:' || id = any($14::text[]))) and /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = case arms.kind when 'document' then 'artifact' else arms.kind end and visible_node.id = case case arms.kind when 'document' then 'artifact' else arms.kind end when 'artifact' then (select store_artifact.ref_key from artifacts store_artifact where store_artifact.id::text = arms.id::text) else arms.id::text end), true)
 ),
@@ -1803,11 +1882,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english',
-         search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-              else left(txt.text, 4000) end),
-         q.tsq, $5) as headline
+       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -1824,11 +1899,21 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
+  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
+  -- query's first term, or the text's head. It is selected beside the headline as well, so the
+  -- scan has the very text ts_headline read and can set the headline back into it
+  -- (pmdoc.SearchSnippet).
+  left join lateral (
+    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
+             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
+             else left(txt.text, 4000) end) as text
+  ) src on true
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
-  -- is never edited and keeps no text table (refs/item_blocks.go's table map), so its block is
-  -- ranked on the excerpt its row holds, the block's first refs.BlockExcerptRunes runes.
+  -- records no revisions, so it keeps no text table (refs/item_blocks.go's table map) and its
+  -- block is ranked on the excerpt its row holds, the block's head as refs.BlockExcerpt cuts it,
+  -- which an edit of the message rewrites with the block it changed.
   left join lateral (
     select covered.block_id
       from unnest(r.covers) with ordinality as covered(block_id, ord)
@@ -1847,7 +1932,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
                                  where x.message_id = r.id::uuid and x.block_id = covered.block_id)
         end as text
       ) block
-     where /* visibility predicate: every kind */` + mainAtDF18VisibilityHead + `
+     where /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
 	end = jsonb_build_object('kind', ($15::jsonb)->>'kind', 'id', case when ($15::jsonb)->>'kind' = 'person' then user_threads_login(($15::jsonb)->>'id') else ($15::jsonb)->>'id' end), false)
 		from graph_nodes visible_node where visible_node.kind = case r.kind when 'document' then 'block' else r.kind || '_block' end and visible_node.id = case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id), true)
      order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
@@ -1856,14 +1941,14 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
 `
 
-// mainAtDF18RelatedMeaningExcludingQuery, mainAtDF18RelatedMeaningScopedExcludingQuery and
-// mainAtDF18RelatedMeaningJoinedExcludingQuery are main's relatedMeaningExcludingQuery,
+// mainAt4975RelatedMeaningExcludingQuery, mainAt4975RelatedMeaningScopedExcludingQuery and
+// mainAt4975RelatedMeaningJoinedExcludingQuery are main's relatedMeaningExcludingQuery,
 // relatedMeaningScopedExcludingQuery and relatedMeaningJoinedExcludingQuery: the meaning stage
 // every write runs, over the fifteen parameters relatedSearch binds it.
 const (
-	mainAtDF18RelatedMeaningExcludingQuery       = mainAtDF18RelatedMeaningOpener + mainAtDF18RelatedMeaningExcludingArms + mainAtDF18RelatedMeaningExcludingTail
-	mainAtDF18RelatedMeaningScopedExcludingQuery = mainAtDF18RelatedMeaningOpener + mainAtDF18RelatedMeaningExcludingArmsScoped + mainAtDF18RelatedMeaningExcludingTail
-	mainAtDF18RelatedMeaningJoinedExcludingQuery = mainAtDF18RelatedMeaningOpener + mainAtDF18RelatedMeaningExcludingArmsJoined + mainAtDF18RelatedMeaningExcludingTail
+	mainAt4975RelatedMeaningExcludingQuery       = mainAt4975RelatedMeaningOpener + mainAt4975RelatedMeaningExcludingArms + mainAt4975RelatedMeaningExcludingTail
+	mainAt4975RelatedMeaningScopedExcludingQuery = mainAt4975RelatedMeaningOpener + mainAt4975RelatedMeaningExcludingArmsScoped + mainAt4975RelatedMeaningExcludingTail
+	mainAt4975RelatedMeaningJoinedExcludingQuery = mainAt4975RelatedMeaningOpener + mainAt4975RelatedMeaningExcludingArmsJoined + mainAt4975RelatedMeaningExcludingTail
 )
 
 // searchResultsItems is how many items of each kind hold the kind's word in R3's fixture: more
@@ -2076,57 +2161,145 @@ func readSearchAnswer(t *testing.T, ctx context.Context, database *store.Store, 
 	return answer
 }
 
+// searchFilterTotal is what a filter row of R3 requires of the total its answer counts.
+type searchFilterTotal int
+
+const (
+	// totalOpen leaves the total to the comparison with main's answer: the filter narrows the
+	// matches by an amount this test does not state.
+	totalOpen searchFilterTotal = iota
+	// totalEvery is every match of the kind's word, 1,500 in every project and 750 in one.
+	totalEvery
+	// totalNone is no match at all, and no item on the page.
+	totalNone
+)
+
+// searchFilter is one narrowing of R3's search: how it sets the search's parameters, whether
+// the first page of its answer must hold the oldest item of the word's kind, and what it
+// requires of the total.
+type searchFilter struct {
+	name        string
+	narrow      func(*searchParameters)
+	keepsOldest bool
+	total       searchFilterTotal
+}
+
+// searchKindFilters are the filter rows that name kinds, for the word of the kind at index of
+// searchResultsKinds: each of the five kinds alone, a pair holding the word's kind and the kind
+// after it, and a pair of two other kinds, which holds no item the word matches. A row names the
+// kinds the search asks for; the set the parameters carry is the kinds it leaves out,
+// searchNoKind &^ asked. A row that names the word's kind counts every match and holds the
+// oldest item on its first page, and a row that names only other kinds answers no match.
+func searchKindFilters(index int) []searchFilter {
+	row := func(asked ...int) searchFilter {
+		var named searchKinds
+		var names []string
+		holds := false
+		for _, kind := range asked {
+			named |= 1 << kind
+			names = append(names, searchResultsKinds[kind].kind)
+			holds = holds || kind == index
+		}
+		filter := searchFilter{
+			name:   "kinds " + strings.Join(names, " and "),
+			narrow: func(p *searchParameters) { p.kinds = searchNoKind &^ named },
+			total:  totalNone,
+		}
+		if holds {
+			filter.keepsOldest, filter.total = true, totalEvery
+		}
+		return filter
+	}
+	next := func(by int) int { return (index + by) % len(searchResultsKinds) }
+	var filters []searchFilter
+	for kind := range searchResultsKinds {
+		filters = append(filters, row(kind))
+	}
+	return append(filters, row(index, next(1)), row(next(1), next(2)))
+}
+
+// searchGenericPlanSetting makes a statement run under its generic plan, planned without the
+// parameter values, which Postgres takes for a prepared text after five custom plans when it
+// costs no more than their average (plan_cache_mode = auto).
+const searchGenericPlanSetting = `set local plan_cache_mode = force_generic_plan`
+
 // TestSearchAnswersMainsRowsOrderTotalAndReachable holds R3: each keyword arm ranks and counts
 // every match whatever its age, and a search answers the rows, the order, the total and the
-// reachable main's statements at df18d9be answer. The fixture (newSearchResultsFixture) gives
-// each of the five kinds 1,500 items holding the kind's word, the oldest of them the best match
-// by ts_rank_cd and by vector, and each kind's word is a query.
+// reachable main's statements at 497581c7 answer, for every set of kinds it names. The fixture
+// (newSearchResultsFixture) gives each of the five kinds 1,500 items holding the kind's word,
+// the oldest of them the best match by ts_rank_cd and by vector, and each kind's word is a
+// query.
 //
 // For each query, each of the four statements - searchQuery, and searchQueryMeaning,
 // searchQueryMeaningScoped and searchQueryMeaningJoined over the vector the fake embedder answers
 // for the word - runs for each project form its caller binds it with (every project and one),
-// with no filter and with each of status, author and updated_since alone, at offsets 0 and 50,
-// this build's text and main's over the same arguments and under the settings the route runs it
-// under (searchScanSettings over searchKeywordScan or searchMeaningScan), the 15-second bound
-// among them (D3). The two answers must be the same rows in the same order. A search narrowed by
-// nothing must count all 1,500 of the kind's matches, or the 750 of one project; and the first
+// with no filter and with each of status, author, updated_since and kinds alone, at offsets 0
+// and 50, this build's text and main's over the same arguments and under the settings the route
+// runs it under (searchScanSettings over searchKeywordScan or searchMeaningScan), the 15-second
+// bound among them (D3). The kinds are no kind named, each of the five kinds alone, and two
+// pairs of kinds, one holding the word's kind and one not (searchKindFilters). A search naming
+// kinds runs the text of its set of kinds (searchKinds.statements) against main's text of the
+// same set (mainAt4975Statement), and one naming none runs the statements searchQuery and
+// searchQueryMeaning* themselves. The two answers must be the same rows in the same order. A
+// search narrowed by nothing, or by kinds that include the word's own, must count all 1,500 of
+// the kind's matches, or the 750 of one project; a search naming only other kinds must count none
+// and page none, and is read at offset 0 alone, since no later page holds anything; and the first
 // page of a search whose filters keep the oldest item must hold it.
 func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
 	t.Parallel()
 	fixture := newSearchResultsFixture(t)
 	ctx := context.Background()
+	for bit, kind := range searchResultsKinds {
+		if kind.kind != mainAt4975KindNames[bit] || kind.kind != searchIndexedKinds[bit] {
+			t.Fatalf("kind %d of the fixture is %q, but main's bit %d names %q and this build's %q", bit, kind.kind, bit, mainAt4975KindNames[bit], searchIndexedKinds[bit])
+		}
+	}
 	every, one := "", fixture.projects[0]
 	statements := []struct {
 		name, live, main string
 		meaning          bool
 		projects         []string
+		// generic runs the form of the statement that names a project under the generic plan
+		// (searchGenericPlanSetting). The joined shape's custom plan for one project, the plan a
+		// text takes for its first five runs, runs for about 16 seconds on this corpus - main's
+		// text and this build's alike, with no kind named too - past the 15-second bound, and
+		// its generic plan for about a quarter of a second. An answer does not depend on the
+		// plan, and both sides run under the same one.
+		generic bool
+		// liveOf and mainOf pick this statement out of one set's four, this build's and main's.
+		liveOf func(*searchStatements) string
+		mainOf func(mainAt4975Shapes) string
 	}{
-		{"searchQuery", searchQuery, mainAtDF18SearchQuery, false, []string{every, one}},
-		{"searchQueryMeaning", searchQueryMeaning, mainAtDF18SearchQueryMeaning, true, []string{every}},
-		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAtDF18SearchQueryMeaningScoped, true, []string{one}},
-		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAtDF18SearchQueryMeaningJoined, true, []string{every, one}},
+		{"searchQuery", searchQuery, mainAt4975SearchQuery, false, []string{every, one}, false,
+			func(s *searchStatements) string { return s.keyword }, func(s mainAt4975Shapes) string { return s.keyword }},
+		{"searchQueryMeaning", searchQueryMeaning, mainAt4975SearchQueryMeaning, true, []string{every}, false,
+			func(s *searchStatements) string { return s.meaningEvery }, func(s mainAt4975Shapes) string { return s.meaningEvery }},
+		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAt4975SearchQueryMeaningScoped, true, []string{one}, false,
+			func(s *searchStatements) string { return s.meaningScoped }, func(s mainAt4975Shapes) string { return s.meaningScoped }},
+		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAt4975SearchQueryMeaningJoined, true, []string{every, one}, true,
+			func(s *searchStatements) string { return s.meaningJoined }, func(s mainAt4975Shapes) string { return s.meaningJoined }},
 	}
-	filters := []struct {
-		name        string
-		narrow      func(*searchParameters)
-		keepsOldest bool
-	}{
-		{"no filter", nil, true},
-		{"status todo", func(p *searchParameters) { p.status = "todo" }, true},
-		{"author alice", func(p *searchParameters) { p.author = "alice" }, true},
-		{"updated since", func(p *searchParameters) { p.since = &fixture.since }, false},
-	}
-	for _, kind := range searchResultsKinds {
+	for index, kind := range searchResultsKinds {
 		t.Run(kind.word, func(t *testing.T) {
 			vectors, err := fixture.embedder.Embed(ctx, []string{kind.word}, embed.InputQuery)
 			if err != nil {
 				t.Fatalf("embed %q: %v", kind.word, err)
 			}
 			oldest := kind.kind + "/" + fixture.oldest[kind.kind]
+			filters := append([]searchFilter{
+				{"no filter", nil, true, totalEvery},
+				{"status todo", func(p *searchParameters) { p.status = "todo" }, true, totalOpen},
+				{"author alice", func(p *searchParameters) { p.author = "alice" }, true, totalOpen},
+				{"updated since", func(p *searchParameters) { p.since = &fixture.since }, false, totalOpen},
+			}, searchKindFilters(index)...)
 			for _, statement := range statements {
 				for _, project := range statement.projects {
 					for _, filter := range filters {
-						for _, offset := range []int{0, 50} {
+						offsets := []int{0, 50}
+						if filter.total == totalNone {
+							offsets = offsets[:1]
+						}
+						for _, offset := range offsets {
 							scope := "every project"
 							if project != every {
 								scope = project
@@ -2141,19 +2314,33 @@ func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
 									arguments = searchMeaningQueryArguments(parameters, vectors[0], fixture.embedder.Identity())
 									settings = searchScanSettings(searchMeaningScan)
 								}
-								want := readSearchAnswer(t, ctx, fixture.database, statement.main, arguments, settings)
-								got := readSearchAnswer(t, ctx, fixture.database, statement.live, arguments, settings)
+								if statement.generic && project != every {
+									settings = append(settings, searchGenericPlanSetting)
+								}
+								live, main := statement.live, statement.main
+								if parameters.kinds != 0 {
+									live = statement.liveOf(parameters.kinds.statements())
+									main = statement.mainOf(mainAt4975Statements(uint8(parameters.kinds)))
+								}
+								want := readSearchAnswer(t, ctx, fixture.database, main, arguments, settings)
+								got := readSearchAnswer(t, ctx, fixture.database, live, arguments, settings)
 								if !slices.Equal(got.rows, want.rows) {
 									t.Fatalf("this build's statement answered\n%s\nwant main's\n%s",
 										strings.Join(got.rows, "\n"), strings.Join(want.rows, "\n"))
 								}
-								if filter.narrow == nil {
+								switch filter.total {
+								case totalEvery:
 									matches := int64(searchResultsItems)
 									if project != every {
 										matches /= 2
 									}
 									if got.total != matches {
 										t.Fatalf("total = %d, want every one of the %d matches of %q", got.total, matches, kind.word)
+									}
+								case totalNone:
+									if got.total != 0 || got.reachable != 0 || len(got.items) != 0 {
+										t.Fatalf("a search naming no kind that holds %q answered total %d, reachable %d and items %v, want none:\n%s",
+											kind.word, got.total, got.reachable, got.items, strings.Join(got.rows, "\n"))
 									}
 								}
 								if offset == 0 && filter.keepsOldest && !slices.Contains(got.items, oldest) {

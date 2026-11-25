@@ -186,52 +186,39 @@ type searchSplitSQL struct{ ranked, rankFree string }
 // ts_rank_cd (searchKeywordLegs takes the rank expression).
 var searchSplitRankFreeLegs = searchKeywordLegs(func(string) string { return "0::real" })
 
-// searchSplitMainLegEdits undoes, as text, the edits main made to search's keyword legs after
-// df18d9be, the commit main's statements are frozen at (mainAtDF18*, search_oracle_test.go):
-// main's #3512 has the updated_since filter of the comment, ask and message legs read
-// coalesce(edited_at, created_at) where main at df18d9be read created_at. Applied to the head's
-// legs it gives main's frozen legs (searchSplitStatements holds that), and applied to the head's
-// rank-free legs it gives main's own legs built rank-free.
-var searchSplitMainLegEdits = strings.NewReplacer(
-	"coalesce(c.edited_at, c.created_at)", "c.created_at",
-	"coalesce(k.edited_at, k.created_at)", "k.created_at",
-	"coalesce(m.edited_at, m.created_at)", "m.created_at",
-)
-
 // searchSplitStatements is every statement the split can run, by side and then by shape. The
 // head's rank-free statements are built from the head's own builders over the rank-free legs.
-// Main's are main's frozen texts with their keyword legs replaced by main's own legs built
-// rank-free, which are the head's rank-free legs with main's edits after df18d9be undone
-// (searchSplitMainLegEdits). The undo is held against main's frozen legs first: undone in the
-// head's ranked legs it must give mainAtDF18SearchKeywordLegs byte for byte, so a later change of
-// the legs the undo does not cover fails here instead of measuring main with the head's text.
+// Main's are main's frozen texts with their keyword legs replaced by those same rank-free legs,
+// which are main's own legs built rank-free once the head's ranked legs are main's: that is held
+// first, against main's frozen legs (mainAt4975SearchKeywordLegs, search_oracle_test.go) byte
+// for byte, so a later change of the head's legs fails here instead of measuring main with the
+// head's text.
 func searchSplitStatements(t *testing.T) map[string]map[string]searchSplitSQL {
 	t.Helper()
-	if undone := searchSplitMainLegEdits.Replace(searchKeywordLegsSQL); undone != mainAtDF18SearchKeywordLegs {
+	if searchKeywordLegsSQL != mainAt4975SearchKeywordLegs {
 		at := 0
-		for at < min(len(undone), len(mainAtDF18SearchKeywordLegs)) && undone[at] == mainAtDF18SearchKeywordLegs[at] {
+		for at < min(len(searchKeywordLegsSQL), len(mainAt4975SearchKeywordLegs)) && searchKeywordLegsSQL[at] == mainAt4975SearchKeywordLegs[at] {
 			at++
 		}
 		excerpt := func(legs string) string { return legs[max(0, at-40):min(len(legs), at+80)] }
-		t.Fatalf("the head's keyword legs (searchKeywordLegsSQL) with main's edits after df18d9be undone (searchSplitMainLegEdits) are not main's frozen legs (mainAtDF18SearchKeywordLegs), so they are not main's own legs: they first differ at byte %d, the undone legs reading %q there and main's %q; undo main's other edits as well",
-			at, excerpt(undone), excerpt(mainAtDF18SearchKeywordLegs))
+		t.Fatalf("the head's keyword legs (searchKeywordLegsSQL) are not main's frozen legs (mainAt4975SearchKeywordLegs), so they are not main's own legs: they first differ at byte %d, the head's legs reading %q there and main's %q",
+			at, excerpt(searchKeywordLegsSQL), excerpt(mainAt4975SearchKeywordLegs))
 	}
-	mainRankFreeLegs := searchSplitMainLegEdits.Replace(searchSplitRankFreeLegs)
 	mainRankFree := func(statement string) string {
-		if count := strings.Count(statement, mainAtDF18SearchKeywordLegs); count != 1 {
+		if count := strings.Count(statement, mainAt4975SearchKeywordLegs); count != 1 {
 			t.Fatalf("main's statement holds its keyword legs %d times; want once", count)
 		}
-		return strings.Replace(statement, mainAtDF18SearchKeywordLegs, mainRankFreeLegs, 1)
+		return strings.Replace(statement, mainAt4975SearchKeywordLegs, searchSplitRankFreeLegs, 1)
 	}
 	headMeaning := func(scope meaningProjectScope) string {
 		return searchQOpener(12) + searchQueryMeaningBody(searchSplitRankFreeLegs, searchFusedSQL, "", searchMeaningSeenParam, scope)
 	}
 	return map[string]map[string]searchSplitSQL{
 		searchSplitMain: {
-			searchShapeKeyword:       {mainAtDF18SearchQuery, mainRankFree(mainAtDF18SearchQuery)},
-			searchShapeMeaningEvery:  {mainAtDF18SearchQueryMeaning, mainRankFree(mainAtDF18SearchQueryMeaning)},
-			searchShapeMeaningScoped: {mainAtDF18SearchQueryMeaningScoped, mainRankFree(mainAtDF18SearchQueryMeaningScoped)},
-			searchShapeMeaningJoined: {mainAtDF18SearchQueryMeaningJoined, mainRankFree(mainAtDF18SearchQueryMeaningJoined)},
+			searchShapeKeyword:       {mainAt4975SearchQuery, mainRankFree(mainAt4975SearchQuery)},
+			searchShapeMeaningEvery:  {mainAt4975SearchQueryMeaning, mainRankFree(mainAt4975SearchQueryMeaning)},
+			searchShapeMeaningScoped: {mainAt4975SearchQueryMeaningScoped, mainRankFree(mainAt4975SearchQueryMeaningScoped)},
+			searchShapeMeaningJoined: {mainAt4975SearchQueryMeaningJoined, mainRankFree(mainAt4975SearchQueryMeaningJoined)},
 		},
 		searchSplitHead: {
 			searchShapeKeyword: {searchQuery,

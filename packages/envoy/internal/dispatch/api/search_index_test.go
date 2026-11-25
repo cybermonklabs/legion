@@ -707,7 +707,7 @@ func (tree searchPlanTree) describe(nodes []int) string {
 }
 
 // meaningStatementPair is one of the nine meaning statements R2 changes the document arm of:
-// this build's text and main's at df18d9be (search_oracle_test.go), with the arguments its caller
+// this build's text and main's at 497581c7 (search_oracle_test.go), with the arguments its caller
 // binds over documentSearchFixture. Both texts take the same parameters.
 type meaningStatementPair struct {
 	name, live, main string
@@ -734,16 +734,16 @@ func (f documentSearchFixture) meaningStatementPairs() []meaningStatementPair {
 		return append(arguments, documentSearchSeen()...)
 	}
 	return []meaningStatementPair{
-		{"searchQueryMeaning", searchQueryMeaning, mainAtDF18SearchQueryMeaning, search("")},
-		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAtDF18SearchQueryMeaningScoped, search(f.project)},
-		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAtDF18SearchQueryMeaningJoined, search(f.project)},
-		{"relatedMeaningQuery", relatedMeaningQuery, mainAtDF18RelatedMeaningQuery, related("", false)},
-		{"relatedMeaningScopedQuery", relatedMeaningScopedQuery, mainAtDF18RelatedMeaningScopedQuery, related(f.project, false)},
-		{"relatedMeaningJoinedQuery", relatedMeaningJoinedQuery, mainAtDF18RelatedMeaningJoinedQuery, related(f.project, false)},
-		{"relatedMeaningExcludingQuery", relatedMeaningExcludingQuery, mainAtDF18RelatedMeaningExcludingQuery, related("", true)},
-		{"relatedMeaningScopedExcludingQuery", relatedMeaningScopedExcludingQuery, mainAtDF18RelatedMeaningScopedExcludingQuery,
+		{"searchQueryMeaning", searchQueryMeaning, mainAt4975SearchQueryMeaning, search("")},
+		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAt4975SearchQueryMeaningScoped, search(f.project)},
+		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAt4975SearchQueryMeaningJoined, search(f.project)},
+		{"relatedMeaningQuery", relatedMeaningQuery, mainAt4975RelatedMeaningQuery, related("", false)},
+		{"relatedMeaningScopedQuery", relatedMeaningScopedQuery, mainAt4975RelatedMeaningScopedQuery, related(f.project, false)},
+		{"relatedMeaningJoinedQuery", relatedMeaningJoinedQuery, mainAt4975RelatedMeaningJoinedQuery, related(f.project, false)},
+		{"relatedMeaningExcludingQuery", relatedMeaningExcludingQuery, mainAt4975RelatedMeaningExcludingQuery, related("", true)},
+		{"relatedMeaningScopedExcludingQuery", relatedMeaningScopedExcludingQuery, mainAt4975RelatedMeaningScopedExcludingQuery,
 			related(f.project, true)},
-		{"relatedMeaningJoinedExcludingQuery", relatedMeaningJoinedExcludingQuery, mainAtDF18RelatedMeaningJoinedExcludingQuery,
+		{"relatedMeaningJoinedExcludingQuery", relatedMeaningJoinedExcludingQuery, mainAt4975RelatedMeaningJoinedExcludingQuery,
 			related(f.project, true)},
 	}
 }
@@ -756,7 +756,7 @@ func (f documentSearchFixture) meaningStatementPairs() []meaningStatementPair {
 // tests the kind 'document_block' (meaningArms), and a plan holding no such arm fails, since it
 // says nothing of the arm.
 //
-// main's text at df18d9be is the negative control, read the same way over the same rows: its arm
+// main's text at 497581c7 is the negative control, read the same way over the same rows: its arm
 // reads the newest version's created_at through a lateral over artifact_versions, so the same
 // reading of its plans must find artifact_versions in the arm, or the assertion on this build's
 // text decides nothing.
@@ -779,7 +779,7 @@ func TestNoMeaningDocumentArmReadsArtifactVersions(t *testing.T) {
 				readsArtifactVersions bool
 			}{
 				{statement.live, "this build's", false},
-				{statement.main, "main's at df18d9be", true},
+				{statement.main, "main's at 497581c7", true},
 			} {
 				prepared++
 				for _, plan := range searchStatementPlans(t, connection, fmt.Sprintf("meaning_document_arm_%d", prepared), side.text, statement.arguments) {
