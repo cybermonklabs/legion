@@ -1,5 +1,7 @@
 # Wake routing
 
+A wake about an issue reaches its own architect while that architect holds its role, else the nearest one above that does.
+A `child-status` or `child-closed`, and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the child.
 "Section N" is that section of `skill://legion-architect`.
 
 | Wake | What to do |

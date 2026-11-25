@@ -79,4 +79,6 @@ When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the th
 
 ## The close
 
+The merge closes the issue (`done`).
+The production check after the close is not yours.
 A root's close lingers the tree for `linger_hours`.
