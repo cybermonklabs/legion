@@ -32,6 +32,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
@@ -149,9 +150,11 @@ func parseFlags(args []string) (config, error) {
 		return config{}, fmt.Errorf("unexpected arguments %q", flags.Args())
 	}
 
+	// The refusal names -url as redact.URL reads it: the value can carry user information or a
+	// query, and one url.Parse refuses quotes them whole.
 	base, err := url.Parse(rawURL)
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
-		return config{}, fmt.Errorf("-url must be http(s)://host:port, got %q", rawURL)
+		return config{}, fmt.Errorf("-url must be http(s)://host:port, got %q", redact.URL(rawURL))
 	}
 	cfg.baseURL = base
 	if strings.TrimSpace(cfg.identityHeader) == "" {
