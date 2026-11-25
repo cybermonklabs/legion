@@ -446,8 +446,7 @@ func OwnersNewestPlan(ctx context.Context, store Store, tx pgx.Tx, issue Issue) 
 // plans the issue's first step passes over. The architect of the tree's root and each
 // sub-architect of the tree are owners, so no plan one of them gave is among them.
 func PlansOfEarlierOwners(ctx context.Context, store Store, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
-	return plansInForceWhere(ctx, store, tx, issue, fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key),
-		func(version PlanVersion) (bool, error) { return GivenByEarlierOwners(ctx, store, tx, version, issue) })
+	return plansInForceWhere(ctx, store, tx, issue, fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key), GivenByEarlierOwners)
 }
 
 // PlansOfOwners is each plan in force of issue (Store.PlansInForce) of which a giver is an
@@ -455,21 +454,22 @@ func PlansOfEarlierOwners(ctx context.Context, store Store, tx pgx.Tx, issue Iss
 // were given: every plan an owner gave that a first step could take, generation 0 and each copy a
 // carry wrote among them.
 func PlansOfOwners(ctx context.Context, store Store, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
-	return plansInForceWhere(ctx, store, tx, issue, fmt.Sprintf("read the plans of %s that its owners gave", issue.Key),
-		func(version PlanVersion) (bool, error) { return GivenByOwner(ctx, store, tx, version, issue) })
+	return plansInForceWhere(ctx, store, tx, issue, fmt.Sprintf("read the plans of %s that its owners gave", issue.Key), GivenByOwner)
 }
 
-// plansInForceWhere is each plan in force of issue (Store.PlansInForce) that keep keeps, in the
-// order they were given; describe names the read in an error. The versions are read, and their
-// rows closed, before keep judges any, since a transaction runs one statement at a time.
-func plansInForceWhere(ctx context.Context, store Store, tx pgx.Tx, issue Issue, describe string, keep func(PlanVersion) (bool, error)) ([]PlanVersion, error) {
+// plansInForceWhere is each plan in force of issue (Store.PlansInForce) that keep keeps, judged
+// through store, in the order they were given; describe names the read in an error. The versions
+// are read, and their rows closed, before keep judges any, since a transaction runs one statement
+// at a time.
+func plansInForceWhere(ctx context.Context, store Store, tx pgx.Tx, issue Issue, describe string,
+	keep func(context.Context, Store, pgx.Tx, PlanVersion, Issue) (bool, error)) ([]PlanVersion, error) {
 	given, err := store.PlansInForce(ctx, tx, issue.Key)
 	if err != nil {
 		return nil, err
 	}
 	var plans []PlanVersion
 	for _, version := range given {
-		kept, err := keep(version)
+		kept, err := keep(ctx, store, tx, version, issue)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
