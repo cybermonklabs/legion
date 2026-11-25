@@ -61,13 +61,15 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 }
 
 // queueReleaseResume queues the resume a cancelled idle release writes for the architect's claim:
-// the row the daemon's own builder makes (outbox.releaseResume) at the root's generation, inserted
-// with the statement store.CancelIssueRelease uses. No release is marked and none is cancelled:
-// the row is written alone, outside the cancel's transaction. It returns that row as the outbox
-// holds it.
+// the row the daemon's own builder makes (outbox.releaseResume) from the root's record as the
+// cancel reads it (store.IssueRun), inserted with the statement store.CancelIssueRelease uses. No
+// release is marked and none is cancelled: the row is written alone, outside the cancel's
+// transaction. It returns that row as the outbox holds it.
 func (r *mainPathRig) queueReleaseResume() entryStartRow {
 	r.t.Helper()
-	row, err := r.runner.releaseResume(r.key, r.key)(claim.RoleArchitect, r.issue().Generation)
+	root := r.issue()
+	row, err := r.runner.releaseResume(r.key, r.key)(claim.RoleArchitect,
+		store.IssueRun{Tree: root.Tree, Generation: root.Generation, TreeGeneration: root.TreeGeneration})
 	if err != nil {
 		r.t.Fatalf("build the release's resume: %v", err)
 	}
@@ -98,7 +100,7 @@ func (r *mainPathRig) architectStartPending() (string, bool) {
 	var reason string
 	var pending bool
 	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		run, err := r.records.RoleRun(r.ctx, tx, r.token, r.key, claim.RoleArchitect, root.Generation)
+		run, err := r.records.RoleRun(r.ctx, tx, r.token, root, claim.RoleArchitect)
 		reason, pending = workflow.ArchitectStartPending(root, entry, run)
 		return err
 	}); err != nil {

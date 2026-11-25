@@ -3340,10 +3340,18 @@ func (s *Postgres) NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds [
 // start older than the branch row it must wait for (the outbox's first start of a child's own
 // architect, which can outlast a re-admission that queues the child's branch row again).
 func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	return s.OutboxQueued(ctx, tx, issue, OutboxKindIssueBranch)
+}
+
+// OutboxQueued says whether the outbox still holds a row of kind for issue — due, running or
+// backing off. A kind of which one row stands for an issue at a time is queued only where this
+// answers false: the read of the checks (CloseRead) and the publish of the stored wait
+// (CloseWaitPublish), each of which reads the record when it runs.
+func (s *Postgres) OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error) {
 	var queued bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2)`,
-		issue, string(OutboxKindIssueBranch)).Scan(&queued); err != nil {
-		return false, fmt.Errorf("read whether %s's branch row is still queued: %w", issue, err)
+		issue, string(kind)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether a %s row of %s is still queued: %w", kind, issue, err)
 	}
 	return queued, nil
 }
@@ -3694,30 +3702,34 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	return nil
 }
 
-// RoleRun reads one role's run of an issue generation as the store holds it. RoleRuns owns the
-// query shape, so the one-role caller and a state-report batch share it.
-func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, generation uint64) (RoleRun, error) {
-	runs, err := s.RoleRuns(ctx, tx, []RoleRunKey{{Token: token, Issue: issue, Role: role, Generation: generation}})
+// RoleRun reads one role's run of issue as the store holds it (RunKey). RoleRuns owns the query
+// shape, so the one-role caller and a state-report batch share it.
+func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue Issue, role claim.Role) (RoleRun, error) {
+	runs, err := s.RoleRuns(ctx, tx, []RoleRunKey{RunKey(token, issue, role)})
 	if err != nil {
 		return RoleRun{}, err
 	}
 	return runs[token], nil
 }
 
-// roleRunIdentity is a candidate role run as an outbox supervise row names it: its issue, and the
+// roleRunIdentity is a candidate role run as an outbox supervise row names it: its issue, the
 // payload's role and generation exactly as Postgres renders them (`payload->>'role'`,
-// `payload->>'generation'`), so a row is matched before it is decoded.
+// `payload->>'generation'`), and whether the row is a start, so a row is matched before it is
+// decoded. A key names two: its starts at the generation a start of the role serves, and its
+// other rows at the issue's own generation (RoleRunKey).
 type roleRunIdentity struct {
 	issue      string
 	role       string
 	generation string
+	start      bool
 }
 
 // RoleRuns reads the queued supervise rows and the claims of keys in two bounded queries. The
 // outbox query reads the selected issues' supervise rows by the outbox_issue index with each
-// payload's role and generation as text, each row's age in the store's own clock
-// (QueuedSupervise.Age) and whether a live lease holds the row at that same now()
-// (QueuedSupervise.Running), and decodes only the rows of keys' roles and generations. A row of
+// payload's role and generation as text and whether it is a start, each row's age in the store's
+// own clock (QueuedSupervise.Age) and whether a live lease holds the row at that same now()
+// (QueuedSupervise.Running), and decodes only the rows of keys' runs: a start at the generation
+// its key gives starts, every other row at the issue's own generation (RoleRunKey). A row of
 // another role is never decoded, so one that does not decode fails only a read of its own role's
 // run, as RoleRun's did.
 //
@@ -3745,36 +3757,38 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 	tokens := make([]string, 0, len(keys))
 	issues := make([]string, 0, len(keys))
 	seenIssues := make(map[string]struct{}, len(keys))
-	candidates := make(map[roleRunIdentity]claim.Token, len(keys))
+	candidates := make(map[roleRunIdentity]claim.Token, 2*len(keys))
 	for _, key := range keys {
-		if _, exists := runs[key.Token]; exists {
+		if _, exists := runs[key.token]; exists {
 			continue
 		}
-		runs[key.Token] = RoleRun{}
-		tokens = append(tokens, string(key.Token))
-		candidates[roleRunIdentity{issue: key.Issue, role: string(key.Role), generation: strconv.FormatUint(key.Generation, 10)}] = key.Token
-		if _, seen := seenIssues[key.Issue]; !seen {
-			seenIssues[key.Issue] = struct{}{}
-			issues = append(issues, key.Issue)
+		runs[key.token] = RoleRun{}
+		tokens = append(tokens, string(key.token))
+		candidates[roleRunIdentity{issue: key.issue, role: string(key.role), generation: strconv.FormatUint(key.starts, 10), start: true}] = key.token
+		candidates[roleRunIdentity{issue: key.issue, role: string(key.role), generation: strconv.FormatUint(key.others, 10)}] = key.token
+		if _, seen := seenIssues[key.issue]; !seen {
+			seenIssues[key.issue] = struct{}{}
+			issues = append(issues, key.issue)
 		}
 	}
 
 	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', ''),
-		now() - created_at, coalesce(lease_token <> '' and lease_until > now(), false)
+		coalesce(payload->>'op', '') = 'start', now() - created_at, coalesce(lease_token <> '' and lease_until > now(), false)
 		from outbox where kind = $1 and issue = any($2) order by id`, string(OutboxKindSupervise), issues)
 	if err != nil {
 		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 	}
 	for rows.Next() {
 		var role, generation string
+		var start bool
 		var age time.Duration
 		var running bool
-		row, err := scanOutbox(rows, &role, &generation, &age, &running)
+		row, err := scanOutbox(rows, &role, &generation, &start, &age, &running)
 		if err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 		}
-		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
+		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation, start: start}]
 		if !wanted {
 			continue
 		}

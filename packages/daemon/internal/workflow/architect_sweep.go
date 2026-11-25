@@ -349,5 +349,5 @@ func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root reco
 	kept *record.KeptDecisions, entry int64,
 ) error {
 	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
-		Role: claim.RoleArchitect, Generation: root.TreeRun(), Task: task, Entry: entry, Kept: kept}, kept, e.now())
+		Role: claim.RoleArchitect, Generation: root.GenerationOf("start", claim.RoleArchitect), Task: task, Entry: entry, Kept: kept}, kept, e.now())
 }

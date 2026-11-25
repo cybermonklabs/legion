@@ -30,6 +30,10 @@ const (
 	DefectKindDefect DefectKind = "defect"
 )
 
+// DefectClosedByPerson is the withdrawal reason of each defect still open when a person's done
+// closed its issue (CloseDefectsByPerson): the person's word ended it, and no change carried it.
+const DefectClosedByPerson = "closed_by_person"
+
 // Defect is one reason of a next change of an issue, a row of defects. Generation is the
 // generation of the issue it was recorded in. Role is the role that reported a defect, and empty
 // for a reason the daemon read. Head is the head of the pull request the role saw the defect at,
@@ -158,6 +162,15 @@ func (s *Postgres) MergeDefects(ctx context.Context, tx pgx.Tx, issue string, ge
 		return fmt.Errorf("mark the defects generation %d of %s carried merged: %w", generation, issue, err)
 	}
 	return nil
+}
+
+func (s *Postgres) CloseDefectsByPerson(ctx context.Context, tx pgx.Tx, issue string, at time.Time) (int64, error) {
+	tag, err := tx.Exec(ctx, `update defects set withdrawn_at = $2, withdraw_reason = $3
+		where issue = $1 and withdrawn_at is null and merged_at is null`, issue, at, DefectClosedByPerson)
+	if err != nil {
+		return 0, fmt.Errorf("mark the open defects of %s closed by a person: %w", issue, err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func scanDefect(row scanner) (Defect, error) {

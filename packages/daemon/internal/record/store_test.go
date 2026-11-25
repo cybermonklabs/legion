@@ -2621,14 +2621,15 @@ func TestRoleRunsSkipsAnotherRolesUndecodableRow(t *testing.T) {
 			values ('supervise', 'LEGION-208', '{"op": "bogus", "tree": "LEGION-208", "role": "tester", "generation": 1}', 0, now(), '')`)
 		must(t, err)
 	})
-	planner := RoleRunKey{Token: "legion-legion-legion-208-planner", Issue: "LEGION-208", Role: claim.RolePlanner, Generation: 1}
-	tester := RoleRunKey{Token: "legion-legion-legion-208-tester", Issue: "LEGION-208", Role: claim.RoleTester, Generation: 1}
+	issue := Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 1}
+	planner := RunKey("legion-legion-legion-208-planner", issue, claim.RolePlanner)
+	tester := RunKey("legion-legion-legion-208-tester", issue, claim.RoleTester)
 	inTx(t, st, func(tx pgx.Tx) {
 		runs, err := records.RoleRuns(ctx, tx, []RoleRunKey{planner})
 		if err != nil {
 			t.Fatalf("the planner's run beside the tester's undecodable row = %v, want it read", err)
 		}
-		if queued := runs[planner.Token].Queued; len(queued) != 1 || queued[0].Request != start {
+		if queued := runs[planner.Token()].Queued; len(queued) != 1 || queued[0].Request != start {
 			t.Fatalf("the planner's queued rows = %+v, want its one start", queued)
 		}
 		if _, err := records.RoleRuns(ctx, tx, []RoleRunKey{tester}); err == nil {

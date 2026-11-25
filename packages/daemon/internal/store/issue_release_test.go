@@ -627,10 +627,12 @@ func releaseMarked(t *testing.T, st *Store) bool {
 }
 
 // resumeRow is the row a cancel queues to bring one claim back, as the daemon's own builder
-// writes it (outbox.releaseResume): the `start` of that role at the generation the cancel read.
-func resumeRow(role claim.Role, generation uint64) (IdleReleaseRow, error) {
+// writes it (outbox.releaseResume): the `start` of that role at the generation a start of it
+// serves on the issue as the cancel read it (record.Issue.GenerationOf).
+func resumeRow(role claim.Role, run IssueRun) (IdleReleaseRow, error) {
+	read := record.Issue{Key: rootIssue, Tree: run.Tree, Generation: run.Generation, TreeGeneration: run.TreeGeneration}
 	return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
-		`{"op":"start","tree":%q,"role":%q,"generation":%d}`, rootIssue, role, generation))}, nil
+		`{"op":"start","tree":%q,"role":%q,"generation":%d}`, rootIssue, role, read.GenerationOf("start", role)))}, nil
 }
 
 // releasedClaim is one claim of the root issue the daemon's release left suspended as
@@ -703,7 +705,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, IssueRun) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
@@ -762,7 +764,7 @@ func TestADeclineWritesItsRowAndItsMessageOnceWithTheCancel(t *testing.T) {
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, decline, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, decline, func(claim.Role, IssueRun) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow, ReleaseCancelPause{At: at}); !errors.Is(err, refused) {
 		t.Fatalf("a decline whose resume could not be built = %v, want %v", err, refused)

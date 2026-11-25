@@ -280,9 +280,9 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 		}
 	}
 	pause, _ := pauseLegion(t, st, pausedAt)
-	resume := func(role claim.Role, generation uint64) (IdleReleaseRow, error) {
+	resume := func(role claim.Role, run IssueRun) (IdleReleaseRow, error) {
 		return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
-			`{"op":"start","tree":%q,"role":%q,"generation":%d}`, otherIssue, role, generation))}, nil
+			`{"op":"start","tree":%q,"role":%q,"generation":%d}`, otherIssue, role, run.Generation))}, nil
 	}
 
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", otherIssue, resume, record.OutOfWorkflow,

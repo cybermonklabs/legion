@@ -566,7 +566,8 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			if newsStartQueued(start.run) || holdsUntakenTask(start.run.Claim) || !recordedClaimTakesNews(start.run.Claim, start.entry) {
 				continue
 			}
-			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role, Generation: start.issue.Generation, News: true}
+			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role,
+				Generation: start.issue.GenerationOf("start", start.role), News: true}
 			if start.role != claim.RoleArchitect {
 				request.Phase = start.issue.Phase
 			}

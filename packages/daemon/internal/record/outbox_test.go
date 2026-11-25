@@ -166,8 +166,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 // (Issue.NextChange) starts its branch at the base its last pull request merged into and names the
 // head that merged, from the merge snapshot. Any other generation carries no start: the first run
 // of the issue, a generation after a next change ended, and a next change of an issue with no
-// snapshot. A start that names neither the base nor the head is refused, as is a working copy's
-// start on anything but a supervise start.
+// snapshot. A working copy's start on anything but a supervise start is refused.
 func TestTheBranchRowOfANextChangeCarriesFrom(t *testing.T) {
 	merge := Merge{Number: 41, Head: strings.Repeat("a", 40), SHA: strings.Repeat("b", 40), Base: "release/v7", Repo: "acme/widgets"}
 	for _, tc := range []struct {
@@ -185,9 +184,6 @@ func TestTheBranchRowOfANextChangeCarriesFrom(t *testing.T) {
 		if got := IssueBranchOf(tc.issue); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: IssueBranchOf = %+v, want %+v", tc.name, got, tc.want)
 		}
-	}
-	if _, err := NewOutboxRow("ACME-1", IssueBranch{Generation: 4, From: &BranchFrom{}}, time.Now()); err == nil {
-		t.Error("a branch row whose start names neither the base nor the head was taken, want it refused")
 	}
 	if _, err := NewOutboxRow("ACME-1", SuperviseRequest{Op: "suspend", Tree: "ACME-1", Role: claim.RolePlanner, Generation: 4,
 		StartAt: &StartAt{Bookmark: "legion/ACME-1", Base: "main"}}, time.Now()); err == nil {
@@ -1214,6 +1210,15 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 				StatusNotTakenYet + " " + EndChildRule},
 		{Kind: "next-change-workspace", Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Reason: "The implementer's first task of the next change of LEGION-208 waits. Its shim did not start the working copy at legion/LEGION-208. The shim answered: Bookmark legion/LEGION-208 is conflicted."},
+		{Kind: "close-waits", Role: claim.RoleArchitect, Reason: "ACME-1 merged and waits for its checks before it closes. Read close-wait.md for the wait."},
+		{Kind: "check-failed", Role: claim.RoleArchitect, Reason: "Check c-done of ACME-1 failed: result result-7 at commit c0de."},
+		{Kind: "check-unknown", Role: claim.RoleArchitect, Reason: "Check c-done of ACME-1 has a pass and a fail at the same commit."},
+		{Kind: "defect-reported", Role: claim.RoleArchitect, Reason: "The merger reported a defect of ACME-1: the retry never stops."},
+		{Kind: "next-change", Role: claim.RoleArchitect, Reason: "ACME-1 starts its next change at generation 4 for check c-done."},
+		{Kind: "close-wait-no-result", Role: claim.RoleArchitect, Reason: "The production check of ACME-1 closed, and check c-done still has no result."},
+		{Kind: "close-wait-standing", Role: claim.RoleArchitect, Reason: "ACME-1 still waits for check c-done, which has no result since 2026-11-08."},
+		{Kind: "checks-unapproved", Role: claim.RoleArchitect, Reason: "The approved Verification document of ACME-1 no longer holds check c-done."},
+		{Kind: "next-change-count", Role: claim.RoleArchitect, Reason: "ACME-1 started its fourth next change, for check c-done."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

@@ -1003,7 +1003,7 @@ func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil || row.Completed() {
 		return false, err
 	}
-	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
+	run, err := e.store.RoleRun(ctx, tx, token, issue, role)
 	if err != nil {
 		return false, err
 	}

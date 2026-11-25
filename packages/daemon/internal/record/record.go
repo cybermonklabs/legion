@@ -419,6 +419,18 @@ func (i Issue) ArchitectGeneration() uint64 {
 	return i.Generation
 }
 
+// GenerationOf is the generation of the issue that a supervise row of op for role serves, the one
+// the outbox's fence holds the row to (internal/daemon's supervise): a start of the architect
+// serves the architect's run (ArchitectGeneration), which a tree root's next change leaves, and
+// every other row serves the issue's own generation. Every writer of a start, the fence and every
+// reader of a role's run (RunKey) read the rule here, so the three agree.
+func (i Issue) GenerationOf(op SuperviseOp, role claim.Role) uint64 {
+	if op == "start" && role == claim.RoleArchitect {
+		return i.ArchitectGeneration()
+	}
+	return i.Generation
+}
+
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
 // every repository-dependent action of the issue works and mints for its owner.
 func (i Issue) Repository() (ghrepo.Repository, error) {
@@ -2388,6 +2400,9 @@ type Store interface {
 	// MergeDefects marks each open defect of issue that generation carries as merged at at: the
 	// change that carried it merged, so it holds the close no more.
 	MergeDefects(ctx context.Context, tx pgx.Tx, issue string, generation uint64, at time.Time) error
+	// CloseDefectsByPerson ends each open defect of issue, of any kind, as closed by a person
+	// (DefectClosedByPerson) at at: a person's done closed the issue. It answers how many it ended.
+	CloseDefectsByPerson(ctx context.Context, tx pgx.Tx, issue string, at time.Time) (int64, error)
 	// PutCheckRead stores read as the issue's newest read of the checks' states, where no read of a
 	// later moment stands. It answers whether it was stored.
 	PutCheckRead(ctx context.Context, tx pgx.Tx, read CheckRead) (bool, error)
@@ -2714,8 +2729,13 @@ type Store interface {
 	// false is none. Kinds nil is every kind.
 	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
 	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
-	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
+	// lease or its next_at: the branch the row creates may not exist on GitHub yet. It is
+	// OutboxQueued of that kind.
 	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// OutboxQueued says whether the outbox still holds a row of kind for issue, whatever its lease
+	// or its next_at: the read of a kind of which one row stands for an issue at a time, as one
+	// close_read and one close_wait_publish row do.
+	OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)
@@ -2803,9 +2823,9 @@ type Store interface {
 	// TreeCloses is every tree-close row (SuperviseRequest's "tree_close") queued for tree on an
 	// issue that still stands in tree, oldest first.
 	TreeCloses(ctx context.Context, tx pgx.Tx, tree string) ([]OutboxRow, error)
-	// RoleRun reads one role's run of an issue generation: its queued supervise rows and the claim
-	// with token.
-	RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, generation uint64) (RoleRun, error)
+	// RoleRun reads one role's run of issue as its record stands (RunKey): its queued supervise
+	// rows and the claim with token.
+	RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue Issue, role claim.Role) (RoleRun, error)
 	// RoleRuns is RoleRun for a bounded batch, keyed by token. Each batch reads its queued starts
 	// and claims from the caller's transaction snapshot rather than one query pair per role.
 	RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error)
@@ -2815,17 +2835,31 @@ type Store interface {
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 }
 
-// RoleRunKey identifies one role's run of an issue generation.
+// RoleRunKey identifies one role's run of an issue as the issue's record stands: the role's
+// supervise rows the outbox's generation fence lets act (Issue.GenerationOf), a start at the
+// generation a start of the role serves and every other row at the issue's own generation. The
+// two differ for a tree root's architect after the root's next change, whose starts serve the
+// tree's run and whose stops serve the root's own generation. RunKey is its one constructor, so no
+// reader picks a generation the fence does not hold the row to.
 type RoleRunKey struct {
-	Token      claim.Token
-	Issue      string
-	Role       claim.Role
-	Generation uint64
+	token  claim.Token
+	issue  string
+	role   claim.Role
+	starts uint64
+	others uint64
 }
 
-// RoleRun is what the store holds of one role's run of an issue generation: the role's supervise
-// rows for the generation still queued, oldest first (finishing deletes a row, so each is one the
-// outbox has not run), and this daemon's claim on the role, nil when it has none.
+// RunKey is the key of role's run of issue, as issue's record stands, for the claim token.
+func RunKey(token claim.Token, issue Issue, role claim.Role) RoleRunKey {
+	return RoleRunKey{token: token, issue: issue.Key, role: role, starts: issue.GenerationOf("start", role), others: issue.Generation}
+}
+
+// Token is the claim token whose run the key reads.
+func (k RoleRunKey) Token() claim.Token { return k.token }
+
+// RoleRun is what the store holds of one role's run of an issue (RoleRunKey): the role's supervise
+// rows of the run still queued, oldest first (finishing deletes a row, so each is one the outbox
+// has not run), and this daemon's claim on the role, nil when it has none.
 type RoleRun struct {
 	Queued []QueuedSupervise
 	Claim  *RoleClaim
