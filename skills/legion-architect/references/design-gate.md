@@ -23,20 +23,20 @@ Read this before you write a root spec, before any edit to an approved one, and 
 
 ## A check CI proves
 
-A check carrying `ci_check` is CI's: `ci_check` names the GitHub check run that proves it at the
-head; it takes no `run`, its `when` is `before_merge`, and no role runs it or records its result
-(`skill://legion-worker/references/ci-checks.md`). Where a CI job that runs on an ordinary pull
-request already makes a check's proof, write that check as `ci_check` rather than as a command. A
-`run` that names tests names specific tests or files; a whole suite is the CI job that runs it.
+A check carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`): it names
+the check run that proves it at the head, takes no `run`, its `when` is `before_merge`, and no
+role runs or records it. Where a CI job already makes a check's proof, write that check as
+`ci_check` rather than as a command. A `run` that names tests names specific tests or files; a
+whole suite is the CI job that runs it.
 
 1. Name the check run of the job that runs the proof, never a roll-up. On cybermonklabs/legion
-   never `ci-ok`, which passes when the jobs it did not select were skipped
+   never `ci-ok`, which passes when jobs it did not select were skipped
    (`.github/scripts/ci-ok.sh`).
-2. A job held back from ordinary pull requests needs its label on the pull request for as long as
-   a check names it: on cybermonklabs/legion `full-ci`, or the job's own `lane:<output>`. Without
-   it the job's check run reads `skipped`, and the ci-ok summary lists the job on a
-   `not run at this head` line.
-3. Write in `negative_control` the case inside that job that fails when the property breaks: a
+2. Name it as GitHub writes it: `<caller> / <job>` for a job of a called workflow (`test / test`).
+3. A held-back job needs its label (`full-ci` or `lane:<output>`) on the pull request while a
+   check names it; without it the check reads `absent` or `skipped`, and the ci-ok summary lists
+   the job on a `not run at this head` line.
+4. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
 
 ## Which steps are gated

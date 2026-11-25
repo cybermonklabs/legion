@@ -333,9 +333,14 @@ script runs. A step off its pin is refused, naming the line that differs.
 
 It fails too when a pinned text or an exact entry's step is gone, when a job or step is gated on a
 filter no gate declares, when a read a gate or a `//ci:` line declares matches no file, and when a
-`//ci:` line cannot be read. It runs go with `GOPROXY=off` over an empty module cache. Run it
-locally from anywhere: `.github/scripts/check-ci-filters.sh` (its header gives the recipe for a
-machine whose go is a bootstrap).
+`//ci:` line cannot be read. It runs the go list behind each closure with `GOPROXY=off` over an
+empty module cache. The tag sets of the darwin vet steps come from `go_build_tags.py`, whose go
+list runs under the machine's own proxy and module cache and can write a checksum a committed
+`go.work.sum` lacks. A run that changes a file of the tree fails naming each, except the files its
+mode writes (each `PUSH_WORKFLOWS` workflow for `write`, the filters and their `.inputs` file for
+`generate`): commit the checksum lines it wrote. Run it locally from anywhere:
+`.github/scripts/check-ci-filters.sh` (its header gives the recipe for a machine whose go is a
+bootstrap).
 
 ## Caches: no job of the router writes one
 

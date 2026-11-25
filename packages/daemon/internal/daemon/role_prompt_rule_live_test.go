@@ -15,12 +15,10 @@
 // scripts/e2e/role-prompt-rule.sh builds this driver with `-tags e2e` and owns the nats-server
 // and the PostgreSQL it runs against.
 //
-// What this proof reads, and why it reads it there. Unit tests already hold the pod memory rule
-// in each composed prompt and in the one part per tree it comes from
-// (packages/daemon/internal/prompts/prompts_test.go and
-// packages/daemon/internal/prompts/roles_test.go), and the planner's rule in the planner's own
-// part alone (roles_test.go's TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst).
-// Neither file starts anything, so neither says that a role process was ever launched with that
+// What this proof reads, and why it reads it there. The prompts package's unit tests hold which
+// parts each role's prompt is composed of (packages/daemon/internal/prompts/prompts_test.go's
+// composition table and common_part_test.go's planted markers).
+// None of them starts anything, so none says that a role process was ever launched with that
 // text. This driver reads the text from what the process itself was started with: the Oh My Pi
 // process's own command line, /proc/<pid>/cmdline, and the file its one `--append-system-prompt`
 // word names. The pid the claim's locator carries is the
@@ -159,12 +157,10 @@ const (
 
 // completionAfterWorkForPlanner is the rule the planner's own part carries about its completion
 // (packages/daemon/internal/prompts/roles/planner.md, "Plan handoff"): the completion reports
-// work already done, at a named head. Three needles hold it. The first two are the pair the unit
-// test pins (packages/daemon/internal/prompts/roles_test.go's
-// TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst): the `head` field as the handoff
-// body names it, with the one thing its value is, and the clause that carries that head to the
-// daemon, which names the planner's own phase word. The third is the paragraph's order sentence,
-// copied from planner.md byte for byte: the record written with `dispatch handoff-write` under
+// work already done, at a named head. Three needles hold it. The first two are the `head` field as
+// the handoff body names it, with the one thing its value is, and the clause that carries that
+// head to the daemon, which names the planner's own phase word. The third is the paragraph's order
+// sentence, copied from planner.md byte for byte: the record written with `dispatch handoff-write` under
 // the planner's own phase word `plan`, then the completion, which is what makes the completion a
 // report of work already recorded rather than of work still to come. The three are short and sit
 // inside the paragraph, so a rewording of the prose around them stands, and the field's removal

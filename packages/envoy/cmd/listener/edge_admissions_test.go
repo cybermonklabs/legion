@@ -17,6 +17,7 @@ import (
 // young admission with no record is one whose record may still be on its way. A session admitted
 // again after it was forgotten is admitted as before.
 func TestAnEdgeForgetsTheAdmissionOfASessionWhoseRecordIsGone(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	sessions := rig.harness.sessions
 	admissions := &rig.deps.consumers.admissions
