@@ -5,12 +5,15 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact/answertest"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // TB is the part of testing.TB a Pods calls, so a command drives a running broker with the same
@@ -24,8 +27,11 @@ type TB interface {
 // Pods speaks HTTP to a running broker binary at Base as a service and its pods do: a service
 // logs in with its token, its launcher credential enrolls pods that prove their accounts with
 // projected tokens, and a pod asks for a secret, reads its request's state and a grant's values,
-// and cancels a request. Each step logs its request and response, and fails T when the broker
-// answers outside the protocol.
+// and cancels a request. Each request asks its route joined onto Base's path with Base's query
+// kept (urljoin.Join), and signs what the broker checks, as agent-secrets' helper does: a proof
+// signs the URL asked without its query (proof.TargetURI), and a request object names Base
+// without its query as its audience (proof.Audience). Each step logs its request and response,
+// and fails T when the broker answers outside the protocol.
 type Pods struct {
 	T    TB
 	Base string
@@ -76,13 +82,14 @@ type RequestReply struct {
 func (b Pods) LogIn(service, account string) Launcher {
 	b.T.Helper()
 	key := b.newKey()
-	loginRequest, err := record.Sign(key, b.Base, []record.AuthorizationDetail{
+	loginRequest, err := record.Sign(key, b.audience(), []record.AuthorizationDetail{
 		{Type: record.KindLauncherCredential, Identifier: "example-host-" + service, Service: service},
 	}, "", "", nil, time.Now())
 	if err != nil {
 		b.T.Fatalf("sign %s's login request: %v", service, err)
 	}
-	status, answer := b.send(http.MethodPost, "/v1/launcher-credentials/token", nil, map[string]any{
+	const path = "/v1/launcher-credentials/token"
+	status, answer := b.send(http.MethodPost, path, b.target(http.MethodPost, path), nil, map[string]any{
 		"token":   b.Token(account, ""),
 		"request": loginRequest,
 	})
@@ -105,11 +112,12 @@ func (b Pods) Enroll(by Launcher, runtimeID, account string) Pod {
 	if err != nil {
 		b.T.Fatalf("thumbprint %s's key: %v", runtimeID, err)
 	}
-	signed, err := proof.SignLauncher(by.Key, by.CredentialID, http.MethodPost, b.Base+"/v1/enrollments", time.Now())
+	target := b.target(http.MethodPost, "/v1/enrollments")
+	signed, err := proof.SignLauncher(by.Key, by.CredentialID, http.MethodPost, proof.TargetURI(target), time.Now())
 	if err != nil {
 		b.T.Fatalf("sign %s's enrollment: %v", runtimeID, err)
 	}
-	status, answer := b.send(http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	status, answer := b.send(http.MethodPost, "/v1/enrollments", target, map[string]string{"Proof": signed}, map[string]any{
 		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": b.Token(account, runtimeID),
 	})
 	var enrolled struct {
@@ -131,11 +139,12 @@ func (b Pods) EnrollRefused(by Launcher, runtimeID, account string) (int, string
 	if err != nil {
 		b.T.Fatalf("thumbprint %s's key: %v", runtimeID, err)
 	}
-	signed, err := proof.SignLauncher(by.Key, by.CredentialID, http.MethodPost, b.Base+"/v1/enrollments", time.Now())
+	target := b.target(http.MethodPost, "/v1/enrollments")
+	signed, err := proof.SignLauncher(by.Key, by.CredentialID, http.MethodPost, proof.TargetURI(target), time.Now())
 	if err != nil {
 		b.T.Fatalf("sign %s's enrollment: %v", runtimeID, err)
 	}
-	status, answer := b.send(http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	status, answer := b.send(http.MethodPost, "/v1/enrollments", target, map[string]string{"Proof": signed}, map[string]any{
 		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": b.Token(account, runtimeID),
 	})
 	if status == http.StatusCreated {
@@ -159,7 +168,7 @@ func (b Pods) Ask(p Pod, secretName string) RequestReply {
 // that names none, and returns the broker's reply.
 func (b Pods) AskWithReason(p Pod, secretName, reason string) RequestReply {
 	b.T.Helper()
-	request, err := record.Sign(p.Key, b.Base, []record.AuthorizationDetail{
+	request, err := record.Sign(p.Key, b.audience(), []record.AuthorizationDetail{
 		{Type: record.KindAgentSecret, Identifier: secretName, Actions: []string{"inject"}},
 	}, reason, "", nil, time.Now())
 	if err != nil {
@@ -220,20 +229,47 @@ func (b Pods) newKey() *ecdsa.PrivateKey {
 	return key
 }
 
-// signed sends body to path with p's proof of its enrollment.
+// target is the URL a request of method to path asks: path joined onto Base's path, Base's query
+// kept ahead of path's (urljoin.Join). A Base that is no absolute URL with a host, or a path no
+// URL can hold, fails T in urljoin's words, which quote none of Base, since it can carry a
+// credential.
+func (b Pods) target(method, path string) *url.URL {
+	b.T.Helper()
+	target, err := urljoin.Join(b.Base, path)
+	if err != nil {
+		b.T.Fatalf("%s %s: %v", method, path, err)
+	}
+	return target
+}
+
+// audience is the audience a request object signed for the broker names (proof.Audience): Base
+// without its query, fragment or user information, the URL the broker verifies the object for. A
+// Base that is no absolute URL with a host fails T in urljoin's words, which quote none of it.
+func (b Pods) audience() string {
+	b.T.Helper()
+	audience, err := proof.Audience(cipheraddr.New(b.Base))
+	if err != nil {
+		b.T.Fatalf("the request object's audience: %v", err)
+	}
+	return audience
+}
+
+// signed sends body to path with p's proof of its enrollment, signed for the URL the request
+// asks without its query (proof.TargetURI).
 func (b Pods) signed(p Pod, method, path string, body any) (int, []byte) {
 	b.T.Helper()
-	proofHeader, err := proof.Sign(p.Key, p.EnrollmentID, method, b.Base+path, time.Now())
+	target := b.target(method, path)
+	proofHeader, err := proof.Sign(p.Key, p.EnrollmentID, method, proof.TargetURI(target), time.Now())
 	if err != nil {
 		b.T.Fatalf("sign %s's proof for %s %s: %v", p.RuntimeID, method, path, err)
 	}
-	return b.send(method, path, map[string]string{"Proof": proofHeader}, body)
+	return b.send(method, path, target, map[string]string{"Proof": proofHeader}, body)
 }
 
-// send sends body as JSON to path with the auth headers, logs the exchange with neither the
-// headers nor the body, since each can carry a credential, and returns the status and the
-// response body.
-func (b Pods) send(method, path string, auth map[string]string, body any) (int, []byte) {
+// send sends body as JSON to target, the URL a request to path asks (Pods.target), with the auth
+// headers, logs the exchange by path with neither the headers nor the body, since each can carry
+// a credential, and returns the status and the response body.
+func (b Pods) send(method, path string, target *url.URL, auth map[string]string, body any) (int, []byte) {
 	b.T.Helper()
 	var payload []byte
 	if body != nil {
@@ -242,7 +278,7 @@ func (b Pods) send(method, path string, auth map[string]string, body any) (int, 
 			b.T.Fatalf("encode the body of %s %s: %v", method, path, err)
 		}
 	}
-	request, err := http.NewRequest(method, b.Base+path, bytes.NewReader(payload))
+	request, err := http.NewRequest(method, target.String(), bytes.NewReader(payload))
 	if err != nil {
 		b.T.Fatalf("%s %s: %v", method, path, err)
 	}
