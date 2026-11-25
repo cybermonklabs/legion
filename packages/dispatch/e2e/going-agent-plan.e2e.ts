@@ -265,9 +265,29 @@ test("a row whose item another person changes after the plan showed shows the ne
     await openBarOver(page, "/");
     await askTheAgent(page, words);
     await planWaits(page);
+    // The row is of a page that has not read the plan again since bob's write: such a page shows
+    // the old title, and its Enter approves the plan as it showed it. A page that has read it again
+    // shows bob's title, and its Enter approves that, so the row runs; which of the two a page is
+    // when Enter lands is the live update's race (7 of 8 and 5 of 8 runs at 5676cdad and b8db472b
+    // were the first). So the page's reads of the plan are held from before the write until the
+    // approval is answered, and then go on; the route stays, and lets every later read through.
+    const plan = "**/api/v1/going/runs/*/plan";
+    const { promise: approvalAnswered, resolve: answered } = Promise.withResolvers<void>();
+    await page.route(plan, async (route) => {
+      if (route.request().method() === "GET") {
+        await approvalAnswered;
+      }
+      await route.continue();
+    });
     await patchIssue(split.second, { title: "Bob's dome" }, { login: "bob" });
+    const approval = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && response.url().endsWith("/plan/approve")
+    );
     await searchBox(page).focus();
     await searchBox(page).press("Enter");
+    expect((await approval).ok()).toBe(true);
+    answered();
     const changed = planRows(planCard(page)).filter({
       has: page.getByTestId("going-plan-changed"),
     });
