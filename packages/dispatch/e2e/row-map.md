@@ -276,7 +276,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-h.e2e.ts` | the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload |
 | `e2e/issue-page-i.e2e.ts` | the server's reads fold the outline; read marks and typed words persist |
 | `e2e/issue-page-k.e2e.ts` | the view orders the plan's blocks and needs the server stored |
-| `e2e/issue-page-l.e2e.ts` | each row writes from the box at the foot and then reads its own write: the comment, reply, answer or read mark Dispatch stored, and the row the outline draws from the server's reads |
+| `e2e/issue-page-l.e2e.ts` | each row writes from the box at the foot and then reads its own write: the comment, reply or read mark Dispatch stored, and the row the outline draws from the server's reads |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-p.e2e.ts` | each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval |
 | `e2e/issue-page-q.e2e.ts` | the server's decisions read sorts the view; a sent Change is re-read |

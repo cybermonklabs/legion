@@ -911,7 +911,7 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
 
 // c-writer: R7 and R10 at 1440 px.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
-// seven rows focused, three presses waited out for the writer's frames, and a read of the API.
+// six rows focused, three presses waited out for the writer's frames, and a read of the API.
 test("a row's Reply and Answer set the page's writer, and a decision asked to change draws it", async ({
   browser,
 }) => {
@@ -921,9 +921,10 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     await expectSeedDrawn(page, seeded);
     const writes = watchApiRequests(page);
 
-    // Reply and Answer aim the box at the foot (part L's `IssueComposer.tsx`) and put the caret
-    // in its line, the one the box draws: the line that writes on the issue stays mounted, hidden,
-    // while the line answers a question.
+    // Reply aims the box at the foot (part L's `IssueComposer.tsx`) and puts the caret in its
+    // line, the one the box draws: the line that writes on the issue stays mounted, hidden, while
+    // the line edits a comment. Answer and a press on an option put no caret in the box, which
+    // answers no ask: the ask's own body does.
     const boxField = page.locator('[data-testid="issue-composer"] textarea:visible');
     const comment = await focusRow(page, seeded.comment);
     await expect(rowAct(comment, "reply"), "the focused comment draws no Reply").toHaveCount(1);
@@ -941,17 +942,21 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     await expect(option).toHaveAttribute("aria-pressed", "true");
     await expect(option).toContainText("●");
     await expect(question.locator('[data-pick-option="1280 px"]')).toContainText("○");
-    // A pick aims the box at the question as well and puts the caret in it, and a row draws its
-    // acts only while it holds the focus, so the reader comes back to the row for its Answer.
     await writerFramesPass(page);
-    await expect(boxField, "a pick does not put the caret in the box").toBeFocused();
-    await rowAct(await focusRow(page, seeded.openQuestion), "answer").click();
+    await expect(
+      boxField,
+      "a press on an option put the caret in the box, which answers no ask"
+    ).not.toBeFocused();
+    await rowAct(question, "answer").click();
     await writerFramesPass(page);
-    await expect(boxField, "Answer does not put the caret in the box").toBeFocused();
-    await expect(question).not.toBeFocused();
+    await expect(
+      boxField,
+      "Answer put the caret in the box, which answers no ask"
+    ).not.toBeFocused();
+    await expect(question).toBeFocused();
 
-    // A statement takes a reply, a comment anchored to it (part L's R11), so it draws Reply; a
-    // check takes none in today's model, so it draws no act.
+    // A statement takes a Reply, which writes a comment on its text (part L's R11), so it draws
+    // Reply; a check takes none in today's model, so it draws no act.
     const statement = await focusRow(page, `${seeded.slugs.spec}#b-r-one`);
     await expect(statement.locator("[data-row-act]")).toHaveCount(1);
     await expect(rowAct(statement, "reply"), "the focused statement draws no Reply").toHaveCount(1);
@@ -980,9 +985,10 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     const outlined = await focusRow(page, seeded.changed);
     await expect(outlined.locator("button[data-row-action]")).toHaveCount(0);
 
-    // Nothing was sent: Reply and Answer aim the box at the foot (`IssueComposer.tsx`), and
-    // nothing was typed in it or sent from it. A thread's read mark is the page's own record of
-    // what the reader read (`outline-thread-read.tsx`), and no write of theirs.
+    // Nothing was sent: Reply aims the box at the foot (`IssueComposer.tsx`), Answer and an
+    // option set the page's writer alone, and nothing was typed in the box or sent from it. A
+    // thread's read mark is the page's own record of what the reader read
+    // (`outline-thread-read.tsx`), and no write of theirs.
     expect(
       writes.requests.filter(
         (request) =>

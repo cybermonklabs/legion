@@ -505,10 +505,10 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   },
   // The new issue page's one box, at the foot of its outline, which a
   // reader gets once their `issue.page` is `outline` (`withIssuePage`). The line's name follows
-  // what it writes, so it is reached by the attribute its form carries; the answer's field, drawn
-  // in the line's place while the box answers a question, by its own name. An edit of the
-  // reader's own comment is opened only by the Edit control of that comment, which the page does
-  // not draw yet, so the list leaves `comment-edit` uncovered until that Edit is under the box.
+  // what it writes, so it is reached by the attribute its form carries. It answers no ask: an
+  // ask's own body does, so it draws no answer field. An edit of the reader's own comment is
+  // opened only by an Edit of that comment, which the page does not draw yet, so the list leaves
+  // `comment-edit` uncovered until such an Edit is under the box.
   "issue-page-composer": {
     drive: async (page, world) => {
       await withIssuePage(page.context(), "alice");
@@ -535,12 +535,6 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await page.keyboard.press("r");
       await expect(field).toBeFocused();
       await expectRow(page, field, "issue-page-composer", "message-reply");
-      // `a` on the session's open question draws the answer's own field in the line's place.
-      await focusRow(page, world.ask);
-      await page.keyboard.press("a");
-      const answer = box.getByRole("textbox", { exact: true, name: CONTROL_LABELS.answer });
-      await expect(answer).toBeFocused();
-      await expectRow(page, answer, "issue-page-composer", "ask-answer");
     },
   },
   "margin-comment-edit": {

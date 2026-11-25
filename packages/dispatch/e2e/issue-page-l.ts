@@ -1,7 +1,17 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { createAsk, createComment, createIssue, createProject, getArtifact } from "./api";
-import { focusRow, rowAct } from "./issue-page-g";
+import {
+  createAsk,
+  createComment,
+  createIssue,
+  createIssueArtifact,
+  createMessage,
+  createProject,
+  getArtifact,
+  recordCheckResult,
+} from "./api";
+import { marginShell } from "./issue-page";
+import { focusRow, READER, recorderActor, rowAct } from "./issue-page-g";
 import { onScreen } from "./issue-page-i";
 
 /**
@@ -16,10 +26,12 @@ import { onScreen } from "./issue-page-i";
  * - **The box** `section[data-testid="issue-composer"]`, held at the foot of the screen by its
  *   slot's wrapper, `hidden` while it is not drawn (under a view or a document with no target).
  * - **A line** of it, a `form[data-issue-composer]`: the one that writes on the issue, a reply or
- *   a statement's comment, which stays mounted, hidden, while the line that answers a question or
- *   edits a comment is drawn in its place. So a row reads the line that is drawn with `:visible`.
- * - In a line: the target line `[data-composer-target]` above it while it has a target, with its
- *   control named `CONTROL_LABELS.write_on_issue`; the field, a `textarea`; the kinds' chips
+ *   a statement's comment, which stays mounted, hidden, while the line that edits a comment is
+ *   drawn in its place. So a row reads the line that is drawn with `:visible`. No line answers a
+ *   question: an ask's own body does.
+ * - In a line: the target line `[data-composer-target]` above it while it has a target, which
+ *   names the target by its author and its kind and draws none of its words, with its control
+ *   named `CONTROL_LABELS.write_on_issue`; the field, a `textarea`; the kinds' chips
  *   `[data-composer-kind]` (Comment, then Question) while it writes on the issue; and Send.
  * - **The read mark** `[data-outline-end]`, 1 px tall, after the outline's last row and moved
  *   down by the box's height, so it comes on screen only once that row is clear of the box.
@@ -31,7 +43,7 @@ export function composer(page: Page): Locator {
 }
 
 /** The line of the box that is drawn: the one that writes on the issue stays mounted, hidden,
- *  while the line answers a question or edits a comment. */
+ *  while the line edits a comment. */
 export function composerForm(page: Page): Locator {
   return composer(page).locator("[data-issue-composer]:visible");
 }
@@ -41,8 +53,9 @@ export function composerField(page: Page): Locator {
   return composer(page).locator("textarea:visible");
 }
 
-/** The target line above the line that is drawn: what a reply answers, the statement a comment
- *  is on, the question an answer answers. */
+/** The target line above the line that is drawn, which names what the line is aimed at by its
+ *  author and its kind: the entry a reply answers, the statement a comment is on, the comment an
+ *  edit rewrites. */
 export function composerTarget(page: Page): Locator {
   return composer(page).locator("[data-composer-target]:visible");
 }
@@ -188,6 +201,12 @@ export async function scrollEndUnderBox(page: Page, lastRow: string): Promise<vo
   }, lastRow);
 }
 
+/** The entry of the panel (Details) whose words are `words`: a turn of the issue's history, whose
+ *  Reply aims the box at it, or the reader's own comment, whose Edit opens its words in the box. */
+export function panelEntry(page: Page, words: string): Locator {
+  return marginShell(page).getByRole("listitem").filter({ hasText: words });
+}
+
 // ---------------------------------------------------------------------------------------------
 // The seeds.
 // ---------------------------------------------------------------------------------------------
@@ -199,8 +218,9 @@ const PROJECT = "BOX";
  *  reader the rows sign in as (alice). */
 const WRITER = "bob";
 
-/** An agent asking the question `seedFortyComments` writes. */
-const ASKER = {
+/** An agent of the seeds: it asks the question `seedFortyComments` writes, and writes the
+ *  comment of `seedHistoryTurns` that no person wrote in. */
+const AGENT = {
   actor: { id: "e2e-box-asker", kind: "session" as const },
   as: "agent" as const,
 };
@@ -209,8 +229,8 @@ export interface FortyCommentsSeed {
   /** The forty comments' ids, oldest first: the last is the outline's last row. */
   readonly comments: readonly string[];
   readonly key: string;
-  /** The open question asked before the comments, the outline's first row, which the answer
-   *  line answers. */
+  /** The open question asked before the comments, the outline's first row, on which `a` leaves
+   *  the box as it is at rest. */
   readonly question: string;
 }
 
@@ -218,8 +238,8 @@ export interface FortyCommentsSeed {
  * One issue whose outline runs well past the screen at every width: an open question with two
  * options, then forty one-line comments, all written by `WRITER`, so the outline's end starts
  * off screen and the issue is unread for the reader. The question is the first row, so the page
- * opens at its top whether or not it waits on the reader, and the answer line has a question to
- * answer on the same issue.
+ * opens at its top whether or not it waits on the reader, and the issue holds an open question
+ * for `a`.
  */
 export async function seedFortyComments(): Promise<FortyCommentsSeed> {
   await createProject({ key: PROJECT, name: "The box at the foot" });
@@ -233,7 +253,7 @@ export async function seedFortyComments(): Promise<FortyCommentsSeed> {
       options: [{ label: "Left" }, { label: "Right" }],
       question: "Which side does the box keep its controls on?",
     },
-    ASKER
+    AGENT
   );
   const comments: string[] = [];
   for (let at = 1; at <= 40; at += 1) {
@@ -276,7 +296,7 @@ export const STATEMENT_BLOCKS = {
 /** The words of those statements. */
 export const STATEMENT_WORDS = {
   /** The words of `cites` before the address it cites. */
-  citesLead: "A comment on this statement is drawn under it",
+  citesLead: "A comment on this statement goes in the margin beside it",
   /** The first paragraph of `two`, which is the statement's first line. */
   first: "The first paragraph of this statement says what it holds.",
   /** The second paragraph of `two`. */
@@ -284,6 +304,15 @@ export const STATEMENT_WORDS = {
   /** The words of `twice`, which the spec holds a second time. */
   twice: "The draft stays in the box until it is sent.",
 } as const;
+
+/** The title of the issue `cites` cites by its address. */
+export const CITED_TITLE = "The issue a statement cites";
+
+/** The whole words of `cites`, as the spec holds them: the issue `cited` is named by its
+ *  address, which the spec holds as text. */
+export function citesWords(cited: string): string {
+  return `${STATEMENT_WORDS.citesLead}, as dispatch://${cited} asks.`;
+}
 
 export interface StatementsSeed {
   /** The issue the cited statement names by its address. */
@@ -307,11 +336,11 @@ export async function seedStatements(): Promise<StatementsSeed> {
   const cited = await createIssue({
     force: true,
     project: PROJECT,
-    title: "The issue a statement cites",
+    title: CITED_TITLE,
   });
   const spec = [
     `:::requirement{#${STATEMENT_BLOCKS.cites}}`,
-    `${STATEMENT_WORDS.citesLead}, as dispatch://${cited.key} asks.`,
+    citesWords(cited.key),
     ":::",
     "",
     `:::requirement{#${STATEMENT_BLOCKS.two}}`,
@@ -331,7 +360,7 @@ export async function seedStatements(): Promise<StatementsSeed> {
     force: true,
     project: PROJECT,
     spec,
-    title: "A comment on a statement hangs under it",
+    title: "A comment on a statement goes beside it",
   });
   const specArtifactId = issue.primary_artifact_id ?? "";
   return {
@@ -339,5 +368,128 @@ export async function seedStatements(): Promise<StatementsSeed> {
     key: issue.key,
     specArtifactId,
     specSlug: (await getArtifact(specArtifactId)).slug,
+  };
+}
+
+/** How many top-level comments `seedPastFifty` writes: more than the 50 children of a node the
+ *  outline draws before its control for the rest (root R40). */
+const PAST_FIFTY = 55;
+
+export interface PastFiftySeed {
+  /** The comments' ids, oldest first: the last stands past the first 50 top-level rows. */
+  readonly comments: readonly string[];
+  readonly key: string;
+}
+
+/** One issue of more top-level rows than the outline draws before its control for the rest:
+ *  `PAST_FIFTY` one-line comments, all written by `WRITER`, so the issue is unread for the
+ *  reader, and no question, so the newest comment is the conversation's current point. */
+export async function seedPastFifty(): Promise<PastFiftySeed> {
+  await createProject({ key: PROJECT, name: "The box at the foot" });
+  const issue = await createIssue(
+    { force: true, project: PROJECT, title: "More comments than the outline draws at once" },
+    { login: WRITER }
+  );
+  const comments: string[] = [];
+  for (let at = 1; at <= PAST_FIFTY; at += 1) {
+    const comment = await createComment(
+      issue.key,
+      { body: `Comment ${at} of ${PAST_FIFTY}, written by bob.` },
+      { login: WRITER }
+    );
+    comments.push(comment.id);
+  }
+  return { comments, key: issue.key };
+}
+
+export interface ResultAfterActSeed {
+  /** The comment that is the newest act on the issue, written before the result. */
+  readonly comment: string;
+  readonly key: string;
+}
+
+/** One issue whose newest act is a comment by `WRITER`, with a result of its one check recorded
+ *  after that comment: a check's result is no act of the conversation. */
+export async function seedResultAfterAct(): Promise<ResultAfterActSeed> {
+  await createProject({ key: PROJECT, name: "The box at the foot" });
+  const issue = await createIssue(
+    {
+      force: true,
+      project: PROJECT,
+      spec: ":::requirement{#r-one}\nThe box stays at the foot of the screen.\n:::\n",
+      title: "A result recorded after the newest act",
+    },
+    { login: WRITER }
+  );
+  await createIssueArtifact(issue.key, {
+    content:
+      `:::check{#c1 serves="dispatch://${issue.key}/spec#b-r-one" surface="browser" ` +
+      `run="bun run e2e" when="before_merge"}\nThe box is at the foot.\n:::\n`,
+    name: "verification.md",
+  });
+  const comment = await createComment(
+    issue.key,
+    { body: "The newest act on the issue, written before the check's result." },
+    { login: WRITER }
+  );
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c1",
+      commit: "a".repeat(40),
+      negative_control: "Took the box off the foot and the run failed.",
+      observed: "The box is at the foot.",
+      role: "tester",
+      verdict: "pass",
+    },
+    { actor: recorderActor, as: "agent" }
+  );
+  return { comment: comment.id, key: issue.key };
+}
+
+/** The Legion daemon, which writes on an issue as a session of its own. */
+const DAEMON = {
+  actor: { id: "legion-daemon", kind: "session" as const, origin: { session_title: "Legion" } },
+  as: "agent" as const,
+};
+
+/** One entry `seedHistoryTurns` writes: its id and its words. */
+export interface SeededEntry {
+  readonly id: string;
+  readonly words: string;
+}
+
+export interface HistoryTurnsSeed {
+  /** A comment an agent wrote on the issue, tied to no text, in a thread no person wrote in,
+   *  which the panel's history holds and the outline draws only once a person writes in it. */
+  readonly agent: SeededEntry;
+  /** The Legion daemon's message, the first turn of a thread it began, which the panel's
+   *  history holds. */
+  readonly daemon: SeededEntry;
+  readonly key: string;
+  /** A comment of the reader's own, which its Edit opens in the box. */
+  readonly own: SeededEntry;
+}
+
+/** One issue holding the entries the panel's Reply and Edit act on: the daemon's message, an
+ *  agent's comment no person wrote in, and a comment of the reader's own. */
+export async function seedHistoryTurns(): Promise<HistoryTurnsSeed> {
+  await createProject({ key: PROJECT, name: "The box at the foot" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "The panel's history holds turns a reply can answer",
+  });
+  const daemonWords = "The planner's session was replaced; its claim moves to the new one.";
+  const daemon = await createMessage(issue.key, { body: daemonWords }, DAEMON);
+  const agentWords = "Status: the plan is drafted and waits on its review.";
+  const agent = await createComment(issue.key, { body: agentWords }, AGENT);
+  const ownWords = "A comment of the reader's own, which its writer alone edits.";
+  const own = await createComment(issue.key, { body: ownWords }, { login: READER });
+  return {
+    agent: { id: agent.id, words: agentWords },
+    daemon: { id: daemon.id, words: daemonWords },
+    key: issue.key,
+    own: { id: own.id, words: ownWords },
   };
 }
