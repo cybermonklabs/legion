@@ -367,12 +367,13 @@ func awaitReplicasCurrent(ctx context.Context, js nats.JetStreamContext, stream 
 }
 
 // copiesBehind says what keeps the stream info describes short of replicas copies that are all
-// current, and is empty when none does: the stream has a leader, as many copies as were asked for,
-// and every copy of it is current, online and not lagging. Each copy that is not is named with
-// what it reported, so a start that gave up says which member it waited for.
+// current, and is empty when none does: the stream has a leader that takes a write
+// (leaderNotServing), as many copies as were asked for, and every copy of it is current, online
+// and not lagging. Each copy that is not is named with what it reported, so a start that gave up
+// says which member it waited for.
 func copiesBehind(info *nats.StreamInfo, replicas int) string {
-	if info.Cluster == nil || info.Cluster.Leader == "" {
-		return "the stream has no leader yet"
+	if short := leaderNotServing(info); short != "" {
+		return short
 	}
 	var behind []string
 	if copies := 1 + len(info.Cluster.Replicas); copies != replicas {
