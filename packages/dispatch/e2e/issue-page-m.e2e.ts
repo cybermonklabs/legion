@@ -38,7 +38,9 @@ import {
   createMessage,
   createProject,
   createProjectDocument,
+  deleteMessage,
   editArtifact,
+  editComment,
   getAsk,
   getIssue,
   getIssueEvents,
@@ -63,7 +65,7 @@ import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from ".
 import { focusAfterStaleness } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
 import { seedConversationState } from "./issue-layout-seed";
-import { asPlanner } from "./issue-layout-seed-support";
+import { asPlanner, PROJECT } from "./issue-layout-seed-support";
 import { requirementText } from "./issue-layout-seed-text";
 import {
   closeDetails,
@@ -97,8 +99,10 @@ import {
   historyEntries,
   historyHeading,
   historyItem,
-  historyLoadOlder,
+  historyNextPage,
   historyPanel,
+  historyShowMore,
+  historyShowMoreState,
   newestHistoryEntry,
   olderPageAnswered,
   rowFacts,
@@ -159,23 +163,141 @@ async function allEvents(key: string): Promise<DispatchEvent[]> {
   }
 }
 
+/** How many entries the history draws at first, and how many more each press of its Show more
+ *  draws (`HISTORY_PAGE` in `history-model.ts`). */
+const HISTORY_DRAWS = 20;
+
+/**
+ * Presses the history's Show more by `press` until it reaches `end`: `uncounted`, where every
+ * entry the history has read is drawn and the control says no number, or `gone`, where no
+ * control is left under the last entry, so the history draws the whole log of `key`. A press of
+ * a control that says how many entries are left draws the next ones, waited for until more are
+ * drawn; a press of one that says no number reads the log's next page, waited for until its
+ * answer has landed and two frames drew it. Each press draws an entry or reads a page, so a
+ * control still offered after as many presses as the log has entries and pages fails as offered
+ * past the log's end.
+ */
+async function readHistoryDown(
+  page: Page,
+  key: string,
+  press: (control: Locator) => Promise<void>,
+  end: "gone" | "uncounted"
+): Promise<void> {
+  const events = (await allEvents(key)).length;
+  const most = Math.ceil(events / HISTORY_DRAWS) + Math.ceil(events / 200) + 1;
+  for (let presses = 0; ; presses += 1) {
+    const state = await historyShowMoreState(page);
+    if (state === end || state === "gone") return;
+    if (state === "reading") {
+      await expect(
+        historyPanel(page).locator('button[aria-busy="true"]'),
+        "the log's next page is read for ever"
+      ).toHaveCount(0);
+      continue;
+    }
+    expect(presses, `${CONTROL_LABELS.show_more} is still offered past the log's end`).toBeLessThan(
+      most
+    );
+    if (state === "counted") {
+      // The entries drawn as the press is made: the press draws at least one more.
+      const drawn = await historyEntries(page).count();
+      await press(historyShowMore(page));
+      await expect
+        .poll(() => historyEntries(page).count(), {
+          message: `${CONTROL_LABELS.show_more} drew no entry`,
+        })
+        .toBeGreaterThan(drawn);
+    } else {
+      const answered = olderPageAnswered(page, key);
+      await press(historyShowMore(page));
+      await answered;
+      await nextFrames(page);
+    }
+  }
+}
+
+/** The Legion daemon of `project`, which writes on the project's issues as the session
+ *  `legion-daemon:<PROJECT>`: a message it writes with no target begins a thread the history
+ *  holds whole, whoever writes in it (`agents-only.ts`). */
+function daemonOf(project: string) {
+  return {
+    actor: { id: `legion-daemon:${project}`, kind: "session" as const },
+    as: "agent" as const,
+  };
+}
+
+/** The Legion daemon of `CORE`, the project most rows seed their issue in. */
+const asDaemon = daemonOf("CORE");
+
+/** The reviewer agent row (1)'s planner writes to, and which answers it. */
+const asReviewerAgent = {
+  actor: { id: "e2e-history-reviewer", kind: "session" as const },
+  as: "agent" as const,
+};
+
+/** The words of the person's reply in the daemon's thread of row (1), by which the row knows the
+ *  page's read of the issue's messages that brings it. */
+const PERSON_IN_DAEMON_THREAD = "A person answers the daemon in its thread.";
+
+/** The whole issue of `seedConversationState`, with what the history holds whole and what it
+ *  holds not: a thread the issue's Legion daemon began, with an agent's reply in it; an agent's
+ *  note to the issue's people, a message with no target; and a thread between two agents, whose
+ *  root the planner sends to the reviewer's role and which the reviewer answers. */
+async function seedHistoryThreads() {
+  const seeded = await seedConversationState();
+  const root = await createMessage(
+    seeded.key,
+    { body: "The daemon moved the planner's claim to its new session." },
+    daemonOf(PROJECT)
+  );
+  const reply = await createMessage(
+    seeded.key,
+    { body: "The new planner session holds the claim now.", in_reply_to: root.id },
+    asPlanner
+  );
+  const note = await createMessage(
+    seeded.key,
+    { body: "A note to the issue's people: the plan waits on its review." },
+    asPlanner
+  );
+  const toReviewer = await createMessage(
+    seeded.key,
+    {
+      body: "Reviewer, the plan's second task waits on you.",
+      delivery: "btw",
+      target: "role:reviewer",
+    },
+    asPlanner
+  );
+  const answer = await createMessage(
+    seeded.key,
+    { body: "Read it: the second task stands.", in_reply_to: toReviewer.id },
+    asReviewerAgent
+  );
+  return {
+    ...seeded,
+    betweenAgents: { reply: answer.id, root: toReviewer.id },
+    daemonThread: { reply: reply.id, root: root.id },
+    note: note.id,
+  };
+}
+
 // c-conversation-state. The conversation is the outline and nothing else: each seeded comment
 // and message a person took part in is one node, nothing offers a choice between words,
-// questions, pinned and everything, and Details draws none of them. The history in the panel
-// draws what no node does - the status change, the claim, both
-// handoffs, the daemon's message, an agent's status note and the two comments agents wrote to
-// each other, each once - and no event of a node, no version of a document, no result against a
-// check and no child's move. The person's reply that moves the agents' thread into the outline
-// is sent by the API: the page draws no box at the foot of the outline yet.
+// questions, pinned and everything, and Details draws none of them. An agent's note to the
+// issue's people and a thread between two agents are nodes of the outline too, and no entry of
+// the history: so is the seed's message by the session `legion-daemon`, which is no project's
+// daemon (`legion-daemon:<PROJECT>`). The history in the panel draws what no node does - the
+// status change, the claim, both handoffs, the three uploads, the thread the daemon began, an
+// agent's status note and the two comments agents wrote to each other, each once - and no event
+// of a node, no version of a document, no result against a check and no child's move. A person's
+// reply leaves the daemon's thread whole in the history, the reply among its turns, and moves
+// the agents' thread into the outline. The replies are sent by the API: the page draws no box at
+// the foot of the outline yet.
 test("the conversation is the outline and the history is in the panel", async ({ browser }) => {
-  // The whole issue's seed and two loads of its page, the history opened day by day between.
+  // The whole issue's seed and two loads of its page, the history read to its end between.
   test.setTimeout(240_000);
-  await phase(browser, seedConversationState, async (page, seeded) => {
-    // A day before today, which the history folds to one line with its count.
-    const created = (await allEvents(seeded.key)).find((event) => event.type === "issue.created");
-    if (created === undefined) throw new Error(`${seeded.key} recorded no issue.created`);
-    await setEventCreatedAt(created.id, new Date(Date.now() - 86_400_000).toISOString());
-
+  await phase(browser, seedHistoryThreads, async (page, seeded) => {
     // The asks, comments and messages arrive by reads of their own after the tree, so the load
     // is waited out until its reads settle before the branches they draw are opened.
     const settling = watchApiRequests(page);
@@ -190,12 +312,19 @@ test("the conversation is the outline and the history is in the panel", async ({
       seeded.messages.root,
       seeded.messages.reply,
       seeded.messages.replyToReply,
+      seeded.daemonMessage,
+      seeded.note,
+      seeded.betweenAgents.root,
+      seeded.betweenAgents.reply,
     ];
     for (const id of turns) {
-      await expect(
-        page.locator(`[data-node-row][data-node-id="${id}"]`),
-        `${id} is not one node of the outline`
-      ).toHaveCount(1);
+      await expect(nodeRow(page, id), `${id} is not one node of the outline`).toHaveCount(1);
+    }
+    const daemonTurns = [seeded.daemonThread.root, seeded.daemonThread.reply];
+    for (const id of daemonTurns) {
+      await expect(nodeRow(page, id), `${id} of the daemon's thread is in the outline`).toHaveCount(
+        0
+      );
     }
     await expect(page.locator("[data-conversation-state], [data-turn]")).toHaveCount(0);
     for (const name of ["Words", "Questions", "Pinned", "Everything"]) {
@@ -203,9 +332,11 @@ test("the conversation is the outline and the history is in the panel", async ({
       await expect(page.getByRole("radio", { exact: true, name })).toHaveCount(0);
     }
     await openDetails(page);
-    // The newest entry, the three uploads, says the history has drawn the log it reads.
-    await expect(await newestHistoryEntry(page)).toHaveAttribute("data-history-uploads", "3");
-    await expect(historyPanel(page).locator('[data-history-uploads="3"]')).toHaveCount(1);
+    // The newest entry, the daemon's thread, says the history has drawn the log it reads.
+    await expect(await newestHistoryEntry(page)).toHaveAttribute(
+      "data-history-entry",
+      `thread:${seeded.daemonThread.root}`
+    );
     await expect(
       marginShell(page).getByText("Thread 1 opens here.", { exact: false }),
       "Details draws a comment a person took part in, which is the outline's"
@@ -228,30 +359,12 @@ test("the conversation is the outline and the history is in the panel", async ({
       historyPanel(page),
       "/activity does not open the panel at its history"
     ).toBeVisible();
-    // The history pages the log 200 events at a time: every page is read in before it is. A
-    // page is pressed for only once the first is drawn, and the log's length bounds the presses.
-    const events = await allEvents(seeded.key);
+    // The history draws its entries 20 at a time and pages the log 200 events at a time: Show
+    // more is pressed until the whole log is read and drawn.
     await newestHistoryEntry(page);
-    const older = historyLoadOlder(page);
-    // Read once a page's answer has landed and two frames drew it, so Load older is drawn or gone.
-    for (let presses = 1; await older.isVisible(); presses += 1) {
-      expect(
-        presses,
-        `${CONTROL_LABELS.show_more} is still offered past the log's last page`
-      ).toBeLessThanOrEqual(Math.floor(events.length / 200));
-      const answered = olderPageAnswered(page, seeded.key);
-      await older.click();
-      await answered;
-      await nextFrames(page);
-    }
-    const folded = historyPanel(page).locator('[data-history-day] > button[aria-expanded="false"]');
-    await expect(folded.first(), "no day before today is folded to one line").toHaveText(/ · \d+$/);
-    // The whole log is read and drawn by now, so the folded days counted here stay as counted.
-    for (let left = await folded.count(); left > 0; left -= 1) {
-      await folded.first().click();
-      await expect(folded).toHaveCount(left - 1);
-    }
-    // With the whole log read and every day open, no turn of a person's thread is drawn here.
+    await readHistoryDown(page, seeded.key, (control) => control.click(), "gone");
+    const events = await allEvents(seeded.key);
+    // With the whole log read and drawn, no turn of a thread the outline draws is drawn here.
     for (const id of turns) {
       await expect(historyItem(page, id), `${id} is drawn in the history too`).toHaveCount(0);
     }
@@ -263,7 +376,7 @@ test("the conversation is the outline and the history is in the panel", async ({
     ).filter((seq) => seq > 0);
     expect(seqs, "the history is not newest first").toEqual([...seqs].sort((a, b) => b - a));
     const drawn = new Set(seqs);
-    const people = new Set(turns);
+    const outlined = new Set(turns);
     const ofNodes = events.filter(
       (event) =>
         ((event.type === "ask.opened" ||
@@ -275,7 +388,7 @@ test("the conversation is the outline and the history is in the panel", async ({
         (event.type === "artifact.version" &&
           event.payload.artifact_id === seeded.specArtifactId) ||
         ((event.type === "comment.created" || event.type === "message.created") &&
-          people.has(event.payload.id))
+          outlined.has(event.payload.id))
     );
     for (const type of ["ask.resolved", "result.recorded", "artifact.version"]) {
       expect(
@@ -302,21 +415,59 @@ test("the conversation is the outline and the history is in the panel", async ({
     expect(handoffs, "the seed recorded both handoffs").toHaveLength(2);
     for (const handoff of handoffs) await once(handoff.seq, `handoff ${handoff.seq}`);
     for (const [id, words] of [
-      [seeded.daemonMessage, "The planner's session was replaced"],
+      [seeded.daemonThread.root, "The daemon moved the planner's claim"],
+      [seeded.daemonThread.reply, "The new planner session holds the claim"],
       [seeded.statusNote, "Status: the plan is drafted"],
       [seeded.agentComments.root, "the plan's third task needs a second look"],
       [seeded.agentComments.reply, "the third task stands as written"],
     ] as const) {
       await expect(historyItem(page, id), `${words} is not drawn once`).toHaveCount(1);
       await expect(historyItem(page, id)).toContainText(words);
-    }
-    for (const id of [seeded.agentComments.root, seeded.agentComments.reply]) {
       await expect(historyPanel(page).locator(`[data-history-reply="${id}"]`)).toHaveCount(1);
     }
+    const daemonThread = historyPanel(page).locator(
+      `[data-history-entry="thread:${seeded.daemonThread.root}"]`
+    );
+    await expect(
+      daemonThread.locator(`[data-history-item="${seeded.daemonThread.reply}"]`),
+      "the agent's reply is not a turn of the daemon's thread"
+    ).toHaveCount(1);
     const uploads = historyPanel(page).locator('[data-history-uploads="3"]');
     await expect(uploads, "the three uploads are not one entry").toHaveCount(1);
     for (const name of seeded.uploads) {
       await expect(uploads.getByRole("link", { exact: true, name })).toHaveCount(1);
+    }
+
+    // A person replies in the daemon's thread: the thread stays in the history, whole, with the
+    // person's reply among its turns, once the page's read of the issue's messages brings it.
+    const messagesRead = page.waitForResponse(
+      async (response) =>
+        new URL(response.url()).pathname === `/api/v1/issues/${seeded.key}/messages` &&
+        (await response.text()).includes(PERSON_IN_DAEMON_THREAD)
+    );
+    const person = await createMessage(
+      seeded.key,
+      { body: PERSON_IN_DAEMON_THREAD, in_reply_to: seeded.daemonThread.root },
+      { login: "alice" }
+    );
+    await messagesRead;
+    await nextFrames(page);
+    await expect(
+      historyItem(page, seeded.daemonThread.root),
+      "the daemon thread left the history when a person replied"
+    ).toHaveCount(1);
+    await expect(
+      daemonThread.locator(`[data-history-item="${person.id}"]`),
+      "the person's reply is not among the daemon thread's turns"
+    ).toContainText(PERSON_IN_DAEMON_THREAD);
+    await expect(
+      daemonThread.locator(`[data-history-item="${seeded.daemonThread.reply}"]`)
+    ).toHaveCount(1);
+    for (const id of [...daemonTurns, person.id]) {
+      await expect(
+        nodeRow(page, id),
+        `${id} of the daemon's thread is in the outline once a person replied`
+      ).toHaveCount(0);
     }
 
     // A person's reply to one of the agents' comments moves that thread into the outline.
@@ -326,10 +477,16 @@ test("the conversation is the outline and the history is in the panel", async ({
       { body: "A person joins the agents' thread.", reply_to: seeded.agentComments.root },
       { login: "alice" }
     );
-    await expect(historyItem(page, seeded.agentComments.root)).toHaveCount(0);
     await expect(
-      page.locator(`[data-node-row][data-node-id="${seeded.agentComments.root}"]`)
+      historyItem(page, seeded.agentComments.root),
+      "the agents' thread stayed in the history once a person wrote in it"
+    ).toHaveCount(0);
+    await expect(
+      nodeRow(page, seeded.agentComments.root),
+      "the agents' thread a person wrote in is not drawn in the outline"
     ).toHaveCount(1);
+    // The daemon's thread is in the history still.
+    await expect(historyItem(page, seeded.daemonThread.root)).toHaveCount(1);
   });
 });
 
@@ -342,8 +499,9 @@ const activityAgent = {
   as: "agent" as const,
 };
 
-// The issue's history is the list in Details that `/activity` opens:
-// every event no row of the outline draws, and the threads agents wrote among themselves, whole.
+// The issue's history is the list in Details that `/activity` opens: every event no row of the
+// outline draws, and the threads agents wrote among themselves, whole - two agents' posts and a
+// thread the Legion daemon began.
 // What the outline draws - an ask, answered or retracted - is not in it, and nothing the
 // history draws is a row of the outline.
 // The source's row carried `@pr`, and this copy does not: the pull-request lane holds its 150
@@ -369,7 +527,7 @@ test("the history lists the events and the agents' threads the outline does not 
   const resolved = await createComment(issue.key, { body: "A resolved thread." }, activityAgent);
   await resolveComment(resolved.id);
   const open = await createComment(issue.key, { body: "An open thread." }, activityAgent);
-  const message = await createMessage(issue.key, { body: "A message thread." }, activityAgent);
+  const message = await createMessage(issue.key, { body: "A message thread." }, asDaemon);
   await patchIssue(issue.key, { status: "in_progress" });
   await claimIssue(issue.key, activityAgent);
   await createIssueArtifact(issue.key, { content: "# Note\n", name: "note.md" });
@@ -432,17 +590,15 @@ test("the history lists the events and the agents' threads the outline does not 
 });
 
 // SLOW(>=2s): four status moves, three of them back-dated a day and the read watermark set,
-// before one cold load of the history. A day before today is one line with its count, which
-// opens it; the reader's watermark is drawn where it stood when the history first drew, at the
-// end of today's list when the reader stopped on an earlier day, and a later move of the mark -
-// a write the outline does not make yet, made here by the API and read back on a refocus -
-// leaves the line where it was, across a close and an open of Details too. Each day is the one
-// the page files its moves under, named as the page names it, worked out in the page from the
-// moves' own times (`historyDayOf`): a midnight between the seeding and the read makes the newer
-// moves' day a day before the reader's today too, which the row opens before it reads its lines.
-test("the history folds each day before today and marks where the reader stopped", async ({
-  browser,
-}) => {
+// before one cold load of the history. Every day is drawn open, under a line that names it with
+// no count and is no control; the reader's watermark is drawn where it stood when the history
+// first drew, at the end of today's list when the reader stopped on an earlier day, and a later
+// move of the mark - a write the outline does not make yet, made here by the API and read back
+// on a refocus - leaves the line where it was, across a close and an open of Details too. Each
+// day is the one the page files its moves under, named as the page names it, worked out in the
+// page from the moves' own times (`historyDayOf`): a midnight between the seeding and the read
+// makes the newer moves' day a day before the reader's today too.
+test("the history draws every day open and marks where the reader stopped", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Dividers" });
   await patchIssue(issue.key, { status: "in_progress" });
@@ -486,22 +642,26 @@ test("the history folds each day before today and marks where the reader stopped
     const days = historyPanel(page).locator("[data-history-day]");
     await expect(days).toHaveCount(new Set([newest.date, oldestUnread.date, backDated.date]).size);
     await expect(days.first()).toHaveAttribute("data-history-day", newest.date);
-    await expect(days.first()).toContainText(newest.label);
     await expect(days.last()).toHaveAttribute("data-history-day", backDated.date);
-    const earlier = days.last().getByRole("button", {
-      name: `${backDated.label} · 3`,
-    });
-    await expect(earlier).toHaveAttribute("aria-expanded", "false");
-    // The newer moves' lines are drawn, their day opened where the page drew it folded, and the
-    // line that says what is new closes the list of the oldest unread move's day, which is open,
-    // rather than heading the day the list folds; the back-dated ones are behind its one line.
-    for (const move of [fourth, third]) {
-      await seededHistoryEntry(
-        page,
-        historyPanel(page).locator(`[data-event-seq="${move.seq}"]`),
-        move.created_at
-      );
+    // The day before is drawn open: its moves stand under its line with no press.
+    for (const move of [second, first, created]) {
+      await expect(
+        days.last().locator(`[data-event-seq="${move.seq}"]`),
+        "Yesterday's entries are not drawn"
+      ).toBeVisible();
     }
+    // Each day's line names the day, with no count, and is no control.
+    await expect(days.first().locator(":scope > p")).toHaveText(newest.label);
+    await expect(days.last().locator(":scope > p"), "a day's line carries a count").toHaveText(
+      backDated.label
+    );
+    await expect(
+      historyPanel(page).locator("[data-history-day] > button"),
+      "a day's line is a control"
+    ).toHaveCount(0);
+    // Newest first: the line that says what is new sits below the oldest unread line and above
+    // the newest line the reader had already seen, which here is the first line of the day
+    // before.
     const order = () =>
       historyPanel(page)
         .locator("[data-event-seq], li[aria-label]")
@@ -510,14 +670,6 @@ test("the history folds each day before today and marks where the reader stopped
             (item) => item.getAttribute("data-event-seq") ?? item.getAttribute("aria-label")
           )
         );
-    await expect
-      .poll(order, "the line that says what is new is not at the end of today's list")
-      .toEqual([String(fourth.seq), String(third.seq), CONTROL_LABELS.history_unread]);
-
-    await earlier.click();
-    await expect(earlier).toHaveAttribute("aria-expanded", "true");
-    // Newest first: the watermark sits below the oldest unread line and above the newest line
-    // the reader had already seen, which here is the first line of the day before.
     const marked = [
       String(fourth.seq),
       String(third.seq),
@@ -526,11 +678,13 @@ test("the history folds each day before today and marks where the reader stopped
       String(first.seq),
       String(created.seq),
     ];
-    expect(await order()).toEqual(marked);
-    // The line stays the last of its day's list, above the back-dated lines, with their day open.
+    await expect
+      .poll(order, "the line that says what is new is not where the reader stopped")
+      .toEqual(marked);
+    // The line closes the list of the oldest unread move's day, above the back-dated lines.
     await expect(
       historyPanel(page).locator(`[data-history-day="${oldestUnread.date}"] > ol > li`).last(),
-      "opening Yesterday moved the line out of today's list"
+      "the line that says what is new is not at the end of today's list"
     ).toHaveAttribute("aria-label", CONTROL_LABELS.history_unread);
 
     // The mark moves on to the newest line, as the outline's end writes it, and the page reads
@@ -652,7 +806,9 @@ test("a mention that could not be delivered reads as not delivered in the focuse
 // A comment body is bounded block by block, so one far longer than an event carries rides its
 // event as its first part. The history draws a thread agents wrote among themselves from the
 // comment itself, not from its event, so the whole body is there, and the comment's time links
-// to its own address, which marks the turn.
+// to its own address, which marks the turn. Every turn is drawn whole, at any length, whether or
+// not an address names it: at `/activity`, which names none, a turn of forty lines is drawn to
+// its last line, with no "more · N words" control, where a cut would draw its first six.
 test("the history draws an agent's comment longer than one event whole, linked to its address", async ({
   browser,
 }) => {
@@ -663,11 +819,24 @@ test("the history draws an agent's comment longer than one event whole, linked t
   const first = "A".repeat(20_000);
   const second = "B".repeat(20_000);
   const comment = await createComment(issue.key, { body: `${first}\n\n${second}` }, activityAgent);
+  // Forty lines, each a paragraph of its own; the newest entry, so it stands at the history's
+  // head, in Details' view.
+  const lines = Array.from({ length: 40 }, (_, index) => `Line ${index + 1} of the agents' turn.`);
+  const tall = await createComment(issue.key, { body: lines.join("\n\n") }, activityAgent);
 
   const alice = await reader(browser, "alice");
   try {
     const page = await alice.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const tallTurn = historyItem(page, tall.id);
+    await seededHistoryEntry(page, tallTurn, tall.created_at);
+    await expect(tallTurn.getByText(lines.at(-1) ?? "", { exact: true })).toBeAttached();
+    await nextFrames(page);
+    await expect(tallTurn.locator("[data-node-more]"), "the history cut a turn").toHaveCount(0);
+    // Forty lines of 20 px each, with their paragraphs' spacing on top: a cut turn is far short.
+    const height = (await tallTurn.boundingBox())?.height ?? 0;
+    expect(height, "the history cut a turn").toBeGreaterThan(lines.length * 20);
+
     const item = historyItem(page, comment.id);
     await seededHistoryEntry(page, item, comment.created_at);
     await expect(item).toHaveCount(1);
@@ -763,7 +932,7 @@ async function handoffLinesDrawn(page: Page, key: string): Promise<void> {
 // The conversation's handoff cards are the history's lines (the
 // Design's "Where each thing goes": "The conversation's handoff cards, and the Activity tab -
 // The history in the panel"), and each line keeps what the card opened: its fields and every
-// proof entry, read when the reader opens them.
+// proof entry, drawn open, which the reader folds by the line and opens again by it.
 test("the history lists each handoff version, and opening one shows its fields and every proof entry", async ({
   browser,
 }, testInfo) => {
@@ -787,8 +956,11 @@ test("the history lists each handoff version, and opening one shows its fields a
     await expect(v2).toContainText("Implementer (e2e)");
     await expect(v1).toContainText("Implementer (e2e)");
 
+    // Drawn open, folded by its line, and opened again by it.
+    await v2.getByRole("button", { name: CONTROL_LABELS.hide_fields }).click();
     const toggle = v2.getByRole("button", { name: CONTROL_LABELS.show_fields });
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(v2.locator("[data-handoff-field]")).toHaveCount(0);
     await toggle.click();
     await expect(v2.getByRole("button", { name: CONTROL_LABELS.hide_fields })).toHaveAttribute(
       "aria-expanded",
@@ -811,9 +983,10 @@ test("the history lists each handoff version, and opening one shows its fields a
     await expect(proof.nth(0)).toContainText("browser suite green");
     await expect(proof.nth(1)).toContainText(`${CONTROL_LABELS.handoff_fields.proof} 2`);
     await expect(proof.nth(1)).toContainText("lint clean");
-    // Version 1 stays folded: its body is not on the page.
-    await expect(v1.locator("[data-handoff-field]")).toHaveCount(0);
-    await expect(page.getByText("First pass", { exact: true })).toHaveCount(0);
+    // Version 1 stays as it was drawn, open: its own fields, and none of version 2's.
+    await expect(v1.locator('[data-handoff-field="summary"]')).toHaveText(/First pass$/u);
+    await expect(v1.locator('[data-handoff-field="proof"]')).toHaveCount(2);
+    await expect(v1.locator('[data-handoff-field="files"]')).toHaveCount(0);
 
     await page.screenshot({
       fullPage: true,
@@ -899,8 +1072,8 @@ const attentionSession = {
 };
 
 /**
- * The issue's history, in Details: where the comments and messages
- * an agent wrote outside every thread a person wrote in are read, newest first, each thread one
+ * The issue's history, in Details: where the threads the Legion daemon began and the comments
+ * agents wrote outside every thread a person wrote in are read, newest first, each thread one
  * entry carrying its own id in `data-history-entry`. The history holds the reader's place in the
  * box Details scrolls in (`IssueHistory.tsx`'s `ViewportAnchor`), and these rows read that.
  */
@@ -950,14 +1123,14 @@ async function openHistory(
   await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
 }
 
-/** An issue with `count` messages an agent wrote, `Existing message <n>`, newest last, and the
- *  newest of them. */
+/** An issue with `count` messages the Legion daemon wrote, `Existing message <n>`, newest last,
+ *  each a thread the history holds, and the newest of them. */
 async function seedMessages(title: string, count: number, words = "Existing message") {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title });
-  let newest = await createMessage(issue.key, { body: `${words} 0` }, attentionSession);
+  let newest = await createMessage(issue.key, { body: `${words} 0` }, asDaemon);
   for (let index = 1; index < count; index += 1) {
-    newest = await createMessage(issue.key, { body: `${words} ${index}` }, attentionSession);
+    newest = await createMessage(issue.key, { body: `${words} ${index}` }, asDaemon);
   }
   return { issue, newest };
 }
@@ -998,7 +1171,7 @@ test("a reader scrolled down the history keeps their place when a new entry arri
     expect(before, `the entry the reader is on, ${entry}, has no box`).toBeDefined();
 
     // The history is newest first, so the arrival lands above the reader.
-    await createMessage(issue.key, { body: "Arrived while reading" }, attentionSession);
+    await createMessage(issue.key, { body: "Arrived while reading" }, asDaemon);
 
     await expect(historyPanel(page).getByText("Arrived while reading")).toBeAttached();
     await expect
@@ -1026,7 +1199,7 @@ test("a reader at the top of Details finds a new entry at the history's head", a
     await openHistory(page, issue.key, newest);
     await scrollHistoryTo(page, 0);
 
-    await createMessage(issue.key, { body: "Arrived at the top" }, attentionSession);
+    await createMessage(issue.key, { body: "Arrived at the top" }, asDaemon);
 
     await expect(historyEntries(page).first()).toContainText("Arrived at the top");
     expect(await historyScrollTop(page), "an arrival moved Details under a reader at its top").toBe(
@@ -1061,7 +1234,7 @@ test("a new entry arriving while the reader is on a filter leaves Details where 
     await expect(spec).toHaveAttribute("aria-pressed", "true");
     expect(await historyScrollTop(page)).toBe(0);
 
-    await createMessage(issue.key, { body: "Arrived while away" }, attentionSession);
+    await createMessage(issue.key, { body: "Arrived while away" }, asDaemon);
 
     await expect(historyPanel(page).getByText("Arrived while away")).toBeAttached();
     expect(
@@ -1082,14 +1255,14 @@ test("a new entry arriving while the reader is on a filter leaves Details where 
   }
 });
 
-// The history draws each day before the reader's today folded to one line, and the page reads
-// its today from the browser's clock at each render, while the server stamps each seed with its
-// own time: a row whose seeding and drawing fall on either side of the reader's midnight finds its
-// seeds a day before today, folded. So the rows read a seed through `seededHistoryEntry`, which
-// finds it by its id and opens the day the page drew it folded in, and none of them assumes which
-// day a seed falls in. Here, and in no other row, the page's own clock is moved past the reader's
-// next midnight after the seeding, before the history is drawn: the seeds are then in the day
-// before the page's today, named as the page names it, and the rows' reading finds them there.
+// The page reads its today from the browser's clock at each render, while the server stamps
+// each seed with its own time: a row whose seeding and drawing fall on either side of the
+// reader's midnight finds its seeds a day before today. So the rows read a seed through
+// `seededHistoryEntry`, which finds it by its id in the day the page files its time under, and
+// none of them assumes which day a seed falls in. Here, and in no other row, the page's own clock
+// is moved past the reader's next midnight after the seeding, before the history is drawn: the
+// seeds are then in the day before the page's today, named as the page names it and drawn open
+// under its line, and the rows' reading finds them there.
 test("entries made before the reader's midnight are found in the day the history draws them in after it", async ({
   browser,
 }) => {
@@ -1101,8 +1274,8 @@ test("entries made before the reader's midnight are found in the day the history
     // The page's own clock, from the real time, so the row can move it once the seeds are made.
     await page.clock.install();
     await gotoIssue(page, `/issues/${issue.key}`);
-    // Every write of this issue is an agent's message, which the outline draws no row for, so
-    // the tree is drawn with no row in it.
+    // Every write of this issue is a message of the Legion daemon, which the outline draws no
+    // row for, so the tree is drawn with no row in it.
     await expectIssuePageDrawn(page);
     // How far the reader's next midnight is, by the page's clock.
     const toMidnight = await page.evaluate(() => {
@@ -1118,9 +1291,9 @@ test("entries made before the reader's midnight are found in the day the history
     await openHistory(page, issue.key, newest);
     const day = historyPanel(page).locator(`[data-history-day="${seeded.date}"]`);
     await expect(
-      day.getByRole("button", { name: `${seeded.label} · ` }),
-      "the seeds' day is not the day the page names before its today, opened"
-    ).toHaveAttribute("aria-expanded", "true");
+      day.locator(":scope > p"),
+      "the seeds' day is not the day the page names before its today"
+    ).toHaveText(seeded.label);
     for (let index = 0; index < 3; index += 1) {
       await expect(day.getByText(`Existing message ${index}`, { exact: true })).toBeVisible();
     }
@@ -1133,12 +1306,16 @@ test("entries made before the reader's midnight are found in the day the history
   }
 });
 
-// Paging is the history's: the outline reads each of its three lists whole and offers no
-// `Load older` at all. Older events land beneath the entries already on screen, so the entry
-// the reader is on does not move; and the reader who presses on reaches the log's start, where
-// the control goes.
+// Paging is the history's: the outline reads each of its three lists whole and offers no Show
+// more at all. The history draws 20 entries at a time, and its Show more says how many of the
+// entries read are left, with "+" while an older page of the log is unread; once every entry
+// read is drawn it says no number, and its press reads that page and draws the next entries from
+// it. Those land beneath the entries already on screen, so the entry the reader is on does not
+// move; and the reader who presses on reaches the log's start, where the control goes.
 test("loading older history entries keeps the reader anchor", async ({ browser }) => {
-  // One more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists.
+  // The seed's 205 messages and the presses that draw 200 of them, 20 at a time.
+  test.setTimeout(120_000);
+  // Five more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists.
   const { issue, newest } = await seedMessages("Older events", 205, "Older message");
   const created = (await allEvents(issue.key)).find((event) => event.type === "issue.created");
   if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
@@ -1147,8 +1324,8 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
   try {
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/conversation`);
-    // Every write of this issue is an agent's message, which the outline draws no row for, so
-    // the tree is drawn with no row in it.
+    // Every write of this issue is a message of the Legion daemon, which the outline draws no
+    // row for, so the tree is drawn with no row in it.
     await expectIssuePageDrawn(page);
     await expect(page.getByRole("button", { name: CONTROL_LABELS.show_more })).toHaveCount(0);
 
@@ -1159,7 +1336,13 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     // list while that page is read, or that hands the focus to a control off screen once it lands.
     await withoutScrollAnchoring(page);
     await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
-    const loadOlder = historyLoadOlder(page);
+    await expect(
+      historyShowMore(page),
+      "Show more does not say that an older page of the log is unread"
+    ).toHaveText(new RegExp(`\\(\\d+\\+ ${CONTROL_LABELS.show_more_left}\\)$`, "u"));
+    // The reader draws every entry the first page holds, until the control says no number.
+    await readHistoryDown(page, issue.key, (control) => control.click(), "uncounted");
+    const loadOlder = historyNextPage(page);
     await expect(loadOlder).toBeVisible();
     await loadOlder.scrollIntoViewIfNeeded();
     await nextFrames(page);
@@ -1190,8 +1373,11 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
       )
       .toBe(before);
 
-    // Pressed until it goes: each press reads the next page, and the last page takes it away.
-    await pressLoadOlderUntilGone(page, issue.key, (older) => older.click());
+    // The older page was the log's last, and every entry it holds is drawn: the control goes.
+    await expect(
+      historyShowMore(page),
+      `${CONTROL_LABELS.show_more} is still offered once the whole log is read`
+    ).toHaveCount(0);
   } finally {
     await context.close();
   }
@@ -1208,18 +1394,21 @@ async function uploadEvent(key: string, name: string): Promise<DispatchEvent> {
   return event;
 }
 
-// "Load older" adds entries under the reader, and the line they read keeps its place on the
-// screen; and by the focus rule of `IssueHistory.tsx`, a press of Load older made by keyboard
-// hands the focus to a control the page it read added, never one out of the reader's view. One
-// author's newest upload and their uploads made at most a minute before it are one entry
-// (`history-model.ts`), so a run whose uploads straddle the log's 200-event page is extended by
-// the older page. Found by the tester on a running build of e3bf280f with a copy of a large real
-// issue, when a run listed its files oldest first and was keyed by its oldest upload read so far:
-// a reader on a file of such a run saw it move 572 px down when Load older landed (the entry's
-// key went from uploads:4736 to uploads:4709), where an event line in the same place stayed put;
-// and Load older pressed by keyboard put the focus on that run's author link 752 px above
-// Details' view (6,624 px on the next press). A run now lists its files newest first and keeps
-// its key as the older page extends it.
+// Show more, where it reads the log's next page, adds entries under the reader, and the line
+// they read keeps its place on the screen; and by the focus rule of `IssueHistory.tsx`, that
+// press made by keyboard hands the focus to a control the page it read added, never one out of
+// the reader's view. One author's newest upload and their uploads made at most a minute before
+// it are one entry (`history-model.ts`), so a run whose uploads straddle the log's 200-event page
+// is extended by the older page. Found by the tester on a running build of e3bf280f with a copy
+// of a large real issue, when a run listed its files oldest first and was keyed by its oldest
+// upload read so far: a reader on a file of such a run saw it move 572 px down when the older
+// page landed (the entry's key went from uploads:4736 to uploads:4709), where an event line in
+// the same place stayed put; and the press by keyboard put the focus on that run's author link
+// 752 px above Details' view (6,624 px on the next press). A run now lists its files newest first
+// and keeps its key as the older page extends it. The run is the last entry of the log's first
+// page, so the reader first draws every entry that page holds, pressing Show more while it says
+// how many are left; those presses are dispatched to the control, so they move neither the focus
+// nor Details, and the reader comes to the run by a scroll of their own.
 test("loading older keeps the reader's place on an upload run the older page extends, and the focus in view", async ({
   browser,
 }) => {
@@ -1236,7 +1425,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
     });
   }
   for (let index = 0; index < 199; index += 1) {
-    await createMessage(issue.key, { body: `Later message ${index}` }, attentionSession);
+    await createMessage(issue.key, { body: `Later message ${index}` }, asDaemon);
   }
   const newest = "shot-9.png";
   const upload = await uploadEvent(issue.key, newest);
@@ -1264,11 +1453,14 @@ test("loading older keeps the reader's place on an upload run the older page ext
     const file = historyPanel(page)
       .locator("[data-history-uploads]")
       .getByRole("link", { exact: true, name: newest });
-    const loadOlder = historyLoadOlder(page);
+    const loadOlder = historyNextPage(page);
+    const dispatched = (control: Locator) => control.dispatchEvent("click");
 
     // By pointer: the reader is on the newest file of the run, and the older page lands.
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     await withoutScrollAnchoring(page);
+    await newestHistoryEntry(page);
+    await readHistoryDown(page, issue.key, dispatched, "uncounted");
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await expect(loadOlder).toBeVisible();
@@ -1294,8 +1486,10 @@ test("loading older keeps the reader's place on an upload run the older page ext
       )
       .toBe(before);
 
-    // By keyboard: Load older pressed with the focus on it hands the focus to a control in view.
+    // By keyboard: Show more pressed with the focus on it hands the focus to a control in view.
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await newestHistoryEntry(page);
+    await readHistoryDown(page, issue.key, dispatched, "uncounted");
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await putFileAtCentre();
@@ -1311,26 +1505,29 @@ test("loading older keeps the reader's place on an upload run the older page ext
       const box = document.activeElement?.getBoundingClientRect();
       return box === undefined ? null : { bottom: box.bottom, top: box.top };
     });
-    expect(focused, "Load older left the focus nowhere").not.toBeNull();
+    expect(focused, "Show more left the focus nowhere").not.toBeNull();
     expect(
       (focused?.top ?? -1) >= clip.top - 1 && (focused?.bottom ?? 0) <= clip.bottom + 1,
-      `Load older handed the focus to a control out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
+      `Show more handed the focus to a control out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
     ).toBe(true);
   } finally {
     await context.close();
   }
 });
 
-// The focus rule of `IssueHistory.tsx`: Load older pressed by keyboard hands the focus to a
-// control the page it read added, never one out of the reader's view, where a press of Enter
-// would follow a link the reader cannot see. Here an agent's message stands between the run and
-// Load older, so the older page's files of the run land above that message and push every
-// control below it down by their height: the first new control below the message is the
-// issue's creation line, out of view under Details' foot. Found by the tester on a running build
-// of 864163bf with a copy of a large real issue: after Load older pressed by keyboard the focus
-// was on a turn's time link at 1,425 px, the view ending at 900, with 13 files of a run (572 px)
-// added above the entry between that run and Load older; the next page's Retry did the same.
-test("Load older by keyboard keeps the focus in view when the older page extends a run above the entries under it", async ({
+// The focus rule of `IssueHistory.tsx`: Show more pressed by keyboard where it reads the log's
+// next page hands the focus to a control the page it read added, never one out of the reader's
+// view, where a press of Enter would follow a link the reader cannot see. Here a message of the
+// daemon's stands between the run and Show more, so the older page's files of the run land above
+// that message and push every control below it down by their height: the first new control
+// below the message is the issue's creation line, out of view under Details' foot. Found by the
+// tester on a running build of 864163bf with a copy of a large real issue: after the press by
+// keyboard the focus was on a turn's time link at 1,425 px, the view ending at 900, with 13 files
+// of a run (572 px) added above the entry between that run and the control; the next page's Retry
+// did the same. The run and the message are the last entries of the log's first page, so the
+// reader first draws every entry that page holds, by presses dispatched to Show more while it
+// says how many are left, which move neither the focus nor Details.
+test("Show more by keyboard keeps the focus in view when the older page it reads extends a run above the entries under it", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
@@ -1342,14 +1539,14 @@ test("Load older by keyboard keeps the focus in view when the older page extends
       contentType: "image/png",
       name: `shot-${index}.png`,
     });
-  // Eight uploads, an agent's message, two more uploads within the minute: one run of ten whose
-  // newest upload sorts it above the message. The 197 messages after them leave the run's two
-  // newest uploads and the message at the foot of the log's first page.
+  // Eight uploads, a message of the daemon's, two more uploads within the minute: one run of ten
+  // whose newest upload sorts it above the message. The 197 messages after them leave the run's
+  // two newest uploads and the message at the foot of the log's first page.
   for (let index = 0; index < 8; index += 1) await upload(index);
-  const between = await createMessage(issue.key, { body: "Between the uploads" }, attentionSession);
+  const between = await createMessage(issue.key, { body: "Between the uploads" }, asDaemon);
   for (let index = 8; index < 10; index += 1) await upload(index);
   for (let index = 0; index < 197; index += 1) {
-    await createMessage(issue.key, { body: `Later message ${index}` }, attentionSession);
+    await createMessage(issue.key, { body: `Later message ${index}` }, asDaemon);
   }
   const newestUpload = await uploadEvent(issue.key, "shot-9.png");
   const created = (await allEvents(issue.key)).find((event) => event.type === "issue.created");
@@ -1359,6 +1556,13 @@ test("Load older by keyboard keeps the focus in view when the older page extends
   try {
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await newestHistoryEntry(page);
+    await readHistoryDown(
+      page,
+      issue.key,
+      (control) => control.dispatchEvent("click"),
+      "uncounted"
+    );
     const run = historyPanel(page).locator("[data-history-uploads]");
     await seededHistoryEntry(page, run, newestUpload.created_at);
     await expect(run).toHaveCount(1);
@@ -1372,7 +1576,7 @@ test("Load older by keyboard keeps the focus in view when the older page extends
       historyPanel(page).getByText("Between the uploads"),
       "the message between the uploads is not drawn on the first page"
     ).toHaveCount(1);
-    const loadOlder = historyLoadOlder(page);
+    const loadOlder = historyNextPage(page);
     await loadOlder.focus();
     await nextFrames(page);
     await page.keyboard.press("Enter");
@@ -1392,10 +1596,10 @@ test("Load older by keyboard keeps the focus in view when the older page extends
       const box = document.activeElement?.getBoundingClientRect();
       return box === undefined ? null : { bottom: box.bottom, top: box.top };
     });
-    expect(focused, "Load older left the focus nowhere").not.toBeNull();
+    expect(focused, "Show more left the focus nowhere").not.toBeNull();
     expect(
       (focused?.top ?? -1) >= clip.top - 1 && (focused?.bottom ?? 0) <= clip.bottom + 1,
-      `Load older handed the focus to a control out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
+      `Show more handed the focus to a control out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
     ).toBe(true);
   } finally {
     await context.close();
@@ -1403,7 +1607,7 @@ test("Load older by keyboard keeps the focus in view when the older page extends
 });
 
 // Details keeps the focus rule of every page of Dispatch. A control of Details that the reader's
-// own press or key takes away hands the focus on inside Details: each Retry, Load older and
+// own press or key takes away hands the focus on inside Details: each Retry, Show more and
 // Unsubscribe hands it on itself, and the Details focus keeper (`details-focus-keeper.ts`) under
 // them hands on what no site did. A control that goes with no press of the reader's - a live
 // update, another session's change that takes a row away - leaves the focus on the page's body,
@@ -1478,28 +1682,26 @@ test("a control of Details that another session takes away under the focus leave
  *  that draws long turns rests on the height this gives them, so each draws its turns of it. */
 const TURN_PARAGRAPH = "the agents read the history and wrote what they found ".repeat(6);
 
-// The focus rule of `IssueHistory.tsx`, with long agents' turns just above Load older. A turn is
-// cut to six lines only once it comes near the screen (`clamp-measurer.ts`), so turns far below
-// the reader are drawn whole. Moving the focus to Load older scrolls them into view, and Enter
-// pressed at once lands the next page before they are cut: the page's own hand-on puts the focus
-// on a new control in view, then the turns above it are cut, about a thousand pixels each. While
-// the reader's place was held on one of those turns, the focused control moved up out of Details'
-// view. Found by the tester on a running build of f589637b with a copy of a large real issue: the
-// second press of Load older, made as the focus reached it, left the focus on a turn's time link
-// 212 px above Details' view at 1440 px (two runs of four), 224 px above at 768 px and 280 px
-// above at 390 px; a second and a half between the focus and Enter left it in view. The place
-// keeper now records the reader's place at each focus that moves into the history, so it holds
-// the entry the hand-on puts the focus in.
-test("Load older pressed as the focus reaches it keeps the focus in view while the turns above it are cut", async ({
+// The focus rule of `IssueHistory.tsx`, with long agents' turns under Show more. A press moves
+// the focus to the first entry it added, as Show more under every other list of Details does: to
+// a control of that entry the reader can see, its time at its head, where the control stood,
+// and not its Reply a thousand pixels below at its foot. The place keeper records the reader's
+// place at each focus that moves into the history, so it holds the entry the hand-on puts the
+// focus in as the turns under it are drawn. Found by the tester on a running build of f589637b
+// with a copy of a large real issue, when turns were still cut as they came near the screen: a
+// press made as the focus reached the control left the focus on a turn's time link 212 px above
+// Details' view at 1440 px (two runs of four), 224 px above at 768 px and 280 px above at 390
+// px. Every turn is drawn whole now, and Enter is still pressed as the focus reaches the control.
+test("Show more pressed as the focus reaches it hands the focus to the first long turn it draws, in view", async ({
   browser,
 }) => {
-  test.setTimeout(300_000);
+  test.setTimeout(120_000);
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Long turns above Load older" });
-  // Each turn is about a thousand pixels whole at Details' width and six lines cut, as the long
-  // turns of the real issue were.
-  const turn = (index: number) =>
-    createMessage(
+  const issue = await createIssue({ project: "CORE", title: "Long turns under Show more" });
+  // Each turn is about a thousand pixels at Details' width, as the long turns of the real issue
+  // were; five more than the history draws at first, so one press draws them.
+  for (let index = 0; index < HISTORY_DRAWS + 5; index += 1) {
+    await createMessage(
       issue.key,
       {
         body: Array.from(
@@ -1507,23 +1709,22 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
           (_, part) => `Turn ${index}, part ${part}: ${TURN_PARAGRAPH}`
         ).join("\n\n"),
       },
-      attentionSession
+      asDaemon
     );
-  let newest = await turn(0);
-  for (let index = 1; index < 205; index += 1) newest = await turn(index);
+  }
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
-    await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
-    const loadOlder = historyLoadOlder(page);
-    await expect(loadOlder, "the log's first page offers no Load older").toHaveCount(1);
-    await loadOlder.focus();
+    await newestHistoryEntry(page);
+    const more = historyShowMore(page);
+    await expect(more, "the history drew every turn at once").toBeVisible();
+    await more.focus();
     await page.keyboard.press("Enter");
-    await expect(loadOlder, "Load older stayed after the log's last page").toHaveCount(0);
-    // Long enough for every turn that came near to be cut, and for the reader's place to be held.
-    await page.waitForTimeout(2_000);
+    // The issue's creation, the oldest entry, is drawn with the five turns: every entry is.
+    await expect(historyEntries(page)).toHaveCount(HISTORY_DRAWS + 6);
+    await expect(more, "Show more stayed with every entry drawn").toHaveCount(0);
     await nextFrames(page);
     const clip = await historyViewport(page);
     const focused = await page.evaluate(() => {
@@ -1532,10 +1733,16 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
         active === null || active === document.body ? undefined : active.getBoundingClientRect();
       return box === undefined ? null : { bottom: box.bottom, top: box.top };
     });
-    expect(focused, "Load older left the focus on the page").not.toBeNull();
+    expect(focused, "Show more left the focus on the page").not.toBeNull();
     expect(
       (focused?.top ?? -1) >= clip.top - 1 && (focused?.bottom ?? 0) <= clip.bottom + 1,
-      `Load older handed the focus to a control that the cut of the turns above it moved out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
+      `Show more handed the focus to a control out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
+    ).toBe(true);
+    expect(
+      await historyEntries(page)
+        .nth(HISTORY_DRAWS)
+        .evaluate((entry) => entry.contains(document.activeElement)),
+      "Show more did not hand the focus to the first entry it drew"
     ).toBe(true);
   } finally {
     await context.close();
@@ -1547,307 +1754,6 @@ function longTurnBody(parts: number): string {
   return Array.from({ length: parts }, (_, part) => `Part ${part}: ${TURN_PARAGRAPH}`).join("\n\n");
 }
 
-// The reader's place in the history (`IssueHistory.tsx`'s `ViewportAnchor`) when a turn above it
-// shrinks by more than the history holds below Details' view. A turn in view, wholly or in part,
-// keeps its whole length, and is cut to six lines once it lies wholly outside the view
-// (`clamp-measurer.ts`), so the reader here scrolls up until a long turn above them shows, whole,
-// and back down until it lies wholly above the view, where it is cut. As it is cut, the browser
-// itself first pulls the scroll back to the history's new end, by the room that was below the
-// view, and the place keeper took that scroll for one of the reader's own: it kept the moved
-// place and put nothing back, so the entries the reader is on moved up by that room. Found by the
-// tester on a running build of 23d42292 with a copy of a large real issue, on the third and last
-// press of Load older made as the focus reached it: a turn above was cut from 5,184 px to 190 px
-// after the page landed, the browser moved the scroll 3,143 px to the new end, the place keeper
-// kept that, and the focused time link went from 853 px to 455 px above Details' view at 1440 px,
-// in three runs of four. The place keeper now puts the row back where the reader last saw it when
-// the browser pulls the box back to its end (`ViewportAnchor.tsx`).
-test("the reader's place in the history holds when a turn above it is cut by more than the history holds below the view", async ({
-  browser,
-}) => {
-  test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A long turn above the reader" });
-  // Oldest first: thirty short turns, one long turn, twelve short turns. The history lists them
-  // newest first, so the long turn stands below the first screen with thirty turns under it.
-  const older: { readonly created_at: string; readonly id: string }[] = [];
-  for (let index = 0; index < 30; index += 1) {
-    older.push(await createMessage(issue.key, { body: `Older turn ${index}` }, attentionSession));
-  }
-  const seventeenth = older[17];
-  if (seventeenth === undefined) throw new Error("the seed made no seventeenth older turn");
-  const longTurn = await createMessage(issue.key, { body: longTurnBody(40) }, attentionSession);
-  for (let index = 0; index < 12; index += 1) {
-    await createMessage(issue.key, { body: `Newer turn ${index}` }, attentionSession);
-  }
-
-  const context = await reader(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await gotoIssue(page, `/issues/${issue.key}/activity`);
-    const long = historyEntries(page).filter({ hasText: "Part 39:" });
-    await seededHistoryEntry(page, long, longTurn.created_at);
-    await expect(long).toHaveCount(1);
-    // The focus jumps to an older turn well under the long turn, which never shows on the way,
-    // so it stays whole above the reader.
-    const target = historyEntries(page).filter({ hasText: "Older turn 17" });
-    await seededHistoryEntry(page, target, seventeenth.created_at);
-    await target.locator("[data-history-time]").focus();
-    await nextFrames(page);
-    const view = await historyViewport(page);
-    const whole = await long.boundingBox();
-    expect(
-      (whole?.height ?? 0) > 3_000 && (whole?.y ?? 0) + (whole?.height ?? 0) < view.top,
-      "the long turn is cut already or shows in Details' view, so the row proves nothing"
-    ).toBe(true);
-    // The reader scrolls up until the long turn's foot shows, with the pointer on the history. It
-    // is in view now, so it keeps its whole length.
-    const panel = await historyPanel(page).boundingBox();
-    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
-    await page.mouse.wheel(
-      0,
-      -(Math.round(view.top - ((whole?.y ?? 0) + (whole?.height ?? 0))) + 60)
-    );
-    // Half a second lets the wheel's scroll end, so the long turn is read where the reader sees it.
-    await page.waitForTimeout(500);
-    await nextFrames(page);
-    const shown = await long.boundingBox();
-    expect(
-      (shown?.height ?? 0) > 3_000 && (shown?.y ?? 0) + (shown?.height ?? 0) > view.top,
-      "the long turn did not show in Details' view whole, so the row proves nothing"
-    ).toBe(true);
-    // Then the reader scrolls back down until the long turn lies wholly above the view, its foot
-    // 40 px above the window's top, which is the view a cut is measured against. Their place once
-    // the scroll is done is the older turn nearest the middle of the view then: it is chosen, and
-    // its top read, before the scroll, since the cut follows the scroll within a frame. The scroll
-    // moves it up by exactly that distance.
-    const away = Math.round((shown?.y ?? 0) + (shown?.height ?? 0)) + 40;
-    const place = await page.evaluate(
-      ({ top, bottom }) => {
-        const middle = (top + bottom) / 2;
-        let best: { distance: number; id: string; top: number } | undefined;
-        for (const item of document.querySelectorAll<HTMLElement>(
-          '[data-testid="issue-history"] [data-history-entry]'
-        )) {
-          if (!(item.textContent ?? "").includes("Older turn")) continue;
-          const box = item.getBoundingClientRect();
-          if (box.top < top || box.bottom > bottom) continue;
-          const distance = Math.abs((box.top + box.bottom) / 2 - middle);
-          if (best === undefined || distance < best.distance) {
-            best = { distance, id: item.getAttribute("data-history-entry") ?? "", top: box.top };
-          }
-        }
-        return best;
-      },
-      { bottom: view.bottom + away, top: view.top + away }
-    );
-    expect(place, "no older turn will show whole in Details' view after the scroll").toBeTruthy();
-    const below =
-      (await page.evaluate(() => {
-        const history = document.querySelector('[data-testid="issue-history"]');
-        let box = history?.parentElement ?? null;
-        while (box !== null && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) {
-          box = box.parentElement;
-        }
-        return box === null ? 0 : box.scrollHeight - box.clientHeight - box.scrollTop;
-      })) - away;
-    expect(
-      below < (shown?.height ?? 0) - 400,
-      `the history holds ${Math.round(below)} px below the view after the scroll, more than the cut of the long turn takes, so the browser pulls nothing back and the row proves nothing`
-    ).toBe(true);
-    await page.mouse.wheel(0, away);
-    await expect
-      .poll(async () => (await long.boundingBox())?.height ?? 0, {
-        message: "the long turn was not cut once it lay wholly above the view",
-      })
-      .toBeLessThan(400);
-    // A second for the place keeper and the browser's pull-back to finish with the cut, so the
-    // entry is read where they left it.
-    await page.waitForTimeout(1_000);
-    await nextFrames(page);
-    const expected = Math.round((place?.top ?? 0) - away);
-    const after = Math.round(
-      (await historyPanel(page).locator(`[data-history-entry="${place?.id}"]`).boundingBox())?.y ??
-        0
-    );
-    expect(
-      Math.abs(after - expected),
-      `the entry the reader is on stood at ${expected} px once the scroll took the long turn above the view, and at ${after} px once that turn was cut, with ${Math.round(below)} px of the history below the view (Details' view ${Math.round(view.top)} to ${Math.round(view.bottom)})`
-    ).toBeLessThanOrEqual(1);
-  } finally {
-    await context.close();
-  }
-});
-
-// The focus a control holds at the foot of a long agents' turn when that turn is cut. A turn in
-// view, wholly or in part, keeps its whole length, and is cut to six lines once it lies wholly
-// outside the view (`clamp-measurer.ts`), so the cut comes once the reader has scrolled past the
-// turn with the focus still inside it. The place keeper kept the turn's top where it was, so the
-// cut took the Reply that held the focus, and everything under it, up by thousands of pixels.
-// Found by the tester on a running build of eed73c9a with a copy of a large real issue, while a
-// turn was still cut as it showed: the second press of Load older, made as the focus reached it,
-// put the focus on a turn's Reply at 270 px, the turn was cut, and the Reply stood at -50 px
-// above Details' view (53 to 900) at 1440 px, in two runs of six. The place keeper now keeps a
-// focused control's own place when the focus is inside the row it holds (`ViewportAnchor.tsx`),
-// so the Reply stays where the reader left it. Here the reader puts the focus on the Reply,
-// scrolls on down with the wheel until the turn lies wholly above the view, and once it is cut
-// presses Page Up to go back to the control the focus is on: the focus is still in Details, and
-// the one press shows it. Tab then Shift+Tab would prove nothing here, as the browser scrolls to
-// the control they focus wherever the cut left it.
-test("a control at the foot of a long turn keeps the focus in view when the turn it is in is cut", async ({
-  browser,
-}) => {
-  test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A long turn under the reader" });
-  // Oldest first: a hundred and thirty short turns, one long turn, thirty short turns. The history
-  // lists them newest first, so the long turn stands well below the first screen, with more of
-  // the history under it than its cut takes: the browser pulls nothing back, and the place keeper
-  // alone decides where the cut leaves the Reply.
-  for (let index = 0; index < 130; index += 1) {
-    await createMessage(issue.key, { body: `Older turn ${index}` }, attentionSession);
-  }
-  const long = await createMessage(issue.key, { body: longTurnBody(40) }, attentionSession);
-  for (let index = 0; index < 30; index += 1) {
-    await createMessage(issue.key, { body: `Newer turn ${index}` }, attentionSession);
-  }
-
-  const context = await reader(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await gotoIssue(page, `/issues/${issue.key}/activity`);
-    const turn = historyItem(page, long.id);
-    await seededHistoryEntry(page, turn, long.created_at);
-    await expect(turn).toHaveCount(1);
-    const reply = historyPanel(page).locator(`[data-history-reply="${long.id}"]`);
-    await expect(reply).toHaveCount(1);
-    // The focus goes to the turn's Reply, which the browser brings into view, the turn's head
-    // above the view: the turn is in view, so it is drawn whole.
-    await reply.focus();
-    await nextFrames(page);
-    const view = await historyViewport(page);
-    const whole = await turn.boundingBox();
-    expect(
-      (whole?.height ?? 0) > 3_000,
-      "the long turn is cut while its Reply holds the focus in view, so the row proves nothing"
-    ).toBe(true);
-    // The reader scrolls on down with the wheel, the pointer on the history, until the turn lies
-    // wholly above the view, its foot 40 px above the window's top, which is the view a cut is
-    // measured against. The focus is still on its Reply.
-    const panel = await historyPanel(page).boundingBox();
-    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
-    await page.mouse.wheel(0, Math.round((whole?.y ?? 0) + (whole?.height ?? 0)) + 40);
-    await expect
-      .poll(async () => (await turn.boundingBox())?.height ?? 0, {
-        message: "the long turn was not cut once it lay wholly above the view",
-      })
-      .toBeLessThan(400);
-    // A second for the place keeper to finish with the cut, so the focused control is read where
-    // the keeper left it.
-    await page.waitForTimeout(1_000);
-    await nextFrames(page);
-    expect(
-      await marginShell(page).evaluate((details) => {
-        const active = document.activeElement;
-        return active !== null && active !== document.body && details.contains(active);
-      }),
-      "the cut of the turn the focus is in left the focus on the page, or outside Details"
-    ).toBe(true);
-    expect(
-      await reply.evaluate((button) => button === document.activeElement),
-      "the focus left the turn's Reply"
-    ).toBe(true);
-    // The reader goes back up to the control the focus is on by the keyboard, a page at a time.
-    await page.keyboard.press("PageUp");
-    // Half a second lets the scroll of Page Up end before the focused control is read against the
-    // view.
-    await page.waitForTimeout(500);
-    await nextFrames(page);
-    const focused = await page.evaluate(() => {
-      const active = document.activeElement;
-      const box =
-        active === null || active === document.body ? undefined : active.getBoundingClientRect();
-      return box === undefined ? null : { bottom: box.bottom, top: box.top };
-    });
-    expect(
-      (focused?.top ?? -1) >= view.top - 1 && (focused?.bottom ?? 0) <= view.bottom + 1,
-      `a press of Page Up left the focused control at ${Math.round(focused?.top ?? 0)} px, out of Details' view (${Math.round(view.top)} to ${Math.round(view.bottom)}): the cut of its own turn moved it from where the reader left it`
-    ).toBe(true);
-  } finally {
-    await context.close();
-  }
-});
-
-// A turn cut to six lines opens in place: "more · N words" draws the rest under the lines the
-// reader has read, and the turn's head stays where it was. "more" stands at the foot of the
-// words, so a place keeper that keeps the focused control's own place keeps "more" where it was
-// and pushes the turn's head up by everything the press drew, out of the view, and the reader
-// meets the end of the turn first. Found by the tester on a running build of 685fbb25 with a copy
-// of a large real issue, at 1440 px: with the focus on a turn's "more · 426 words" and a scroll
-// of the reader's, Enter left "less" at 678 px and moved the turn's head from 534 px to -1,271 px.
-test("more pressed by keyboard opens a turn's words in place, its head where it was", async ({
-  browser,
-}) => {
-  test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A long turn to open" });
-  const long = await createMessage(issue.key, { body: longTurnBody(12) }, attentionSession);
-  // Newer turns above it, so the history scrolls and the long turn starts below the first screen.
-  for (let index = 0; index < 15; index += 1) {
-    await createMessage(issue.key, { body: `Newer turn ${index}` }, attentionSession);
-  }
-
-  const context = await reader(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await gotoIssue(page, `/issues/${issue.key}/activity`);
-    const turn = historyItem(page, long.id);
-    await seededHistoryEntry(page, turn, long.created_at);
-    const more = turn.locator("[data-node-more]");
-    // A turn in view, wholly or in part, keeps its whole length, and is cut to six lines once it
-    // lies wholly outside the view (`clamp-measurer.ts`). So the reader scrolls to the long turn,
-    // which shows whole, then back up with the wheel, the pointer on the history, until it lies
-    // wholly below the view, its head 40 px under the window's foot, which is the view a cut is
-    // measured against. It is cut there, and the reader scrolls to it again.
-    await turn.scrollIntoViewIfNeeded();
-    await nextFrames(page);
-    const view = await historyViewport(page);
-    const panel = await historyPanel(page).boundingBox();
-    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
-    const shown = Math.round((await turn.boundingBox())?.y ?? 0);
-    const screen = await page.evaluate(() => window.innerHeight);
-    await page.mouse.wheel(0, shown - screen - 40);
-    await expect(more, "the long turn is not cut, so the row proves nothing").toContainText(
-      CONTROL_LABELS.read_more
-    );
-    await turn.scrollIntoViewIfNeeded();
-    // The reader moves the focus to "more" and scrolls the history a little, the pointer on it.
-    await more.focus();
-    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
-    await page.mouse.wheel(0, 40);
-    await nextFrames(page);
-    // Three tenths of a second let the wheel's scroll of 40 px end before the turn's head is read.
-    await page.waitForTimeout(300);
-    const before = Math.round((await turn.boundingBox())?.y ?? 0);
-    expect(
-      before >= view.top,
-      `the turn's head is above Details' view (${before} px) before the press, so the row proves nothing`
-    ).toBe(true);
-    await page.keyboard.press("Enter");
-    await expect(more).toContainText(CONTROL_LABELS.read_less);
-    // A second for the opened words to draw and the place keeper to finish with them, before the
-    // turn's head is read again.
-    await page.waitForTimeout(1_000);
-    await nextFrames(page);
-    const after = Math.round((await turn.boundingBox())?.y ?? 0);
-    expect(
-      Math.abs(after - before),
-      `"more" opened the turn's words upward: its head moved from ${before} px to ${after} px (Details' view ${Math.round(view.top)} to ${Math.round(view.bottom)})`
-    ).toBeLessThanOrEqual(1);
-  } finally {
-    await context.close();
-  }
-});
-
 // The read mark draws one line in the history, "New since you last read", where the mark falls
 // among its entries (`history-model.ts`): a mark that moves back adds that line under the
 // entries the reader has not read, above the reader's place, so the reader's own entry has to
@@ -1855,7 +1761,7 @@ test("more pressed by keyboard opens a turn's words in place, its head where it 
 // `ViewportAnchor`'s probe has to fall back to the entry below. One day's entries are drawn flush,
 // one rule down their left (the prototype's `.hev`), so the gap between two entries is where one
 // day ends and the next opens with its line: the first ten comments and the issue's creation are
-// a day old, and the reader opens that day.
+// a day old, drawn open in a day of their own.
 async function verifyGapDetection(
   browser: Browser,
   viewport?: { height: number; width: number }
@@ -1903,14 +1809,14 @@ async function verifyGapDetection(
       name: CONTROL_LABELS.history_unread,
     });
     await expect(divider).toHaveCount(0);
-    // The back-dated day, named as the page names the day it files those comments under.
+    // The back-dated day, named as the page names the day it files those comments under, drawn
+    // open under the reader's today.
     const backDated = await historyDayOf(page, yesterday);
-    const dayBefore = historyPanel(page)
-      .locator(`[data-history-day="${backDated.date}"]`)
-      .getByRole("button", { name: `${backDated.label} · ` });
-    await dayBefore.click();
-    await expect(dayBefore).toHaveAttribute("aria-expanded", "true");
-    await expect(historyPanel(page).getByText("Gap comment 0", { exact: true })).toBeVisible();
+    await expect(
+      historyPanel(page)
+        .locator(`[data-history-day="${backDated.date}"]`)
+        .getByText("Gap comment 0", { exact: true })
+    ).toBeVisible();
     // The reader's hand leaves the list, so the place the history keeps is the one at its centre.
     await handsOff(page);
 
@@ -2001,6 +1907,176 @@ test("a read mark moving under a reader parked in a history gap keeps the lower 
 
 test("a read mark moving in a narrow history keeps the lower entry fixed", async ({ browser }) => {
   await verifyGapDetection(browser, { height: 1024, width: 768 });
+});
+
+// ---------------------------------------------------------------------------------------------
+// c-history (16) to (18): how the history draws a handoff, its pages and a corrected turn.
+// ---------------------------------------------------------------------------------------------
+
+// Each handoff is drawn open, its fields and every proof entry under its line with no press, as
+// the conversation's handoff card showed them once opened; it folds only when the reader folds
+// it by its line, and folding one leaves the others open.
+// SLOW(>=2s): two handoff versions written, a sign-in and one load of the history.
+test("each handoff in the history is drawn open, and the reader folds it", async ({ browser }) => {
+  const key = await seedHandoffs();
+
+  const alice = await reader(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await gotoIssue(page, `/issues/${key}/activity`);
+    await handoffLinesDrawn(page, key);
+    for (const [version, summary] of [
+      [2, "Second pass, review addressed"],
+      [1, "First pass"],
+    ] as const) {
+      const line = handoffLine(page, version);
+      await expect(
+        line.locator('[data-handoff-field="summary"]'),
+        "the handoff is not drawn open"
+      ).toBeVisible();
+      await expect(line.locator('[data-handoff-field="summary"]')).toHaveText(
+        new RegExp(`${summary}$`, "u")
+      );
+      const proof = line.locator('[data-handoff-field="proof"]');
+      await expect(proof, `version ${version}'s proof entries are not drawn`).toHaveCount(2);
+      await expect(proof.last()).toBeVisible();
+      await expect(line.getByRole("button", { name: CONTROL_LABELS.hide_fields })).toHaveAttribute(
+        "aria-expanded",
+        "true"
+      );
+    }
+
+    // A press on version 2's line folds it, and version 1 stays open.
+    const v2 = handoffLine(page, 2);
+    await v2.getByRole("button", { name: CONTROL_LABELS.hide_fields }).click();
+    await expect(
+      v2.locator("[data-handoff-field]"),
+      "a press on the handoff's line did not fold it"
+    ).toHaveCount(0);
+    await expect(v2.getByRole("button", { name: CONTROL_LABELS.show_fields })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect(
+      handoffLine(page, 1).locator('[data-handoff-field="summary"]'),
+      "folding one handoff folded another"
+    ).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
+// The history draws its first 20 entries, and under the last of them one control that draws the
+// next 20 and says how many entries are left; each press keeps the entries drawn and adds the
+// next ones, and the control goes once every entry is drawn. The seed is 44 of the daemon's
+// threads under the issue's own creation, 45 entries on one page of the log, so no count carries
+// "+".
+// SLOW(>=2s): 44 messages written, a sign-in and one load of the history.
+test("the history draws 20 entries at a time and its control says how many are left", async ({
+  browser,
+}) => {
+  const { issue, newest } = await seedMessages("Twenty at a time", 44);
+  const created = (await allEvents(issue.key)).find((event) => event.type === "issue.created");
+  if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
+  const left = (count: number) =>
+    `${CONTROL_LABELS.show_more} (${count} ${CONTROL_LABELS.show_more_left})`;
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await openHistory(page, issue.key, newest);
+    const entries = historyEntries(page);
+    await expect(entries, "the history drew 45 entries, not 20").toHaveCount(HISTORY_DRAWS);
+    const more = historyShowMore(page);
+    await expect(more, "Show more does not say that 25 entries are left").toHaveText(left(25));
+
+    await more.click();
+    await expect(entries, "a press of Show more did not draw the next 20").toHaveCount(40);
+    await expect(
+      entries.first(),
+      "a press of Show more took the first entries away"
+    ).toHaveAttribute("data-history-entry", `thread:${newest.id}`);
+    await expect(more, "Show more does not say that 5 entries are left").toHaveText(left(5));
+
+    await more.click();
+    await expect(entries, "a second press of Show more did not draw the last 5").toHaveCount(45);
+    await expect(
+      entries.last(),
+      "the issue's creation is not the last entry drawn"
+    ).toHaveAttribute("data-event-seq", String(created.seq));
+    await expect(more, "Show more stayed with every entry drawn").toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+/** The agent that corrects its own posts in the row below, named by the title its writes stamp. */
+const asCorrector = {
+  actor: {
+    id: "e2e-history-corrector",
+    kind: "session" as const,
+    origin: { session_title: "Corrections agent" },
+  },
+  as: "agent" as const,
+};
+
+// A post its author corrected carries, in the history, the marks every surface of `main` draws
+// on one: an agents' post its agent edited reads " · edited" after its author (`EditedMark`),
+// and a reply in the daemon's thread its agent deleted reads its deleted line, "Deleted by" with
+// its author and its time, in place of its words, and offers no Reply (`DeletedLine`).
+// SLOW(>=2s): a post written and edited, a thread written and its reply deleted, a sign-in and
+// one load of the history.
+test("a history turn carries the marks of a post its author corrected", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Corrected turns" });
+  const post = await createComment(issue.key, { body: "The build runs at noon." }, asCorrector);
+  await editComment(post.id, { body: "Corrected: the build runs at midnight." }, asCorrector);
+  const root = await createMessage(
+    issue.key,
+    { body: "The daemon handed the build to its agent." },
+    asDaemon
+  );
+  const reply = await createMessage(
+    issue.key,
+    { body: "Words the agent takes back.", in_reply_to: root.id },
+    asCorrector
+  );
+  await deleteMessage(reply.id, asCorrector);
+
+  const alice = await reader(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const head = (turn: Locator) => turn.locator("p", { has: page.locator("[data-history-time]") });
+
+    const edited = historyItem(page, post.id);
+    await seededHistoryEntry(page, edited, post.created_at);
+    await expect(edited).toContainText("Corrected: the build runs at midnight.");
+    await expect(head(edited), "the edited turn carries no edited mark").toHaveText(
+      new RegExp(` · ${CONTROL_LABELS.post_edited}$`, "u")
+    );
+
+    const deleted = historyItem(page, reply.id);
+    await seededHistoryEntry(page, deleted, root.created_at);
+    await expect(
+      deleted.locator("[data-post-deleted]"),
+      "the deleted turn does not read its deleted line"
+    ).toHaveText(new RegExp(`^${CONTROL_LABELS.post_deleted_by} Corrections agent · \\S`, "u"));
+    await expect(historyPanel(page).getByText("Words the agent takes back.")).toHaveCount(0);
+    await expect(
+      historyPanel(page).locator(`[data-history-reply="${reply.id}"]`),
+      "the deleted turn offers Reply"
+    ).toHaveCount(0);
+    // The thread's other turn and the post are no deleted line, and the root, never edited,
+    // carries no mark.
+    await expect(historyItem(page, root.id)).toContainText("The daemon handed the build");
+    await expect(head(historyItem(page, root.id))).not.toContainText(
+      ` · ${CONTROL_LABELS.post_edited}`
+    );
+    await expect(historyPanel(page).locator("[data-post-deleted]")).toHaveCount(1);
+  } finally {
+    await alice.close();
+  }
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -2794,9 +2870,10 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
   );
 });
 
-/** An issue with an agents' thread, a message an agent wrote that no person wrote in, dated a
- *  day back with its event, so the history folds the day it is in: its id, the time it is dated
- *  to (`messageAt`), and the newest of the notes after it (`newest`). */
+/** An issue with an agents' thread, a thread the Legion daemon began that no person wrote in,
+ *  dated a day back with its event, so it stands in a day before today, among the daemon's notes,
+ *  each a thread of its own: its id, the time it is dated to (`messageAt`), and the newest of the
+ *  notes after it (`newest`). */
 async function seedAgentsThread(): Promise<{
   key: string;
   message: string;
@@ -2807,24 +2884,16 @@ async function seedAgentsThread(): Promise<{
   const issue = await createIssue({ project: "CORE", title: "The history's addresses" });
   await createComment(issue.key, { body: "A person's comment, a row of the outline." });
   for (let index = 0; index < 12; index += 1) {
-    await createMessage(issue.key, { body: `An agent's earlier note ${index}.` }, attentionSession);
+    await createMessage(issue.key, { body: `An agent's earlier note ${index}.` }, asDaemon);
   }
   const message = await createMessage(
     issue.key,
     { body: "The agents' turn an address names." },
-    attentionSession
+    asDaemon
   );
-  let newest = await createMessage(
-    issue.key,
-    { body: "An agent's later note 0." },
-    attentionSession
-  );
+  let newest = await createMessage(issue.key, { body: "An agent's later note 0." }, asDaemon);
   for (let index = 1; index < 12; index += 1) {
-    newest = await createMessage(
-      issue.key,
-      { body: `An agent's later note ${index}.` },
-      attentionSession
-    );
+    newest = await createMessage(issue.key, { body: `An agent's later note ${index}.` }, asDaemon);
   }
   const created = (await getIssueEvents(issue.key, { limit: 200 })).find(
     (event) => event.type === "message.created" && event.payload.id === message.id
@@ -3677,47 +3746,25 @@ async function detailsStandStill(page: Page, after: string): Promise<void> {
     .toBe(0);
 }
 
-/** Presses the history's Load older by `press` until the last page of the log of `key` takes it
- *  away: each press waits for its page's answer and for two frames that draw it, so Load older is
- *  drawn or gone when it is looked for again. Load older still offered after two presses of this
- *  call fails as offered past the log's last page. */
-async function pressLoadOlderUntilGone(
-  page: Page,
-  key: string,
-  press: (loadOlder: Locator) => Promise<void>
-): Promise<void> {
-  const loadOlder = historyLoadOlder(page);
-  // Read once a page's answer has landed and two frames drew it, so Load older is drawn or gone.
-  for (let presses = 1; await loadOlder.isVisible(); presses += 1) {
-    expect(
-      presses,
-      `${CONTROL_LABELS.show_more} is still offered past the log's last page`
-    ).toBeLessThan(3);
-    const answered = olderPageAnswered(page, key);
-    await press(loadOlder);
-    await answered;
-    await nextFrames(page);
-  }
+/** The reader reading down the history of `key` to its end: Show more focused and pressed by
+ *  Enter until no control is left under the last entry (`readHistoryDown`), and Details' box
+ *  standing still after. Each focus brings Show more into Details' view, at the foot of what
+ *  the history draws. Answers how far Details' box is then scrolled. */
+async function readDownByShowMore(page: Page, key: string): Promise<number> {
   await expect(
-    loadOlder,
-    `${CONTROL_LABELS.show_more} is still offered once the whole log is read`
-  ).toHaveCount(0);
-}
-
-/** The reader reading down the history of `key` to its end: Load older focused and pressed by
- *  Enter until the log's last page takes it away (`pressLoadOlderUntilGone`), and Details' box
- *  standing still after. Each focus brings Load older into Details' view, at the foot of what
- *  the history holds. Answers how far Details' box is then scrolled. */
-async function readDownByLoadOlder(page: Page, key: string): Promise<number> {
-  await expect(
-    historyLoadOlder(page),
-    "the history offers no Load older to read down by"
+    historyShowMore(page),
+    "the history offers no Show more to read down by"
   ).toBeVisible();
-  await pressLoadOlderUntilGone(page, key, async (loadOlder) => {
-    await loadOlder.focus();
-    await nextFrames(page);
-    await page.keyboard.press("Enter");
-  });
+  await readHistoryDown(
+    page,
+    key,
+    async (control) => {
+      await control.focus();
+      await nextFrames(page);
+      await page.keyboard.press("Enter");
+    },
+    "gone"
+  );
   await detailsStandStill(page, `the last ${CONTROL_LABELS.show_more}`);
   return historyScrollTop(page);
 }
@@ -3727,10 +3774,10 @@ async function readDownByLoadOlder(page: Page, key: string): Promise<number> {
 const MANY_AGENTS = 16;
 
 /** How many notes the history of each of the two rows below holds: more than the first page of
- *  200 the history reads, so Load older reads on. */
+ *  200 the history reads, so Show more reads on. */
 const LONG_HISTORY_NOTES = 205;
 
-/** An issue whose history holds `LONG_HISTORY_NOTES` notes of the agents', so Load older reads
+/** An issue whose history holds `LONG_HISTORY_NOTES` notes of the daemon's, so Show more reads
  *  on, and which `MANY_AGENTS` Legion agents worked, so the collaborators' row with its list open
  *  is taller than Details' view. */
 async function seedCollaboratorsOverLongHistory(): Promise<string> {
@@ -3765,7 +3812,7 @@ async function readyForPageKey(page: Page, size: { readonly width: number }): Pr
 
 /**
  * The reader at `size`'s width reading the history of `key` down to its end
- * (`readDownByLoadOlder`), then pressing `opener`, Details closed first where it is a sheet
+ * (`readDownByShowMore`), then pressing `opener`, Details closed first where it is a sheet
  * (`readyForPageKey`). `landing`, named `what`, is what the key brings into Details' view: the
  * reading must leave it wholly above the view, or the row proves nothing. `t o` puts the focus on
  * the Collaborators control and `t v` on the history. Answers how far the reading scrolled
@@ -3779,7 +3826,7 @@ async function keyAfterReadingDown(
   landing: Locator,
   what: string
 ) {
-  const scrolled = await readDownByLoadOlder(page, key);
+  const scrolled = await readDownByShowMore(page, key);
   // One read of the place the reading left: Details' box has stood still for two frames.
   const view = await historyViewport(page);
   const away = await boxOf(landing, what);
@@ -3968,7 +4015,7 @@ test("t v from a load with Details shut opens Details with the history's heading
 });
 
 // A load of `/activity` opens Details with the history's heading at the top of its view; the
-// reader then reads the history down to its end, pressing Load older by Enter until it goes, and
+// reader then reads the history down to its end, pressing Show more by Enter until it goes, and
 // presses `t v`. Each press is a following of `/activity` of its own (`useFollowing`), which
 // brings the heading back to the top of Details' view. The history's landing told one following
 // from the next by the address alone, the same for every following of `/activity`, so `t v` put
@@ -3976,7 +4023,7 @@ test("t v from a load with Details shut opens Details with the history's heading
 // whose dialog masks the page's keys, so there the reader closes it with Escape before the key
 // (`readyForPageKey`). Found by the tester on a running build with a copy of a large real issue:
 // the heading 39,585 px above Details' view at 1440 px and 121 px above it at 390.
-test("t v after the history is read down by Load older brings the history's heading to the top of Details' view", async ({
+test("t v after the history is read down by Show more brings the history's heading to the top of Details' view", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
@@ -4016,7 +4063,7 @@ test("t v after the history is read down by Load older brings the history's head
 });
 
 // The address of an agents' turn opens Details with that turn marked
-// and on screen. The marked turn is drawn whole (`CutWords whole`), so a long one is taller than
+// and on screen. Every turn is drawn whole, so a long one is taller than
 // Details' view: its head - the author and the time that is its address - must be what the
 // reader lands on, never cut above the view. Found by the tester on a running build of
 // 3bd86200 with a copy of a large real issue: a turn of 338 words, 1,083 px tall, landed
@@ -4032,7 +4079,7 @@ test("the address of a long agents' turn lands on its head", async ({ browser })
         { length: 60 },
         (_, index) => `Paragraph ${index + 1} of the agent's long turn.`
       ).join("\n\n");
-      const message = await createMessage(issue.key, { body }, attentionSession);
+      const message = await createMessage(issue.key, { body }, asDaemon);
       return { key: issue.key, message: message.id };
     },
     async (page, seeded) => {
@@ -4061,27 +4108,26 @@ test("the address of a long agents' turn lands on its head", async ({ browser })
 });
 
 // The address of a short reply under a long agents' turn opens Details with the reply marked in
-// the middle of its view, the turn above it drawn whole as the landing scrolls. That turn is cut
-// in the microtask after the landing's scroll (`clamp-measurer.ts`), which moves the reply up by
-// the cut and leaves the top of the thread's entry where it was; the history's anchor kept that
-// entry's top, so the reply went up by the cut, out of Details' view. Found by the tester on a
-// running build with a copy of a large real issue: at 1440 px 3 of 12 reply addresses showed none
-// of the reply, up to 2,820 px above the view, and 8 left its head above it; at 390 px too.
-// The anchor now keeps the landed turn's own place inside its entry (`ViewportAnchor.tsx`'s
-// `keepRow`).
-test("the address of a short reply under a long agents' turn keeps the reply in Details' view as the turn above it is cut", async ({
+// the middle of its view, the turn above it drawn whole. A change of that turn's height after the
+// landing's scroll - its words finishing their drawing, as a cut to six lines once did - moves
+// the reply and leaves the top of the thread's entry where it was; the history's anchor kept
+// that entry's top, so the reply went up by the change, out of Details' view. Found by the
+// tester on a running build with a copy of a large real issue, when the turn was still cut: at
+// 1440 px 3 of 12 reply addresses showed none of the reply, up to 2,820 px above the view, and 8
+// left its head above it; at 390 px too. The anchor now keeps the landed turn's own place inside
+// its entry (`ViewportAnchor.tsx`'s `keepRow`).
+test("the address of a short reply under a long agents' turn keeps the reply in Details' view, the turn above it drawn whole", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "A reply under a long turn" });
   await createComment(issue.key, { body: "A person's comment, a row of the outline." });
-  // Oldest first: sixty short notes, then the long turn and its reply. The history lists them
-  // newest first, so the notes stand under the reply, more of the history than the cut of the
-  // long turn takes: the browser pulls nothing back as the turn is cut, and the place keeper
-  // alone decides where the cut leaves the reply.
+  // Oldest first: sixty short notes of the daemon's, then the long turn and its reply. The
+  // history lists them newest first, so the notes stand under the reply, enough of the history
+  // for Details to bring the reply to the middle of its view.
   for (let index = 0; index < 60; index += 1) {
-    await createMessage(issue.key, { body: `Older note ${index}` }, attentionSession);
+    await createMessage(issue.key, { body: `Older note ${index}` }, asDaemon);
   }
   const root = await createComment(issue.key, { body: longTurnBody(15) }, attentionSession);
   const reply = await createComment(
@@ -4103,16 +4149,28 @@ test("the address of a short reply under a long agents' turn keeps the reply in 
         "aria-current",
         "true"
       );
-      // The turn above the reply is cut once the reply has landed; a few frames let the place
-      // keeper finish with the cut, so the reply is read where the keeper left it.
-      await expect
-        .poll(async () => (await historyItem(page, root.id).boundingBox())?.height ?? 0, {
-          message: `at ${size.width} px the long turn above the reply was not cut, so the row proves nothing`,
-        })
-        .toBeLessThan(400);
-      await nextFrames(page);
+      // The turn above the reply is drawn whole, taller than Details' view, with no control
+      // that cuts it.
+      const long = historyItem(page, root.id);
+      await expect(long).toContainText("Part 14:");
+      await expect(long.locator("[data-node-more]"), "the history cut a turn").toHaveCount(0);
       const view = await historyViewport(page);
-      // Read once the cut has landed and two frames drew it, so the reply stands where the keeper left it.
+      expect(
+        ((await long.boundingBox())?.height ?? 0) > view.bottom - view.top,
+        `at ${size.width} px the long turn above the reply is no taller than Details' view, so the row proves nothing`
+      ).toBe(true);
+      // The reply is read once it has stood still for two frames, where the keeper left it.
+      await expect
+        .poll(
+          async () => {
+            const top = (await marked.boundingBox())?.y;
+            await nextFrames(page);
+            return (await marked.boundingBox())?.y === top;
+          },
+          { message: `at ${size.width} px the reply kept moving after its address landed it` }
+        )
+        .toBe(true);
+      // Read once the reply has stood still, so this one box is the place the keeper left it.
       const at = await marked.boundingBox();
       if (at === null) {
         outOfView.push(`at ${size.width} px the reply drew no box`);
@@ -4140,7 +4198,7 @@ test("on a phone a link of the history and Reply close Details", async ({ browse
       const message = await createMessage(
         issue.key,
         { body: "An agents' note with a Reply." },
-        attentionSession
+        asDaemon
       );
       await uploadIssueFile(issue.key, {
         bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
