@@ -92,14 +92,17 @@ check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "N
 
 echo "case: the step whose line this harness exists for is read as ci.yaml writes it"
 file=.github/workflows/ci-job-envoy-go-race-docs.yaml
+# Its go test is behind an xargs now: the step pipes go_legs.py's lines into `env NAME=value …
+# race_memory.py go test …`, so the reading is the xargs tail with the variables and the wrapper
+# dropped.
 found=$(py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
-lines = [step["run"].strip()
-         for job in document["jobs"].values() for step in job["steps"] if "run" in step]
-print(sum(1 for line in lines
-          for words, _ in [ex.go_command(line)]
+lines = [line.strip() for job in document["jobs"].values() for step in job["steps"] if "run" in step
+         for line in step["run"].splitlines()]
+tails = [match.group("test") for line in lines for match in [ex.XARGS.match(line)] if match]
+print(sum(1 for tail in tails for words, _ in [ex.go_command(tail)]
           if len(words) > 1 and words[0] == "go" and words[1] == "test"))' "$file")
-check "$file holds a go test line this reader reads" "$(is "$found" "1")"
+check "$file pipes into a go test line this reader reads, under its variables and its wrapper" "$(is "$found" "1")"
 
 # The one `-skip` line of this repository is daemon-go's race step, and the rule expands
 # packages/daemon now, so the space form below is reachable from a real step and the equals form
@@ -153,18 +156,38 @@ try:
 except ex.Refused:
     print("refused")
 else:
-    print(read.workdir, read.script)' "$@"; }
+    print("none" if read is None else f"{read.workdir} {read.script}")' "$@"; }
 unit_listing=$(cat <<'EOF'
 packages/envoy go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -json -count=1 -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 20m
 EOF
 )
 check "envoy-go's unit step runs the module less the other jobs' packages, less the fixture's and the backend count's tests" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Unit test envoy Go package" "")" "$unit_listing")"
-check "envoy-go-race-api's race step runs the API package under -race through the counter" \
-  "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
-    "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"
-check "the race step with one more argument, which the entry does not list, is refused" \
-  "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" " --race")" "refused")"
+# The API's legs pipe their packages and their group's -run into the counter, so that step is no
+# run: that is the script's own path: audited_step leaves it to the xargs branch, which resolves
+# the same entry by the argument list before the lister's words.
+check "the API's leg step is left to the xargs reading, not refused as a whole-run script" \
+  "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" "none")"
+piped=$(py 'import pathlib, yaml
+document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
+step = [s for job in document["jobs"].values() for s in job["steps"] if s.get("name") == sys.argv[2]][0]
+tail = [m.group("test") for line in step["run"].splitlines() for m in [ex.XARGS.match(line.strip())] if m][0]
+read = ex.Step(workflow=sys.argv[1], job="(a job)", name=sys.argv[2], workdir="packages/envoy", script=tail)
+print(ex.audited_command(read, tail))' .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API")
+check "and that reading is the counter's own go test, without the packages the lister prints" \
+  "$(is "$piped" "go test -json -count=1 -race -timeout 70m")"
+refused=$(py 'import pathlib, yaml
+document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
+step = [s for job in document["jobs"].values() for s in job["steps"] if s.get("name") == sys.argv[2]][0]
+tail = [m.group("test") for line in step["run"].splitlines() for m in [ex.XARGS.match(line.strip())] if m][0]
+read = ex.Step(workflow=sys.argv[1], job="(a job)", name=sys.argv[2], workdir="packages/envoy", script=tail)
+try:
+    ex.audited_command(read, tail + " --count-the-world")
+except ex.Refused:
+    print("refused")
+else:
+    print("read")' .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API")
+check "a piped argument list the entry does not list is refused" "$(is "$refused" "refused")"
 
 # envoy-go's "Count the store-form rows on each backend" runs backend-count.sh from the
 # repository root and holds no `go test` of its own, so until AUDITED_SCRIPTS read that script

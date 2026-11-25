@@ -145,3 +145,271 @@ packages/daemon:
   # Packages of the module no leg runs, each with the job that does.
   elsewhere:
     internal/textcheck: text-checks
+packages/envoy:
+  # envoy-go-race-api (.github/workflows/ci-job-envoy-go-race-api.yaml, job
+  # envoy-go-race-api-legs): one package, internal/dispatch/api, in three legs, a group of its
+  # tests each (.github/go-legs/packages/envoy/internal/dispatch/api.yaml). It took 1,476 s of a
+  # 1,579 s step alone, and one of its tests, which runs alone, is 595 s of that, so group 1 is
+  # that test and the groups below it model 438 s each.
+  # why: .github/ci-notes/ci-job-envoy-go-race-api.md#why-the-apis-tests-run-in-three-legs
+  envoy-go-race-api:
+    1:
+      - internal/dispatch/api: 1                # 595 s, one test
+    2:
+      - internal/dispatch/api: 2                # 438 s modelled
+    3:
+      - internal/dispatch/api: 3                # 438 s modelled
+  # envoy-go-race-docs (job envoy-go-race-docs-legs): one package, internal/dispatch/docs, in
+  # three legs, a group of its tests each; 1,430 s alone, and its longest test 491.6 s.
+  # why: .github/ci-notes/ci-job-envoy-go-race-docs.md#why-the-document-services-tests-run-in-three-legs
+  envoy-go-race-docs:
+    1:
+      - internal/dispatch/docs: 1               # 444 s modelled
+    2:
+      - internal/dispatch/docs: 2               # 444 s modelled
+    3:
+      - internal/dispatch/docs: 3               # 444 s modelled
+  # Packages of the module no leg of these two jobs runs, each with the job that does: the
+  # unit step's (envoy-go, internal/integration's own step included), the race lane's
+  # (envoy-go-race, whose five packages .github/scripts/ci_job_reads.py's ENVOY_RACE_LANE
+  # names), envoy-go-build's note, spec and listenerwire packages, and the text checks.
+  # Read from those tables, not by hand: a package that moves between lanes moves here.
+  elsewhere:
+    agentloop: envoy-go
+    cipheraddr: envoy-go
+    cipherclient: envoy-go
+    ciphertest: envoy-go
+    clitest: envoy-go
+    cmd/architecture-check: envoy-go-build
+    cmd/cipher: envoy-go
+    cmd/cipher-devrelay: envoy-go
+    cmd/cipher-helper: envoy-go
+    cmd/cipher-refgen: envoy-go
+    cmd/cipherd: envoy-go
+    cmd/dev-oidc-issuer: envoy-go
+    cmd/dev-proxy-stands: envoy-go
+    cmd/dispatch: envoy-go
+    cmd/dispatch-seed: envoy-go
+    cmd/listener: envoy-go-race
+    cmd/mcp: envoy-go
+    cmd/natsprobe: envoy-go
+    cmd/natstail: envoy-go
+    cmd/spec-check: envoy-go-build
+    dispatchbody: envoy-go
+    going: envoy-go
+    going/goingtest: envoy-go
+    internal/buildversion: envoy-go
+    internal/bus: envoy-go-race
+    internal/bus/bustest: envoy-go
+    internal/bus/kvrecords: envoy-go
+    internal/bus/signedrecord: envoy-go
+    internal/cipher/answer: envoy-go
+    internal/cipher/api: envoy-go
+    internal/cipher/approval: envoy-go
+    internal/cipher/ciphertest: envoy-go
+    internal/cipher/ciphertest/requestseed: envoy-go
+    internal/cipher/config: envoy-go
+    internal/cipher/dispatchread: envoy-go
+    internal/cipher/e2e: envoy-go
+    internal/cipher/enroll: envoy-go
+    internal/cipher/exchange: envoy-go
+    internal/cipher/githubname: envoy-go
+    internal/cipher/groups: envoy-go
+    internal/cipher/groups/groupstest: envoy-go
+    internal/cipher/helper: envoy-go
+    internal/cipher/judge: envoy-go
+    internal/cipher/leasetime: envoy-go
+    internal/cipher/logmask: envoy-go
+    internal/cipher/machine: envoy-go
+    internal/cipher/natscallout: envoy-go-race
+    internal/cipher/natshold: envoy-go
+    internal/cipher/netaddr: envoy-go
+    internal/cipher/oauth: envoy-go
+    internal/cipher/oauthstore: envoy-go
+    internal/cipher/oauthwire: envoy-go
+    internal/cipher/placeholder: envoy-go
+    internal/cipher/policy: envoy-go
+    internal/cipher/policy/policytest: envoy-go
+    internal/cipher/projectaccess: envoy-go
+    internal/cipher/projectaccess/projectaccesstest: envoy-go
+    internal/cipher/projectrepos: envoy-go
+    internal/cipher/proof: envoy-go
+    internal/cipher/proxy: envoy-go
+    internal/cipher/proxyrules: envoy-go
+    internal/cipher/proxyrules/proxyrulestest: envoy-go
+    internal/cipher/record: envoy-go
+    internal/cipher/requests: envoy-go
+    internal/cipher/reread: envoy-go
+    internal/cipher/rulehost: envoy-go
+    internal/cipher/secrets: envoy-go
+    internal/cipher/store: envoy-go
+    internal/cipher/store/storetest: envoy-go
+    internal/cipher/wake: envoy-go
+    internal/cipher/wire: envoy-go
+    internal/cipherclient: envoy-go
+    internal/ciphertoken: envoy-go
+    internal/ciphertoken/ciphertokentest: envoy-go
+    internal/cistore: envoy-go
+    internal/clock: envoy-go
+    internal/clock/clocktest: envoy-go
+    internal/cmdtest: envoy-go
+    internal/config: envoy-go
+    internal/contracts: envoy-go
+    internal/cputest: envoy-go
+    internal/ctxlock: envoy-go
+    internal/dedupe: envoy-go
+    internal/dispatch/access: envoy-go
+    internal/dispatch/accesslog: envoy-go
+    internal/dispatch/agentstream: envoy-go
+    internal/dispatch/api/apitest: envoy-go
+    internal/dispatch/architecture: envoy-go
+    internal/dispatch/architecture/notes: envoy-go-build
+    internal/dispatch/asks: envoy-go
+    internal/dispatch/auth: envoy-go
+    internal/dispatch/benchtime: envoy-go
+    internal/dispatch/bytelru: envoy-go
+    internal/dispatch/cipher: envoy-go
+    internal/dispatch/cireconcile: envoy-go
+    internal/dispatch/config: envoy-go
+    internal/dispatch/dashboard: envoy-go
+    internal/dispatch/delivery: envoy-go-race
+    internal/dispatch/delivery/citebody: envoy-go-race
+    internal/dispatch/delivery/measures: envoy-go-race
+    internal/dispatch/deliveryaudit: envoy-go
+    internal/dispatch/docs/crafted: envoy-go
+    internal/dispatch/docs/docstest: envoy-go
+    internal/dispatch/duty: envoy-go
+    internal/dispatch/embed: envoy-go
+    internal/dispatch/embed/embedtest: envoy-go
+    internal/dispatch/embedqueue: envoy-go
+    internal/dispatch/envoy: envoy-go
+    internal/dispatch/events: envoy-go
+    internal/dispatch/files: envoy-go
+    internal/dispatch/files/filestest: envoy-go
+    internal/dispatch/githubapi: envoy-go
+    internal/dispatch/githubapp: envoy-go
+    internal/dispatch/githubapp/githubapptest: envoy-go
+    internal/dispatch/githubapp/ratelimit: envoy-go
+    internal/dispatch/githubreads: envoy-go
+    internal/dispatch/graphcensus: envoy-go
+    internal/dispatch/graphcensus/censustest: envoy-go
+    internal/dispatch/graphstore: envoy-go
+    internal/dispatch/graphstore/graphstoretest: envoy-go
+    internal/dispatch/horizontest: envoy-go
+    internal/dispatch/identity: envoy-go
+    internal/dispatch/itemblocks: envoy-go
+    internal/dispatch/legion: envoy-go
+    internal/dispatch/legion/metrics: envoy-go
+    internal/dispatch/model: envoy-go
+    internal/dispatch/outbox: envoy-go
+    internal/dispatch/outbox/copyrule: envoy-go
+    internal/dispatch/pmdoc: envoy-go
+    internal/dispatch/pmdoc/heavybodies: envoy-go
+    internal/dispatch/pmdoc/pmdoctest: envoy-go
+    internal/dispatch/pmdoc/schemanodes: envoy-go
+    internal/dispatch/pmdoc/schemanodes/schemanodestest: envoy-go
+    internal/dispatch/prioritystore: envoy-go
+    internal/dispatch/processes: envoy-go
+    internal/dispatch/rank: envoy-go
+    internal/dispatch/redeliver: envoy-go
+    internal/dispatch/refs: envoy-go
+    internal/dispatch/refs/refstest: envoy-go
+    internal/dispatch/retry: envoy-go
+    internal/dispatch/routes: envoy-go
+    internal/dispatch/sessionanswers: envoy-go
+    internal/dispatch/specgraph: envoy-go-build
+    internal/dispatch/startup: envoy-go
+    internal/dispatch/store: envoy-go-race
+    internal/dispatch/store/cmd/connections: envoy-go-race
+    internal/dispatch/store/searchtest: envoy-go-race
+    internal/dispatch/store/storetest: envoy-go-race
+    internal/dispatch/store/storetest/lockstep: envoy-go-race
+    internal/dispatch/testlimits: envoy-go
+    internal/dispatch/text: envoy-go
+    internal/dispatch/texttreefill: envoy-go
+    internal/dispatch/texttrees: envoy-go
+    internal/dispatch/textversions: envoy-go
+    internal/dispatch/textversions/textversionstest: envoy-go
+    internal/dispatch/workflowstore: envoy-go
+    internal/docnumbers: envoy-go
+    internal/dpopproof: envoy-go
+    internal/envconf: envoy-go
+    internal/explaintest: envoy-go
+    internal/fileowner: envoy-go
+    internal/fixtureenv: envoy-go
+    internal/fold: envoy-go
+    internal/ghrename: envoy-go
+    internal/githubappjwt: envoy-go
+    internal/githubtest: envoy-go
+    internal/googleidentity: envoy-go
+    internal/goroutinetest: envoy-go
+    internal/holdrecord: envoy-go
+    internal/holdrecord/holdrecordtest: envoy-go
+    internal/id: envoy-go
+    internal/integration: envoy-go
+    internal/kvchunk: envoy-go
+    internal/kvchunk/kvchunktest: envoy-go
+    internal/kvwatch: envoy-go-race
+    internal/kvwatch/kvwatchtest: envoy-go-race
+    internal/legionagents: envoy-go
+    internal/logging: envoy-go
+    internal/logtest: envoy-go
+    internal/mcpbridge: envoy-go
+    internal/metrics: envoy-go
+    internal/oauthrefusal: envoy-go
+    internal/oidc: envoy-go-race
+    internal/oidc/oidctest: envoy-go
+    internal/ordertest: envoy-go
+    internal/pglisten: envoy-go
+    internal/pgmigrate: envoy-go
+    internal/pgmigrate/cmd/edited-migrations: envoy-go
+    internal/pgmigrate/pgmigratetest: envoy-go
+    internal/principal: envoy-go
+    internal/ratelimit: envoy-go
+    internal/redact: envoy-go
+    internal/redirects: envoy-go
+    internal/roles: envoy-go
+    internal/routing: envoy-go
+    internal/runnerlog: envoy-go-build
+    internal/serverwait: envoy-go
+    internal/session: envoy-go-race
+    internal/smoke/systemroots: envoy-go
+    internal/stacktest: envoy-go
+    internal/store: envoy-go-race
+    internal/testbaseline: envoy-go
+    internal/testcleanup: envoy-go
+    internal/testnats: envoy-go
+    internal/testnats/cmd/calloutd: envoy-go
+    internal/testnats/cmd/natsd: envoy-go
+    internal/testnats/cmd/refillrig: envoy-go
+    internal/testnats/hooktest: envoy-go
+    internal/testpg: envoy-go
+    internal/testpg/testdb: envoy-go
+    internal/testport: envoy-go
+    internal/tests3: envoy-go
+    internal/testsocks5: envoy-go
+    internal/testtmp: envoy-go
+    internal/testwait: envoy-go
+    internal/textcheck: text-checks
+    internal/tlsalert: envoy-go
+    internal/tlsalert/tlsalerttest: envoy-go
+    internal/verify: envoy-go
+    internal/webhook: envoy-go
+    internal/weborigin: envoy-go
+    internal/wirecheck: envoy-go-build
+    listenerwire: envoy-go-build
+    listenfd: envoy-go
+    loadtest: envoy-go
+    loadtest/browsertype: envoy-go
+    loadtest/listenerclient: envoy-go
+    migrationid: envoy-go
+    natscred: envoy-go-race
+    natsgrant: envoy-go
+    natsversion: envoy-go
+    natsversion/cmd/natsfloor: envoy-go
+    roleholder: envoy-go
+    sessiontiming: envoy-go
+    steprecord: envoy-go
+    subjectforms: envoy-go
+    testnatsimages: envoy-go
+    testnatsinprocess: envoy-go

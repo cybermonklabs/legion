@@ -738,10 +738,45 @@ CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 # a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
 # ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so its line is shell
 # assignments and a script, not a go command the simple form reduces. GODEBUG is a GO* name,
+# ---------------------------------------------------------------- a job whose steps run in legs
+# .github/go-legs.yaml lists the packages each leg of a Go job runs, and, for a package too long
+# for one leg, the group of its tests each leg runs; .github/scripts/go_legs.py prints them for
+# the leg, holding the file to `go list ./...` and the package's own test listing first.
+# why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+GO_LEGS = go_legs.LEGS
+GO_LEGS_SCRIPT = ".github/scripts/go_legs.py"
+GO_LEGS_GROUPS = go_legs.GROUPS
+
+
+def legs_script(module, job, command):
+    """The whole run: of a legs job's go test step: its leg's packages, piped from go_legs.py into
+    `command` (a go test, or a script that runs one). go_legs.py takes the leg's number and how
+    many legs the matrix runs, and refuses a file whose legs are not those or a leg with no
+    package. It also takes the command's own build flags (-race, -tags), under which it lists the
+    tests of a package a leg runs a group of, so the listing is the build the run then reuses and
+    names the tests the run can choose from. `set -o pipefail` is what fails the step when
+    go_legs.py refuses the file or go list fails, rather than run what xargs got."""
+    words = command.split()
+    # `--race` is how packages/envoy/scripts/database-skips.sh takes the same flag, and a leg
+    # piped into that counter builds under the detector as surely as one piped into go test.
+    build = "".join(" -race" if word in ("-race", "--race") else f" {word}"
+                    for word in words if word in ("-race", "--race") or word.startswith("-tags="))
+    build += "".join(f" -tags={words[i + 1]}" for i, word in enumerate(words[:-1]) if word == "-tags")
+    return ("set -o pipefail\n"
+            f"python3 ../../{GO_LEGS_SCRIPT} {module} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}}{build} "
+            f"| xargs {command}")
+
+
 # which is outside ENV_ALLOWED wherever it is set, so the step is pinned whole.
 RACE_DOCS_STEP = "Race-test the document service"
-RACE_DOCS_SCRIPT = (f"{CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
-                    "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
+# The document service's legs: as the API's, with the memory sampler and the cleanup detector the
+# one job carried. xargs runs a program and not a shell, so `env` is what carries the two
+# variables to the sampler.
+RACE_DOCS_LEGS_JOB = "envoy-go-race-docs-legs"
+RACE_DOCS_SCRIPT = legs_script(ENVOY, "envoy-go-race-docs",
+                               f"env {CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 "
+                               "../../.github/scripts/race_memory.py "
+                               "go test -json -race -count=1 -timeout 60m")
 # Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
 # which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
 # what the script runs, so each such gate declares the script, and the go run on the script's line
@@ -1046,9 +1081,6 @@ DAEMON_PLAIN_JOB = "daemon-go"
 DAEMON_RACE_JOB = "daemon-go-race"
 DAEMON_PLAIN_LEGS_JOB = "daemon-go-legs"
 DAEMON_RACE_LEGS_JOB = "daemon-go-race-legs"
-GO_LEGS = go_legs.LEGS
-GO_LEGS_SCRIPT = ".github/scripts/go_legs.py"
-GO_LEGS_GROUPS = go_legs.GROUPS
 DAEMON_LEGS = go_legs.module_entry(DAEMON, Path(GO_LEGS))
 
 
@@ -1097,24 +1129,6 @@ hold_daemon_legs(DAEMON_LEGS)
 DAEMON_PLAIN_PACKAGES = go_legs.job_packages(DAEMON_LEGS[DAEMON_PLAIN_JOB])
 DAEMON_RACE_LEG_PACKAGES = go_legs.job_packages(DAEMON_LEGS[DAEMON_RACE_JOB])
 
-
-def daemon_legs_script(job, flags):
-    """The whole run: of a legs job's go test step: its leg's packages, piped from go_legs.py into
-    one go test with the step's flags. go_legs.py takes the leg's number and how many legs the
-    matrix runs, and refuses a file whose legs are not those or a leg with no package. It also
-    takes the step's build flags, under which it lists the tests of a package a leg runs a group
-    of, so the listing is the build the run then reuses and names the tests the run can choose
-    from: -race, and -tags, which decides which files are in the build and so which tests exist at
-    all (a listing without a step's -tags would leave that tag's tests in no group's -run). No step
-    of this module passes -tags today, and one that did would hand it on here. `set -o pipefail` is
-    what fails the step when go_legs.py refuses the file or go list fails, rather than test what
-    xargs got."""
-    words = flags.split()
-    build = "".join(f" {word}" for word in words if word == "-race" or word.startswith("-tags="))
-    build += "".join(f" -tags={words[index + 1]}" for index, word in enumerate(words[:-1]) if word == "-tags")
-    return ("set -o pipefail\n"
-            f"python3 ../../{GO_LEGS_SCRIPT} {DAEMON} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}}{build} "
-            f"| xargs go test {flags}")
 
 # The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
 # of agentmodels_omp_test.go (a fourth that loads a plugin on the real Oh My Pi,
@@ -1275,8 +1289,10 @@ if SUPERVISE_TABLE_PACKAGE not in DAEMON_PLAIN_PACKAGES:
     raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which no plain leg of {GO_LEGS} runs, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step "
                      f"that runs them")
-DAEMON_PLAIN_SCRIPT = daemon_legs_script(DAEMON_PLAIN_JOB, f"-count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}")
-DAEMON_RACE_SCRIPT = daemon_legs_script(DAEMON_RACE_JOB, f"-count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN}")
+DAEMON_PLAIN_SCRIPT = legs_script(DAEMON, DAEMON_PLAIN_JOB,
+                                  f"go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}")
+DAEMON_RACE_SCRIPT = legs_script(DAEMON, DAEMON_RACE_JOB,
+                                 f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN}")
 
 
 def hold_supervise_table_tests():
@@ -1546,8 +1562,13 @@ hold_counted_in_unit_run()
 # without -v. Its text is built from the lane's declaration: the race job's packages, and its
 # -timeout as the counter's --timeout.
 RACE_API = RACE_JOBS["envoy-go-race-api"]
-RACE_API_SCRIPT = ("scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL "
-                   f"--race --timeout {RACE_API.timeout} " + " ".join(race_pkgs(RACE_API)))
+# The API's legs: each runs a group of internal/dispatch/api's tests, so the packages and the
+# group's -run come from go_legs.py and the counter takes them through xargs. -run reaches the
+# counter's EXPECTED_SKIPS rule too, which then holds only the tests the group runs.
+RACE_API_LEGS_JOB = "envoy-go-race-api-legs"
+RACE_API_SCRIPT = legs_script(ENVOY, RACE_API.job,
+                              "scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL "
+                              f"--var BROKER_TEST_DATABASE_URL --race --timeout {RACE_API.timeout}")
 
 
 # ---------------------------------------------------------------- the web app's display fixture

@@ -6,7 +6,7 @@
 # variable unset, or with a t.Skip left in one of its tests, reads as green. This script runs
 # `go test -json` and counts the skips in that report, and fails on any.
 #
-#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--module-except PATTERN] [PACKAGE...]
+#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--module-except PATTERN] [-run=PATTERN] [PACKAGE...]
 #   database-skips.sh --report FILE [PACKAGE...]
 #
 # PACKAGE is a pattern under packages/envoy: `./dir/`, that package alone, or `./dir/...`, it
@@ -25,6 +25,13 @@
 # `--skip PATTERN` is go test's -skip, for a test another step of the same job runs in the same
 # build and environment (envoy-go's backend count): go test reports nothing for a test -skip
 # leaves out, so it is neither run twice nor counted as a skip here.
+# `-run=PATTERN` is go test's -run, in the one shape .github/scripts/go_legs.py prints for a leg
+# that runs a group of a package's tests, `^(Name|Name|...)$`: the leg pipes it in with its
+# package, so this script hands it to its go test and holds EXPECTED_SKIPS only against the tests
+# that pattern selects. Without that, a leg running a third of a package would be refused with
+# `database_skips=UNKNOWN` for every expected skip the other two thirds hold. Any other -run shape
+# is refused rather than read, since this script reads the names off the pattern's own text and go
+# test runs the real pattern through Go's regexp.
 # `--module-except PATTERN` adds to that one go test every other package of the module that
 # `go list ./... | grep -Ev PATTERN` keeps, in go list's order: envoy-go's unit step runs the
 # module so, and the broker's packages share that run's -p slots with the rest, where a second
@@ -157,7 +164,7 @@ unknown() {
 }
 
 usage() {
-  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--module-except PATTERN] [PACKAGE...], or --report FILE [PACKAGE...])" >&2
+  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--module-except PATTERN] [-run=PATTERN] [PACKAGE...], or --report FILE [PACKAGE...])" >&2
   exit 1
 }
 
@@ -170,6 +177,7 @@ done <<<"$EXPECTED_SKIPS"
 vars=()
 race=()
 skip=()
+run=()
 timeout=""
 module_except=""
 packages=()
@@ -207,12 +215,25 @@ while [ $# -gt 0 ]; do
       esac
       shift 2
       ;;
+    -run=*)
+      pattern="${1#-run=}"
+      case "$pattern" in
+        '^('*')$') ;;
+        *) usage "-run takes the anchored alternation go_legs.py prints, ^(Name|Name|...)\$, not \"$pattern\"" ;;
+      esac
+      inner="${pattern#^(}"
+      inner="${inner%)$}"
+      [ -n "$inner" ] || usage "-run names no test"
+      printf '%s\n' "${inner//|/$'\n'}" | sort -u >"$work/selected"
+      run=(-run "$pattern")
+      shift
+      ;;
     ./*) packages+=("$1"); shift ;;
     *) usage "unknown argument $1: a package is a pattern under packages/envoy that starts with ./" ;;
   esac
 done
-if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ] || [ -n "$module_except" ]; }; then
-  usage "--report reads a run made elsewhere, so --var, --race, --timeout, --skip and --module-except, which shape a run of its own, are refused beside it"
+if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ] || [ -n "$module_except" ] || [ ${#run[@]} -gt 0 ]; }; then
+  usage "--report reads a run made elsewhere, so --var, --race, --timeout, --skip, --module-except and -run, which shape a run of its own, are refused beside it"
 fi
 # runs is what the go list and go test below are given: the patterns as written, or for the
 # default table the import paths go list prints for it under the run's own flags, less
@@ -276,7 +297,7 @@ if [ -z "$report" ]; then
     mapfile -t tested < <(cut -d' ' -f1 "$work/listed" | cat "$work/kept" - | awk '!seen[$0]++')
   fi
   go_test_exit=0
-  go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${tested[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
+  go test -json -count=1 "${race[@]}" "${skip[@]}" "${run[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${tested[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
 fi
 
 [ -e "$report" ] || unknown "the report $report does not exist"
@@ -295,6 +316,12 @@ awk '$2 + $3 > 0 { print $1 }' "$work/listed" | sort -u | comm -23 - "$work/evid
 awk 'NF == 3 && $1 == "skip" { print $2, $3 }' "$work/ended" | sort -u >"$work/skipped"
 awk 'NF == 3 { print $2, $3 }' "$work/ended" | sort -u >"$work/held"
 printf '%s\n' "$EXPECTED_SKIPS" | jq -R -r --argjson listed "$listed" "$under"' select(length > 0) | split(" ") | select(under(.[0])) | "\(.[0]) \(.[1])"' | sort -u >"$work/expected"
+# A run under a -run holds only the tests that pattern selects, so an EXPECTED_SKIPS line whose
+# test it leaves out names nothing this run could hold; the lines it does select are held as ever.
+if [ -s "${work}/selected" ]; then
+  awk 'NR == FNR { selected[$0]; next } ($2 in selected)' "$work/selected" "$work/expected" >"$work/expected.run"
+  mv "$work/expected.run" "$work/expected"
+fi
 comm -23 "$work/expected" "$work/held" >"$work/stale"
 [ ! -s "$work/stale" ] || unknown "EXPECTED_SKIPS names $(paste -sd ',' "$work/stale" | sed 's/,/, /g'), under ${packages[*]}, which the report $report does not hold"
 

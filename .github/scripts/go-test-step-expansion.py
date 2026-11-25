@@ -356,7 +356,10 @@ STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
-XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
+# `… | xargs <command>`: the command is read as any other line is (go_command below), so a step
+# that pipes a lister into a go test under variables and a wrapper (the document service's legs:
+# `xargs env GODEBUG=… RACE_MEM_LIMIT_KB=… race_memory.py go test …`) is read as that go test.
+XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>\S.*)$")
 # A matrix value as a run: writes it, which GitHub replaces before the shell reads the line.
 MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
 # How many jobs the matrix makes, as a run: writes it (a legs step hands it to go_legs.py).
@@ -424,8 +427,12 @@ AUDITED_SCRIPTS = {
                 f"go list ./... | grep -Ev {UNIT_EXCEPT} | xargs go test -json -count=1 -skip {UNIT_SKIP} -timeout 20m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
+            # The same run in a leg: the packages, and the leg's group as `-run=^(Name|...)$`,
+            # come from go_legs.py through xargs, so the entry's command carries neither.
+            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m":
+                "go test -json -count=1 -race -timeout 70m",
         },
-        sha256="b640fd0d9f4d7604a9114c1cd51f5334ef8e506ccddcf9ac8aafe12c5fdb2fc9",
+        sha256="c04d6cfff00c40f92ce2bf82ecfd7ba988040655007fea32e8256c45ff81f4b0",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -650,6 +657,11 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
     named = [path for path in AUDITED_SCRIPTS if Path(path).name in script]
     if not named:
         return None
+    # A line that pipes a lister into the script - a legs step, `go_legs.py … | xargs <script> …` -
+    # is read by read_block's xargs branch, which resolves the script through this same table with
+    # the words the lister printed appended; here it is no run: that is the script's own path.
+    if any(XARGS.match(line.strip()) for line in script.splitlines()):
+        return None
     # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
     # which bash reads as part of the name.
     alone = script.strip(" \t\n")
@@ -714,7 +726,8 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
             printed = shell(lister, step.directory, f"{step.label}: {lister}").split()
             if not printed:
                 raise Refused(f"{step.label}: `{lister}` printed no package")
-            found.append(parse_go_test(step, expand(piped.group("test"), variables), printed))
+            tail = expand(piped.group("test"), variables)
+            found.append(parse_go_test(step, audited_command(step, tail), printed))
             continue
 
         words, command = go_command(line)
@@ -739,6 +752,11 @@ def go_command(line: str) -> tuple[list[str], str]:
     of what is left - a `-run` pattern above all - is the line's own.
     """
     rest = line.strip()
+    # `xargs env NAME=value … <command>`: xargs runs a program, not a shell, so a step that must
+    # set a variable for the command it pipes into writes `env`. It changes no test the command
+    # runs, so it is dropped as the variables themselves are.
+    if rest.split(None, 1)[:1] == ["env"] and len(rest.split(None, 1)) == 2:
+        rest = rest.split(None, 1)[1]
     while True:
         head = rest.split(None, 1)
         if len(head) == 2 and ENV_PREFIX.match(head[0]):
@@ -774,6 +792,28 @@ def skip_names(pattern: str) -> list[str] | None:
         return None
     names = match.group(1).split("|")
     return names if all(NAME.match(name) for name in names) else None
+
+
+def audited_command(step: Step, text: str) -> str:
+    """The `go test` a command piped into by xargs runs: the text itself where it is a go command,
+    or, where its first word is a script AUDITED_SCRIPTS names, that entry's command for the
+    arguments it is given. A script the table does not name, or an argument list its entry does
+    not list, is refused rather than guessed at, as a step whose whole run: is that script is."""
+    words = text.split()
+    for path, script in AUDITED_SCRIPTS.items():
+        if not words or not words[0].endswith(Path(path).name):
+            continue
+        if Path(path).name not in text:
+            continue
+        arguments = " ".join(words[1:])
+        if arguments not in script.commands:
+            raise Refused(f"{step.label}: `{text}` runs {path} with arguments its entry in "
+                          f"AUDITED_SCRIPTS does not list ({arguments!r}); read the script again and add them")
+        if hashlib.sha256((ROOT / path).read_bytes()).hexdigest() != script.sha256:
+            raise Refused(f"{step.label}: {path} has changed since its AUDITED_SCRIPTS entry was written "
+                          f"(sha256); read it again and update the entry")
+        return script.commands[arguments]
+    return text
 
 
 def parse_go_test(step: Step, text: str, appended: list[str]) -> GoTest:
