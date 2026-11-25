@@ -621,12 +621,6 @@ var stateNarrowings = []stateNarrowing{
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
-	{contract: deploymentRolesContract, state: withoutDeploymentRoleClaims, issue: withoutDeploymentRoles,
-		left: leftDeploymentRoles,
-		dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
-			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
-	{contract: strandedTokenContract, state: withoutStrandedTokens, dropped: "the stranded claims' token"},
-	{contract: tasksContract, issue: withoutTasks, dropped: "the issues' tasks"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1091,46 +1085,6 @@ const cachesSourceContract = 213
 // change's own number, and answers.go's SupportedContracts names the constant rather than its
 // number for that reason.
 const assignmentPlanContract = 220
-
-// deploymentRolesContract is the daemon contract that added the roles a deployment defines to the
-// state (version.go's 258): the phase step, each issue's `stepRole` and `startWaitsForPod`, and
-// the stranded claims, waiting wakes and pause stops of a role outside Legion's six. A plugin
-// below it reads an issue's `phase`, its `heldFrom` and a pending task's `phase` with an
-// enumeration that names no step, and the `role` of a stranded claim, of a waiting wake and of a
-// pause stop with an enumeration of the six, and refuses the whole body for another value. So a
-// caller below it is served the state without them (withoutDeploymentRoles,
-// withoutDeploymentRoleClaims), and the daemon logs each claim it left out (leftDeploymentRoles).
-//
-// It is one band, which follows strip, though it takes values as well as keys, where a value
-// strip follows restore (fieldArrivals.heldBack). The two numbers are one below this contract:
-// a caller that states its contract is served at that number on both sides, and a pod's reckoning
-// counts only claims below shapedAnswersContract (podContracts), so every caller whose strip is
-// below this contract has its restore below it too, and no reader that refuses step or a role of
-// the deployment is served one.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and answers.go's SupportedContracts names the constant
-// rather than its number for that reason.
-const deploymentRolesContract = 258
-
-// strandedTokenContract is the daemon contract that added each stranded claim's token to the
-// state (version.go's 259, `strandedClaims.*.token`): two claims of one issue can hold one role,
-// so the issue and the role no longer name one claim.
-//
-// It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
-// gives, and answers.go's SupportedContracts names the constant rather than its number for that
-// reason.
-const strandedTokenContract = 259
-
-// tasksContract is the daemon contract that added each issue's tasks to the state (version.go's
-// 264, `issues.<key>.tasks`): each task of the issue's plan with where it stands, the act at its
-// place, what the step there waits for, its own pull request and its own counts (TaskView).
-//
-// It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
-// gives, and it is the last number of answers.go's SupportedContracts, which names the constant
-// rather than its number for that reason.
-const tasksContract = 264
 
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as
