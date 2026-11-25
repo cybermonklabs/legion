@@ -13,6 +13,7 @@ import (
 // with the issue they name. The test migrates the whole set, so it reads the table by the name the
 // head gives it.
 func TestKeptDecisionsArriveWith20261101163106AndGoWithTheirIssue(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 67)

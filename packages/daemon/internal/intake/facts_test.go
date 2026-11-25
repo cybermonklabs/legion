@@ -8,6 +8,7 @@ import "testing"
 // appending its own: workflow's byReviewer tells the reviewer's own review-App session from any
 // other's by it.
 func TestLegionSessionFindsTheLastFooterInAReviewsBody(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -53,6 +54,7 @@ func TestLegionSessionFindsTheLastFooterInAReviewsBody(t *testing.T) {
 // instead (workflow's refusesRound). Only a whole commit name counts - 40 lowercase hexadecimal
 // characters - since a prefix or a branch name names no commit to compare with the head.
 func TestLegionHeadReadsTheHeadTheReviewSaysItRead(t *testing.T) {
+	t.Parallel()
 	const head = "8848896da05779c592221b1199ee55ddb11cc3f3"
 	for _, tc := range []struct {
 		name string
@@ -102,6 +104,7 @@ func TestLegionHeadReadsTheHeadTheReviewSaysItRead(t *testing.T) {
 // unquoted placeholder `"entry":<entry>` among them, still reads as no footer: its session and its
 // head read empty too.
 func TestLegionEntryReadsTheEntryTheReviewSaysItIsOf(t *testing.T) {
+	t.Parallel()
 	const head = "8848896da05779c592221b1199ee55ddb11cc3f3"
 	footer := func(entry string) string {
 		return "Round 2: APPROVE.\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\",\"head\":\"" + head + "\",\"entry\":" + entry + "} -->"
@@ -174,6 +177,7 @@ func TestLegionEntryReadsTheEntryTheReviewSaysItIsOf(t *testing.T) {
 // workflow queues no root in backlog or icebox for it. An approval given with no reason, and a review with any
 // other reason, are not carries.
 func TestCarriedApprovalReadsTheReasonsPrefix(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		reason string

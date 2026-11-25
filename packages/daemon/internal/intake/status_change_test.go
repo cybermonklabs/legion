@@ -69,6 +69,7 @@ func readDispatchEvents(t *testing.T, name string) []json.RawMessage {
 // status the issue already shows changes nothing in Dispatch, which then writes no changed list,
 // and the reader takes it as no change.
 func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
+	t.Parallel()
 	session := func(id string) dispatch.Actor { return dispatch.Actor{Kind: "session", ID: id} }
 	type read struct {
 		typ     string
@@ -157,6 +158,7 @@ func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
 // An event the reader cannot decode is an error, so the set-back's check never takes a log it
 // cannot read for a log with no status change in it.
 func TestStatusChangeOfRefusesAnEventItCannotDecode(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, event, want string
 	}{
@@ -190,6 +192,7 @@ func approvalLogEvent(seq int) json.RawMessage {
 // though the status ends where it stood. Events of other kinds count for nothing. With no issue
 // event at or before seq, only a change between the later ones counts.
 func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		events []json.RawMessage
@@ -280,6 +283,7 @@ func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T
 // so the preparation fails and the approval is delivered again rather than applied as though
 // nothing changed.
 func TestStatusChangedAfterRefusesAnEventItCannotDecode(t *testing.T) {
+	t.Parallel()
 	const want = "decode Dispatch issue payload of event 2 of 2"
 	_, err := statusChangedAfter([]json.RawMessage{approvalLogEvent(9), payloadlessLogEvent(10, "issue.updated")}, 9)
 	if err == nil || !strings.Contains(err.Error(), want) {

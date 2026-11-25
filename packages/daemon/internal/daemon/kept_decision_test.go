@@ -214,6 +214,7 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 // claimed it; her earlier request at version 2 then reaches the stopped tree. The newer decision
 // stays kept, at its own time, and claimed, and the controller has the one notice.
 func TestALateChangesRequestLeavesTheNewerKeptDecision(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

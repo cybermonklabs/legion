@@ -237,9 +237,10 @@ const (
 // the variable is unset.
 const stateAnswerOut = "LEGION_STATE_ANSWER_OUT"
 
-// baseContract is the numbered contract of the previous release (#4392's entry,
-// 275): the contract a plugin of the release before this one states.
-const baseContract = 275
+// baseContract is the contract main declares at this branch's last forward merge: the number of
+// its newest entry, role-identities (#4580's), which a plugin built from main states. It is read
+// from the registry, since no source line holds an entry's number.
+func baseContract() int { return entryNumber(roleIdentitiesContract) }
 
 // A caller whose plugin speaks a contract below entryNumber(treeInBacklogOrIceboxContract) reads
 // `admission.held`'s `reason` as a strict list that does not hold tree_in_backlog_or_icebox, and
@@ -251,7 +252,8 @@ const baseContract = 275
 // contract for a caller that states none). The base's plugin (baseContract) states its contract in
 // `Legion-Plugin-Contract`. A caller at this daemon's contract is served the word, held by the
 // root. With LEGION_STATE_ANSWER_OUT naming a directory, each answer is written there:
-// `pod-152.json`, `pod-178.json`, `pod-188.json`, `275.json`, and `<this daemon's contract>.json`.
+// `pod-152.json`, `pod-178.json`, `pod-188.json`, `<the base's contract>.json`, and
+// `<this daemon's contract>.json`.
 func TestAnOlderCallerReadsAChildUnderATreeInBacklogAsUnclassified(t *testing.T) {
 	const remote = "192.0.2.1:41000"
 	state := populatedState(t)
@@ -294,7 +296,8 @@ func TestAnOlderCallerReadsAChildUnderATreeInBacklogAsUnclassified(t *testing.T)
 	for _, contract := range []int{152, 178, 188} {
 		below = append(below, answer{"pod-" + strconv.Itoa(contract), stateFrom(t, state, statePodAddr+":41000", podClaims(contract))})
 	}
-	below = append(below, answer{strconv.Itoa(baseContract), stateStating(t, handler, remote, baseContract)})
+	base := baseContract()
+	below = append(below, answer{strconv.Itoa(base), stateStating(t, handler, remote, base)})
 	for _, served := range below {
 		write(served.name, served.body)
 		rows := heldRowsServed(t, served.body)

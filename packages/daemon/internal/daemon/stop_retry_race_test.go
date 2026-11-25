@@ -192,6 +192,7 @@ const pauseHeldLine = "supervise: the project is paused; its gate holds this cla
 // in its published view, and must stop the launch the retry then makes rather than finish without
 // acting. The tester's process is never asked of the runtime.
 func TestAStopRowStopsTheClaimARetryInFlightLaunches(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		row  func(t *testing.T, r *podStopRig) record.OutboxRow

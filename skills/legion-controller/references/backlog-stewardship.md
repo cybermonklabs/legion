@@ -39,7 +39,7 @@ Only work that a person's directive, recorded in the plan with its link, moves t
 
 A labelled root the daemon queued or runs, which the weekly plan says to defer, goes to `backlog` or `icebox` at your next pass only when the plan's line names a person's request: `set_status` to `backlog` (`icebox` for longer), citing that request in a comment. A plan row with no such request moves nothing; ask instead:
 
-1. Find your earlier ask: read the root's comments into `notes` with the `curl` of step 1 of `skill://legion-controller/references/backlog-asks.md`, then list your deferral asks:
+1. Find your earlier ask: read the root's comments into `notes` with the `dispatch api` of step 1 of `skill://legion-controller/references/backlog-asks.md`, then list your deferral asks:
 
    ```text
    printf '%s' "$notes" | jq -cn 'input | if type == "array" then [.[] | select(.author.kind == "session" and (.body | startswith("Asked whether to defer: "))) | {id, created_at, body}] else error("Dispatch did not answer the list") end'
