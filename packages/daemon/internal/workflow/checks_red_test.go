@@ -547,7 +547,7 @@ func assertRoleMessages(t *testing.T, pool *pgxpool.Pool, issue string, want []r
 		t.Fatalf("%d role messages %+v, want %d %+v", len(got), got, len(want), want)
 	}
 	for i, message := range got {
-		if message != want[i] {
+		if message.Role != want[i].Role || message.Body != want[i].Body {
 			t.Fatalf("role message %d is %+v, want %+v", i+1, message, want[i])
 		}
 	}

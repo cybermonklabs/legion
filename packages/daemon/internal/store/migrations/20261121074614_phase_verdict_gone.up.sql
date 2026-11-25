@@ -43,13 +43,19 @@
 -- checks it names (record.Notice's Head, WaitsFor, Waiting and Failing), and the release before
 -- decodes a notice strictly and has no field for any of them, so a queued notice that kept one
 -- would retry for ever under that release. No notice of the release before carries any of the
--- four keys, and the notice keeps its reason, which names the same head and checks. The release
+-- four keys, and the notice keeps its reason, which names the same head and checks. It deletes
+-- the keys pull_request, head, check, ci_case, checks and statuses from each queued role message
+-- for the same reason: this release's message of a CI settlement and the implementer's of a
+-- failed CI job carry under them what their body names (record.RoleMessage's fields), and the
+-- release before decodes a role message strictly and has no field for any of them. No role
+-- message of the release before carries any of the six, and each keeps its body. The release
 -- before decodes a notice with no verdict, so the strip of verdict below needs no undoing.
 --
 -- begin;
 -- update phases set verdict = '' where verdict <> '';
 -- alter table phases drop column if exists states_serial;
 -- update outbox set payload = payload - 'head' - 'waits_for' - 'waiting' - 'failing' where kind = 'notice';
+-- update outbox set payload = payload - 'pull_request' - 'head' - 'check' - 'ci_case' - 'checks' - 'statuses' where kind = 'role_message';
 -- delete from schema_version where version = 20261121074614;
 -- commit;
 alter table phases alter column verdict set default '';
