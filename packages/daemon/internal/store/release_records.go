@@ -455,9 +455,17 @@ func retellStarts(ctx context.Context, tx pgx.Tx, issue string, retell func(kind
 // outbox (retellStarts), and the line's task is the task the role reads. A cancel deletes the
 // start in the same transaction (dropWakesUnderRelease), and the line is then the one record of
 // that task, such as the text of a CI settlement that the cancel's resume does not carry.
+//
+// The line goes to the logger of the pool the caller's transaction is open on (logOf), as the
+// store's other lines about a transaction do, and to the process's default logger for a context
+// no transaction scopes.
 func logStartWithoutDetail(ctx context.Context, issue string, id int64, role, kind, task, what string) {
+	log := slog.Default()
+	if scope := scopeOf(ctx); scope != nil {
+		log = logOf(scope.pool)
+	}
 	OnCommit(ctx, func() {
-		slog.Warn("store: the start of a wake that an earlier daemon queued carries no detail, so its task cannot be told again; "+what,
+		log.Warn("store: the start of a wake that an earlier daemon queued carries no detail, so its task cannot be told again; "+what,
 			"issue", issue, "row", id, "role", role, "kind", kind, "task", task)
 	})
 }

@@ -25,6 +25,7 @@ import (
 // `released` in a pod that still stands, which is what a resume that fails, or a daemon that
 // stops between the two, produces.
 func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -84,6 +85,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 // can hold claims an earlier release left: resuming those puts a role back into a pod that has
 // no work for it, with no wake, no task and no record of why it is there.
 func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -116,6 +118,7 @@ func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
 // the root is parked while the check runs so the linger's rows are queued above the release's,
 // and the release's teardown is the next row of the lane.
 func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)

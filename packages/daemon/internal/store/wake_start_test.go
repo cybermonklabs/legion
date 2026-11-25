@@ -656,7 +656,7 @@ func TestAStartAnEarlierDaemonQueuedWithNoDetailKeepsItsTask(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			st := migratedStore(t)
 			earlierDaemonsWakes(t, st)
-			logged := captureLog(t)
+			logged := captureLog(t, st.Pool())
 			tc.act(t, st)
 			if got := startsOfTheRoot(t, st); !slices.Equal(got, tc.want) {
 				t.Errorf("queued starts = %q, want %q: the start with no detail keeps its task, and the start with one is told again", got, tc.want)
@@ -669,7 +669,7 @@ func TestAStartAnEarlierDaemonQueuedWithNoDetailKeepsItsTask(t *testing.T) {
 	t.Run("a cancel while the project runs", func(t *testing.T) {
 		st := migratedStore(t)
 		earlierDaemonsWakes(t, st)
-		logged := captureLog(t)
+		logged := captureLog(t, st.Pool())
 		told := map[claim.Role]DroppedWake{}
 		woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
 			told[role] = wake
