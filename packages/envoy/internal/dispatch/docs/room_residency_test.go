@@ -1201,10 +1201,10 @@ func parkedCommitTrial() (int, bool) {
 // exists to catch, and the case must report it and end rather than hold its package's cleanup:
 // storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result, and
 // the pool's Close waits for every connection in use, so a transaction left open there costs the
-// whole run its deadline - the -timeout .github/workflows/ci.yaml gives envoy-go-race-docs and
-// envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs the case in a child
-// process of this test binary with one trial's commit parked for good and requires the child to
-// print the case's own --- FAIL line inside a deadline of its own.
+// whole run its deadline - the -timeout envoy-go-race-docs gives it - and prints no --- FAIL line
+// at all. This runs the case in a child process of this test binary with one trial's commit parked
+// for good and requires the child to print the case's own --- FAIL line inside a deadline of its
+// own.
 func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	t.Parallel()
 	if !storetest.Available() {
@@ -1223,7 +1223,7 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// parked trial's own 30 s guard, which left its setup 150 s before that guard; here the parked
 	// trial's wait gives up at the same 150 s from the child's start, six times that worst setup,
 	// so a slow runner cannot turn a reporting child into this row's red. The child runs until
-	// that wait gives up, so this row takes about 150 s, minutes inside the -timeout of either run
+	// that wait gives up, so this row takes about 150 s, minutes inside the -timeout of the run
 	// named above.
 	const childDeadline = 180 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so

@@ -165,7 +165,11 @@ func storedHoldsPeerEdit(t *testing.T, database *store.Store, artifactID string,
 	return true
 }
 
-// waitForLandedAppends waits until every update the room has recorded is durable.
+// waitForLandedAppends waits until every update the room has recorded is durable, on the room's
+// idle signal and with no span of its own: a room's appends queue behind every other room's on
+// the service's room-appends pool, so how long they take is the machine's, while appends that
+// never land fail the test where the shared wait gives up (testwait.Context; docs/testing.md, "A
+// document test that waits for a room's appends").
 func waitForLandedAppends(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
 	ctx := testwait.Context(t)

@@ -290,6 +290,7 @@ const growthStep = 8
 // countedVerdict's, without a *testing.T, so a failing direction is provable without failing this
 // test.
 func TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack(t *testing.T) {
+	t.Parallel()
 	const small, full = 1000, growthStep * 1000
 	// A linear op counts 1,000 statements a character and allocates as many bytes; its reading is
 	// that.

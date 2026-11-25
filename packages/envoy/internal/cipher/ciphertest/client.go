@@ -83,6 +83,8 @@ func NewClient(t *testing.T, publicURL, addr string) *Client {
 		// the environment would send these requests somewhere other than the one process this
 		// client exists to be pinned to, and publicURL resolves nowhere, so the failure would be
 		// a DNS error naming a host no test chose.
+		// The dial takes the request's own context, and no span of its own: a connection refused
+		// fails at once, and one the machine is slow to make is waited for.
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, addr)
 		},
@@ -100,7 +102,7 @@ func NewClient(t *testing.T, publicURL, addr string) *Client {
 // asserts no status itself: a caller does that, so a mismatch names the actual body.
 func (c *Client) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(testwait.Context(t), t, c.http, c.PublicURL, method, path, headers, body, " (at "+c.Addr+")")
+	return request(t, testwait.Context(t), c.http, c.PublicURL, method, path, headers, body, " (at "+c.Addr+")")
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the
@@ -146,13 +148,15 @@ func NewSigningKey(t *testing.T) *ecdsa.PrivateKey {
 // deviceClient is the OAuth client a machine logs in with: this broker's device authorization and
 // token endpoints under its public URL, over a transport that both pins the connection to this
 // client's process and signs a DPoP proof of key for every request, as the helper's own does. Its
-// context is the shared wait's (testwait.Context), so each OAuth request, and a device-code
-// exchange's polling, ends on the broker's answer or where that wait gives up.
+// context is the shared wait's (testwait.Context), and its transport sends each request that
+// carries no deadline of its own on that context (onDeadline), so each OAuth request, and a
+// device-code exchange's polling, ends on the broker's answer or where that wait gives up.
 func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Config, context.Context) {
 	t.Helper()
 	if c.DPoP == nil {
 		t.Fatal("this Client has no DPoP: set it to cipherclient.NewDPoPTransport before driving an OAuth step")
 	}
+	ctx := testwait.Context(t)
 	return &oauth2.Config{
 			ClientID: oauthwire.ClientID, Scopes: []string{oauthwire.Scope},
 			Endpoint: oauth2.Endpoint{
@@ -161,7 +165,26 @@ func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Conf
 				AuthStyle:     oauth2.AuthStyleInParams,
 			},
 		},
-		context.WithValue(testwait.Context(t), oauth2.HTTPClient, &http.Client{Transport: c.DPoP(key, c.transport)})
+		context.WithValue(ctx, oauth2.HTTPClient,
+			&http.Client{Transport: onDeadline{ctx: ctx, next: c.DPoP(key, c.transport)}})
+}
+
+// onDeadline sends a request that carries no deadline of its own on ctx, the test binary's
+// deadline less testwait's margin. x/oauth2's device authorization builds its request without the
+// context it is handed and only reads the client out of that context (retrieveDeviceAuth, in
+// deviceauth.go of x/oauth2 v0.37.0), so without this a broker that never answers a login would
+// hold the test past its binary's deadline. The token exchange already sends on its context, and
+// keeps it.
+type onDeadline struct {
+	ctx  context.Context
+	next http.RoundTripper
+}
+
+func (d onDeadline) RoundTrip(r *http.Request) (*http.Response, error) {
+	if _, bounded := r.Context().Deadline(); !bounded {
+		r = r.WithContext(d.ctx)
+	}
+	return d.next.RoundTrip(r)
 }
 
 // DeviceLogin asks this broker for a device code for a machine of person on host, as the helper's

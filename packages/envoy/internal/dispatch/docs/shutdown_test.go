@@ -431,15 +431,34 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 }
 
 // A room whose settlement is still rendering when Shutdown's own drain budget (drainCtx) ends
-// does not make Shutdown return the settlements-unconfirmed error, as long as the per-room worker
-// returns within the document service's whole deadline: documentShutdownTimeout's 5 s reserve past
-// ShutdownDrainBudget comfortably outlasts the 3.4 s overrun service_test.go's own measurement
-// found (a 1 MiB document settling in 4.5 s against a 5 s budget). Shutdown's wait for its
+// does not make Shutdown return the settlements-unconfirmed error: Shutdown's wait for its
 // per-room workers (waitGroup(ctx, &workers)) runs under the whole outer deadline, not the drain
 // budget alone, because a render or commit already under way when the budget ends does not stop
-// for it; drainCtx having already expired by the time this one tries to commit still leaves it to
-// resume (a documented, non-error outcome), but the worker returns in time for Shutdown itself to
-// read that back and finish cleanly rather than time out (LEGION-501).
+// for it. A commit the expired budget then refuses leaves the document to resume from its
+// pending-settlement row, which is a documented, non-error outcome (LEGION-501).
+//
+// What the row needs is that order of events, not a duration. It once wrote the order as a
+// render sleeping ShutdownDrainBudget + 3.4 s of wall clock inside a Shutdown deadline of
+// ShutdownDrainBudget + 5 s, which left 1.6 s of wall clock for the service's start, the
+// settlement's work and its commit, and the row then failed for the machine rather than for the
+// product (dispatch://INFRA-3904). Now the service, its drain budget and Shutdown's own deadline,
+// ShutdownDrainBudget plus the 5 s reserve cmd/dispatch/shutdown.go's documentShutdownTimeout adds
+// past it, all run on one fake clock (drainClock), the render is held until the test has moved
+// that clock 3.4 s past the budget - the measured overrun, with 1.6 s of the reserve still to
+// spare - and each wait ends on its fact.
+//
+// The move comes after the render entered, which is after Shutdown made drainCtx, so the budget
+// has certainly ended when the render is let go, whatever the machine's speed. The row proves
+// that rather than trusting it: a settlement whose commit the budget refused leaves the document
+// owing its settlement, so the check at its end fails by name if the render did not outlast the
+// budget.
+//
+// The held render sits inside the settlement's own transaction, on a pooled connection, and the
+// database's cleanup waits for every connection to come back (Pool.Close). So the hold is let go
+// on every path, a failure included: its release is registered as a cleanup before Shutdown
+// starts, and that cleanup runs before the database's own. And whether Shutdown answered while
+// the render was still held is read in Shutdown's goroutine at the moment it answers, not sampled
+// from the test's side some time later.
 func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -450,10 +469,7 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	waitForSettlementOwed(t, service, artifactID)
-	appendCtx := testwait.Context(t)
-	if err := service.waitForDurableAppends(appendCtx, artifactID); err != nil {
-		t.Fatalf("wait for the edit to be stored: %v", err)
-	}
+	waitForLandedAppends(t, service, artifactID)
 
 	entered, overrun := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -480,14 +496,40 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 	// cmd/dispatch/shutdown.go's documentShutdownTimeout now adds past it, on the same clock.
 	shutdownCtx, cancelShutdown := drainClock.WithTimeout(context.Background(), ShutdownDrainBudget+5*time.Second)
 	defer cancelShutdown()
-	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
+	type answer struct {
+		err error
+		// held is whether the render was still held when Shutdown answered.
+		held bool
+	}
+	shutdown := make(chan answer, 1)
+	go func() {
+		err := service.Shutdown(shutdownCtx)
+		select {
+		case <-overrun:
+			shutdown <- answer{err: err}
+		default:
+			shutdown <- answer{err: err, held: true}
+		}
+	}()
 	testwait.Receive(t, "the settlement to reach its reconcile hook", entered)
 	drainClock.Advance(ShutdownDrainBudget + 3400*time.Millisecond)
 	close(overrun)
-	shutdownErr := testwait.Receive(t, "Shutdown to return once the render finished", shutdown)
-	if shutdownErr != nil {
-		t.Errorf("Shutdown returned %v, want nil: a render already running when the budget ends should still let its worker return in time", shutdownErr)
+	got := testwait.Receive(t, "Shutdown to answer once the render finished", shutdown)
+	if got.held {
+		t.Fatalf("Shutdown answered %v while the render was still held: its wait for the per-room workers ran under the drain budget, not its whole deadline", got.err)
+	}
+	if got.err != nil {
+		t.Errorf("Shutdown returned %v, want nil: a render already running when the budget ends should still let its worker return in time", got.err)
+	}
+	// The control on the hold: a settlement the expired budget refused at its commit leaves the
+	// document owing one. A render let go before the budget ended would have committed, and this
+	// row would then prove nothing about a budget that ends under a render.
+	owed, err := settlementPending(context.Background(), database.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read whether the document still owes a settlement: %v", err)
+	}
+	if !owed {
+		t.Fatal("the document owes no settlement after the shutdown: its render did not outlast the drain budget, so this row did not hold one past it")
 	}
 }
 

@@ -419,12 +419,13 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	deps := withHeldRoles(Deps{Store: storetest.SentStore(t, database, sent), Publisher: publisher, Broker: broker})
 	holder := holding(t, deps).instance
 	// passStatements is every statement a fallback pass sends, byte for byte: its claim, its read
-	// of the rows' own events, its two reads of each row's mentions, the rule's own statement and
-	// its record, and the pool's check of a connection that sat idle (PoolPing).
+	// of the rows' own events, its two reads of each row's mentions, the rule's own statement, its
+	// read of whether a comment whose copy it would publish is deleted, and its record, and the
+	// pool's check of a connection that sat idle (PoolPing).
 	passStatements := map[string]bool{
 		fallbackClaimQuery: true, fallbackEventsQuery: true, mentionDeliveryQuery: true,
-		mentionFallbackHoldsQuery: true, model.MentionCopyRuleSQL: true, fallbackRecordQuery: true,
-		storetest.PoolPing: true,
+		mentionFallbackHoldsQuery: true, model.MentionCopyRuleSQL: true, fallbackWithdrawnQuery: true,
+		fallbackRecordQuery: true, storetest.PoolPing: true,
 	}
 	// due is each row's next_attempt_at as last written, nil for due at once, as a fresh row is.
 	due := map[string]*time.Time{}

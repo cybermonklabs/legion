@@ -690,16 +690,19 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	defer connection.Close()
-	waitFor(t, "document peer connection", func() bool {
+	// The socket's room loads the document before the room counts the browser, which takes as
+	// long as the store and the machine take: the wait ends on the room's record of the
+	// connection, bounded by the test binary's deadline alone.
+	testwait.Until(t, "the document's room to count the browser's connection", func() (string, bool) {
 		state := service.room(artifactID)
 		state.mu.Lock()
 		defer state.mu.Unlock()
-		return len(state.connected) == 1
+		return fmt.Sprintf("%d connections", len(state.connected)), len(state.connected) == 1
 	})
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(context.Background()) }()
 	readUntilServerCloses(t, connection, "Shutdown to close the editor's connection")
-	if err := testwait.Receive(t, "service.Shutdown to return with a document peer connected", shutdown); err != nil {
+	if err := testwait.Receive(t, "Shutdown to answer once it closed the browser's socket", shutdown); err != nil {
 		t.Fatalf("shutdown with document peer: %v", err)
 	}
 	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "before\n" {

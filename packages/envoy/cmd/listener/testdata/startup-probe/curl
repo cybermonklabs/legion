@@ -1,0 +1,7 @@
+#!/bin/sh
+# The fake curl TestHubListenerStartupProbePassesOnlyOnceV1Serves puts first on the startup probe's
+# PATH: it records its arguments in $CURL_ARGS and prints the scrape in $SCRAPE. It is checked in,
+# not written by the test, so no test writes an executable that another test's fork can hold open
+# when this one runs it (ETXTBSY, Go issue 22315).
+printf '%s\n' "$*" >"$CURL_ARGS"
+cat "$SCRAPE"

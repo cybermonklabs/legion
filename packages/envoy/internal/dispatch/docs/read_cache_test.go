@@ -549,7 +549,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 		return coldReadsWaitingOnAFold() == 3
 	})
 	cancel()
-	if err := testwait.Receive(t, "the cancelled leader to return while the shared fold stays blocked", leader); !errors.Is(err, context.Canceled) {
+	if err := testwait.Receive(t, "the cancelled leader to leave the shared fold", leader); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled leader = %v, want context.Canceled", err)
 	}
 	close(persistence.release)

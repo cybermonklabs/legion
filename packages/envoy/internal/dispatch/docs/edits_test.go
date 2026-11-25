@@ -235,7 +235,9 @@ func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing
 	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the document owner's lock: %v", err)
 	}
-	if err := testwait.Receive(t, "the comment body update to finish once the edit transaction released the owner's lock", updateDone); err != nil {
+	// The update was queued behind the owner's lock this test just released, so the wait ends on
+	// its answer, with the test binary's deadline as its only bound.
+	if err := testwait.Receive(t, "the comment body update the released owner lock let through", updateDone); err != nil {
 		t.Fatalf("comment body update: %v", err)
 	}
 }

@@ -94,8 +94,17 @@ jobs:
       # out, so the log still carries the --- FAIL lines and the package's own line. -count=1
       # because the job restores the Go build cache above, and a cached pass must not stand in
       # for a run.
+      # Under Go's cleanup detector too, GODEBUG=checkfinalizers=1: at each collection the runtime
+      # reports a cleanup or a finalizer whose closure or argument reaches the object it is
+      # attached to, a cycle that keeps that object alive for the life of the process, which is the
+      # defect that held this package's memory (dispatch://INFRA-1085). This is the only package of
+      # the repository that registers a cleanup. The detector is the runtime's own bookkeeping and
+      # runs beside the race detector in this one run, so no job runs the package again plain for
+      # the detector alone. What this run cannot judge, or judges only at a smaller size, envoy-go's
+      # step "Test what the race build cannot run at all or at full size" runs plain, under the
+      # cleanup detector as well: the two render-reuse storms run in both, at two sizes.
       - name: Race-test the document service
-        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 80m ./internal/dispatch/docs/
+        run: GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 80m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

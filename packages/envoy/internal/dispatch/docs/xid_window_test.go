@@ -1,3 +1,5 @@
+//go:build !race
+
 package docs
 
 import (
@@ -40,6 +42,12 @@ import (
 // own, is judged below. RestoreDecidedWordings does no document work under its xid (only the
 // reconciliation of its asks' own references on short questions, planAskReferences), and
 // reaching it needs the reworded state an earlier release leaves.
+//
+// This file and anchor_blocks_xid_window_test.go build without the race detector (`//go:build
+// !race`), as the API's and delivery's window tests do. Under it the rig judges no gap
+// (storetest.XidJudgesGaps) and the shape is the same rule in either build, so a race run of
+// these tests proved nothing the plain run does not: envoy-go's step "Test what the race build
+// cannot run at all or at full size" runs them, judging shape and gaps both.
 
 // xidService is a document service on a traced pool of a fresh database, settling after a day so
 // only the settlement a test runs itself settles. Its document store and its identity check every
@@ -147,8 +155,7 @@ func TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
 
 // The rig sees a gap inside the window: the same transaction with Go work between its write and
 // its commit breaks D6, and the report names the statement the gap follows. The gap is four
-// times the bound and is spent in Go, so this test is a reading of the bound alone and skips in
-// a build that judges no window's time.
+// times the bound and is spent in Go, so this test is a reading of the bound alone.
 func TestXidWindowRigCatchesAGapAfterTheFirstWrite(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	_, database, tracer := xidService(t)
@@ -169,13 +176,11 @@ func TestXidWindowRigCatchesAGapAfterTheFirstWrite(t *testing.T) {
 // replaces is gone: nothing here waits. A build whose bound reached what that parse costs would
 // let the real fault through, so this is the test that would go red first were XidMaxGap ever
 // widened too far. The parse runs no statement of its own, so the window's shape is the same
-// with it as without it, and of the window's verdicts only the bound sees it: under the race
-// detector, which judges no window's time, this test skips, and the plain lane is where it holds.
-// The tracer's document-work check sees the parse too, in every build, and
-// TestXidWindowCatchesDocumentWorkInsideTheWindow holds that check, so here the pool reports to a
-// recorder: its report of the parse is no failure of this row, and any other report is. A
-// document call that does run a statement inside the window is caught in either build, by the
-// shape each window test asserts.
+// with it as without it, and of the window's verdicts only the bound sees it. The tracer's
+// document-work check sees the parse too, and TestXidWindowCatchesDocumentWorkInsideTheWindow
+// holds that check, so here the pool reports to a recorder: its report of the parse is no failure
+// of this row, and any other report is. A document call that does run a statement inside the
+// window is caught by the shape each window test asserts as well.
 func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	tracer := storetest.NewXidTracer()

@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
@@ -487,17 +488,21 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 	return provider
 }
 
-// request issues method against baseURL+path through client, with an optional body (marshaled to
-// JSON) and headers, under ctx, and answers the status and the body bytes. It asserts no status
-// itself: a caller does that, so a mismatch names the actual body.
+// request issues method against baseURL+path through client on ctx, with an optional body
+// (marshaled to JSON) and headers, and answers the status and the body bytes. It asserts no
+// status itself: a caller does that, so a mismatch names the actual body.
+//
+// ctx carries the request's one bound, the test binary's deadline less testwait's margin
+// (testwait.Context): a broker a loaded machine slows is waited for, and one that never answers
+// fails the test there.
 //
 // It is the one request body in this package: Rig.Req and Client.Req differ in the broker they
-// name, the client they go out on, the context they send under, and at — the process a failure is
-// about, " (at host:port)" for a Client pinned to one of two processes serving one database, and
-// empty for a Rig, which has one broker and so nothing to tell apart.
+// name, the client they go out on, and at — the process a failure is about, " (at host:port)"
+// for a Client pinned to one of two processes serving one database, and empty for a Rig, which
+// has one broker and so nothing to tell apart.
 func request(
-	ctx context.Context,
 	t *testing.T,
+	ctx context.Context,
 	client *http.Client,
 	baseURL, method, path string,
 	headers map[string]string,
@@ -540,7 +545,7 @@ func request(
 // caller does that so a mismatch names the actual body.
 func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(context.Background(), t, http.DefaultClient, r.URL, method, path, headers, body, "")
+	return request(t, testwait.Context(t), http.DefaultClient, r.URL, method, path, headers, body, "")
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the
