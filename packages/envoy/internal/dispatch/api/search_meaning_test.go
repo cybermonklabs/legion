@@ -1621,7 +1621,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // The third way the progress read can go wrong, and the one that costs a search time rather
 // than rows: the row is there, readable, and locked. The read then waits for the lock, and
 // behind an ACCESS EXCLUSIVE one it waited out the whole bound the server holds on a meaning
-// statement (searchStatementBoundSetting, 15 s) before degrading to the joined statement -
+// statement (searchStatementBound, 15 s) before degrading to the joined statement -
 // 15,002 ms measured at this change's head against 202 ms with a lock_timeout of 200 ms
 // (INFRA-988). A search whose answer is the same either way must not spend a quarter of a
 // minute learning that, so the savepoint bounds its own wait

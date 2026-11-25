@@ -825,12 +825,6 @@ func CoverageReadStatement() string {
 // shortens search's bound.
 var coverageStatementTimeout = 10 * time.Second
 
-// statementTimeoutSetting is the `set local` that bounds each later statement of a transaction to
-// d, in whole milliseconds and never under one: a statement_timeout of 0 turns the bound off.
-func statementTimeoutSetting(d time.Duration) string {
-	return fmt.Sprintf("set local statement_timeout = %d", max(d.Milliseconds(), 1))
-}
-
 // coverageRollbackTimeout bounds Coverage's rollback, which runs after the statement whatever
 // happened to it. It is not the statement's bound: it ends a rollback the database will not
 // take, so no caller is held by one.
@@ -971,11 +965,12 @@ func planCoverage(ctx context.Context, tx pgx.Tx) error {
 // cancel cannot arrive: pgx v5.13 answers a context that ends mid-statement by sending Postgres a
 // CancelRequest before it closes the connection (pgconn's asyncClose), but a CancelRequest needs
 // a connection of its own, which a saturated server may refuse (the reason api/search.go's
-// searchMeaningScan bounds search's statements). The boot pass reads the report through here too
-// (coverPass), so it is bounded the same way. planCoverage then sets, under the bound, the
-// settings the statement runs under, and the statement runs. The rollback runs on a context the
-// caller's cancellation does not end, so a caller that leaves once the rows are read still hands
-// its connection back to the pool rather than pgx destroying it over a rollback it refused to send.
+// searchStatementBound bounds search's statements, as searchMeaningScan's comment tells). The
+// boot pass reads the report through here too (coverPass), so it is bounded the same way.
+// planCoverage then sets, under the bound, the settings the statement runs under, and the
+// statement runs. The rollback runs on a context the caller's cancellation does not end, so a
+// caller that leaves once the rows are read still hands its connection back to the pool rather
+// than pgx destroying it over a rollback it refused to send.
 func Coverage(ctx context.Context, database *store.Store, identity string) (model.SearchCoverage, error) {
 	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -986,7 +981,7 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 		defer cancel()
 		_ = tx.Rollback(rollback)
 	}()
-	if _, err := tx.Exec(ctx, statementTimeoutSetting(coverageStatementTimeout)); err != nil {
+	if _, err := tx.Exec(ctx, store.StatementTimeoutSetting(coverageStatementTimeout)); err != nil {
 		return model.SearchCoverage{}, fmt.Errorf("search coverage: bound the statement: %w", err)
 	}
 	if err := planCoverage(ctx, tx); err != nil {

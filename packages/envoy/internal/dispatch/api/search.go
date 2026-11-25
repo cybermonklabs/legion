@@ -564,11 +564,12 @@ legs as (
 // caller's.
 var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 
-// searchMeaningScan is what a meaning query's transaction sets before it runs, every statement
-// local to that transaction and no other:
+// searchMeaningScan is what a meaning query's transaction sets before it runs, after the bound
+// beginSearchScan sets first, every statement local to that transaction and no other:
 //
 //   - statement_timeout: the only bound the server itself holds on a meaning query,
-//     searchStatementBound. The request's own context does reach the query - runMeaningSearch and
+//     searchStatementBound, which beginSearchScan sets ahead of this list (the list does not hold
+//     it). The request's own context does reach the query - runMeaningSearch and
 //     relatedMeaningSearch each pass it to tx.Query - but pgx cancels out of band: a CancelRequest
 //     is a new connection of its own, and under saturation, which is exactly when meaning searches
 //     pile up, there is none to open, so the cancellation never arrives and a search whose caller
@@ -578,10 +579,16 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     cancelling them by hand took that deployment from 221 active backends to 2 and released the
 //     15 GiB. The bound sits between the two numbers it has to separate: a healthy meaning search,
 //     under a second on production's data, and the 30-second deadline the generator and
-//     Dispatch's own clients give a request. So the server gives up before the client does,
-//     rather than an hour after, and the backend goes with the statement. A statement ended that
-//     way is SQLSTATE 57014 (searchStatementEnded): the search route answers it 503
-//     SEARCH_TIMEOUT (searchFailed), and the related-item check reports it as its own timeout.
+//     Dispatch's own clients give a request. It holds each statement, not the whole search: a
+//     search whose first statement finds nothing reads its rarest words and runs a second,
+//     broadened statement under a bound of its own (runSearch). A search with a broadened run can
+//     therefore take up to two bounds after its query's embedding, and pass the web app's
+//     30-second deadline (REQUEST_DEADLINE_MS, packages/dispatch/web/src/api/client.ts): the page
+//     then meets its own deadline error, which isRetryableQueryError retries, not 503
+//     SEARCH_TIMEOUT. Either way the backend goes with the statement rather than an hour after its
+//     caller left. A statement the bound ends is SQLSTATE 57014 (searchStatementEnded): the search
+//     route answers it 503 SEARCH_TIMEOUT (searchFailed), and the related-item check reports it as
+//     its own timeout.
 //   - client_connection_check_interval: how often Postgres checks, while the statement runs, that
 //     its client is still connected (searchClientConnectionCheck), 1 second. A request whose
 //     caller has gone ends pgx's read and closes the connection, and the CancelRequest pgx sends
@@ -608,42 +615,28 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //
 // Both meaning queries run in a transaction beginMeaningScan opens, and set them there.
 var searchMeaningScan = []string{
-	searchStatementBoundSetting,
 	searchClientConnectionCheck,
 	`set local hnsw.ef_search = 400`,
 	`set local hnsw.iterative_scan = relaxed_order`,
 }
 
 // searchKeywordScan is what the keyword statement's transaction sets before it runs
-// (beginKeywordScan): the same bound and the same connection check as searchMeaningScan, for
+// (beginKeywordScan), after the same bound: the same connection check as searchMeaningScan, for
 // the same reasons, and neither index setting, since searchQuery reads no vector. The keyword
 // statement serves the bar's keystroke request (keywords_only) and every search whose query
 // embedding could not be had, so a deployment under load runs it as often as the meaning ones.
 var searchKeywordScan = []string{
-	searchStatementBoundSetting,
 	searchClientConnectionCheck,
 }
 
 // searchStatementBound is the server's own bound on each keyword and each meaning statement a
-// search runs, 15 seconds. Both scans set it (searchStatementBoundSetting), and a statement it
-// ends answers 503 SEARCH_TIMEOUT with a message that names it (search). A search whose first
-// statement matches nothing runs a second one, broadened (runSearch), which has the whole bound
-// again. It is a variable for one reason: endSearchStatementsAt shortens it for a test, with
-// the setting built from it, so that the message names the bound in force.
+// search runs, 15 seconds. beginSearchScan sets it first in both scans' transactions, and a
+// statement it ends answers 503 SEARCH_TIMEOUT with a message that names it (search). A search
+// whose first statement matches nothing runs a second one, broadened (runSearch), which has the
+// whole bound again. It is a variable for one reason: endSearchStatementsAt shortens it for a
+// test, so that the statements run under the shortened bound and the message names the bound in
+// force.
 var searchStatementBound = 15 * time.Second
-
-// statementTimeoutSetting is the `set local` that bounds each later statement of a transaction
-// to d. Go writes 15 seconds as "15s", which Postgres reads as the same duration.
-func statementTimeoutSetting(d time.Duration) string {
-	return "set local statement_timeout = '" + d.String() + "'"
-}
-
-// searchStatementBoundSetting is searchStatementBound as the setting both scans open with. It is
-// named because two readers outside the lists need the very same string: the measurement of
-// these statements, which has to read what a statement costs and so cannot run under a bound
-// that would end it (TestStatementTimings), and the test that shortens the bound to prove what
-// each caller reports when the server ends a statement (endSearchStatementsAt).
-var searchStatementBoundSetting = statementTimeoutSetting(searchStatementBound)
 
 // searchClientConnectionCheck is the connection check both scans set (searchMeaningScan says
 // what it is for).
@@ -651,7 +644,7 @@ const searchClientConnectionCheck = `set local client_connection_check_interval 
 
 // searchStatementEnded reports whether err is Postgres ending a search statement itself - a
 // meaning statement, or the keyword one - rather than answering it: SQLSTATE 57014,
-// query_canceled, which is what searchStatementBoundSetting raises when a query outlasts it, and
+// query_canceled, which is what searchStatementBound raises when a query outlasts it, and
 // what an operator's pg_cancel_backend raises too. A caller's own context ending is not this
 // error - pgx answers that with the context's error - so a caller that tells a timeout from a
 // failure has to read the error as well as its context (relatedMeaningStage, searchFailed).
@@ -699,27 +692,39 @@ func (s *server) beginKeywordScan(ctx context.Context) (pgx.Tx, error) {
 	return s.beginSearchScan(ctx, searchKeywordScan)
 }
 
-// beginSearchScan opens a read transaction with settings applied to it: `set local` holds every
-// one of them to this transaction, so a pooled connection carries none of them - the server's
-// bound on the statement included - back to the next request. The caller ends the transaction, a
-// rollback deferred, since no search statement writes; a transaction a setting failed on is
-// rolled back here and never handed back.
+// searchScanSettings is every setting a search transaction runs before its statement, in the
+// order it runs them: the server's bound on each statement (searchStatementBound, as
+// store.StatementTimeoutSetting writes it) first, then scan (searchMeaningScan or
+// searchKeywordScan). beginSearchScan sets them, and a test that runs a statement under exactly
+// the route's settings builds them here too. It is built at each call rather than at package
+// init because a test shortens searchStatementBound (endSearchStatementsAt) and another replaces
+// searchMeaningScan (TestMeaningScanRollsBackWhenASettingFails), and a list built at init would
+// see neither.
+func searchScanSettings(scan []string) []string {
+	settings := make([]string, 0, len(scan)+1)
+	settings = append(settings, store.StatementTimeoutSetting(searchStatementBound))
+	return append(settings, scan...)
+}
+
+// beginSearchScan opens a read transaction with scan applied to it after the bound
+// (searchScanSettings): `set local` holds every setting to this transaction, so a pooled
+// connection carries none of them - the bound included - back to the next request. The caller
+// ends the transaction, a rollback deferred, since no search statement writes; a transaction a
+// setting failed on is rolled back here and never handed back.
 //
 // The settings go in one Exec, joined with "; ", rather than one Exec each: they carry no
 // argument, so pgx sends them over the simple protocol, which takes a statement list and drains
 // every result (pgx v5 conn.go's execSimpleProtocol), and every search and every related-item
-// check pays one round trip of setup rather than one per setting. The join is made here rather
-// than at package init because a test reassigns searchMeaningScan and searchKeywordScan to
-// shorten the bound (endSearchStatementsAt), and a string built at init would not see it.
+// check pays one round trip of setup rather than one per setting.
 //
 // A setting Postgres refuses fails the whole Exec, and the Go-side error no longer names which
 // of them failed; Postgres's own message still does, since it quotes the parameter it refused.
-func (s *server) beginSearchScan(ctx context.Context, settings []string) (pgx.Tx, error) {
+func (s *server) beginSearchScan(ctx context.Context, scan []string) (pgx.Tx, error) {
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, strings.Join(settings, "; ")); err != nil {
+	if _, err := tx.Exec(ctx, strings.Join(searchScanSettings(scan), "; ")); err != nil {
 		_ = tx.Rollback(context.WithoutCancel(ctx))
 		return nil, err
 	}
@@ -875,13 +880,11 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 // downstream filters it, so a node the acting person may not see would otherwise take a place
 // in that cut and hide a node they may.
 //
-// The document arm probes document_search by its key once for each candidate artifact, as main's
-// arm probed artifact_versions. A plain join let the planner read all of document_search and
-// probe artifacts once for each embedding row. On the database cmd/dispatch-seed writes at scale
-// 1, in the one-project statement whose project keys are not filled, that arm read 374,682
-// shared buffers against main's 327,575 (Job infra-4864-search-split-xc52s at f28566f1). The
-// probe's `limit 1` changes no answer, since artifact_id is document_search's key. Without it
-// Postgres pulls the subquery up into the same join.
+// The document arm probes document_search by its key once for each candidate artifact (the
+// lateral join), because a plain join let the planner read all of document_search and probe
+// artifacts once for each embedding row. The probe's `limit 1` keeps Postgres from pulling the
+// subquery up into that join, and it changes no answer, since artifact_id is document_search's
+// key.
 func searchQueryMeaningBody(keywordLegs, fused, exclude string, seen int, scope meaningProjectScope) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
@@ -1684,7 +1687,7 @@ func meaningStatementFor(project string, filled, filtered bool) (statement, shap
 //
 // The savepoint also carries the bound on how long that read may wait. The row is one row of a
 // one-row table, so the only wait it can take is a lock somebody else holds on the table, and
-// behind an ACCESS EXCLUSIVE lock the read waited out searchStatementBoundSetting's whole 15
+// behind an ACCESS EXCLUSIVE lock the read waited out searchStatementBound's whole 15
 // seconds before it degraded - 15,002 ms measured at this change's head, against 202 ms with
 // the setting below (INFRA-988). A search that is going to answer from the joined statement
 // anyway must not spend a quarter of a minute learning that, so the savepoint sets

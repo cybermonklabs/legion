@@ -173,7 +173,7 @@ func explainRead(t *testing.T, database *store.Store, statement string, args []a
 		t.Fatalf("begin the explain: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	mustExec(t, tx, statementTimeoutSetting(coverageStatementTimeout))
+	mustExec(t, tx, store.StatementTimeoutSetting(coverageStatementTimeout))
 	if err := planCoverage(ctx, tx); err != nil {
 		t.Fatalf("plan the statement as Coverage does: %v", err)
 	}

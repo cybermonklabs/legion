@@ -776,8 +776,9 @@ func (f meaningDocumentDateFixture) requireDocumentsAndDates(t *testing.T, rows 
 // arm alone (meaningDocumentArmRows) from this build's statement and from main's at df18d9be,
 // and compares each row's document, window, date and cosine, for every project scope and with
 // an updated_since between two versions' dates. Then it runs each whole statement, this build's
-// and main's, under the settings the route runs meaning statements under (searchMeaningScan),
-// and compares the answers row for row.
+// and main's, under the settings the route runs meaning statements under
+// (searchScanSettings(searchMeaningScan), the bound among them), and compares the answers row
+// for row.
 //
 // The statements are search's three meaning statements and the related-item check's six, which
 // share searchQueryMeaningBody and so the arm. For search's three, the arm cut from main's
@@ -809,8 +810,9 @@ func TestTheMeaningDocumentArmAnswersMainsRowsAndDates(t *testing.T) {
 			}
 			fixture.requireDocumentsAndDates(t, got, statement.project, statement.since)
 
-			wantAnswer := documentSearchRows(t, ctx, fixture.database, statement.main, statement.arguments, searchMeaningScan)
-			gotAnswer := documentSearchRows(t, ctx, fixture.database, statement.live, statement.arguments, searchMeaningScan)
+			settings := searchScanSettings(searchMeaningScan)
+			wantAnswer := documentSearchRows(t, ctx, fixture.database, statement.main, statement.arguments, settings)
+			gotAnswer := documentSearchRows(t, ctx, fixture.database, statement.live, statement.arguments, settings)
 			if !slices.Equal(gotAnswer, wantAnswer) {
 				t.Errorf("this build's statement answered\n%s\nwant main's\n%s", strings.Join(gotAnswer, "\n"), strings.Join(wantAnswer, "\n"))
 			}

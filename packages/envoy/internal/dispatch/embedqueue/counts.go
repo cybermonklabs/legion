@@ -274,7 +274,7 @@ func countsTransaction(ctx context.Context, database *store.Store, locked bool, 
 		defer cancel()
 		_ = tx.Rollback(rollback)
 	}()
-	setup, failed := statementTimeoutSetting(time.Until(deadline)), "bound the statements"
+	setup, failed := store.StatementTimeoutSetting(time.Until(deadline)), "bound the statements"
 	if locked {
 		setup, failed = setup+"; "+countsLock, "bound the statements and take the counts lock"
 	}

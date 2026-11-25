@@ -2103,10 +2103,10 @@ func readSearchAnswer(t *testing.T, ctx context.Context, database *store.Store, 
 // for the word - runs for each project form its caller binds it with (every project and one),
 // with no filter and with each of status, author and updated_since alone, at offsets 0 and 50,
 // this build's text and main's over the same arguments and under the settings the route runs it
-// under (searchKeywordScan, searchMeaningScan), the 15-second bound among them (D3). The two
-// answers must be the same rows in the same order. A search narrowed by nothing must count all
-// 1,500 of the kind's matches, or the 750 of one project; and the first page of a search whose
-// filters keep the oldest item must hold it.
+// under (searchScanSettings over searchKeywordScan or searchMeaningScan), the 15-second bound
+// among them (D3). The two answers must be the same rows in the same order. A search narrowed by
+// nothing must count all 1,500 of the kind's matches, or the 750 of one project; and the first
+// page of a search whose filters keep the oldest item must hold it.
 func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
 	t.Parallel()
 	fixture := newSearchResultsFixture(t)
@@ -2152,10 +2152,10 @@ func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
 								if filter.narrow != nil {
 									filter.narrow(&parameters)
 								}
-								arguments, settings := searchQueryArguments(parameters), searchKeywordScan
+								arguments, settings := searchQueryArguments(parameters), searchScanSettings(searchKeywordScan)
 								if statement.meaning {
 									arguments = searchMeaningQueryArguments(parameters, vectors[0], fixture.embedder.Identity())
-									settings = searchMeaningScan
+									settings = searchScanSettings(searchMeaningScan)
 								}
 								want := readSearchAnswer(t, ctx, fixture.database, statement.main, arguments, settings)
 								got := readSearchAnswer(t, ctx, fixture.database, statement.live, arguments, settings)

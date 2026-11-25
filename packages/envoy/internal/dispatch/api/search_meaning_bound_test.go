@@ -22,28 +22,27 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// endSearchStatementsAt points the server's bound on a search statement at `at` for one test:
-// searchStatementBound, and the setting built from it (searchStatementBoundSetting) in both
-// searchMeaningScan and searchKeywordScan. A keyword or meaning statement is then ended by the
-// server rather than answered, without a test waiting production's fifteen seconds out, and the
-// 503 the search route answers names the bound in force. The bound it replaces must be in each
-// list: a list that holds none is the defect an earlier fix closed (a statement with no bound of
-// its own), and a test that quietly added its own bound would pass on a server that holds none.
+// endSearchStatementsAt points the server's bound on a search statement, searchStatementBound,
+// at `at` for one test. beginSearchScan sets the bound from it on every search transaction, so a
+// keyword or meaning statement is then ended by the server rather than answered, without a test
+// waiting production's fifteen seconds out, and the 503 the search route answers names the bound
+// in force.
 //
-// The lists and the bound are package variables, read by every test that runs a search, a
+// The bound and the scan lists are package variables, read by every test that runs a search, a
 // related-item check or a scan, many of them parallel:
 // TestMeaningScanAppliesTheServersBoundToItsTransaction,
 // TestKeywordScanAppliesTheBoundAndTheConnectionCheckToItsTransaction and
 // TestEverySearchStatementRunsInsideItsBoundedTransaction among them. Swapping them is safe only
-// because every test that writes them - this helper's callers
+// because every test that writes one - this helper's callers
 // (TestSearchReportsAMeaningStatementTheServerEnded,
 // TestSearchReportsAKeywordStatementTheServerEnded, TestASearchWhoseClientLeftIsNotATimeout and
-// TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout) and
-// TestMeaningScanRollsBackWhenASettingFails - calls no t.Parallel: Go runs the part of a
-// top-level test after its t.Parallel only once every top-level test that does not call it has
-// returned and put the variables back, so no reader sees a shortened list. A writer that called
-// t.Parallel would race every one of those readers. It is the same seam, under the same
-// constraint, as the claim path's (issue_claim_test.go).
+// TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout), which write the bound, and
+// TestMeaningScanRollsBackWhenASettingFails, which writes searchMeaningScan - calls no
+// t.Parallel: Go runs the part of a top-level test after its t.Parallel only once every
+// top-level test that does not call it has returned and put the variables back, so no reader
+// sees a shortened bound or a replaced list. A writer that called t.Parallel would race every one
+// of those readers. It is the same seam, under the same constraint, as the claim path's
+// (issue_claim_test.go).
 //
 // The shortened bound alone does not end a statement. On a test database of a few rows a meaning
 // statement itself executes in well under a millisecond (0.14 to 0.53 ms measured on Postgres
@@ -58,26 +57,9 @@ import (
 // of the transaction's statements the bound ends.
 func endSearchStatementsAt(t *testing.T, at time.Duration) {
 	t.Helper()
-	bound, meaning, keyword := searchStatementBound, searchMeaningScan, searchKeywordScan
-	shortened := statementTimeoutSetting(at)
-	shortenedMeaning := shortenedScan(t, "searchMeaningScan", meaning, shortened)
-	shortenedKeyword := shortenedScan(t, "searchKeywordScan", keyword, shortened)
-	searchStatementBound, searchMeaningScan, searchKeywordScan = at, shortenedMeaning, shortenedKeyword
-	t.Cleanup(func() { searchStatementBound, searchMeaningScan, searchKeywordScan = bound, meaning, keyword })
-}
-
-// shortenedScan is scan, the list named name, with the server's bound on a search statement
-// (searchStatementBoundSetting) replaced by shortened.
-func shortenedScan(t *testing.T, name string, scan []string, shortened string) []string {
-	t.Helper()
-	at := slices.Index(scan, searchStatementBoundSetting)
-	if at < 0 {
-		t.Fatalf("%s = %q, want it to hold the server's own bound on a search statement (%q)",
-			name, scan, searchStatementBoundSetting)
-	}
-	replaced := slices.Clone(scan)
-	replaced[at] = shortened
-	return replaced
+	bound := searchStatementBound
+	searchStatementBound = at
+	t.Cleanup(func() { searchStatementBound = bound })
 }
 
 // holdMeaningStatements locks embeddings, the table every meaning statement reads its vectors
@@ -223,7 +205,7 @@ func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	healthy := searchMeaningScan
-	searchMeaningScan = []string{searchStatementBoundSetting, `set local statement_timeout = 'not a duration'`}
+	searchMeaningScan = []string{`set local statement_timeout = 'not a duration'`}
 	t.Cleanup(func() { searchMeaningScan = healthy })
 
 	before := database.Pool.Stat().AcquiredConns()
@@ -506,10 +488,11 @@ func (b *backendStatements) statements() []backendStatement {
 }
 
 // The two settings R1 holds the transaction of every search statement to: the server's own
-// bound on the statement, and the interval at which Postgres checks, while the statement runs,
-// that its client is still connected.
+// bound on the statement, 15 s in the whole milliseconds store.StatementTimeoutSetting writes,
+// and the interval at which Postgres checks, while the statement runs, that its client is still
+// connected.
 const (
-	searchBoundSetting           = `statement_timeout = '15s'`
+	searchBoundSetting           = `statement_timeout = 15000`
 	searchConnectionCheckSetting = `client_connection_check_interval = '1s'`
 )
 

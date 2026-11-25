@@ -265,10 +265,11 @@ func searchSplitPrepared(side, shape string, rankFree bool) string {
 // its rank-free run. Each run is `explain (analyze, buffers, verbose, format json) execute` of the
 // prepared statement with its literals, in a read-only transaction that is rolled back, under
 // `plan_cache_mode = force_custom_plan`, as production's first runs of a statement plan it, and
-// searchMeaningScan's settings without its bound (the reason TestStatementTimings gives). Each run
-// carries no statement bound of its own. The seeded database bounds nothing. On production the
-// read login holds every statement to 30 s and refuses a `SET` of `statement_timeout`
-// (dispatch://INFRA-4863, R1). psql writes each plan under plans/ by the name split.json gives it.
+// searchMeaningScan's settings, which do not hold the bound beginSearchScan sets ahead of them
+// (the reason TestStatementTimings gives for leaving it out). Each run carries no statement bound
+// of its own. The seeded database bounds nothing. On production the read login holds every
+// statement to 30 s and refuses a `SET` of `statement_timeout` (dispatch://INFRA-4863, R1). psql
+// writes each plan under plans/ by the name split.json gives it.
 //
 // On the seeded database, where DISPATCH_BENCH_DATABASE_URL names it too, the subjects are read
 // with benchtime.Open as well, and subjects.json must name the same ones: that is what holds
@@ -318,9 +319,7 @@ func TestSearchReadSplitScript(t *testing.T) {
 			t.Fatalf("%s=%q; want an odd number of runs, 3 or more, so each side has a middle run and a spread", searchSplitRunsEnv, value)
 		}
 	}
-	settings := []string{"set local plan_cache_mode = force_custom_plan"}
-	settings = append(settings, slices.DeleteFunc(slices.Clone(searchMeaningScan),
-		func(setting string) bool { return setting == searchStatementBoundSetting })...)
+	settings := append([]string{"set local plan_cache_mode = force_custom_plan"}, searchMeaningScan...)
 
 	statements := searchSplitStatements(t)
 	shapes := map[string]string{searchSplitKeyword: searchShapeKeyword}
