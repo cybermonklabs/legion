@@ -69,6 +69,13 @@ const owedWriteLine = "supervise: a claim write the database did not take"
 // caught up from one that is still behind.
 const repairedWriteLine = "supervise: a claim write the database did not take was made"
 
+// claimWriteAgainLine is the line of a store call of a decision that the claim-write bound cut
+// short and that the decision makes again at once (Machine.write), at Warn: the database answered
+// that call past defaultClaimWrite, which a healthy one never does, so an operator sees a slow
+// database here before any write is owed. A write made again that lands owes nothing and is
+// followed by no owed line; one that is cut again is owed, under owedWriteLine.
+const claimWriteAgainLine = "supervise: a claim write the bound cut short; making it again in this decision"
+
 // oweWrite marks the claim write owed and says so in the log: the row the store holds is behind
 // what memory holds, and the claim's next decision is to make that write again (repair). A
 // machine that already owes one keeps the single mark, since the repair writes the claim as it
@@ -273,6 +280,12 @@ func (m *Machine) makeOwedReports(reports []owedReport) {
 // owed: dropping one loses a claim fact the daemon's memory already holds and the row does not,
 // and the write is the only thing that would ever put it there. A nil error is no refusal and
 // owes nothing.
+//
+// This rule decides what is owed once Machine.write has stopped trying, not whether it tries again
+// first: write makes a deadline cut of a write the database was handed once more in the same
+// decision (cutByBound, claimWriteTries), and only a write whose last try still failed comes here.
+// A deadline cut of a write the database was never handed (a dial, a queue's wait, a BEGIN) is
+// owed at once, as the deadline row of TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout reads.
 //
 // The rule reads the error in two steps, and their order is the substance of it rather than a
 // style of writing.
