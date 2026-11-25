@@ -444,14 +444,14 @@ test("phaseOpsOf offers review_verdict to a review step's agent's role alone, an
   }
 });
 
-// A head that moves while its issue stands past its review (accepting, retro or merging) gets a
-// verdict from the agent of each review step of its task that has passed: the reviewer, and the
-// architect that owns the issue and ran its acceptance. Each sends it through review_verdict,
-// which every host's `legion` tool serves from this one definition: a fresh grant with the
-// verdict, the head and the summary, posted to `POST /legion/v1/review-verdict`. An architect's
-// grant serves its whole tree, so its call names the issue it accepted; a reviewer's grant names
-// its own issue, so its call names none. The call writes no handoff, so it reads no record and
-// looks no handoff report up.
+// A head that moves once a review step of its task has passed gets a verdict from the agent of
+// each review step of that task that has passed: the reviewer, and the architect that owns the
+// issue and ran its acceptance, once that acceptance has passed. Each sends it through
+// review_verdict, which every host's `legion` tool serves from this one definition: a fresh grant
+// with the verdict, the head and the summary, posted to `POST /legion/v1/review-verdict`. An
+// architect's grant serves its whole tree, so its call names the issue it accepted; a reviewer's
+// grant names its own issue, so its call names none. The call writes no handoff, so it reads no
+// record and looks no handoff report up.
 test("review_verdict is one phase op, defined once, that posts a review step's agent's verdict and commit to /legion/v1/review-verdict", async () => {
   expect(PHASE_OPS.filter((op) => op === "review_verdict")).toEqual(["review_verdict"]);
   expect(
@@ -598,14 +598,19 @@ test("the description says who sends which verdict word, and review_verdict's se
   expect(description).not.toContain("tester's pass");
   expect(description).not.toContain("the reviewer's alone");
   for (const words of [
+    "when the head of the pull request moves once a review step of the issue's task has passed",
+    "from the agent of each review step of that task that has passed",
     "the reviewer, and the owning architect on the issue whose acceptance it ran",
     "an architect names in `issue` the issue it accepted, and a reviewer leaves `issue` out",
     "VERDICT_CALLER_FORBIDDEN",
+    "only once its own step has passed, never for the step that runs now (VERDICT_NOT_PAST_REVIEW)",
     "VERDICT_HEAD_NOT_CURRENT",
   ]) {
     expect(PHASE_OP_SENTENCES.reviewVerdict).toContain(words);
   }
   expect(PHASE_OP_SENTENCES.reviewVerdict).not.toContain("tester's pass");
+  // Past review is the step rule (a review step of the task has passed), not a list of phases.
+  expect(PHASE_OP_SENTENCES.reviewVerdict).not.toContain("accepting, retro or merging");
 });
 
 // The agent that does the retro rates the plan the issue ran in the completion that ends the

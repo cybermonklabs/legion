@@ -376,12 +376,13 @@ export const PHASE_OP_SENTENCES = {
     "names in `commit` the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the " +
     "pull request's current head (VERDICT_HEAD_NOT_CURRENT). That move counts no review round: only a review that requests changes counts one. ",
   reviewVerdict:
-    "review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review " +
-    "(accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has " +
-    "passed: the reviewer, and the owning architect on the issue whose acceptance it ran. Send `verdict` approve or changes, `commit` " +
-    "that head, and `summary`; an architect names in `issue` the issue it accepted, and a reviewer leaves `issue` out. It writes no " +
-    "handoff and ends no phase. The daemon takes it only from such an agent (VERDICT_CALLER_FORBIDDEN), only past review " +
-    "(VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). ",
+    "review_verdict answers the daemon's request, when the head of the pull request moves once a review step of the issue's task has " +
+    "passed, for a verdict on the new head from the agent of each review step of that task that has passed: the reviewer, and the " +
+    "owning architect on the issue whose acceptance it ran. Send `verdict` approve or changes, `commit` that head, and `summary`; an " +
+    "architect names in `issue` the issue it accepted, and a reviewer leaves `issue` out. It writes no handoff and ends no phase. The " +
+    "daemon takes it only from such an agent (VERDICT_CALLER_FORBIDDEN), only once its own step has passed, never for the step that " +
+    "runs now (VERDICT_NOT_PAST_REVIEW), whose verdict is the reviewer's completion or the owner's sign_off or move back, and only on " +
+    "the pull request's current head (VERDICT_HEAD_NOT_CURRENT). ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +

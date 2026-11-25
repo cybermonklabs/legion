@@ -3580,17 +3580,21 @@ package api
 // `POST /legion/v1/signoff` names a required `commit`, the head the owner accepts, and an
 // architect's `POST /legion/v1/phase/backward` out of accepting a required `commit`, the head it
 // sends back (MISSING_FIELD where it names none; a phase worker's move needs none). The workflow
-// takes either only where that commit is the pull request's current head, and otherwise refuses it
-// with nothing recorded or moved (VERDICT_HEAD_NOT_CURRENT, 409); it records the sign-off there as
-// the owner's acceptance's `approve`, and the move back as its `changes`.
+// takes either only from the claim the acceptance step's record names as its agent, and otherwise
+// refuses it with nothing recorded or moved (VERDICT_CALLER_FORBIDDEN, 403), and only where that
+// commit is the pull request's current head, and otherwise refuses it with nothing recorded or
+// moved (VERDICT_HEAD_NOT_CURRENT, 409); it records the sign-off there as the owner's acceptance's
+// `approve`, and the move back as its `changes`.
 // POST /legion/v1/review-verdict takes the verdict of the agent of a review step of the issue's
-// task on a head past review: the reviewer's, and that of the architect that ran the owner's
-// acceptance, which names the issue it is for in an optional `issue` (the reviewer leaves it out,
-// and the grant's issue is the one). It refuses the controller and a claim that is the agent of no
-// review step of the task (VERDICT_CALLER_FORBIDDEN), a word that is neither verdict
-// (REVIEWER_VERDICT_REQUIRED), no commit (VERDICT_COMMIT_REQUIRED), an issue the daemon does not
-// record (ISSUE_NOT_FOUND), a head that is not the current one (VERDICT_HEAD_NOT_CURRENT) and a
-// phase that is not accepting, retro or merging (VERDICT_NOT_PAST_REVIEW).
+// task that has passed, on a head the pull request moved to once a review step of that task has
+// passed: the reviewer's, and that of the architect that ran the owner's acceptance, which names
+// the issue it is for in an optional `issue` (the reviewer leaves it out, and the grant's issue is
+// the one). It refuses the controller and a claim that is the agent of no review step of the task
+// (VERDICT_CALLER_FORBIDDEN), a word that is neither verdict (REVIEWER_VERDICT_REQUIRED), no commit
+// (VERDICT_COMMIT_REQUIRED), an issue the daemon does not record (ISSUE_NOT_FOUND), a head that is
+// not the current one (VERDICT_HEAD_NOT_CURRENT) and a caller whose own step has not passed, as
+// the step that runs now has not, whose verdict is the reviewer's completion or the owner's
+// sign-off or move back (VERDICT_NOT_PAST_REVIEW).
 // And one App serves every role, each with its own token set: a GitHub credential's `app` names
 // the role's set (implementer, merger, architect, planner, tester, reviewer or controller) in
 // place of the two Apps' `implement` and `review`. A step's role takes the set of its step's type,
