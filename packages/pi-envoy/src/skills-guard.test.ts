@@ -75,11 +75,8 @@ test("the injected dispatch-first skill fits its budget on every host", () => {
 test("the injected dispatch-first context holds the blocker and accepted-request rules", () => {
   const context = readDispatchFirstContext(dispatchFirstSkillFile(staged));
   for (const rule of [
-    "The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them.",
-    "A Legion phase worker sends decisions to its architect instead.",
-    "Before you say you wait on a person, run `dispatch open-asks`.",
-    "Record each request you accept in Dispatch before you start it. Your issue's work is a task, or a task's new text, in its plan. Other work is an issue or an ask.",
-    "Before you end a turn, read the plan, your issues and open asks: each item is done, in progress, or an open ask. Never drop one.",
+    "The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them. A Legion phase worker sends decisions to its architect instead. Before you say you wait on a person, run `dispatch open-asks`.",
+    "Record each request you accept in Dispatch before you start it. Your issue's work is a task, or a task's new text, in its plan. Other work is an issue or an ask. Before you end a turn, read the plan, your issues and open asks: each item is done, in progress, or an open ask. Never drop one.",
   ]) {
     expect(context).toContain(rule);
   }
@@ -182,7 +179,7 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // is the record" (3). The duplicate bullet lost "read it", which the bullet on reading each hit
 // says (1). The research bullets lost "Ask only the part no search answered.", which their first
 // two bullets say together (7). The result bullet lost "is the same" (3). The spec-writing row
-// lost "or write an" (3).
+// lost "or write an" (3). The three skills stay at 2,337 words, as on main.
 //
 // The bound did not move when dispatch-first's blocker bullet took one sentence of 19 words at
 // its end: "A secret request that waits for a person is already in their Inbox, so it gets no ask
@@ -190,11 +187,11 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // already reaches its approver's Inbox, so an ask for it is a duplicate, and that the rule go in a
 // generic skill. The rule lives in skills/agent-secrets/SKILL.md, which a session reads when a
 // command needs a secret. The blocker bullet, which every session holds whole, is the line that
-// sends an agent to open an ask, so its exception sits there and links the rule. By this test's
-// own whitespace count, the three skills stand at 2,329 words on main at d57c7a79 (917 + 556 +
-// 856; 2,310 at 7227e703 before #5364, after #5391's exit-code bullets), not 2,276. This pull
-// request's rewrite of dispatch-first with #5364's sentence takes them to 2,349, over the 2,340
-// bound until dispatch and dispatch-writing-specs are cut after #4316.
+// sends an agent to open an ask, so its exception sits there and links the rule. Before this
+// sentence came, #5051 cut 80 words from dispatch-writing-specs, which left the three skills at
+// 2,257 words. By this test's own whitespace count, the three skills now stand at 2,329 words on
+// main at d57c7a79 (917 + 556 + 856; 2,310 at 7227e703 before #5364, after #5391's exit-code
+// bullets), not 2,276: 11 under the bound.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
@@ -258,7 +255,7 @@ test("every relative link resolves to a file inside the staged partition", () =>
 // (what `omp agents unpack` writes, read off the pinned binary rather than listed here). A
 // `skill://legion-*` mention in these skills is held to no such partition, on purpose: each is a
 // sentence conditioned on a Legion role (skills/dispatch/SKILL.md:13,
-// skills/dispatch-writing-specs/SKILL.md:10, skills/dispatch-first/SKILL.md:58), inert
+// skills/dispatch-writing-specs/SKILL.md:10, skills/dispatch-first/SKILL.md:48), inert
 // for a person and right for a pane with both plugins, and `brokenSkillLinks` above resolves a
 // `skill://<name>/<path>` link against the repository's skills/ for the same reason.
 test.skipIf(omp === undefined && !onActions)(

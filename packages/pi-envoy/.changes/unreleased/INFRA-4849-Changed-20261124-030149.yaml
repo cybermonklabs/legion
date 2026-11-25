@@ -1,8 +1,5 @@
 kind: Changed
 body: |-
-  The skill `dispatch-first` is written in the style of writing-agent-skills. It opens with its
-  goal, and with a `**Done when:**` line where it asks for a check that ends its work. Each item
-  holds one rule. The rules are the same.
   `plain-words` now lets a bold label start a rule in a skill.
   `approval-review` no longer says that nothing but its `never-decide.md` states that file's rule.
 time: 2026-11-24T03:01:49Z
