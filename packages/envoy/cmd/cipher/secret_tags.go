@@ -330,8 +330,8 @@ func guidanceTooLong(guidance string) error {
 // adminTrue; a stored admin tag holding anything else is no rule of TagRules but
 // policy.ReasonAdminMalformed, which the broker answers to the reread that follows the write,
 // exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The
-// requesters are read without the project tags' rollback guard (policy.SplitRequestersGuard), as
-// the broker reads them: the guard has no @, so the rules would otherwise weigh it as a service on
+// requesters are read without either rollback guard (requestersList), as the broker reads them:
+// a guard has no @, so the rules would otherwise weigh it as a service on
 // the list. The one
 // field of the set left empty is BoundAccount, the deployment's BROKER_SERVICE_ACCOUNT_SECRETS
 // binding, which `agent-secrets` never sees, just as it never sees BROKER_SERVICES and so calls
@@ -339,7 +339,7 @@ func guidanceTooLong(guidance string) error {
 // service on a secret bound to a dev-<name> account, is the broker's to apply on that reread.
 func checkTagsFor(tags map[string]string) error {
 	duration, _ := policy.ParseMaxGrant(tags[policy.TagMaxGrant])
-	requesters, _ := policy.SplitRequestersGuard(tags[policy.TagRequesters])
+	requesters, _, _ := requestersList(tags[policy.TagRequesters])
 	set := policy.TagSet{
 		Type:         policy.TypeFromTags(tags),
 		Owner:        tags[policy.TagOwner],
@@ -354,31 +354,46 @@ func checkTagsFor(tags map[string]string) error {
 	return tagRefusal(policy.TagRules(set), set, tags)
 }
 
-// guardRequesters puts the project tags' rollback guard (policy.RequestersRollbackGuard) into the
-// requesters tag of tags, the tags a secret holds once a write lands, when they carry a
-// dispatch-project or a project-channels tag, after the list the tag holds and never in place of
-// it; and takes it out when they carry neither, removing the requesters tag when the guard was
-// all it held. A requesters tag no guard was written into is left exactly as it is, a malformed
-// one included, which the broker refuses on the reread. A broker from before the project tags
-// reads the guard as a service no deployment can register and refuses the secret, rather than
-// serve a project's secret by owner and tier to every session; this broker takes it out before
-// it reads the list.
+// guardRequesters puts the rollback guards into the requesters tag of tags, the tags a secret
+// holds once a write lands, after the list the tag holds and never in place of it: the project
+// tags' (policy.RequestersRollbackGuard) when they carry a dispatch-project or a project-channels
+// tag, and the kinds' (policy.KindsRollbackGuard) when they carry a proxy or a proxy-narrowed tag,
+// the project guard first. It takes each out when they carry none of its tags, removing the
+// requesters tag when the guards were all it held. A requesters tag no guard was written into, on
+// a secret that carries none of those tags, is left exactly as it is, a malformed one included,
+// which the broker refuses on the reread. A broker from before the project tags, or from before
+// the kinds, reads the guard as a service no deployment can register and refuses the secret,
+// rather than serve it by owner and tier to every session, or release a secret behind the proxy
+// as its value; this broker takes both out before it reads the list.
 func guardRequesters(tags map[string]string) {
-	raw, listed := tags[policy.TagRequesters]
-	list, guarded := policy.SplitRequestersGuard(raw)
+	list, projectGuarded, kindsGuarded := requestersList(tags[policy.TagRequesters])
 	_, project := tags[policy.TagProject]
 	_, channels := tags[policy.TagProjectChannels]
-	switch {
-	case project || channels:
-		if !listed {
-			list = ""
-		}
-		tags[policy.TagRequesters] = policy.WithRequestersGuard(list)
-	case guarded && list == "":
-		delete(tags, policy.TagRequesters)
-	case guarded:
-		tags[policy.TagRequesters] = list
+	_, proxy := tags[policy.TagProxy]
+	_, narrowed := tags[policy.TagProxyNarrowed]
+	wantProject, wantKinds := project || channels, proxy || narrowed
+	if !wantProject && !wantKinds && !projectGuarded && !kindsGuarded {
+		return
 	}
+	if wantProject {
+		list = policy.WithRequestersGuard(list)
+	}
+	if wantKinds {
+		list = policy.WithKindsGuard(list)
+	}
+	if list == "" {
+		delete(tags, policy.TagRequesters)
+		return
+	}
+	tags[policy.TagRequesters] = list
+}
+
+// requestersList is a requesters tag as the broker reads it, without either rollback guard
+// (policy.SplitRequestersGuard, policy.SplitKindsGuard), and whether it held each.
+func requestersList(raw string) (list string, projectGuarded, kindsGuarded bool) {
+	rest, projectGuarded := policy.SplitRequestersGuard(raw)
+	list, kindsGuarded = policy.SplitKindsGuard(rest)
+	return list, projectGuarded, kindsGuarded
 }
 
 // tagRefusal says one cross-tag refusal as the flag that fixes it: reason is what
@@ -542,6 +557,27 @@ func optionalTags(f tagFlags) map[string]string {
 		tags[policy.TagProxyNarrowed] = f.ProxyNarrowed
 	}
 	return tags
+}
+
+// createCommand is the `secret create` command line a create prints for piping its value in
+// (pipeCommand): the name, the owner and tier as the command named them, and every tag flag it
+// named with its value, in the order the usage line lists them. A flag left out of it would be
+// left out of the secret the printed command creates, and a dropped --proxy releases that secret
+// as its value.
+func createCommand(name, owner, tier string, f tagFlags) []string {
+	command := []string{"secret", "create", name, "--owner", owner, "--tier", tier}
+	for _, flag := range []struct{ name, value string }{
+		{"--type", f.Type}, {"--github-owners", f.GitHubOwners}, {"--requesters", f.Requesters},
+		{"--scopes", f.Scopes}, {"--admin", f.Admin}, {"--project", f.Project},
+		{"--project-channels", f.ProjectChannels}, {"--max-grant", f.MaxGrant},
+		{"--default-grant", f.DefaultGrant}, {"--judge", f.Judge}, {"--guidance", f.Guidance},
+		{"--proxy", f.Proxy}, {"--proxy-narrowed", f.ProxyNarrowed},
+	} {
+		if flag.value != "" {
+			command = append(command, flag.name, flag.value)
+		}
+	}
+	return command
 }
 
 // checkDefaultGrant is --default-grant's rule: "session", or none where orNone allows it.

@@ -170,8 +170,9 @@ const microsoftAuthority = "login.microsoftonline.com"
 // authority, as the application and in the tenant name's own document names (app), before the
 // broker puts its federated token in it. host is the host the exchange would be made at, ASCII
 // lower-cased and with its port if it names one, and it must be authority itself
-// (Server.azureAuthority): an azure entry binds other hosts too - the service an access token
-// is spent at - and an exchange made at one of them would hand that host the federated token.
+// (Server.azureAuthority): an azure-login name's kind binds other hosts too - the service an
+// access token is spent at - and an exchange made at one of them would hand that host the
+// federated token.
 // clientIDs is every client_id the exchange's form carries: exactly one, since of two the
 // endpoint and not this check would choose the one that counts. path is the token endpoint's
 // path, which is where the tenant is, and it is read whole - "/", the tenant, then one of the
@@ -290,7 +291,7 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 		return
 	}
 	// The host as this connection reached it: the CONNECT target, which the decision has
-	// already tied to the entry's hosts, the TLS name and the Host header, lower-cased and
+	// already tied to its kind's hosts, the TLS name and the Host header, lower-cased and
 	// with the port a bound connection is opened on left off.
 	host := fold.ASCII(hostHeaderOf(info.target))
 	if err := azureBound(chosen.name, s.azureAuthority, secret.Azure, host, form["client_id"], r.URL.Path); err != nil {

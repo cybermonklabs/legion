@@ -14,10 +14,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
 
@@ -241,37 +243,108 @@ func TestCipherRepositoryNeverReachesTheService(t *testing.T) {
 	}
 }
 
-// TestAPathTwoReadersResolveApartIsRefused: an allow prefix bounds the path the service reads,
-// and a service that merges "//" or decodes "%2F" reads another path than the one the prefix
-// holds, so the proxy refuses a path with an empty segment and a raw path with an encoded slash,
-// 403 in the decision's own words, before anything is sent. Each path is under the kind's /v1/,
-// so the rule that refuses it is the path rule and not the allow list. The control: the same
-// path with one slash is carried.
+// TestAPathTwoReadersResolveApartIsRefused: an allow prefix bounds the path and the method the
+// service reads, and a service that merges "//", decodes "%2F", reads "\" or "%5C" as "/", or takes
+// its method from a "_method" parameter reads another request than the one the allow list holds.
+// So where the kind or the profile has an allow, the proxy refuses a path with an empty segment,
+// an encoded slash or a backslash, and a query with a method override parameter, 403 in the
+// decision's own words, before anything is sent: each refused row's path is under /v1/, which the
+// list allows, so the rule that refuses it is the path or query rule and not the list. Where
+// neither has one there is no prefix to bound, so the same forms go to the service as the command
+// sent them, an object name's "%2F" through the gcp kind included. The controls: the path with one
+// slash, and a parameter whose name only ends in _method, are carried under the allow.
+//
+// The named revert: read the decoded path as the raw one (proxy-raw-path-decoded), and the
+// encoded slash is carried.
 func TestAPathTwoReadersResolveApartIsRefused(t *testing.T) {
-	for _, row := range []struct{ path, reason string }{
-		{"/v1//things", "path has an empty segment"},
-		{"/v1/things//", "path has an empty segment"},
-		{"/v1/ada%2Fproofs", "path has an encoded slash"},
-		{"/v1/ada%2fproofs", "path has an encoded slash"},
-		{"/v1/things", ""},
+	v1 := []proxyrules.Allow{{Method: http.MethodGet, PathPrefix: "/v1/"}, {Method: http.MethodPost, PathPrefix: "/v1/"}}
+	// rules is testRules with kind the kind's allow and profile the binding's own, nil for none.
+	rules := func(kind, profile []proxyrules.Allow) proxyrules.Rules {
+		r := testRules()
+		r.Kinds[0].Allow, r.Names[0].Allow = kind, profile
+		return r
+	}
+	underKind, underProfile, underNone := rules(v1, nil), rules(nil, v1), rules(nil, nil)
+	for _, row := range []struct {
+		name  string
+		rules proxyrules.Rules
+		// target is the path and query as the command sends them. literal sends it as the
+		// request line verbatim (URL.Opaque): a backslash no URL writes, since net/url escapes it.
+		target  string
+		literal bool
+		// reason is the refusal, "" for a request the service is sent as the command wrote it.
+		reason string
+	}{
+		{"an empty segment", underKind, "/v1//things", false, "path has an empty segment"},
+		{"a trailing empty segment", underKind, "/v1/things//", false, "path has an empty segment"},
+		{"an encoded slash", underKind, "/v1/ada%2Fproofs", false, "path has an encoded slash"},
+		{"an encoded slash in lower case", underKind, "/v1/ada%2fproofs", false, "path has an encoded slash"},
+		{"an encoded backslash", underKind, "/v1/ada%5Cproofs", false, "path has a backslash"},
+		{"an encoded backslash in lower case", underKind, "/v1/ada%5cproofs", false, "path has a backslash"},
+		{"a backslash as the command wrote it", underKind, `/v1/ada\proofs`, true, "path has a backslash"},
+		{"a _method parameter", underKind, "/v1/things?_method=DELETE", false, "request carries a method override parameter"},
+		{"a _METHOD parameter after another", underKind, "/v1/things?a=1&_METHOD=PUT", false, "request carries a method override parameter"},
+		{"an encoded _method parameter", underKind, "/v1/things?%5Fmethod=DELETE", false, "request carries a method override parameter"},
+		{"an empty segment under the profile's allow alone", underProfile, "/v1//things", false, "path has an empty segment"},
+		{"a _method parameter under the profile's allow alone", underProfile, "/v1/things?_method=DELETE", false, "request carries a method override parameter"},
+		{"the control: one slash", underKind, "/v1/things", false, ""},
+		{"the control: a parameter whose name ends in _method", underKind, "/v1/things?x_method=PUT", false, ""},
+		{"no allow: an object name's encoded slash", underNone, "/storage/v1/b/b/o/dir%2Fobj", false, ""},
+		{"no allow: an empty segment", underNone, "/a//b", false, ""},
+		{"no allow: an encoded backslash", underNone, "/a%5Cb", false, ""},
+		{"no allow: a _method parameter", underNone, "/v1/things?_method=PUT", false, ""},
 	} {
-		t.Run(row.path, func(t *testing.T) {
-			r := newRig(t, Options{})
-			answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+row.path, "Authorization", "Bearer "+workerPlaceholder)
+		t.Run(row.name, func(t *testing.T) {
+			r := newRuledRig(t, row.rules, Options{})
+			// What the service was sent, as it read the request line: the path as escaped on the
+			// wire, and the query.
+			var forwarded []string
+			var mu sync.Mutex
+			r.answerWith(func(_ http.ResponseWriter, request *http.Request, _ proxyrulestest.Request) bool {
+				mu.Lock()
+				defer mu.Unlock()
+				target := request.URL.EscapedPath()
+				if request.URL.RawQuery != "" {
+					target += "?" + request.URL.RawQuery
+				}
+				forwarded = append(forwarded, target)
+				return false
+			})
+			request, err := http.NewRequest(http.MethodGet, "https://"+boundHost+row.target, nil)
+			if row.literal {
+				request, err = http.NewRequest(http.MethodGet, "https://"+boundHost+"/", nil)
+				if err == nil {
+					request.URL.Opaque = row.target
+				}
+			}
+			if err != nil {
+				t.Fatalf("build GET %s: %v", row.target, err)
+			}
+			request.Header.Set("Authorization", "Bearer "+workerPlaceholder)
+			answer, err := r.client(workerPlaceholder).Do(request)
+			if err != nil {
+				t.Fatalf("GET %s through the proxy: %v", row.target, err)
+			}
+			body := bodyOf(t, answer)
+			mu.Lock()
+			defer mu.Unlock()
 			if row.reason == "" {
-				if answer.StatusCode != http.StatusOK || len(r.requests()) != 1 {
-					t.Fatalf("the control %s answered %d %q with %d calls sent; want 200 and one", row.path, answer.StatusCode, body, len(r.requests()))
+				if answer.StatusCode != http.StatusOK || len(forwarded) != 1 || forwarded[0] != row.target {
+					t.Fatalf("GET %s answered %d %q and the service was sent %q; want 200 and the request as the command wrote it", row.target, answer.StatusCode, body, forwarded)
+				}
+				if got := r.requests()[0].Header.Get("Authorization"); got != "Bearer "+workerValue {
+					t.Errorf("the service was sent Authorization %q; want the value swapped in", got)
 				}
 				return
 			}
 			if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, row.reason) {
-				t.Errorf("GET %s answered %d %q; want 403 naming %q", row.path, answer.StatusCode, body, row.reason)
+				t.Errorf("GET %s answered %d %q; want 403 naming %q", row.target, answer.StatusCode, body, row.reason)
 			}
 			if lines := r.logs.refusals(); len(lines) != 1 || lines[0].fields["code"] != codeNotAllowed || lines[0].fields["reason"] != row.reason {
 				t.Errorf("the refusal logged %+v; want one line, %s, %q", lines, codeNotAllowed, row.reason)
 			}
-			if seen := r.requests(); len(seen) != 0 {
-				t.Errorf("the service saw %d calls; want none", len(seen))
+			if len(forwarded) != 0 {
+				t.Errorf("the service was sent %q; want nothing", forwarded)
 			}
 		})
 	}

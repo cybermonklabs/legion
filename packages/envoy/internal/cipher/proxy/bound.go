@@ -277,7 +277,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// all the same, so a connection that ever reached here on another port carries no
 		// value off it.
 		ConnectPort: info.port,
-		// The three names the decision compares are ASCII lower-cased, as the entry's hosts
+		// The three names the decision compares are ASCII lower-cased, as a kind's hosts
 		// are: host names are case-insensitive and the model compares them exactly, so a
 		// client that wrote "API.example.com" in one of the three is not a mismatch. The fold
 		// is fold.ASCII, ASCII-only for the reason the proxyrules package gives.
@@ -494,7 +494,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Headers of the proxy itself, which belong to this connection and not to the service. The
-	// swap and the signature have already run, so a header the entry names keeps its value and
+	// swap and the signature have already run, so a header the kind names keeps its value and
 	// the signature covers neither of these.
 	header.Del("Proxy-Authorization")
 	header.Del("Proxy-Connection")
@@ -576,7 +576,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 				RawQuery: rawQuery,
 			}
 			// The bound host, wherever the request is sent: the service reads the request as one
-			// to its public name, which a dpop entry's proof names too.
+			// to its public name, which a dpop binding's proof names too.
 			pr.Out.Host = hostHeaderOf(info.target)
 			if way == proxyrules.WayDPoP {
 				// A minted capability's request goes on without any forwarding header the command
@@ -590,10 +590,11 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			}
 			// ReverseProxy drops the command's own Forwarded and X-Forwarded-* headers before
 			// Rewrite runs, for a proxy that writes its own; this one writes none and changes
-			// no header the entry does not name, so they go on as the command sent them, and
-			// as an AWS signature covered them - all but one the command's Connection header
-			// names, which belongs to its connection to the proxy as every header named there
-			// does, and which ReverseProxy dropped for that reason.
+			// no header but the ones the kind names and Cipher-Repository, which it removes, so
+			// they go on as the command sent them, and as an AWS signature covered them - all but
+			// one the command's Connection header names, which belongs to its connection to the
+			// proxy as every header named there does, and which ReverseProxy dropped for that
+			// reason.
 			for _, name := range forwardedHeaders {
 				values, sent := pr.In.Header[name]
 				if sent && !httpguts.HeaderValuesContainsToken(r.Header["Connection"], name) {
@@ -723,7 +724,7 @@ func (c *commandSide) finish() {
 var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
 
 // dpopDroppedHeaders are the forwarding headers ReverseProxy leaves on a request, which a request
-// to a host whose entry is of kind dpop loses in Rewrite: with the four ReverseProxy drops and
+// to a host a dpop binding binds loses in Rewrite: with the four ReverseProxy drops and
 // serveBound does not set back for that kind, they are the six that Dispatch reads a caller's
 // address from (internal/dispatch/routes's forwardingHeaders), so a minted capability's request
 // reaches Dispatch with the broker's address and none the command wrote.
@@ -1070,8 +1071,8 @@ func candidates(rules proxyrules.Rules, grant requests.AirlockConnection, host s
 // function the model calls carries).
 //
 // A request that carries no placeholder of any candidate is still decided, for the first
-// candidate: the entry's hosts, method and path rules apply to it, and it is forwarded with
-// nothing swapped. That is what makes an entry's allow list a bound on the whole connection
+// candidate: its kind's hosts, method and path rules and its profile's apply to it, and it is
+// forwarded with nothing swapped. That is what makes an allow list a bound on the whole connection
 // rather than on the requests that happen to ask for a swap.
 func choosePair(candidates []pair, grant requests.AirlockConnection, request *proxyrules.Request) (chosen pair, holdsPlaceholder bool) {
 	for _, candidate := range candidates {

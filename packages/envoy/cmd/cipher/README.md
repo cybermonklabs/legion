@@ -182,6 +182,19 @@ show` prints it as a `proxy_narrowed:` line, and `--json` carries it as `proxy_n
 for a secret without it. Any other value, and `none` on create, is refused before anything is
 written.
 
+Beside either proxy tag, `create` and `retag` also write the entry `rollback-guard:kinds` into the
+secret's `requesters` tag, after any list it holds and after `rollback-guard:project-tags` where a
+project tag brings that one too, and remove it when neither proxy tag remains. This broker ignores
+the entry. A broker from legion-envoy-v29.23.0, the first to read `requesters`, up to the release
+before the kinds reads no proxy tag, and would release a secret behind the proxy as its value to a
+command; it reads the entry as a requester no deployment can register, and refuses the secret
+(`requesters-malformed`) instead. `secret show` prints the list without the entry and a
+`kinds_rollback_guard: yes|-` line, and `--json` a `kinds_rollback_guard` field: a row whose `proxy`
+or `proxy_narrowed` is not `""` and whose `kinds_rollback_guard` is `false` is a tag written in the
+store's own console, which such a broker would release as its value. On AWS Secrets Manager the
+entry counts toward the 256 characters a tag value holds, so a `requesters` list it would carry
+past 256 is refused before anything is written.
+
 On a machine that runs agents directly, `agent-secrets-helper` (`../cipher-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
 `AGENT_SECRETS_KEY_DIR`.

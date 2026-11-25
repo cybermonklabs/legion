@@ -30,7 +30,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		target = net.JoinHostPort(target, "443")
 	}
 	// The authority, with its host ASCII lower-cased: it is the URL and the Host header of
-	// every request this connection carries, and the one string the entry's hosts and the
+	// every request this connection carries, and the one string a kind's hosts and the
 	// request's own Host header are compared against. The reason quotes it lowercased too, as
 	// every line names a host the command wrote: a command may write anything here, its own
 	// placeholder among it.
@@ -56,7 +56,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		return
 	}
 	// Whether this CONNECT may be decrypted and read: the (name, slot) pairs of the grant
-	// whose entry binds this host on the port the CONNECT named. One answer from the one
+	// whose kind binds this host on the port the CONNECT named. One answer from the one
 	// function that says what is bound (candidates), so a change to what is bound is made in
 	// one place.
 	//
@@ -66,7 +66,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// reaches that service exactly as it reaches every host the rules say nothing about. A minted
 	// capability's grant is the one exception, refused above (mintedHostOnly). The
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
-	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
+	// and the Host header - carries no port, so 443 is the only port a kind's hosts speak
 	// about and another port of one name is another service.
 	bound := len(candidates(s.grants.AirlockRules(), grant, host, connectPort)) > 0
 	// The addresses this name has, read and checked once: the tunnel below dials these and

@@ -52,15 +52,15 @@ func init() {
 	// Register after variable initialization: the handlers use commands for help.
 	secretForms = []secretForm{
 		{command{"secret list", "agent-secrets secret list [--json]",
-			"List every agent secret, under the environment's cloud credential: its name, owner, tier, type,\nproject, project channels, max grant, default grant, whether it has a value, and its deletion\nonce it is deleted, with the earliest purge beside it on Secrets Manager; --json also prints\neach one's store, secret name, github-owners, requesters, scopes, admin mark and whether it\ncarries the project tags' rollback guard, and its created and last-changed times where the\nstore gives them. Name the store the rows are in."}, cmdSecretList},
+			"List every agent secret, under the environment's cloud credential: its name, owner, tier, type,\nproject, project channels, max grant, default grant, whether it has a value, and its deletion\nonce it is deleted, with the earliest purge beside it on Secrets Manager; --json also prints\neach one's store, secret name, github-owners, requesters, scopes, admin mark, proxy kind, proxy\nnarrowing, whether it carries the project tags' rollback guard and the kinds' rollback guard,\nand its created and last-changed times where the store gives them. Name the store the rows are\nin."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json]",
-			"Print an agent secret's name, store, secret name, owner, tier, type, github-owners,\nrequesters, scopes, admin mark, project, project channels, whether it carries the project\ntags' rollback guard, max grant, default grant, its created and last-changed times, its deletion\nonce it is deleted, with the earliest purge beside it on Secrets Manager, and its versions;\n--json prints those and whether it has a value. Never print its value."}, cmdSecretShow},
+			"Print an agent secret's name, store, secret name, owner, tier, type, github-owners,\nrequesters, scopes, admin mark, project, project channels, whether it carries the project\ntags' rollback guard, max grant, default grant, its created and last-changed times, its judge\nand guidance, its proxy kind and proxy narrowing, whether it carries the kinds' rollback\nguard, its deletion once it is deleted, with the earliest purge beside it on Secrets Manager,\nand its versions; --json prints those and whether it has a value. Never print its value."}, cmdSecretShow},
 		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL|group:EMAIL --tier agent|human [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--project KEY] [--project-channels slack] [--max-grant DURATION] [--default-grant session] [--judge SECONDS] [--guidance TEXT] [--proxy KIND] [--proxy-narrowed true]",
-			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email; --owner group:EMAIL names the owning\nGoogle group by its lowercase email. --project KEY makes it a secret of that\nDispatch project: a private project's secret goes only to a session that names the project.\n--project-channels slack marks a Slack bot token: a session whose credential names a private\nproject posts with it only to the Slack channels that project's owner named. Beside either,\nthe requesters tag also holds " + policy.RequestersRollbackGuard + ", which a broker from before\nthose tags refuses rather than serve the secret to every session. --judge SECONDS (1 to 900)\nlets the model judge decide a request for it, granting at most that long, against --guidance\nTEXT; a person decides any other. --proxy KIND names a kind of the broker's profiles\nfile: a session then gets a placeholder, and the broker's proxy puts the credential\ninto the calls the kind allows. --proxy-narrowed true marks a secret served only through\nits one profile, whose allow narrows the kind's. Read its value from standard input, or\ntype it at a prompt with echo off."}, cmdSecretCreate},
+			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email; --owner group:EMAIL names the owning\nGoogle group by its lowercase email. --project KEY makes it a secret of that\nDispatch project: a private project's secret goes only to a session that names the project.\n--project-channels slack marks a Slack bot token: a session whose credential names a private\nproject posts with it only to the Slack channels that project's owner named. Beside either,\nthe requesters tag also holds " + policy.RequestersRollbackGuard + ", which a broker from before\nthose tags refuses rather than serve the secret to every session. --judge SECONDS (1 to 900)\nlets the model judge decide a request for it, granting at most that long, against --guidance\nTEXT; a person decides any other. --proxy KIND names a kind of the broker's profiles\nfile: a session then gets a placeholder, and the broker's proxy puts the credential\ninto the calls the kind allows. --proxy-narrowed true marks a secret served only through\nits one profile, whose allow narrows the kind's. Beside either, the requesters tag also\nholds " + policy.KindsRollbackGuard + ", which a broker from before the kinds refuses rather\nthan release the secret as its value. Read its value from standard input, or\ntype it at a prompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME",
 			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
 		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL|group:EMAIL] [--tier agent|human] [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--project KEY|none] [--project-channels slack|none] [--max-grant DURATION|none] [--default-grant session|none] [--judge SECONDS|none] [--guidance TEXT|none] [--proxy KIND|none] [--proxy-narrowed true|none]",
-			"Change an agent secret's owner, tier, type, GitHub owners, requesters, scopes, admin mark,\nproject, project channels, max grant, default grant, judge, guidance, proxy kind or proxy\nnarrowing under the environment's cloud credential. Then ask the broker to reread it.\nnone removes a type, GitHub owners, requesters, scopes, the admin mark, a project,\nproject channels, a max grant, a default grant, the judge, the guidance, the proxy kind\nor the proxy narrowing, in a retag of its own.\nWhile the secret carries a project or project channels, the requesters tag holds\n" + policy.RequestersRollbackGuard + " after its list, and --requesters none keeps it; it goes with\nthe last of those two tags. An administrator changes a shared secret's owner and tier. This\nCLI cannot tell whether a requesters entry naming a service is one the deployment registers: it\nholds no list of them, so the broker's answer to the reread is what catches an unregistered name,\nprinting its refusal and its reason, and the retag exits 1 with the tag written."}, cmdSecretRetag},
+			"Change an agent secret's owner, tier, type, GitHub owners, requesters, scopes, admin mark,\nproject, project channels, max grant, default grant, judge, guidance, proxy kind or proxy\nnarrowing under the environment's cloud credential. Then ask the broker to reread it.\nnone removes a type, GitHub owners, requesters, scopes, the admin mark, a project,\nproject channels, a max grant, a default grant, the judge, the guidance, the proxy kind\nor the proxy narrowing, in a retag of its own.\nWhile the secret carries a project or project channels, the requesters tag holds\n" + policy.RequestersRollbackGuard + " after its list, and --requesters none keeps it; it goes with\nthe last of those two tags. While it carries a proxy kind or proxy narrowing, the requesters\ntag holds " + policy.KindsRollbackGuard + " after its list and that guard, kept and taken out\nthe same way. An administrator changes a shared secret's owner and tier. This\nCLI cannot tell whether a requesters entry naming a service is one the deployment registers: it\nholds no list of them, so the broker's answer to the reread is what catches an unregistered name,\nprinting its refusal and its reason, and the retag exits 1 with the tag written."}, cmdSecretRetag},
 		{command{"secret delete", "agent-secrets secret delete NAME",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
 		{command{"secret restore", "agent-secrets secret restore NAME",
@@ -1201,9 +1201,9 @@ type secretView struct {
 	Type       string `json:"type"`
 	// GitHubOwners is a github-app secret's github-owners tag, the accounts the broker mints for.
 	GitHubOwners string `json:"github_owners"`
-	// Requesters is the requesters tag without the project tags' rollback guard
-	// (policy.SplitRequestersGuard): the people and services that may ask for the secret at all,
-	// or "" where any session its owner and tier allow may.
+	// Requesters is the requesters tag without either rollback guard (requestersList): the people
+	// and services that may ask for the secret at all, or "" where any session its owner and tier
+	// allow may.
 	Requesters string `json:"requesters"`
 	// Scopes is a google-service-account secret's scopes tag: the OAuth scope names the token it
 	// mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, or
@@ -1227,6 +1227,12 @@ type secretView struct {
 	// exactly one profile whose allow narrows that kind's.
 	Proxy         string `json:"proxy"`
 	ProxyNarrowed string `json:"proxy_narrowed"`
+	// KindsRollbackGuard is whether the requesters tag holds the kinds' rollback guard
+	// (policy.KindsRollbackGuard), which `secret create` and `retag` write beside a proxy or a
+	// proxy-narrowed tag so that a broker from before the kinds refuses the secret. A row whose
+	// proxy or proxy_narrowed is not "" and whose kinds_rollback_guard is false is a tag written
+	// without this CLI, which such a broker would release as its value.
+	KindsRollbackGuard bool `json:"kinds_rollback_guard"`
 	// Project is the dispatch-project tag as the store holds it, the key of the Dispatch project
 	// the secret belongs to, and nil for a secret carrying none, which --json writes as null
 	// (policy.TagProject). It is a pointer so a census of the store's tagged secrets counts the
@@ -1274,7 +1280,7 @@ func (v secretView) withTags(tags map[string]string) secretView {
 	v.Scopes, v.Admin = tags[policy.TagScopes], tags[policy.TagAdmin]
 	v.Judge, v.Guidance = tags[policy.TagJudge], tags[policy.TagGuidance]
 	v.Proxy, v.ProxyNarrowed = tags[policy.TagProxy], tags[policy.TagProxyNarrowed]
-	v.Requesters, v.RollbackGuard = policy.SplitRequestersGuard(tags[policy.TagRequesters])
+	v.Requesters, v.RollbackGuard, v.KindsRollbackGuard = requestersList(tags[policy.TagRequesters])
 	if project, tagged := tags[policy.TagProject]; tagged {
 		v.Project = &project
 	}
@@ -1385,14 +1391,17 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	rollbackGuard := "-"
+	rollbackGuard, kindsGuard := "-", "-"
 	if view.RollbackGuard {
 		rollbackGuard = "yes"
+	}
+	if view.KindsRollbackGuard {
+		kindsGuard = "yes"
 	}
 	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nproject: %s\nproject_channels: %s\nrollback_guard: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
 		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDashPtr(view.Project), orDashPtr(view.ProjectChannels), rollbackGuard, orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
 	fmt.Fprintf(stdout, "judge: %s\nguidance: %s\ndecides: %s\n", orDash(view.Judge), orDash(view.Guidance), whoDecides(view, s.settings))
-	fmt.Fprintf(stdout, "proxy: %s\nproxy_narrowed: %s\n", orDash(view.Proxy), orDash(view.ProxyNarrowed))
+	fmt.Fprintf(stdout, "proxy: %s\nproxy_narrowed: %s\nkinds_rollback_guard: %s\n", orDash(view.Proxy), orDash(view.ProxyNarrowed), kindsGuard)
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",
@@ -1492,7 +1501,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	tags := optionalTags(tagFlags{
+	given := tagFlags{
 		Type:            *secretType,
 		GitHubOwners:    *githubOwners,
 		Requesters:      *requesters,
@@ -1506,7 +1515,8 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		Guidance:        *guidance,
 		Proxy:           *proxyKind,
 		ProxyNarrowed:   *proxyNarrowed,
-	})
+	}
+	tags := optionalTags(given)
 	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
@@ -1520,8 +1530,8 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	tags[policy.TagOwner], tags[policy.TagTier] = ownerValue, *tier
-	// A project tag brings the rollback guard into the requesters tag, after the list named, as
-	// a type brings its own guard (optionalTags).
+	// A project tag and a proxy tag each bring their rollback guard into the requesters tag,
+	// after the list named, as a type brings its own guard (optionalTags).
 	guardRequesters(tags)
 	// The cross-tag rules weigh the owner tag, which me resolves to only once the sign-in is
 	// read, so they are checked here rather than beside the flags — still before the value is
@@ -1535,40 +1545,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err := s.backend.checkTagValues(tags); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
-	command := []string{"secret", "create", name, "--owner", *owner, "--tier", *tier}
-	if *secretType != "" {
-		command = append(command, "--type", *secretType)
-	}
-	if *githubOwners != "" {
-		command = append(command, "--github-owners", *githubOwners)
-	}
-	if *requesters != "" {
-		command = append(command, "--requesters", *requesters)
-	}
-	if *scopes != "" {
-		command = append(command, "--scopes", *scopes)
-	}
-	if *admin != "" {
-		command = append(command, "--admin", *admin)
-	}
-	if *project != "" {
-		command = append(command, "--project", *project)
-	}
-	if *projectChannels != "" {
-		command = append(command, "--project-channels", *projectChannels)
-	}
-	if *maxGrant != "" {
-		command = append(command, "--max-grant", *maxGrant)
-	}
-	if *defaultGrant != "" {
-		command = append(command, "--default-grant", *defaultGrant)
-	}
-	if *judge != "" {
-		command = append(command, "--judge", *judge)
-	}
-	if *guidance != "" {
-		command = append(command, "--guidance", *guidance)
-	}
+	command := createCommand(name, *owner, *tier, given)
 	// Install cleanup before the first store call: a signal can arrive after the store has
 	// created the empty secret but before its answer reaches the form.
 	pending := &pendingCreate{s: s, form: form, name: name, secretType: policy.TypeFromTags(tags), owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}

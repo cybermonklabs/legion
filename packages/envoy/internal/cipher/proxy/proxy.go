@@ -731,7 +731,7 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	r.URL = &forwarded
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
-	// port an entry's hosts speak about, while the refusal below is about no port at all: a
+	// port a kind's hosts speak about, while the refusal below is about no port at all: a
 	// value may not cross in the clear whatever port it was asked for on.
 	if len(candidates(s.grants.AirlockRules(), grant, host, 443)) > 0 {
 		// Plain HTTP to a bound host is refused rather than swapped into: the value would

@@ -9,7 +9,7 @@
 +++ b/packages/envoy/internal/cipher/proxy/bound.go
 @@ -578,6 +578,9 @@
  			// The bound host, wherever the request is sent: the service reads the request as one
- 			// to its public name, which a dpop entry's proof names too.
+ 			// to its public name, which a dpop binding's proof names too.
  			pr.Out.Host = hostHeaderOf(info.target)
 +			// MUTANT: the swap's headers written over the request ReverseProxy stripped of its
 +			// hop-by-hop headers, as before the swap's headers went to it as the request's own.

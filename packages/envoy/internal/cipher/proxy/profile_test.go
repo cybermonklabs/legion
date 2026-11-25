@@ -68,7 +68,7 @@ var profileInstallations = map[string]int64{"acme": 41, "ada": 42}
 const profileKind = "github"
 
 // profileKindsJSON is the kinds part of every profiles file of these rows.
-const profileKindsJSON = `[{"name": "` + profileKind + `", "hosts": ["` + boundHost + `"], "ways": ["swap", "mint", "app-token"]}]`
+const profileKindsJSON = `[{"name": "` + profileKind + `", "hosts": ["` + boundHost + `"], "ways": ["swap", "mint"]}]`
 
 // readProfile is the profiles file of the one profile under profileKindsJSON: permissions
 // (readOnly, contents and metadata read, unless a row edits them) on both accounts, the value form

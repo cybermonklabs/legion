@@ -12,19 +12,21 @@ import (
 )
 
 // TestCreateAndRetagWriteTheProxyTags: create --proxy KIND and --proxy-narrowed true write the
-// secret's proxy and proxy-narrowed tags beside its owner and tier and nothing else, on each
-// store. Retag writes each beside every tag the secret already holds, a type, its GitHub owners
-// and rollback guard, requesters, an admin mark, a max grant, a default grant, a judge and a
-// guidance among them, and changes none of those; --proxy none and --proxy-narrowed none each
-// remove their own tag and leave the rest, and a removal beside another change is refused before
-// anything is written, since it is a retag of its own.
+// secret's proxy and proxy-narrowed tags beside its owner and tier and the kinds' rollback guard,
+// which a requesters tag of the guard alone carries, and nothing else, on each store. Retag writes
+// each beside every tag the secret already holds, a type, its GitHub owners and rollback guard,
+// requesters, an admin mark, a max grant, a default grant, a judge and a guidance among them, and
+// changes none of those but the requesters tag, which holds the kinds' guard after its list while
+// either proxy tag remains; --proxy none and --proxy-narrowed none each remove their own tag and
+// leave the rest, the last of them the guard too, and a removal beside another change is refused
+// before anything is written, since it is a retag of its own.
 func TestCreateAndRetagWriteTheProxyTags(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "probe-value")
 		if _, stderr, code := runSecret("create", "PROXIED_KEY", "--owner", "me", "--tier", "agent", "--proxy", "github"); code != 0 {
 			t.Fatalf("create --proxy github: exit %d, stderr %q", code, stderr)
 		}
-		want := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent, policy.TagProxy: "github"}
+		want := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent, policy.TagProxy: "github", policy.TagRequesters: policy.KindsRollbackGuard}
 		if got := store.tags(t, "PROXIED_KEY"); !maps.Equal(got, want) {
 			t.Fatalf("PROXIED_KEY's tags = %v, want exactly %v", got, want)
 		}
@@ -33,7 +35,7 @@ func TestCreateAndRetagWriteTheProxyTags(t *testing.T) {
 		if _, stderr, code := runSecret("create", "NARROWED_KEY", "--owner", "me", "--tier", "human", "--proxy", "anthropic", "--proxy-narrowed", "true"); code != 0 {
 			t.Fatalf("create --proxy anthropic --proxy-narrowed true: exit %d, stderr %q", code, stderr)
 		}
-		want = map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagProxy: "anthropic", policy.TagProxyNarrowed: policy.ProxyNarrowedTrue}
+		want = map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagProxy: "anthropic", policy.TagProxyNarrowed: policy.ProxyNarrowedTrue, policy.TagRequesters: policy.KindsRollbackGuard}
 		if got := store.tags(t, "NARROWED_KEY"); !maps.Equal(got, want) {
 			t.Fatalf("NARROWED_KEY's tags = %v, want exactly %v", got, want)
 		}
@@ -48,9 +50,12 @@ func TestCreateAndRetagWriteTheProxyTags(t *testing.T) {
 		held[policy.TagJudge] = "600"
 		held[policy.TagGuidance] = "grant for the release job"
 		store.put(t, "API_KEY", held, policytest.TypeValue(policy.TypeGitHubApp))
+		// with is the tags held, with tags written over them and the kinds' guard after the
+		// requesters list, as a secret behind the proxy holds it.
 		with := func(tags map[string]string) map[string]string {
 			out := maps.Clone(held)
 			maps.Copy(out, tags)
+			out[policy.TagRequesters] = policy.WithKindsGuard(held[policy.TagRequesters])
 			return out
 		}
 		for _, step := range []struct {
