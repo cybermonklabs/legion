@@ -92,7 +92,7 @@ func TestAPersonsDoneClosesAndSaysWhatWaited(t *testing.T) {
 	rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
 	defect := rig.seedDefect(waitRoot, "the retro found the cache key unchecked")
 
-	rig.fact(intake.DispatchIssue{Key: waitRoot, Seq: 2, Type: "issue.closed", Status: "done", Title: "root", Rank: "U"})
+	rig.fact(intake.DispatchIssue{Key: waitRoot, ResolvedRepo: waitRepo, Seq: 2, Type: "issue.closed", Status: "done", Title: "root", Rank: "U"})
 	// The record's status is admission's to write (its recordObservation), which this rig stubs.
 	if got := issueAt(t, rig.pool, waitRoot); got != phase.Done {
 		t.Fatalf("%s stands at %s after a person's done, want done", waitRoot, got)
