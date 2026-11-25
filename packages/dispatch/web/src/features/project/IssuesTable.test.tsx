@@ -1836,6 +1836,36 @@ test("with the agent registry refused, the header filters draw every count it do
   expect(claims.filter((name) => /, \d+ issues?$/.test(name))).toEqual(["Nobody, 2 issues"]);
 });
 
+// With Nobody or lapsed picked and `/api/v1/agents` still pending, the listed rows can still
+// change when the registry answers, so no column draws a count until the registry settles.
+test("with Nobody or lapsed picked, no header filter draws a count while the agent registry is pending", async () => {
+  const user = userEvent.setup();
+  const registry = Promise.withResolvers<Agent[]>();
+  const gone: IssueSummary["claim"] = {
+    actor: { kind: "session", id: "session-gone", origin: { session_title: "Gone holder" } },
+    at: "2026-09-10T00:00:00Z",
+  };
+  table(
+    [
+      issue("CORE-1", { assignee: "alice", priority: 1 }),
+      issue("CORE-2", { assignee: "bob", claim: gone, priority: 2 }),
+    ],
+    "?unclaimed=1",
+    { agents: registry.promise }
+  );
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  for (const header of ["Assignee", "Priority", "Claimed by"]) {
+    const names = await headerOptions(user, header);
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) expect(name).not.toMatch(/, \d+ issues?$/);
+  }
+  registry.resolve([]);
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  expect(await headerOptions(user, "Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
+  expect(await headerOptions(user, "Priority")).toEqual(["P1, 1 issue", "P2, 1 issue"]);
+  expect(await headerOptions(user, "Claimed by")).toContain("Nobody or lapsed, 2 issues");
+});
+
 test("an open epic is an ordinary row, and a group heading only when grouped by Epic", async () => {
   const user = userEvent.setup();
   table([

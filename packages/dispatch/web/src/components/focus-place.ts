@@ -506,6 +506,30 @@ export function landWhole(element: HTMLElement): boolean {
   return land(element, () => showWhole(element, clips, false));
 }
 
+/** Scrolls every clipping box around `element` and the window the least distance that shows
+ *  `element` whole, below `head` if given, ignoring CSS scroll padding. When `origin` is given,
+ *  its box moves to the closest position to `origin.top` that still fits `element`, rather than
+ *  anchoring to an approximate virtual jump. */
+export function scrollToNearest(
+  element: Element,
+  head: Element | null = null,
+  origin?: { readonly box: HTMLElement; readonly top: number }
+): void {
+  const boxes = clippingBoxes(element);
+  const headBox = head === null ? undefined : boxes.find((box) => box.contains(head));
+  for (const box of boxes) {
+    const sight = belowHead(scrollportOf(box), box === headBox ? head : null);
+    const drawn = boxOf(element, undefined);
+    const from = box === origin?.box ? origin.top - box.scrollTop : 0;
+    scrollNearestIn(box, drawn, sight, from);
+  }
+  scrollNearestIn(
+    window,
+    boxOf(element, undefined),
+    belowHead(viewport(), headBox === undefined ? head : null)
+  );
+}
+
 /** Lands the selection bar's target at its nearest visible edge, ignoring CSS scroll padding.
  *  The table can supply the scroll position before it had to draw a virtual row: show the
  *  measured checkbox at the closest position to that starting point, not to the draw's jump. */
@@ -514,21 +538,9 @@ export function landNearest(
   head: Element | null = null,
   origin?: { readonly box: HTMLElement; readonly top: number }
 ): boolean {
-  const boxes = clippingBoxes(element);
-  const headBox = head === null ? undefined : boxes.find((box) => box.contains(head));
   let firstOrigin = origin;
   return land(element, () => {
-    for (const box of boxes) {
-      const sight = belowHead(scrollportOf(box), box === headBox ? head : null);
-      const drawn = boxOf(element, undefined);
-      const from = box === firstOrigin?.box ? firstOrigin.top - box.scrollTop : 0;
-      scrollNearestIn(box, drawn, sight, from);
-    }
-    scrollNearestIn(
-      window,
-      boxOf(element, undefined),
-      belowHead(viewport(), headBox === undefined ? head : null)
-    );
+    scrollToNearest(element, head, firstOrigin);
     firstOrigin = undefined;
   });
 }

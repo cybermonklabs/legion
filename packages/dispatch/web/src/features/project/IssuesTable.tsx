@@ -494,18 +494,17 @@ export function IssuesTable({
   );
   // A header filter's count is drawn once every read it counts has answered, and a read it does
   // not count never hides it. Every count counts the rows the table waits on (`counted`), as the
-  // chip does: never the open issues alone while the closed ones it asked for are out. Which
-  // claims have lapsed is the agent registry's answer, so every Claimed by value but Nobody -
-  // Nobody or lapsed, and each holder - also waits until the registry's latest read has succeeded
-  // (`known`): before its first answer and after a read that failed, no session's claim reads
-  // lapsed (`claimIsTakeable`), and those values draw no count rather than one the registry has
-  // not decided. Nobody counts the issues no one claims, and every other filter counts the rows
-  // the table lists, which count every claim as held until the registry is known; neither waits
-  // for the registry, so each draws its count once the issues answer, whether the registry
-  // answered, is still out or failed.
+  // chip does: never the open issues alone while the closed ones it asked for are out. While a
+  // Nobody-or-lapsed narrowing is active (`wantsFree`) and the agent registry's first read is
+  // still pending (`registryPending`), the listed rows can still change when the registry answers,
+  // so no column draws a count. Once the registry answers or settles on its error (where the page
+  // shows `unclaimed-unchecked` and counts every claim as held), each count that the registry does
+  // not decide draws: every other column, and Claimed by's Nobody. Every other Claimed by value -
+  // Nobody or lapsed, and each holder - still waits until the registry's latest read has succeeded
+  // (`known`), since only it decides which claims have lapsed (`claimIsTakeable`).
+  const registryPending = wantsFree && !registry.known && !registry.isError;
   const filterCounted = (column: string, value: string) =>
-    counted && (column !== "claim" || value === NOBODY_FACET || registry.known);
-
+    counted && !registryPending && (column !== "claim" || value === NOBODY_FACET || registry.known);
   const visibleColumns = table.getVisibleLeafColumns().length + (rowActions ? 1 : 0);
   // A column filter's panel hangs off its header and goes with the table: it is closed then, as
   // a panel whose anchor has left the page closes (`AnchoredPanel`), so the table coming back
