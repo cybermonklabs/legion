@@ -179,10 +179,20 @@ func runPackages(dir string, rows []row, rowTimeout time.Duration, keep string, 
 	return runs, os.WriteFile(filepath.Join(keep, "go-steps.tsv"), []byte(steps.String()), 0o644)
 }
 
+// bunPackage is the package directory a Bun row's file is run from: its first two path elements
+// (packages/<name>) where it has more than two, and the file itself otherwise, which then names no
+// package directory and fails as a run, never as an index out of range.
+func bunPackage(file string) string {
+	if parts := strings.SplitN(file, "/", 3); len(parts) == 3 {
+		return parts[0] + "/" + parts[1]
+	}
+	return file
+}
+
 // runBunFiles runs bun test on each Bun file of rows, in the order of their names, in the file's
-// package (the first two parts of its path), with Bun's JUnit reporter, and keeps each run's
-// record in keep. The verdicts read the report rather than Bun's console, which prints no line for
-// a passing test where AGENT or CLAUDECODE is set, as it is in an agent's shell.
+// package (bunPackage), with Bun's JUnit reporter, and keeps each run's record in keep. The
+// verdicts read the report rather than Bun's console, which prints no line for a passing test
+// where AGENT or CLAUDECODE is set, as it is in an agent's shell.
 func runBunFiles(repo string, rows []row, keep string) ([]bunRun, error) {
 	files := make([]string, 0, len(rows))
 	for _, r := range rows {
@@ -193,10 +203,7 @@ func runBunFiles(repo string, rows []row, keep string) ([]bunRun, error) {
 	var steps strings.Builder
 	runs := make([]bunRun, 0, len(files))
 	for i, file := range files {
-		pkg := file
-		if parts := strings.SplitN(file, "/", 3); len(parts) == 3 {
-			pkg = parts[0] + "/" + parts[1]
-		}
+		pkg := bunPackage(file)
 		report := filepath.Join(keep, fmt.Sprintf("bun-%d.xml", i))
 		if err := os.Remove(report); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, err

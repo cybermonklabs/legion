@@ -620,7 +620,7 @@ func baselinePassed(gated []*row, longest time.Duration, longestRow string, rowT
 }
 
 func (g *gate) runBun(copyDir string, r *row, res result, start time.Time) result {
-	pkg := strings.Join(strings.SplitN(r.File, "/", 3)[:2], "/")
+	pkg := bunPackage(r.File)
 	report := filepath.Join(g.work, "junit.xml")
 	_ = os.Remove(report)
 	res.bound = g.rowTimeout
