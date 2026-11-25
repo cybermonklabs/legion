@@ -491,7 +491,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
-		return Installation{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
+		return Installation{}, fmt.Errorf("GET %s: %s", ShownBody(target.name), StatusText(status, body.Words().String()))
 	}
 	var payload installationPayload
 	if err := body.Decode(&payload); err != nil {
@@ -776,7 +776,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	}
 	if c.limits == nil {
 		if limited := RateLimit(status, header, body); limited != nil {
-			noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
+			noteFailure(ctx, limitNoted(http.MethodPost, target.name, limited))
 		}
 		return body, status, header, nil
 	}
@@ -787,7 +787,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	c.recordGraphQLLimit(ctx, installation, limited, secondary)
 	// Noted once recorded, so the cause carries the wait every process now holds, which a strike
 	// can make longer than GitHub's own.
-	noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
+	noteFailure(ctx, limitNoted(http.MethodPost, target.name, limited))
 	return body, status, header, limited
 }
 
@@ -865,7 +865,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		return cachedToken{}, limited
 	}
 	if status != http.StatusCreated {
-		return cachedToken{}, fmt.Errorf("POST %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
+		return cachedToken{}, fmt.Errorf("POST %s: %s", ShownBody(target.name), StatusText(status, body.Words().String()))
 	}
 	var payload struct {
 		Token       string        `json:"token"`
@@ -917,7 +917,7 @@ func (c *Client) CheckSource(ctx context.Context, owner, repo string) (Source, e
 		return Source{}, fmt.Errorf("%w: its token cannot read %s/%s", ErrNoInstallation, owner, repo)
 	}
 	if status != http.StatusOK {
-		return Source{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
+		return Source{}, fmt.Errorf("GET %s: %s", ShownBody(target.name), StatusText(status, body.Words().String()))
 	}
 	return Source{InstallationID: installation.ID, AppSlug: installation.AppSlug}, nil
 }
@@ -934,30 +934,44 @@ func (c *Client) TokenScope(token string) string {
 	return ""
 }
 
-// target is the URL of a call at ref, an API path with its own query where it has one: ref joined
-// onto the API origin (base, urljoin.JoinURL), the origin's path with ref's path joined onto it,
-// the origin's query first and ref's after it, user information, host and port kept, and no
-// fragment. Every call of this package asks the URL this builds. ref appended to the origin's
-// text would sit inside the origin's query where it has one, which would ask GitHub the origin's
-// own path with the query's last value changed; the deliveries listing's next page link is the
-// one URL this package asks that it does not build, GitHub's own, held to this origin (nextLink).
+// call is one request this package sends: url, the URL it asks, and name, the URL as every error
+// of this package names the request (target, nextCall). The API base can carry a credential in
+// its user information or its query, and url holds both, so no error prints url.
+type call struct{ url, name string }
+
+// target is the call at ref, an API path with its own query where it has one.
+//
+// Its url is ref joined onto the API origin (base, urljoin.JoinURL): the origin's path with ref's
+// path joined onto it, the origin's query first and ref's after it, user information, host and
+// port kept, and no fragment. Every call of this package asks the URL this builds. ref appended to
+// the origin's text would sit inside the origin's query where it has one, which would ask GitHub
+// the origin's own path with the query's last value changed; the deliveries listing's next page
+// link is the one URL this package asks that it does not build, GitHub's own, held to this origin
+// (nextLink, nextCall).
+//
+// Its name is the origin as the URL rule names a URL a request asked (redact.AskedURL: its scheme,
+// host and path, never its user information, query or fragment) with ref after it, the route
+// Dispatch built, query included: what the request asked, without what the configured origin
+// carries. The rule's name of the whole url would leave out the route's query (a listing's page)
+// and print as redact.NotPrinted any path the rule refuses, a tree's `<sha>:<dir>` and a branch
+// with a '/' (%2F) among them, so an error of Dir would name no repository.
 //
 // A ref this package writes is fixed text and elements url.PathEscape wrote, which draws no
 // error. A caller's own path (Read) that is no relative reference, or that holds a scheme, a
 // host or a fragment, is urljoin.ErrRef, whose words quote neither the path nor the origin.
-func (c *Client) target(ref string) (string, error) {
+func (c *Client) target(ref string) (call, error) {
 	joined, err := urljoin.JoinURL(c.base, ref)
 	if err != nil {
-		return "", fmt.Errorf("the GitHub API path of the call: %w", err)
+		return call{}, fmt.Errorf("the GitHub API path of the call: %w", err)
 	}
-	return joined.String(), nil
+	return call{url: joined.String(), name: strings.TrimSuffix(redact.AskedURL(c.base), "/") + ref}, nil
 }
 
-func (c *Client) do(ctx context.Context, scope, method, target, authorization string) (redact.Answer, int, http.Header, error) {
+func (c *Client) do(ctx context.Context, scope, method string, target call, authorization string) (redact.Answer, int, http.Header, error) {
 	return c.doLimited(ctx, scope, method, target, authorization, responseLimit)
 }
 
-func (c *Client) doLimited(ctx context.Context, scope, method, target, authorization string, limit int64) (redact.Answer, int, http.Header, error) {
+func (c *Client) doLimited(ctx context.Context, scope, method string, target call, authorization string, limit int64) (redact.Answer, int, http.Header, error) {
 	return c.request(ctx, scope, method, target, authorization, mediaTypeJSON, "", nil, limit)
 }
 
@@ -973,7 +987,7 @@ func (c *Client) doLimited(ctx context.Context, scope, method, target, authoriza
 // no process sends GitHub anything under that scope before the wait ends. Every REST call of this
 // package goes through here. GraphQL calls send itself and reads, notes and records the limit in
 // its answer itself, which is another detection and another scope (recordGraphQLLimit).
-func (c *Client) request(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) (redact.Answer, int, http.Header, error) {
+func (c *Client) request(ctx context.Context, scope, method string, target call, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) (redact.Answer, int, http.Header, error) {
 	responseBody, status, header, err := c.send(ctx, scope, method, target, authorization, accept, ifNoneMatch, body, limit)
 	if err != nil {
 		return responseBody, status, header, err
@@ -982,7 +996,7 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	if limited == nil {
 		return responseBody, status, header, nil
 	}
-	noteFailure(ctx, limitNoted(method, target, limited))
+	noteFailure(ctx, limitNoted(method, target.name, limited))
 	if c.limits != nil && scope != "" {
 		// Recorded past the caller's own end: see limitRecordContext.
 		record, cancel := limitRecordContext(ctx)
@@ -1011,12 +1025,15 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 // held limit (noted, though nothing was sent), a 5xx and a 401. A context with no attempt changes
 // nothing.
 //
-// Each error send words itself names target as ShownBody shows it. A target holds names Dispatch
-// keeps and text GitHub gave (a blob's sha from a tree answer, a next page link), so none of them
-// passes the bound in send's words. A request that got no answer also names the URL it asked as
-// redact.Unanswered names it, whose path is not cut: a next page link's is at most
-// nextLinkMaxBytes.
-func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) (redact.Answer, int, http.Header, error) {
+// Each error send words itself names the call by its name (target), as ShownBody shows it: a
+// name holds names Dispatch keeps and text GitHub gave (a blob's sha from a tree answer, a next
+// page link's path), so none of them passes the bound in send's words. A request that got no
+// answer also names the URL it asked as redact.Unanswered names it, whose path is not cut: a next
+// page link's is at most nextLinkMaxBytes. The build of a request names no more of url than the
+// call's name: url is a URL urljoin.JoinURL wrote or a link nextLink parsed, which
+// http.NewRequestWithContext parses as url.Parse does, so its error is never url.Parse's, which
+// would quote url whole.
+func (c *Client) send(ctx context.Context, scope, method string, target call, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) (redact.Answer, int, http.Header, error) {
 	if c.limits != nil && scope != "" {
 		wait, recorded, err := c.limits.Wait(ctx, scope)
 		switch {
@@ -1030,9 +1047,9 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	}
 	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(bounded, method, target, body)
+	request, err := http.NewRequestWithContext(bounded, method, target.url, body)
 	if err != nil {
-		return redact.Answer{}, 0, nil, fmt.Errorf("build %s %s: %w", method, ShownBody(target), ShownErr(err))
+		return redact.Answer{}, 0, nil, fmt.Errorf("build %s %s: %w", method, ShownBody(target.name), ShownErr(err))
 	}
 	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Accept", accept)
@@ -1045,7 +1062,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	githubreads.NoteSent(ctx)
 	response, err := c.http.Do(request)
 	if err != nil {
-		err = fmt.Errorf("%s %s: %w", method, ShownBody(target), redact.Unanswered(err, request, ""))
+		err = fmt.Errorf("%s %s: %w", method, ShownBody(target.name), redact.Unanswered(err, request, ""))
 		noteFailure(ctx, err)
 		return redact.Answer{}, 0, nil, err
 	}
@@ -1057,12 +1074,12 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	// for, which its caller decodes (redact.Answer.Decode).
 	responseBody, err := redact.ReadAnswer(response, limit)
 	if errors.Is(err, redact.ErrAnswerTooLarge) {
-		err := fmt.Errorf("%s %s: %w", method, ShownBody(target), &ResponseTooLargeError{Limit: limit})
+		err := fmt.Errorf("%s %s: %w", method, ShownBody(target.name), &ResponseTooLargeError{Limit: limit})
 		noteFailure(ctx, err)
 		return redact.Answer{}, 0, nil, err
 	}
 	if err != nil {
-		err = fmt.Errorf("read %s %s response: %w", method, ShownBody(target), ShownErr(err))
+		err = fmt.Errorf("read %s %s response: %w", method, ShownBody(target.name), ShownErr(err))
 		noteFailure(ctx, err)
 		return redact.Answer{}, 0, nil, err
 	}
@@ -1071,7 +1088,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	// point and a failure at another (a 404 is a deleted repository to one caller and a wrong
 	// workflow path to the next), and only the caller can tell the two apart.
 	if status := response.StatusCode; status/100 == 5 || status == http.StatusUnauthorized {
-		noteFailure(ctx, &failedAnswer{method: method, target: target, status: status, detail: responseBody.Words().String()})
+		noteFailure(ctx, &failedAnswer{method: method, name: target.name, status: status, detail: responseBody.Words().String()})
 	}
 	return responseBody, response.StatusCode, response.Header, nil
 }
@@ -1087,13 +1104,14 @@ func noteFailure(ctx context.Context, err error) {
 }
 
 // failedAnswer is an answer send, request or GraphQL notes as a failure, worded as the client's
-// own errors are: "<METHOD> <target>: status <n>: <body>" (StatusText) for a 5xx or a 401, and
-// "<METHOD> <target>: rate-limited by GitHub (status <n>), next request in <wait>: <body>" for a
-// limit GitHub answered (limitNoted, RateLimitError), each with target as ShownBody shows it, as
-// send shows it, and each ending at its head where there is no body (withBody). Its text is made
-// only where the note can still become a cause (githubreads.NoteFailure), so a request outside the
-// leased passes formats nothing. The target carries no token: every token travels in the
-// Authorization header.
+// own errors are: "<METHOD> <name>: status <n>: <body>" (StatusText) for a 5xx or a 401, and
+// "<METHOD> <name>: rate-limited by GitHub (status <n>), next request in <wait>: <body>" for a
+// limit GitHub answered (limitNoted, RateLimitError), each with name, the call's name (target),
+// as ShownBody shows it, as send shows it, and each ending at its head where there is no body
+// (withBody). Its text is made only where the note can still become a cause
+// (githubreads.NoteFailure), so a request outside the leased passes formats nothing. The name
+// carries no token: every token travels in the Authorization header, and the name holds nothing
+// the API base carries in its user information or its query.
 //
 // Its text carries a body only as StatusText and RateLimitError word one, never at a 2xx status:
 // for a 5xx or a 401 detail, the body send read as the rule prints it (redact.Answer.Words), and
@@ -1105,9 +1123,9 @@ func noteFailure(ctx context.Context, err error) {
 // CI reconcile's stop.ended, and the redelivery sweep's "a GitHub rate limit stopped the webhook
 // redelivery sweep" (Sweeper.sweepAndReport).
 type failedAnswer struct {
-	method, target string
-	status         int
-	detail         string
+	method, name string
+	status       int
+	detail       string
 	// limit is the limit GitHub answered, nil for a 5xx or a 401, and never a held one, which is
 	// noted as it is.
 	limit *RateLimitError
@@ -1115,18 +1133,18 @@ type failedAnswer struct {
 
 func (f *failedAnswer) Error() string {
 	if f.limit != nil {
-		return f.method + " " + ShownBody(f.target) + ": " + f.limit.Error()
+		return f.method + " " + ShownBody(f.name) + ": " + f.limit.Error()
 	}
-	return f.method + " " + ShownBody(f.target) + ": " + StatusText(f.status, f.detail)
+	return f.method + " " + ShownBody(f.name) + ": " + StatusText(f.status, f.detail)
 }
 
-// limitNoted is the client's note of limited, a limit GitHub answered method's request to target
-// with (request, GraphQL), worded by limited's own text: GitHub's refusal, or at a 2xx GitHub's
-// wording of the limit and nothing of the answer's data (RateLimitError). It notes no held limit,
-// which is noted as its own error (send, GraphQL), and none of the limits a loop words itself
-// (failedAnswer).
-func limitNoted(method, target string, limited *RateLimitError) *failedAnswer {
-	return &failedAnswer{method: method, target: target, limit: limited}
+// limitNoted is the client's note of limited, a limit GitHub answered method's request to the call
+// named name with (request, GraphQL), worded by limited's own text: GitHub's refusal, or at a 2xx
+// GitHub's wording of the limit and nothing of the answer's data (RateLimitError). It notes no
+// held limit, which is noted as its own error (send, GraphQL), and none of the limits a loop
+// words itself (failedAnswer).
+func limitNoted(method, name string, limited *RateLimitError) *failedAnswer {
+	return &failedAnswer{method: method, name: name, limit: limited}
 }
 
 // Ref resolves branch to its commit SHA under an installation token
@@ -1157,7 +1175,7 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 		return "", fmt.Errorf("%w: %s on %s/%s", ErrNoBranch, branch, owner, repo)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
+		return "", fmt.Errorf("GET %s: %s", ShownBody(target.name), StatusText(status, body.Words().String()))
 	}
 	// The SHA is GitHub's one line, sent back to GitHub in the next read: it leaves the answer
 	// only where the rule prints it as it came (RemoteText.SendBack).
@@ -1195,7 +1213,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 	case http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
 		return "", noBranch
 	default:
-		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
+		return "", fmt.Errorf("GET %s: %s", ShownBody(target.name), StatusText(status, body.Words().String()))
 	}
 	var ref struct {
 		Ref    string `json:"ref"`
@@ -1258,7 +1276,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		return Dir{}, nil
 	}
 	if status != http.StatusOK {
-		return Dir{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
+		return Dir{}, fmt.Errorf("GET %s: %s", ShownBody(target.name), StatusText(status, body.Words().String()))
 	}
 	var tree struct {
 		SHA       string `json:"sha"`
@@ -1322,9 +1340,9 @@ func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listin
 
 // blob reads the blob sha, the file at path, under token, at repoRef, the repository's own API
 // path. sha and path come from GitHub's tree answer (Dir), so every error blob answers shows sha,
-// path and the target that holds sha as ShownBody shows GitHub's text: blob's own errors, send's
-// (which shows its target so), and notes.CheckSize's, which blob gives the path as ShownBody
-// shows it.
+// path and the name of the call that holds sha (target) as ShownBody shows GitHub's text: blob's
+// own errors, send's (which shows the call's name so), and notes.CheckSize's, which blob gives the
+// path as ShownBody shows it.
 func (c *Client) blob(ctx context.Context, token, repoRef, path, sha string) ([]byte, error) {
 	target, err := c.target(repoRef + "/git/blobs/" + url.PathEscape(sha))
 	if err != nil {
@@ -1335,7 +1353,7 @@ func (c *Client) blob(ctx context.Context, token, repoRef, path, sha string) ([]
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("GET %s (%s): %s", ShownBody(target), ShownBody(path), StatusText(status, body.Words().String()))
+		return nil, fmt.Errorf("GET %s (%s): %s", ShownBody(target.name), ShownBody(path), StatusText(status, body.Words().String()))
 	}
 	var payload struct {
 		Content  string `json:"content"`
