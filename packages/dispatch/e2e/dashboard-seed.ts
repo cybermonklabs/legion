@@ -8,11 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { LegionIssueResponse } from "@legion/contracts";
-import {
-  LEGION_CLAIM_STATES,
-  type LegionClaimState,
-  type LegionPhase,
-} from "@legion/contracts/legion-api";
+import type { LegionClaimState, LegionPhase } from "@legion/contracts/legion-api";
 import type { Actor } from "../web/src/api/types";
 import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
 import { compareTimestamps } from "../web/src/lib/timestamps";
@@ -164,10 +160,31 @@ export interface LegionStateSeed {
   readonly roles: readonly SeededRole[];
 }
 
+/** Each claim state the daemon names (`LEGION_CLAIM_STATES`), in its order. The seed takes the
+ *  contract's type alone: a Node run of Playwright resolves `@legion/contracts/legion-api` to a
+ *  file that `build:contracts` does not write, and the `Record` keeps this list whole, since the
+ *  type check refuses it where the contract gains or drops a state. */
+const DAEMON_CLAIM_STATES: Readonly<Record<LegionClaimState, true>> = {
+  queued: true,
+  launch_uncertain: true,
+  launching: true,
+  shim_connected: true,
+  registered: true,
+  ready: true,
+  working: true,
+  idle: true,
+  suspended: true,
+  failed: true,
+  retired: true,
+};
+
 /** A role holding each claim state the daemon names, and one it does not, in the order the
  *  daemon lists them: the agents part reads each in its role words, and leaves out `retired`. */
 export const EVERY_CLAIM_STATE: readonly SeededRole[] = [
-  ...LEGION_CLAIM_STATES.map((state) => ({ role: `role-${state.replaceAll("_", "-")}`, state })),
+  ...(Object.keys(DAEMON_CLAIM_STATES) as LegionClaimState[]).map((state) => ({
+    role: `role-${state.replaceAll("_", "-")}`,
+    state,
+  })),
   { role: "role-unlisted", state: UNLISTED },
 ];
 
