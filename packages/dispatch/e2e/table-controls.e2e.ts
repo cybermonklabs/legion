@@ -11294,3 +11294,114 @@ test("with the agent list refused, the project List's header filters draw each c
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// INFRA-3135, round 27 (the tester's), by the architect's ruling of 2026-11-25 04:59Z: a reader
+// who has gone elsewhere while a Board move's dry run is out keeps the focus where they put it,
+// and the body counts as the place the press left only when the press's own card went away.
+// Measured at 7deb75af in builds Job infra-3135-f-h1-qgpz2 and at 5ae79d88 in
+// infra-3135-f-b1-q7ttr, in Chromium, Firefox and WebKit at 1440x900 and 390x664: a child's card
+// moved by Shift+L (moved at once) or a parent's by Shift+H (asked, then Unlink them), with the
+// rule's dry run held and a Tab meanwhile that lands on the moving card's own link, ends on the
+// body once the move lands at 7deb75af, where 5ae79d88 takes it to the moved card. The move
+// draws the card in its new column, which takes the link away with the card, and the move sets
+// no focus to follow it: it does so only while the focus is the card itself, or the question
+// took it from the card itself (features/project/IssueBoard.tsx:644, 1cb2c03e), and a focus on a
+// control inside the card is neither, so the effect at :551 has no plan to run.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): eight projects of three issues on the Board, and eight keyboard moves with held dry runs.
+test("a Tab onto the moving card's own link while a Board move's dry run is out leaves the focus on the moved card once the move lands, as the same move with the focus left on the card does, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  // Every dry run of a status change sent while `holding` is held until the row lets it through.
+  let holding = false;
+  const held: Route[] = [];
+  await page.route(/\/api\/v1\/issues\/[^/?]+\/status-change$/, async (route) => {
+    const dryRun = (route.request().postData() ?? "").includes('"dry_run":true');
+    if (!holding || !dryRun) return route.fallback();
+    held.push(route);
+  });
+  /** What holds the keyboard focus: the moved card, the body, or the focused element's tag and
+   *  name. */
+  const focusName = (moved: string) =>
+    page.evaluate((moved) => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) return "the body";
+      if (focused.matches(`[data-board-card="${moved}"]`)) return "the moved card";
+      const words = (focused.getAttribute("aria-label") || focused.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 40);
+      return `${focused.tagName.toLowerCase()} "${words}"`;
+    }, moved);
+  const got: string[] = [];
+  const want: string[] = [];
+  let made = 0;
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const move of ["moved at once", "asked, then Unlink them"] as const) {
+      for (const press of ["no Tab", "a Tab onto the card's own link"] as const) {
+        const where = `Board at ${size.width}x${size.height}, a move ${move}, with ${press} while the dry run is out`;
+        // One project per case: a parent and a child under it, both in To do, so the child's
+        // move into work is one the rule's dry run checks and moves at once, and the parent's
+        // move to the backlog, with its child in To do, is one it asks about.
+        made += 1;
+        const key = `BT${String.fromCharCode(64 + made)}`;
+        await createProject({ key, name: `Board Tab ${made}` });
+        const parent = await createIssue({ project: key, title: `Parent ${key}` });
+        const child = await createIssue({
+          parent: parent.key,
+          project: key,
+          title: `Child ${key}`,
+        });
+        const other = await createIssue({ project: key, title: `Other ${key}` });
+        for (const issue of [parent, child, other]) await patchIssue(issue.key, { status: "todo" });
+        await openIssuesTab(page, key, "Board");
+        const moved = move === "moved at once" ? child.key : parent.key;
+        const card = page.locator(`[data-board-card="${moved}"]`);
+        await card.focus();
+        await expect(card).toBeFocused();
+        holding = true;
+        await page.keyboard.press(move === "moved at once" ? "Shift+L" : "Shift+H");
+        await expect
+          .poll(() => held.length, { message: `${where}: the move sent no dry run` })
+          .toBeGreaterThan(0);
+        if (press === "a Tab onto the card's own link") {
+          await page.keyboard.press("Tab");
+          await expect(
+            card.locator("a").first(),
+            `${where}: the Tab did not land on the card's own link`
+          ).toBeFocused();
+        }
+        holding = false;
+        for (const route of held.splice(0)) await route.continue();
+        if (move === "asked, then Unlink them") {
+          const question = page.getByRole("dialog", { name: `Move ${moved} to Backlog?` });
+          // The choice is disabled until its own dry run answers, and the click waits for that.
+          await question.getByRole("button", { name: "Unlink them" }).click();
+          await expect(question).toHaveCount(0);
+        }
+        const column = move === "moved at once" ? "in_progress" : "backlog";
+        await expect(
+          page.locator(`[data-board-column="${column}"] [data-board-card="${moved}"]`),
+          `${where}: the card did not move`
+        ).toHaveCount(1);
+        // The move's focus effect runs with the render that draws the card in its column, and
+        // the question gives the focus back as it closes, so both are done after these frames.
+        await nextFrames(page);
+        await nextFrames(page);
+        // One read is the answer: the move has landed and every hand-off of it has run.
+        got.push(`${where}: the focus is on ${await focusName(moved)}`);
+        want.push(`${where}: the focus is on the moved card`);
+      }
+    }
+  }
+  // The Tab put the focus inside the card the press moved; the move took that link away with the
+  // card, so a focus left on the body there is the press's doing, and a keyboard reader would
+  // start their next Tab from the top of the page.
+  expect(got, got.join("; ")).toEqual(want);
+});
