@@ -17,6 +17,7 @@ import { answerSends, type SendAnswers } from "../../__tests__/send-answers";
 import {
   ApiError,
   api,
+  isPageGoing,
   NetworkError,
   RequestTimeoutError,
   type WriteBounds,
@@ -377,17 +378,22 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
   });
 });
 
-/** A pick of CORE-1's status on the issue's line, made from its request alone, as the issue page
+/** A pick of `issue`'s status on that issue's line, made from its request alone, as the issue page
  *  presses one: its body names the status picked. */
-function statusPick(writes: Writes, status: string): Promise<unknown> {
+function pickOn(writes: Writes, issue: string, status: string): Promise<unknown> {
   return writes.run({
     detail: null,
     kind: plainWrite,
-    label: `CORE-1 set to ${status}`,
+    label: `${issue} set to ${status}`,
     presentation: "indicator",
-    request: { ...patch, body: { status } },
-    target: "issue:CORE-1",
+    request: { ...patch, body: { status }, path: `/api/v1/issues/${issue}` },
+    target: `issue:${issue}`,
   });
+}
+
+/** A pick of CORE-1's status on the issue's line. */
+function statusPick(writes: Writes, status: string): Promise<unknown> {
+  return pickOn(writes, "CORE-1", status);
 }
 
 // The app's take-up of what a reload kept waits for every kind of write, which is a chunk of its
@@ -644,22 +650,31 @@ interface TakingUp {
   readonly pressed: Promise<unknown>;
   /** The key of each write that went out, in order. */
   readonly sent: () => readonly (string | undefined)[];
+  /** Whether the page was going (`isPageGoing`) as each write went out, in the same order: what
+   *  makes `api/client.ts` send it with `keepalive`. */
+  readonly goingWhenSent: () => readonly boolean[];
   readonly tab: KeptTab;
   readonly writes: Writes;
 }
 
-/** A page reloaded while alice's pick of CORE-1's status was out, kept in the tab, whose take-up
- *  of it waits for the kinds of write (`resume`): `kinds` is that load, which the row lets land.
+/** A page reloaded while alice's pick of CORE-1's status was out, kept in the tab as `keptAs`
+ *  says (out within the resume window unless it names otherwise), whose take-up of it waits for
+ *  the kinds of write (`resume`): `kinds` is that load, which the row lets land.
  *  Alice presses another write meanwhile (`press`, a pick of todo on the same line unless named),
  *  which the store holds for the take-up, kept in the tab from its press. Dispatch answers every
  *  write at once. */
 async function pressedWhileTakingUp(
-  press: (writes: Writes) => Promise<unknown> = (writes) => statusPick(writes, "todo")
+  press: (writes: Writes) => Promise<unknown> = (writes) => statusPick(writes, "todo"),
+  keptAs: Parameters<typeof keepWrite>[2] = {}
 ): Promise<TakingUp> {
   const tab = keptTab();
   const kept = keyMinted(Date.now());
-  keepWrite(tab.storage, kept, { target: "issue:CORE-1" });
-  const send = spyOn(api, "send").mockResolvedValue(null as never);
+  keepWrite(tab.storage, kept, { target: "issue:CORE-1", ...keptAs });
+  const going: boolean[] = [];
+  const send = spyOn(api, "send").mockImplementation(async () => {
+    going.push(isPageGoing());
+    return null as never;
+  });
   const kinds = Promise.withResolvers<void>();
   const end = async () => {
     kinds.resolve();
@@ -683,6 +698,7 @@ async function pressedWhileTakingUp(
     expect(tab.kept(held.key)).toMatchObject({ login: "alice" });
     return {
       end,
+      goingWhenSent: () => going,
       held,
       kept,
       kinds: { asked: () => asked, resolve: kinds.resolve },
@@ -1328,6 +1344,173 @@ test("writes pressed while the take-up's load of the kinds of write is out start
       expect(taking.kinds.asked()).toBe(1);
     } finally {
       await taking.end();
+    }
+  });
+});
+
+// A write pressed while the take-up waits stays out of its line so that a kept write taken up
+// after a newer press on its line would not land after it (`Writes.run`). A line the reload kept
+// no write on has no such write to land after, so when the page goes (`pagehide`) the write joins
+// its line and is sent as the page goes, as main sends it: a tab closed in that window has no
+// reload to send it later. A write with no target has no line and goes too; two on one line keep
+// press order. The kept write still waits for the kinds, which never came in this row until the
+// end, and goes out then.
+test("a write pressed while the take-up waits, on a line the reload kept no write on, goes out when the page goes", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp((writes) =>
+      Promise.all([
+        pickOn(writes, "CORE-2", "todo"),
+        pickOn(writes, "CORE-2", "backlog"),
+        writes.run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 pinned",
+          presentation: "indicator",
+          request: { ...put },
+        }),
+      ])
+    );
+    try {
+      const [first, second, noLine] = taking.writes.rows().map((write) => write.key);
+      expect(taking.sent()).toEqual([]);
+
+      window.dispatchEvent(new Event("pagehide"));
+      await settle();
+      expect(taking.sent().filter((key) => key !== noLine)).toEqual([first, second]);
+      expect(taking.sent()).toContain(noLine);
+      expect(taking.goingWhenSent()).toEqual([true, true, true]);
+      expect(taking.writes.rows()).toEqual([]);
+
+      taking.kinds.resolve();
+      await settle();
+      expect(taking.sent().at(-1)).toBe(taking.kept);
+      expect(taking.sent()).toHaveLength(4);
+      expect(await taking.pressed).toEqual([null, null, null]);
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// The page can be going while a field's own `pagehide` listener presses a write, which runs after
+// the store's own: `run` reads the page's going from `api/client.ts` and treats that press by the
+// same rule. On a line with no kept write it joins its line at once; on a line that holds one it
+// stays out, kept in the tab.
+test("a write pressed while the page is going, on a line the reload kept no write on, goes out at once, and one on a line that holds a kept write stays out", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp();
+    try {
+      let fieldPressed: Promise<unknown[]> | undefined;
+      // A field's own listener, added after the store's.
+      const field = () => {
+        fieldPressed = Promise.all([
+          pickOn(taking.writes, "CORE-2", "todo"),
+          pickOn(taking.writes, "CORE-1", "backlog"),
+        ]);
+      };
+      window.addEventListener("pagehide", field);
+      try {
+        window.dispatchEvent(new Event("pagehide"));
+      } finally {
+        window.removeEventListener("pagehide", field);
+      }
+      const [, onOtherLine, onKeptLine] = taking.writes.rows().map((write) => write.key);
+      await settle();
+      expect(taking.sent()).toEqual([onOtherLine]);
+      expect(taking.goingWhenSent()).toEqual([true]);
+      expect(taking.tab.kept(onKeptLine ?? "")).toMatchObject({ state: { status: "queued" } });
+
+      taking.kinds.resolve();
+      await settle();
+      expect(taking.sent()).toEqual([onOtherLine, taking.kept, taking.held.key, onKeptLine]);
+      expect(await fieldPressed).toEqual([null, null]);
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// A write pressed meanwhile on a line that holds a write the reload kept stays out of its line when
+// the page goes, and the tab keeps it behind the kept write, so the next load sends it after that
+// write (`WriteStorage.load` sorts by press time, and the take-up joins its line in that order).
+// A `pageshow` changes nothing already released, and the take-up goes on: a write pressed after it
+// waits as before.
+test("a write pressed while the take-up waits, on a line that holds a kept write, stays out of its line when the page goes, kept in the tab behind that write", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp(
+      (writes) => Promise.all([statusPick(writes, "todo"), pickOn(writes, "CORE-2", "todo")]),
+      { pressedAt: Date.now() - 1_000 }
+    );
+    try {
+      const [onKeptLine, onOtherLine] = taking.writes.rows().map((write) => write.key);
+
+      window.dispatchEvent(new Event("pagehide"));
+      await settle();
+      expect(taking.sent()).toEqual([onOtherLine]);
+      expect(taking.writes.rows().map((write) => [write.key, write.status])).toEqual([
+        [onKeptLine, "queued"],
+      ]);
+      // What the next load takes up, in the order it takes it up.
+      expect(
+        taking.tab
+          .page()
+          .load("alice")
+          .map((write) => write.key)
+      ).toEqual([taking.kept, onKeptLine]);
+
+      window.dispatchEvent(new Event("pageshow"));
+      const after = pickOn(taking.writes, "CORE-2", "backlog");
+      await settle();
+      const afterKey = taking.writes.rows()[1]?.key;
+      expect(taking.sent()).toEqual([onOtherLine]);
+
+      taking.kinds.resolve();
+      await settle();
+      expect(taking.sent().filter((key) => key !== afterKey)).toEqual([
+        onOtherLine,
+        taking.kept,
+        onKeptLine,
+      ]);
+      expect(taking.sent()).toContain(afterKey);
+      expect(await after).toBeNull();
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// A kept write that the take-up does not send on its own holds no line: a refused one, and one
+// pressed longer ago than `KEPT_SEND_RESUME_MS`, which is taken up refused (`#resume`) and starts
+// nothing in its line. Main sends a field's write at once past either, so a write pressed
+// meanwhile on such a line goes out when the page goes, and the kept record stays refused.
+test("a write pressed while the take-up waits, on a line whose only kept write is refused or too old to be sent on its own, goes out when the page goes", async () => {
+  await onFakeClock(async () => {
+    const cases: Readonly<Record<string, Parameters<typeof keepWrite>[2]>> = {
+      "a refused one": {
+        state: { refusal: { kind: "error", message: "not now" }, status: "refused" },
+      },
+      "one pressed too long ago": { pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1_000 },
+    };
+    for (const [name, keptAs] of Object.entries(cases)) {
+      const taking = await pressedWhileTakingUp(undefined, keptAs);
+      try {
+        window.dispatchEvent(new Event("pagehide"));
+        await settle();
+        expect([name, taking.sent()]).toEqual([name, [taking.held.key]]);
+        expect([name, taking.goingWhenSent()]).toEqual([name, [true]]);
+
+        taking.kinds.resolve();
+        await settle();
+        expect([name, taking.sent()]).toEqual([name, [taking.held.key]]);
+        expect([name, taking.writes.rows().map((write) => [write.key, write.status])]).toEqual([
+          name,
+          [[taking.kept, "refused"]],
+        ]);
+      } finally {
+        // The next case's page has not gone.
+        window.dispatchEvent(new Event("pageshow"));
+        await taking.end();
+      }
     }
   });
 });

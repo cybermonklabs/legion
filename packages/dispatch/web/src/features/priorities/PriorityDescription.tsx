@@ -192,9 +192,9 @@ function rest(held: Held, latest: Latest, fail: (failure: Failure) => void): voi
  * (`proofMarks: false`) - no comment, suggestion or ask on a selection, and no authorship span
  * in the markdown it writes - and what it holds is written through the priority's own write as
  * markdown, once the typing rests, at once when the editor is left, and as the page goes, so far
- * as the page lets a write finish then (`api/client.ts`'s `pageGoing`), as every field of a
- * priority is (`InPlaceField`). The priority's own page and the open row of the priorities table
- * draw it alike, so what a description does does not depend on where it is read.
+ * as the page lets a write start and finish then (`api/client.ts`'s `pageGoing`), as every field
+ * of a priority is (`InPlaceField`). The priority's own page and the open row of the priorities
+ * table draw it alike, so what a description does does not depend on where it is read.
  *
  * A change of the server's text is read as a one-line field reads one (`arrival`): one that
  * answers one of the reader's own writes changes nothing they see. Another person's text is taken
@@ -500,8 +500,9 @@ export function PriorityDescription({
 
   // The page going is the editor left, as a blur is: a small write that starts now is let finish
   // as the page goes (`keepalive`, `api/client.ts`'s `pageGoing`); one that waits behind a write
-  // of the same priority still out does not start before the page is gone. The tab keeps it too,
-  // for a reload to make (`features/writes/write-storage.ts`).
+  // of the same priority still out, or behind a kept write of the same priority a waiting
+  // take-up will send (`Writes.run`), does not start before the page is gone. The tab keeps it
+  // too, for a reload to make (`features/writes/write-storage.ts`).
   useEffect(() => {
     const leave = () => {
       if (held.current !== undefined) rest(held.current, latest.current, setFailure);

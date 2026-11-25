@@ -29,10 +29,11 @@ import {
   patchPriority,
 } from "./api";
 import { actionBar } from "./editor";
-import { pendingWrites } from "./keyed-writes";
+import { keptWrites, pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
 import { settledValue } from "./settled";
-import { expect, type Locator, type Page, test } from "./test";
+import { fetchedChunk, WRITE_KINDS_CHUNK } from "./shell";
+import { expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 const PRIORITIES_PATH = "/priorities";
@@ -2936,6 +2937,151 @@ test("what a reader types into a priority's description is written as the tab cl
           ""
       )
       .toContain("Typed before the tab closed.");
+  } finally {
+    await context.close();
+  }
+});
+
+/** Keeps alice's rename of the priority `id` through a reload that lands on `landing` (its own
+ *  page, or another's), whose take-up of what the reload kept waits for the kinds of write
+ *  (`Writes.resume`): every request for them is held on the wire until `letThrough`. The rename
+ *  is out when the reload comes, held at the network, so the tab keeps it, and a priority's line
+ *  (`priority:<id>`) holds it for as long as the kinds are held. Before it answers, it checks
+ *  that the take-up still waits: the reloaded page asked for the kinds and no such request has
+ *  ended, the tab still keeps the rename, the store holds no row of it, so a row that uses it
+ *  cannot pass because the kinds came in. `letThrough` lets the kinds and the rename's own
+ *  request through from then on. */
+async function renameKeptWhileTheKindsAreHeld(
+  page: Page,
+  id: string,
+  landing: string
+): Promise<{ letThrough: () => void }> {
+  // The reload's own "leave this page?" is accepted.
+  page.on("dialog", (dialog) => void dialog.accept());
+  let held = true;
+  const renameOut = Promise.withResolvers<void>();
+  await page.route(`**/api/v1/priorities/${id}`, async (route) => {
+    if (route.request().method() === "PATCH" && held) {
+      renameOut.resolve();
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto(`/priorities/${id}`);
+  await openTitle(page);
+  await page.keyboard.press("End");
+  await page.keyboard.type(" kept");
+  await page.getByRole("textbox", { name: "Title" }).blur();
+  await renameOut.promise;
+  await expect.poll(() => keptWrites(page), { message: "the tab keeps the rename" }).toBe(1);
+
+  // The page before the reload has its own download of the kinds in first, so each request
+  // counted below is the reloaded page's.
+  await fetchedChunk(page, WRITE_KINDS_CHUNK);
+  const asked = new Set<Request>();
+  const ended = new Set<Request>();
+  page.on("request", (request) => {
+    if (WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)) asked.add(request);
+  });
+  const end = (request: Request) => {
+    if (asked.has(request)) ended.add(request);
+  };
+  page.on("requestfinished", end);
+  page.on("requestfailed", end);
+  await page.route(WRITE_KINDS_CHUNK, async (route) => {
+    if (held) return;
+    await route.continue();
+  });
+  // `domcontentloaded` rather than `load`: a script download held from before the `load` event
+  // holds that event with it.
+  await page.goto(landing, { waitUntil: "domcontentloaded" });
+  await expect
+    .poll(() => asked.size, { message: "the reloaded page did not ask for the kinds" })
+    .toBeGreaterThan(0);
+  expect(ended.size, "a download of the kinds ended").toBe(0);
+  expect(await keptWrites(page), "the tab does not keep the rename").toBe(1);
+  await expect(pendingWrites(page), "the take-up did not wait for the kinds").toHaveCount(0);
+  return {
+    letThrough: () => {
+      held = false;
+    },
+  };
+}
+
+// A write a field makes as the page goes is sent as it goes, with `keepalive`, since no reload
+// follows a closed tab to make it again. While the take-up of what a reload kept waits for the
+// kinds of write, a write pressed meanwhile stays out of its line so that a kept write on its
+// line is not overtaken (`Writes.run`), and the tab keeps it only for a reload. Priority A holds
+// the write the reload kept, and the kinds never arrive; B's line holds none, so the title typed
+// into B's field goes out as the tab closes (`Writes.run`, `pagehide`).
+// SLOW(>=2s): the seed, two page loads, and a tab closed over a take-up that never ends.
+test("what a reader types into a priority's field while the take-up waits for kinds of write that never arrive is written as the tab closes, on a priority the reload kept no write of", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await priorityPage(page);
+    await renameKeptWhileTheKindsAreHeld(page, seed.ids[0], `/priorities/${seed.ids[2]}`);
+    await expect(titleHeading(page)).toHaveText(seed.titles[2]);
+    await openTitle(page);
+    await page.keyboard.press("End");
+    await page.keyboard.type(" typed as the tab closed");
+    await page.close();
+    await expect
+      .poll(
+        async () =>
+          (await listPriorities()).priorities?.find((one) => one.id === seed.ids[2])?.title,
+        { message: "the title typed as the tab closed did not reach the server" }
+      )
+      .toBe(`${seed.titles[2]} typed as the tab closed`);
+  } finally {
+    await context.close();
+  }
+});
+
+// The same page going on A, the priority the reload kept a write of: its line holds that write,
+// so the description typed as the page goes stays out of its line, kept in the tab behind the
+// rename, and the next load, whose kinds come in, sends the rename first and the description
+// after it. Dispatch's history lists each act newest first, so the description stands before the
+// rename there. The rename and the description are different attributes, so neither refuses the
+// other, and the history is what says which one reached the server first.
+// SLOW(>=2s): the seed, three page loads, and the history read.
+test("what a reader types into a priority's field as the page goes, on a priority the reload kept a write of, is written after that write once the kinds of write come in", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await priorityPage(page);
+    const kept = await renameKeptWhileTheKindsAreHeld(
+      page,
+      seed.ids[0],
+      `/priorities/${seed.ids[0]}`
+    );
+    const editor = page.getByRole("textbox", { exact: true, name: "Description" });
+    await expect(editor).toContainText("nothing is waiting on one");
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.type(" Typed over the kept rename.");
+    // The next load has the kinds, and the rename goes out then.
+    kept.letThrough();
+    await page.reload();
+    await expect
+      .poll(
+        async () =>
+          (await getPriorityHistory(seed.ids[0]))
+            .filter(
+              (act) =>
+                (act.field === "title" && act.value === `${seed.titles[0]} kept`) ||
+                (act.field === "description" && act.value.includes("Typed over the kept rename."))
+            )
+            .map((act) => act.field),
+        { message: "the server did not take the rename, then the description" }
+      )
+      .toEqual(["description", "title"]);
   } finally {
     await context.close();
   }

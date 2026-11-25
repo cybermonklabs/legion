@@ -85,10 +85,12 @@ const utf8 = new TextEncoder();
  *  a page it kept and brings back). A small write that starts then, its body under
  *  `maxKeepaliveBodyBytes`, is let finish as the page goes (`keepalive`), under its key or not:
  *  the write a field makes as the tab closes (`InPlaceField`, `PriorityDescription`) has no
- *  reload after it to make it again. A larger one is not, and one that waits then behind a write
- *  of the same target still out (`write-store.ts`'s `#advance`) does not start before the page is
- *  gone. This module listens as it loads, before any field adds its own `pagehide` listener, so
- *  a field's write finds the page going. */
+ *  reload after it to make it again. A larger one is not, and two kinds do not start before the
+ *  page is gone: one that waits behind a write of the same target still out (`write-store.ts`'s
+ *  `#advance`), and one pressed while the take-up of what a reload kept waits whose line holds a
+ *  kept write that take-up will send (`write-store.ts`'s `Writes.run`), which the tab keeps
+ *  behind that write for the next load. This module listens as it loads, before the write store
+ *  or any field adds its own `pagehide` listener, so both find the page going. */
 let pageGoing = false;
 if (typeof window !== "undefined") {
   window.addEventListener("pagehide", () => {
@@ -97,6 +99,13 @@ if (typeof window !== "undefined") {
   window.addEventListener("pageshow", () => {
     pageGoing = false;
   });
+}
+
+/** Whether the page is going (`pageGoing`): read by `write-store.ts` so a write pressed during
+ *  `pagehide` on a line with no kept write ahead of it joins its line at once rather than waiting
+ *  on the take-up of what a reload kept (`Writes.run`). */
+export function isPageGoing(): boolean {
+  return pageGoing;
 }
 
 /** Forgets that the page went: the unit-test preload, between tests, whose `pagehide` ends no
@@ -1027,10 +1036,13 @@ export class DispatchApiClient {
    * `PUT` or a `DELETE` is the same however often it is made, so it carries none. A write that
    * carries no body, or a JSON body under `maxKeepaliveBodyBytes`, is let finish as the page goes
    * (`keepalive`): a `PUT` or a `DELETE` whenever it is sent, and a `POST` or a `PATCH`, key and
-   * all, only when it starts as the page goes (`pageGoing`). A larger one is not, and one that
-   * waits behind a write of the same target still out (`write-store.ts`'s `#advance`) does not
-   * start before the page is gone. A keyed write the page did not let finish is made again under
-   * its key by a reload. The key is the caller's, minted when the person acts (`Writes.run`),
+   * all, only when it starts as the page goes (`pageGoing`). A larger one is not, and two kinds
+   * do not start before the page is gone: one that waits behind a write of the same target still
+   * out (`write-store.ts`'s `#advance`), and one pressed while the take-up of what a reload kept
+   * waits whose line holds a kept write that take-up will send (`write-store.ts`'s `Writes.run`),
+   * which the tab keeps behind that write for the next load. A keyed write the page did not let
+   * finish is made again under its key by a reload. The key is the caller's, minted when the
+   * person acts (`Writes.run`),
    * never here; so is `bounds.login` (`Dispatch-Login`), the person who pressed it. A JSON body
    * goes as JSON and a multipart form as itself, through the upload transport; `bounds.sent` is
    * told the request as it goes out. Answers what Dispatch answered (nothing for an empty body),
