@@ -942,7 +942,7 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 			asked := map[claim.Role]int{}
 			for _, ask := range next.asks() {
 				asked[ask.Role]++
-				if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
+				if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace), supervise.UpdatePush{}); ask.Text != text {
 					t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
 				}
 			}
@@ -1001,7 +1001,7 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 	asked := map[claim.Role]int{}
 	for _, ask := range next.asks() {
 		asked[ask.Role]++
-		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
+		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace), supervise.UpdatePush{}); ask.Text != text {
 			t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
 		}
 	}

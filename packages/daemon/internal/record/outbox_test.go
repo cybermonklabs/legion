@@ -142,6 +142,32 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	}
 }
 
+// An update round's ask to a step beside a fix names the branch that step pushes to, whether the
+// branch is the fix's own, and whether the fix still reads its job (supervise.UpdatePush), so a test
+// reads them from the row: the three members decode strictly and encode again unchanged. An ask
+// with no push carries none of them, so its row is the row the release before writes.
+func TestAnUpdateAskCarriesThePushOfAStepBesideAFix(t *testing.T) {
+	const ask = `"round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"The daemon must replace the pod that runs this issue's roles."`
+	for _, tc := range []struct{ name, payload string }{
+		{"a step beside a fix", `{"role":"tester",` + ask + `,"branch":"legion-beside/LEGION-208/3/a/fix-1/tester"}`},
+		{"the fix", `{"role":"implementer",` + ask + `,"branch":"legion-beside/LEGION-208/3/a/fix-1/implementer","ownFix":true}`},
+		{"the fix reading its job", `{"role":"implementer",` + ask + `,"fixReads":true}`},
+		{"no push", `{"role":"reviewer",` + ask + `}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := OutboxRow{ID: 7, Kind: OutboxKindUpdateAsk, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
+			decoded, err := DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload of %s: %v", tc.payload, err)
+			}
+			encoded, err := json.Marshal(decoded)
+			if err != nil || string(encoded) != tc.payload {
+				t.Fatalf("the ask encoded again = %s, %v; want %s", encoded, err, tc.payload)
+			}
+		})
+	}
+}
+
 func TestExpediteOutboxReportsWhetherItMovedARow(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

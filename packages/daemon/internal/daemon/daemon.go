@@ -1624,6 +1624,13 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
+	// updatePushes answers, for each role of issue, where it pushes at an update round's ask
+	// (supervise.UpdatePush): a step beside a running fix to its own branch, the fix to its own, the
+	// implementer while a fix reads its job nowhere, and every other role, the zero push, to the
+	// issue's branch (workflow.(*Engine).UpdatePushes, in one read transaction). askRound reads it
+	// once for each issue it asks. nil in a deployment with no workflow, whose rounds ask every role
+	// with the zero push. The workflow sets it where it attaches, as it sets enqueue above.
+	updatePushes func(ctx context.Context, issue string) (map[claim.Role]supervise.UpdatePush, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records

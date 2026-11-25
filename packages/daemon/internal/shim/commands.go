@@ -221,7 +221,8 @@ func fixWorkArgs(jj, fix, fixFrom string) []string {
 // the commit it stands on, and a `jj new` onto MoveTo only where that is another commit; the answer
 // names MoveTo as moved to. With FixFrom, the adoption is of the fix's working copy, beside the
 // workspace (workspace.FixDir), in place of the workspace's: a jj workspace of the same clone added
-// on FixFrom where none is there. Where one is, it is brought up to date, and one read (fixWorkArgs)
+// where none is there, on the head of the fix's own branch where the request names it (FixBranch)
+// and origin holds it, and on FixFrom otherwise (fixStart). Where one is, it is brought up to date, and one read (fixWorkArgs)
 // asks whether it holds work of its own over FixFrom — a commit, or an edit the read itself
 // records. Where it does, it is this fix's copy, and it stays where it stands: the adoption before a
 // fix's task runs again each time that task is sent again, and the pod that replaced a released one
@@ -277,8 +278,14 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo s
 					return "", "", err
 				}
 			}
-		} else if _, err := run(nil, jj, "workspace", "add", "--name", filepath.Base(fix), "-r", request.FixFrom, fix, "-R", dir); err != nil {
-			return "", "", err
+		} else {
+			from, err := fixStart(request, dir, jj, run)
+			if err != nil {
+				return "", "", err
+			}
+			if _, err := run(nil, jj, "workspace", "add", "--name", filepath.Base(fix), "-r", from, fix, "-R", dir); err != nil {
+				return "", "", err
+			}
 		}
 		if _, err := runIn(fix, nil, adoptionArgs(jj, fix)...); err != nil {
 			return "", "", err
@@ -297,6 +304,38 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo s
 		return "", "", err
 	}
 	return "", movedTo, nil
+}
+
+// fixStart is the revision a fix's working copy is made at where the directory beside the
+// workspace holds none: the head of the fix's own branch on origin where the request names that
+// branch and origin holds it, so a fix that pushed its work at an update round finds it on the pod
+// that replaced the round's, and FixFrom otherwise. One read of origin in the clone's git directory
+// (`git ls-remote`, which answers an absent branch with no line and exit 0) decides, and only where
+// it names a commit does a fetch of that one branch run, in the workspace, so the clone holds the
+// branch's head as a remote bookmark.
+func fixStart(request shimwire.AdoptWorkingCopy, dir, jj string, run func(stdin []byte, args ...string) (string, error)) (string, error) {
+	if request.FixBranch == "" {
+		return request.FixFrom, nil
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("worker-shim: git is not on PATH (%s); no git to read the fix's branch %s with", os.Getenv("PATH"), request.FixBranch)
+	}
+	gitDir, err := workspace.GitDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("worker-shim: %w", err)
+	}
+	pushed, err := run(nil, git, "--git-dir="+gitDir, "ls-remote", "origin", "refs/heads/"+request.FixBranch)
+	if err != nil {
+		return "", err
+	}
+	if pushed == "" {
+		return request.FixFrom, nil
+	}
+	if _, err := run(nil, jj, "git", "fetch", "--remote", "origin", "--branch", request.FixBranch, "-R", dir); err != nil {
+		return "", err
+	}
+	return request.FixBranch + "@origin", nil
 }
 
 // holdsJJ is whether dir holds a jj workspace: a `.jj` directory. A dir that is not there holds
