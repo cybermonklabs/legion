@@ -3888,7 +3888,7 @@ package api
 // 2026-11-25T09:36Z INFRA-3118's architect, who allocates the numbers on this repository, assigned
 // 294, so this entry moved to 294. The readings behind this change's earlier numbers are in its
 // implement handoffs on dispatch://INFRA-3136. The last number of answers.go's SupportedContracts
-// was 256, version.go's entry for #5349, `api.causeTimesContract`, until this entry added
+// was 275, version.go's entry for #4392, `api.dispatchCredentialContract`, until this entry added
 // `api.repositoryCorrectionContract` after it. That was a reading and never the rule: read main's
 // own number and every open head again at the next forward merge rather than from this line.)
 const DaemonAPIVersion = 294
