@@ -275,15 +275,15 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	}
 	// The claim's own identity is the six variables its commits carry (GitIdentity.Env), and a
 	// failed mint of it fails the launch. Every role's of claim.Roles is the table the push step of
-	// `legion jj` reads to set the author of each commit a push sends from the role its
-	// Legion-Role trailer names (runtime.RoleIdentitiesVariable): an issue's roles share one
-	// working copy, so a commit's author may be another role's App. The table is built with the
-	// claim's own identity for its own App's roles and with one resolution of the other App's
-	// (roleIdentities); when the other App's identity cannot be resolved, the launch goes on with
-	// a table of its own App's roles alone, and a commit whose trailer names a role left out keeps
-	// its author. A launch whose context ended during that resolution fails, as one whose context
-	// ended during the claim's own mint does: that is no failure of the other App. The
-	// controller's launch (controllerSpawnSpec) asks for no identity and carries no table.
+	// `legion jj` reads to set the author of a commit a push sends from the role its Legion-Role
+	// trailer names, where the step's rules let it (runtime.RoleIdentitiesVariable): an issue's
+	// roles share one working copy, so a commit's author may be another role's App. The table is
+	// built with the claim's own identity for its own App's roles and with one resolution of the
+	// other App's (roleIdentities); when the other App's identity cannot be resolved, the launch
+	// goes on with a table of its own App's roles alone, and a commit whose trailer names a role
+	// left out keeps its author. A launch whose context ended during that resolution fails, as one
+	// whose context ended during the claim's own mint does: that is no failure of the other App.
+	// The controller's launch (controllerSpawnSpec) asks for no identity and carries no table.
 	if s.identity != nil {
 		id, err := s.identity(ctx, c.Role, spec.Repository)
 		if err != nil {

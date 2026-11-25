@@ -73,7 +73,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		newWorkspaceInitCommand(stdout, own),
 		passThrough("git-credential", "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names, or of a fork's parent's or source's owner where the path's owner has no gh directory (git runs it, never a person)", runGitCredential, stdout, own),
 		passThrough("git", "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)", runGit, stdout, own),
-		passThrough("jj", "the jj first on a tmux pane's PATH and the push half of a pod's jj: sets the author of each commit a push sends from its Legion-Role trailer, then runs the real jj (a jj wrapper runs it, never a person)", runJJ, stdout, own),
+		passThrough("jj", "the jj first on a tmux pane's PATH and the push half of a pod's jj: sets the author of a commit a push sends from its Legion-Role trailer, where its rules let it (docs/deployment.md), then runs the real jj (a jj wrapper runs it, never a person)", runJJ, stdout, own),
 		passThrough("gh", "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)", runGh, stdout, own),
 		newLeakCheckCommand(own),
 	)

@@ -25,8 +25,8 @@ const jjUsage = `usage: legion jj --real <jj> -- <jj argument>…
 A jj wrapper runs this command, never a person. It runs a jj with the arguments after --.
 Before a jj git push, it first sets the author of a commit the push sends from that
 commit's first Legion-Role trailer: the identity LEGION_ROLE_IDENTITIES gives that role, by
-one jj metaedit --update-author for each role, for each mutable commit that no remote holds
-and whose role the table names. It prints one line for each commit it rewrote.
+one jj metaedit --update-author for each role, where the step's rules let it
+(docs/deployment.md). It prints one line for each commit it rewrote.
 With --after, it first expands the arguments as jj does, through jj's aliases and
 ui.default-command, so a command that jj runs as a jj git push is one too.
 
@@ -205,7 +205,8 @@ var jjDryRunQuiet = []string{"--config", "ui.quiet=false"}
 
 // jjStep is the step that runs before a push: it reads what the push sends from its dry run, and
 // sets the author of each of those commits whose first Legion-Role trailer names a role of the
-// table, where it is not that role's identity, by one jj metaedit --update-author for each role.
+// table, where it is not that role's identity, by one jj metaedit --update-author for each role,
+// where its rules let it (setAuthors, errJJAsWritten).
 // Each revision argument reaches each pass of the dry run and the real push in the words
 // revisionGiven gives it, which name the commits it named before the step, as the step left them:
 // once a metaedit of the step has run, every argument is held to them, whether or not it moved the
@@ -277,8 +278,10 @@ type jjRewrite struct {
 // what the command printed on standard error, and runs no push. Four go on past one:
 // readRevisions, revisionSet and revisionGiven, past the failure of their reads of a revision
 // argument (readRevision, ids), and metaedit, past jj's refusal to make a commit that exists
-// already (jjCommitExists) where that commit stands for one of its commits (existing); where it
-// stands for none, or the read of it fails, metaedit answers that refusal.
+// already (jjCommitExists) where that commit stands for one of its commits (existing). Where it
+// stands for none, or the read of it is itself such a failure (jj refuses it, or it cannot start),
+// metaedit answers that refusal; where the step cannot parse what jj printed for that read (read),
+// metaedit answers that error, which runJJ prints as `legion jj: <error>`, ending with code 1.
 type jjStepFailure struct {
 	code   int
 	output string
@@ -798,7 +801,9 @@ func jjExistingCommit(err error) (id string, ok bool) {
 // stands for that one stands for made now, and has moved, hidden as made is. It is nil where made
 // is of no change of commits, of the change of more than one, or of a visible one's, whose
 // bookmarks and descendants only the refused metaedit would have moved onto made, where another
-// of commits is hidden, and where the step cannot read made.
+// of commits is hidden, and where the read of made is a command of the step that failed
+// (jjStepFailure). Where the step cannot parse what jj printed for that read (read), it answers
+// that error, and no commit.
 func (s *jjStep) existing(made string, commits []*jjFollowed) (*jjFollowed, error) {
 	read, err := s.read("commit_id(" + made + ")")
 	var failed jjStepFailure
