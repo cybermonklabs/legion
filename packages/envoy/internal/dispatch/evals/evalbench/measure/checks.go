@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalbench"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
@@ -490,22 +493,65 @@ func (c *headChecks) insertRolledBack(ctx context.Context, index, text string, a
 	return "", "", err
 }
 
+// fallbackLeaseTries is how many times the fallback tries for the refresher's lease, and
+// fallbackLeaseWait how long it waits after a try that did not take it: two minutes in all, the
+// bound the paint's client gives each read of the server. A refresher pass holds the lease for as
+// long as it runs and gives it back as it ends (duty.Exclusive with no period, which duty.RunWoken
+// takes), so a try between two passes takes it. A lease no try takes in two minutes is a pass that
+// runs longer than that, or a take that keeps failing, and the lines duty.Exclusive writes say which.
+const (
+	fallbackLeaseTries = 240
+	fallbackLeaseWait  = 500 * time.Millisecond
+)
+
 // fallback measures, for k16, the read of a repository whose cut a default move has marked stale
 // and the refresher has not folded again yet (dispatch://INFRA-2916/artifact/decisions-md, "A
 // repository's cut is stored again"): it marks the project's cut of the deploy repository stale as
 // a move's commit marks it (eval_figure_cuts_stale), reads the paint's 84-day read with a compare
 // range and its 28-day read of that repository once more, as the paint measures each (measure),
 // which fold the day rows while the mark stands (figuresThrough), and takes the mark away again
-// where it made it. A running server's refresher folds a marked cut again in any pass
+// where it made it (staleReads). A running server's refresher folds a marked cut again in any pass
 // (evals.refoldStaleCuts): its first batch records where the refold stands (next_day) and its last
-// deletes the mark. So after the two reads it reads the mark back, and where the mark no longer
-// stands at generation 1 with its refold to begin, the refresher folded the cut during the
-// measurement and a read may have read the stored figures: it states no read and fails. Each
-// RESULT line names the read, its database and server time, its body, the same read's database
-// time from the stored figures in the paint, and whether the two answers' items are equal. It
-// judges no budget: the architect reads the fallback's time.
+// deletes the mark. So the fallback does all of that holding the refresher's lease
+// (evals.RefresherLease) on a connection of the bench's lease pool, as a refresher pass holds it
+// (duty.Exclusive with no period), and no refresher pass of any process that takes the lease runs
+// until it gives the lease back. A try that finds the lease held is made again, fallbackLeaseWait
+// later, up to fallbackLeaseTries; where none takes it, the fallback states no read and fails.
 func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 	ctx := context.Background()
+	callers, err := c.pool.Leases()
+	if err != nil {
+		c.r.fail("k16 fallback: open the lease pool: %v", err)
+		return
+	}
+	leases, err := callers.For("k16 fallback")
+	if err != nil {
+		c.r.fail("k16 fallback: reserve a connection of the lease pool: %v", err)
+		return
+	}
+	// With no period and a context nothing cancels, Exclusive reports exactly whether the pass
+	// ran: it did not take the lease otherwise.
+	read := func(ctx context.Context) { c.staleReads(ctx, measured, catalog) }
+	for try := 1; !duty.Exclusive(ctx, leases, evals.RefresherLease, time.Time{}, 0, read); try++ {
+		if try == fallbackLeaseTries {
+			c.r.fail("k16 fallback: no try of %d, %s apart, took the refresher's lease %s: a refresher pass held it at each, or the take failed (the dispatch duty lines above say which); no read of a stale cut is stated",
+				fallbackLeaseTries, fallbackLeaseWait, evals.RefresherLease)
+			return
+		}
+		time.Sleep(fallbackLeaseWait)
+	}
+}
+
+// staleReads is the fallback's measurement, made under the refresher's lease: it marks the cut,
+// makes the two reads and takes the mark back where it made it. Before the take-back it reads the
+// mark back. The lease keeps out every refresher that takes it, so where the mark no longer stands
+// at generation 1 with its refold to begin, a writer that takes no lease moved it during the
+// measurement, and a read may have read the stored figures: it states no read and fails. Each
+// RESULT line names the read, its database and server time, its body, the same read's database
+// time from the stored figures in the paint, and whether the two answers' items are equal. A read
+// whose items are not fails beside its line: the stored figures and the day rows answer the same
+// values (sameItems). It judges no budget: the architect reads the fallback's time.
+func (c *headChecks) staleReads(ctx context.Context, measured []measuredCase, catalog map[int64]bool) {
 	repo := evalbench.Repos[0]
 	tag, err := c.pool.Exec(ctx, `
 		insert into eval_figure_cuts_stale (project_key, repo, generation, next_day) values ($1, $2, 1, null)
@@ -523,18 +569,18 @@ func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 			}
 		}()
 	}
-	var results []string
+	type staleRead struct {
+		name, line string
+		equal      bool
+	}
+	var reads []staleRead
 	for _, name := range []string{"list-84d-compare-repo", "list-28d-repo"} {
-		var stored *measuredCase
-		for index := range measured {
-			if measured[index].name == name {
-				stored = &measured[index]
-			}
-		}
-		if stored == nil {
+		index := slices.IndexFunc(measured, func(one measuredCase) bool { return one.name == name })
+		if index < 0 {
 			c.r.fail("k16 fallback: the paint has no case %s", name)
 			continue
 		}
+		stored := &measured[index]
 		one := stored.paintCase
 		one.name += "-stale"
 		got, err := measure(ctx, c.pool, c.client, c.o, one, catalog)
@@ -542,8 +588,9 @@ func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 			c.r.fail("k16 fallback: %s: %v", one.name, err)
 			continue
 		}
-		results = append(results, fmt.Sprintf("k16 fallback case=%s status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d stored_db_ms=%.2f items_equal=%t",
-			one.name, got.status, dbMs(got.own), len(got.own), got.serverMs, len(got.body), gzipSize(got.body), dbMs(stored.own), sameItems(got.body, stored.body)))
+		equal := sameItems(got.body, stored.body)
+		reads = append(reads, staleRead{name: one.name, equal: equal, line: fmt.Sprintf("k16 fallback case=%s status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d stored_db_ms=%.2f items_equal=%t",
+			one.name, got.status, dbMs(got.own), len(got.own), got.serverMs, len(got.body), gzipSize(got.body), dbMs(stored.own), equal)})
 	}
 	var stands bool
 	if err := c.pool.QueryRow(ctx, `select exists (select 1 from eval_figure_cuts_stale where project_key = $1 and repo = $2 and generation = 1 and next_day is null)`,
@@ -552,11 +599,14 @@ func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 		return
 	}
 	if !stands {
-		c.r.fail("k16 fallback: the refresher folded %s's cut of %s again during the measurement, so its reads may have read the stored figures; no read of it is stated", c.o.project, repo)
+		c.r.fail("k16 fallback: the mark of %s's cut of %s no longer stands at generation 1 with its refold to begin, though the fallback held the refresher's lease, so its reads may have read the stored figures; no read of it is stated", c.o.project, repo)
 		return
 	}
-	for _, result := range results {
-		c.r.result("%s", result)
+	for _, read := range reads {
+		c.r.result("%s", read.line)
+		if !read.equal {
+			c.r.fail("k16 fallback: %s answers other items than the paint's read of the stored figures, where the day rows and the stored figures answer the same values", read.name)
+		}
 	}
 }
 
@@ -569,5 +619,5 @@ func sameItems(a, b []byte) bool {
 	if json.Unmarshal(a, &one) != nil || json.Unmarshal(b, &other) != nil {
 		return false
 	}
-	return len(one.Items) > 0 && string(one.Items) == string(other.Items)
+	return len(one.Items) > 0 && bytes.Equal(one.Items, other.Items)
 }

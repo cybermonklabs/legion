@@ -53,16 +53,23 @@ func newRefresherRig(t *testing.T) *refresherRig {
 }
 
 // pass makes one refresher pass as of the rig's clock, under its build, with a batch of its own
-// (gapBatch), and answers what it wrote and when it asks to run again. It proves the event log's
-// safe horizon first, as the Legion facts consumer's tests do: a pass reads the log only up to the
-// horizon, which a later observation raises past a write the test just made.
+// (gapBatch), and answers what it wrote and when it asks to run again (refreshIn).
 func (r *refresherRig) pass(t *testing.T) (refreshed, time.Time) {
 	t.Helper()
-	if _, err := r.horizon.Await(t.Context()); err != nil {
+	return r.refreshIn(t.Context(), t, &gapBatch{})
+}
+
+// refreshIn makes one refresher pass in ctx as of the rig's clock, under its build, with batch
+// (refresh; nil for none), and answers what it wrote and when it asks to run again. It proves the
+// event log's safe horizon first, as the Legion facts consumer's tests do: a pass reads the log
+// only up to the horizon, which a later observation raises past a write the test just made.
+func (r *refresherRig) refreshIn(ctx context.Context, t *testing.T, batch *gapBatch) (refreshed, time.Time) {
+	t.Helper()
+	if _, err := r.horizon.Await(ctx); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
-	report, next, err := r.registry.refresh(t.Context(), RefresherDeps{Horizon: r.horizon, Build: r.build},
-		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, &gapBatch{})
+	report, next, err := r.registry.refresh(ctx, RefresherDeps{Horizon: r.horizon, Build: r.build},
+		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, batch)
 	if err != nil {
 		t.Fatalf("the refresher's pass failed: %v", err)
 	}
@@ -899,9 +906,7 @@ func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
 	}
 	holder := pauseInserts(t, r.rig, "eval_days", fmt.Sprintf("new.project_key = 'EVAL' and new.day = '%s'", day(5)))
 	move("EVAL-3", 5)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
-		t.Fatal("the pass of EVAL-3's move never reached its held write of the 5th")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	burst := []struct {
 		key string
 		day int
@@ -1135,9 +1140,7 @@ func TestAWalkBatchThatStopsForAWakeKeepsItsDaysForTheNextPass(t *testing.T) {
 	holder := pauseInserts(t, r.rig, "eval_days", fmt.Sprintf("new.project_key = 'EVAL' and new.day = '%s'", start.AddDate(0, 0, 1).Format(time.DateOnly)))
 
 	loop := r.startLoop(t, gap, r.changesWake(t))
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
-		t.Fatal("the walk never reached its held write of its second day")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	row := history.rows["EVAL-4"]
 	row.ClosedAt = new(closed.Add(10 * time.Hour))
 	history.rows["EVAL-4"] = row

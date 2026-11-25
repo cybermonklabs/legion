@@ -376,13 +376,9 @@ func TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock(t *tes
 	}
 
 	first := goTimed(func() error { return UpsertRunJobs(ctx, pool, "acme/widgets", 813, forward, true) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1); waiting < 1 {
-		t.Fatal("the first jobs write never reached its first job's update")
-	}
+	storetest.WaitForLockWaiters(t, gate, 1)
 	second := goTimed(func() error { return UpsertRunJobs(ctx, pool, "acme/widgets", 813, reversed, true) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2); waiting < 2 {
-		t.Fatal("the second jobs write never waited, at its first job's update or behind the first write")
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("let the writes on: %v", err)
 	}

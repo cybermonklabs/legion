@@ -891,9 +891,7 @@ func TestTwoFirstWritesOfOneSlugRegisterItOnce(t *testing.T) {
 			})
 		})
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2); waiting < 2 {
-		t.Fatalf("%d writes wait for the eval's lock, want both", waiting)
-	}
+	storetest.WaitForLockWaiters(t, holder, 2)
 	if err := holder.Commit(t.Context()); err != nil {
 		t.Fatalf("release the eval's lock: %v", err)
 	}
@@ -977,9 +975,7 @@ func TestACorrectionWaitsForTheEvalsLockHoldingNoTransactionID(t *testing.T) {
 			Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 6, "measured_at": at(4, 9, 0), "replaces": replaced})}})
 		answered <- err
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
-		t.Fatalf("the correction never waited for the eval's lock")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	// backend_xid is null for a backend holding no transaction id, read here as "".
 	rows, err := r.database.Pool.Query(t.Context(), `
 		select pid, coalesce(wait_event, ''), coalesce(backend_xid::text, '') from pg_stat_activity

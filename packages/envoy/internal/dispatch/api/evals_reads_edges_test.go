@@ -76,9 +76,7 @@ func TestTheEvalReadStatesItsVersionsOfOneSnapshot(t *testing.T) {
 	go func() {
 		answered <- evalRequest(t, handler, http.MethodGet, "/api/v1/projects/EVL/evals/review-time", nil, "")
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
-		t.Fatalf("%d reads wait on eval_series, want the eval's read", waiting)
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit version 2: %v", err)
 	}

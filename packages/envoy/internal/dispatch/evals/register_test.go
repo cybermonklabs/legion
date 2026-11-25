@@ -96,9 +96,7 @@ func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
 	for index, change := range changes {
 		writers.Go(func() { _, failures[index] = r.registry.Register(t.Context(), change) })
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2); waiting < 2 {
-		t.Fatalf("%d register writes wait for the eval's lock, want both", waiting)
-	}
+	storetest.WaitForLockWaiters(t, holder, 2)
 	if err := holder.Commit(t.Context()); err != nil {
 		t.Fatalf("release the eval's lock: %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The registry's writes and the refresher's record their changes in the change log's outbox
@@ -76,30 +77,23 @@ func race(t *testing.T, holder pgx.Tx, first, second func(ctx context.Context) e
 	defer cancel()
 	firstDone, secondDone := make(chan error, 1), make(chan error, 1)
 	go func() { firstDone <- first(ctx) }()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
-		t.Fatalf("the first writer never reached the pause")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	go func() { secondDone <- second(ctx) }()
 	var secondErr error
 	secondAnswered := false
-	for deadline := time.Now().Add(lockOrderBound); ; {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the second writer to wait, behind the pause or the first writer, or to answer (the writers waiting, last read)", func() (int, bool) {
 		select {
 		case secondErr = <-secondDone:
 			secondAnswered = true
+			return 0, true
 		default:
 		}
 		waiting, err := storetest.LockWaiters(t.Context(), holder)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if secondAnswered || waiting >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the second writer neither waited, behind the pause or the first writer, nor answered")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return waiting, waiting >= 2
+	})
 	for _, observe := range whileWaiting {
 		observe()
 	}
@@ -567,9 +561,8 @@ func (f firstRegistrations) run(t *testing.T, queuedSlugs ...string) {
 		for _, registration := range queued {
 			go func() { answers <- registration.write(ctx) }()
 		}
-		if waiting := storetest.WaitForLockWaiters(t, holder, 2+len(queued)); waiting < 2+len(queued) {
-			t.Errorf("%d writers wait, want %d: the paused registration, the edit and the %d queued registrations", waiting, 2+len(queued), len(queued))
-		}
+		// The paused registration, the edit and every queued registration.
+		storetest.WaitForLockWaiters(t, holder, 2+len(queued))
 		requireQueuedWithNoTransactionID(t, holder, documentID, len(queued))
 		if held := documentRowHeld(t, holder, documentID); held != f.earlierBuild {
 			t.Errorf("the paused registration holds evals-md's row: %t; want %t, which an earlier build in the fleet makes every owner lock take (store.LockOwner)", held, f.earlierBuild)
@@ -713,13 +706,9 @@ func TestTwoWritersLockingEvalsWhoseKeysCollideNeverDeadlock(t *testing.T) {
 		return done
 	}
 	first := lock(a, b)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
-		t.Fatalf("the writer of %s and %s never waited for the key the test holds", a, b)
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	second := lock(b, c)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2); waiting < 2 {
-		t.Fatalf("the writer of %s and %s never waited, behind the test or the first writer", b, c)
-	}
+	storetest.WaitForLockWaiters(t, holder, 2)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("let the writers on: %v", err)
 	}

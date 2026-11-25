@@ -1,7 +1,6 @@
 package evals
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -360,19 +359,6 @@ func (r *refresherRig) owedPass(t *testing.T, batch *gapBatch) {
 	owed := make(chan struct{}, 1)
 	owed <- struct{}{}
 	r.refreshIn(duty.WithWake(t.Context(), owed), t, batch)
-}
-
-// refreshIn makes one refresher pass in ctx as of the rig's clock with batch (refresh), once the
-// event log's safe horizon is proven.
-func (r *refresherRig) refreshIn(ctx context.Context, t *testing.T, batch *gapBatch) {
-	t.Helper()
-	if _, err := r.horizon.Await(ctx); err != nil {
-		t.Fatalf("await the event log's safe horizon: %v", err)
-	}
-	if _, _, err := r.registry.refresh(ctx, RefresherDeps{Horizon: r.horizon, Build: r.build},
-		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, batch); err != nil {
-		t.Fatalf("the refresher's pass failed: %v", err)
-	}
 }
 
 // markedBefore reports whether marks hold a cut before cut in the byte order of their keys, whose
