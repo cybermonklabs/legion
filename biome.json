@@ -35,6 +35,7 @@
       "!packages/envoy-client/src/__tests__/fixtures/dispatch-tool.schema.json",
       "!packages/envoy-client/src/__tests__/fixtures/command-surface.json",
       "!packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json",
+      "!packages/dispatch/web/src/features/issue-page/graph-edit/__fixtures__/graph-edit.json",
       "!packages/contracts/schemas/dispatch-openapi.json",
       "!packages/contracts/fixtures/session-grant.json",
       "!packages/contracts/fixtures/github-envelopes/**",

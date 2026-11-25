@@ -82,21 +82,23 @@ var (
 
 // graphEditExchange is one request the fixture holds and the answer the handlers gave it: the
 // method, the path with its query (its {id} segment shown as the address it names, where the
-// request sent it percent-encoded), the If-Match it sent, the caller, the body it sent, and the
-// status and the body of the answer. node is the seed's name of the node the request moves, which
-// names a placement_seq the answer gives with no node beside it.
+// request sent it percent-encoded), the If-Match it sent, whether it sent `Dispatch-Trees: 1`, the
+// caller, the body it sent, and the status and the body of the answer. node is the seed's name of
+// the node the request moves, which names a placement_seq the answer gives with no node beside it.
 type graphEditExchange struct {
 	method, path string
 	ifMatch      *string
+	trees        bool
 	as           graphEditCaller
 	body         any
 	response     *httptest.ResponseRecorder
 	node         string
 }
 
-// graphEditSend sends method to sent on handler as as, with body and the If-Match tag where tag is
-// not "", and answers the exchange, whose path is shown.
-func graphEditSend(t *testing.T, handler http.Handler, as graphEditCaller, method, shown, sent, tag string, body map[string]any) *graphEditExchange {
+// graphEditSend sends method to sent on handler as as, with body, the If-Match tag where tag is
+// not "", and `Dispatch-Trees: 1` where trees is set, and answers the exchange, whose path is
+// shown.
+func graphEditSend(t *testing.T, handler http.Handler, as graphEditCaller, method, shown, sent, tag string, trees bool, body map[string]any) *graphEditExchange {
 	t.Helper()
 	header := http.Header{}
 	var payload any
@@ -120,20 +122,25 @@ func graphEditSend(t *testing.T, handler http.Handler, as graphEditCaller, metho
 			payload = body
 		}
 	}
-	exchange := &graphEditExchange{method: method, path: shown, as: as, body: payload}
+	exchange := &graphEditExchange{method: method, path: shown, as: as, body: payload, trees: trees}
 	if tag != "" {
 		header.Set("If-Match", tag)
 		exchange.ifMatch = &tag
+	}
+	if trees {
+		header.Set(displayTreesHeader, "1")
 	}
 	exchange.response = serveNodeRequest(t, handler, method, sent, payload, header)
 	return exchange
 }
 
-// graphEditRead is the tree read of the issue key with query, as as, on handler.
+// graphEditRead is the tree read of the issue key with query, as as, on handler, with
+// `Dispatch-Trees: 1`, as the issue page's client sends every tree read, so each node carries its
+// text_tree.
 func graphEditRead(t *testing.T, handler http.Handler, as graphEditCaller, key, query string) *graphEditExchange {
 	t.Helper()
 	path := "/api/v1/issues/" + key + "/tree" + query
-	return graphEditSend(t, handler, as, http.MethodGet, path, path, "", nil).taken(t, as.name+"'s tree read of "+key+query)
+	return graphEditSend(t, handler, as, http.MethodGet, path, path, "", true, nil).taken(t, as.name+"'s tree read of "+key+query)
 }
 
 // taken fails unless the exchange answered 200, naming what, and answers it.
@@ -215,7 +222,10 @@ type graphEditSeed struct {
 //
 //   - tree: the tree read with no view of the converted issue, the child, the done copy and the
 //     unconverted issue, each as the person and as an agent; an agent's read the person's bytes
-//     equal is held as its request and same_as_person.
+//     equal is held as its request and same_as_person. child_spec is the child's ?view=spec as the
+//     person: the child is a view of its parent's spec, and the read holds <statement-1>, the
+//     parent's statement the child's check serves, as a node of another issue (issue "<issue>",
+//     read_only true).
 //
 //   - paged: the converted issue's tree read on a server whose Deps.IssueTreePageSize is half its
 //     nodes, page_size beside its pages, the first carrying a cursor.
@@ -231,8 +241,11 @@ type graphEditSeed struct {
 //     keyed by the code and a word.
 //
 //   - deleted: the DELETE's dry run of the third statement (dry_run), the delete taken with the
-//     count of its 409 DELETE_COUNT_MOVED (taken), and each DELETE refusal (refused), keyed as
-//     refused is.
+//     count of its 409 DELETE_COUNT_MOVED (taken), the converted issue's tree read as the person
+//     right after it (tree_after), and each DELETE refusal (refused), keyed as refused is.
+//
+// Every tree read sends `Dispatch-Trees: 1`, as the issue page's client does, so each node carries
+// its text_tree, and its request says so (dispatch_trees).
 //
 // The names: each issue key, artifact id, node id, block id a run mints, placement_seq, login and
 // time is replaced, in every string and every object key, before the bytes are compared or
@@ -452,7 +465,7 @@ func (s *graphEditSeed) tag(t *testing.T, name, address string) string {
 func (s *graphEditSeed) move(t *testing.T, as graphEditCaller, name, address, tag string, body map[string]any) *graphEditExchange {
 	t.Helper()
 	exchange := graphEditSend(t, s.rig.handler, as, http.MethodPatch, "/api/v1/issues/"+s.key+"/nodes/"+address,
-		"/api/v1/issues/"+s.key+"/nodes/"+url.PathEscape(address), tag, body)
+		"/api/v1/issues/"+s.key+"/nodes/"+url.PathEscape(address), tag, false, body)
 	exchange.node = name
 	return exchange
 }
@@ -467,11 +480,12 @@ func (s *graphEditSeed) remove(t *testing.T, as graphEditCaller, address string,
 	if _, query, queried := strings.Cut(sent, "?"); queried {
 		shown += "?" + query
 	}
-	return graphEditSend(t, s.rig.handler, as, http.MethodDelete, shown, sent, tag, nil)
+	return graphEditSend(t, s.rig.handler, as, http.MethodDelete, shown, sent, tag, false, nil)
 }
 
 // trees is the member tree: the tree read of each issue of the seed, as the person and as an
-// agent.
+// agent, and the child's ?view=spec as the person, which holds the statements of the issue above
+// it that the child's check serves, each a node of another issue.
 func (s *graphEditSeed) trees(t *testing.T) map[string]any {
 	t.Helper()
 	trees := map[string]any{}
@@ -481,6 +495,13 @@ func (s *graphEditSeed) trees(t *testing.T) map[string]any {
 			agent:  graphEditRead(t, s.rig.handler, graphEditAgent, key, ""),
 		}
 	}
+	childSpec := graphEditRead(t, s.rig.handler, graphEditPerson, s.child, "?view=spec")
+	if !slices.ContainsFunc(decodeBody[model.IssueTreeRead](t, childSpec.response).Nodes, func(node model.IssueTreeNode) bool {
+		return node.ID == s.statement1 && node.Supertag == "requirement" && node.Issue == s.key
+	}) {
+		t.Fatalf("?view=spec of the child %s answers no node of %s's first statement %s marked with its issue: %s", s.child, s.key, s.statement1, childSpec.response.Body.String())
+	}
+	trees["child_spec"] = childSpec
 	return trees
 }
 
@@ -624,6 +645,7 @@ func (s *graphEditSeed) refusals(t *testing.T) (map[string]any, map[string]any) 
 		t.Errorf("the delete of %s answered the count %d, want %d", s.statement3, count, counted+1)
 	}
 	s.rig.quiet(t)
+	treeAfter := graphEditRead(t, s.rig.handler, person, s.key, "")
 	deleteRefused(codeNodeGone, "the dry run of the deleted "+s.statement3, s.remove(t, person, s.statement3, true, "", -1), http.StatusConflict)
 	deleteRefused("NOT_FOUND", "the dry run of the done copy's statement under "+s.key, s.remove(t, person, s.doneStatement, true, "", -1), http.StatusNotFound)
 	moveRefused(codeNodeGone, "the move of the deleted "+s.statement3, s.move(t, person, "<statement-3>", s.statement3, tag, map[string]any{"parent": s.criterion}), http.StatusConflict)
@@ -637,7 +659,7 @@ func (s *graphEditSeed) refusals(t *testing.T) (map[string]any, map[string]any) 
 		s.tag(t, "<prose-under-criterion>", s.prose), map[string]any{"parent": graphstore.KindArtifact + "/" + notes.RefKey}), http.StatusConflict)
 	s.contended(t, refused, refusedDeletes)
 	s.names.issue(t, s.rig.database, s.key, "")
-	return refused, map[string]any{"dry_run": dryRun, "taken": taken, "refused": refusedDeletes}
+	return refused, map[string]any{"dry_run": dryRun, "taken": taken, "tree_after": treeAfter, "refused": refusedDeletes}
 }
 
 // contended adds the PATCH's and the DELETE's 409 PARENT_CONTENDED to refused and refusedDeletes,
@@ -982,6 +1004,9 @@ func (n *graphEditNames) exchange(e *graphEditExchange) map[string]any {
 	request := map[string]any{"method": e.method, "path": n.text(e.path), "login": e.as.name, "if_match": nil}
 	if e.ifMatch != nil {
 		request["if_match"] = n.tag(*e.ifMatch)
+	}
+	if e.trees {
+		request["dispatch_trees"] = "1"
 	}
 	if e.body != nil {
 		request["body"] = n.value(graphEditDecode(n.t, mustJSON(n.t, e.body)), e.node)
