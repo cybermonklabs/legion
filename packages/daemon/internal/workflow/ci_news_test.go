@@ -647,8 +647,11 @@ func TestTheReportGoesToMainsReceivers(t *testing.T) {
 		}, func(r *fixRig) []string {
 			return []string{"architect", "implementer " + r.stepReader(claim.RoleImplementer, phase.Retro)}
 		}},
-		{"at the merge", func(t *testing.T) *fixRig { return mergingOn(t, []string{"implementer", "reviewer"}, TriggerImplementationReady) },
-			func(r *fixRig) []string { return []string{"architect", "merger " + r.stepReader(claim.RoleMerger, phase.Merging)} }},
+		{"at the merge", func(t *testing.T) *fixRig {
+			return mergingOn(t, []string{"implementer", "reviewer"}, TriggerImplementationReady)
+		}, func(r *fixRig) []string {
+			return []string{"architect", "merger " + r.stepReader(claim.RoleMerger, phase.Merging)}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := tc.rig(t)
