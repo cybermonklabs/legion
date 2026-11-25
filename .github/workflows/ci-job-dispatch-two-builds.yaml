@@ -163,6 +163,7 @@ jobs:
           token: ''
           cache: false
       # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -184,6 +185,7 @@ jobs:
       # and a pull request's only by that pull request, so such entries filled the repository's
       # cache (25 entries, 12.2 GB on 2026-11-23) and evicted entries other jobs read. A run whose
       # release main has not built yet (a release tagged since the last push to main) builds it below.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - name: Restore the previous build
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -216,6 +218,7 @@ jobs:
           fi
           echo "commit=$FIRST_ROLLOUT_COMMIT" >> "$GITHUB_OUTPUT"
       # Restored only, as the previous build is: ci-caches.yaml's dispatch-builds job fills it on main.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - name: Restore the first-rollout build
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -455,6 +458,7 @@ jobs:
           token: ''
           cache: false
       # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

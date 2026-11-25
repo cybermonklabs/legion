@@ -557,7 +557,8 @@ export function listPriorities(
 }
 
 /** `POST /api/v1/priorities`: writes one, last in the order; the server derives its id from the
- *  title and refuses a second write of that id with 409 PRIORITY_EXISTS. */
+ *  title, as the title's slug cut to `PRIORITY_ID_MAX` (200) characters at the end of a word when
+ *  it is longer, and refuses a second write of that id with 409 PRIORITY_EXISTS. */
 export function createPriority(
   input: Body<"/api/v1/priorities", "post">,
   options: ApiOptions = {}

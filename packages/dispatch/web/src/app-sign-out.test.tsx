@@ -12,11 +12,12 @@ import userEvent from "@testing-library/user-event";
 
 import { endAsAReload, planner } from "./__tests__/draft-matrix-fixture";
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
+import { keptWrites } from "./__tests__/kept-sends-harness";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { wholeText } from "./__tests__/whole-text";
 import { ApiError, api, NetworkError } from "./api/client";
-import { aliceWrite, keptWrites, type OtherTab, otherTab, renderApp } from "./app-sign-out-fixture";
+import { aliceWrite, type OtherTab, otherTab, renderApp } from "./app-sign-out-fixture";
 import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
 import { goingState, resetGoingStore, startRun } from "./features/going/going-store";
 import { answerDraft, setAnswerDraft } from "./features/inbox/answer-drafts";

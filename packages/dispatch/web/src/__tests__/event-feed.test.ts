@@ -49,8 +49,7 @@ import {
 // key its own reader builds, for issue CORE-1 (child of CORE-0, grandchild of CORE-00) and for
 // what sits beside it. A rule is what an event marks stale here, through the real scheduler.
 const READS = {
-  // The work under one priority, as a scoped issues table reads it: the Priorities page's open
-  // row and the priority's own page.
+  // The work under one priority, as a scoped issues table reads it: the priority's own page.
   advancesWork: { key: advancesIssuesQuery({ advances: "linkage-closure" }, true).queryKey },
   // A fault list of the Priorities page: the work under any priority standing in backlog or
   // icebox, with its move there, as that page's Issues table reads it.

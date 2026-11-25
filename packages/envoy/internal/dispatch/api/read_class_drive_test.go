@@ -131,7 +131,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/dashboard/builds":        {target: "/api/v1/dashboard/builds", statement: statementOf(`\bfrom\s+dashboard_builds\b`)},
 	"GET /api/v1/priorities":              {target: "/api/v1/priorities", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+state\b`)},
 	"GET /api/v1/priorities/{id}/history": {target: "/api/v1/priorities/$priority/history", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+id\b`)},
-	"GET /api/v1/issues":                  {target: "/api/v1/issues?project=$project", statement: statementOf(`\bwith\s+recursive\s+advances_stated\s+as\b`)},
+	"GET /api/v1/issues":                  {target: "/api/v1/issues?project=$project", statement: statementOf(`\bwith\s+recursive\s+advances_relations\s+as\b`)},
 	"GET /api/v1/issues/resolve":          {target: "/api/v1/issues/resolve?ref=$issue", statement: statementOf(`\bselect\s+key\s+from\s+issues\s+where\s+key\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}":            {target: "/api/v1/issues/$issue", statement: statementOf(`\bfrom\s+design_gates\s+where\s+issue\b`)},
 	"GET /api/v1/issues/{key}/summary":    {target: "/api/v1/issues/$issue/summary", statement: statementOf(`\bselect\s+key,\s*project_key,\s*title,\s*status\s+from\s+issues\b`)},

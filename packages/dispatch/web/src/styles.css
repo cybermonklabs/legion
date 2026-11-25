@@ -636,6 +636,14 @@ html:has([data-issue-page]) {
   max-width: none;
 }
 
+/* A priority's description is drawn in the documents' editor (`PriorityDescription.tsx`), but it
+   is a short field of the priority and not a whole document, so it does not take a document's
+   24rem. The editor library's own `min-height` is unlayered, so a utility class on the
+   description cannot lower it; this rule (0,4,0) outranks the one above (0,3,0). */
+.dispatch-doc.dispatch-description .milkdown .editor {
+  min-height: 6rem;
+}
+
 /* A document's own headings are content, not the page's identity. `@legion/proof-editor` sizes
    `h1` at 2em, so an issue specification that opens with a heading repeating the issue title
    printed that title twice, the second time at nearly twice the size of the page title 40px
