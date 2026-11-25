@@ -23,16 +23,24 @@ import type { SlotProps } from "../slot-props";
  * (`pageComposer.foot`), so nothing of the box shows while it is hidden. Its layer is over the
  * outline's rows and under the view row and Details. It is an element of the foot's page layer
  * (`useFootInset`), so the shell's floats - the update banner, the status corner - keep clear
- * of it while it has a box on the screen.
+ * of it while it has a box on the screen, riding above it.
+ *
+ * The mark and the wrapper are the column's last items, at `order: 1`, so the spacer that
+ * `styles.css` draws at `order: 0` in a column holding end room lands above both. While a float
+ * lies over the outline, the column takes that room for it above the box, not under it
+ * (`FOOT_LAYERS`, "Why the room goes above an element sticky to the document's foot"): the box
+ * stays at the foot, the floats above it stay where they are, and at the end of the scroll the
+ * outline's last row ends 1rem above the highest of them.
  *
  * The mark stands in the flow after the stage and before the box, 12 px under the outline's last
- * row (the tree's own `mb-3`, `IssueTree.tsx`), and is moved down by the box's height less those
- * 12 px (`--issue-composer-height`, `FOOT_HEIGHT_PROPERTY` of `identity-block.ts`), which moves
- * its box and not the layout. So it stands where the last row's bottom edge would stand if it
- * were the box's height lower: the dwell reads where it is moved to, so it reaches the screen
- * exactly once the last row is clear of the box (`End` leaves that row 8 px above the box), and on
- * an outline shorter than the screen at once. It is drawn while the address names no view and no
- * document, whose end is not the conversation's.
+ * row (the tree's own `mb-3`, `IssueTree.tsx`) and under that room while the column holds it, and
+ * is moved down by the box's height less those 12 px (`--issue-composer-height`,
+ * `FOOT_HEIGHT_PROPERTY` of `identity-block.ts`), which moves its box and not the layout. So it
+ * stands where the last row's bottom edge would stand if it were the box's height and the room
+ * lower: the dwell reads where it is moved to, so it reaches the screen exactly once the last row
+ * is clear of the box, and 1rem clear of the floats above it while they show (`End` leaves that
+ * row 8 px above the box), and on an outline shorter than the screen at once. It is drawn while
+ * the address names no view and no document, whose end is not the conversation's.
  */
 export function FootSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
@@ -53,12 +61,12 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
   return (
     <>
       {place.viewOn || place.documentOpen ? null : (
-        <div className="relative top-[calc(var(--issue-composer-height,0px)-0.75rem)]">
+        <div className="relative order-1 top-[calc(var(--issue-composer-height,0px)-0.75rem)]">
           <IssueReadMark issueKey={issue.key} />
         </div>
       )}
       <div
-        className="sticky bottom-0 z-[15] mx-auto mt-auto w-full max-w-[1000px] min-w-0 max-[761px]:-mx-1 max-[761px]:w-auto"
+        className="sticky bottom-0 z-[15] order-1 mx-auto mt-auto w-full max-w-[1000px] min-w-0 max-[761px]:-mx-1 max-[761px]:w-auto"
         ref={wrapper}
       >
         <IssueComposer

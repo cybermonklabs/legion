@@ -55,6 +55,8 @@ import { type RefObject, useLayoutEffect } from "react";
  *   - The new issue page's box to write in (`slots/foot.tsx`): its wrapper, which `sticky
  *     bottom-0` holds at the foot of the frame's column while the outline scrolls under it. The
  *     `MentionComposer` inside it is neither docked nor framed, so it registers nothing itself.
+ *     The frame's column takes the end room for the outline above the wrapper, not below it
+ *     (below, "Why the room goes above an element sticky to the document's foot").
  * - `banner` (`--foot-banner-inset`): the update banner (`DeploymentResilience`), which reads the
  *   page layer's property and has no floor.
  * - `status` (`--foot-status-inset`): the shell's status corner - Pending changes, the note on
@@ -192,6 +194,19 @@ import { type RefObject, useLayoutEffect } from "react";
  *   caps anything, and the floats above them count. Were `Jump to latest` to cap the transcript,
  *   the end room would go as soon as the reader scrolled back from the end, the transcript would
  *   end where they were, and the view would take them back to the end.
+ * - Why the room goes above an element sticky to the document's foot. The new issue page's box
+ *   is the last item of the frame's column and sticky to its foot, so it stands at the foot of
+ *   the screen at the end of the document's scroll as during it, and the floats ride above it,
+ *   over the outline's last rows. As a page element the column holds, it caps the column, so no
+ *   float counted and the column took no room: at 360x640 the box's band was 0-56px, Pending
+ *   changes stood at 158-224px, and the outline's last rows ended under it. Room below such an
+ *   element lifts it, and the floats with it, by as much, so the room goes above it. Where the
+ *   document's scroller is a column flexbox and a page element among its items is sticky to the
+ *   foot at an `order` above 0, the spacer's, the spacer lands above that element
+ *   (`footHeldAbove`), and the scroller takes the spacer, never padding, for the clearance
+ *   measured up from that element's top rather than from the scroller's foot: 184px there. The
+ *   element keeps its place, so the floats keep theirs, and the room holds. A sticky element the
+ *   spacer would land under - the Agents page's broadcast composer, in `main` - caps as before.
  * - Why a spacer rather than each scroller's own padding. The hook marks a scroller whose
  *   clearance is more than 0 (`data-foot-clearance`) and writes its end room, the clearance less
  *   its own bottom padding and never below 0, as `--foot-clearance` on its own inline style, unset
@@ -213,6 +228,8 @@ import { type RefObject, useLayoutEffect } from "react";
  *   a spacer there would lengthen the document under the box instead, and each scroll to the end
  *   and the measure after it would grow the box by that scroll. Its box grows with the room, or
  *   the page it holds gives way to it, and either way its foot stays 0.
+ *   The document's scroller that holds an element sticky to its foot the spacer lands above
+ *   (above) takes the spacer instead, and keeps it until the hook unmarks it.
  *
  * Marking a scroller the walk finds changes its scroll height, never its box, and the hit test
  * reads boxes. A point over the spacer hits the scroller itself, since a pseudo-element is not an
@@ -463,6 +480,24 @@ function footClearance(lo: number, ceiling: number, floats: readonly Band[], gap
   return clearance;
 }
 
+/**
+ * The band of the page element above which the document's scroller `scroller` takes its end room
+ * (`FOOT_LAYERS` says why): one of its flex items while it is a column flexbox, sticky to the foot
+ * (`position: sticky` with a `bottom` other than `auto`; one sticky to the top holds no band),
+ * whose `order` is above the spacer's 0, so that the spacer lands above it. Undefined where none
+ * is.
+ */
+function footHeldAbove(scroller: HTMLElement): PageBand | undefined {
+  const { display, flexDirection } = getComputedStyle(scroller);
+  if (SPACER_BOXES[display] !== "flexbox" || flexDirection !== "column") return undefined;
+  for (const [element, band] of pageBands) {
+    if (element.parentElement !== scroller) continue;
+    const { bottom, order, position } = getComputedStyle(element);
+    if (position === "sticky" && bottom !== "auto" && Number(order) > 0) return band;
+  }
+  return undefined;
+}
+
 /** Writes `pixels` to `property` in `style` as `${pixels}px`, or removes the property while
  *  `pixels` is 0 (`setProperty` with an empty value removes it), and leaves a property that
  *  already holds that alone. */
@@ -592,6 +627,7 @@ function unmark(scroller: HTMLElement): void {
  * holds after: the spacer, `clearance` less its own bottom padding, or its inline bottom padding,
  * the larger of its own and `clearance`. The document's scroller (`byDocument`) always takes the
  * padding. Each is rounded up to a whole pixel, which the inline style keeps as written.
+ * A document's scroller that holds the spacer `footHeldAbove` gave it keeps that way.
  */
 function markFor(scroller: HTMLElement, clearance: number, byDocument: boolean): Mark {
   let held = marks.get(scroller);
@@ -622,6 +658,10 @@ function markFor(scroller: HTMLElement, clearance: number, byDocument: boolean):
  *  or its inline bottom padding, its own and the room together. Only a value that changes is
  *  written. */
 function mark(scroller: HTMLElement, next: Mark): void {
+  // A scroller that leaves its padding for the spacer gives the padding up (`footHeldAbove`).
+  if (next.way === "after" && marks.get(scroller)?.way === "padding") {
+    scroller.style.removeProperty("padding-bottom");
+  }
   if (next.way === "after") writePixels(scroller.style, CLEARANCE_PROPERTY, next.room);
   else writePixels(scroller.style, "padding-bottom", next.own + next.room);
   marks.set(scroller, next);
@@ -681,6 +721,8 @@ function standsInRoom(scroller: HTMLElement, room: number): boolean {
  * it writes anything, and between unmarking and marking a scroller it reads only styles, so the
  * browser never lays out a scroller without its end room and clips a scroll at its end. It
  * then listens, or stops, as `listenWhileNeeded` says.
+ * The document's scroller that holds an element sticky to its foot the spacer lands above takes
+ * its room above that element (`footHeldAbove`), from that element's top.
  */
 function clearScrollers(): void {
   clearFrame = 0;
@@ -711,6 +753,13 @@ function clearScrollers(): void {
   for (const [scroller, { byDocument, floats, lo }] of found) {
     const held: PageBand[] = [];
     for (const [element, band] of pageBands) if (scroller.contains(element)) held.push(band);
+    // The room above a page element sticky to the document's foot (`footHeldAbove`).
+    const above = byDocument ? footHeldAbove(scroller) : undefined;
+    if (above !== undefined) {
+      const room = Math.ceil(footClearance(above.hi, footCeiling(above.hi, held), floats, gap));
+      if (room > 0) next.set(scroller, { room, way: "after" });
+      continue;
+    }
     const clearance = footClearance(lo, footCeiling(lo, held), floats, gap);
     if (clearance > 0) next.set(scroller, markFor(scroller, clearance, byDocument));
   }
