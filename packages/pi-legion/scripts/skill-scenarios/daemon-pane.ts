@@ -42,6 +42,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { isLegionRole, type LegionRole } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
 import {
@@ -1135,9 +1136,11 @@ const ACT_RUNS = Object.values(STEPS).filter(({ kind }) => kind !== "step");
  * takes, and the wait `execute` makes of the router's 404 of a Dispatch older than the route
  * (`waitsForTheRoute`, for the record lane and the role holders' publication); the result of each
  * move (`endOf`, which ends no step stopped since #4464: a head that conflicts with its base moves
- * no issue); the id's namespace and name; the identity every write carries (`stepWrite`); the
- * moment alone at the start; and the report alone after the end. Where the task, its steps and a
- * phase's place are read, and how the end is written, are each shape's own (`STEPS_OF_PHASE`,
+ * no issue); the id's namespace and name. The identity every write carries (`stepWrite`), the
+ * moment alone at the start and the report alone after the end are in `STEPS_WITHOUT_VARIANT`
+ * (before #5014) or `STEPS_WITH_VARIANT` (since #5014, where each write carries the issue's
+ * experiment and variant, nil for an issue of no group). Where the task, its steps and a phase's
+ * place are read, and how the end is written, are each shape's own (`STEPS_OF_PHASE`,
  * `STEPS_ON_WALK`). */
 const WRITES_STEPS: readonly Marker[] = [
   {
@@ -1180,6 +1183,10 @@ const WRITES_STEPS: readonly Marker[] = [
     file: STEPS_GO,
     text: 'name := fmt.Sprintf("%s/%d/%s/%s/%d/%d", issue, generation, place.Task, place.Kind, place.Place, starts)',
   },
+];
+/** The three `stepWrite` lines common to main's shapes from #4488 until #5014 (0986c960d9e),
+ * before each write carried the issue's experiment and variant (`drawn`). */
+const STEPS_WITHOUT_VARIANT: readonly Marker[] = [
   {
     file: STEPS_GO,
     text: "return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,\n\t\tStep: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation}",
@@ -1191,6 +1198,41 @@ const WRITES_STEPS: readonly Marker[] = [
   {
     file: STEPS_GO,
     text: "write := stepWrite(issue, step.place, step.role, step.typ, latest.Agent, latest.Starts)\n\twrite.Report = new(report)",
+  },
+];
+/** The end's `stepWrite` on the walk from #4611 until #5014, without `drawn`. */
+const STEP_END_ON_WALK_WITHOUT_VARIANT: Marker = {
+  file: STEPS_GO,
+  text: "return stepWrite(before, step.place, step.role, step.typ, start.Agent, start.Starts)",
+};
+/** The same four `stepWrite` lines since #5014, where each write carries `drawn` (the issue's
+ * experiment and variant), and `variantOf`'s nil return and the outbox's nil skip: a world issue
+ * belongs to no experiment group, so its `StepExperiment` is nil and its step write carries
+ * neither, and no experiment route is called. */
+const STEPS_WITH_VARIANT: readonly Marker[] = [
+  {
+    file: STEPS_GO,
+    text: "return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,\n\t\tStep: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation,\n\t\tStepExperiment: drawn}",
+  },
+  {
+    file: STEPS_GO,
+    text: "write := stepWrite(issue, drawn, step.place, step.role, step.typ, string(agent), starts)\n\t\twrite.StartedAt = new(now)\n\t\treturn write",
+  },
+  {
+    file: STEPS_GO,
+    text: "write := stepWrite(issue, drawn, step.place, step.role, step.typ, latest.Agent, latest.Starts)\n\twrite.Report = new(report)",
+  },
+  {
+    file: STEPS_GO,
+    text: "return stepWrite(before, drawn, step.place, step.role, step.typ, start.Agent, start.Starts)",
+  },
+  {
+    file: STEPS_GO,
+    text: 'if err != nil || group.Experiment == "" || group.Variant == "" {\n\t\treturn nil, err\n\t}',
+  },
+  {
+    file: DAEMON_OUTBOX,
+    text: "if err := publish(ctx, row, value); err != nil || value.StepExperiment == nil {",
   },
 ];
 /** The end's moments, result, return, report and agent's session and model, its agent read in the
@@ -1327,10 +1369,6 @@ const STEPS_ON_WALK: readonly Marker[] = [
     text: [...new Set(Object.values(STEPS).map(({ kind }) => kind))]
       .map((kind) => `\t${goConstant("Place", kind).padEnd(10)} = ${kindConstant(kind)}`)
       .join("\n"),
-  },
-  {
-    file: STEPS_GO,
-    text: "return stepWrite(before, step.place, step.role, step.typ, start.Agent, start.Starts)",
   },
   {
     file: STEPS_GO,
@@ -1617,34 +1655,31 @@ const UPDATE_STATE_GO = "daemon/internal/api/updatestate.go";
 /** The refusal of the per-issue record of an issue the daemon records nothing of, as main's
  * daemon since #3659 words it: its code, and the sentence the issue's key ends (server.go's
  * `issueRecordRoute`). The daemon stand-in answers by it; `labelShapes` holds a label's source to
- * it (`STATES_CONTRACT`). */
+ * it (`STATES_CONTRACT_SHARED`). */
 export const RECORD_NOT_FOUND = {
   code: "RECORD_NOT_FOUND",
   message: "The daemon has no record for ",
 } as const;
 /** What a daemon that states its contract on every answer and shapes its bodies to its caller's
- * holds (main's since #3659, dc1bbc995e): the handler around the whole mux that sets
- * `Legion-Daemon-Contract` to its `DaemonAPIVersion` before any route answers, the catch-all's
- * 404 and every refusal among them (server.go's `statingContract`); `GET /healthz` answering the
- * project beside its status (`Health`, `healthRoute`); `GET /legion/v1/issues/{key}/record`
- * answering the issue the state holds under that key, and 404 RECORD_NOT_FOUND in the words
- * `RECORD_NOT_FOUND` restates for any other (`issueRecordRoute`); and the state shaped to the
- * caller's contract (shaping.go): a caller placed by its `Legion-Plugin-Contract` header, or with
- * none by the claims of its pod, of which a claim recording this daemon's contract counts for
- * nothing, so such a caller is served this daemon's own body (`ownBody`); that body marked with
- * the daemon's contract and the caller's (`contract`), the lowest contract the claims that hold a
- * process record (`lowestPluginContract`, `recordsContract`), and each claim's update state,
- * `none` for a claim no update round is open over (`updateState`, updatestate.go's
- * `UpdateStateOf`). */
-const STATES_CONTRACT: readonly Marker[] = [
+ * holds (main's since #3659, dc1bbc995e), in either form of its contract number: the handler
+ * around the whole mux that sets `Legion-Daemon-Contract` to its `DaemonAPIVersion` before any
+ * route answers, the catch-all's 404 and every refusal among them (server.go's
+ * `statingContract`); `GET /healthz` answering the project beside its status (`Health`,
+ * `healthRoute`); `GET /legion/v1/issues/{key}/record` answering the issue the state holds under
+ * that key, and 404 RECORD_NOT_FOUND in the words `RECORD_NOT_FOUND` restates for any other
+ * (`issueRecordRoute`); and the state shaped to the caller's contract (shaping.go): a caller placed
+ * by its `Legion-Plugin-Contract` header, or with none by the claims of its pod, of which a claim
+ * recording this daemon's contract counts for nothing, so such a caller is served this daemon's
+ * own body (`ownBody`); that body marked with the daemon's contract and the caller's (`contract`),
+ * the lowest contract the claims that hold a process record (`lowestPluginContract`,
+ * `recordsContract`), and each claim's update state, `none` for a claim no update round is open
+ * over (`updateState`, updatestate.go's `UpdateStateOf`). The three lines that name the contract
+ * itself are in `CONTRACT_IS_A_CONSTANT` or `CONTRACT_IS_THE_REGISTRYS`. */
+const STATES_CONTRACT_SHARED: readonly Marker[] = [
   { file: SERVER_GO, text: 'const daemonContractHeader = "Legion-Daemon-Contract"' },
   {
     file: SERVER_GO,
     text: "Handler:           statingContract{handler: trackTransactions(noteRequesters(mux))},",
-  },
-  {
-    file: SERVER_GO,
-    text: "\tw.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion))\n\ts.handler.ServeHTTP(w, r)\n}",
   },
   {
     file: SERVER_GO,
@@ -1667,14 +1702,6 @@ const STATES_CONTRACT: readonly Marker[] = [
   { file: SHAPING_GO, text: 'const pluginContractHeader = "Legion-Plugin-Contract"' },
   {
     file: SHAPING_GO,
-    text: "var ownBody = placement{restore: DaemonAPIVersion, strip: DaemonAPIVersion}",
-  },
-  {
-    file: SHAPING_GO,
-    text: "state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: strip}",
-  },
-  {
-    file: SHAPING_GO,
     text: "return c.Locator != nil && c.Locator.Sandbox != nil && c.PluginContract != 0",
   },
   { file: STATE_GO, text: 'UpdateState UpdateState `json:"updateState,omitempty"`' },
@@ -1684,6 +1711,41 @@ const STATES_CONTRACT: readonly Marker[] = [
   },
   { file: UPDATE_STATE_GO, text: 'UpdateStateNone UpdateState = "none"' },
 ];
+/** The three lines of a daemon that states its contract that name the contract, as main's daemon
+ * holds them from #3659 until #5399 (d41b74eb, INFRA-1569): `DaemonAPIVersion` is a constant,
+ * which version.go declares as `const DaemonAPIVersion = <n>`. */
+const CONTRACT_IS_A_CONSTANT: readonly Marker[] = [
+  {
+    file: SERVER_GO,
+    text: "\tw.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion))\n\ts.handler.ServeHTTP(w, r)\n}",
+  },
+  {
+    file: SHAPING_GO,
+    text: "var ownBody = placement{restore: DaemonAPIVersion, strip: DaemonAPIVersion}",
+  },
+  {
+    file: SHAPING_GO,
+    text: "state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: strip}",
+  },
+];
+/** The same three lines since #5399, where `DaemonAPIVersion()` is the number the build's registry
+ * gives it (contracts.go): `LastNumberedContract` plus the build's count of entries, each entry
+ * one file of the package and one fixture under `packages/contracts/fixtures/daemon-api/contracts/`,
+ * so no file declares the number. */
+const CONTRACT_IS_THE_REGISTRYS: readonly Marker[] = [
+  {
+    file: SERVER_GO,
+    text: "\tw.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion()))\n\ts.handler.ServeHTTP(w, r)\n}",
+  },
+  {
+    file: SHAPING_GO,
+    text: "func ownBody() placement {\n\town := DaemonAPIVersion()\n\treturn placement{restore: own, strip: own}\n}",
+  },
+  {
+    file: SHAPING_GO,
+    text: "state.Contract = &ContractView{Daemon: DaemonAPIVersion(), Caller: strip}",
+  },
+];
 /** What every daemon before #3659 has in their place: `GET /healthz` answering `{"status":"ok"}`
  * and nothing else, written as a body of its own, which no handler around it marks with a
  * contract. */
@@ -1692,22 +1754,43 @@ const HEALTH_UNSTATED: Marker = {
   text: 'writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})',
 };
 
+/** Where a daemon source that states its contract has the number it states: the `constant` of
+ * version.go, or the build's `registry`. */
+type ContractSource = "constant" | "registry";
+
 /** The contract the daemon of `checkout` states on every answer and shapes its bodies to
- * (`LabelShapes`' `statesContract`): its `DaemonAPIVersion` (version.go) for a source of main's
- * shape since #3659, by `STATES_CONTRACT`, and undefined for one before it, by `HEALTH_UNSTATED`.
- * standin-record.ts's `contractRefusal` reads it to build the state bodies a label's contract is
- * handed, as the stand-in serves them. Throws, naming each marker and its file, for a source of
- * neither shape or both, and for a source of main's that declares no contract. */
+ * (`LabelShapes`' `statesContract`): for a source of main's shape since #3659, the number its
+ * version.go declares, by `CONTRACT_IS_A_CONSTANT`, or, since #5399, the number its registry gives
+ * the build, by `CONTRACT_IS_THE_REGISTRYS`. That is `daemonContract`'s own number for the
+ * checkout, which no manifest of it holds, since main's plugins read it the same way. It is
+ * undefined for a source before #3659, by `HEALTH_UNSTATED`. standin-record.ts's
+ * `contractRefusal` reads it to build the state bodies a label's contract is handed, as the
+ * stand-in serves them. Throws, naming each marker and its file, for a source of no shape or of
+ * two, and for a source of the constant's shape that declares no constant. */
 export function statesContract(checkout: string): number | undefined {
-  const states = sourceShape(checkout, "the contract its answers state", [
-    { name: "main's daemon since #3659", markers: STATES_CONTRACT, value: true },
-    {
-      name: "every daemon the rig runs before #3659, whose health route answers its status alone",
-      markers: [HEALTH_UNSTATED],
-      value: false,
-    },
-  ]);
-  if (!states) return undefined;
+  const states = sourceShape<ContractSource | undefined>(
+    checkout,
+    "the contract its answers state",
+    [
+      {
+        name: "main's daemon from #3659 to #5399, whose contract is a constant of version.go",
+        markers: [...STATES_CONTRACT_SHARED, ...CONTRACT_IS_A_CONSTANT],
+        value: "constant",
+      },
+      {
+        name: "main's daemon since #5399, whose contract is its registry's",
+        markers: [...STATES_CONTRACT_SHARED, ...CONTRACT_IS_THE_REGISTRYS],
+        value: "registry",
+      },
+      {
+        name: "every daemon the rig runs before #3659, whose health route answers its status alone",
+        markers: [HEALTH_UNSTATED],
+        value: undefined,
+      },
+    ]
+  );
+  if (states === undefined) return undefined;
+  if (states === "registry") return daemonContract({}, checkout);
   const file = path.join(checkout, "packages", VERSION_GO);
   const declared = existsSync(file)
     ? /^const DaemonAPIVersion = ([1-9]\d*)$/m.exec(readFileSync(file, "utf8"))?.[1]
@@ -1881,13 +1964,24 @@ export function labelShapes(checkout: string): LabelShapes {
     ]),
     writesSteps: sourceShape(checkout, "the record of each run of a step", [
       {
-        name: "main's daemon and Dispatch since #4611, which read the step a run stands at off the walk of its run",
-        markers: [...WRITES_STEPS, ...STEPS_ON_WALK, STEP_ROUTE],
+        name: "main's daemon and Dispatch since #5014, which name the issue's experiment and variant on each step record",
+        markers: [...WRITES_STEPS, ...STEPS_ON_WALK, ...STEPS_WITH_VARIANT, STEP_ROUTE],
+        value: true,
+      },
+      {
+        name: "main's daemon and Dispatch from #4611 until #5014, which read the step a run stands at off the walk of its run",
+        markers: [
+          ...WRITES_STEPS,
+          ...STEPS_ON_WALK,
+          ...STEPS_WITHOUT_VARIANT,
+          STEP_END_ON_WALK_WITHOUT_VARIANT,
+          STEP_ROUTE,
+        ],
         value: true,
       },
       {
         name: "main's daemon and Dispatch from #4488 until #4611, which read the step of a phase off DefaultSteps",
-        markers: [...WRITES_STEPS, ...STEPS_OF_PHASE, STEP_ROUTE],
+        markers: [...WRITES_STEPS, ...STEPS_WITHOUT_VARIANT, ...STEPS_OF_PHASE, STEP_ROUTE],
         value: true,
       },
       {

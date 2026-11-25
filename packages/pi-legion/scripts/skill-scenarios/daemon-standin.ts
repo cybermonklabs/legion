@@ -301,6 +301,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { isLegionRole, roleToken } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { STEP_OTHER_ISSUE_CODE, STEP_WRITER_CODE } from "@legion/contracts/dispatch-tools";
 import {
   LegionGrantRequest,
@@ -1889,21 +1890,22 @@ function runOutbox(): Promise<void> {
   return outboxTurn;
 }
 
-/** The contract the label's plugin declares at its registration (`pluginContract`, the
- * `legion.daemonApiVersion` of its package: packages/pi-legion/src/claim-session.ts), which
- * every claim of the issue's pod records, since they all load the one plugin: read from the
- * label's checkout until the agent registers, and the registration's own from then on. 0 is the
- * daemon's word for no contract recorded, which is a checkout whose package names none. */
+/** The contract the label's plugin declares at its registration (`pluginContract`: its
+ * `daemonContract`, packages/contracts/src/daemon-contract.ts, read by
+ * packages/pi-legion/src/claim-session.ts), which every claim of the issue's pod records, since
+ * they all load the one plugin: read from the label's checkout until the agent registers, and the
+ * registration's own from then on. A package holds it as `legion.daemonApiVersion` where a pack
+ * wrote it, and a checkout of main since #5399 holds none, so the number is the one
+ * `daemonContract` counts from the checkout's own fixtures, as the plugin run from that checkout
+ * reads it. 0 is the daemon's word for no contract recorded, which is a checkout with no plugin
+ * package. */
 const PluginPackage = z.looseObject({
-  legion: z.looseObject({ daemonApiVersion: z.number().int().nonnegative() }),
+  legion: z.looseObject({ daemonApiVersion: z.number().int().nonnegative().optional() }).optional(),
 });
 let pluginContract = (() => {
   const file = `${CHECKOUT}/packages/pi-legion/package.json`;
   if (!existsSync(file)) return 0;
-  return (
-    PluginPackage.safeParse(JSON.parse(readFileSync(file, "utf8"))).data?.legion.daemonApiVersion ??
-    0
-  );
+  return daemonContract(PluginPackage.parse(JSON.parse(readFileSync(file, "utf8"))), CHECKOUT);
 })();
 
 /** A `claims/ready` as far as the record reads it: the capability report a session sends on one

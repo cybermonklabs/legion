@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -1573,9 +1574,15 @@ describe("the label's build and its facts", () => {
       mkdirSync(path.dirname(path.join(daemon, file)), { recursive: true });
       cpSync(path.join(DAEMON_MODULE, file), path.join(daemon, file), { recursive: true });
     }
-    const routes = path.join("packages", "envoy", "internal", "dispatch", "api", "routes_table.go");
-    mkdirSync(path.dirname(path.join(checkout, routes)), { recursive: true });
-    cpSync(path.join(DAEMON_MODULE, "..", "..", routes), path.join(checkout, routes));
+    // The routes table, and the list of released contracts the daemon's contract is counted from
+    // since #5399 (daemon-pane.ts's `statesContract`).
+    for (const file of [
+      path.join("packages", "envoy", "internal", "dispatch", "api", "routes_table.go"),
+      path.join("packages", "contracts", "fixtures", "daemon-api", "released-contracts.json"),
+    ]) {
+      mkdirSync(path.dirname(path.join(checkout, file)), { recursive: true });
+      cpSync(path.join(DAEMON_MODULE, "..", "..", file), path.join(checkout, file));
+    }
     const help = path.join(daemon, "cmd", "legion", "gh_help.go");
     writeFileSync(help, edit(readFileSync(help, "utf8")));
     return checkout;
@@ -1756,6 +1763,9 @@ describe("the shapes of a label's daemon source", () => {
     "daemon/internal/api/server.go",
     "daemon/internal/api/shaping.go",
     "daemon/internal/api/version.go",
+    // The list of released contracts, which a source of main since #5399 gets its number from
+    // with its entry fixtures (`daemonContract`).
+    "contracts/fixtures/daemon-api/released-contracts.json",
     "daemon/internal/api/updatestate.go",
     // Main's since #4611 reads the step a run stands at off the walk of its run.
     "daemon/internal/workflow/line.go",
@@ -1800,13 +1810,25 @@ describe("the shapes of a label's daemon source", () => {
     "%s holds a NUL character (U+0000) at character %d, which the daemon API refuses rather than store it as U+FFFD";
   const NUL_UNSTORABLE =
     "%s holds a NUL character (U+0000) at character %d, which the daemon cannot store";
-  /** The contract this checkout's daemon declares (its api's version.go), the one its answers
-   * state. */
-  const DAEMON_API_VERSION = Number(
-    /^const DaemonAPIVersion = (\d+)$/m.exec(
-      readFileSync(path.join(CHECKOUT, "packages", "daemon/internal/api/version.go"), "utf8")
+  /** The `LastNumberedContract` of this checkout's daemon (contracts.go), the greatest contract
+   * numbered by hand: the number version.go's last lines still name. */
+  const LAST_NUMBERED = Number(
+    /^const LastNumberedContract = (\d+)$/m.exec(
+      readFileSync(path.join(CHECKOUT, "packages", "daemon/internal/api/contracts.go"), "utf8")
     )?.[1]
   );
+  /** Where a checkout holds one fixture for each entry of the contract after the numbered ones. */
+  const ENTRY_FIXTURES = "contracts/fixtures/daemon-api/contracts";
+  /** The contract this checkout's daemon states: the one its registry gives a build with no stamp
+   * (contracts.go), which is `LastNumberedContract` plus one for each entry fixture. Counted here
+   * from the two, apart from the `daemonContract` the rig reads the number with. */
+  const DAEMON_API_VERSION =
+    LAST_NUMBERED +
+    (existsSync(path.join(CHECKOUT, "packages", ENTRY_FIXTURES))
+      ? readdirSync(path.join(CHECKOUT, "packages", ENTRY_FIXTURES)).filter((name) =>
+          /^\d{14}_.+\.json$/.test(name)
+        ).length
+      : 0);
   const MAIN = {
     postsBackward: true,
     refusesReason: true,
@@ -1913,10 +1935,43 @@ describe("the shapes of a label's daemon source", () => {
         '[]byte("legion-step-record")',
         '[]byte("legion-step")',
       ],
+      // #5014: a record that names an experiment for an issue of no group, or an outbox that
+      // calls the experiment route for a record that names none, writes what the stand-in does not.
+      [
+        "daemon/internal/workflow/steps.go",
+        'if err != nil || group.Experiment == "" || group.Variant == "" {',
+        "if err != nil {",
+      ],
+      [
+        "daemon/internal/daemon/outbox.go",
+        "err != nil || value.StepExperiment == nil {",
+        "err != nil {",
+      ],
     ] as const)
       expect(() => labelShapes(copyOf(CHECKOUT, file, marker, renamed))).toThrow(
         "is no shape of the record of each run of a step this rig reads"
       );
+  });
+
+  // Catches: a source of main from #4611 until #5014 (0986c960d9e), whose step writes carry no
+  // experiment or variant, read as no shape: the base label at main 58ba1b4b is one. And a source
+  // that mixes the two (one `stepWrite` call with `drawn`, one without) read as either.
+  test("a daemon source whose step writes carry no variant, main's from #4611 until #5014, writes each step, and one that mixes the two is of no shape", () => {
+    const STEPS = "daemon/internal/workflow/steps.go";
+    const before: (readonly [string, string, string])[] = [
+      [
+        STEPS,
+        "Generation: issue.Generation,\n\t\tStepExperiment: drawn}",
+        "Generation: issue.Generation}",
+      ],
+      ...["issue, drawn, step.place", "before, drawn, step.place"].map(
+        (call) => [STEPS, `stepWrite(${call}`, `stepWrite(${call.replace(" drawn,", "")}`] as const
+      ),
+    ];
+    expect(labelShapes(copyWith(CHECKOUT, before)).writesSteps).toBe(true);
+    expect(() => labelShapes(copyWith(CHECKOUT, before.slice(0, 2)))).toThrow(
+      "is no shape of the record of each run of a step this rig reads"
+    );
   });
 
   // Catches: a reviewer's task whose end is not the daemon's two sentences, word for word as
@@ -2026,9 +2081,9 @@ describe("the shapes of a label's daemon source", () => {
     'MergeState     string `json:"mergeState,omitempty"`\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n\t// fixAttemptsShown is set on the copy the state route serves a caller below the contract\n';
   const UNCOUNTED =
     'MergeState     string `json:"mergeState,omitempty"`\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n}';
-  // What main's daemon since #3659 holds of its answers (daemon-pane.ts's `STATES_CONTRACT`) and of
-  // a completion's `ready` (`RETIRES_READY`), and what its health route was before it
-  // (`HEALTH_UNSTATED`).
+  // What main's daemon since #3659 holds of its answers (daemon-pane.ts's
+  // `STATES_CONTRACT_SHARED`) and of a completion's `ready` (`RETIRES_READY`), and what its health
+  // route was before it (`HEALTH_UNSTATED`).
   const SERVER = "daemon/internal/api/server.go";
   const CONTRACT_HEADER = 'const daemonContractHeader = "Legion-Daemon-Contract"';
   const STATING =
@@ -2038,8 +2093,17 @@ describe("the shapes of a label's daemon source", () => {
   const HEALTH_BEFORE = 'writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})';
   const RECORD_REFUSED =
     'issue, recorded := state.Issues[key]\n\tif !recorded {\n\t\ts.writeFailure(w, r, http.StatusNotFound, recordNotFound, "The daemon has no record for "+key)';
-  const OWN_BODY = "var ownBody = placement{restore: DaemonAPIVersion, strip: DaemonAPIVersion}";
-  const CONTRACT_MARK = "state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: strip}";
+  const OWN_BODY =
+    "func ownBody() placement {\n\town := DaemonAPIVersion()\n\treturn placement{restore: own, strip: own}\n}";
+  const CONTRACT_MARK = "state.Contract = &ContractView{Daemon: DaemonAPIVersion(), Caller: strip}";
+  // The same lines in main's daemon from #3659 until #5399, where the contract is a constant
+  // (daemon-pane.ts's `CONTRACT_IS_A_CONSTANT`).
+  const HEADER_SET =
+    "\tw.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion()))\n\ts.handler.ServeHTTP(w, r)\n}";
+  const HEADER_SET_CONSTANT = HEADER_SET.replace("DaemonAPIVersion()", "DaemonAPIVersion");
+  const OWN_BODY_CONSTANT =
+    "var ownBody = placement{restore: DaemonAPIVersion, strip: DaemonAPIVersion}";
+  const CONTRACT_MARK_CONSTANT = CONTRACT_MARK.replace("DaemonAPIVersion()", "DaemonAPIVersion");
   const UPDATE_NONE = 'UpdateStateNone UpdateState = "none"';
   const READY_FIELD = 'Ready *bool `json:"ready,omitempty"`\n}';
   const READY_REFUSED =
@@ -2167,7 +2231,7 @@ describe("the shapes of a label's daemon source", () => {
     [SERVER, STATING, STATING.replace(/statingContract\{handler: (.*)\},/, "$1,")],
     [SERVER, HEALTH_PROJECT, HEALTH_PROJECT.replace(", Project: s.project", "")],
     [SERVER, RECORD_REFUSED, RECORD_REFUSED.replace("has no record for", "records nothing of")],
-    ["daemon/internal/api/shaping.go", OWN_BODY, OWN_BODY.replace("strip: DaemonAPIVersion", "")],
+    ["daemon/internal/api/shaping.go", OWN_BODY, OWN_BODY.replace("strip: own", "")],
     ["daemon/internal/api/shaping.go", CONTRACT_MARK, CONTRACT_MARK.replace("strip", "restore")],
     ["daemon/internal/api/updatestate.go", UPDATE_NONE, UPDATE_NONE.replace('"none"', '""')],
     ["daemon/internal/api/handoff.go", READY_FIELD, READY_FIELD.replace("*bool", "bool ")],
@@ -2325,28 +2389,65 @@ describe("the shapes of a label's daemon source", () => {
     );
   });
 
-  // Catches: a source holding #3659's answers and the health route before it, read as either; and
-  // one whose version.go declares no number for its answers to state, answered with a contract
-  // read from elsewhere or none.
-  test("a daemon source that states its contract states the one its version.go declares, and one of both shapes is refused", () => {
+  // Catches: a source holding #3659's answers and the health route before it, read as either.
+  test("a daemon source holding both #3659's answers and the health route before it is refused", () => {
     expect(() =>
       labelShapes(
         copyOf(CHECKOUT, SERVER, HEALTH_PROJECT, `${HEALTH_PROJECT}\n\t// ${HEALTH_BEFORE}`)
       )
     ).toThrow(
-      "the contract its answers state this rig reads: it holds the markers of two shapes at once, main's daemon since #3659, and every daemon the rig runs before #3659, whose health route answers its status alone"
+      "the contract its answers state this rig reads: it holds the markers of two shapes at once, main's daemon since #5399, whose contract is its registry's, and every daemon the rig runs before #3659, whose health route answers its status alone"
     );
-    const declared = `const DaemonAPIVersion = ${DAEMON_API_VERSION}`;
+  });
+
+  // Catches: a source of main since #5399 whose number is read from a file that declares none any
+  // more (version.go keeps the line in a comment), counted without its entry fixtures or with
+  // names that are no entry's, or answered with a number when its checkout holds no list of the
+  // released contracts to count from.
+  test("a daemon source whose contract is its registry's states the released contracts' last and one for each entry fixture, and one with no list of them is refused", () => {
+    expect(labelShapes(CHECKOUT).statesContract).toBe(DAEMON_API_VERSION);
+    const entries = copyOf(CHECKOUT);
+    mkdirSync(path.join(entries, "packages", ENTRY_FIXTURES), { recursive: true });
+    for (const name of ["20990101000000_planted.json", "20990202020202_second.json"])
+      writeFileSync(path.join(entries, "packages", ENTRY_FIXTURES, name), "{}");
+    for (const name of ["notes.txt", "2099010100000_short.json", "20990303030303.json"])
+      writeFileSync(path.join(entries, "packages", ENTRY_FIXTURES, name), "");
+    expect(labelShapes(entries).statesContract).toBe(LAST_NUMBERED + 2);
+    const unlisted = copyOf(CHECKOUT);
+    rmSync(
+      path.join(unlisted, "packages", "contracts/fixtures/daemon-api/released-contracts.json")
+    );
+    expect(() => labelShapes(unlisted)).toThrow("is in no checkout");
+  });
+
+  // Catches: a source of main from #3659 until #5399 read as no shape or as another contract: the
+  // constant its version.go declares, none declared, and a source holding one of the three lines
+  // that name the contract in each form.
+  test("a daemon source whose contract is a constant of version.go states the one it declares, and one that declares none or mixes the two forms is refused", () => {
+    const constant = (number = LAST_NUMBERED) =>
+      copyWith(CHECKOUT, [
+        [SERVER, HEADER_SET, HEADER_SET_CONSTANT],
+        ["daemon/internal/api/shaping.go", OWN_BODY, OWN_BODY_CONSTANT],
+        ["daemon/internal/api/shaping.go", CONTRACT_MARK, CONTRACT_MARK_CONSTANT],
+        [
+          "daemon/internal/api/version.go",
+          `const\tDaemonAPIVersion = ${LAST_NUMBERED}`,
+          `const DaemonAPIVersion = ${number}`,
+        ],
+      ]);
+    expect(labelShapes(constant()).statesContract).toBe(LAST_NUMBERED);
+    expect(labelShapes(constant(207)).statesContract).toBe(207);
+    const declared = `const DaemonAPIVersion = ${LAST_NUMBERED}`;
     expect(() =>
-      labelShapes(copyOf(CHECKOUT, "daemon/internal/api/version.go", declared, `${declared} + 0`))
+      labelShapes(copyOf(constant(), "daemon/internal/api/version.go", declared, `${declared} + 0`))
     ).toThrow(
       "packages/daemon/internal/api/version.go declares no `const DaemonAPIVersion = <n>` for it to state"
     );
-    expect(
-      labelShapes(
-        copyOf(CHECKOUT, "daemon/internal/api/version.go", declared, "const DaemonAPIVersion = 207")
-      ).statesContract
-    ).toBe(207);
+    expect(() =>
+      labelShapes(copyOf(CHECKOUT, "daemon/internal/api/shaping.go", OWN_BODY, OWN_BODY_CONSTANT))
+    ).toThrow(
+      `${JSON.stringify(OWN_BODY)} in packages/daemon/internal/api/shaping.go, and this source does not`
+    );
   });
 
   // Catches: an older shape's marker renamed, read as that older daemon all the same, or as

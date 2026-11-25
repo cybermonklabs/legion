@@ -4360,8 +4360,9 @@ test.skipIf(skip)(
  * daemon source the bodies a label is handed are built by: `packages/daemon/internal/api/state.go`
  * with `state` (this checkout's where none is given: daemon-pane.ts's `servesFixAttempts` and
  * `repositoriesLive`), and this checkout's api sources the contract its answers state is read
- * from beside it (`statesContract`, and shaping.go for `repositoriesLive`), under this file's
- * work directory. */
+ * from beside it (`statesContract`, and shaping.go for `repositoriesLive`), with the list of
+ * released contracts that number is counted from since #5399, under this file's work
+ * directory. */
 function contractCheckout(name: string, source: string, state?: string): string {
   const checkout = path.join(work, name);
   const dir = path.join(checkout, "packages", "contracts", "src");
@@ -4375,6 +4376,12 @@ function contractCheckout(name: string, source: string, state?: string): string 
   writeFileSync(
     path.join(api, "state.go"),
     state ?? readFileSync(path.join(own, "state.go"), "utf8")
+  );
+  const released = path.join("packages", "contracts", "fixtures", "daemon-api");
+  mkdirSync(path.join(checkout, released), { recursive: true });
+  cpSync(
+    path.join(CHECKOUT, released, "released-contracts.json"),
+    path.join(checkout, released, "released-contracts.json")
   );
   return checkout;
 }

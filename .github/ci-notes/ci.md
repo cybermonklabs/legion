@@ -1751,10 +1751,9 @@ would fail `changes`, whose result every job's `if:` reads.
 
 The ci-ok-report step is the whole of this job's GitHub writing: it posts a failing ci-ok
 with `checks: write` and names the run's jobs in it with `actions: read`. `contents: read`
-is the checkout's. `pull-requests: read` is the daemon API contract check's: when it is
-about to refuse a change it reads every open pull request of the repository, with the paths
-each changes, to name a number no other one has taken. The pull request's text is the
-`pr-title` job's, which declares the scopes its own routes read.
+is the checkout's. The daemon API contract check reads no pull request: it fetches its base
+from origin with git, with no token. The pull request's text is the `pr-title` job's, which
+declares the scopes its own routes read.
 
 ## Why every Biome step prints every warning and error
 
