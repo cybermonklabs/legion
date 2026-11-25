@@ -614,6 +614,20 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 	return string(i.kind) + "/" + i.itemID + "#" + blockID, excerpt, true
 }
 
+// BlockText is the whole text of block blockID as the index leaves it, where Block gives the
+// excerpt its row stores: the text a reply's quote of that block is checked against. found is
+// false when the body holds no such block.
+func (i ItemIndexing) BlockText(blockID string) (text string, found bool) {
+	for _, rows := range [][]itemBlockRow{i.written, i.kept} {
+		for _, row := range rows {
+			if row.id == blockID {
+				return row.text, true
+			}
+		}
+	}
+	return "", false
+}
+
 // Queue queues the index's writes on a write phase's batch: the item's state row taken first,
 // the blocks the body changed and removed, the block texts of a kind that records them, the
 // links its blocks hold, and last the statement that records the item indexed

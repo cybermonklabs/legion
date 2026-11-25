@@ -984,8 +984,9 @@ type messageReplyPlan struct {
 }
 
 // planMessageReply plans one session reply above every row lock the route takes: the block the
-// reply names with the index its message owes, and the reply's own index and references, for an
-// id and a created_at reserved here. Nothing it plans is written here.
+// reply names, with the words of it the reply quotes (quote, occurrence), and the index its
+// message owes, and the reply's own index and references, for an id and a created_at reserved
+// here. Nothing it plans is written here.
 //
 // The reply row is not inserted yet, so the document its `#id`s resolve against is handed over,
 // named by the fields that row will hold (planPendingItem, refs.PendingSource), as
@@ -994,11 +995,11 @@ type messageReplyPlan struct {
 // A direct message writes no mention, so its blocks hold none and it moves nothing. who is the
 // session replying, which a block it may not see is refused to.
 func (s *server) planMessageReply(
-	ctx context.Context, tx pgx.Tx, who model.Actor, message model.Message, body string, inReplyToBlock *string,
+	ctx context.Context, tx pgx.Tx, who model.Actor, message model.Message, body string, inReplyToBlock, quote *string, occurrence *int,
 ) (messageReplyPlan, error) {
 	plan := messageReplyPlan{body: body}
 	if inReplyToBlock != nil {
-		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemMessage, message.ID, *inReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
+		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemMessage, message.ID, *inReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE", quote, occurrence)
 		if err != nil {
 			plan.refusal, err = deferredRefusal(err)
 			return plan, err
@@ -1048,6 +1049,10 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.InReplyToBlock != nil && input.Body == nil {
 		writeError(w, "INVALID_MESSAGE", http.StatusBadRequest, "in_reply_to_block names the block a reply's body answers; an error report has none")
+		return
+	}
+	if err := replyQuoteRefusal("INVALID_MESSAGE", "in_reply_to_block", input.InReplyToBlock, input.Quote, input.Occurrence); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 
@@ -1117,7 +1122,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// with a write phase.
 	var plan messageReplyPlan
 	if input.Body != nil {
-		if plan, err = s.planMessageReply(r.Context(), tx, actor, message, *input.Body, input.InReplyToBlock); err != nil {
+		if plan, err = s.planMessageReply(r.Context(), tx, actor, message, *input.Body, input.InReplyToBlock, input.Quote, input.Occurrence); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1334,11 +1339,11 @@ func followUpRequested(r *http.Request) (bool, error) {
 // naming a block of parent stores it and previews that block's text in place of the parent's.
 //
 // plan carries the row: its id and created_at, written explicitly because its index and its
-// references were planned for them before this insert ran, the body, the block it names and the
-// step that writes its index (planMessageReply). A follow-up names no block, so the plan's
-// serves both rows the route can insert. Nothing of the body and nothing of the reply's own row
-// is read here, so this write holds the transaction id for its own statements alone
-// (INFRA-636).
+// references were planned for them before this insert ran, the body, the block it names with the
+// words of it the reply quotes (replyQuote), and the step that writes its index
+// (planMessageReply). A follow-up names no block, so the plan's serves both rows the route can
+// insert. Nothing of the body and nothing of the reply's own row is read here, so this write
+// holds the transaction id for its own statements alone (INFRA-636).
 func (s *server) insertSessionReply(
 	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {
@@ -1346,11 +1351,12 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
+	quote, occurrence := replyQuote(plan.replyBlock)
 	reply, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, replies_to_quote, replies_to_occurrence, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		returning `+messageColumns+`
-	`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt))
+	`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), quote, occurrence, plan.createdAt))
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}

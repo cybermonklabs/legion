@@ -336,7 +336,7 @@ func (s *server) normalizeCommentThreadTarget(
 		if err != nil || input.ReplyToBlock == nil {
 			return target, err
 		}
-		target.ReplyBlock, err = s.namedReplyBlock(ctx, tx, ledger, who, refs.ItemComment, parent.ID, *input.ReplyToBlock)
+		target.ReplyBlock, err = s.namedReplyBlock(ctx, tx, ledger, who, refs.ItemComment, parent.ID, *input.ReplyToBlock, input.Quote, input.Occurrence)
 		if err != nil {
 			return commentThreadTarget{}, err
 		}
@@ -355,7 +355,7 @@ func (s *server) normalizeCommentThreadTarget(
 	if err != nil || input.ReplyToBlock == nil {
 		return target, err
 	}
-	target.ReplyBlock, err = s.namedReplyBlock(ctx, tx, ledger, who, refs.ItemAsk, *input.AskID, *input.ReplyToBlock)
+	target.ReplyBlock, err = s.namedReplyBlock(ctx, tx, ledger, who, refs.ItemAsk, *input.AskID, *input.ReplyToBlock, input.Quote, input.Occurrence)
 	if err != nil {
 		return commentThreadTarget{}, err
 	}
@@ -373,12 +373,13 @@ func (s *server) normalizeCommentThreadTarget(
 //
 // It is planReplyBlock with the index the item owes queued on ledger, the write phase of this
 // route, since this route's writes are one queued batch: the reply's own route is the only
-// caller, and reply_to_block is the only field it reads, so the field and the code a refusal
-// names are written here rather than passed in.
+// caller, and reply_to_block, with the quote and occurrence beside it, the only fields it reads,
+// so the field and the code a refusal names are written here rather than passed in.
 func (s *server) namedReplyBlock(
 	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, who model.Actor, kind refs.ItemKind, itemID, blockID string,
+	quote *string, occurrence *int,
 ) (*namedBlock, error) {
-	repair, block, err := s.planReplyBlock(ctx, tx, who, kind, itemID, blockID, "reply_to_block", "INVALID_COMMENT")
+	repair, block, err := s.planReplyBlock(ctx, tx, who, kind, itemID, blockID, "reply_to_block", "INVALID_COMMENT", quote, occurrence)
 	if err != nil {
 		return nil, err
 	}
@@ -755,6 +756,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := replyQuoteRefusal("INVALID_COMMENT", "reply_to_block", input.ReplyToBlock, input.Quote, input.Occurrence); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	delivery, mentionTargets, err := validateCommentMentions(input)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -873,6 +878,17 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		ReplyTo: input.ReplyTo, Answers: threadTarget.Answers, AskID: input.AskID, Turn: turn, Suggestion: suggestion,
 		Mentions: mentions, Deliveries: []model.CommentDelivery{}, RepliesToBlock: threadTarget.ReplyBlock.nodeID(),
 	}
+	if threadTarget.ReplyBlock != nil {
+		// The comment's insert is queued, so the read that gives a stored reply its block finds
+		// nothing yet: the block read in the read phase is carried here instead, and the insert
+		// stores the words of it the reply quotes from what it carries (queueCommentRow).
+		issueKey, project, slug, err := s.ownerAddress(r.Context(), tx, owner)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		comment.ReplyBlock = threadTarget.ReplyBlock.replyBlock(issueKey, project, slug)
+	}
 	stored, err := queueCommentRow(r.Context(), tx, ledger, &comment, projectionKind)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -889,16 +905,6 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	waitingOn := threadTarget.waitingOnAfter(turn)
-	if threadTarget.ReplyBlock != nil {
-		// The comment's insert is queued, so the read that gives a stored reply its block finds
-		// nothing yet: the block read in the read phase is carried here instead.
-		issueKey, project, slug, err := s.ownerAddress(r.Context(), tx, owner)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		comment.ReplyBlock = threadTarget.ReplyBlock.replyBlock(issueKey, project, slug)
-	}
 	if comment.Anchor != nil {
 		s.registerCommentAnchor(ledger, comment, actor, false)
 		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, nil, projectionKind), actor); err != nil {
@@ -1162,6 +1168,11 @@ func commentRowID(ctx context.Context, tx pgx.Tx) (string, error) {
 // the kind: the comment route the kind its mark projection read (commentProjectionKind), and a
 // caller whose comment has no suggestion or no anchor "". A comment with no suggestion stores none.
 //
+// The row's replies_to_quote and replies_to_occurrence are the words of the block comment answers
+// that it quotes, as the block it carries holds them (replyQuote): its caller sets ReplyBlock
+// before the insert is queued, and a comment that names no block, or quotes none of it, stores
+// neither.
+//
 // The row's created_at is the clock at the insert (migration 0065's default), which orders an
 // owner's comments as they commit because every comment insert holds the owner's lock. The insert
 // is queued, so the clock is read here, at the insert's place and under that lock. That still
@@ -1211,11 +1222,13 @@ func queueCommentRow(
 		}
 	}
 	nodeKind, nodeAddress := stored.rowNode()
+	quote, occurrence := replyQuote(comment.ReplyBlock)
 	if err := queueExec(ledger, `
-		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block,
+		                      replies_to_quote, replies_to_occurrence, answers, node_kind, node_address, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 	`, comment.ID, comment.IssueKey, comment.ArtifactID, author, comment.Body, anchor, comment.ReplyTo, comment.AskID, comment.Turn,
-		suggestion, comment.RepliesToBlock, comment.Answers, nodeKind, nodeAddress, comment.CreatedAt); err != nil {
+		suggestion, comment.RepliesToBlock, quote, occurrence, comment.Answers, nodeKind, nodeAddress, comment.CreatedAt); err != nil {
 		return commentStoreWrite{}, err
 	}
 	return stored, nil

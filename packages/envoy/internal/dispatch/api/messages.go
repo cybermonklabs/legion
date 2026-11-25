@@ -122,7 +122,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	target := "session:" + r.PathValue("session_id")
 	messageInput := createMessageInput{
 		Body: input.Body, InReplyTo: input.InReplyTo, InReplyToBlock: input.InReplyToBlock,
-		Target: &target, Delivery: &input.Delivery,
+		Quote: input.Quote, Occurrence: input.Occurrence, Target: &target, Delivery: &input.Delivery,
 	}
 	delivery, err := validateCreateMessage(&messageInput)
 	if err != nil {
@@ -361,7 +361,7 @@ func (s *server) createStoredMessage(
 	var block *namedBlock
 	var parentRepair refs.ItemRepair
 	if input.InReplyToBlock != nil {
-		if parentRepair, block, err = s.planReplyBlock(ctx, tx, actor, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
+		if parentRepair, block, err = s.planReplyBlock(ctx, tx, actor, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE", input.Quote, input.Occurrence); err != nil {
 			return model.Message{}, nil, err
 		}
 		parent.ReplyBody = messageReplyPreview(block.excerpt)
@@ -452,7 +452,9 @@ func (s *server) createStoredMessage(
 	// The parent's lock, the index its blocks owe, the insert, the recovery point, this message's
 	// own index, the event, its stamp and a targeted message's first delivery attempt go in one
 	// batch (store.WriteBatch): the message is known before the insert runs, and the stamp names
-	// the event's id as the id sequence left it.
+	// the event's id as the id sequence left it. The insert stores the words of the block the
+	// reply quotes from the block it carries (replyQuote).
+	quote, occurrence := replyQuote(message.ReplyBlock)
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if block != nil {
@@ -460,9 +462,9 @@ func (s *server) createStoredMessage(
 			parentRepair.Queue(b)
 		}
 		b.Queue("", `
-			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)
-		`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, message.RepliesToBlock, createdAt)
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, replies_to_quote, replies_to_occurrence, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, message.RepliesToBlock, quote, occurrence, createdAt)
 		// The recovery point right after its message and before the event append: a repeat that
 		// took the key over meanwhile refuses it, and this transaction rolls back.
 		if err := queueRequestKeyRecovery(ctx, b, messageRecovery{MessageID: messageID, Delivery: delivery}); err != nil {
@@ -568,6 +570,9 @@ func validateCreateMessage(input *createMessageInput) (string, error) {
 	input.Target = target
 	if input.InReplyToBlock != nil && input.InReplyTo == nil {
 		return "", errorf(http.StatusBadRequest, "INVALID_MESSAGE", "in_reply_to_block requires in_reply_to, the message whose block it names")
+	}
+	if err := replyQuoteRefusal("INVALID_MESSAGE", "in_reply_to_block", input.InReplyToBlock, input.Quote, input.Occurrence); err != nil {
+		return "", err
 	}
 	if input.Urgency != nil && !validMessageUrgency(*input.Urgency) {
 		return "", errorf(http.StatusBadRequest, "MESSAGE_INPUT", "urgency must be one of low, med, high, blocking")
