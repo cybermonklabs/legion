@@ -1095,6 +1095,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, errors.New("state_dir is required")
 	}
 	cfg.StateDir = underConfig(*file.StateDir, configDir)
+	if strings.ContainsAny(cfg.StateDir, "\n\r") {
+		return Config{}, fmt.Errorf("state_dir %q holds a line break, which a state directory may not hold: the working copy line every phase task opens with names a workspace directory under it and ends at its line break", cfg.StateDir)
+	}
 
 	cfg.PostgresDSN = env("LEGION_POSTGRES_DSN")
 	if file.PostgresDSN != nil {

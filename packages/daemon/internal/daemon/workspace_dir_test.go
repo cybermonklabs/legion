@@ -68,7 +68,7 @@ func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
 			if got := workflow.WorkingCopy(unfilled, dir).String(); got != branchAlone {
 				t.Fatalf("the working copy line of a record that holds no repository = %q, want %q", got, branchAlone)
 			}
-			const rest = " Continue root. Issue: LEGION-208. Phase: implementing."
+			const rest = "\nContinue root. Issue: LEGION-208. Phase: implementing."
 			engine := workflow.New(nil, cfg, quietLogger())
 			if got, want := engine.WorkingCopyAtSend(branchAlone+rest, issue.Key, ghrepo.Repository{}), tc.unnamed+rest; got != want {
 				t.Fatalf("the task sent to a process whose launch named no repository = %q, want %q", got, want)

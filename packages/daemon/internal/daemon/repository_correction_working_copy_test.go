@@ -135,8 +135,8 @@ func (r *workingCopyRig) start(composedOn string) entryStartRow {
 		r.t.Fatal("the promotion wrote no start of the implementer")
 	}
 	start := rows[len(rows)-1]
-	if task := start.request.Task; !strings.HasPrefix(task, r.line(composedOn)) || !strings.Contains(task, workingCopyOwnersLine) {
-		r.t.Fatalf("the implementer's start carries %q, want it composed opening with %q and holding the owner's line %q: the case's own premise",
+	if task := start.request.Task; !strings.HasPrefix(task, r.line(composedOn)+"\nContinue ") || !strings.Contains(task, workingCopyOwnersLine) {
+		r.t.Fatalf("the implementer's start carries %q, want it composed opening with %q on a line of its own before its continue line, and holding the owner's line %q: the case's own premise",
 			task, r.line(composedOn), workingCopyOwnersLine)
 	}
 	return start
@@ -221,25 +221,29 @@ func (r *workingCopyRig) prompt(n int) string {
 
 // wantSent fails unless sent, a prompt of the implementer's task, and the task the claim holds
 // after it name the workspace of works in their working copy line and never the workspace of
-// other, the held task opening with that line, with the owner's line inside the owner's text as
-// the owner wrote it.
+// other, with the owner's line inside the owner's text as the owner wrote it. The held task opens
+// with that line, then a line break and its continue line, and the prompt holds the same: notes
+// can stand before the task in a prompt, so the prompt is read for that text anywhere. A send that
+// left part of the composed directory after the line would hold text between the line and its
+// line break, and fails here.
 func (r *workingCopyRig) wantSent(sent, works, other string) {
 	r.t.Helper()
 	want, wrong := r.line(works), r.line(other)
+	opening := want + "\n" + "Continue "
 	held := r.machine().Claim().Pending
 	if held == nil {
 		r.t.Fatal("the implementer holds no task after its send")
 	}
-	if !strings.HasPrefix(held.Task, want) {
-		r.t.Fatalf("the task the claim holds after its send does not open with its working copy line %q:\n%s", want, held.Task)
+	if !strings.HasPrefix(held.Task, opening) {
+		r.t.Fatalf("the task the claim holds after its send does not open with %q, its working copy line on a line of its own and then its continue line:\n%s", opening, held.Task)
 	}
 	for _, read := range []struct{ what, text string }{
 		{"the prompt", sent},
 		{"the task the claim holds after it", held.Task},
 	} {
-		if strings.Contains(read.text, wrong) || !strings.Contains(read.text, want) {
-			r.t.Fatalf("%s names the working copy %q, the workspace of %s, which the process it went to does not work in; want %q:\n%s",
-				read.what, wrong, other, want, read.text)
+		if strings.Contains(read.text, wrong) || !strings.Contains(read.text, opening) {
+			r.t.Fatalf("%s names the working copy %q, the workspace of %s, which the process it went to does not work in, or holds no %q, the working copy line of the process's workspace followed by a line break and the continue line:\n%s",
+				read.what, wrong, other, opening, read.text)
 		}
 		if !strings.Contains(read.text, "\n"+workingCopyOwnersLine+"\n") {
 			r.t.Fatalf("%s holds no owner's line %q inside the owner's text as the owner wrote it:\n%s", read.what, workingCopyOwnersLine, read.text)

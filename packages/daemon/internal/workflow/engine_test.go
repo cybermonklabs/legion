@@ -361,7 +361,7 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if !strings.HasPrefix(task, "Working copy: branch legion/LEGION-208. Continue root. Issue: LEGION-208. Phase: reviewing.") {
+	if !strings.HasPrefix(task, "Working copy: branch legion/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: reviewing.") {
 		t.Fatalf("reviewer task %q does not open with the working copy it works in and then the phase it starts", task)
 	}
 	assertNamesTheHandoff(t, task, "LEGION-208", "test", 3)

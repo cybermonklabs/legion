@@ -89,39 +89,77 @@ const workingCopyDirectory = ", directory "
 // repo, the repository the process the task goes to works (the daemon's workingCopy), the zero
 // Repository for a launch that named none: the line under the directory this engine names
 // (Config.WorkspaceDir) for that key on that repository, the zero one included, in the place of
-// the line the task holds (workingCopyLine). It is the one place a kept task's line is found and
-// replaced, and the daemon asks it at every send of a worker's task (supervise's Deps.WorkingCopy).
-// A task that holds no working copy line of key's branch where its shape puts one, as a task a
-// release before that line composed holds none, is answered as it is, and so is a task whose line
-// is already the one repo gives.
+// the line the task holds (workingCopyLine). Every other byte of the task is sent as it was kept.
+// It is the one place a kept task's line is found and replaced, and the daemon asks it at every
+// send of a worker's task (supervise's Deps.WorkingCopy). A task in which workingCopyLine finds no
+// line is answered as it is: a task a release before that line composed holds none, and so is a
+// task whose line is already the one repo gives.
 func (e *Engine) WorkingCopyAtSend(task, key string, repo ghrepo.Repository) string {
-	start, end, ok := workingCopyLine(task, key)
-	if !ok {
-		return task
-	}
 	line := workingCopyAt(key, repo, e.cfg.WorkspaceDir)
-	if task[start:end] == line {
+	start, end, ok := workingCopyLine(task, key, line)
+	if !ok || task[start:end] == line {
 		return task
 	}
 	return task[:start] + line + task[end:]
 }
 
 // workingCopyLine returns the byte range of the working copy line of the issue key in task,
-// including its full stop. This release's task and resumeText open every task with that line, so
-// it starts at byte 0, before the continue line and the Dispatch title, and no words a person
-// wrote stand before it: no title can move it or be read in its place. A task an earlier release
-// composed is read too (earlierWorkingCopy), since such a task is kept across the upgrade and its
-// send still writes its line. The two shapes cannot be confused: one opens with `Working copy:`,
-// the other with `Continue `. A task that opens with neither stays as it was composed, as one a
-// release before the line existed holds none. The line ends at the full stop right after the
-// branch, or, where it names a directory, at the first full stop after `, directory ` that is
-// followed by a space, a line end or the end of the task.
-func workingCopyLine(task, key string) (start, end int, ok bool) {
+// including its full stop, for a send that writes line, the line of the process the task goes to,
+// in its place (WorkingCopyAtSend).
+//
+// This release's task and resumeText open every task with that line and end it with a line break
+// (taskOpening), so the line runs from byte 0 up to the task's first line break. No words a person
+// wrote stand before it, so no title can move it or be read in its place, and the line holds no
+// line break of its own, so neither a title nor a directory decides where it ends. The opening of
+// the line (workingCopyOpening) must be followed by the full stop of a line that names the branch
+// alone, or by `, directory `, so the line of a longer key that begins with key, such as
+// LEGION-2080's for LEGION-208, is not read as key's. A task that opens with the line but holds no
+// line break has no line here, and a send leaves it as it was kept.
+//
+// A task an earlier release composed is read too (earlierLine), since such a task is kept across
+// the upgrade and its send still writes its line. The two shapes cannot be confused: one opens with
+// `Working copy:`, the other with `Continue `, and no title stands at byte 0 of either. A task that
+// opens with neither stays as it was composed, as one a release before the line existed holds none.
+func workingCopyLine(task, key, line string) (start, end int, ok bool) {
 	opening := workingCopyOpening(key)
 	if !strings.HasPrefix(task, opening) {
-		if start, ok = earlierWorkingCopy(task, key, opening); !ok {
-			return 0, 0, false
-		}
+		return earlierLine(task, key, opening, line)
+	}
+	end = strings.IndexByte(task, '\n')
+	if end < 0 {
+		return 0, 0, false
+	}
+	if rest := task[len(opening):end]; rest != "." && !strings.HasPrefix(rest, workingCopyDirectory) {
+		return 0, 0, false
+	}
+	return 0, end, true
+}
+
+// earlierLine is workingCopyLine for a task an earlier release composed, which opened with the
+// continue line and held the working copy line of the issue key after it, with a space after the
+// line rather than a line break. The line starts where earlierWorkingCopy finds it, and nothing
+// but its words marks where it ends, so it ends at the full stop right after the branch, or, where
+// it names a directory, at the first full stop after `, directory ` that is followed by a space, a
+// line end or the end of the task.
+//
+// A directory that holds a full stop followed by a space breaks that rule: the line would end
+// inside the directory, and a send would write the new line in front of the rest of the kept
+// directory. So a task that holds exactly line there, followed by a space, a line end or the end
+// of the task, has that line, which the send leaves as it is. Otherwise a task has no line when the
+// directory of line holds a full stop followed by a space, and a send leaves it as it was kept. A
+// kept line whose own directory holds the two bytes, sent where the directory of line does not,
+// is still cut where they first stand: in this shape nothing marks where such a line ends but its
+// directory.
+func earlierLine(task, key, opening, line string) (start, end int, ok bool) {
+	start, ok = earlierWorkingCopy(task, key, opening)
+	if !ok {
+		return 0, 0, false
+	}
+	if end = start + len(line); strings.HasPrefix(task[start:], line) && endsEarlierLine(task, end) {
+		return start, end, true
+	}
+	if strings.Contains(line[len(opening):], ". ") {
+		return 0, 0, false
 	}
 	rest := start + len(opening)
 	if strings.HasPrefix(task[rest:], ".") {
@@ -131,21 +169,28 @@ func workingCopyLine(task, key string) (start, end int, ok bool) {
 		return 0, 0, false
 	}
 	for at := rest + len(workingCopyDirectory); at < len(task); at++ {
-		if task[at] == '.' && (at+1 == len(task) || task[at+1] == ' ' || task[at+1] == '\n') {
+		if task[at] == '.' && endsEarlierLine(task, at+1) {
 			return start, at + 1, true
 		}
 	}
 	return 0, 0, false
 }
 
+// endsEarlierLine reports whether a working copy line of an earlier release's task (earlierLine)
+// can end right before byte at of task: at the end of the task, or before a space or a line end.
+func endsEarlierLine(task string, at int) bool {
+	return at == len(task) || task[at] == ' ' || task[at] == '\n'
+}
+
 // earlierWorkingCopy is where the working copy line of the issue key, which opens with opening
 // (workingCopyOpening), starts in a task composed before this release, which opened with the
 // continue line and held the line right after it, after a space: such tasks
 // (record.PhaseRow.EntryTask, a claim's pending delivery, an outbox start row) are kept across the
-// upgrade. It reads from the first place the continue line's ending (continueEnding) stands, which
-// is where the title ends unless the title holds those words too: a title that does can still hide
-// the line, in such a task only. A task that does not open with the continue line, or holds no
-// line of key's branch right after the first such ending's phase, has none here.
+// upgrade, and earlierLine reads where the line ends. It reads from the first place the continue
+// line's ending (continueEnding) stands, which is where the title ends unless the title holds
+// those words too: a title that does can still hide the line, in such a task only. A task that
+// does not open with the continue line, or holds no line of key's branch right after the first
+// such ending's phase, has none here.
 func earlierWorkingCopy(task, key, opening string) (int, bool) {
 	if !strings.HasPrefix(task, continueOpening) {
 		return 0, false

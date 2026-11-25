@@ -226,8 +226,8 @@ func sessionsNoteBeforeRound(task, note string) (string, bool) {
 func TestApprovedVersionNewsAReviewersNoteGoesBeforeItsRoundsSentences(t *testing.T) {
 	t.Parallel()
 	// The reviewer's resume task as the engine composes it for an issue with no plan rows, its
-	// working copy line naming the branch alone (workflow.Engine.ResumeTask).
-	const resume = "Working copy: branch legion/AS0001-1. Continue The reader. Issue: AS0001-1. Phase: reviewing. Resume the existing phase work."
+	// working copy line naming the branch alone, on a line of its own (workflow.Engine.ResumeTask).
+	const resume = "Working copy: branch legion/AS0001-1.\nContinue The reader. Issue: AS0001-1. Phase: reviewing. Resume the existing phase work."
 	const note = "The pull request makes the reader fetch one page on each call."
 	noted, ok := sessionsNoteBeforeRound(resume+reviewround.Sentences("", 1), note)
 	if want := resume + " " + note + reviewround.Sentences("", 1); !ok || noted != want {

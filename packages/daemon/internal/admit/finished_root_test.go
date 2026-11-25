@@ -503,7 +503,7 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 				// the one a review approved
 				// (dispatch://INFRA-714 R2). A carried root's merger is resumed into the phase it
 				// stood in, and the merge it makes is the head it reads for itself.
-				want := "Working copy: branch legion/" + child + ". Continue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work."
+				want := "Working copy: branch legion/" + child + ".\nContinue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work."
 				if len(mergerTasks) != 1 || mergerTasks[0] != want {
 					t.Fatalf("carried merger tasks = %q, want one resuming merging: %q", mergerTasks, want)
 				}

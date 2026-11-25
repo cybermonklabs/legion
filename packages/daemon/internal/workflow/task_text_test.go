@@ -95,18 +95,19 @@ func withoutRoundsSentences(t *testing.T, pool *pgxpool.Pool, task string) strin
 	return cut
 }
 
-// The task each agent of an owner's plan is told opens with its working copy, then its continue
-// line, then names its task and its step in it, each step of the task in order and the report of
-// each earlier step, and, last of what the task composes, the task's text inside a fence, which
-// only the reviewer's two sentences of the review round follow: the reviewer of the task
-// `implementer reviewer` reads the implementer's report, and the retro and the merger, which run no
-// step, are told the task and its steps alone, and read the runs of the steps from Dispatch.
+// The task each agent of an owner's plan is told opens with its working copy line, then, after a
+// line break, its continue line, then names its task and its step in it, each step of the task in
+// order and the report of each earlier step, and, last of what the task composes, the task's text
+// inside a fence, which only the reviewer's two sentences of the review round follow: the reviewer
+// of the task `implementer reviewer` reads the implementer's report, and the retro and the merger,
+// which run no step, are told the task and its steps alone, and read the runs of the steps from
+// Dispatch.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-	const continued = "Working copy: branch legion/LEGION-208, directory /work/LEGION-208. Continue root. Issue: LEGION-208. Phase: "
+	const continued = "Working copy: branch legion/LEGION-208, directory /work/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: "
 	const steps = " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
 	const text = "Build the widget."
 
@@ -236,9 +237,9 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 }
 
 // An issue with no plan rows, which started before plans existed, is told today's task opening
-// with the working copy line before its continue line and with no other new line: the prompts read
-// a task with no `Task:` line as such an issue. With no runtime to place the working copy (a nil
-// Config.WorkspaceDir), the line names the branch alone.
+// with the working copy line on a line of its own before its continue line, and with none of the
+// lines a plan adds: the prompts read a task with no `Task:` line as such an issue. With no runtime
+// to place the working copy (a nil Config.WorkspaceDir), the line names the branch alone.
 func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -253,7 +254,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 			root := stepRoot(t, pool, phase.Implementing)
 			completes(t, pool, tc.engine, claim.RoleImplementer, "implement", 1)
 			tester := lastStart(t, pool, root.Key, claim.RoleTester)
-			if want := tc.working + " Continue root. Issue: LEGION-208. Phase: testing." +
+			if want := tc.working + "\nContinue root. Issue: LEGION-208. Phase: testing." +
 				handoffPartOf(t, "LEGION-208", "implement", 1) +
 				" Handoff commit: head. Where a later version names another head, the head this task names is still head. Pull request: #42."; tester != want {
 				t.Fatalf("the tester's task = %q,\nwant %q", tester, want)
@@ -266,7 +267,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 				return tc.engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleTester)
 			})
 
-			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), tc.working+" Continue root. Issue: LEGION-208. Phase: testing."+
+			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), tc.working+"\nContinue root. Issue: LEGION-208. Phase: testing."+
 				" Resume the existing phase work."; resumed != want {
 				t.Fatalf("the resumed tester's task = %q,\nwant %q", resumed, want)
 			}
@@ -276,9 +277,10 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 
 // The task writes a line of each label by the label's exact text, which the prompts and the skills
 // name to a worker, so a change of one label's constant alone fails here: the working copy line
-// opens the task, before its continue line, and every other line stands after a space. The forms
-// of its lines, filled with a step's values, are the task's words exactly, and the task of the
-// retro and of the merger, which runs no step, ends with the task alone and its steps.
+// opens the task, on a line of its own before its continue line, and every other line stands after
+// a space. The forms of its lines, filled with a step's values, are the task's words exactly, and
+// the task of the retro and of the merger, which runs no step, ends with the task alone and its
+// steps.
 func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
@@ -298,8 +300,8 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	}
 
 	const workingCopyForm = "`Working copy: branch legion/<KEY>, directory <dir>.`"
-	if want := strings.NewReplacer("<KEY>", "LEGION-208", "<dir>", "/work").Replace(strings.Trim(workingCopyForm, "`")) + " Continue root."; !strings.HasPrefix(written, want) {
-		t.Errorf("the task %q does not open with %q, the words of %s and then its continue line", written, want, workingCopyForm)
+	if want := strings.NewReplacer("<KEY>", "LEGION-208", "<dir>", "/work").Replace(strings.Trim(workingCopyForm, "`")) + "\nContinue root."; !strings.HasPrefix(written, want) {
+		t.Errorf("the task %q does not open with %q, the words of %s, a line break and then its continue line", written, want, workingCopyForm)
 	}
 	for template, values := range map[string][]string{
 		"`Task: <id>. Step <i> of <n>: <role>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<role>", "reviewer"},

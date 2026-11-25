@@ -1100,10 +1100,10 @@ const (
 // task is what a started worker is told. It names the phase the worker starts, which the issue
 // record already holds: one role runs several phases (the implementer runs implementing and
 // retro), and a resumed session cannot otherwise tell a new phase from its last. at is where the
-// worker's work stands (standingPart): its working copy line opens the task, before the continue
-// line and the Dispatch title it holds, so no words a person wrote stand before it
-// (workingCopyLine); its lines are placed right after the continue line, and the text of its
-// task's block, which the owner of the issue wrote, last of all (Standing.owners).
+// worker's work stands (standingPart): its working copy line opens the task, on a line of its own
+// before the continue line and the Dispatch title it holds, so no words a person wrote stand
+// before it (workingCopyLine); its lines are placed right after the continue line, and the text of
+// its task's block, which the owner of the issue wrote, last of all (Standing.owners).
 // The handoff a phase ended with is a Dispatch handoff record on the issue. The line names it by
 // its phase word and the version the daemon accepted, with the command that reads that version,
 // because `Handoff commit:` and the verdict are that version's. It also names the command that
@@ -1165,12 +1165,20 @@ func sentence(s string) string {
 }
 
 // taskOpening is how every task of a phase worker opens (task, resumeText): the working copy line
-// of at, where the work stands (Standing.workingCopy), then a space and the continue line. The
+// of at, where the work stands (Standing.workingCopy), then a line break and the continue line. A
+// standing that holds no working copy line opens its task with the continue line. The working copy
 // line comes first, so the Dispatch title, the one part of the opening a person wrote, stands
 // after it and can neither move it nor be read in its place when a send writes it again
-// (workingCopyLine).
+// (workingCopyLine). The line break ends the line, and the line holds no other: an issue key
+// (claim.IsIssueKey) and a repository's owner and name (ghrepo.Parse) hold none, and the directory,
+// the line's one free text, stands under the state directory under tmux, where the configuration
+// refuses a state_dir that holds a line break, and under the fixed sandbox.TreeRoot under
+// Kubernetes. So a send finds where the line ends without reading the directory.
 func taskOpening(issue record.Issue, at Standing) string {
-	return at.workingCopy + " " + continueLine(issue)
+	if at.workingCopy == "" {
+		return continueLine(issue)
+	}
+	return at.workingCopy + "\n" + continueLine(issue)
 }
 
 // continueOpening is how the continue line begins (continueLine), and so how a task an earlier
@@ -1208,10 +1216,10 @@ func handoffWord(role claim.Role) string {
 // resumeText is what a worker started for a phase already under way is told, at the standing at.
 // No handoff begins that phase — the run that did is over — so the task names the phase and says
 // to carry the work on, which is what a resumed session needs to tell this phase from its last.
-// It opens as a start's task does (taskOpening), with the standing's working copy line and then
-// the continue line; the standing's lines stand right after the continue line and the text of its
-// task's block last, as a start's task places them (task): a worker resumed in a fresh session has
-// no earlier task to read them from.
+// It opens as a start's task does (taskOpening), with the standing's working copy line and then,
+// after a line break, the continue line; the standing's lines stand right after the continue line
+// and the text of its task's block last, as a start's task places them (task): a worker resumed in
+// a fresh session has no earlier task to read them from.
 func resumeText(issue record.Issue, at Standing) string {
 	return taskOpening(issue, at) + at.lines + " Resume the existing phase work." + at.owners
 }

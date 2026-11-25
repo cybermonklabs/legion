@@ -2658,7 +2658,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   Tree 3 is then set todo, and the state reads the cap full of the four issues the daemon has started — tree 1's root, both its children and tree 2's root — with tree 3 alone in `admission.waiting`: a slot is one issue the daemon has started, so one tree's children fill a cap beside another tree's root.
   Tree 1's planner is then told to plan.
   Tree 2's planner has held for the driver: a tree 2 that left planning before the driver sent it anything fails here by name.
-  The proof's instructions tell every phase worker that the daemon's task line (its `Working copy:` line, then `Continue <title>. Issue: <key>. Phase: <phase>.`) is not the driver's instruction.
+  The proof's instructions tell every phase worker that the daemon's task line (its `Working copy:` line, on a line of its own, then `Continue <title>. Issue: <key>. Phase: <phase>.` on the next line) is not the driver's instruction.
   The memory hog, the pod watch's negative control, runs on the root's node and is OOMKilled by its own 64Mi limit
 
 - `child-release`

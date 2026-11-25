@@ -23,8 +23,9 @@ type workingCopyAnswer struct {
 	asked []string
 }
 
-// directoryClause is the directory a task's working copy line names, which the answer writes again.
-var directoryClause = regexp.MustCompile(`, directory [^ ]+\.`)
+// directoryClause is the directory a task's working copy line names, which the answer writes again:
+// the line ends with a full stop before the line break that ends it.
+var directoryClause = regexp.MustCompile(`, directory [^ \n]+\.`)
 
 func (r *workingCopyAnswer) answer(_ context.Context, _ Claim, d Delivery) (string, []byte, error) {
 	r.mu.Lock()
@@ -50,10 +51,11 @@ func (r *workingCopyAnswer) askedAbout() []string {
 	return append([]string(nil), r.asked...)
 }
 
-// workingCopyTask is a phase worker's task whose working copy line names dir.
+// workingCopyTask is a phase worker's task whose working copy line names dir, on a line of its own
+// before the continue line, as the workflow composes one.
 func workingCopyTask(dir string) string {
 	return "Working copy: branch legion/LEGION-209, directory " + dir +
-		". Continue Workflow. Issue: LEGION-209. Phase: implementing. Implement the plan."
+		".\nContinue Workflow. Issue: LEGION-209. Phase: implementing. Implement the plan."
 }
 
 const (
