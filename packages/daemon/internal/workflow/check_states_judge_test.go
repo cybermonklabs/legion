@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 
@@ -85,33 +84,21 @@ func TestJudgeStates(t *testing.T) {
 			testingJudgement{Waiting: []string{"k3"}}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			all := tc.leaving
-			if tc.all != nil {
-				all = *tc.all
-			}
-			for _, judged := range []struct {
-				leaveCI bool
-				want    testingJudgement
-			}{{true, tc.leaving}, {false, all}} {
-				got, ok := judgeStates(tc.head, judged.leaveCI)
-				if !ok || !reflect.DeepEqual(got, judged.want) {
-					t.Fatalf("judgeStates(leaveCI %t) = %+v, %t; want %+v, judged", judged.leaveCI, got, ok, judged.want)
-				}
+			if got, ok := judgeStates(tc.head); !ok || !reflect.DeepEqual(got, tc.leaving) {
+				t.Fatalf("judgeStates = %+v, %t; want %+v, judged", got, ok, tc.leaving)
 			}
 		})
 	}
 	t.Run("no set held", func(t *testing.T) {
-		for _, leaveCI := range []bool{true, false} {
-			if got, judged := judgeStates(record.HeadStates{States: map[string]record.CheckState{"k1": state("k1", "yes", "", "", "tester")}}, leaveCI); judged {
-				t.Fatalf("judgeStates(leaveCI %t) of a head with no set = %+v, judged; want no judgement", leaveCI, got)
-			}
+		if got, judged := judgeStates(record.HeadStates{States: map[string]record.CheckState{"k1": state("k1", "yes", "", "", "tester")}}); judged {
+			t.Fatalf("judgeStates of a head with no set = %+v, judged; want no judgement", got)
 		}
 	})
 }
 
 // Each pair of a state of the issue and an event the testing move meets, each its own row, run
-// once with the engine's TestingLeavesCI false, as the daemon wires it, and once true, so both
-// testing moves are held and none is skipped. A completion that waits tells the architect once, in
+// under the testing move's one rule, which leaves out each check a CI job runs (a row's leaving,
+// where it differs from then). A completion that waits tells the architect once, in
 // one phase-finished notice carrying what it waits for as fields; a later event that still leaves
 // it waiting tells nothing more. The move decides only once every check it reads holds a conclusive
 // state, so a fail waits while another check has no state or a CI run with no result goes on, and
@@ -130,7 +117,8 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 		given func(r *statesRig)
 		event func(r *statesRig)
 		then  func(r *statesRig)
-		// leaving is the outcome with TestingLeavesCI true, nil where it is then's.
+		// leaving is the outcome where the testing move's leaving out each check a CI job runs makes
+		// it differ from then, nil where it is then's.
 		leaving func(r *statesRig)
 	}{
 		{
@@ -247,8 +235,10 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 			given: func(r *statesRig) {
 				r.states(headOne, 1, passOf("k1", "tester"), stateOf("k2", "no", "fail", "tester"), k3Failed)
 			},
-			event:   func(r *statesRig) { r.complete(headOne, 3) },
-			then:    func(r *statesRig) { r.movedBackFailing(headOne, failingOf("k2", "no", "fail"), failingOf("k3", "no", "fail")) },
+			event: func(r *statesRig) { r.complete(headOne, 3) },
+			then: func(r *statesRig) {
+				r.movedBackFailing(headOne, failingOf("k2", "no", "fail"), failingOf("k3", "no", "fail"))
+			},
 			leaving: func(r *statesRig) { r.movedBackFailing(headOne, failingOf("k2", "no", "fail")) },
 		},
 		{
@@ -395,20 +385,17 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 			},
 		},
 	} {
-		for _, leaveCI := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s (TestingLeavesCI %t)", tc.name, leaveCI), func(t *testing.T) {
-				r := newStatesRig(t, tc.at)
-				r.engine.cfg.TestingLeavesCI = leaveCI
-				if tc.given != nil {
-					tc.given(r)
-				}
-				tc.event(r)
-				if then := tc.leaving; leaveCI && then != nil {
-					then(r)
-					return
-				}
-				tc.then(r)
-			})
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			r := newStatesRig(t, tc.at)
+			if tc.given != nil {
+				tc.given(r)
+			}
+			tc.event(r)
+			if tc.leaving != nil {
+				tc.leaving(r)
+				return
+			}
+			tc.then(r)
+		})
 	}
 }

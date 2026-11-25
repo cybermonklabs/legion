@@ -184,30 +184,64 @@ func TestAFailureWhileTheReviewRunsStartsAFix(t *testing.T) {
 	})
 }
 
-// A task that takes a fix hears of a failure once, from the fix: the state event starts the fix,
-// and the listener's settlement of the same head tells the owner alone, so the implementer gets
-// no role message of the failure and the reviewer none either. The control: with the settlement
-// told to every role as before (the seam everyRoleToldCI) the implementer gets the settlement's
-// message beside the fix, which the subtest asserts.
-func TestAFixesCITaskGetsOneDeliveryOfAFailure(t *testing.T) {
-	settled := settledBody
-	t.Run("the fix alone reaches the implementer", func(t *testing.T) {
+// A task that takes a fix gets one repair assignment of a failure, whichever of Dispatch's state
+// event and the listener's settlement of the head comes first: the failure's row names fix 1, one
+// fix reads its job, and once the read answers the fix starts with the failure in its task; no
+// assignment row is written beside it. The settlement is reported to each of the reviewer, the
+// implementer and the owner once, which assigns nothing, and the implementer gets no role message
+// of the failure. The controls, each a subtest: with an assignment derived from the settlement's
+// raw conclusion (the seam assignFromSettlement) the implementer gets an assignment row beside the
+// fix, a second repair; and with the failed CI job told to a task that takes a fix as to any other
+// (the seam tellCIFailureBesideFix) the implementer gets that message beside the fix.
+func TestAFixesCITaskGetsOneRepairAssignmentInBothOrders(t *testing.T) {
+	settle := func(r *fixRig) { applyRefusingNothing(r.t, r.pool, r.engine, settledAt(fixHead, 1, "unit")) }
+	fail := func(r *fixRig) { r.fails(fixHead, "k-ci") }
+	for _, order := range []struct {
+		name          string
+		first, second func(*fixRig)
+	}{
+		{"state first", fail, settle},
+		{"settlement first", settle, fail},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			r := reviewing(t)
+			order.first(r)
+			order.second(r)
+			assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1)})
+			if got := r.jobReads(); !reflect.DeepEqual(got, oneJobRead("a", "k-ci")) {
+				t.Fatalf("the job reads = %+v, want %+v", got, oneJobRead("a", "k-ci"))
+			}
+			r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+			assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "running", "k-ci")})
+			if starts := r.fixStarts(); len(starts) != 1 || starts[0].Fix != 1 || starts[0].FixFrom != fixHead {
+				t.Fatalf("the fix's starts = %+v, want one of fix 1 from %s", starts, fixHead)
+			}
+			assertStrings(t, "the assignments", r.assignments(), nil)
+			assertStrings(t, "the reports' receivers", r.receivers(record.CINewsRuns), []string{"architect", "implementer", "reviewer"})
+			assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
+		})
+	}
+
+	t.Run("the control: an assignment from the settlement's raw conclusion is a second repair", func(t *testing.T) {
 		r := reviewing(t)
-		r.fails(fixHead, "k-ci")
-		applyRefusingNothing(t, r.pool, r.engine, settledAt(fixHead, 1, "unit"))
+		r.engine.assignFromSettlement = true
+		settle(r)
+		fail(r)
 		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
-		assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
-		assertStrings(t, "the reviewer's messages", r.told(claim.RoleReviewer), nil)
-		assertStrings(t, "the owner's messages", r.told(claim.RoleArchitect), []string{settled})
+		if assigned := r.assignments(); len(assigned) != 1 {
+			t.Fatalf("the assignments with one derived from the settlement = %q, want one beside the fix", assigned)
+		}
 	})
 
-	t.Run("the control: the settlement told to every role reaches the implementer beside the fix", func(t *testing.T) {
+	t.Run("the control: the failed CI job told as to any task reaches the implementer beside the fix", func(t *testing.T) {
 		r := reviewing(t)
-		r.engine.everyRoleToldCI = true
-		r.fails(fixHead, "k-ci")
-		applyRefusingNothing(t, r.pool, r.engine, settledAt(fixHead, 1, "unit"))
+		r.engine.tellCIFailureBesideFix = true
+		fail(r)
+		settle(r)
 		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
-		assertStrings(t, "the implementer's messages with every role told", r.told(claim.RoleImplementer), []string{settled})
+		if told := r.told(claim.RoleImplementer); len(told) != 1 {
+			t.Fatalf("the implementer's messages with the failed job told = %q, want that one beside the fix", told)
+		}
 	})
 }
 
@@ -225,19 +259,21 @@ func TestAnIssueOnTheDefaultStepsGetsAFix(t *testing.T) {
 }
 
 // A failure while the task's implementation step runs goes to that step: the failure is the
-// implementer's, and the implementer is told once, naming the check, the head and the job's end;
-// no fix starts. The same failure in a later event tells nothing more, since its row says the
-// implementer was given it.
+// implementer's, and the implementer gets one repair assignment for that step, naming the check,
+// the head and how its job ended, and no role message of it; no fix starts. The same failure in a
+// later event assigns nothing more, since its row says the implementer was given it.
 func TestAFailureWhileTheImplementerRunsGoesToIt(t *testing.T) {
 	r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"})
 	assertPhase(t, r.pool, phase.Implementing)
 	r.fails(fixHead, "k-ci")
 	assertStrings(t, "the fixes", r.fixes(), nil)
 	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "implementer", 0)})
-	assertToldOnceNaming(t, "the implementer's messages", r.told(claim.RoleImplementer), "k-ci", fixHead, "failure")
+	assigned := []string{"implementer " + r.stepReader(claim.RoleImplementer, phase.Implementing) + " k-ci@" + fixHead + " failure fix 0"}
+	assertStrings(t, "the assignments", r.assignments(), assigned)
+	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
 
 	r.fails(fixHead, "k-ci")
-	assertToldOnceNaming(t, "the implementer's messages after the same failure again", r.told(claim.RoleImplementer), "k-ci", fixHead, "failure")
+	assertStrings(t, "the assignments after the same failure again", r.assignments(), assigned)
 }
 
 // A state at a head the pull request has left starts nothing and tells nobody: Dispatch keeps
@@ -305,10 +341,10 @@ func runningAtTheEnd(t *testing.T) *fixRig {
 }
 
 // A check failing at the head of a task held for its fix at its end joins the fix that runs:
-// one fix holds both failures, the implementer is told the new one is part of its fix, and the
-// issue read names the one fix that runs. The control, kept: with the join taken out (the seam
-// noFixJoin) the end's branch starts a second fix, which the store refuses (record.ErrFixOpen),
-// and the fact fails.
+// one fix holds both failures, the implementer gets one repair assignment of the new one for the
+// fix it runs, and the issue read names the one fix that runs. The control, kept: with the join
+// taken out (the seam noFixJoin) the end's branch starts a second fix, which the store refuses
+// (record.ErrFixOpen), and the fact fails.
 func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
 	r := runningAtTheEnd(t)
 
@@ -316,7 +352,8 @@ func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
 
 	assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "running", "k-ci")})
 	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1), failureOf("k-ci2", "fix", 1)})
-	assertToldOnceNaming(t, "the implementer's messages", r.told(claim.RoleImplementer), "k-ci2", fixHead, "failure")
+	assertStrings(t, "the assignments", r.assignments(), []string{"implementer fix-1@2 k-ci2@" + fixHead + " failure fix 1"})
+	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
 	if issue := issueOf(t, r.pool, r.engine, "LEGION-208"); issue.RunningFix != 1 {
 		t.Fatalf("the issue read names running fix %d, want 1", issue.RunningFix)
 	}

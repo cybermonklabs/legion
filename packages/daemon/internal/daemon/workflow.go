@@ -314,6 +314,9 @@ type workflowRuntime struct {
 	mergeStateQueued  map[string]string
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
+	// dropFirstReadFailure, set only by tests, ends a climb on a read that failed with nothing to
+	// follow, as a climb ended before it read again after a failure (climbMergeState).
+	dropFirstReadFailure bool
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
@@ -1012,12 +1015,6 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments:  cfg.ExperimentsDeclared(),
 		WorkspaceDir: engineWorkspaceDir(cfg),
-		// The testing move reads every check, those a CI job runs among them, until the end of a
-		// task holds the checks a CI job runs: a task whose steps after testing hold no review and
-		// no acceptance would otherwise end with no gate on them. INFRA-5392 (INFRA-3570's fix
-		// beside the review) turns this on with its end hold, which makes the end of a task hold
-		// them. TestTheDaemonWiresTheTestingMoveToReadEveryCheck holds it false until then.
-		TestingLeavesCI: false,
 	}
 }
 

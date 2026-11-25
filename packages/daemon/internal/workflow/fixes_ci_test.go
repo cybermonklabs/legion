@@ -112,11 +112,8 @@ func TestARunningRunOfTheReleaseBeforeKeepsNoFlag(t *testing.T) {
 
 // The testing move leaves a check that a CI job runs to the fix: an issue in testing at its tested
 // head, where a check that no CI job runs passes and one that a CI job runs failed, goes to
-// review on the tester's completion. It waits for the testing step that leaves each such check
-// to the fix, which this branch does not hold yet; with that step's switch off, the work goes
-// back to implementing, which is its control.
+// review on the tester's completion, and the end of its task holds the failed check for CI.
 func TestTheJoinsTestingMoveLeavesCIToTheFix(t *testing.T) {
-	t.Skip("needs the testing step that leaves each check a CI job runs to the fix, which this branch does not hold yet")
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1, ofSet(passOf("k1", "tester"), "k1", "k2"), ofSet(inCI(stateOf("k2", "no", "fail", "ci"), "failure"), "k1", "k2"))
 	r.complete(headOne, 2)

@@ -14,8 +14,8 @@ import (
 // nothing: k1 and k2 are checks that no CI job runs, and k3 is one a CI job runs, whose state names
 // its job's case. The CI result of #42 that settles while the tester works is told to the
 // implementer at once (tellChecks), before any state of k3 arrives, and starts no implementer; the
-// tester's completion then moves the issue by every check, k3 among them, as the testing move reads
-// them with the engine's TestingLeavesCI false, the daemon's wiring. A state of k3 that says its
+// tester's completion then moves the issue by the checks that no CI job runs, which pass, so k3,
+// whose failure the end of the task holds, sends no work back. A state of k3 that says its
 // job ended at the head of the pull request without a pass is told to the implementer alone, at
 // once, in any phase: one message naming the check, the head and the job's case, and no start of
 // the implementer. A state at a head the pull request has left, and a second state that says the
@@ -35,7 +35,7 @@ func TestAFailedCIJobReachesTheImplementerWhileTheReviewerWorks(t *testing.T) {
 
 		r.states(headOne, 3, k3Failed)
 		r.complete(headOne, 3)
-		r.movedBackFailing(headOne, failingOf("k3", "no", "fail"))
+		assertPhase(t, r.pool, phase.Reviewing)
 	})
 
 	t.Run("a state of k3 arrives while the tester works", func(t *testing.T) {

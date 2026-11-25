@@ -341,7 +341,7 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 			status("deploy", "success", 1), status("ci", "failure", 1)),
 			`head1 had no failed or cancelled check; skipped "envoy-go": ` + skippedSaid + "; failed commit status ci"},
 	} {
-		got := settlementDetail(shape.fact)
+		got := settlementDetail(shape.fact, ciNextOf{})
 		if got != shape.detail {
 			t.Errorf("%s: settlementDetail = %q, want %q", shape.name, got, shape.detail)
 		}
@@ -363,7 +363,7 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 			"head1 passed every check"},
 		{"no skipped run and no word", settlement("head1"), "head1 passed every check"},
 	} {
-		if got := settlementDetail(today.fact); got != today.detail {
+		if got := settlementDetail(today.fact, ciNextOf{}); got != today.detail {
 			t.Errorf("%s: settlementDetail = %q, want today's %q", today.name, got, today.detail)
 		}
 	}

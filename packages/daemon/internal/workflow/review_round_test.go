@@ -489,7 +489,7 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 	case pods.WakeChecks:
 		fact := settlement(head)
 		apply("wake-checks", fact)
-		return WakeTask(kind, settlementDetail(fact), StoppedByRelease)
+		return WakeTask(kind, settlementDetail(fact, ciNextOf{}), StoppedByRelease)
 	case pods.WakeRoleMessage:
 		apply("wake-role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: token, At: reviewTestedAt, Report: "report-role"})
 		return WakeTask(kind, token, StoppedByRelease)
