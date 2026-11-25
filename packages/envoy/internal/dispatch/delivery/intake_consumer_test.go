@@ -555,6 +555,8 @@ func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 // the first holds it, and takes it over once the first stops -- which is how a stopped or dead
 // process's delivery work is picked up.
 func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
+	// The default logger, not the intake's: the row requires no ERROR line from any component,
+	// the bus client and duty among them, which write to the default.
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -601,6 +603,8 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 // process of the build before holds, which binds without one -- is therefore left exactly as it
 // is, filter set and all, however much this release would otherwise replace it.
 func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
+	// The default logger, not the intake's: the row requires no ERROR line from any component,
+	// the bus client and duty among them, which write to the default.
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
@@ -673,6 +677,7 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 // takes, bus.DispatchDeliveryDurable's: a test holding any other durable's lease would leave the
 // take-over free and prove nothing.
 func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
+	// The default logger, not the intake's: the line the row waits for is duty's (duty.Exclusive).
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)

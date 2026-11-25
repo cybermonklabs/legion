@@ -82,13 +82,21 @@ const targetNode = `coalesce(item_block.kind, case when r.to_kind = 'block' then
 // for each other node: the distinct kinds of its links in order, and its lowest via, the least
 // pair of via kind and via id as arrays compare, element by element in the database's order.
 //
-// It leaves them out by an anti-join, `not exists` over own, and not by a test of each row against
-// an array of own's rows. Postgres pushed the array's test into each arm of the links, and it does
-// not hash an array an InitPlan reads, so it compared each link with every row of own in turn. On
-// a copy of a dispatch:local database seeded at production's size, for an issue with 2,041 own
-// targets, the in statement read 5,000 links in 3.44-3.48 s, past the route's 2 s budget, and its
-// plan spent 2.58 s of 2.67 s in that test; with the anti-join, which Postgres plans as a Merge
-// Anti Join, it read them in 0.27-0.36 s.
+// It leaves them out by an anti-join, `not exists` over own, and not, as the read did before, by a
+// test of each row against an array of own's rows,
+// `not (row(f.node_kind, f.node_id) = any(array(...)))` over `select row(o.kind, o.id) from own o`
+// in the out statement and over `select row(t.kind, t.id) from targets t` in the in statement.
+// Postgres pushed the array's test into each arm of the links, and it does not hash an array an
+// InitPlan reads, so it compared each link with every row of own in turn. On a copy of a
+// dispatch:local database seeded at production's size (block_refs 876,018 rows), for an issue
+// with 2,041 own targets, the in statement read 5,000 links in 3.44-3.48 s, past the route's 2 s
+// budget, and its plan spent 2.58 s of 2.67 s in that test; with an anti-join, hashed or merged,
+// it read them in 0.27-0.36 s. On the seed of api's
+// TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks, 2,042 own targets and 10,000
+// links from 500 documents, the read with the array answered 503 at 2.01 s in a shared pod and 200
+// in 931 ms on a 10-CPU build machine, so the plan, which api's
+// TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin holds, is the proof and not
+// the time.
 func oneRowPerNode(own string) string {
 	return `
 		select f.node_kind, f.node_id, array_agg(distinct f.kind order by f.kind),

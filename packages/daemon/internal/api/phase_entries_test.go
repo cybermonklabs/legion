@@ -88,7 +88,7 @@ func phaseEntriesServed(t *testing.T, body []byte) map[string]struct {
 // worker role: the absence is how a reader tells an issue the daemon reaches from one no sweep
 // of the entries passes over.
 func TestTheStateRouteServesThePhaseEntryNumbers(t *testing.T) {
-	body := stateFrom(t, phaseEntriesState(), "10.1.24.9:4100", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, phaseEntriesState(), "10.1.24.9:4100", podClaims(DaemonAPIVersion()))
 	served := phaseEntriesServed(t, body)
 
 	for key, want := range map[string]struct{ entry, given int64 }{
@@ -146,8 +146,8 @@ func TestPhaseEntryContractIsTheContractThatAddedTheNumbers(t *testing.T) {
 		t.Fatalf("phaseEntriesContract = %d, want %d, the contract whose entry in version.go added the issues' phase entry and given entry",
 			phaseEntriesContract, addedPhaseEntries)
 	}
-	if phaseEntriesContract > DaemonAPIVersion {
+	if phaseEntriesContract > DaemonAPIVersion() {
 		t.Fatalf("phaseEntriesContract = %d, above DaemonAPIVersion %d: no caller could be served the two numbers",
-			phaseEntriesContract, DaemonAPIVersion)
+			phaseEntriesContract, DaemonAPIVersion())
 	}
 }

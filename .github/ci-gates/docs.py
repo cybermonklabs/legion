@@ -54,6 +54,7 @@ GATE = gate("docs", "docs", runs=[
     ) for path in files_but_tests(f"{ENVOY}/{directory}")],
 ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
   + dispatch_api_types(at_docs("Typecheck the docs site"))
+  + reads((CRASH_SAFETY, at_docs("Turn crash safety off on the screenshots' Postgres") + " runs it"))
   + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF, workflow=CI)
 GATE = with_reads(GATE, [
     Read('packages/daemon/internal/daemon/**', "filter docs held packages/daemon/internal/daemon/** by hand before the filters were computed: it selected 7 file(s) no other read of this gate declares", but=('**/*_test.go',)),

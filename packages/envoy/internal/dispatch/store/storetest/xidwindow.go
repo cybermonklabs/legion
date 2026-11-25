@@ -59,8 +59,9 @@ import (
 // The operation runs with the collector held off, after a collection that leaves the window
 // memory the heap has already used, and each marked BEGIN keeps every page the process has mapped
 // out of NUMA balancing and makes the execution tracer's pages present (XidTracer.lockTransaction,
-// xidHoldMemory), so none of the runtime's pauses lands in a window, no allocation of the code's
-// and no event of the tracer's in it is the first touch of a page, and no page is moved under it.
+// xidHoldWindowMemory), so none of the runtime's pauses lands in a window, no allocation of the
+// code's and no event of the tracer's in it is the first touch of a page, and no page is moved
+// under it; a window whose BEGIN could not hold the memory is UNKNOWN, naming why.
 // And the rig does its own work on a statement inside that statement, between its Start and its
 // End, and none in the gaps around it (XidTracer.begin, XidTracer.end). Each gap is read off that
 // thread's own scheduler clocks (readXidThreadClock), read at the very moments the gap's two ends
@@ -169,10 +170,13 @@ type XidStatement struct {
 	// transaction was locked to at its BEGIN (XidTracer.lockTransaction), zero when none was.
 	// startedIRQ and endedIRQ are the softirq counts of the CPU that thread is pinned to, read just
 	// after Start and just before End (readXidSoftirqs), so the counts from one statement's End to
-	// the next one's Start cover the gap between them.
+	// the next one's Start cover the gap between them. unheldMemory is, on a marked BEGIN, why the
+	// rig could not hold the process's memory there (XidTracer.lockTransaction), empty where it held
+	// it or did not try.
 	started, ended       xidThreadClock
 	startedIRQ, endedIRQ xidSoftirqReading
 	locked               int
+	unheldMemory         string
 }
 
 // xidThreadClock is one reading of an OS thread's scheduler clocks: which thread, the moment of
@@ -274,11 +278,13 @@ func (x *XidTracer) begin(ctx context.Context, conn *pgx.Conn, sql string) conte
 	pid := conn.PgConn().PID()
 	verb := xidVerb(sql)
 	marked := markedXid(ctx)
+	var unheldMemory string
 	if verb == "begin" && marked {
-		x.lockTransaction(pid)
+		unheldMemory = x.lockTransaction(pid)
 	}
 	span := &xidSpan{ends: verb == "commit" || verb == "rollback", statement: XidStatement{
 		PID: pid, Start: start, SQL: sql, Marked: marked, started: started, startedIRQ: startedIRQ,
+		unheldMemory: unheldMemory,
 	}}
 	x.mu.Lock()
 	span.statement.locked = x.locked[pid].gapThread()
@@ -315,17 +321,20 @@ func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 // (unlockTransaction). Where the build judges gaps (XidJudgesGaps), it also holds that thread out
 // of NUMA balancing meanwhile (xidHoldThread), opens the thread's clock for the transaction's
 // readings and pins the thread to the CPU it is on, with that CPU's softirq counts open beside its
-// clock (xidWatchThreadClock), and holds the process's memory still (xidHoldMemory): out of NUMA
-// balancing, with the execution tracer's pages present, a hold that lasts (xidHoldMemory says how).
-// All of it runs inside the BEGIN, which no window holds. A build that judges no gap does none of
-// that hold, since it reads no gap's clocks. A thread locked to a goroutine runs that goroutine
-// and no other, so every gap between two statements the goroutine sends from it is read off
-// clocks of its own: the time the thread ran, and waited for a CPU, is the goroutine's. It is the
-// BEGIN that locks, not the measured operation, because an operation sends a transaction from any
-// goroutine it starts - a broadcast delivers to each session on a goroutine of its own. A thread
-// the rig could not hold is not recorded as held, so its gaps are read off no thread's clocks and
-// are a rig problem (analyzeXidWindows).
-func (x *XidTracer) lockTransaction(pid uint32) {
+// clock (xidWatchThreadClock), and holds the process's memory still (xidHoldWindowMemory): out of
+// NUMA balancing, with the execution tracer's pages present, a hold that lasts (xidHoldWindowMemory
+// says how). All of it runs inside the BEGIN, which no window holds. A build that judges no gap
+// does none of that hold, since it reads no gap's clocks. A thread locked to a goroutine runs that
+// goroutine and no other, so every gap between two statements the goroutine sends from it is read
+// off clocks of its own: the time the thread ran, and waited for a CPU, is the goroutine's. It is
+// the BEGIN that locks, not the measured operation, because an operation sends a transaction from
+// any goroutine it starts - a broadcast delivers to each session on a goroutine of its own. A
+// thread the rig could not hold is not recorded as held, so its gaps are read off no thread's
+// clocks and are a rig problem (analyzeXidWindows). Nor is one whose BEGIN could not hold the
+// process's memory, as when the hold found none of the execution tracer's memory to make present:
+// lockTransaction answers why (unheld), the BEGIN's statement keeps it, and that window is UNKNOWN
+// by that reason.
+func (x *XidTracer) lockTransaction(pid uint32) (unheld string) {
 	runtime.LockOSThread()
 	held := xidHeldThread{thread: xidThread()}
 	if XidJudgesGaps() {
@@ -339,7 +348,10 @@ func (x *XidTracer) lockTransaction(pid uint32) {
 				release()
 			}
 		}
-		xidHoldMemory()
+		if unheld = xidHoldWindowMemory(); unheld != "" && held.release != nil {
+			held.release()
+			held.release = nil
+		}
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -347,6 +359,7 @@ func (x *XidTracer) lockTransaction(pid uint32) {
 		x.locked = map[uint32]xidHeldThread{}
 	}
 	x.locked[pid] = held
+	return unheld
 }
 
 // unlockTransaction puts back and lets go of the thread lockTransaction locked for backend pid's
@@ -675,7 +688,10 @@ func xidAssigned(sql string, tag pgconn.CommandTag) bool {
 // Where the build judges gaps, a window gap not read off its transaction's locked thread
 // (XidGap.Read) or off the execution trace (XidGap.Traced) is a rig problem, and so is such a
 // statement of a window that has a gap: rule 2 would weigh the gaps against that statement's time
-// on the clock, or with the runtime's wait inside it, both of which a loaded machine stretches.
+// on the clock, or with the runtime's wait inside it, both of which a loaded machine stretches. A
+// window whose transaction's BEGIN could not hold the process's memory (XidStatement.unheldMemory)
+// has its thread not held, so its gaps and statements are unread for that one reason: the window is
+// UNKNOWN, one problem naming it in place of theirs.
 func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time.Duration, reading *xidTraceReading) *XidReport {
 	report := &XidReport{Duration: duration, Polls: len(polls)}
 	for i := 1; i < len(polls); i++ {
@@ -748,8 +764,15 @@ func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time
 		}
 		window := xidWindowOf(transaction, reading)
 		if XidJudgesGaps() {
+			unheld := transaction.Statements[0].unheldMemory
+			if unheld != "" && len(window.Gaps) > 0 {
+				report.Problems = append(report.Problems, fmt.Sprintf(
+					"UNKNOWN: backend %d's window (%s) was read off no thread's clocks: at the transaction's BEGIN the rig could not hold the process's memory still (xidHoldWindowMemory): %s",
+					transaction.PID, xidSQL(window.Statements[0].SQL), unheld))
+			}
 			for i, gap := range window.Gaps {
 				switch {
+				case unheld != "":
 				case !gap.Read:
 					report.Problems = append(report.Problems, fmt.Sprintf(
 						"the gap after statement %d of backend %d's window (%s) was not read off one thread's clocks on both sides: the transaction's goroutine was not locked to its thread from its BEGIN (a BEGIN the operation's marked context did not send), the rig could not hold that thread out of NUMA balancing (xidHoldThread), the rig could not open that thread's schedstat at its BEGIN (xidWatchThreadClock), a read of the thread's clocks at one of the gap's ends found the thread switched out in each of its tries (readXidThreadClock, xidClockTries), or another goroutine sent its statements",
@@ -762,7 +785,7 @@ func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time
 			}
 			for i, span := range window.Spans {
 				switch {
-				case len(window.Gaps) == 0:
+				case len(window.Gaps) == 0, unheld != "":
 				case !span.Read:
 					report.Problems = append(report.Problems, fmt.Sprintf(
 						"statement %d of backend %d's window (%s) was not read off one thread's clocks at its start and end, for one of the causes an unread gap has (readXidThreadClock, xidClockTries), so rule 2 would weigh the window's gaps against its time on the clock, which a loaded machine stretches",
