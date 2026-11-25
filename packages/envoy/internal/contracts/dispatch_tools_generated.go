@@ -513,6 +513,14 @@ var DispatchTools = []DispatchTool{
 		Example:     json.RawMessage("{}"),
 	},
 	{
+		Name:        "dispatch_api",
+		Description: "Read one route of Dispatch's HTTP API that no other command reads, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends one GET of path: a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. It only reads: it takes no method and no body, and every write goes through the command named for it (dispatch --help lists them). When Dispatch refuses the read, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
+		Arguments: []ToolField{
+			{Name: "path", Kind: ToolFieldString, Required: true, Description: "The route to read, beginning /api/v1, with its query after ?, such as /api/v1/issues/ACME-12/events?limit=200. No scheme or host, and no . or .. segment.", Min: new(float64(1))},
+		},
+		Example: json.RawMessage("{\"path\":\"/api/v1/issues/DSP-1/events?limit=200\"}"),
+	},
+	{
 		Name:        "dispatch_handoff_write",
 		Description: "Record this session's handoff for one phase of an issue: the body, one JSON object, is stored on the issue exactly as sent, under this session, and read back byte for byte. Each write is the next version (1, 2, ...) of that phase's handoff; earlier versions stay. Write the body to a file outside your workspace and pass it with --body-file (- reads stdin). A closed issue refuses it with 409 ISSUE_CLOSED, and a body over 262144 bytes with 413 CAP_EXCEEDED. Read it back with dispatch handoff-read. An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
 		Arguments: []ToolField{

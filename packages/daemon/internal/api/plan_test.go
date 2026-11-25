@@ -220,7 +220,7 @@ func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	}
 }
 
-// register_plan's answer names the act each running task stands at (contract 262), as a list of
+// register_plan's answer names the act each running task stands at (contract 296), as a list of
 // one entry (record.StoredPlan.Running gives one for each running task): step 2 of task a, the
 // reviewer. A task that does not run, b, carries no `running` key at all, rather than an empty or
 // a null list.
@@ -263,7 +263,7 @@ func servedVersion(t *testing.T, name string, status int, artifactID string) (di
 		}
 	}))
 	defer server.Close()
-	return dispatch.New(server.URL, "dispatch-test-token").PlanDocument(t.Context(), artifactID, 1)
+	return dispatch.New(server.URL, dispatch.BearerTransport("dispatch-test-token", nil)).PlanDocument(t.Context(), artifactID, 1)
 }
 
 // What register_plan answers for a document it cannot read a plan from, each before anything is

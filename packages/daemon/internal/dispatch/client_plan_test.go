@@ -79,7 +79,7 @@ func TestPlanDocumentReadsTheParentOfATaskBlock(t *testing.T) {
 		t.Fatalf("the fixture's parent attributes = %v, want %v", kinds, want)
 	}
 
-	document, err := New(servingVersion(t, http.StatusOK, body).URL, dispatchToken).PlanDocument(context.Background(), "plan-1", 1)
+	document, err := New(servingVersion(t, http.StatusOK, body).URL, BearerTransport(dispatchToken, nil)).PlanDocument(context.Background(), "plan-1", 1)
 	if err != nil {
 		t.Fatalf("read the plan at version 1: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestPlanDocumentAnswersAnOlderBuildsRefusal(t *testing.T) {
 	if err := json.Unmarshal(body, &refused); err != nil || refused.Code != "DOC_NEWER_CONTENT" || refused.Error == "" {
 		t.Fatalf("the fixture = %s (%v), want a DOC_NEWER_CONTENT refusal with its message", body, err)
 	}
-	_, err := New(servingVersion(t, http.StatusConflict, body).URL, dispatchToken).PlanDocument(context.Background(), "plan-1", 1)
+	_, err := New(servingVersion(t, http.StatusConflict, body).URL, BearerTransport(dispatchToken, nil)).PlanDocument(context.Background(), "plan-1", 1)
 	var refusal *Error
 	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict || refusal.Code != "DOC_NEWER_CONTENT" || refusal.Message != refused.Error {
 		t.Fatalf("PlanDocument = %v, want Dispatch's 409 DOC_NEWER_CONTENT with its message %q", err, refused.Error)
@@ -164,7 +164,7 @@ func TestPlanDocumentReadsTheBlocksOfThatVersion(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	document, err := client.PlanDocument(context.Background(), "plan-1", 3)
 	if err != nil {

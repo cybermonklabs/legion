@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    The live proof of a provider error's retry ladder (`scripts/e2e/provider-error-retry.sh`) now
+    times each re-send by the daemon's own record of it, and the content-filter step's first send
+    by the record of its turn's start. It timed each re-send as the moment its poll read that
+    record, so a correct two-minute rung could read as shorter than its wait and fail.
+    It also waits for the stand-in to receive the last request before counting the requests;
+    the daemon logs the send before that HTTP request arrives.
+time: 2026-11-24T17:33:42Z
+custom:
+    Issue: pr5411
