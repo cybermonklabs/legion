@@ -1,6 +1,9 @@
 # The ci_router_outputs_test filter's gate: what job test reads.
 GATE = harness("ci_router_outputs_test", "Test the router outputs' label terms", f"{SCRIPTS}/ci-router-outputs.test.sh", [
     (f"{SCRIPTS}/ci_router_outputs.py", "the script under test"),
+    (f"{SCRIPTS}/ci-filters-generate.sh", "the harness runs a copy of it to write the fallback file its fall-open "
+                                          "cases evaluate the list over"),
+    *ci_retry("ci-filters-generate.sh, a copy of which the harness runs, sources it for the base tree's install"),
     (".github/ci-gates/*.py", "the filter names the script reads (--filters) are the gates' names, which the changes "
                               "job computes the filters this step is handed from (CI_FILTERS_FILE)"),
     (f"{SCRIPTS}/check-ci-filters.sh", "the harness computes the filters with its generate mode when no "
