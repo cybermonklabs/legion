@@ -12,12 +12,15 @@
  * (a CPU with AVX2) or `-baseline` before `.node`, as PI_NATIVE_VARIANT says where it names one,
  * in `<natives dir>/18.18.6`, the natives directory being PI_NATIVES_DIR, else
  * `$OMP_DOWNLOAD_ROOT/natives`, else `$XDG_DATA_HOME/omp/natives` where `$XDG_DATA_HOME/omp`
- * exists, else `natives` under OMP_CONFIG_ROOT or `~/.omp`. The runner takes the first of those
- * paths that is there, points the addon at `<natives dir>/grammars`, where Oh My Pi installs the
- * WebAssembly grammars it downloads, as the loader does, and throws where it has no pinned addon:
- * no such file, a file of another digest, or another platform, each reason naming the file and
- * the steps that give the pin's addon (PINNED_ADDON_STEPS). It never answers such a read another
- * way for want of the addon.
+ * exists, else `natives` under OMP_CONFIG_ROOT or `~/.omp`. Before those the runner tries the same
+ * files in SKILL_CUTS_NATIVES_DIR (RUNNER_NATIVES_DIR), a natives directory of the runner's alone:
+ * CI's pi-legion job names the pin's addon there (.github/actions/install-skill-cuts-omp), and not
+ * in PI_NATIVES_DIR, which the later Oh My Pi the job's other tests run reads too. The runner takes
+ * the first of those paths that is there, points the addon at `<natives dir>/grammars`, where Oh My
+ * Pi installs the WebAssembly grammars it downloads, as the loader does, and throws where it has no
+ * pinned addon: no such file, a file of another digest, or another platform, each reason naming the
+ * file and the steps that give the pin's addon (PINNED_ADDON_STEPS). It never answers such a read
+ * another way for want of the addon.
  *
  * Some languages' grammars are WebAssembly modules Oh My Pi downloads the first time it needs one
  * (packages/coding-agent/src/utils/grammars.ts, `ensureGrammar`), before it looks for a window's
@@ -33,9 +36,14 @@ import path from "node:path";
 /** The release of the pinned Oh My Pi's native addon (packages/natives/package.json). */
 export const NATIVES_VERSION = "18.18.6";
 
-/** The pin's tag and its linux-x64 release asset, from which the addon is extracted. */
+/** The pin's tag and its linux-x64 release asset, from which the addon is extracted. The
+ *  `skill-cuts-omp` row of .github/ci-tools.yaml, which CI installs the addon from, carries this
+ *  tag without its `v` as its version (.github/scripts/check-ci-tools.sh holds the two equal). */
 const PIN_TAG = "v18.18.6-sami.20261119-162325";
 const PIN_ASSET = `omp-${PIN_TAG}-linux-x64.tar.gz`;
+
+/** The variable naming the runner's own natives directory, tried before the loader's. */
+const RUNNER_NATIVES_DIR = "SKILL_CUTS_NATIVES_DIR";
 
 /** The SHA-256 of each linux-x64 addon the pin's binary extracts (its `bin/omp --help` with
  *  PI_NATIVES_DIR set): the `-modern` one, and the `-baseline` one it extracts with
@@ -151,10 +159,13 @@ function addonFilenames(): string[] {
   return modern ? [`pi_natives.${tag}-modern.node`, baseline, plain] : [baseline, plain];
 }
 
-/** The paths the pin's loader tries for its native addon, in its order (see the file's header). */
+/** The paths the runner tries for the pin's native addon, in its order (see the file's header):
+ *  each of the loader's file names in RUNNER_NATIVES_DIR, then in the loader's natives directory. */
 function nativeAddonPaths(): string[] {
-  const dir = nativesDir();
-  return addonFilenames().map((name) => path.join(dir, NATIVES_VERSION, name));
+  const names = addonFilenames();
+  const dirs = [absoluteDir(process.env[RUNNER_NATIVES_DIR]), nativesDir()];
+  const unique = [...new Set(dirs.filter((dir) => dir !== undefined))];
+  return unique.flatMap((dir) => names.map((name) => path.join(dir, NATIVES_VERSION, name)));
 }
 
 /** The SHA-256 of `file`, hashed once in this process however many paths lead to it. */

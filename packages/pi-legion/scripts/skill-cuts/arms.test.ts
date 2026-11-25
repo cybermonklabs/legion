@@ -46,10 +46,10 @@ const F1 = path.join(
   "2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl"
 );
 const scratch = temporaryDirectory("skill-cuts-arms", { real: true });
-/** Whether the rows whose reads need the pinned Oh My Pi's native addon (a window that leaves lines
- *  of a file out, for its block context, or a code file the pin may summarize) skip
- *  (test-natives.ts). */
-const noNatives = pinNatives("arms.test.ts");
+/** The `test` of the rows whose reads need the pinned Oh My Pi's native addon (a window that leaves
+ *  lines of a file out, for its block context, or a code file the pin may summarize): skipped, or
+ *  under GITHUB_ACTIONS failing, where the runner finds none (test-natives.ts). */
+const natives = pinNatives("arms.test.ts");
 const LINE = "2. Write each step's result on one line.";
 const PLANTED = "Run the tests where needed.";
 
@@ -1672,7 +1672,7 @@ test("a whole read of the copy relative to the session's working directory, or u
 // a file under the installed directory its `[Skill file: …]` line shows to the step (the defect:
 // ce-simplify-code's session cases judged on such reads, using-subagents' written cases left with no
 // verdict), or answer it with one text in every arm.
-test.skipIf(noNatives)(
+natives.test(
   "a case that read its skill by skill:// only answers a read by path of a file under the installed directory its header shows as a read of the cut's own copy, and none answers it as not found",
   () => {
     const x = `${INSTALLED}/references/x.md`;
@@ -1821,7 +1821,7 @@ test("pathFormFault names each form of a file the arms do not rebuild, as buildA
 
 // Catches: a page the byte budget stops answered with its rows alone, where the pin shows the
 // closing line of the block the page cuts after them, outside the budget.
-test.skipIf(noNatives)(
+natives.test(
   "a whole read by path the byte budget stops shows the closing line of the block it cuts after its rows",
   () => {
     // Numbered pages stop at 50,000 bytes. Plain pages have room for all 100 lines. The 100 lines
@@ -1846,7 +1846,7 @@ test.skipIf(noNatives)(
 // the rows' lines alone from line 1, `rowPrefixes`, `summary` with its rows, elided spans and
 // elided lines, `fileSize` and `meta.source`, in that order, and no page's `pagedSource`), or a
 // code file of a skill's own read by path summarized, where the arms rebuild no such read.
-test.skipIf(noNatives)(
+natives.test(
   "a checkout's whole read by path of a code file the pin summarizes gives the pin's summary and its record; a skill's own code file is still no form the arms rebuild",
   () => {
     const table = `${[

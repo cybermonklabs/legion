@@ -19,6 +19,8 @@
 # docker provider plugin the envoy-infra live tests install,
 # the `HELM=` line of packages/envoy/loadtest/cluster/render-nats.sh for helm, whose render runs
 # an installed helm only where that helm answers the version the line names,
+# `const PIN_TAG` of packages/pi-legion/scripts/skill-cuts/natives.ts for the skill-cuts-omp row,
+# the Oh My Pi release whose native addon the skill-cuts runner opens and no other,
 # and .bun-version for the three bun rows.
 # A row named `<tool>-aarch64` is the arm64 build of the `<tool>` row beside it, for the jobs that
 # run on ubuntu-24.04-arm: its `version` is that row's, so it answers to the same pin, and the
@@ -85,7 +87,9 @@
 # release holds only the .asc signatures of them, read on 2026-11-22: 33 assets at v3.20.2, and
 # the three that name linux-amd64 each end in .asc. So the second source is the copy, filled from
 # get.helm.sh, and `helm-releases` is the word that host is read with.
-#
+# The skill-cuts-omp row takes a copy for the reason elan does: the fork publishes that archive as
+# a release asset of its own repository and nowhere else. It is a fixed release, which the
+# runner's tag names and no bump of .omp-pin moves, so its copy is filled once.
 # WHY THE BUN AND jj ROWS PIN THE INSTALLED BINARY AND NOT AN ARCHIVE.
 # `oven-sh/setup-bun` at the commit .github/actions/setup-bun pins verifies no checksum at all,
 # and .github/actions/install-jj verifies the mise archive and nothing of the jj binary mise then
@@ -474,6 +478,29 @@ tools:
     mirror_from: https://get.helm.sh/helm-v3.20.2-linux-amd64.tar.gz
     mirror_member: ""
 
+  # The Oh My Pi release the skill-cuts runner (packages/pi-legion/scripts/skill-cuts) rebuilds
+  # tool answers of, whose native addon it opens for a read's block context and summary and opens
+  # no other: not the build .omp-pin names, whose addon is another file. Its version is the
+  # `const PIN_TAG` of natives.ts without the tag's `v`. .github/actions/install-skill-cuts-omp
+  # installs it for the pi-legion job's tests, extracting the addon with the archive's own
+  # `bin/omp --help`. The release ships this one linux-x64 archive, so the row has no -aarch64 row
+  # beside it, and the fork publishes it nowhere else, so the second source is a copy, as elan's
+  # is; the digest is the archive's own sha256, measured with sha256sum on the downloaded asset on
+  # 2026-11-25.
+  - name: skill-cuts-omp
+    version: 18.18.6-sami.20261119-162325
+    digest: 9fd84e4ff44cddef87f323100e5cb30ca235284033c8a05192f90c69481fea68
+    digest_of: the release archive omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz, whole
+    primary_source: github-release
+    primary: https://github.com/cybermonklabs/oh-my-pi/releases/download/v18.18.6-sami.20261119-162325/omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/cybermonklabs/oh-my-pi/releases/download/v18.18.6-sami.20261119-162325/omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz
+    mirror_member: ""
+
 # The URLs CI fetches that have no second source anywhere today, one entry per URL. Each is
 # allowed by its entry and by nothing else; the gate refuses any other unnamed release asset.
 no_second_source:
@@ -503,7 +530,8 @@ no_second_source:
   # being `v` and the version), and the digest is `ARG OMP_SHA256` of the worker image's
   # Dockerfile, which its tools stage checks the same archive against. `pinned_as` names that ARG,
   # so the gate holds this digest to its value exactly, and a bump of .omp-pin moves the ARG and
-  # this digest in one commit.
+  # this digest in one commit. (The skill-cuts-omp row above is another release of the same fork,
+  # one no bump moves, and keeps a copy.)
   - url: https://github.com/${owner}/${repo}/releases/download/${tag}/omp-${tag}-linux-x64.tar.gz
     digest: 8ea7415e726e81f4e47d4ba914adf7a8d7c417c05c0a7e66a24023a12ee48a3b
     pinned_in: packages/daemon/docker/worker.Dockerfile

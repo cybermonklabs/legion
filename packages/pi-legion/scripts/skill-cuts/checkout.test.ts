@@ -12,7 +12,7 @@ import path from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { snapshotTag } from "./arms";
+import { fileTag, snapshotTag } from "./arms";
 import {
   answerCall,
   type CheckoutCopy,
@@ -30,10 +30,10 @@ import { pinNatives } from "./test-natives";
 import { detachedCommit, gitIn, writeTree } from "./testdata/fixtures";
 
 const scratch = temporaryDirectory("skill-cuts-checkout", { real: true });
-/** Whether the rows whose reads need the pinned Oh My Pi's native addon (a window that leaves lines
- *  of a file out, for its block context, or a code file the pin may summarize) skip
- *  (test-natives.ts). */
-const noNatives = pinNatives("checkout.test.ts");
+/** The `test` of the rows whose reads need the pinned Oh My Pi's native addon (a window that leaves
+ *  lines of a file out, for its block context, or a code file the pin may summarize): skipped, or
+ *  under GITHUB_ACTIONS failing, where the runner finds none (test-natives.ts). */
+const natives = pinNatives("checkout.test.ts");
 
 /** The made-up session's checkout root, as a written case names it. */
 const ROOT = "/work/acme/proj";
@@ -159,10 +159,10 @@ test("removeOutsideLinks removes each link that resolves outside the copy or now
 
 // Catches: a read of a code file of 100 lines or more left unanswered, or a ranged read (a run
 // then judged on that read; thermonuclear's runs on a range past a file's end were dropped as
-// reads-past-last-round), a range answered past the lines the pin shows, or a read with another
-// selector answered in a form the runner does not rebuild.
-test.skipIf(noNatives)(
-  "a whole read pages after 300 lines; a range includes context and continues only if lines remain; code whose parse elides nothing is shown whole; a range beyond EOF names the bounds",
+// reads-past-last-round), a range answered past the lines the pin shows, or a read with :raw, a
+// list of ranges or :-N left unanswered (the sweep's unanswered rows).
+natives.test(
+  "a whole read pages after 300 lines; a range includes context and continues only if lines remain; code whose parse elides nothing is shown whole; a range beyond EOF names the bounds; :raw, a list and :-N are answered",
   async () => {
     const dir = path.join(scratch, "ranges");
     mkdirSync(path.join(dir, "src"), { recursive: true });
@@ -223,16 +223,15 @@ test.skipIf(noNatives)(
         "src/big.py:200-210",
         "Line 200 is beyond end of file (120 lines total). Use :1 to read from the start, or :120 to read the last line.",
       ],
+      // :raw is the file as it is; a list of ranges each range's lines alone, a `…` row between
+      // them; :-N the last N lines, read as that range, with a line before it.
+      ["src/big.py:raw", big],
+      ["src/big.py:1-2,5-6", `${header}\n${rows(1, 2)}\n…\n${rows(5, 6)}`],
+      ["src/big.py:-5", `${header}\n${rows(115, 120)}`],
     ] as const) {
       expect({ target, answer: await read(target) }).toEqual({
         target,
         answer: { text, isError: false },
-      });
-    }
-    for (const target of ["src/big.py:raw", "src/big.py:1-2,5-6", "src/big.py:-5"]) {
-      expect({ target, answer: await read(target) }).toEqual({
-        target,
-        answer: { why: expect.stringContaining(target) },
       });
     }
     // A read, grep or glob answer is kept on the copy and given again; a bash answer is not kept.
@@ -242,7 +241,101 @@ test.skipIf(noNatives)(
   }
 );
 
-test.skipIf(noNatives)(
+// Catches: a read with :raw (alone, or joined to a range, a line or a tail), :-N or a list of
+// ranges left unanswered (the fidelity sweep's unanswered reasons of those forms), or answered
+// with row numbers, context, a hashline line or a column cut where the pin shows the lines as they
+// are, with a list's ranges given context or a byte budget, or a file named like a selector read
+// as a range; or a form the runner does not rebuild answered.
+natives.test(
+  "a read's selector is the pin's: :raw and a range, a line or a tail joined to it the lines as they are; :-N the last lines as that range; a list each range alone, one past the end noted; a file named like a selector read as it is; a selector the pin refuses, :conflicts, :img and a raw read whose text is empty or whose first line passes the budget are not answered",
+  async () => {
+    const notes = "one\ntwo\r\nthree\nfour\nfive\nsix\nseven\neight\n";
+    const wide = `a\nb\n${"x".repeat(800)}\nd\n`;
+    const copy = filesCopy("selectors", {
+      "docs/notes.txt": notes,
+      "docs/wide.txt": wide,
+      "docs/odd:1-2": "literal\n",
+      "docs/empty.txt": "",
+      "docs/long.txt": Array.from({ length: 350 }, (_, n) => `line ${n + 1}\n`).join(""),
+      "docs/heavy.txt": `${"h".repeat(30_000)}\n${"i".repeat(30_000)}\n${"j".repeat(10)}\n`,
+      "docs/huge.txt": `${"k".repeat(60_000)}\n`,
+    });
+    const read = (target: string) => answerCall(copy, "read", { path: target }, "hashline");
+    const header = `[docs/notes.txt#${fileTag(notes)}]`;
+    const long = Array.from({ length: 300 }, (_, n) => `line ${n + 1}`).join("\n");
+    for (const [target, text] of [
+      // :raw: the lines as they are (a carriage return kept), no context, the file's final newline
+      // after a read with no end that reaches it, a notice only where lines of it are left out.
+      ["docs/notes.txt:raw", notes],
+      ["docs/notes.txt:raw:2-3", "two\r\nthree"],
+      ["docs/notes.txt:2-3:raw", "two\r\nthree"],
+      ["docs/notes.txt:raw:4", "four"],
+      ["docs/notes.txt:4:raw", "four"],
+      ["docs/notes.txt:raw:6-", "six\nseven\neight\n"],
+      ["docs/notes.txt:raw:-2", "seven\neight"],
+      ["docs/notes.txt:-2:raw", "seven\neight"],
+      ["docs/notes.txt:raw:1-2,5-6", "one\ntwo\r\nfive\nsix"],
+      ["docs/notes.txt:raw:1,20-30", "one"],
+      ["docs/long.txt:raw", `${long}\n\n[Showing lines 1-300 of 350. Use :301 to continue]`],
+      [
+        "docs/heavy.txt:raw",
+        `${"h".repeat(30_000)}\n\n[Showing lines 1-1 of 3 (50.0KB limit). Use :2 to continue]`,
+      ],
+      // :-N: the last N lines, read as that range, with the line before it.
+      ["docs/notes.txt:-2", `${header}\n6:six\n7:seven\n8:eight`],
+      [
+        "docs/notes.txt:-20",
+        `${header}\n1:one\n2:two\r\n3:three\n4:four\n5:five\n6:six\n7:seven\n8:eight`,
+      ],
+      // A list: each range's lines alone as the pin holds the file (its line ends LF), a `…` row
+      // between them; a range past the end noted after them, a line apart.
+      ["docs/notes.txt:1-2,5-6", `${header}\n1:one\n2:two\n…\n5:five\n6:six`],
+      [
+        "docs/notes.txt:1-2,20-30",
+        `${header}\n1:one\n2:two\n[Range 20-30 is beyond end of file (8 lines total); skipped]`,
+      ],
+      [
+        "docs/notes.txt:20-30,40",
+        "[Range 20-30 is beyond end of file (8 lines total); skipped]\n[Range 40-40 is beyond end of file (8 lines total); skipped]",
+      ],
+      [
+        `docs/wide.txt:1,3`,
+        `[docs/wide.txt#${fileTag(wide)}]\n1:a\n…\n3:${"x".repeat(768)}…\n\n[Some lines truncated to 768 chars. Use :raw:3-3 to read line 3 whole]`,
+      ],
+      // Ranges that touch are one range, read with its context.
+      [
+        "docs/notes.txt:3-3,4-4",
+        `${header}\n2:two\r\n3:three\n4:four\n5:five\n6:six\n7:seven\n\n[Showing lines 2-7 of 8. Use :8 to continue]`,
+      ],
+      // A file named like a path and a selector is read as it is.
+      ["docs/odd:1-2", `[docs/odd:1-2#${fileTag("literal\n")}]\n1:literal`],
+    ] as const) {
+      expect({ target, answer: await read(target) }).toEqual({
+        target,
+        answer: { text, isError: false },
+      });
+    }
+    for (const [target, why] of [
+      ["docs/notes.txt:0-2", "Line selector 0 is invalid"],
+      ["docs/notes.txt:5-3", "Invalid range 5-3: end must be >= start."],
+      ["docs/notes.txt:raw:-0", "Tail selector -0 is invalid"],
+      ["docs/notes.txt:conflicts", "of a form the runner does not rebuild"],
+      ["docs/notes.txt:img", "of a form the runner does not rebuild"],
+      ["docs/notes.txt:raw:20", "gives empty text"],
+      ["docs/notes.txt:raw:20-30,40", "gives empty text"],
+      ["docs/empty.txt:raw", "gives empty text"],
+      ["docs/huge.txt:raw:1", "passes the 50.0KB a raw read shows"],
+      ["docs:2-3", "a read of a directory with a selector"],
+    ] as const) {
+      expect({ target, answer: await read(target) }).toEqual({
+        target,
+        answer: { why: expect.stringContaining(why) },
+      });
+    }
+  }
+);
+
+natives.test(
   "whole and ranged path reads stop at a UTF-8 byte boundary between lines",
   async () => {
     const line = "é".repeat(250);
@@ -263,7 +356,7 @@ test.skipIf(noNatives)(
   }
 );
 
-test.skipIf(noNatives)(
+natives.test(
   "a path page joins its column and continuation clauses, and shows only the column clause at EOF",
   async () => {
     const wide = "x".repeat(800);
@@ -307,7 +400,7 @@ function meanSource(wide = ""): string {
 // those rows found by another rule than the pin's tree-sitter one or, for a language the addon
 // does not know, its scan of the brackets; a long context line not cut; or a read whose blocks
 // the pin finds with a grammar it downloads answered as if it found them otherwise.
-test.skipIf(noNatives)(
+natives.test(
   "a read that leaves lines out shows the boundary line of each block it cuts, as tree-sitter finds them or, for an unknown language, a scan of the brackets; none where nothing is cut; a grammar the pin downloads leaves the read unanswered",
   async () => {
     // 298 one-line statements and an object of three lines, too few for the pin's summary to
@@ -431,7 +524,7 @@ function stepsSource(count: number): string {
 // for their first rows alone); a summary whose rows, elision rows or footer are not the pin's; a
 // file the pin does not summarize (under its 100 lines, or prose) shown summarized; or a read
 // whose summary needs a grammar the pin downloads answered as if the pin had none.
-test.skipIf(noNatives)(
+natives.test(
   "a whole read of a code file of 100 lines or more whose parse elides a span is the pin's summary, its footer naming the elided ranges; under 100 lines and prose are shown whole; a grammar the pin downloads leaves the read unanswered",
   async () => {
     // 108 lines as the pin counts them (107 newlines and one more).
@@ -880,8 +973,9 @@ test("a glob of a directory with no glob character lists it, one of a file answe
 // Catches: a glob's paths answered in path order (the sweep of R4's answers: the pin sorts its
 // matches by time of change, newest first, glob.ts lines 582 and 656), a tie broken by name as
 // JavaScript compares it where the pin's walk compares bytes, or a list's patterns answered one
-// after another where the pin merges them by time.
-test("a glob answers its matches newest first by the copy's own times of change, a tie by path below its base in byte order; a ;-list's patterns merged by time, each path once, a tie in the list's order; a file named alone at its own time", async () => {
+// after another where the pin merges them by time; or a glob that finds its limit of paths
+// answered without the pin's notice that it reached it, or one that finds more left unanswered.
+test("a glob answers its matches newest first by the copy's own times of change, a tie by path below its base in byte order; a ;-list's patterns merged by time, each path once, a tie in the list's order; a file named alone at its own time; at most its limit of paths, the newest, with the pin's notice where it finds that many", async () => {
   const copy = filesCopy("glob-order", {
     "src/old.ts": "",
     "src/new.ts": "",
@@ -913,6 +1007,66 @@ test("a glob answers its matches newest first by the copy's own times of change,
   ] as const) {
     expect({ target, answer: await glob(target) }).toEqual({
       target,
+      answer: { text, isError: false },
+    });
+  }
+  // A target keeps its `limit` newest matches, and a call that finds `limit` or more paths says
+  // the limit was reached, with twice it where that is under 200 (list-limit.ts's
+  // `applyListLimit`, glob.ts lines 337-374).
+  for (const [target, limit, text] of [
+    ["src/*.ts", 4, `${src}\n\n[4 results limit reached. Use limit=8 for more]`],
+    ["src/*.ts", 5, src],
+    ["src/*.ts", 150, src],
+    ["src/*.ts", 2, "# src/\nnew.ts\nB.ts\n\n[2 results limit reached. Use limit=4 for more]"],
+    ["src/*.ts;lib/*.ts", 1, "# src/\nnew.ts\n\n[1 results limit reached. Use limit=2 for more]"],
+  ] as const) {
+    expect({
+      target,
+      limit,
+      answer: await answerCall(copy, "glob", { path: target, limit }, "hashline"),
+    }).toEqual({ target, limit, answer: { text, isError: false } });
+  }
+  const name = (n: number) => `f${String(n).padStart(3, "0")}.ts`;
+  const many = filesCopy(
+    "glob-limit",
+    Object.fromEntries(Array.from({ length: 201 }, (_, n) => [`many/${name(n)}`, ""]))
+  );
+  setTimes(
+    many.dir,
+    Object.fromEntries(Array.from({ length: 201 }, (_, n) => [`many/${name(n)}`, MADE_AT]))
+  );
+  const tree = `# many/\n${Array.from({ length: 200 }, (_, n) => name(n)).join("\n")}`;
+  for (const [limit, text] of [
+    [undefined, `${tree}\n\n[200 results limit reached]`],
+    [
+      300,
+      `${tree}\n\nRequested limit 300 clamped to the max of 200\n\n[200 results limit reached]`,
+    ],
+  ] as const) {
+    const input = limit === undefined ? { path: "many/*.ts" } : { path: "many/*.ts", limit };
+    expect({ limit, answer: await answerCall(many, "glob", input, "hashline") }).toEqual({
+      limit,
+      answer: { text, isError: false },
+    });
+  }
+}, 60_000);
+
+// Catches: a file of the working directory whose name starts with `..` shown by its relative path,
+// where the pin's formatPathRelativeToCwd, which reads a relative path that starts with `..` as
+// outside the directory, shows it absolute.
+test("a file of the working directory whose name starts with .. is shown absolute by read, grep and glob, as the pin shows it; one below a directory of it relative", async () => {
+  const copy = filesCopy("dot-dot-names", { "..notes.md": "dots\n", "docs/..cfg.md": "dots\n" });
+  const tag = snapshotTag("dots\n");
+  for (const [name, input, text] of [
+    ["read", { path: "..notes.md" }, `[${ROOT}/..notes.md#${tag}]\n1:dots`],
+    ["grep", { pattern: "dots", path: "..notes.md" }, `[${ROOT}/..notes.md#${tag}]\n*1:dots`],
+    ["glob", { path: "..notes.md" }, `# ${ROOT}/\n..notes.md`],
+    ["read", { path: "docs/..cfg.md" }, `[docs/..cfg.md#${tag}]\n1:dots`],
+    ["glob", { path: "docs/..cfg.md" }, "# docs/\n..cfg.md"],
+  ] as const) {
+    expect({ name, input, answer: await answerCall(copy, name, input, "hashline") }).toEqual({
+      name,
+      input,
       answer: { text, isError: false },
     });
   }
@@ -1435,6 +1589,73 @@ test("a grep path joined by ; is searched path by path in its order, a missing o
   }
 }, 60_000);
 
+// Catches: a grep path with a line range (`:N-M`, `:N-`, a list of them) or a glob, a brace list of
+// files among them (`dir/{a,b}`), left unanswered (the fidelity sweep's `holds a selector`, `is a
+// list` and `holds a glob` reasons), or answered with the matches or their context lines outside
+// the range, or with files the glob does not name.
+test("a grep path's line ranges keep a file's matches and their context lines to them; a glob path searches the files below its base the glob names, a brace list of them too; a selector grep refuses, a range of no file, a glob in a list and one the runner does not read are not answered", async () => {
+  const copy = filesCopy("grep-selectors", {
+    "docs/notes.txt": "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n",
+    "src/a.ts": "export const a = 1;\n",
+    "src/b.ts": "export const b = 2;\n",
+    "src/c.ts": "export const c = 3;\n",
+    "src/sub/a.ts": "export const d = 4;\n",
+  });
+  const section = (name: string, line: string) => [`## ${name}`, `*1|${line}`];
+  const src = [
+    "# src/",
+    ...section("a.ts", "export const a = 1;"),
+    ...section("b.ts", "export const b = 2;"),
+  ];
+  const c = section("c.ts", "export const c = 3;");
+  for (const [pattern, given, lines] of [
+    // Matches outside the range left out, with the context lines of those kept that are outside
+    // it, and line 2, the context of the match on line 1, which is.
+    ["e", "docs/notes.txt:2-5", ["*3|three", " 4|four", "*5|five"]],
+    ["e", "docs/notes.txt:2-3,7-", ["*3|three", "...", "*7|seven", "*8|eight"]],
+    ["e", "docs/notes.txt:6", ["*7|seven", "*8|eight"]],
+    [
+      "e",
+      "docs/notes.txt:1-2;src/a.ts",
+      [
+        "# docs/",
+        "## notes.txt",
+        "*1|one",
+        " 2|two",
+        "",
+        "# src/",
+        ...section("a.ts", "export const a = 1;"),
+      ],
+    ],
+    ["export", "src/{a.ts,b.ts}", src],
+    ["export", "src/*.ts", [...src, ...c]],
+    // A glob with no `/` matches at any depth.
+    ["export", "*.ts", [...src, ...c, "", "## sub/", "### a.ts", "*1|export const d = 4;"]],
+  ] as const) {
+    expect({ given, answer: await grepText(copy, { pattern, path: given }) }).toEqual({
+      given,
+      answer: lines.join("\n"),
+    });
+  }
+  for (const [given, why] of [
+    ["docs/notes.txt:raw", "grep takes line ranges alone"],
+    ["docs/notes.txt:-2", "grep takes line ranges alone"],
+    ["docs/notes.txt:0-1", "Line selector 0 is invalid"],
+    ["docs:1-2", "names no file of the checkout"],
+    ["docs/gone.txt:1-2", "names no file of the checkout"],
+    ["src/*.ts:1-2", "a line range after a glob"],
+    ["src/{a.ts,b.ts};docs", "its path list holds the glob"],
+    ["src/[ab].ts", "a glob of a form the runner does not read"],
+    ["gone/*.ts", "no directory of the checkout"],
+    ["**/node_modules/*.ts", "names node_modules"],
+  ] as const) {
+    expect({ given, answer: await grepText(copy, { pattern: "e", path: given }) }).toEqual({
+      given,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+}, 60_000);
+
 // Catches: a grep whose shown line passes the 512 bytes grep shows left unanswered (16 of the
 // dropped runs' calls), or answered with the line whole, cut elsewhere than the pin's window
 // around its first match, without its column, or without the pin's notice of cut lines.
@@ -1551,7 +1772,7 @@ test("a grep keeps 20 matches a file of several and 200 of one, with grep's noti
 // pin shows `<size> <age>` and orders by time of change), or with ages measured from the time of
 // the call, so two runs of one case differ; or a listing answered that would show the copy's own
 // `.git`.
-test("a read of a directory is answered with the pin's listing: entries two levels down, newest first by the copy's own times of change, a tie by name, a file's size and each one's age from the time the copy was made; a directory under it capped at its 11 newest, the count of the rest and its oldest; .DS_Store left out; an empty one says so; the same at any time of the call; a copy that records no time it was made, a listing that shows .git, or a ranged read of a directory, is not answered", async () => {
+test("a read of a directory is answered with the pin's listing: entries two levels down, newest first by the copy's own times of change, a tie by name, a file's size and each one's age from the time the copy was made; a directory under it capped at its 11 newest, the count of the rest and its oldest; .DS_Store left out; an empty one says so; the same at any time of the call; a copy that records no time it was made, a listing that shows .git, or a read of a directory with a selector, is not answered", async () => {
   const gen = (n: number) => `gen/g${String(n).padStart(2, "0")}.ts`;
   const made = filesCopy("listing", {
     "fresh.txt": "",
@@ -1630,7 +1851,7 @@ test("a read of a directory is answered with the pin's listing: entries two leve
   mkdirSync(path.join(copy.dir, ".git"), { recursive: true });
   for (const [target, why] of [
     [".", "shows .git"],
-    ["docs:1-3", "a ranged read of a directory"],
+    ["docs:1-3", "a read of a directory with a selector"],
   ] as const) {
     expect({ target, answer: await read(target) }).toEqual({
       target,

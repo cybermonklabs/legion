@@ -576,6 +576,77 @@ check "fails" "$(is "$status" 1)"
 check "names the file and the line it lacks" \
   "$(contains "$out" '^packages/envoy/loadtest/cluster/render-nats.sh:1: this file declares no HELM=helm.sh/helm/v<major>/cmd/helm@v<version> line, and the helm row of .github/ci-tools.yaml carries what it pins$')"
 
+# skill_cuts_row <root> <version>: appends a skill-cuts-omp row at that version, in the shape the
+# manifest's row takes: the release archive as the primary, and a copy of it as the second source.
+skill_cuts_row() {
+  cat >> "$1/.github/ci-tools.yaml" <<YAML
+
+  - name: skill-cuts-omp
+    version: $2
+    digest: $SOLO
+    digest_of: the release archive, whole
+    primary_source: github-release
+    primary: https://github.com/example/omp/releases/download/v$2/omp-v$2-linux-x64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/omp/releases/download/v$2/omp-v$2-linux-x64.tar.gz
+    mirror_member: ""
+YAML
+}
+
+# skill_cuts_natives <root> [line]: writes packages/pi-legion/scripts/skill-cuts/natives.ts
+# holding that line, by default the PIN_TAG line a skill-cuts-omp row at 8.8.8-fork.1 agrees
+# with. The green fixture writes no such file and holds no such row, which is the tree in which
+# the gate does not read it.
+skill_cuts_natives() {
+  mkdir -p "$1/packages/pi-legion/scripts/skill-cuts"
+  printf '%s\n' "${2:-const PIN_TAG = \"v8.8.8-fork.1\";}" \
+    > "$1/packages/pi-legion/scripts/skill-cuts/natives.ts"
+}
+
+echo "case: rule 2 — the skill-cuts-omp row at the version natives.ts's PIN_TAG pins"
+root=$(fixture pin-skill-cuts-agrees)
+skill_cuts_row "$root" 8.8.8-fork.1
+skill_cuts_natives "$root"
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and counts the skill-cuts-omp row with the rest" \
+  "$(contains "$out" '^.github/ci-tools.yaml holds 7 row(s), each agreeing with the pin that installs it')"
+
+echo "case: rule 2 — the skill-cuts-omp row and natives.ts's PIN_TAG disagree"
+# The runner opens only the addon of the release its tag names, so a row at another version
+# installs an addon the runner refuses.
+root=$(fixture pin-skill-cuts-version)
+skill_cuts_row "$root" 8.8.8-fork.1
+skill_cuts_natives "$root" 'const PIN_TAG = "v8.8.8-fork.2";'
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names both values and both files" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the skill-cuts-omp row's version is 8.8.8-fork.1 and packages/pi-legion/scripts/skill-cuts/natives.ts pins const PIN_TAG = \"v8.8.8-fork.2\".")"
+check "and says which of the two to move" \
+  "$(contains "$out" "move this row to the tag's version, or the tag to the row's.$")"
+
+echo "case: rule 2 — a skill-cuts-omp row and no natives.ts"
+root=$(fixture pin-skill-cuts-no-natives)
+skill_cuts_row "$root" 8.8.8-fork.1
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the row that answers to it" \
+  "$(contains "$out" '^packages/pi-legion/scripts/skill-cuts/natives.ts:1: this file is missing or is not readable as text, and the skill-cuts-omp row of .github/ci-tools.yaml carries the version its PIN_TAG pins$')"
+
+echo "case: rule 2 — a skill-cuts-omp row and a natives.ts with no PIN_TAG line"
+# A comment that names the tag is no pin: the line the gate reads is the constant the runner reads.
+root=$(fixture pin-skill-cuts-no-line)
+skill_cuts_row "$root" 8.8.8-fork.1
+skill_cuts_natives "$root" '// const PIN_TAG = "v8.8.8-fork.1";'
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the line it lacks" \
+  "$(contains "$out" '^packages/pi-legion/scripts/skill-cuts/natives.ts:1: this file declares no const PIN_TAG = "v<version>";, and the skill-cuts-omp row of .github/ci-tools.yaml carries what it pins$')"
+
 echo "case: rule 1 — a second_url that does not hold its row's version"
 # The rule that holds a URL to the row's version reads every URL the row writes, so a second
 # source at another version is refused where a primary at another version is.

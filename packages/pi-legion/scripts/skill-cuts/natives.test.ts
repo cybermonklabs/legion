@@ -10,7 +10,7 @@ import { pinnedAddon } from "./natives";
 // needs the real addon, and none opens one.
 
 const scratch = temporaryDirectory("skill-cuts-natives-loader");
-restoreEnvironment(["PI_NATIVES_DIR", "PI_NATIVE_VARIANT"]);
+restoreEnvironment(["PI_NATIVES_DIR", "PI_NATIVE_VARIANT", "SKILL_CUTS_NATIVES_DIR"]);
 
 /** The steps every refusal names. */
 const STEPS =
@@ -36,13 +36,15 @@ function onHost<T>(platform: string, arch: string, read: () => T): T {
   }
 }
 
-/** A natives directory `name` of the scratch directory, named by PI_NATIVES_DIR, and the file the
- *  loader tries first there with PI_NATIVE_VARIANT=baseline. */
+/** A natives directory `name` of the scratch directory, named by PI_NATIVES_DIR (with
+ *  SKILL_CUTS_NATIVES_DIR unset), and the file the loader tries first there with
+ *  PI_NATIVE_VARIANT=baseline. */
 function nativesDir(name: string): { dir: string; baseline: string } {
   const dir = path.join(scratch, name);
   mkdirSync(path.join(dir, "18.18.6"), { recursive: true });
   process.env.PI_NATIVES_DIR = dir;
   process.env.PI_NATIVE_VARIANT = "baseline";
+  delete process.env.SKILL_CUTS_NATIVES_DIR;
   return { dir, baseline: path.join(dir, "18.18.6", "pi_natives.linux-x64-baseline.node") };
 }
 
@@ -75,6 +77,26 @@ test("another platform is refused, naming the file the pin's loader would open t
   writeFileSync(path.join(dir, "18.18.6", "pi_natives.linux-arm64.node"), "a made-up addon\n");
   expect(onHost("linux", "arm64", pinnedAddon)).toEqual({
     why: `it is known by its SHA-256 on linux-x64 alone, and this host is linux-arm64, so the runner opens none of ${dir}/18.18.6/pi_natives.linux-arm64.node; on a linux-x64 host, ${STEPS}`,
+  });
+});
+
+// Catches: CI's job naming the pin's addon only in PI_NATIVES_DIR, which the later Oh My Pi its
+// other tests run reads too, or the runner's own directory read after the loader's, so a file
+// there is never the one opened.
+test("the runner's own natives directory, SKILL_CUTS_NATIVES_DIR, is tried before the pin loader's", () => {
+  const { dir } = nativesDir("loader");
+  const own = path.join(scratch, "runner-own");
+  mkdirSync(path.join(own, "18.18.6"), { recursive: true });
+  process.env.SKILL_CUTS_NATIVES_DIR = own;
+  expect(onHost("linux", "x64", pinnedAddon)).toEqual({
+    why: `none is at ${own}/18.18.6/pi_natives.linux-x64-baseline.node, ${own}/18.18.6/pi_natives.linux-x64.node, ${dir}/18.18.6/pi_natives.linux-x64-baseline.node, ${dir}/18.18.6/pi_natives.linux-x64.node; ${STEPS}`,
+  });
+  const file = path.join(own, "18.18.6", "pi_natives.linux-x64-baseline.node");
+  writeFileSync(file, "a runner's made-up addon\n");
+  writeFileSync(path.join(dir, "18.18.6", "pi_natives.linux-x64-baseline.node"), "another\n");
+  const digest = createHash("sha256").update("a runner's made-up addon\n").digest("hex");
+  expect(onHost("linux", "x64", pinnedAddon)).toEqual({
+    why: `${file} is another build's: its SHA-256 is ${digest}, and the pin's is ${PINNED}; ${STEPS}`,
   });
 });
 

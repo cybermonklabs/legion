@@ -11,6 +11,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -37,6 +38,7 @@ import {
   main,
   noVerdict,
   ompBinary,
+  readCheckoutMarker,
   runAfterCase,
   runnerDigest,
   SENDS,
@@ -73,6 +75,7 @@ import {
   scoreSkill,
   smallestDrop,
 } from "./score";
+import { pinNatives } from "./test-natives";
 import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
@@ -92,6 +95,10 @@ import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
 const CLI = path.join(import.meta.dir, "cli.ts");
 const scratch = temporaryDirectory("skill-cuts-cli", { real: true });
+/** The `test` of the rows whose reads need the pinned Oh My Pi's native addon (a code file the pin
+ *  may summarize): skipped, or under GITHUB_ACTIONS failing, where the runner finds none
+ *  (test-natives.ts). */
+const natives = pinNatives("cli.test.ts");
 
 /** The stand-in spend collector each command's usage spans go to. */
 const collector = startCollector();
@@ -5505,84 +5512,104 @@ describe("behaviour: a replay's reads of skill files", () => {
 
   // Catches: a written case judged on a reply one of whose read-only calls its checkout answers in
   // no form (a step every arm takes alike, whatever the skill says), a run so made again with no
-  // word of why, and a report that does not count those runs, or the reads answered with a file's
-  // whole text in place of the pin's summary, by kind of case.
-  test("a written case's run whose reply makes a read-only call the checkout answers in no form gets no verdict and runs again; the report counts those runs and the whole-text answers by kind of case", async () => {
-    const base = scenario("checkout-unanswered", LOSS_SKILL(), [{ id: "c04" }]);
-    const big = Array.from({ length: 120 }, (_, n) => `x${n + 1} = ${n + 1}\n`).join("");
-    const { repos, commit } = gitRepository(base.dir, { "src/big.py": big });
-    const written: Case = {
-      ...makeWrittenCase("w00"),
-      checkout: { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" },
-    };
-    const cases = [...base.cases, written];
-    writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
-    const s = { ...base, cases, markers: new Map([...base.markers, ["w00", ""] as const]) };
-    recordCaptures(s, ["old", "new", "none"]);
-    // w00's first two runs read /etc/hostname, outside the checkout, which the copy answers in no
-    // form; each later one reads src/big.py, a code file of 120 lines, answered whole; and acts
-    // once that answer is in its body.
-    let looks = 0;
-    answer = (body) => {
-      if (isJudgement(body) || !JSON.stringify(body.messages).includes("Case w00")) {
-        return behaviourStandIn(body);
-      }
-      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
-      const answered = (block: { tool_use_id?: unknown }) =>
-        String(block?.tool_use_id).startsWith("toolu_odd_");
-      if (Array.isArray(last) && last.some(answered)) {
-        return behaviourStandIn(body);
-      }
-      looks += 1;
-      return sseResponse(
-        messageSse({
-          id: `msg_odd_${looks}`,
-          model: "claude-sonnet-5-5",
-          content: [
-            {
-              type: "tool_use",
-              id: `toolu_odd_${looks}`,
-              name: "read",
-              input: { path: looks <= 2 ? "/etc/hostname" : "src/big.py" },
-            },
-          ],
-          stopReason: "tool_use",
-        })
-      );
-    };
-    const ran = await cli(behaviour("screen", s, "--repos", repos));
-    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-    const runs = result(s.out, "w00").stages.screen?.runs ?? [];
-    expect(runs).toHaveLength(3 * SCREEN_RUNS + 2);
-    const unjudged = runs.filter((run) => run.verdict === null);
-    expect(unjudged.map((run) => run.reason)).toEqual([
-      expect.stringMatching(/^unanswered-read: read \{"path":"\/etc\/hostname"\}: /),
-      expect.stringMatching(/^unanswered-read: read \{"path":"\/etc\/hostname"\}: /),
-    ]);
-    expect(unjudged.map((run) => run.reply)).toEqual([
-      [expect.objectContaining({ name: "read", input: { path: "/etc/hostname" } })],
-      [expect.objectContaining({ name: "read", input: { path: "/etc/hostname" } })],
-    ]);
-    for (const run of runs.filter((each) => each.verdict !== null)) {
-      expect(run.skillReads).toEqual([
-        [
-          {
-            from: "checkout",
-            tool: "read",
-            input: { path: "src/big.py" },
-            isError: false,
-            wholeText: true,
-          },
-        ],
+  // word of why, and a report that does not count those runs, or the reads a run saved before the
+  // runner rebuilt the pin's summaries marks `wholeText`, by kind of case; or a run that marks one.
+  natives.test(
+    "a written case's run whose reply makes a read-only call the checkout answers in no form gets no verdict and runs again; the report counts those runs and the saved whole-text answers by kind of case",
+    async () => {
+      const base = scenario("checkout-unanswered", LOSS_SKILL(), [{ id: "c04" }]);
+      const big = Array.from({ length: 120 }, (_, n) => `x${n + 1} = ${n + 1}\n`).join("");
+      const { repos, commit } = gitRepository(base.dir, { "src/big.py": big });
+      const written: Case = {
+        ...makeWrittenCase("w00"),
+        checkout: { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" },
+      };
+      const cases = [...base.cases, written];
+      writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+      const s = { ...base, cases, markers: new Map([...base.markers, ["w00", ""] as const]) };
+      recordCaptures(s, ["old", "new", "none"]);
+      // w00's first two runs read /etc/hostname, outside the checkout, which the copy answers in no
+      // form; each later one reads src/big.py, a code file of 120 lines whose parse elides nothing,
+      // answered whole with no mark; and acts once that answer is in its body.
+      let looks = 0;
+      answer = (body) => {
+        if (isJudgement(body) || !JSON.stringify(body.messages).includes("Case w00")) {
+          return behaviourStandIn(body);
+        }
+        const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+        const answered = (block: { tool_use_id?: unknown }) =>
+          String(block?.tool_use_id).startsWith("toolu_odd_");
+        if (Array.isArray(last) && last.some(answered)) {
+          return behaviourStandIn(body);
+        }
+        looks += 1;
+        return sseResponse(
+          messageSse({
+            id: `msg_odd_${looks}`,
+            model: "claude-sonnet-5-5",
+            content: [
+              {
+                type: "tool_use",
+                id: `toolu_odd_${looks}`,
+                name: "read",
+                input: { path: looks <= 2 ? "/etc/hostname" : "src/big.py" },
+              },
+            ],
+            stopReason: "tool_use",
+          })
+        );
+      };
+      const ran = await cli(behaviour("screen", s, "--repos", repos));
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const runs = result(s.out, "w00").stages.screen?.runs ?? [];
+      expect(runs).toHaveLength(3 * SCREEN_RUNS + 2);
+      const unjudged = runs.filter((run) => run.verdict === null);
+      expect(unjudged.map((run) => run.reason)).toEqual([
+        expect.stringMatching(/^unanswered-read: read \{"path":"\/etc\/hostname"\}: /),
+        expect.stringMatching(/^unanswered-read: read \{"path":"\/etc\/hostname"\}: /),
       ]);
-    }
-    expect(ran.stdout).toContain("(2 runs with no verdict, run again; unanswered-read: ");
-    const reported = await cli(report(s));
-    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(reported.stdout.split("\n")).toContain(
-      `runs with no verdict, run again, and reads answered whole, by kind of case: session: 0 ${READS_PAST_LAST_ROUND}, 0 unanswered-read, 0 reads answered with the file's whole text in place of the pin's summary; written: 0 ${READS_PAST_LAST_ROUND}, 2 unanswered-read, ${3 * SCREEN_RUNS} reads answered with the file's whole text in place of the pin's summary`
-    );
-  }, 120_000);
+      expect(unjudged.map((run) => run.reply)).toEqual([
+        [expect.objectContaining({ name: "read", input: { path: "/etc/hostname" } })],
+        [expect.objectContaining({ name: "read", input: { path: "/etc/hostname" } })],
+      ]);
+      for (const run of runs.filter((each) => each.verdict !== null)) {
+        expect(run.skillReads).toEqual([
+          [{ from: "checkout", tool: "read", input: { path: "src/big.py" }, isError: false }],
+        ]);
+      }
+      expect(ran.stdout).toContain("(2 runs with no verdict, run again; unanswered-read: ");
+      const counted = (saved: number) =>
+        `runs with no verdict, run again, and saved whole-text reads, by kind of case: session: 0 ${READS_PAST_LAST_ROUND}, 0 unanswered-read, 0 saved reads marked wholeText (answered whole before the runner rebuilt the pin's summaries); written: 0 ${READS_PAST_LAST_ROUND}, 2 unanswered-read, ${saved} saved reads marked wholeText (answered whole before the runner rebuilt the pin's summaries)`;
+      const reported = await cli(report(s));
+      expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(reported.stdout.split("\n")).toContain(counted(0));
+      // A run saved before the runner rebuilt the pin's summaries marks such a read `wholeText`.
+      const file = caseResultFile(s.out, "w00");
+      const saved = CaseResult.parse(JSON.parse(readFileSync(file, "utf8")));
+      const marked = {
+        ...saved,
+        stages: {
+          ...saved.stages,
+          screen: saved.stages.screen && {
+            ...saved.stages.screen,
+            runs: saved.stages.screen.runs.map((run) => ({
+              ...run,
+              skillReads: run.skillReads?.map((round) =>
+                round.map((read) =>
+                  read.from === "checkout" ? { ...read, wholeText: true } : read
+                )
+              ),
+            })),
+          },
+        },
+      };
+      writeFileSync(file, JSON.stringify(marked));
+      const again = await cli(report(s));
+      expect({ code: again.code, stderr: again.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(again.stdout.split("\n")).toContain(counted(3 * SCREEN_RUNS));
+    },
+    120_000
+  );
 
   // Catches: a written case built before build-cases passed over a context session in no checkout
   // it knows, so it has no checkout, judged on a reply whose calls all read, which the runner
@@ -5630,7 +5657,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     const reported = await cli(report(s));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout.split("\n")).toContain(
-      `runs with no verdict, run again, and reads answered whole, by kind of case: session: 0 ${READS_PAST_LAST_ROUND}, 0 ${UNANSWERED_READ}, 0 reads answered with the file's whole text in place of the pin's summary; written: 0 ${READS_PAST_LAST_ROUND}, 2 ${UNANSWERED_READ}, 0 reads answered with the file's whole text in place of the pin's summary`
+      `runs with no verdict, run again, and saved whole-text reads, by kind of case: session: 0 ${READS_PAST_LAST_ROUND}, 0 ${UNANSWERED_READ}, 0 saved reads marked wholeText (answered whole before the runner rebuilt the pin's summaries); written: 0 ${READS_PAST_LAST_ROUND}, 2 ${UNANSWERED_READ}, 0 saved reads marked wholeText (answered whole before the runner rebuilt the pin's summaries)`
     );
   }, 120_000);
 });
@@ -6242,4 +6269,22 @@ test("an --after-case command that never exits is ended at its limit, and counts
   expect(performance.now() - started).toBeLessThan(3_000);
   writeFileSync(command, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   expect(await runAfterCase(command, file, 2_000)).toBeUndefined();
+});
+
+// Catches: the time a shared checkout's copy was made, which a listing's ages are measured from,
+// taken from the time of the call (two runs of a case then differ), or a marker written before it
+// recorded that time read with none.
+test("readCheckoutMarker gives a marker's recorded madeAt, and for one written before it recorded one, its file's own time of change in whole milliseconds, not the time of the read; no marker is none", () => {
+  const root = path.join(scratch, "checkout-markers");
+  mkdirSync(root, { recursive: true });
+  const marker = { git: true, depth: 1, removedLinks: [], seconds: 2, bytes: 10 };
+  const recorded = path.join(root, "recorded.ready.json");
+  writeFileSync(recorded, JSON.stringify({ ...marker, madeAt: 1_763_640_000_123 }));
+  utimesSync(recorded, 1_000, 1_000);
+  expect(readCheckoutMarker(recorded)).toEqual({ ...marker, madeAt: 1_763_640_000_123 });
+  const old = path.join(root, "old.ready.json");
+  writeFileSync(old, JSON.stringify(marker));
+  utimesSync(old, 1_763_640_000.9876, 1_763_640_000.9876);
+  expect(readCheckoutMarker(old)).toEqual({ ...marker, madeAt: 1_763_640_000_987 });
+  expect(readCheckoutMarker(path.join(root, "none.ready.json"))).toBeUndefined();
 });

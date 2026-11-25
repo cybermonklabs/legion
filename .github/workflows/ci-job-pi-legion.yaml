@@ -54,11 +54,13 @@ jobs:
     # The budget, added up part by part from the slowest run this job can have rather than
     # copied from another job, when it also ran the typecheck and the pack that pi-legion-build
     # runs now: the job's set-up with the NATS service started and the checkout (15 s), setup-bun
-    # (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache restore (26), the
-    # workspace install and contracts' build (14), the lint and the typecheck (16), the test step
-    # (300), the pack, the upload and the ci-ok report (4), the post steps with the containers
-    # stopped (5), and the seconds the job's own clock holds over the sum of its steps (5). That
-    # is 396 s, 6 m 36 s, a floor this job, without the typecheck and the pack, stays under.
+    # (2), install-jj (3), install-omp (6), install-skill-cuts-omp (about 9, not yet measured: the
+    # 6 install-omp takes to fetch and unpack an Oh My Pi archive, and the extraction of the
+    # 129 MB addon), setup-go and the go-daemon cache restore (26), the workspace install and
+    # contracts' build (14), the lint and the typecheck (16), the test step (300), the pack, the
+    # upload and the ci-ok report (4), the post steps with the containers stopped (5), and the
+    # seconds the job's own clock holds over the sum of its steps (5). That is 405 s, 6 m 45 s, a
+    # floor this job, without the typecheck and the pack, stays under.
     # The test step runs the package's files in one worker per CPU (`bun test --parallel`,
     # package.json), so it lasts as long as its slowest worker, which runs
     # legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s, 281.5 s and 296.4 s
@@ -95,6 +97,12 @@ jobs:
       # Actions without one. The pin is read from .omp-pin, the repository's one copy of it
       # (.github/actions/install-omp).
       - uses: ./.github/actions/install-omp
+      # scripts/skill-cuts' block-context and summary rows read through the native addon of the
+      # Oh My Pi release the runner rebuilds answers of, which is not .omp-pin's build: this names
+      # it in SKILL_CUTS_NATIVES_DIR for the test step, and in no PI_NATIVES_DIR, so the tests that
+      # run .omp-pin's Oh My Pi read their own (.github/actions/install-skill-cuts-omp). On GitHub
+      # Actions those rows fail by name without it (scripts/skill-cuts/test-natives.ts).
+      - uses: ./.github/actions/install-skill-cuts-omp
       # scripts/skill-scenarios/rig.test.ts runs rig.sh judge-omp's container with the runner's own
       # Docker. Every image a CI job fetches is a copy in ghcr.io/cybermonklabs/legion/ci, named by
       # digest, which ci.yaml's ci-images job publishes from .github/ci-images.yaml.

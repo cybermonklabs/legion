@@ -182,9 +182,11 @@
  *   against the session's working directory, and a `~` path against the session's home where the
  *   copy names one, `CheckoutCopy.home`) to a file under the checkout's root, in the form
  *   arms.ts writes a whole read by path (`pathAnswer`, its rows as the arm's reads by path show
- *   them; its hashline header's path relative to the working directory, else `~/<rest>` under the
- *   session's home, as the pin's `shortenPath` shows it, read-format.ts lines 70-83, else
- *   absolute), or Oh My Pi's not-found result `Path '<path>' not found` for a file the copy lacks. A
+ *   them; its hashline header's path relative to the working directory, where that relative path
+ *   starts with no `..`, else `~/<rest>` under the session's home, as the pin's `shortenPath`
+ *   shows it, read-format.ts lines 70-83, else absolute: a file `..notes` of the working directory
+ *   is shown absolute, as path-utils.ts's `formatPathRelativeToCwd` shows it), or Oh My Pi's
+ *   not-found result `Path '<path>' not found` for a file the copy lacks. A
  *   file that is no prose is answered so too: a UTF-8 text file that is no notebook, SVG or
  *   document markit converts. A whole read of such a file of 100 lines or more (newlines and one
  *   more, `read.summarize.minTotalLines`) is the pin's structural summary where the pin's
@@ -195,12 +197,32 @@
  *   ` with`, and the first two ranges, where more are elided), `<path>` relative to the session's
  *   working directory, else absolute; a file the pin does not summarize is answered as below.
  *   Whole reads page after 300 lines (`read.defaultLimit`) or at the byte budget, whichever
- *   comes first. A single line range (`:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`) includes a preceding
- *   line and, for a range with an end, up to three following lines, subject to its byte budget
- *   and line cap (`pathRangeAnswer`). If lines remain, the notice is `[Showing lines <a>-<b>
- *   of <total>. Use :<b+1> to continue]`, with `(<size> limit)` after the total on a byte stop.
- *   Any column truncation goes in the same notice. Where the rows shown leave lines of the file
- *   out, the answer shows the pin's block context too (arms.ts's `windowRows`, block-context.ts):
+ *   comes first. A read's selector is the text after its path's last `:` where it is one of the
+ *   read's grammar (arms.ts's `readSelector`: read-selector.ts's `parseSel`, tui read.ts's
+ *   `splitPathAndSel`), unless the whole target names a path the copy holds, which is read as it
+ *   is (`notes:1-2`, path-utils.ts's `splitPathAndSelPreferringLiteral`). A single line range
+ *   (`:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`, or a list of ranges that overlap or touch, merged)
+ *   includes a preceding line and, for a range with an end, up to three following lines, subject
+ *   to its byte budget and line cap (`pathRangeAnswer`); `:-N` is the last N lines, read as that
+ *   range. If lines remain, the notice is `[Showing lines <a>-<b> of <total>. Use :<b+1> to
+ *   continue]`, with `(<size> limit)` after the total on a byte stop. Any column truncation goes
+ *   in the same notice. A list of ranges that do not touch (`:1-5,40-60`, a tail among them) shows
+ *   each range's lines alone, with no context and no byte budget, the file's lines as the pin
+ *   holds them (a carriage return taken off), under one hashline header, and after them, a line
+ *   apart, `[Range <a>-<b> is beyond end of file (<lines> lines total); skipped]` for each range
+ *   past the end (the notices alone where every range is), then the column clause (read.ts lines
+ *   1649-1857; arms.ts's `rangesAnswer`); past 50 KB it is saved as an artifact, not answered. A
+ *   `raw` read (`:raw`, or a range, a line, a tail or a list joined to `raw` either way:
+ *   `:raw:5-9`, `:5-9:raw`, `:raw:7`, `:raw:-20`, `:raw:1-2,9-10`) shows the lines as they are,
+ *   a carriage return or a byte order mark kept, with no row numbers, no header, no context, no
+ *   column cut and no block context, a range's lines (a bare N the line N alone), else 300 lines,
+ *   inside 50 KiB; the file's final newline after a read with no end that reaches the end; for one
+ *   range or none, `[Showing lines <a>-<b> of <n>. Use :<b+1> to continue]` where lines of it are
+ *   left out; for several, the ranges joined by a line end, each inside the larger of 50 KiB and
+ *   512 bytes a line, their notices kept in the result's record as the pin keeps them (read.ts
+ *   lines 2627-3036 and 1707-1830; `rawRangeAnswer`, `rawRangesAnswer`); a notebook or an SVG so
+ *   read is its text. Where the rows shown leave lines of the file
+ *   out, the answer shows the pin's block context too (arms.ts's `spanRows`, block-context.ts):
  *   the boundary line of each block that opens on a shown row and closes after them, or closes on
  *   one and opens before them, as tree-sitter finds it through the pinned Oh My Pi's native addon
  *   (else, for a language the addon does not know or a file that does not parse, a scan of the
@@ -221,8 +243,11 @@
  *   recorded once in the copy's marker by cli.ts), never from the time of its own call, so a
  *   listing reads the same in every arm and every run of a case. A symbolic link is listed as a
  *   file is; one cli.ts removed from the copy is not listed. Not
- *   answered: a read with another selector (`:raw`, a list, `:-N`, …), a ranged read of a
- *   directory, a listing of a copy that records no time it was made, one that would show `.git`
+ *   answered: a read with `:conflicts` or `:img`, a selector the pin refuses with an error
+ *   (`:0-2`, `:5-3`, `:-0`), a `raw` read whose text is empty (every range past the end, or an
+ *   empty file: the pin keeps its notices out of the text) or whose first line passes 50 KiB (the
+ *   pin shows a part of it), a read of a directory with a selector, a listing of a copy that
+ *   records no time it was made, one that would show `.git`
  *   or `.jj` (the copy's, not the session's), or past 50 KB, a read outside the root, under
  *   `.git` or, where the copy names no home of the session's, under `~`, a file past 4 MiB (the
  *   pin streams it, with a notice of its own and no block context), a read whose block context
@@ -234,13 +259,26 @@
  * - `grep` (keys `pattern`, `path`, `case`, `gitignore`, `skip`, `i`): GrepTool's output
  *   (packages/coding-agent/src/tools/grep.ts lines 651-1316, its native search
  *   crates/pi-walker/src/grep/). Its `path` (`.` when absent) is a path, or a list joined by `;`
- *   outside braces (unless the whole names a path the copy holds; `pathListEntries`, which
- *   `glob` reads too: path-utils.ts lines 599-772), whose parts that start with `!` and name no
+ *   outside braces (unless the whole names a path the copy holds, or does with its selector taken
+ *   off, as `a.ts:1-5,9-12`; `pathListEntries`, which `glob` reads too: path-utils.ts lines
+ *   599-772), whose parts that start with `!` and name no
  *   path of the copy are exclusions (grep.ts lines 465-529, crates/pi-walker/src/glob.rs lines
  *   95-125: one with no `/`, or that starts with `**`, matches at any depth; any other is
  *   anchored where it resolves, and kept only inside a searched directory; a file or directory
  *   one matches below a searched directory is left out) and the rest the paths searched (`.`
- *   where none is). Of several paths, those the copy holds are searched, each on its own in their
+ *   where none is). A searched path may end with a line range (`:N-M`, `:N-`, `:N`, from line N
+ *   on, or a comma list of them; grep.ts lines 194-263, `parsePathSpecs`, and 930-959), its
+ *   path a file the copy holds: that file's matches are kept to its ranges, their context lines
+ *   too, wherever a search finds them, after the native search, which takes so many more a file
+ *   that `cap` of them may still be in range (the last line a bounded range names, or the cap and
+ *   one past an open range's start, and that many more in all; lines 437-456 and 799-810). A lone
+ *   searched path that holds a glob character (`*`, `?`, `[`, `{`) and names no path the copy
+ *   holds is a glob (`grepGlobScope`; path-utils.ts lines 901-924, crates/pi-walker/src/glob.rs
+ *   lines 41-94): its base, the part before its first such segment (`.` for none), searched as a
+ *   directory, its files those whose path below the base the rest matches, or whose directory it
+ *   matches (`src/{a.rs,b.rs}` searches those two files, `{src,test}` those two directories), a
+ *   glob with no `/` at any depth unless it starts with `**` or is a brace list of plain names.
+ *   Of several paths, those the copy holds are searched, each on its own in their
  *   order (a line two of them show kept once), or, where they are directories one of which holds
  *   the rest, as that one (path-utils.ts lines 1050-1133 and 1460-1591, grep.ts lines 826-918);
  *   the others are noted after the matches, `Skipped missing paths: <paths>`. A directory's files
@@ -257,8 +295,9 @@
  *   (or `...` and the line's last 509 bytes), then ` [col <n>]`, the match's column. Each match
  *   line `*<n>:<line>` and each context line ` <n>:<line>` (`|` in place of `:` in a session that
  *   shows no hashline rows; packages/tui/src/tools/match-line-format.ts). A search of several
- *   files (a directory or a list) keeps 20 matches of a file and shows 20 files a page, from the
- *   file after the `skip` it is given, under a prefix-folded tree of `#` headers, each file's
+ *   files (a directory, a glob or a list) keeps 20 matches of a file and shows 20 files a page,
+ *   from the file after the `skip` it is given, under a prefix-folded tree of `#` headers, each
+ *   file's
  *   `#<tag>` beside its name in a hashline session (packages/tui/src/tools/grouped-file-output.ts
  *   lines 65-154, packages/utils/src/path-tree.ts); a search of one file keeps 200, under
  *   `[<path>#<tag>]` (grep.ts lines 83-96 and 985-1045). After them, each after a blank line
@@ -276,10 +315,11 @@
  *   `. ` when both apply (packages/tui/src/tools/output-meta.ts). `No matches found` when none,
  *   the missing paths' note on the next line; `No more results (<n> files total; skip=<k> is past
  *   the end)` for a page past the last. Its paths are
- *   relative to the working directory when under it, else absolute (path-utils.ts lines
- *   512-531, `formatPathRelativeToCwd`, which shows no `~`: a path under the session's home is
- *   absolute, where a read's header shows `~/…`; a `~` path given resolves against the session's
- *   home where the copy names one); its regular expression is JavaScript's in Unicode mode,
+ *   relative to the working directory when under it and their relative path starts with no `..`,
+ *   else absolute (path-utils.ts lines 512-531, `formatPathRelativeToCwd`, which shows no `~`: a
+ *   path under the session's home is absolute, where a read's header shows `~/…`; a `~` path
+ *   given resolves against the session's home where the copy names one); its regular expression
+ *   is JavaScript's in Unicode mode,
  *   case-sensitive unless `case`
  *   is false, which backtracks where the pin's (Rust's regex) does not, so the answer is worked
  *   out in a worker thread (`answerInWorker`), never the runner's own, within BASH_TIME_LIMIT_MS
@@ -292,9 +332,13 @@
  *   `(?FLAGS)`, FLAGS one or more of `i`, `m` and `s` each once, which Rust's regex takes and
  *   JavaScript's does not, is read without it, its letters added to the expression's flags (`i`
  *   as `case` false adds it).
- *   Not answered: a glob or a selector in a searched path, a path outside the root, a path (or
- *   every path of a list) the copy lacks, a path named twice, an exclusion of a form the runner
- *   does not read (`dialectGlob`), a list joined by commas or blanks, a file named alone past
+ *   Not answered: a selector of a searched path other than line ranges (`:raw`, `:-N`; grep
+ *   refuses them), a range the pin refuses (`:0-1`), a range of a path that is no file of the
+ *   copy, a range after a glob, a glob in a list, a glob of a form the runner does not read
+ *   (`dialectGlob`) or that names `node_modules`, a glob whose base is no directory of the copy, a
+ *   path outside the root, a path (or every path of a list) the copy lacks, a path named twice, an
+ *   exclusion of a form the runner does not read (`dialectGlob`), a list joined by commas or
+ *   blanks, a file named alone past
  *   4 MiB (which the pin streams), a pattern over lines or with a look-around, a back-reference,
  *   a named group in Rust's own form or a flag group other than that leading one (one elsewhere,
  *   a scoped `(?i:…)`, a negated one, one of another flag), one JavaScript does not take, a cut
@@ -319,10 +363,15 @@
  *   matches a tie by their path below its base in byte order, then the patterns' paths merged,
  *   each once, a tie kept in their order. Its matching
  *   (Bun.Glob's, of each path under its base) is worked out in a worker thread (`answerInWorker`),
- *   within BASH_TIME_LIMIT_MS, as grep's is. Not answered: a
+ *   within BASH_TIME_LIMIT_MS, as grep's is. A pattern's native walk keeps its `limit` newest
+ *   matches (200 when absent; crates/pi-walker/src/glob.rs lines 271-277), and the merged list
+ *   shows at most `limit` paths; where it holds `limit` or more, the answer ends, after a blank
+ *   line, with `[<limit> results limit reached. Use limit=<2 × limit> for more]`, or `[200
+ *   results limit reached]` where twice the limit is not under 200 (list-limit.ts's
+ *   `applyListLimit`, glob.ts lines 337-374, output-meta.ts's `resultLimit`). Not answered: a
  *   list joined by commas or blanks, a base outside the root, one pattern (or every pattern of a
- *   list) whose base is not there or is a file under a glob (the pin's error is not rebuilt),
- *   more matches than `limit` (200 when absent), and a search past the time limit.
+ *   list) whose base is not there or is a file under a glob (the pin's error is not rebuilt), and
+ *   a search past the time limit.
  * - `bash` (keys `command`, `cwd`, `timeout`, `i`, and `pty`, `async`, `name` and `ready` where
  *   each asks for nothing, `bashOptionFault`): the command run in the sandbox of the copy
  *   (above; its working directory the session's mapped into the copy; the checkout's root in the
@@ -397,13 +446,17 @@ import { isMainThread, parentPort, Worker, workerData } from "node:worker_thread
 import {
   fileTag,
   formatBytes,
+  grepLineRanges,
+  type LineRange,
   outputNotice,
   type PathRows,
   pathAnswer,
   pathRangeAnswer,
-  readRange,
+  readSelector,
   showingLines,
   shownPath,
+  splitPathAndSel,
+  splitPreferringLiteral,
 } from "./arms";
 import { type Case, insideRoot, resolvedReadPath, textLines } from "./cases";
 import { bytesAt, eachChunk, firstLine, Limiter, timeLimit } from "./common";
@@ -2523,11 +2576,16 @@ function bashOptionFault(input: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-/** The path Oh My Pi's search tools show for the session's absolute path `full`: relative to the
- *  working directory when under it (`.` for it), else absolute (path-utils.ts lines 512-531). */
-function relativeToCwd(copy: CheckoutCopy, full: string): string {
-  if (full === copy.cwd) return ".";
-  return full.startsWith(`${copy.cwd}/`) ? full.slice(copy.cwd.length + 1) : full;
+/** The path Oh My Pi's tools show for the session's absolute path `full` (path-utils.ts lines
+ *  512-531, `formatPathRelativeToCwd`): relative to the working directory where its relative path
+ *  holds no leading `..` (`.` for the directory itself), else absolute, so a name inside it that
+ *  starts with `..` (`..cache`) is shown absolute too; each `\` as `/`; and, where `slash`, a `/`
+ *  after a directory but `.`. */
+function relativeToCwd(copy: CheckoutCopy, full: string, slash = false): string {
+  const resolved = path.posix.resolve(full);
+  const relative = path.posix.relative(path.posix.resolve(copy.cwd), resolved);
+  const shown = (relative.startsWith("..") ? resolved : relative || ".").replace(/\\/g, "/");
+  return slash && shown !== "." && !shown.endsWith("/") ? `${shown}/` : shown;
 }
 
 /** The session's path of `inside`, a path inside the checkout ("" for its root): the reverse of
@@ -2552,9 +2610,6 @@ function searchTarget(
   if (target.startsWith("!") || /[*?[\]{}]/.test(target)) {
     return { why: `its path ${target} holds a glob` };
   }
-  if (target.slice(target.lastIndexOf("/") + 1).includes(":")) {
-    return { why: `its path ${target} holds a selector` };
-  }
   const full = resolvedReadPath(target, { cwd: copy.cwd, home: copy.home });
   const inside = full === undefined ? undefined : insideRoot(copy.root, full);
   if (full === undefined || inside === undefined) {
@@ -2576,13 +2631,21 @@ function readAnswer(
   if (other !== undefined) return { why: other };
   const target = input.path;
   if (typeof target !== "string") return { why: "it names no path" };
-  const ranged = readRange(target);
-  if (ranged !== undefined && ranged.range === undefined) {
+  // A file named with the selector is read as it is (path-utils.ts's
+  // `splitPathAndSelPreferringLiteral`).
+  const selected = readSelector(target, (literal) => copyHolds(copy, literal));
+  if ("refused" in selected) {
     return {
-      why: `${target} has the selector :${ranged.selector}, of a form the runner does not rebuild (it rebuilds one line range: :N-M, :N+K, :N)`,
+      why: `${target} has the selector :${selected.selector}, which the pin refuses with an error the runner does not rebuild (${selected.refused})`,
     };
   }
-  const read = ranged?.path ?? target;
+  const { parsed } = selected;
+  if (parsed.kind === "conflicts" || parsed.kind === "image") {
+    return {
+      why: `${target} has the selector :${selected.selector}, of a form the runner does not rebuild (it rebuilds line ranges, lists of them, :-N and :raw)`,
+    };
+  }
+  const read = selected.path;
   const full = resolvedReadPath(read, { cwd: copy.cwd, home: copy.home });
   const inside = full === undefined ? undefined : insideRoot(copy.root, full);
   if (full === undefined || inside === undefined) {
@@ -2595,9 +2658,9 @@ function readAnswer(
     return { why: `${target} resolves, through a symbolic link, outside the checkout` };
   }
   if (copyStat(copy, inside)?.isDirectory()) {
-    if (ranged !== undefined) {
+    if (parsed.kind !== "none") {
       return {
-        why: `${target} is a ranged read of a directory, whose sliced listing the runner does not rebuild`,
+        why: `${target} is a read of a directory with a selector, whose sliced listing the runner does not rebuild`,
       };
     }
     return directoryListing(copy, inside, target);
@@ -2606,13 +2669,13 @@ function readAnswer(
     return { why: `${target} names a directory the session's checkout does not hold as one` };
   }
   const shown = shownPath(read, full, { cwd: copy.cwd, home: copy.home });
-  if (ranged?.range !== undefined) {
+  if (parsed.kind !== "none") {
     const answer = pathRangeAnswer(copy.dir, {
       file: inside,
       target: read,
       shown,
       rows,
-      ...ranged.range,
+      selector: parsed,
     });
     return typeof answer === "string" ? { why: `${target}: ${answer}` } : answer;
   }
@@ -3190,13 +3253,16 @@ function grepExclusions(
 /** The files grep's native search reads under the directory `root` of the checkout (run.rs lines
  *  573-690), each its path inside the checkout: every regular file below it, no symbolic link
  *  followed, `.git`, `.jj` (which a colocated copy's own `.gitignore` leaves out) and
- *  `node_modules` not entered, and each file or directory `exclude` matches (its path below
- *  `root`) left out; in path order (`grepReads` puts a file past GREP_FILE_BYTES after all
- *  others). Why not, where a test of `exclude` took past REGEX_TEST_MS (`timedExec`). */
+ *  `node_modules` not entered, each file or directory `exclude` matches (its path below `root`)
+ *  left out, and, where the search's path is a glob, each file `include` does not match
+ *  (`grepGlobScope`); in path order (`grepReads` puts a file past GREP_FILE_BYTES after all
+ *  others). Why not, where a test of `exclude` or `include` took past REGEX_TEST_MS
+ *  (`timedExec`). */
 function grepFiles(
   copy: CheckoutCopy,
   root: string,
-  exclude: RegExp | undefined
+  exclude: RegExp | undefined,
+  include: RegExp | undefined
 ): string[] | Unanswered {
   const found: string[] = [];
   let slow: Unanswered | undefined;
@@ -3214,7 +3280,18 @@ function grepFiles(
       if (excluded !== null) continue;
       if (entry.isDirectory()) {
         if (entry.name !== "node_modules") walk(inside, under);
-      } else if (entry.isFile()) found.push(inside);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (include !== undefined) {
+        const included = timedExec(include, under);
+        if (included === null) continue;
+        if ("why" in included) {
+          slow = { why: `its glob over ${under}: ${included.why}` };
+          return;
+        }
+      }
+      found.push(inside);
     }
   };
   walk(root, "");
@@ -3264,22 +3341,31 @@ function bytesWithin(file: string, limit: number): Buffer | undefined {
   }
 }
 
-/** Where a `grep` call searches (grep.ts lines 673-746 and 826-918, path-utils.ts lines 1050-1133
- *  and 1460-1591; see the file's header): `roots`, each a file or a directory of the checkout, in
- *  the order the pin searches them; `multi`, whether the pin reads the call as a search of several
- *  files (a directory or a list); `missing`, the paths of a list the checkout does not hold;
- *  `exclusions`, its `!` parts. Or why not answered. */
-function grepScope(
-  copy: CheckoutCopy,
-  given: unknown
-):
-  | {
-      readonly roots: readonly { readonly inside: string; readonly dir: boolean }[];
-      readonly multi: boolean;
-      readonly missing: readonly string[];
-      readonly exclusions: readonly string[];
-    }
-  | Unanswered {
+/** A root of a `grep` search (`grepScope`): a file or a directory inside the checkout, and, for a
+ *  glob, the files below the directory it reads (`grepGlobScope`). */
+interface GrepRoot {
+  readonly inside: string;
+  readonly dir: boolean;
+  readonly include?: RegExp;
+}
+
+/** Where a `grep` call searches (`grepScope`). */
+interface GrepScope {
+  readonly roots: readonly GrepRoot[];
+  readonly multi: boolean;
+  readonly missing: readonly string[];
+  readonly exclusions: readonly string[];
+  readonly ranges: ReadonlyMap<string, readonly LineRange[]>;
+}
+
+/** Where a `grep` call searches (grep.ts lines 194-263, 673-746 and 826-918, path-utils.ts lines
+ *  1050-1133 and 1460-1591; see the file's header): `roots`, each a file or a directory of the
+ *  checkout, in the order the pin searches them; `multi`, whether the pin reads the call as a
+ *  search of several files (a directory, a glob or a list); `missing`, the paths of a list the
+ *  checkout does not hold; `exclusions`, its `!` parts; `ranges`, the line ranges a path's
+ *  selector keeps a file's matches to (`:N-M`, `:N-`, a list of them; each such path a file the
+ *  checkout holds), by the file inside the checkout. Or why not answered. */
+function grepScope(copy: CheckoutCopy, given: unknown): GrepScope | Unanswered {
   if (given !== undefined && typeof given !== "string") return { why: "its path is no text" };
   const entry = pathLikeInput(given ?? ".");
   if (entry === "") return { why: "its path is empty, which the pin refuses" };
@@ -3290,10 +3376,28 @@ function grepScope(
     part.startsWith("!") && !copyHolds(copy, part) ? [part.slice(1)] : []
   );
   const searched = parts.filter((part) => !part.startsWith("!") || copyHolds(copy, part));
+  const entries = searched.length > 0 ? searched : ["."];
   const rootFull = path.posix.resolve(copy.root);
   const found: { entry: string; full: string; inside: string }[] = [];
-  for (const each of searched.length > 0 ? searched : ["."]) {
-    const where = searchTarget(copy, each);
+  const ranges = new Map<string, LineRange[]>();
+  for (const each of entries) {
+    // A selector after the path (grep.ts's `parsePathSpecs`), unless the whole names a path the
+    // copy holds; a path with a glob character the copy does not hold as it is is a glob.
+    const split = splitPreferringLiteral(each, (literal) => copyHolds(copy, literal));
+    if (/[*?[{]/.test(split.path) && !copyHolds(copy, split.path)) {
+      if (split.sel !== undefined) {
+        return {
+          why: `its path ${each} holds a line range after a glob, which the pin refuses with an error the runner does not rebuild`,
+        };
+      }
+      if (entries.length > 1) {
+        return {
+          why: `its path list holds the glob ${each}, whose search the runner does not rebuild`,
+        };
+      }
+      return grepGlobScope(copy, split.path, exclusions);
+    }
+    const where = searchTarget(copy, split.path);
     if ("why" in where) return where;
     if (leavesCopy(copy, where.inside)) {
       return { why: `its path ${each} resolves, through a symbolic link, outside the checkout` };
@@ -3303,7 +3407,22 @@ function grepScope(
     if (inside === undefined) {
       return { why: `its path ${each} is outside the session's checkout ${copy.root}` };
     }
-    found.push({ entry: each, full, inside });
+    if (split.sel !== undefined) {
+      const listed = grepLineRanges(split.sel);
+      if (listed === null || "refused" in listed) {
+        const error = listed === null ? "grep takes line ranges alone" : listed.refused;
+        return {
+          why: `its path ${each} has the selector :${split.sel}, which the pin refuses with an error the runner does not rebuild (${error})`,
+        };
+      }
+      if (copyStat(copy, inside)?.isFile() !== true) {
+        return {
+          why: `its path ${each} has a line range and names no file of the checkout, and the pin's error for it is not rebuilt`,
+        };
+      }
+      ranges.set(inside, [...(ranges.get(inside) ?? []), ...listed]);
+    }
+    found.push({ entry: split.path, full, inside });
   }
   // One path is searched as it is; of several, each the checkout holds, the others noted.
   const valid = found.length > 1 ? found.filter((each) => copyStat(copy, each.inside)) : found;
@@ -3322,7 +3441,7 @@ function grepScope(
       };
     }
     const dir = stats.isDirectory();
-    return { roots: [{ inside: only.inside, dir }], multi: dir, missing, exclusions };
+    return { roots: [{ inside: only.inside, dir }], multi: dir, missing, exclusions, ranges };
   }
   if (new Set(valid.map((each) => each.entry)).size < valid.length) {
     return { why: "its path names one path twice, whose search the runner does not rebuild" };
@@ -3344,13 +3463,75 @@ function grepScope(
     items.some((each) => !each.dir) ||
     !items.some((each) => each.full === common);
   if (!fanOut && commonInside !== undefined) {
-    return { roots: [{ inside: commonInside, dir: true }], multi: true, missing, exclusions };
+    const roots = [{ inside: commonInside, dir: true }];
+    return { roots, multi: true, missing, exclusions, ranges };
   }
   return {
     roots: items.map((each) => ({ inside: each.inside, dir: each.dir })),
     multi: true,
     missing,
     exclusions,
+    ranges,
+  };
+}
+
+/**
+ * Where a `grep` call whose path is the one glob `glob` searches (path-utils.ts's `parseSearchPath`
+ * and `isBareSearchGlob`, lines 901-924; crates/pi-walker/src/glob.rs lines 41-94, `build_pattern`
+ * and `Selector::scope`): the directory before its first part that holds a glob character (`.`
+ * where that is its first part), searched as a directory, its files those whose path below it the
+ * rest matches, or whose directory the rest matches (`{src,test}` searches both directories, and
+ * `src/{a.rs,b.rs}` those two files of `src`). A glob with no `/` matches at any depth, as though
+ * `**` and a `/` came before it, unless it starts with `**` or is a brace list of plain names
+ * (`{a,b}`); an unclosed `{` is closed at its end. Why not answered: a glob of a form the runner
+ * does not read (`dialectGlob`), one that names `node_modules`, which the native walk then
+ * enters, and a base that is no directory of the checkout (the pin's error is not rebuilt).
+ */
+function grepGlobScope(
+  copy: CheckoutCopy,
+  glob: string,
+  exclusions: readonly string[]
+): GrepScope | Unanswered {
+  const normalized = glob.replace(/\\/g, "/");
+  const segments = normalized.split("/");
+  const first = segments.findIndex((segment) => /[*?[{]/.test(segment));
+  const base = first <= 0 ? "." : segments.slice(0, first).join("/");
+  const pattern = first <= 0 ? normalized : segments.slice(first).join("/");
+  const plainUnion = /^\{[^*?[\]{}]+\}$/.test(pattern);
+  let built =
+    !normalized.includes("/") && !pattern.startsWith("**") && !plainUnion
+      ? `**/${pattern}`
+      : pattern;
+  const unclosed = built.split("{").length - built.split("}").length;
+  built += "}".repeat(Math.max(0, unclosed));
+  if (built.includes("node_modules")) {
+    return {
+      why: `its path ${glob} is a glob that names node_modules, whose walk the runner does not rebuild`,
+    };
+  }
+  const trimmed = built.replace(/\/+$/, "");
+  const patterns = trimmed === "**" || trimmed.endsWith("/**") ? [built] : [built, `${trimmed}/**`];
+  const sources = patterns.map(dialectGlob);
+  if (base === "" || sources.some((source) => source === undefined)) {
+    return { why: `its path ${glob} is a glob of a form the runner does not read` };
+  }
+  const where = searchTarget(copy, base);
+  if ("why" in where) return where;
+  if (leavesCopy(copy, where.inside)) {
+    return { why: `its path ${glob} resolves, through a symbolic link, outside the checkout` };
+  }
+  if (copyStat(copy, where.inside)?.isDirectory() !== true) {
+    return {
+      why: `its path ${glob} is a glob under ${base}, no directory of the checkout, and the pin's error for it is not rebuilt`,
+    };
+  }
+  const include = new RegExp(`^(?:${sources.join("|")})$`, "u");
+  return {
+    roots: [{ inside: where.inside, dir: true, include }],
+    multi: true,
+    missing: [],
+    exclusions,
+    ranges: new Map(),
   };
 }
 
@@ -3417,8 +3598,22 @@ function grepAnswer(
   const scope = grepScope(copy, input.path);
   if ("why" in scope) return scope;
   const cap = scope.multi ? GREP_MULTI_FILE_MATCHES : GREP_SINGLE_FILE_MATCHES;
-  // Each root's matches (at most cap + 1 a file, GREP_TOTAL_MATCHES a root), a line two roots
-  // share kept once (grep.ts lines 826-918).
+  // A path's line ranges keep its file's matches to them after the native search, which, so that
+  // `cap` of them may still be in range, takes up to the last line a bounded range names, or `cap`
+  // and one more past an open one's start, a file (clamped to GREP_FILE_BYTES), and as many more
+  // in all (grep.ts lines 799-810 and 437-456, `lineRangeFetchCap`).
+  const ranged = [...scope.ranges.values()].flat();
+  const perFile = Math.max(
+    cap + 1,
+    Math.min(
+      Math.max(0, ...ranged.map((range) => range.endLine ?? range.startLine + cap)),
+      GREP_FILE_BYTES
+    )
+  );
+  const perRoot =
+    ranged.length === 0 ? GREP_TOTAL_MATCHES : Math.ceil(GREP_TOTAL_MATCHES / (cap + 1)) * perFile;
+  // Each root's matches (at most perFile a file, perRoot a root), a line two roots share kept once
+  // (grep.ts lines 826-918).
   const matches: GrepMatch[] = [];
   const seen = new Set<string>();
   let totalCapReached = false;
@@ -3427,7 +3622,7 @@ function grepAnswer(
     if (root.dir) {
       const exclude = grepExclusions(copy, scope.exclusions, root.inside);
       if ("why" in exclude) return exclude;
-      const found = grepFiles(copy, root.inside, exclude.regex);
+      const found = grepFiles(copy, root.inside, exclude.regex, root.include);
       if ("why" in found) return found;
       files = found;
     }
@@ -3438,9 +3633,9 @@ function grepAnswer(
           why: `${file.inside} passes the ${GREP_FILE_BYTES} bytes grep reads into memory, past which it streams the file`,
         };
       }
-      const found = grepScan(file.inside, file.bytes, regex, cap + 1);
+      const found = grepScan(file.inside, file.bytes, regex, perFile);
       if ("why" in found) return found;
-      const taken = found.slice(0, GREP_TOTAL_MATCHES - emitted);
+      const taken = found.slice(0, perRoot - emitted);
       emitted += taken.length;
       for (const match of taken) {
         const key = `${match.file}\0${match.n}`;
@@ -3448,12 +3643,26 @@ function grepAnswer(
         seen.add(key);
         matches.push(match);
       }
-      if (emitted >= GREP_TOTAL_MATCHES) {
+      if (emitted >= perRoot) {
         totalCapReached = true;
         break;
       }
     }
   }
+  // The matches of a file a path's selector names kept to its ranges, each one's context lines
+  // too (grep.ts lines 930-959, `isLineInRanges`); the others as found.
+  const inRanges = (n: number, ranges: readonly LineRange[]) =>
+    ranges.some(
+      (range) => n >= range.startLine && (range.endLine === undefined || n <= range.endLine)
+    );
+  const kept = matches.flatMap((match) => {
+    const ranges = scope.ranges.get(match.file);
+    if (ranges === undefined) return [match];
+    if (!inRanges(match.n, ranges)) return [];
+    const before = match.before.filter((line) => inRanges(line.n, ranges));
+    const after = match.after.filter((line) => inRanges(line.n, ranges));
+    return [{ ...match, before, after }];
+  });
   // Group by file in the order found, keeping the page's files (grep.ts lines 985-1045).
   const display = (inside: string) => relativeToCwd(copy, sessionPath(copy, inside));
   const groups = new Map<string, { count: number; list?: GrepMatch[] }>();
@@ -3461,7 +3670,7 @@ function grepAnswer(
   const capped: string[] = [];
   const pageStart = scope.multi ? skip : 0;
   const pageEnd = scope.multi ? skip + GREP_FILE_LIMIT : Number.POSITIVE_INFINITY;
-  for (const match of matches) {
+  for (const match of kept) {
     const shown = display(match.file);
     const group = groups.get(shown);
     if (group === undefined) {
@@ -3683,10 +3892,15 @@ function hasListDelimiter(entry: string): boolean {
  *  (path-utils.ts's `splitDelimitedPathEntry`, lines 599-765, which glob.ts lines 212-225 and
  *  grep.ts lines 673-687 share): split at each `;` outside braces, each part trimmed, its outer
  *  double quotes taken off and the empty ones left out, unless the whole names a path the copy
- *  holds; `[entry]` when it holds no list delimiter; why not answered for a list the pin splits at
- *  commas or blanks only where its paths are there. */
+ *  holds, or does with its selector taken off (`a.ts:1-5,9-12` searches `a.ts` over two ranges,
+ *  lines 744-753); `[entry]` when it holds no list delimiter; why not answered for a list the pin
+ *  splits at commas or blanks only where its paths are there. */
 function pathListEntries(copy: CheckoutCopy, entry: string): string[] | Unanswered {
   if (!hasListDelimiter(entry) || copyHolds(copy, entry)) return [entry];
+  const split = splitPathAndSel(entry);
+  if (split.sel !== undefined && copyHolds(copy, split.path)) return [entry];
+  const unfolded = splitPathAndSel(entry, false).path;
+  if (unfolded !== split.path && copyHolds(copy, unfolded)) return [entry];
   if (!entry.includes(";")) return { why: `its path ${entry} is a list of commas or blanks` };
   const parts: string[] = [];
   let depth = 0;
@@ -3782,14 +3996,15 @@ function globAnswer(
       if ((directoryOnly && !each.dir) || !glob.match(below)) continue;
       const { mtimeNs } = lstatSync(path.join(copy.dir, each.path), { bigint: true });
       matches.push({
-        shown: `${relativeToCwd(copy, sessionPath(copy, each.path))}${each.dir ? "/" : ""}`,
+        shown: relativeToCwd(copy, sessionPath(copy, each.path), each.dir),
         millis: walkMillis(mtimeNs),
         walked: Buffer.from(below),
       });
     }
-    if (matches.length > limit) return { why: `it finds more than its limit of ${limit} paths` };
+    // The native walk keeps a target's `limit` newest matches (crates/pi-walker/src/glob.rs lines
+    // 271-277).
     matches.sort((a, b) => b.millis - a.millis || Buffer.compare(a.walked, b.walked));
-    for (const match of matches) add(match.shown, match.millis);
+    for (const match of matches.slice(0, limit)) add(match.shown, match.millis);
   }
   if (missing.length === targets.length) {
     return {
@@ -3807,15 +4022,26 @@ function globAnswer(
   if (found.length === 0) {
     return { text: ["No files found matching pattern", ...notes].join("\n"), isError: false };
   }
-  if (found.length > limit) return { why: `it finds more than its limit of ${limit} paths` };
   // The targets' paths merged newest first, a tie in the order found (glob.ts lines 644-657), as
-  // a prefix-folded tree in that order (`formatGroupedPaths`).
+  // a prefix-folded tree in that order (`formatGroupedPaths`), at most `limit` of them; where
+  // there are `limit` or more, the pin's notice that the limit was reached, with a limit twice
+  // it where that is under GLOB_LIMIT (list-limit.ts's `applyListLimit`, glob.ts lines 337-374,
+  // output-meta.ts's `resultLimit`).
   found.sort((a, b) => b.millis - a.millis);
-  const lines = pathTreeEvents(found.map((each) => each.shown)).map((event) =>
+  const shown = found.slice(0, limit);
+  const lines = pathTreeEvents(shown.map((each) => each.shown)).map((event) =>
     event.kind === "dir" ? `${"#".repeat(event.depth + 1)} ${event.name}/` : event.name
   );
   const text = lines.join("\n");
-  return { text: notes.length === 0 ? text : `${text}\n\n${notes.join("\n")}`, isError: false };
+  const suggestion = Math.min(limit * 2, GLOB_LIMIT);
+  const reached =
+    found.length < limit
+      ? undefined
+      : suggestion > limit
+        ? `${limit} results limit reached. Use limit=${suggestion} for more`
+        : `${limit} results limit reached`;
+  const body = notes.length === 0 ? text : `${text}\n\n${notes.join("\n")}`;
+  return { text: `${body}${outputNotice(reached)}`, isError: false };
 }
 
 /** The paths an option word `word` may name, as `escapes` reads them: a word that is no option is

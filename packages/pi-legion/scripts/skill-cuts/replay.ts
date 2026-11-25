@@ -12,10 +12,14 @@
  * installed in, arms.ts's `Arm.pathCopy`), or of a file of another
  * skill (arms.ts's `otherSkillRead`: a `skill://` read of any other skill, or a whole read by path
  * of a skill the profile lists); a `skill://` read, and a read by path of the arm's copy, with
- * one line range (arms.ts's `readRange`: `:N-M`, `:N+K`, `:N`) is one too, answered with the lines
- * of its range in Oh My Pi's range form (arms.ts's `skillFileRange` and `pathRangeAnswer`: a line
- * before, three after, and the count of the lines left), in every run, session and written cases
- * alike. Each read of the arm's skill is answered the way the arm's files
+ * one line range (arms.ts's `readRange`: `:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`, or a list that
+ * merges into one range, the selector split off as the pin splits it, so `x.md:notes` names the
+ * file `x.md:notes`) is one too, answered with the lines of its range in Oh My Pi's range form (a
+ * line before, three after; arms.ts's `skillFileRange`, which ends a range with an end that leaves
+ * lines after it with `[<n> more lines in file. Use :<next> to continue]`, and `pathRangeAnswer`,
+ * which ends one with `[Showing lines <a>-<b> of <n>. Use :<b+1> to continue]` where lines are
+ * left out), in every run, session and written cases alike. Each read of the arm's skill is
+ * answered the way the arm's files
  * would answer it (arms.ts's `skillFile`: the file under a `[Skill file: <path>]` header whose
  * path is the skill's installed one, the same in every arm, or Oh My Pi's not-found result for a
  * file the arm lacks, or, in `none`, which installs no copy of the skill, Oh My Pi's unknown-skill
@@ -56,8 +60,11 @@
  * from the copy of the context session's checkout (checkout.ts's `answerCall`: in the pinned Oh My
  * Pi's form, at the session's paths), and the agent runs on, at most MAX_CHECKOUT_ROUNDS such
  * rounds beside the rounds of skill reads: a whole `read` of a code file the pin summarizes with
- * the pin's summary (arms.ts's `summaryAnswer`); a read with one line range with the lines of its
- * range. A reply one of whose read-only calls the copy answers in no form (another selector, a
+ * the pin's summary (arms.ts's `summaryAnswer`); a read with a line selector with the lines it
+ * names in the pin's form (arms.ts's `pathRangeAnswer`: one range, a list of ranges, the last N
+ * lines, and `:raw` with none, one or several of them); a `grep` whose path keeps a file to line
+ * ranges or is a glob, and a `glob` that reaches its limit, as checkout.ts's header says. A reply
+ * one of whose read-only calls the copy answers in no form (a selector of a form not rebuilt, a
  * path outside the checkout, a git command where the copy holds no history, a form not rebuilt)
  * gets no verdict, never judged on that call: the replay rejects with UnansweredRead
  * (UNANSWERED_READ), naming the call and why, and cli.ts makes the run again as any run with no
@@ -351,9 +358,10 @@ export interface SkillRead extends AnsweredCall {
 }
 
 /** The read `target` the tool call `id` makes, answered, or undefined when it reads no skill file
- *  (see the file's header). A read with one line range (arms.ts's `readRange`: `:N-M`, `:N+K`,
- *  `:N`) is answered with those lines (`skillFileRange`, arms.ts's `pathFile` and
- *  `otherSkillRead`), one with any other selector not. In an arm whose profile lists a copy of
+ *  (see the file's header). A read with one line range (arms.ts's `readRange`: `:N-M`, `:N..M`,
+ *  `:N+K`, `:N`, `:N-`, or a list that merges into one) is answered with those lines
+ *  (`skillFileRange`, arms.ts's `pathFile` and `otherSkillRead`), one with any other selector not.
+ *  In an arm whose profile lists a copy of
  *  another source under the case's skill's name (arms.ts's `caseNameCopy`: `none`, or the arm of
  *  ours once their copies are gone), a `skill://` read of the case's skill is a read of that copy,
  *  which `otherSkillRead` answers (in `none`, `ownSkillReadFile` gives no file). A read of a

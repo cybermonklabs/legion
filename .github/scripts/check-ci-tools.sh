@@ -83,6 +83,13 @@
 #      helm the render passes over for the one it builds with `go run`. That file is read only
 #      where a helm row exists, and then a file that is missing, is not readable as text, or
 #      holds no such line is refused too.
+#      The `skill-cuts-omp` row's `version` is natives.ts's `const PIN_TAG = "v<version>"`
+#      (packages/pi-legion/scripts/skill-cuts/natives.ts) without its leading `v`: the skill-cuts
+#      runner opens only the native addon of the Oh My Pi release that tag names, and
+#      .github/actions/install-skill-cuts-omp installs this row's archive for its tests, so a row
+#      at another version installs an addon whose digest the runner refuses. That file is read
+#      only where a skill-cuts-omp row exists, and a file that is missing, is not readable as
+#      text, or holds no such line is refused too.
 #      The `crane`, `changie`, `elan` and `pulumi-cli` rows are their own pins: their installs
 #      hold no version of their own and install the version the row names.
 #      A row whose name ends in `-aarch64` is the arm64 build of the row named without that
@@ -256,6 +263,10 @@ PULUMITEST = Path("packages/envoy/infra/internal/pulumitest/pulumitest.go")
 # where it answers the version this file's HELM= line names, so the row that installs helm
 # carries that version.
 RENDER_NATS = Path("packages/envoy/loadtest/cluster/render-nats.sh")
+# The file the skill-cuts runner's Oh My Pi release is pinned in: it opens only the native addon
+# of the release this file's PIN_TAG names, so the row whose archive CI extracts that addon from
+# carries that tag.
+SKILL_CUTS_NATIVES = Path("packages/pi-legion/scripts/skill-cuts/natives.ts")
 GITHUB = Path(".github")
 # Rule 3's npm half reads these two directories and nothing else; its release-asset half and
 # its download-host half read every file under .github/, and so does rule 4.
@@ -419,6 +430,8 @@ DOCKER_PLUGIN_VERSION = re.compile(r'^const\s+DockerPluginVersion\s*=\s*"([^"]*)
 # read the same way: the value of the last `HELM=` line, the module path and its `@v<version>`,
 # whichever major version that path names.
 HELM_MODULE = re.compile(r"""^HELM=["']?(helm\.sh/helm/v\d+/cmd/helm@v[^\s"']+)["']?\s*$""")
+# natives.ts's tag, read the same way: the value of the last `const PIN_TAG = "v<version>";` line.
+PIN_TAG = re.compile(r'^const\s+PIN_TAG\s*=\s*"v([^"]+)";\s*$')
 # A URL ends at whitespace or at a quote of any of the three kinds a YAML or a shell line uses.
 # GitHub serves one release asset at many addresses, and a rule that compares text reaches only
 # the ones it spells out. Every form below was measured against github.com on 2026-11-09 with
@@ -876,6 +889,23 @@ if "helm" in rows_by_name:
                 f"{CI_TOOLS} carries what it pins"
             )
 
+# natives.ts is read only where a skill-cuts-omp row exists, as render-nats.sh is for helm.
+skill_cuts_tag = ""
+if "skill-cuts-omp" in rows_by_name:
+    skill_cuts_text = read_text(SKILL_CUTS_NATIVES)
+    if skill_cuts_text is None:
+        problems.append(
+            f"{SKILL_CUTS_NATIVES}:1: this file is missing or is not readable as text, and the "
+            f"skill-cuts-omp row of {CI_TOOLS} carries the version its PIN_TAG pins"
+        )
+    else:
+        skill_cuts_tag = last_arg(PIN_TAG, skill_cuts_text)
+        if not skill_cuts_tag:
+            problems.append(
+                f'{SKILL_CUTS_NATIVES}:1: this file declares no const PIN_TAG = "v<version>";, '
+                f"and the skill-cuts-omp row of {CI_TOOLS} carries what it pins"
+            )
+
 for row in readable:
     name = str(row["name"]).strip()
     version = str(row["version"]).strip()
@@ -950,6 +980,14 @@ for row in readable:
             f".github/actions/install-helm installs this row's, so the render passes this row's "
             f"helm over and builds its own with go run: move this row to the HELM= line's "
             f"version, or that line to the row's."
+        )
+    if name == "skill-cuts-omp" and skill_cuts_tag and version != skill_cuts_tag:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, 'version')}: the skill-cuts-omp row's version is "
+            f'{version} and {SKILL_CUTS_NATIVES} pins const PIN_TAG = "v{skill_cuts_tag}". The '
+            f"runner opens only the native addon of the release that tag names, and "
+            f".github/actions/install-skill-cuts-omp installs this row's, so the runner refuses "
+            f"the addon CI gives it: move this row to the tag's version, or the tag to the row's."
         )
     if name.endswith(ARM64_SUFFIX) and not name.startswith("bun-"):
         base_name = name[: -len(ARM64_SUFFIX)]

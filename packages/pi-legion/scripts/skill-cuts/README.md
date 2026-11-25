@@ -419,9 +419,12 @@ that names no copy, of a file under the directory its `skill://` reads show the 
 in: "A case that names no copy" below), or a whole read by path of another
 skill the profile lists (a path that ends `/<name>/SKILL.md` or holds `skills/<name>/references/`,
 as `count.sql` places a read); a `skill://` read, or a read by path of the cut's own copy or that
-directory, with one line range (`:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`; `arms.ts`'s
-`readRange`) is one too, in every run, session and written cases alike, answered with the lines of
-its range in Oh My Pi's range form. Both include a line before the range (unless it starts at
+directory, with one line range (`:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`, or a list of ranges that
+merges into one; `arms.ts`'s `readRange`) is one too, in every run, session and written cases
+alike, answered with the lines of its range in Oh My Pi's range form. The selector is the text
+after the path's last `:` where it is one of the read's grammar, as the pin splits it, so a read of
+`skill://alpha/x.md:notes` or `<copy>/x.md:notes` reads the file named `x.md:notes`, as the pin's
+does. Both include a line before the range (unless it starts at
 line 1) and, for a range with an end, up to three lines after it. A `skill://` read under its
 `[Skill file: <path>]` line has no row numbers or page budget; a finite range that leaves lines
 after it ends with `[<n> more lines in file. Use :<next> to continue]` (`skillFileRange`).
@@ -429,7 +432,8 @@ A read by path has the checkout's range notice below (`pathRangeAnswer`). Where 
 leave lines of the file out, both show the pin's block context too, as the checkout's reads do
 below ("Block context"): a `skill://` read with each line whole, a read by path in its row form.
 A `skill://` range whose blocks the pin finds with a grammar it downloads is not answered, and
-the run is judged on it. A read with another selector (`:raw`, a list, `:-N`) is no skill read.
+the run is judged on it. A read with another selector (`:raw`, a list of ranges that do not
+touch, `:-N`) is no skill read; a written case's read of its checkout takes those too (below).
 The arm's skill is answered from the arm (in the arm of ours, our skill; "The arm of ours"
 below); another listed skill from the copy
 its capture installed (`<cache-dir>/skills/<key>`), the same text in every arm; in `none`, and in
@@ -503,7 +507,9 @@ it one, since the sandbox shows jj no directory above the copy (where such a che
 `.jj` at its root, no jj command is answered: jj would answer from that store). The answers are
 the pinned Oh My Pi's forms (`checkout.ts`): `read` as a whole read by path, its rows as the
 case's reads by path show them, its hashline header's path relative to the session's working
-directory, else `~/<rest>` under the session's home (the pin's `shortenPath`), else absolute,
+directory (where that relative path starts with no `..`: a file `..notes` there is shown
+absolute, as the pin's `formatPathRelativeToCwd` shows it), else `~/<rest>` under the session's
+home (the pin's `shortenPath`), else absolute,
 or `Path '<path>' not found`; a file that is no prose too (no
 notebook, SVG or document). A whole read of such a file of 100 lines or more (as the pin counts
 them: its newlines and one more), of at most 20,000 lines and 2 MiB, is the pin's structural
@@ -524,7 +530,25 @@ above. Both stop at a line boundary if the next line would exceed the byte budge
 room for row numbers). When lines remain, the answer ends with `[Showing lines <a>-<b> of
 <total>. Use :<b+1> to continue]`, with `(<size> limit)` after `<total>` if the byte budget
 stopped the page. The column clause (`Some lines truncated to 768 chars. Use :raw:…`) joins that
-notice after `. `, or stands alone if no lines remain. Block context: where the rows shown leave
+notice after `. `, or stands alone if no lines remain. A read's selector is split and parsed as
+the pin's read does (`arms.ts`'s `readSelector`), a file named like a path and a selector the
+copy holds read as it is (`notes:1-2`), and every selector of the read's grammar but `:conflicts`
+and `:img` is answered: one line range, or a list of ranges that merges into one, as above; `:-N`,
+the last N lines, as that range; a list of ranges that do not touch (`:1-5,40-60`, a tail among
+them) each range's lines alone, with no context and no byte budget, the file's lines with their
+carriage returns taken off, under one hashline line, then a line apart `[Range <a>-<b> is beyond
+end of file (<n> lines total); skipped]` for each range past the end, then the column clause,
+past 50 KB saved as an artifact and not answered; and `:raw`, alone or joined to a range, a
+line, a tail or a list either way (`:raw:5-9`, `:5-9:raw`, `:raw:7`, `:raw:-20`,
+`:raw:1-2,9-10`), the lines as they are (a carriage return or a byte order mark kept), with no
+row numbers, no hashline line, no context, no column cut and no block context, a range's lines or
+else 300, inside 50 KiB, the file's final newline after a read with no end that reaches it, and
+for one range or none `[Showing lines <a>-<b> of <n>. Use :<b+1> to continue]` where lines are
+left out; several ranges joined by a line end, each inside the larger of 50 KiB and 512 bytes a
+line, their notices kept out of the text as the pin keeps them. A selector the pin refuses with
+an error (`:0-2`, `:5-3`, `:-0`), a raw read whose text is empty (every range past the end, an
+empty file) or whose first line passes 50 KiB (the pin shows a part of it), and a read of a
+directory with a selector are not answered. Block context: where the rows shown leave
 lines of the file out, the answer shows the pin's block context too (Oh My Pi's
 block-context.ts, ported as `block-context.ts`): the boundary line of each block that opens on a
 shown row and closes after them, or closes on one and opens before them, each in the rows' form
@@ -532,7 +556,8 @@ and cut at 768 characters as a shown row is (the column clause counts it), with 
 each gap. The byte budget counts the shown rows alone; the artifact bound counts the whole answer.
 The blocks and the summaries are tree-sitter's, through the pinned Oh My Pi's own native addon
 (`natives.ts`): `pi_natives.<platform>-<arch>[-modern|-baseline].node` in `<natives
-dir>/18.18.6`, the natives directory found as its loader finds it (`PI_NATIVES_DIR`, else
+dir>/18.18.6`, the natives directory `SKILL_CUTS_NATIVES_DIR`, a directory of the runner's alone,
+then the one its loader finds (`PI_NATIVES_DIR`, else
 `$OMP_DOWNLOAD_ROOT/natives`, else `$XDG_DATA_HOME/omp/natives` where `$XDG_DATA_HOME/omp`
 exists, else `~/.omp/natives`), the first of those files that is there, opened only where its
 SHA-256 is the pin's: `d47a5f57fae382072d43e4529bc8cd1a6eb7fea9765d903bf54b6b6d81950419` for the
@@ -549,11 +574,18 @@ PI_NATIVES_DIR=<dir> omp-v18.18.6-sami.20261119-162325-linux-x64/bin/omp --help
 ```
 
 which extracts it into `<dir>/18.18.6` (the `-baseline` one with `PI_NATIVE_VARIANT=baseline`, or
-on a CPU without AVX2), and run the runner with `PI_NATIVES_DIR=<dir>`. The tests whose reads
-need the addon find it the same way, and where they find none each such file prints one line
-naming itself, why and these steps, and skips those rows (`test-natives.ts`); Oh My Pi at the
-repository's pin (`.omp-pin`, `LEGION_TEST_OMP`) is a later build, whose addon gives them
-nothing. For a file of no language the addon knows or one that does not parse cleanly, the blocks
+on a CPU without AVX2), and run the runner with `PI_NATIVES_DIR=<dir>` (or
+`SKILL_CUTS_NATIVES_DIR=<dir>`, which no Oh My Pi reads). The tests whose reads need the addon
+find it the same way and run with a natives directory of their own linked to it; where they find
+none, each such file prints one line naming itself, why and these steps, and skips those rows,
+and under `GITHUB_ACTIONS=true` each such row fails by its own name with that reason instead
+(`test-natives.ts`, docs/testing.md's `hostGate` rule); Oh My Pi at the repository's pin
+(`.omp-pin`, `LEGION_TEST_OMP`) is a later build, whose addon gives them nothing. CI's pi-legion
+job installs the pin's archive from the `skill-cuts-omp` row of `.github/ci-tools.yaml`
+(`.github/actions/install-skill-cuts-omp`, its version held to natives.ts's `PIN_TAG` by
+`.github/scripts/check-ci-tools.sh`), extracts the addon with the archive's own `bin/omp --help`,
+and names it in `SKILL_CUTS_NATIVES_DIR` alone, so the tests that run `.omp-pin`'s Oh My Pi
+never read it. For a file of no language the addon knows or one that does not parse cleanly, the blocks
 are a scan of its brackets (`()[]{}` outside strings and comments). A read that needs the addon
 where the runner has none (no file, a file of another digest, another platform) fails the run,
 its reason naming the file or each path tried and those steps; it never falls back to the scan
@@ -576,11 +608,12 @@ its age is under a second, a file's size (`0B` for a symbolic link) and its age,
 Oh My Pi measures an age from the time of its call; the runner measures it from the time the copy
 was made, which its marker records (`madeAt`), never from the time of its own call, so a listing
 reads the same in every arm and every run of a case. A listing that would show `.git` or `.jj`,
-or a ranged read of a directory, is not answered. `grep` and `glob` are answered in their tools'
+or a read of a directory with a selector, is not answered. `grep` and `glob` are answered in their tools'
 forms (`glob`'s paths newest first by the copy's own times of change, as Oh My Pi orders them: a
 pattern's matches a tie by path, then the patterns of a list merged, each path once; `.git` and
-`.jj` left out of both; their paths relative to the working directory, else absolute, a path
-under the session's home too, since neither shows `~`); a `grep` and a `glob` are each worked
+`.jj` left out of both; their paths relative to the working directory where the relative path
+starts with no `..`, else absolute, a path under the session's home too, since neither shows
+`~`); a `grep` and a `glob` are each worked
 out in a worker thread, never the
 runner's own, since grep's JavaScript regular expression may backtrack where Oh My Pi's Rust one
 does not (`(a+)+b` over a long line), and glob's matcher of each path may take seconds for a long
@@ -601,13 +634,21 @@ A `grep` path may be a list joined by `;` (outside braces): its parts that
 start with `!` and name no path of the checkout are exclusions (one with no `/`, or that starts
 with `**`, matches at any depth; another is anchored where it resolves), and the rest are
 searched, each on its own in their order, or as the one directory that holds the others, a part
-the checkout lacks noted after the matches (`Skipped missing paths: <paths>`). A directory's
+the checkout lacks noted after the matches (`Skipped missing paths: <paths>`). A searched path may
+end with line ranges (`:N-M`, `:N-`, `:N` from line N on, or a comma list of them), its path a
+file the checkout holds: that file's matches, and their context lines, are kept to its ranges,
+after the native search, which takes enough more a file that the cap may still be met in range
+(`a.ts:1-5,9-12` is one path, though it holds a comma). A lone path that holds a glob character
+(`*`, `?`, `[`, `{`) and names no path of the checkout is a glob: the directory before its first
+such part is searched, its files those the rest matches below it or whose directory it matches
+(`src/{a.rs,b.rs}` searches those two files; a glob with no `/` matches at any depth unless it
+starts with `**` or is a brace list of plain names). A directory's
 files are searched in path order, `node_modules` not entered; each match with one line of context
 before it and three after, each line's trailing whitespace taken off, and a line past 512 bytes
 cut as Oh My Pi's native search cuts it (a context line to its first 509 bytes and `...`, a match
 line to a window around its first match marked `...` on each cut side, then ` [col <n>]`), with
 `[Some lines truncated to 512 bytes]` after the matches where a match line was cut. A search of a
-directory or a list keeps 20 matches of a file and shows 20 files a page, the next page by `skip`,
+directory, a glob or a list keeps 20 matches of a file and shows 20 files a page, the next page by `skip`,
 and a search of one file keeps 200, each with Oh My Pi's notices (`Showing files <a>-<b> of <n>.
 Use skip=<b> for the next page, or narrow paths/pattern.`, `More than 20 matches in <files>; grep
 keeps the first 20 per file when searching several. Search one file alone for up to 200.`, `More
@@ -621,11 +662,17 @@ path with no glob character is a directory, every file and
 directory under which matches, or a file, which answers itself; a path that is a list joined by
 `;` (outside braces) answers each of its patterns, a pattern whose directory is not there noted
 after the paths (`Skipped missing paths: <patterns>`), and a limit above 200 is noted as clamped
-(`Requested limit <n> clamped to the max of 200`). A `grep` or `glob` list joined by commas or
-blanks, a `glob` pattern (or every pattern of a list) whose base is not there, a file under a
-glob, a `grep` path (or every path of a list) the checkout lacks, and a `grep` exclusion of a
-form the runner does not read (a class, an escape, a nested group) are not answered (the pin's
-error is not rebuilt). A `read`, `grep`, `glob` or `bash` `cwd` path under `~` resolves against
+(`Requested limit <n> clamped to the max of 200`). A pattern keeps its `limit` newest matches (200
+when absent), the merged list at most `limit`, and where it finds `limit` or more the answer ends
+`[<limit> results limit reached. Use limit=<twice it> for more]`, or `[200 results limit
+reached]` where twice the limit is not under 200 (the pin's `applyListLimit`). A `grep` or `glob`
+list joined by commas or blanks, a `glob` pattern (or every pattern of a list) whose base is not
+there, a file under a glob, a `grep` path (or every path of a list) the checkout lacks, a `grep`
+selector other than line ranges (`:raw`, `:-N`) or a range of no file, a `grep` glob in a list,
+one with a line range after it, one of a form the runner does not read or one naming
+`node_modules`, and a
+`grep` exclusion of a form the runner does not read (a class, an escape, a nested group) are not
+answered (the pin's error is not rebuilt). A `read`, `grep`, `glob` or `bash` `cwd` path under `~` resolves against
 the session's home where the case records one (cli.ts sets it on the copy, `checkout.ts`'s
 `sessionHome`: the home the case's `pathCopy` names, else `/home/<user>` where the checkout's
 root is under one, since a written case records no `pathCopy`); where it records none, such a
@@ -771,7 +818,7 @@ The sandbox keeps its place until its process exits.
 An expired call remains unanswered, so the replay receives no verdict and retries within its attempt limit.
 The same queue holds the commands that make a colocated jj checkout, with a 30-minute setup and command deadline.
 
-A reply one of whose read-only calls the copy answers in no form (a read with another selector, a
+A reply one of whose read-only calls the copy answers in no form (a read with a selector of a form not rebuilt, a
 path outside the checkout, or under `~` where the case records no home, a `bash` option that
 asks for a terminal, a job or a service, a git or jj command where the copy is the tarball, a jj
 command where its colocation failed or whose checkout tracks a `.jj` at its root, a command whose
@@ -794,9 +841,9 @@ judged step, as before. Each run records its checkout rounds (`checkoutRounds`) 
 rebuilt the pin's summaries may record `"wholeText": true` beside a read too: a read of a code
 file of 100 lines or more it answered with the file's whole text, where the pin may have shown a
 summary; no run records it now. Each report counts, by kind of case, the runs run again for each
-reason and those saved whole-text answers: `runs with no verdict, run again, and reads answered
-whole, by kind of case: session: <n> reads-past-last-round, <n> unanswered-read, <n> reads
-answered with the file's whole text in place of the pin's summary; written: …`.
+reason and those saved whole-text answers: `runs with no verdict, run again, and saved whole-text
+reads, by kind of case: session: <n> reads-past-last-round, <n> unanswered-read, <n> saved reads
+marked wholeText (answered whole before the runner rebuilt the pin's summaries); written: …`.
 
 #### Read-only calls
 

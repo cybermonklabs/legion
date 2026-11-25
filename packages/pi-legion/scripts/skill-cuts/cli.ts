@@ -263,15 +263,16 @@
  * run records the answered rounds' reads (`skillReads`) and is judged on those rounds' read calls
  * and the reply after them. A written case's runs also answer, from the shared checkout of its
  * repository at its commit under `--cache-dir` (`sharedCheckout`), at most 5 rounds of read-only
- * calls (replay.ts's checkout rounds), recorded in `checkoutRounds` and `skillReads` (a read of a
- * code file the pin may summarize answered with its whole text marked `wholeText`); a written
- * case with no checkout (built before build-cases passed over a context session in no checkout it
- * knows) answers none (`NO_CHECKOUT`). A run whose reply after the last answered round still only
- * reads skill files, or, in a written case, makes a read-only call the checkout answers in no
- * form, gets no verdict and is run again, its reason beginning `reads-past-last-round` or
- * `unanswered-read`; each case's line and `report` count such
- * runs by arm, `report` by kind of case too beside the whole-text answers, and a stage left
- * unscreened by an arm with such runs drops its case under `reads-past-last-round`, with the
+ * calls (replay.ts's checkout rounds), recorded in `checkoutRounds` and `skillReads` (a run saved
+ * before the runner rebuilt the pin's summaries may mark a read of a code file it answered with
+ * the file's whole text `wholeText`; no run marks one now); a written case with no checkout (built
+ * before build-cases passed over a context session in no checkout it knows) answers none
+ * (`NO_CHECKOUT`). A run whose reply after the last answered round still only reads skill files,
+ * or, in a written case, makes a read-only call the checkout answers in no form, gets no verdict
+ * and is run again, its reason beginning `reads-past-last-round` or `unanswered-read`; each case's
+ * line and `report` count such runs by arm, `report` by kind of case too beside the saved reads
+ * marked `wholeText`, and a stage left unscreened by an arm with such runs drops its case under
+ * `reads-past-last-round`, with the
  * counts. A stage left unscreened in which the provider refused, on a content policy (a stream
  * error whose type ends in `_policy`, as `cyber_policy`), every replay that got no verdict in
  * each arm that lacks its judged runs can never be judged, and drops its case as
@@ -5020,8 +5021,8 @@ function reportCommand(
     `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of ${MAX_SKILL_ROUNDS} answered rounds of skill reads, or of ${MAX_CHECKOUT_ROUNDS} rounds of a written case's read-only calls answered from its checkout, still only read, which get no verdict and are run again, by stage and arm: ${pastByStage.join("; ")}`
   );
   // By kind of case, the runs with no verdict for the reads of a reply, by reason, and the reads
-  // answered with a file's whole text in place of the pin's summary: a written case's checkout
-  // rounds show the arms what a session's agent may not have seen.
+  // a run saved before the runner rebuilt the pin's summaries marks `wholeText`, answered with a
+  // file's whole text where the pin may have shown its summary: no run marks one now.
   const byKindOfCase = CaseKind.options.map((kind) => {
     const runs = b.cases
       .filter((c) => caseKind(c) === kind)
@@ -5038,10 +5039,10 @@ function reportCommand(
     const whole = runs
       .flatMap((run) => (run.skillReads ?? []).flat())
       .filter((read) => read.from === "checkout" && read.wholeText === true).length;
-    return `${kind}: ${rerun(READS_PAST_LAST_ROUND)} ${READS_PAST_LAST_ROUND}, ${rerun(UNANSWERED_READ)} ${UNANSWERED_READ}, ${whole} reads answered with the file's whole text in place of the pin's summary`;
+    return `${kind}: ${rerun(READS_PAST_LAST_ROUND)} ${READS_PAST_LAST_ROUND}, ${rerun(UNANSWERED_READ)} ${UNANSWERED_READ}, ${whole} saved reads marked wholeText (answered whole before the runner rebuilt the pin's summaries)`;
   });
   lines.push(
-    `runs with no verdict, run again, and reads answered whole, by kind of case: ${byKindOfCase.join("; ")}`
+    `runs with no verdict, run again, and saved whole-text reads, by kind of case: ${byKindOfCase.join("; ")}`
   );
   const pooled = score.cases.flatMap(({ caseId, confirm }) =>
     confirm?.state === "counted" && confirm.pooled !== undefined

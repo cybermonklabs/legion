@@ -52,10 +52,10 @@ import { detachedCommit, f9Completed, fixtureReply, writeTree } from "./testdata
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const scratch = temporaryDirectory("skill-cuts-replay", { real: true });
-/** Whether the rows whose reads need the pinned Oh My Pi's native addon (a window that leaves lines
- *  of a file out, for its block context, or a code file the pin may summarize) skip
- *  (test-natives.ts). */
-const noNatives = pinNatives("replay.test.ts");
+/** The `test` of the rows whose reads need the pinned Oh My Pi's native addon (a window that leaves
+ *  lines of a file out, for its block context, or a code file the pin may summarize): skipped, or
+ *  under GITHUB_ACTIONS failing, where the runner finds none (test-natives.ts). */
+const natives = pinNatives("replay.test.ts");
 
 /** The body the arm's capture recorded: F2, a replayed history Oh My Pi 18.18.6 sent. */
 const BODY = JSON.parse(
@@ -451,7 +451,7 @@ function jsonReply(content: Record<string, unknown>[], stop: string): Response {
 // Catches: a reply's read of the skill by its path on disk taken for the judged step, so an arm
 // is judged while it still loads the skill, or answered with one text in every arm; or a range
 // past the file's end judged as the step where the pin answers it with its notice.
-test.skipIf(noNatives)(
+natives.test(
   "answers a reply's whole read by path of the cut's own copy by arm, and a read of it with a line range with the lines of its range, or the pin's notice for a range past its end; another selector is the judged step",
   async () => {
     const pathCopy = { dir: COPY, shownDir: SHOWN, rows: "hashline" as const };
@@ -663,7 +663,7 @@ test("a reply that reads another installed skill is answered from its installed 
 // Catches: a reply whose only call reads a range of a skill file judged as the step (2 of 220 runs
 // of a control screen, `skill://<skill>/references/reports.md:1-90`), while the agent still loads
 // the skill, so every arm fails it alike.
-test.skipIf(noNatives)(
+natives.test(
   "a skill:// read with a line range, of another installed skill or the case's own, is answered with those lines in Oh My Pi's range form, and the run goes on to the act",
   async () => {
     const copies = [installedCopy("beta", BETA_MD)];
@@ -1706,7 +1706,7 @@ test("a written case's reply that unsets variables, prints pwd and asks jj or gi
 // text (the defect: every such read showed the arms a text the session's agent never saw), a code
 // file the pin shows whole, or a ranged read, left unanswered (such a run was judged on that
 // read), or a checkout read recorded as answered whole.
-test.skipIf(noNatives)(
+natives.test(
   "a written case's read of a code file the pin summarizes is answered with the pin's summary, one whose parse elides nothing with its whole text, and a ranged read with the lines of its range, each recorded as the checkout answered it",
   async () => {
     const copy = checkoutCopy({ "src/big.py": BIG_PY, "src/table.py": TABLE_PY });

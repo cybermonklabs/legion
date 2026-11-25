@@ -1,0 +1,51 @@
+name: Install the skill-cuts runner's Oh My Pi addon
+description: >-
+  Installs the native addon of the Oh My Pi release the skill-cuts runner rebuilds tool answers of
+  (packages/pi-legion/scripts/skill-cuts/natives.ts), for the rows of its tests that read through
+  it, and exports the directory that holds it as SKILL_CUTS_NATIVES_DIR, which natives.ts reads
+  before the directories Oh My Pi's own loader reads. That release is not the build .omp-pin names,
+  which .github/actions/install-omp installs for the tests that run Oh My Pi and whose addon is
+  another file: PI_NATIVES_DIR is set for the one command here that extracts the addon and is
+  exported to no later step, so those tests' Oh My Pi never reads this addon.
+
+  The `skill-cuts-omp` row of .github/ci-tools.yaml names the release archive, the one sha256 both
+  of its sources are checked against, and the second source this install reads when GitHub's
+  release assets do not serve the bytes: the copy of that archive in ghcr.io/cybermonklabs/legion/ci.
+  .github/scripts/check-ci-tools.sh holds the row's version to natives.ts's PIN_TAG. The archive's
+  own `bin/omp --help`, run with PI_NATIVES_DIR naming a directory of the job's own and a home of
+  its own, extracts the addon into `<dir>/18.18.6`, as the runner's README says to, and natives.ts
+  opens it only where its sha256 is the pin's. The release ships linux-x64 alone, so this action
+  refuses any other machine by name.
+runs:
+  using: composite
+  steps:
+    - name: Install the skill-cuts runner's Oh My Pi addon
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        machine=$(uname -m)
+        case "$machine" in
+          x86_64) row=skill-cuts-omp ;;
+          *)
+            echo "::error::install-skill-cuts-omp: .github/ci-tools.yaml holds no skill-cuts-omp row for a $machine runner" >&2
+            exit 1
+            ;;
+        esac
+        started=$(date +%s)
+        archive="$RUNNER_TEMP/$(basename "$(ci_tools_field "$row" primary)")"
+        ci_tools_fetch "$row" "$archive"
+        dir="$RUNNER_TEMP/skill-cuts-omp"
+        natives="$RUNNER_TEMP/skill-cuts-natives"
+        rm -rf "$dir" "$natives"
+        mkdir -p "$dir/home" "$natives"
+        # The archive holds the binary at omp-<tag>-linux-x64/bin/omp.
+        tar -xzf "$archive" -C "$dir" --strip-components=1 --no-same-owner
+        rm -f "$archive"
+        # A home of its own, so this run writes nothing under the runner's ~/.omp, which the
+        # tests' own Oh My Pi reads.
+        HOME="$dir/home" PI_NATIVES_DIR="$natives" "$dir/bin/omp" --help > /dev/null
+        sha256sum "$natives/18.18.6"/pi_natives.linux-x64-*.node
+        echo "installed the $row addon in $(( $(date +%s) - started ))s"
+        echo "SKILL_CUTS_NATIVES_DIR=$natives" >> "$GITHUB_ENV"
