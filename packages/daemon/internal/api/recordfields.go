@@ -179,8 +179,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt,
-// TreeStalledToldAt and MembersOwed, for the reason its own entry gives.
+// the agent surfaces or withheld, as bookkeeping or for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -227,6 +226,26 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
 	{Field: "MembersOwed", Column: ColumnWithheld,
 		Reason: "the mark that a re-admission still owes its tree's members their return, which the root's promotion or the pass that finds its tree running clears in the same transaction that brings them back: it is the daemon's own record of a return still to make, and a reader acts on what it causes, the members' starts and their places in `admission.waiting`"},
+	{Field: "TreeGeneration", Column: ColumnWithheld,
+		Reason: "the tree's run, the fence of each member's queued idle release, suspension and design-news credit and of the run of the tree's architect: it parts from the root's `generation` only at the root's next change, which leaves the members and the architect running, so a reader acts on their work and their claims and never on the fence itself"},
+	{Field: "Merge", Column: ColumnWithheld,
+		Reason: "the merge snapshot, which a next change bases its branch on (record.IssueBranchOf) and the close reads the checks and the production check against: a reader is told of the merge by the open production check's own `check.pullRequest` and `check.mergeCommit`, and by close-wait.md"},
+	{Field: "MergeHistory", Column: ColumnWithheld,
+		Reason: "the evidence class of the issue's merges, ANSWERED, PARTIAL or NONE, which decides whether a request for new work on the issue starts a next change or stands unread: a reader is told of the request that stands unread, never of the class"},
+	{Field: "CloseWaitSince", Column: ColumnWithheld,
+		Reason: "since when the issue's close waits, the merge's time or the time a request applied: the state serves it as `closeWait.since` once it carries `closeWait`, and until then it reaches a reader only as the first line of the issue's Dispatch document close-wait.md"},
+	{Field: "CloseWait", Column: ColumnWithheld,
+		Reason: "the stored wait, each item the close waits for with its state and since when: the state serves its items under `closeWait` (`beneath`, `openChildren`, `checks`, `production`, `defects`, `unapproved`, `unread`) once it carries that key, and until then they reach a reader only through close-wait.md, which renders them"},
+	{Field: "ClosedOnChecksAt", Column: ColumnWithheld,
+		Reason: "the mark that the issue closed because the checks of its goal passed, which alone decides whether a fail recorded after the close tells the controller: the time of the close reaches a reader in the last version of close-wait.md, and a closed issue waits for nothing"},
+	{Field: "NextChange", Column: ColumnWithheld,
+		Reason: "the generation of the open next change, the guard that keeps a second change of the issue from starting while one is open and what starts its branch at the merge snapshot (record.IssueBranchOf): a reader sees the open change as the issue's own `generation` and `phase`, and close-wait.md names it with its reasons"},
+	{Field: "NextChanges", Column: ColumnWithheld,
+		Reason: "the count of the next changes the issue has started: the state serves it as `closeWait.nextChanges` once it carries `closeWait`, and until then a reader is told the count by the notice sent at each multiple of the review round cap"},
+	{Field: "MergerCompletionOwed", Column: ColumnWithheld,
+		Reason: "the daemon's own record that the merger's completion of the merged generation has not landed, which holds a next change back until it lands or the hour after the merge passes: a reader acts on the change's start, which the `next-change` notice tells, and never on the mark"},
+	{Field: "StandingToldAt", Column: ColumnWithheld,
+		Reason: "the mark that holds the daily notice of the terms that still hold the close to once a day: it is the daemon's own record of what it has already told the owning architect, and a reader is told the terms themselves"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares
