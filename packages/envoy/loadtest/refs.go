@@ -404,8 +404,8 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 }
 
 // refsAnswer is what the shape check reads of a references answer: the author list of every
-// version row of every member, as data (the answer's bytes, callResult.body), since the check
-// compares and measures each list's compact JSON and prints none of it.
+// version row of every member, as data, since the check compares and measures each list's compact
+// JSON and prints none of it.
 type refsAnswer struct {
 	Members []struct {
 		Artifact struct {
