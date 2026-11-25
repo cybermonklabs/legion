@@ -37,6 +37,8 @@ type API interface {
 	FollowClosedIssueVersions(ctx context.Context, issueKey string) error
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error
 	SetAskBlockText(ctx context.Context, artifactID, blockID string, edit AskBlockEdit, actor model.Actor) (AskBlockText, error)
 	TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)

@@ -21,14 +21,15 @@ import (
 // spec, so the restore writes the block back under its old address. In the second, RestoreMoves,
 // an ask's block sits in the issue's decisions document, whatever the ask's state (D1), and the
 // restore moves it into the spec, which changes its address: that move is the one a moved_to
-// tuple records (graphstore.TupleMovedTo).
+// tuple records (graphstore.TupleMovedTo). The store census (`envoy-dispatch census --store`)
+// reads both shapes too, in its dangling-citation counter and collision lines (ReadRestoreWork).
 const (
 	RestoreReturns = "returns"
 	RestoreMoves   = "moves"
 )
 
 // RestoreWork is one ask the restore owes its issue's spec, as the store holds it before the
-// restore writes anything.
+// restore writes anything. The store census reads it too, through ReadRestoreWork.
 type RestoreWork struct {
 	// Shape is RestoreReturns or RestoreMoves.
 	Shape string
@@ -64,7 +65,8 @@ func owesBlockIndex(artifact string) string {
 // tuple of the ask's node holds answered and asserts. The node holds the answer and the row is its
 // projection (graphstore's TupleAnswerState, asks.Settle), so a row a writer of the release before
 // answered counts once the step's backfill has stated its node, as docs' countDecisionStepOwed
-// reads the same answer. The read takes graph_tuples_values, keyed by the node and the kind.
+// reads the same answer. The read takes graph_tuples_values, keyed by the node and the kind. The
+// restore's finder reads it (restoreWorkRead), and so does the store census through that finder.
 var answeredAsk = `exists (
 		select 1 from (
 			select t.to_id, t.asserted from graph_tuples t
@@ -78,7 +80,8 @@ var answeredAsk = `exists (
 // (graphstore.TupleRemovedBy): a person took its block out of the document its row names, which
 // stays taken, so the restore never writes it back. A block of the ask written back into that
 // document retracts it (docs' settlement), and a later removal is judged afresh. The read takes
-// graph_tuples_current, keyed by the node and the kind.
+// graph_tuples_current, keyed by the node and the kind. The restore reads it, and so does the store
+// census, through the restore's finder (restoreWorkRead).
 var RemovedByAPerson = `exists (
 		select 1 from (
 			select t.asserted from graph_tuples t
