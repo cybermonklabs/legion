@@ -764,12 +764,14 @@ const RESULT_SHAPE_RULE =
 const DEPLOY_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const DEPLOY_PROGRAM = /^[a-z0-9-]{1,64}$/;
 const DEPLOY_COMMIT = /^[0-9a-f]{40}$/;
-const DEPLOY_TIME = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+const DEPLOY_TIME =
+  /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
 
 function deployRepoProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
   return typeof input.repo !== "string" || !DEPLOY_REPO.test(input.repo)
-    ? "repo must be owner/repo" : undefined;
+    ? "repo must be owner/repo"
+    : undefined;
 }
 
 function deployProblem(value: unknown): string | undefined {
@@ -787,8 +789,10 @@ function deployProblem(value: unknown): string | undefined {
     const timestamp = Date.parse(value);
     if (parts === null || !Number.isFinite(timestamp)) return "deployed_at must be RFC3339";
     const calendar = new Date(`${parts[1]}-${parts[2]}-${parts[3]}T00:00:00Z`);
-    if (calendar.toISOString().slice(0, 10) !== value.slice(0, 10)) return "deployed_at must be a valid calendar date";
-    if (timestamp > Date.now() + 5 * 60 * 1000) return "deployed_at must not be more than five minutes in the future";
+    if (calendar.toISOString().slice(0, 10) !== value.slice(0, 10))
+      return "deployed_at must be a valid calendar date";
+    if (timestamp > Date.now() + 5 * 60 * 1000)
+      return "deployed_at must not be more than five minutes in the future";
   }
   return undefined;
 }
@@ -2085,27 +2089,48 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_deploy",
-    example: { repo: "acme/widgets", program: "worker", commit: "1111111111111111111111111111111111111111" },
-    description: "Record a deployed program's build. Dispatch records the credential's writer; the body cannot choose one. A repeat of the current commit changes nothing, including its time. An older time at another commit is DEPLOY_NOT_NEWEST and names the current build. The repository must hold the commit. A project-scoped credential cannot write a deployment-wide fact. --dry-run checks the arguments and sends nothing; --json prints the complete wire answer.",
+    example: {
+      repo: "acme/widgets",
+      program: "worker",
+      commit: "1111111111111111111111111111111111111111",
+    },
+    description:
+      "Record a deployed program's build. Dispatch records the credential's writer; the body cannot choose one. A repeat of the current commit changes nothing, including its time. An older time at another commit is DEPLOY_NOT_NEWEST and names the current build. The repository must hold the commit. A project-scoped credential cannot write a deployment-wide fact. --dry-run checks the arguments and sends nothing; --json prints the complete wire answer.",
     arguments: (z) => ({
       repo: z.string().describe("The deployed repository, owner/repo."),
-      program: z.string().describe("The deployed program, 1 to 64 lowercase letters, digits or hyphens."),
+      program: z
+        .string()
+        .describe("The deployed program, 1 to 64 lowercase letters, digits or hyphens."),
       commit: z.string().describe("The deployed build, 40 lowercase hexadecimal characters."),
-      deployed_at: z.string().describe("The deployment time in RFC3339. Omit it for the server's clock; a time over five minutes ahead is refused.").optional(),
+      deployed_at: z
+        .string()
+        .describe(
+          "The deployment time in RFC3339. Omit it for the server's clock; a time over five minutes ahead is refused."
+        )
+        .optional(),
       url: z.string().describe("The deployment's URL, if it has one.").optional(),
       json: z.boolean().describe("Print the complete wire answer as JSON.").optional(),
     }),
-    validation: { check: (value) => deployProblem(value) === undefined, message: "Name repo, program and commit.", refusal: (value) => deployProblem(value) ?? "Name repo, program and commit." },
+    validation: {
+      check: (value) => deployProblem(value) === undefined,
+      message: "Name repo, program and commit.",
+      refusal: (value) => deployProblem(value) ?? "Name repo, program and commit.",
+    },
   },
   {
     name: "dispatch_deploys",
     example: { repo: "acme/widgets" },
-    description: "Read the current deploy of each program in a repository, in program order, with its commit, deployment time, source and URL. --json prints the complete wire answer, including the writer and a known workflow attempt or null for an unknown attempt.",
+    description:
+      "Read the current deploy of each program in a repository, in program order, with its commit, deployment time, source and URL. --json prints the complete wire answer, including the writer and a known workflow attempt or null for an unknown attempt.",
     arguments: (z) => ({
       repo: z.string().describe("The deployed repository, owner/repo."),
       json: z.boolean().describe("Print the complete wire answer as JSON.").optional(),
     }),
-    validation: { check: (value) => deployRepoProblem(value) === undefined, message: "repo must be owner/repo", refusal: (value) => deployRepoProblem(value) ?? "repo must be owner/repo" },
+    validation: {
+      check: (value) => deployRepoProblem(value) === undefined,
+      message: "repo must be owner/repo",
+      refusal: (value) => deployRepoProblem(value) ?? "repo must be owner/repo",
+    },
   },
   {
     name: "dispatch_results",

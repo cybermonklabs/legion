@@ -391,7 +391,11 @@ interface DispatchRun {
  *  directory when that is absent. */
 async function runDispatch(
   argv: readonly string[],
-  { stdin, cwd, token }: { readonly stdin?: string; readonly cwd?: string; readonly token?: string } = {}
+  {
+    stdin,
+    cwd,
+    token,
+  }: { readonly stdin?: string; readonly cwd?: string; readonly token?: string } = {}
 ): Promise<DispatchRun> {
   const home = mkdtempSync(join(tmpdir(), "verification-results-cli-"));
   try {
@@ -629,7 +633,14 @@ async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise
       [repo]: {
         actions: "read",
         branch_commits: {
-          main: [commits.behind, commits.comparedOnMain, commits.mainHead, commits.comparedLandingMerge, commits.answerMerge, commits.answerLater],
+          main: [
+            commits.behind,
+            commits.comparedOnMain,
+            commits.mainHead,
+            commits.comparedLandingMerge,
+            commits.answerMerge,
+            commits.answerLater,
+          ],
           [commits.comparedLandingHead]: [commits.comparedMergeCommit],
           [commits.comparedOnMain]: [commits.comparedLandingMerge],
           [commits.answerLater]: [commits.answerMerge],
@@ -1209,11 +1220,21 @@ A default-branch result is compared with the default branch alone.
     url: `https://github.com/${repo}/pull/23`,
   });
   await publishPullRequest({
-    action: "closed", base_ref: "main", body: "Land the release branch.",
-    head_ref: "release/old", head_repo: repo, head_sha: commits.comparedLandingHead,
-    kind: "pr", merge_commit_sha: commits.comparedLandingMerge, merged_at: mergedAt,
-    merged: "true", number: "24", repo, title: "Land the release branch",
-    updated_at: mergedAt, url: `https://github.com/${repo}/pull/24`,
+    action: "closed",
+    base_ref: "main",
+    body: "Land the release branch.",
+    head_ref: "release/old",
+    head_repo: repo,
+    head_sha: commits.comparedLandingHead,
+    kind: "pr",
+    merge_commit_sha: commits.comparedLandingMerge,
+    merged_at: mergedAt,
+    merged: "true",
+    number: "24",
+    repo,
+    title: "Land the release branch",
+    updated_at: mergedAt,
+    url: `https://github.com/${repo}/pull/24`,
   });
   note(`${basesIssue} has pull requests #21 and #22 open, and #23 merged into release/old`);
 
@@ -1299,8 +1320,13 @@ A default-branch result is compared with the default branch alone.
 
   const after = await checkOf(basesIssue, "after");
   note(`the API's after_merge check compares with ${comparedOf(after)}`);
-  const branches = (after.compared_with ?? []).map((basis) => `branch ${basis.branch}, merged at ${basis.merge_commit}`);
-  if (branches.join(", ") !== `branch release/old, merged at ${commits.comparedMergeCommit}, branch main, merged at ${commits.comparedLandingMerge}`) {
+  const branches = (after.compared_with ?? []).map(
+    (basis) => `branch ${basis.branch}, merged at ${basis.merge_commit}`
+  );
+  if (
+    branches.join(", ") !==
+    `branch release/old, merged at ${commits.comparedMergeCommit}, branch main, merged at ${commits.comparedLandingMerge}`
+  ) {
     return `the after_merge check compares with ${comparedOf(after)}`;
   }
   const merged = after.results.find((row) => row.commit_sha === commits.comparedOnMain);
@@ -1425,21 +1451,43 @@ A check of an issue whose repository Dispatch cannot read compares with nothing 
 
 // Both cases use the real command against this run's server, not the renderer as a substitute.
 await runCase("after-merge-answer", async () => {
-  const issue = await seedIssue("VRF", "The newest after-merge result decides the command's line",
-    ':::check{#newest when="after_merge" surface="cli" run="bash scripts/e2e/verification-results.sh"}\nThe newest result names the build it proves.\n:::\n');
+  const issue = await seedIssue(
+    "VRF",
+    "The newest after-merge result decides the command's line",
+    ':::check{#newest when="after_merge" surface="cli" run="bash scripts/e2e/verification-results.sh"}\nThe newest result names the build it proves.\n:::\n'
+  );
   const mergedAt = new Date().toISOString();
   await publishPullRequest({
-    action: "closed", base_ref: "main", body: `Proves ${issue}.`, head_ref: `legion/${issue}`,
-    head_repo: repo, head_sha: commits.answerMerge, kind: "pr", merge_commit_sha: commits.answerMerge,
-    merged_at: mergedAt, merged: "true", number: "31", repo, title: `${issue} merged work`,
-    updated_at: mergedAt, url: `https://github.com/${repo}/pull/31`,
+    action: "closed",
+    base_ref: "main",
+    body: `Proves ${issue}.`,
+    head_ref: `legion/${issue}`,
+    head_repo: repo,
+    head_sha: commits.answerMerge,
+    kind: "pr",
+    merge_commit_sha: commits.answerMerge,
+    merged_at: mergedAt,
+    merged: "true",
+    number: "31",
+    repo,
+    title: `${issue} merged work`,
+    updated_at: mergedAt,
+    url: `https://github.com/${repo}/pull/31`,
   });
   const recordWithCommand = async (verdict: "pass" | "fail", commit: string): Promise<string> => {
     const argv = resultArgv(issue, "newest", commit);
     argv[argv.indexOf("--verdict") + 1] = verdict;
-    const run = await runDispatch([...argv, "--run", "bash scripts/e2e/verification-results.sh", "--observed", "The build was checked."]);
+    const run = await runDispatch([
+      ...argv,
+      "--run",
+      "bash scripts/e2e/verification-results.sh",
+      "--observed",
+      "The build was checked.",
+    ]);
     if (run.code !== 0) throw new Error(stepFailed(1, argv, run, 0));
-    const result = (await checkOf(issue, "newest")).results.find((row) => row.verdict === verdict && row.commit_sha === commit);
+    const result = (await checkOf(issue, "newest")).results.find(
+      (row) => row.verdict === verdict && row.commit_sha === commit
+    );
     if (result === undefined) throw new Error(`the command stored no ${verdict} at ${commit}`);
     return result.id;
   };
@@ -1459,20 +1507,41 @@ await runCase("after-merge-answer", async () => {
 });
 
 await runCase("deploy-recorded", async () => {
-  const credential = await asPerson("POST", "/api/v1/me/agent-tokens", { name: "verification-deploy", scopes: ["person"] }) as { token: string };
-  const argv = ["deploy", "--repo", repo, "--program", "proof", "--commit", commits.deployedBuild, "--json"];
+  const credential = (await asPerson("POST", "/api/v1/me/agent-tokens", {
+    name: "verification-deploy",
+    scopes: ["person"],
+  })) as { token: string };
+  const argv = [
+    "deploy",
+    "--repo",
+    repo,
+    "--program",
+    "proof",
+    "--commit",
+    commits.deployedBuild,
+    "--json",
+  ];
   const recorded = await runDispatch(argv, { token: credential.token });
   if (recorded.code !== 0) return stepFailed(1, argv, recorded, 0);
-  const answer = JSON.parse(recorded.stdout) as { deploy: { program: string; commit: string; recorded_by: { kind: string; id: string } } };
-  if (answer.deploy.program !== "proof" || answer.deploy.commit !== commits.deployedBuild ||
-    answer.deploy.recorded_by.kind !== "user" || answer.deploy.recorded_by.id !== person) {
+  const answer = JSON.parse(recorded.stdout) as {
+    deploy: { program: string; commit: string; recorded_by: { kind: string; id: string } };
+  };
+  if (
+    answer.deploy.program !== "proof" ||
+    answer.deploy.commit !== commits.deployedBuild ||
+    answer.deploy.recorded_by.kind !== "user" ||
+    answer.deploy.recorded_by.id !== person
+  ) {
     return `the deploy command did not name the run's person: ${recorded.stdout}`;
   }
   const listed = await runDispatch(["deploys", "--repo", repo], { token: credential.token });
   if (listed.code !== 0) return stepFailed(2, ["deploys", "--repo", repo], listed, 0);
   note(listed.stdout.trim());
-  return ["proof", commits.deployedBuild, `user ${person}`].every((value) => listed.stdout.includes(value))
-    ? undefined : `the deploy list omitted the build or its writer: ${listed.stdout}`;
+  return ["proof", commits.deployedBuild, `user ${person}`].every((value) =>
+    listed.stdout.includes(value)
+  )
+    ? undefined
+    : `the deploy list omitted the build or its writer: ${listed.stdout}`;
 });
 
 // k-attribution. What decides a pull request's issue: the five ranked sources

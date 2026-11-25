@@ -166,8 +166,12 @@ async function seedProjectSurroundings(issueKey: string, repository: string): Pr
       pull_requests: "read",
       pulls: {
         [PULL_NUMBER]: {
-          head_sha: HEAD_SHA, state: "closed", merged: true, merge_commit_sha: HEAD_SHA,
-          merged_at: new Date().toISOString(), title: `${issueKey} the redesign`,
+          head_sha: HEAD_SHA,
+          state: "closed",
+          merged: true,
+          merge_commit_sha: HEAD_SHA,
+          merged_at: new Date().toISOString(),
+          title: `${issueKey} the redesign`,
         },
       },
     },

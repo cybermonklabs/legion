@@ -20,7 +20,10 @@ export async function deployCommand(context: CommandContext): Promise<DispatchTo
   };
   const result = await client.recordDeploy(input);
   return {
-    text: optionalBoolean(args, "json") === true ? JSON.stringify(result, null, 2) : deployText(result.deploy),
+    text:
+      optionalBoolean(args, "json") === true
+        ? JSON.stringify(result, null, 2)
+        : deployText(result.deploy),
     details: { repo: input.repo, deploy: result.deploy },
   };
 }
@@ -30,8 +33,12 @@ export async function deploysCommand(context: CommandContext): Promise<DispatchT
   const result = await client.deploys(stringArg(args, "repo"));
   const deploys = result.deploys ?? [];
   return {
-    text: optionalBoolean(args, "json") === true ? JSON.stringify(result, null, 2)
-      : deploys.length === 0 ? `Dispatch holds no deploys for ${result.repo}.` : deploys.map(deployText).join("\n"),
+    text:
+      optionalBoolean(args, "json") === true
+        ? JSON.stringify(result, null, 2)
+        : deploys.length === 0
+          ? `Dispatch holds no deploys for ${result.repo}.`
+          : deploys.map(deployText).join("\n"),
     details: { repo: result.repo, deploys },
   };
 }

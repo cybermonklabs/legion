@@ -140,16 +140,26 @@ function checkWordsText(check: CheckBlock, result: CheckResult): string {
 }
 
 /** Head checks and CI keep their wording; branch checks name the fact that decides them. */
-function passStandsText(pass: CheckPassStands | undefined, check?: CheckBlock, repository?: string): string {
+function passStandsText(
+  pass: CheckPassStands | undefined,
+  check?: CheckBlock,
+  repository?: string
+): string {
   if (pass === undefined)
     return "Whether a pass stands is not known: this Dispatch server does not say";
-  const branch = check !== undefined && (check.when === "after_merge" || check.when === "default_branch") &&
+  const branch =
+    check !== undefined &&
+    (check.when === "after_merge" || check.when === "default_branch") &&
     !(check.compared_with ?? []).some((basis) => basis.kind === "named");
   if (branch && check !== undefined) {
     const results = check.results ?? [];
     const deciding = pass.results ?? [];
-    const passed = results.find((result) => result.verdict === "pass" && deciding.includes(result.id));
-    const failed = results.find((result) => result.verdict === "fail" && deciding.includes(result.id));
+    const passed = results.find(
+      (result) => result.verdict === "pass" && deciding.includes(result.id)
+    );
+    const failed = results.find(
+      (result) => result.verdict === "fail" && deciding.includes(result.id)
+    );
     const result = results.find((result) => deciding.includes(result.id));
     const repo = repository ?? check.compared_with?.[0]?.repo ?? "the repository";
     const deploy = pass.deploy;
@@ -159,7 +169,8 @@ function passStandsText(pass: CheckPassStands | undefined, check?: CheckBlock, r
       return `A pass stands: yes, from ${roles}, as the newest result is pass ${passed.id} at ${pass.commit ?? passed.commit_sha}`;
     switch (pass.reason) {
       case "fail":
-        if (failed !== undefined) return `A pass stands: no, as the newest result is fail ${failed.id} at ${pass.commit ?? failed.commit_sha}`;
+        if (failed !== undefined)
+          return `A pass stands: no, as the newest result is fail ${failed.id} at ${pass.commit ?? failed.commit_sha}`;
         break;
       case "no_result":
         return "A pass stands: no, as no result counts at a commit that holds the merge";
@@ -168,7 +179,8 @@ function passStandsText(pass: CheckPassStands | undefined, check?: CheckBlock, r
           return `A pass stands: not known, as pass ${passed.id} and fail ${failed.id} both count at ${pass.commit ?? passed.commit_sha}. A retraction of the wrong one ends it`;
         break;
       case "not_placed":
-        if (result !== undefined) return `A pass stands: not known, as Dispatch could not place ${result.verdict} ${result.id} at ${pass.commit ?? result.commit_sha}`;
+        if (result !== undefined)
+          return `A pass stands: not known, as Dispatch could not place ${result.verdict} ${result.id} at ${pass.commit ?? result.commit_sha}`;
         break;
       case "read_failed":
         return "A pass stands: not known, as a read Dispatch made did not answer";
@@ -177,16 +189,20 @@ function passStandsText(pass: CheckPassStands | undefined, check?: CheckBlock, r
       case "no_deploy":
         return `A pass stands: not known, as Dispatch holds no deploy of ${program} in ${repo}`;
       case "deploy_not_merged":
-        if (deploy !== undefined) return `A pass stands: not known, as ${program} runs ${deploy.commit} since ${deploy.deployed_at}, which does not hold the merge`;
+        if (deploy !== undefined)
+          return `A pass stands: not known, as ${program} runs ${deploy.commit} since ${deploy.deployed_at}, which does not hold the merge`;
         break;
       case "no_result_from_deploy":
-        if (deploy !== undefined) return `A pass stands: not known, as no result counts for ${program} at ${deploy.commit}, deployed ${deploy.deployed_at}`;
+        if (deploy !== undefined)
+          return `A pass stands: not known, as no result counts for ${program} at ${deploy.commit}, deployed ${deploy.deployed_at}`;
         break;
     }
   }
   if (pass.answer === "yes") {
     const roles = pass.roles ?? [];
-    return roles.length === 0 ? "A pass stands: yes" : `A pass stands: yes, from ${roles.join(", ")}`;
+    return roles.length === 0
+      ? "A pass stands: yes"
+      : `A pass stands: yes, from ${roles.join(", ")}`;
   }
   if (pass.answer === "no") return "A pass stands: no";
   return "A pass stands: not known";
@@ -268,9 +284,11 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
   const results = check.results ?? [];
   return [
     `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands, check, repository)}.`,
-    ...(check.pass_stands?.deploy === undefined ? [] : [
-      `  Program ${check.pass_stands.deploy.program} runs ${check.pass_stands.deploy.commit} since ${check.pass_stands.deploy.deployed_at}; a pass of this check must come from this deploy.`,
-    ]),
+    ...(check.pass_stands?.deploy === undefined
+      ? []
+      : [
+          `  Program ${check.pass_stands.deploy.program} runs ${check.pass_stands.deploy.commit} since ${check.pass_stands.deploy.deployed_at}; a pass of this check must come from this deploy.`,
+        ]),
     `  The check's words: ${check.text}`,
     ...(results.length === 0
       ? ["  No result is recorded for this check."]
@@ -285,7 +303,11 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
  *  check with no result says so, and an issue with no Verification document says that instead of
  *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
  *  null, so that is what is compared. */
-export function formatCheckResults(results: IssueCheckResults, brief = false, repositories?: Readonly<Record<string, string>>): string {
+export function formatCheckResults(
+  results: IssueCheckResults,
+  brief = false,
+  repositories?: Readonly<Record<string, string>>
+): string {
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
   }
@@ -293,6 +315,8 @@ export function formatCheckResults(results: IssueCheckResults, brief = false, re
   if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
-  const blocks = checks.map((check) => checkLines(check, brief, repositories?.[check.issue_key]).join("\n"));
+  const blocks = checks.map((check) =>
+    checkLines(check, brief, repositories?.[check.issue_key]).join("\n")
+  );
   return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
