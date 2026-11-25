@@ -195,8 +195,17 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // address, beside `dispatch priorities`: 5 words more, which the bound holds. The blocked-by
 // bullet's "read its links first" became "read that list first", the same count, so that the
 // words name the list the command replaces. Counted as this test counts, over the staged skills,
-// the three stand at 2,334 words, 6 under the bound: the other edits of the three since #5051
-// hold the words the two counts above leave out.
+// the three then stood at 2,334 words, 6 under the bound: the other edits of the three since
+// #5051 hold the words the two counts above leave out.
+//
+// A cut of 35 words from dispatch and dispatch-writing-specs, leaving dispatch-first as it was,
+// then took the three to 2,299 words, 41 under the bound, so that dispatch-first's next rewrite
+// has room. Each rule the cut touched stays, in fewer words or in a sentence beside it: an
+// unreachable Dispatch or broker, the links that differ only by a block or a version (one line
+// each, the optional part in brackets), the choices that are the writer's own, the measured
+// premise (the sentence before it already asks for that), the source to try first and the fresh
+// subagent's read. The issue-status section lost its last sentence, "A status write is set back
+// or stands.": the rule beside it, never to write the status of a `legion`-labelled issue, stays.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))

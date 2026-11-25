@@ -45,15 +45,15 @@ For each spec, ask, comment and message:
 ## Questions
 
 - Name the concrete case and its numbers, then the choice in those terms, never "Which option?".
-- A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours.
+- Choices inside the request, ones their messages favour, routine cleanup, sequencing, naming, a pick between equivalent options and a fix you can make are yours.
 - Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, short and self-contained: a person answers it with no other reading.
-- Measure each claim the ask rests on, its premise and each option's precondition. A claim you cannot measure stays out of the ask until it is measured. Call an option unavailable only where a precondition demonstrably fails. No unmeasured number goes in a premise.
-- Before you pass a question on as one only an attended or privileged act answers, try the source that answers it, then the other records holding it. Keep a privileged read for what only the live system knows.
+- Measure each claim the ask rests on, its premise and each option's precondition. A claim you cannot measure stays out of the ask until it is measured. Call an option unavailable only where a precondition demonstrably fails.
+- Before you call a question one only an attended or privileged act answers, try its source, then the other records holding it. Keep a privileged read for what only the live system knows.
 
 ## Each version
 
 1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts. Answer each comment in its thread. Never narrate an edit.
-2. Where a spec is large, or changed in a way you cannot check alone, give the whole spec to a fresh subagent to find its gaps or check its facts.
+2. Where a spec is large, or changed in a way you cannot check alone, have a fresh subagent check the whole spec for gaps and wrong facts.
 3. Name each version with `dispatch doc-edit --summary`.
 
 ## Decisions

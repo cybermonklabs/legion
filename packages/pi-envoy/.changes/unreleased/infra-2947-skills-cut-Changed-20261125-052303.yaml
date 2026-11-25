@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The `dispatch` and `dispatch-writing-specs` skills say the same rules in 35 fewer words, so
+  the three Dispatch skills every session reads stand at 2,299 words, and `dispatch-first` has
+  room under the 2,340-word bound for its next change. No rule was removed.
+time: 2026-11-25T05:23:03Z
+custom:
+    Issue: infra-2947-skills-cut
