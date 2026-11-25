@@ -175,3 +175,58 @@ func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
 		t.Fatalf("held settings after a malformed deploy repository = %+v, want %s kept", held, seeded.DeployRepo)
 	}
 }
+
+// SettingsCache.Read's channel is closed by the first read that answers, whatever it found, and by
+// no read that failed: a read on a cancelled context fails and leaves it open; a read that finds a
+// deploy repository it refuses answers, holds nothing, and closes it; a later read that finds no
+// row leaves it closed.
+func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	closed := func(cache *SettingsCache) bool {
+		select {
+		case <-cache.Read():
+			return true
+		default:
+			return false
+		}
+	}
+
+	cache := newSettingsCache(pool, nil, nil)
+	if closed(cache) {
+		t.Fatal("a settings cache that has read nothing has its first read closed")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if cache.reload(cancelled) {
+		t.Fatal("control: a read on a cancelled context answered")
+	}
+	if closed(cache) {
+		t.Fatal("a read that failed closed the settings cache's first read")
+	}
+
+	seedDeliverySettings(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `update delivery_settings set deploy_repo = 'no-slash' where singleton`); err != nil {
+		t.Fatalf("write a malformed deploy repository: %v", err)
+	}
+	if !cache.reload(ctx) {
+		t.Fatal("read the malformed settings")
+	}
+	if held := cache.Load(); held != nil {
+		t.Fatalf("held settings after a refused deploy repository = %+v, want nothing", held)
+	}
+	if !closed(cache) {
+		t.Fatal("a read that refused the deploy repository left the settings cache's first read open")
+	}
+
+	if _, err := pool.Exec(ctx, `delete from delivery_settings`); err != nil {
+		t.Fatalf("delete the delivery settings: %v", err)
+	}
+	if !cache.reload(ctx) || !closed(cache) {
+		t.Fatal("a read that found no row after the first read answered reopened it")
+	}
+	empty := newSettingsCache(pool, nil, nil)
+	if !empty.reload(ctx) || !closed(empty) {
+		t.Fatal("a first read that found no row left the settings cache's first read open")
+	}
+}

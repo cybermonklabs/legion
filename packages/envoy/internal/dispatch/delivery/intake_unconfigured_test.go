@@ -109,9 +109,10 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 // The first bind of a deployment that never had the durable starts at the stream's next message,
 // as an explicit start sequence: a pull request opened before the bind, which the stream still
 // holds, gets no head row from it. A take-over of that durable before it has acknowledged anything
-// replays none of it either, and a pull request opened after the take-over gets its row. This test
-// runs on nats-server v2.15.1; the rows of the take-over's start that no server here can show are
-// TestATakeOverStartsAtTheFloorRuleOrTheTip's (takeOverStart says why).
+// replays none of it either, and a pull request opened after the take-over gets its row. The
+// take-over's start rules, row by row, are TestATakeOverStartsAtTheFloorRuleOrTheTip's, and the
+// tests beside it take a never-bound durable and one whose floor lies past the stream's end over on
+// a server (takeover_start_test.go).
 func TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)

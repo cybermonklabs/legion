@@ -515,7 +515,8 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 
 // TestIntakeDrainsABacklogPublishedBeforeItBinds: a backlog published while no process is bound to
 // the durable, three times intakeMaxAckPending, drains in full once the intake comes up, every run
-// stored within the bound awaitRuns sets, which is well inside the ack wait a redelivery would take.
+// stored within the 60 s the test gives awaitRuns. That is under the 80 s ack wait the shrunk flow
+// control derives (intakeTuning.ackWait), so no run is stored by a redelivery after an ack wait.
 // A first intake makes the durable and stops before the backlog is published: the durable's first
 // bind starts at the stream's next message
 // (TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart), so what the stream held

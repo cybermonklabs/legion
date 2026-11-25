@@ -17,9 +17,11 @@ import (
 // ERROR. The intake handles and acknowledges two pull requests, and a check reads the floor after
 // them. The test then holds the durable's consumer lease, so no take-over can run, deletes the
 // durable and publishes two more pull requests: they reach the stream while no durable exists.
-// Once the lease is free, the intake creates the durable again at the sequence after the second
-// pull request, so the two published after the loss get their head rows. Created at the stream's
-// next message instead, as a durable with no start recorded is, it would skip both.
+// While the lease is held, the hold's token records the sequence after the second pull request as
+// the start, where another holder would read it (recordLoss). Once the lease is free, the intake
+// creates the durable again there, so the two published after the loss get their head rows.
+// Created at the stream's next message instead, as a durable with no start recorded is, it would
+// skip both.
 func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -70,6 +72,15 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 	}
 	waitFor(t, 20*time.Second, lost, func() string {
 		return fmt.Sprintf("the intake never said at ERROR that its durable was lost: %v", logs())
+	})
+	holdName := intakeHoldName(bus.DispatchDeliveryDurable)
+	var token string
+	waitFor(t, 20*time.Second, func() bool {
+		read, _, err := duty.HoldToken(ctx, leases, holdName)
+		token = read
+		return err == nil && parseIntakeHoldToken(read).start == lastAcked+1
+	}, func() string {
+		return fmt.Sprintf("the hold's token after the loss is %q, want it to record the start %d, the sequence after the last ack floor the intake read", token, lastAcked+1)
 	})
 
 	releaseLease()
