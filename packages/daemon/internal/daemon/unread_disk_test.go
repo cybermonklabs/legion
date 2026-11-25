@@ -50,7 +50,7 @@ func noRoleRig(t *testing.T, parked bool) (*idleRig, *outboxPublisher) {
 	implementer := supervise.Claim{Token: mustClaimToken(t, rig.issue.Key, claim.RoleImplementer), Project: "legion",
 		Tree: rig.issue.Tree, Issue: rig.issue.Key, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1,
 		ServingGeneration: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-implementer", SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-implementer", SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion()}
 	if err := rig.st.PutClaim(ctx, implementer); err != nil {
 		t.Fatalf("seed the child's released implementer: %v", err)
 	}

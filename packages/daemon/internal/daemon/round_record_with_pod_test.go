@@ -55,7 +55,7 @@ const launchWithPodSentence = "The Sandbox ran pod " + podUpdatePod + ", and the
 func podlessKeptVolumeRound(t *testing.T) *podUpdateRig {
 	t.Helper()
 	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
-		contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, unasked: true})
+		contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, unasked: true})
 	rig.drifts(podUpdateDrift)
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)

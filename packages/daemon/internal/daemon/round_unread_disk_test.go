@@ -175,9 +175,9 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 	// and the next round replaces the pod.
 	t.Run("through a process", func(t *testing.T) {
 		t.Parallel()
-		parked := podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, contract: api.DaemonAPIVersion,
+		parked := podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, contract: api.DaemonAPIVersion(),
 			suspendedBy: supervise.SuspendedByReleased}
-		failed := podUpdateRole{role: claim.RoleTester, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion}
+		failed := podUpdateRole{role: claim.RoleTester, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion()}
 		rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: pacedUntil(podUpdateBound.Add(time.Hour))},
 			readyWorker(claim.RoleArchitect), readyWorker(claim.RoleReviewer), failed, parked)
 		rig.heldStart(claim.RoleImplementer)

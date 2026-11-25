@@ -54,7 +54,7 @@ const launchReadCommit = "5a7c9e1b3d5f7a9c8c2e4a6b0d1f3e5a7c9b1d3f"
 func podlessBreakingRound(t *testing.T) *podUpdateRig {
 	t.Helper()
 	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
-		contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: roundBreakingDrift, unasked: true})
+		contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: roundBreakingDrift, unasked: true})
 	rig.drifts(roundBreakingDrift)
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
