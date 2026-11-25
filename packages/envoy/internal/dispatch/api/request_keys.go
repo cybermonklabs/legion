@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1453,12 +1454,12 @@ func versionNumber(version any) (int64, bool) {
 	return value, err == nil
 }
 
-// storedStatus reports whether an answer of this status is a key's answer. A 5xx says nothing of
-// whether the write could succeed, and a 401 (a session that lapsed mid-write), a 408 and a 429 say
-// only that this attempt was not heard: each leaves the next attempt to run the request again.
+// storedStatus reports whether an answer of this status is a key's answer. An outage
+// (httpoutage.Is: a 5xx, which says nothing of whether the write could succeed, a 408 or a 429)
+// and a 401 (a session that lapsed mid-write) say only that this attempt was not heard: each
+// leaves the next attempt to run the request again.
 func storedStatus(status int) bool {
-	return status < http.StatusInternalServerError && status != http.StatusUnauthorized &&
-		status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
+	return !httpoutage.Is(status) && status != http.StatusUnauthorized
 }
 
 // settleRequestKey records what claim's handler answered: a stored status finishes the row with

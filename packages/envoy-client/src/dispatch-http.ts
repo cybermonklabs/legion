@@ -775,9 +775,10 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
   };
 }
 
-/** Whether `storedStatus` (request_keys.go:1335-1341) keeps this answer under the key. */
+/** Whether `storedStatus` (the Envoy module's `internal/dispatch/api/request_keys.go`) keeps this
+ *  answer under the key: a 4xx that is no {@link outage} (a 408 or a 429) and no 401. */
 function isStoredKeyStatus(status: number): boolean {
-  return status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
+  return status >= 400 && status < 500 && !outage(status) && status !== 401;
 }
 
 /**

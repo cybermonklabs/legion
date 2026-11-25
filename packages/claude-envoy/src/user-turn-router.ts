@@ -17,6 +17,7 @@
 // is Dispatch recording that this session accepted that very attempt, and what it injects is
 // the body Dispatch answers with, never the frame's own text.
 import { comparableLines } from "@legion/contracts"
+import { mayHaveReachedServer } from "@legion/contracts/http-status"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import {
   type DispatchClient,
@@ -106,22 +107,23 @@ export function acceptLanded(messageId: string, error: DispatchWriteLandedError)
 
 /** Whether a post that ended in `error` may or may not have been posted: it ended with no
  *  definitive answer while an attempt of it may have reached Dispatch
- *  (`DispatchWriteUnsettledError`: an earlier attempt got a 5xx or failed in transport, or the last
- *  was cut off for silence or by the deadline), or on a 5xx (a `DispatchServiceError` of 500 or
- *  more, a gateway's included), which can follow a write Dispatch committed. Dispatch's own 4xx,
- *  and an error raised before anything was sent, say it was not posted. */
+ *  (`DispatchWriteUnsettledError`: an earlier attempt got a 5xx or a 408 or failed in transport,
+ *  or the last was cut off for silence or by the deadline), or on a status after which the request
+ *  may have reached Dispatch (`mayHaveReachedServer`: a 5xx or a 408, a gateway's included), which
+ *  can follow a write Dispatch committed. Dispatch's other 4xx, and an error raised before
+ *  anything was sent, say it was not posted. */
 function mayHaveBeenPosted(error: unknown): boolean {
   return (
     error instanceof DispatchWriteUnsettledError ||
-    (error instanceof DispatchServiceError && error.status >= 500)
+    (error instanceof DispatchServiceError && mayHaveReachedServer(error.status))
   )
 }
 
 /** What stderr says of a reply to message `messageId` whose post ended in `error`. One Dispatch
  *  made and gave no copy of its answer for (`DispatchWriteLandedError`) is posted, and the
  *  error's message says what was made; one that may have landed (`mayHaveBeenPosted`: a
- *  `DispatchWriteUnsettledError`, or a 5xx) may or may not have been posted, and the line says
- *  so; any other was not posted, whether Dispatch refused it (a `DispatchServiceError` under 500,
+ *  `DispatchWriteUnsettledError`, a 5xx or a 408) may or may not have been posted, and the line
+ *  says so; any other was not posted, whether Dispatch refused it (another `DispatchServiceError`,
  *  such as a 409) or it never reached Dispatch, and the error's message says which. Every host of
  *  this package says it in these words (`./codex/codex-user-turns`). */
 export function replyWarning(messageId: string, error: unknown): string {
@@ -137,8 +139,8 @@ export function replyWarning(messageId: string, error: unknown): string {
 /** What stderr says of a BTW answer to message `messageId` whose post ended in `error`. One
  *  Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`) answered the
  *  attempt, so no error reply follows it; one that may have landed (`mayHaveBeenPosted`: a
- *  `DispatchWriteUnsettledError`, or a 5xx) may or may not have been posted, and the line says
- *  so; any other was not posted, whether Dispatch refused it or it never reached Dispatch, and
+ *  `DispatchWriteUnsettledError`, a 5xx or a 408) may or may not have been posted, and the line
+ *  says so; any other was not posted, whether Dispatch refused it or it never reached Dispatch, and
  *  the error's message says which. */
 export function btwAnswerWarning(messageId: string, error: unknown): string {
   if (error instanceof DispatchWriteLandedError) {

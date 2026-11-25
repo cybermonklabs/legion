@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/envoy/httpoutage"
 )
 
 // A turn that ends in a provider error does not retire its task (dispatch://INFRA-956 R2). The
@@ -156,11 +158,12 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 }
 
 // holdsTheIssue is whether an error of this HTTP status fails the claim, so that the workflow
-// holds the issue for its architect: a client error, 400 to 499, that is none of 401, 403, 408
-// and 429. A malformed request is the case this exists for. Every other error sends the task
-// again:
+// holds the issue for its architect: a client error, 400 to 499, that is no outage (httpoutage.Is:
+// a 408 or a 429) and none of 401 and 403. A malformed request is the case this exists for. Every
+// other error sends the task again:
 //
-//   - 5xx, 408 and 429 are the provider saying "not now", which the ladder waits out;
+//   - an outage, a 5xx, a 408 or a 429, is the provider saying "not now", which the ladder waits
+//     out;
 //   - 401 and 403 are a credential, which is the fleet's and not this claim's work
 //     (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3). Failing every claim
 //     whose turn hits one is worse than sending the task again, and the notice the project's
@@ -177,11 +180,8 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 //     Claude Code worker's bridge names a status only for a result Claude Code marked api_error
 //     (internal/claudebridge's result), so its statusless turns go again here too.
 func holdsTheIssue(status int) bool {
-	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:
-		return false
-	}
-	return status >= 400 && status <= 499
+	return status >= 400 && status <= 499 && !httpoutage.Is(status) &&
+		status != http.StatusUnauthorized && status != http.StatusForbidden
 }
 
 // providerErrorClears keeps the task on the claim and arms the next step of the ladder for it:

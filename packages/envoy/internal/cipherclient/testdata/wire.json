@@ -438,7 +438,7 @@
     },
     {
       "name": "a proxy before the broker's token endpoint did not take the trade",
-      "about": "A 408 is an outage, as a 429 and every 5xx are (oauthrefusal.Outage in Go, outage in the TypeScript client's oauth-refusal.ts): the broker, or a proxy before it, did not take the request, and a later trade can be answered, whatever OAuth error its body names. So neither client reads it as final (expect.permanent is false), and a client holding a live token keeps writing with it.",
+      "about": "A 408 is an outage, as a 429 and every 5xx are (oauthrefusal.Outage, which is httpoutage.Is, in Go, and outage of @legion/contracts/http-status in the TypeScript client): the broker, or a proxy before it, did not take the request, and a later trade can be answered, whatever OAuth error its body names. So neither client reads it as final (expect.permanent is false), and a client holding a live token keeps writing with it.",
       "subject": {
         "kind": "kubernetes-projected-file",
         "token": "projected.service.account.token",

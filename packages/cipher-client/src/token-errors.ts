@@ -7,7 +7,7 @@
 // broker and NATS credentials, and every test read them without owning the retry loop.
 
 import { scrub } from "@legion/contracts/held-secrets";
-import { outage } from "./oauth-refusal";
+import { outage } from "@legion/contracts/http-status";
 import {
   isKnownBrokerRefusal,
   KNOWN_OAUTH_ERROR_CODES,
