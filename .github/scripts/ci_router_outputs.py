@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What each output of ci.yaml's `changes` job evaluates to for one event, one set of pull request
+"""What each output of `.github/workflows/ci.yaml#changes` job evaluates to for one event, one set of pull request
 labels and one set of paths-filter verdicts, read as GitHub Actions evaluates an expression. Its
 harness, ci-router-outputs.test.sh, holds the outputs' label terms to what they promise: `full-ci`
 turns on every slow suite, a `lane:<output>` label turns on that one output, and a label that names
