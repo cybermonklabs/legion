@@ -111,15 +111,17 @@ var (
 // ascending id order so two dismisses over overlapping sets take them in one order.
 //
 // This comment is where `for update` is accounted for, and the route's own steps and the race
-// tests below point here rather than saying it again. It is the one level
-// that conflicts with the `for key share` the clearing trigger of 20261105093507 takes on this
-// same row before its delete - that migration's header says why the trigger takes that level -
-// and that conflict is the whole of what orders this route against the trigger. Two dismisses
-// need nothing from it: they are ordered by the caller's own rows, steps 3 and 4, whatever level
-// this one is taken at.
+// tests below point here rather than saying it again. It is the one level that conflicts with the
+// `for key share` the clearing trigger of 20261105093507 takes on this same row before its delete -
+// that migration's header says why the trigger takes that level, and a reply of the release before
+// this one still takes it - and that conflict is what orders this route against that trigger. A
+// reply of this release takes the root `for no key update` before its insert
+// (inboxwrite.Recording.QueueRootLock), which conflicts with this level too. Two dismisses need
+// nothing from it: they are ordered by the caller's own rows, steps 3 and 4, whatever level this
+// one is taken at.
 //
 // Neither order then loses a reply: a dismiss that takes the root first makes the reply wait, and
-// the reply's trigger then finds the committed mark and deletes it; a reply that holds the root
+// the reply's clear then finds the committed mark and deletes it; a reply that holds the root
 // first makes this transaction wait, and the check below then reads a thread whose replies are
 // not the ones the request named, so no mark is written for it.
 //
@@ -132,6 +134,23 @@ const inboxDismissLockAgentRoots = `
 	where id = any($1::uuid[])
 	order by id
 	for update`
+
+// inboxRestoreLockAgentRoots takes the root message of every Agent thread a restore is about to
+// delete a mark of, step 2 of the lock order (markInboxReadThreads, api/inbox_read.go), `for no
+// key update` and in ascending id order, before the caller's marks it deletes (step 4). A mark's
+// delete moves its root's agent_dismissed_at (the trigger of migration 20261125053125 updates the
+// root's row), so a restore that took the mark first would reach the root second: the opposite of
+// a dismissal, which takes the root before it writes a mark (inboxDismissLockAgentRoots), and of a
+// session's reply, which takes it before the marks it clears. Taken first, it makes a restore and
+// either of them queue at the root and meet at nothing else. `for no key update` is the level the
+// trigger's update takes anyway, so it stops no reply the clear would not, and it lets a reply of
+// the release before take the root `for key share` beside it in a thread whose marks are being
+// restored.
+const inboxRestoreLockAgentRoots = `
+	select 1 from messages
+	where id = any($1::uuid[])
+	order by id
+	for no key update`
 
 // inboxDismissCheckAgentRoots answers which of the Agent threads a dismissal read it may still
 // write a mark for. It runs as a statement of its own, after the root lock above has been given
@@ -740,14 +759,18 @@ func (s *server) dismissInboxThreads(
 	if err := lockInboxReadOwners(ctx, tx, read); err != nil {
 		return 0, nil, err
 	}
-	if !plan.restore && len(read.agentRoots) > 0 {
+	switch {
+	case len(read.agentRoots) == 0:
+	case plan.restore:
+		// Step 2 of the lock order, after the owners and before the caller's marks it deletes
+		// (inboxRestoreLockAgentRoots).
+		if _, err := tx.Exec(ctx, inboxRestoreLockAgentRoots, read.agentRoots); err != nil {
+			return 0, nil, fmt.Errorf("lock the agent threads' roots: %w", err)
+		}
+	default:
 		// Step 2 of the lock order, after the owners and before the caller's rows and every
 		// write, so the check that follows reads each thread in a snapshot taken once the root is
-		// this transaction's (inboxDismissLockAgentRoots). A restore takes no root: it deletes
-		// marks, and a session reply that commits beside it deletes the same mark through the
-		// trigger of 20261105093507, so whichever of the two runs first the thread ends in the
-		// Inbox, and a `for update` held over the rest of the transaction would stop that
-		// thread's replies for nothing.
+		// this transaction's (inboxDismissLockAgentRoots).
 		if _, err := tx.Exec(ctx, inboxDismissLockAgentRoots, read.agentRoots); err != nil {
 			return 0, nil, fmt.Errorf("lock the agent threads' roots: %w", err)
 		}

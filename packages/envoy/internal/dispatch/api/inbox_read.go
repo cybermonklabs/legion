@@ -416,11 +416,11 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // (api/replies.go), the dismiss route (api/inbox_dismiss.go), the lock statements above and the
 // race tests point here rather than saying it again.
 //
-// The order is owner, then the root of every Agent thread a dismissal writes a mark for, then
-// the caller's rows, then the agent rows it writes, then the project its events name. Steps 2
-// and 4 are the dismiss route's alone - this button writes no dismissal - and they are numbered
-// here rather than there because one order written in two places is two orders as soon as one
-// of them is edited:
+// The order is owner, then the root of every Agent thread a dismissal writes a mark for or a
+// restore deletes one of, then the caller's rows, then the agent rows it writes, then the project
+// its events name. Steps 2 and 4 are the dismiss route's alone - this button writes no dismissal -
+// and they are numbered here rather than there because one order written in two places is two
+// orders as soon as one of them is edited:
 //
 //  1. the owner of every thread it marks, in shared mode (store.LockOwnersShared), documents
 //     then issues, each statement taking its own in ascending lock-key order
@@ -428,7 +428,9 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //  2. the root message of every Agent thread a dismissal writes a mark for, `for update`, in
 //     ascending id order (inboxDismissLockAgentRoots, api/inbox_dismiss.go), which the version
 //     check that follows reads each thread under (inboxDismissCheckAgentRoots) before the insert
-//     writes any mark;
+//     writes any mark; for a restore, the root of every Agent thread it deletes a mark of, `for no
+//     key update`, in ascending id order (inboxRestoreLockAgentRoots), since that delete moves the
+//     root's agent_dismissed_at (migration 20261125053125's trigger updates the root's row);
 //  3. the caller's user_threads rows, `for no key update`, in ascending thread_id order
 //     (inboxReadLockThreads), which the update that follows re-locks;
 //  4. the caller's own user_agent_thread_dismissed rows, `for no key update`, in ascending
@@ -441,17 +443,22 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //     before the first append.
 //
 // Step 2 comes before the caller's rows because that is the order a session's reply takes those
-// two in. Its writer, inboxwrite.Record, takes the thread's root `for key share` and clears the
-// root's Agent dismissals before it takes any user_threads row of the thread (Record's step 2,
-// below). An older build's reply does the same through its triggers: Postgres fires a table's row
-// triggers in name order, so on messages user_agent_thread_dismissed_clear (migration
-// 20261105093507) runs before user_threads_message (0095, attached by 0097) on an issue message,
-// and on an Agent thread's reply it is the only one of the two that runs at all: that other
-// trigger returns at once for a message with no issue key, and an Agent thread's messages carry
-// none. So a session's reply takes the thread's root - the row the clear locks before its delete -
-// before any row of this caller's it reaches. A dismiss that took the caller's rows first and the
-// root second would be the opposite order, and the two would meet each holding what the other
-// waits for.
+// two in, and before the caller's marks because every writer of a mark writes its root's
+// agent_dismissed_at through the trigger of migration 20261125053125, which updates the root's
+// row: the root is the first row of a thread any of them takes. A reply of this release takes the
+// thread's root `for no key update` before its insert (inboxwrite.Recording.QueueRootLock, which
+// api's replyMessage and createStoredMessage run before they take the message's attempt or write
+// the row), and its writer, inboxwrite.Record, clears the root's Agent dismissals under it before
+// it takes any user_threads row of the thread (Record's step 2, below). An older build's reply
+// does the same through its triggers: Postgres fires a table's row triggers in name order, so on
+// messages user_agent_thread_dismissed_clear (migration 20261105093507, whose body 20261125053125
+// replaced) runs before user_threads_message (0095, attached by 0097) on an issue message, and on
+// an Agent thread's reply it is the only one of the two that runs at all: that other trigger
+// returns at once for a message with no issue key, and an Agent thread's messages carry none. It
+// takes the root `for key share`, and `for no key update` before its delete wherever a mark of the
+// root stands. So a session's reply takes the thread's root before any row of this caller's it
+// reaches. A dismiss or a restore that took the caller's rows first and the root second would be
+// the opposite order, and the two would meet each holding what the other waits for.
 //
 // PUT /api/v1/me/threads/{id}/read is ordered against this transaction by the owner alone, as an
 // ordinary writer is (below), and not by this list: it takes its one thread's owner lock

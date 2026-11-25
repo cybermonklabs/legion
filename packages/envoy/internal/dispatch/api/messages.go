@@ -624,13 +624,16 @@ func (s *server) createStoredMessage(
 	// The failure point between the message's node and its row (failpoint.Message), decided
 	// before the batch is sent and queued where it fails.
 	fails := failpoint.Planned(ctx, failpoint.Message)
-	// The parent's lock, the index its blocks owe, the message's node, the insert, the recovery
-	// point, this message's own index, the event, its stamp, what the node write and the index
-	// stated, its author, its record in its thread and a targeted message's first delivery
-	// attempt go in one batch (store.WriteBatch): the message is known before the insert runs,
-	// and the stamp and every cause name the event's id as the id sequence left it.
+	// The thread's root where the message is a session's reply that clears its Agent dismissals
+	// (inboxwrite.Recording.QueueRootLock), the parent's lock, the index its blocks owe, the
+	// message's node, the insert, the recovery point, this message's own index, the event, its
+	// stamp, what the node write and the index stated, its author, its record in its thread and a
+	// targeted message's first delivery attempt go in one batch (store.WriteBatch): the message is
+	// known before the insert runs, and the stamp and every cause name the event's id as the id
+	// sequence left it.
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		recording.QueueRootLock(b)
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
 			if err := parentRepair.Queue(b); err != nil {

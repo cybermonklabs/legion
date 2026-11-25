@@ -19,9 +19,11 @@ import (
 )
 
 // What the one read's two states that answer every row of their state - state=inbox and
-// state=unread - cost as a person's dismissed history grows (meInboxBuild): the read walks only the
-// tuples between the person's nodes and the nodes of the state's rows, one keyed probe a relation
-// kind from each, so the walk, the counts and the Agent arm read the live rows and none of the pile.
+// state=unread - cost as a person's dismissed history grows: the read walks only the tuples
+// between the person's nodes and the nodes of the state's rows, one keyed probe a relation kind
+// from each (meInboxBuild), and its Agent arm reads the person's live roots off their own index,
+// which holds no dismissed one (myAgentLiveRoot, messages_direct_roots_live), so the walk, the
+// counts and the Agent arm read the live rows and none of the pile.
 //
 // Two databases hold one store each, seeded by a14's own helpers (seedDismissedScale) and by the
 // same code: the measured person, alice, with a14's Inbox - 540 Reply threads and 60 Agent threads,
@@ -33,10 +35,10 @@ import (
 // Inbox put there: a participates_in into each root, a dismissed into each dismissed one, and
 // read_through, reply_read and delivered_to beside them.
 //
-// Each read is held, at 5,000 against 250, to three figures of its own (walkScaleBound): the median
-// of 201 timed runs, alternating which database is read first, the rows its plan reads from
-// graph_tuples and the buffers those reads access, and the rows and buffers of its Agent arm - the
-// reads of messages through messages_direct_roots or messages_direct_roots_live, and of
+// Each read is held, at 5,000 against 250, to five figures of its own (walkScaleFigures): the
+// median of 201 timed runs, alternating which database is read first; the rows its plan reads
+// from graph_tuples and the buffers those reads access; and the rows and buffers of its Agent arm
+// - the reads of messages through messages_direct_roots or messages_direct_roots_live, and of
 // user_agent_thread_dismissed. The counts are Postgres's own, taken under EXPLAIN (ANALYZE, BUFFERS)
 // of the statement the handler builds (meInboxStatement), under the generic plan the read runs
 // (meInboxSettings), the least of three counts after a warm-up; so they do not move with the box.
@@ -206,6 +208,8 @@ func walkScaleFigures(
 			bound: walkScaleMedianBound, unit: " ms"},
 		{what: "the rows read from graph_tuples", small: at(small).graphRows, large: at(large).graphRows, bound: walkScaleRowsBound},
 		{what: "the buffers of graph_tuples", small: at(small).graphBuffers, large: at(large).graphBuffers, bound: walkScaleBuffersBound},
+		{what: "the Agent arm's rows", small: at(small).agentRows, large: at(large).agentRows, bound: walkScaleRowsBound},
+		{what: "the Agent arm's buffers", small: at(small).agentBuffers, large: at(large).agentBuffers, bound: walkScaleBuffersBound},
 	}
 }
 
@@ -460,7 +464,7 @@ func countWalkScale(t *testing.T, shape *dismissedScaleShape, read walkScaleRead
 			t.Fatalf("explain %s: %v", name, err)
 		}
 		var plans []struct {
-			Plan analyzedNode `json:"Plan"`
+			Plan walkScaleNode `json:"Plan"`
 		}
 		if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 			t.Fatalf("read the plan of %s: %d plans, %v", name, len(plans), err)
@@ -500,10 +504,34 @@ func countWalkScale(t *testing.T, shape *dismissedScaleShape, read walkScaleRead
 	return least, text
 }
 
+// walkScaleNode is one node of an analysed plan as the counts read it: analyzedNode's fields and
+// the filter a scan applies, which tells the Agent arm's scan of messages from the others.
+type walkScaleNode struct {
+	NodeType         string          `json:"Node Type"`
+	RelationName     string          `json:"Relation Name,omitempty"`
+	IndexName        string          `json:"Index Name,omitempty"`
+	Filter           string          `json:"Filter,omitempty"`
+	Rows             float64         `json:"Actual Rows"`
+	Loops            float64         `json:"Actual Loops"`
+	RemovedByFilter  float64         `json:"Rows Removed by Filter,omitempty"`
+	RemovedByRecheck float64         `json:"Rows Removed by Index Recheck,omitempty"`
+	SharedHitBlocks  float64         `json:"Shared Hit Blocks,omitempty"`
+	SharedReadBlocks float64         `json:"Shared Read Blocks,omitempty"`
+	Plans            []walkScaleNode `json:"Plans,omitempty"`
+}
+
+func (node walkScaleNode) everyNode() []walkScaleNode {
+	nodes := []walkScaleNode{node}
+	for _, child := range node.Plans {
+		nodes = append(nodes, child.everyNode()...)
+	}
+	return nodes
+}
+
 // walkScaleScan is whether node reads a table's rows: a scan of the table itself or of one of its
 // indexes, the bitmap heap scan standing for the bitmap index scans under it, whose buffers it
 // counts.
-func walkScaleScan(node analyzedNode) bool {
+func walkScaleScan(node walkScaleNode) bool {
 	switch node.NodeType {
 	case "Seq Scan", "Index Scan", "Index Only Scan", "Bitmap Heap Scan":
 		return node.RelationName != ""
@@ -514,8 +542,11 @@ func walkScaleScan(node analyzedNode) bool {
 // walkScaleAgentArm is whether node is a read of the Agent arm's roots or of their dismissals: a
 // scan of user_agent_thread_dismissed, or a read of messages through messages_direct_roots or
 // messages_direct_roots_live - an index scan of either, or a bitmap heap scan over one - or a scan
-// of the whole table, which reads every root there is.
-func walkScaleAgentArm(node analyzedNode) bool {
+// of the whole table that applies the arm's own test of a root's author (myAgentRootFilter). The
+// page's own reads of messages are no part of it: the conversations of the page's roots
+// (agent_chain, meInboxPageReads) walk their replies, which at 250 dismissed the generic plan reads
+// by a scan of the whole table at each step and at 5,000 by messages_in_reply_to.
+func walkScaleAgentArm(node walkScaleNode) bool {
 	if !walkScaleScan(node) {
 		return false
 	}
@@ -523,7 +554,8 @@ func walkScaleAgentArm(node analyzedNode) bool {
 	case "user_agent_thread_dismissed":
 		return true
 	case "messages":
-		if node.NodeType == "Seq Scan" || strings.HasPrefix(node.IndexName, "messages_direct_roots") {
+		if strings.HasPrefix(node.IndexName, "messages_direct_roots") ||
+			(node.NodeType == "Seq Scan" && strings.Contains(node.Filter, "author")) {
 			return true
 		}
 		for _, child := range node.everyNode()[1:] {

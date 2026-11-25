@@ -39,11 +39,13 @@ import (
 //     to the page before any thread is walked, so a page costs the page.
 //
 // Each read is one pass over its own roots with index probes per root: the walk of one root's
-// thread (messages_in_reply_to), the dismissal mark (user_agent_thread_dismissed's primary key, or
-// its login/dismissed_at index when the marks are what is read), the session's marks and the
-// replies read by id. The shape this replaces built one recursive CTE over every one-off message
-// the person had ever sent and then scanned that whole CTE once per root, which cost the Dismissed
-// view's page read 433 ms and its count 7.4 s at 10,000 dismissed Agent threads (INFRA-450's a14).
+// thread (messages_in_reply_to), the session's marks and the replies read by id. A dismissal is the
+// root's own column for the Inbox's two states (messages.agent_dismissed_at, whose index of the
+// live roots, messages_direct_roots_live, holds no dismissed root), and the marks themselves,
+// through user_agent_thread_dismissed's login/dismissed_at index, for the Dismissed view. The shape
+// this replaces built one recursive CTE over every one-off message the person had ever sent and
+// then scanned that whole CTE once per root, which cost the Dismissed view's page read 433 ms and
+// its count 7.4 s at 10,000 dismissed Agent threads (INFRA-450's a14).
 //
 // The definition of "a reply this login has not read in this session" is unread_replies.go's
 // (unreadDirectRepliesCTE), which the Agents page's New replies badge and the conversation window
@@ -118,7 +120,7 @@ func myAgentUnreadReplyTest(reply, mark string) string {
 // issue-less message of theirs targeted at a session, which no session took as a turn of its live
 // conversation. row names the relation it reads the message from, since the Dismissed view reads
 // that message by its primary key (myAgentRootIsOneOff) and the Inbox's own states read it off
-// messages_direct_roots.
+// messages_direct_roots_live (myAgentLiveRoot).
 //
 // The acceptance test reads accepted_at alone, the predicate of migration 0054's partial unique
 // index message_deliveries_one_acceptance, so it is one probe of that index a root, answered from
@@ -159,26 +161,24 @@ var myAgentRootIsOneOff = `
 			offset 0
 		)`
 
-// myAgentDismissedRootSet is the person's own dismissal marks, read once per statement as the set
-// the Inbox's own two states test their roots against, and myAgentDismissedRoot is that test. What
-// "dismissed" means on the Agent half is a mark existing, with no comparison of two times: the
-// trigger of migration 20261105093507 clears the mark in the transaction the session's reply is
-// written in, as user_threads_record clears a Reply thread's (20261105093501), so a thread that
-// came back carries no mark to find.
+// myAgentLiveRoot is what leaves a dismissed root out of the Inbox's own two states: the root's own
+// mark of its author's dismissal (messages.agent_dismissed_at, migration 20261125052902), which the
+// trigger of 20261125053125 keeps from user_agent_thread_dismissed in the statement that writes a
+// mark, whichever build writes it. What "dismissed" means on the Agent half is a mark existing,
+// with no comparison of two times: a session's reply deletes its root's marks in the transaction
+// it is written in (inboxwrite's queueAgentDismissalsClear, and for an older build's reply the
+// trigger of migration 20261105093507), as user_threads_record clears a Reply thread's
+// (20261105093501), so a thread that came back carries no mark and its root no column to find.
 //
-// The set is read once and hashed rather than probed per root, which is the difference between
-// reading the person's marks and reading one index entry for every thread they have ever
-// dismissed: the probe was 66 ms of the Inbox read's 69 at 10,000 of them (INFRA-450's a14), and
-// the set is one index-only scan of the same marks. `not in` over a materialized set is what asks
-// the planner for the hash; a correlated `not exists` leaves it free to loop, and with the roots
-// estimated at one row it does.
-const myAgentDismissedRootSet = `
-	dismissed_roots as materialized (
-		select message_id from user_agent_thread_dismissed where login = $1
-	),`
-
-func myAgentDismissedRoot(root string) string {
-	return root + ` in (select message_id from dismissed_roots)`
+// The test is the predicate of the partial index messages_direct_roots_live (20261125053341), so a
+// read takes the person's live roots off that index and reads no dismissed root and no mark. It
+// replaced the marks read as one set the roots were hashed against: one index-only scan of every
+// mark the person ever wrote, beside an index entry of messages_direct_roots for every root they
+// ever sent, each dismissed one read and thrown away - at 5,000 dismissed Agent threads 10,020 rows
+// for 20 roots in the Inbox, where 250 dismissed read 520
+// (TestTheOneReadsInboxStatesDoNotGrowWithTheDismissedHistory).
+func myAgentLiveRoot(root string) string {
+	return root + `.agent_dismissed_at is null`
 }
 
 // myAgentRowFacts is what one root's own thread says about its row, read in one walk of it: the
@@ -227,30 +227,30 @@ var myAgentRootsWithFacts = `
 // mark, which only the Dismissed view's rows have.
 var (
 	// The Inbox's own two states leave a dismissed root out before they read anything of its
-	// thread: the mark alone says it is dismissed (myAgentDismissedRoot), so the test is one
-	// anti-join against the person's own marks rather than a walk of every thread they ever
-	// dismissed. The unread state leaves them out too, and may: a dismissal marks every reply in
-	// the thread read by id, and a reply written since cleared the mark in its own transaction, so
-	// a root that still carries one holds nothing unread.
-	myAgentUnreadRoots = myAgentMarks + myAgentDismissedRootSet + `
+	// thread: the root's own column says it is dismissed (myAgentLiveRoot), so the test is the
+	// predicate of the index the roots are read off rather than a walk of every thread the person
+	// ever dismissed. The unread state leaves them out too, and may: a dismissal marks every reply
+	// in the thread read by id, and a reply written since cleared the mark in its own transaction,
+	// so a root that still carries one holds nothing unread.
+	myAgentUnreadRoots = myAgentMarks + `
 	roots as (
 		select m.id as root_id, null::timestamptz as dismissed_at
 		from messages m
 		cross join lateral (select ` + agentMarkOf(agentSessionOf("m.target")) + ` as at) mark
 		where ` + myAgentRootFilter("m") + `
-		  and not ` + myAgentDismissedRoot("m.id") + `
+		  and ` + myAgentLiveRoot("m") + `
 		  and exists (` + agentThreadCTE("m.id") + `
 			select 1 from thread t
 			where t.author->>'kind' = 'session'
 			  and t.` + myAgentUnreadReplyTest("t.id", "mark.at") + `
 		  )
 	)`
-	myAgentInboxRoots = myAgentMarks + myAgentDismissedRootSet + `
+	myAgentInboxRoots = myAgentMarks + `
 	roots as (
 		select m.id as root_id, null::timestamptz as dismissed_at
 		from messages m
 		where ` + myAgentRootFilter("m") + `
-		  and not ` + myAgentDismissedRoot("m.id") + `
+		  and ` + myAgentLiveRoot("m") + `
 	)`
 	// The Dismissed view's roots are the marks themselves, in the order the view answers in, so
 	// one index scan answers the narrowing, the order and the cursor
