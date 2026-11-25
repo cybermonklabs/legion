@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -18,18 +19,19 @@ import (
 // wakeWriteRetry is how long the daemon waits before it makes again a write that keeps its record
 // of a paced wake true and that failed (writeAgainUntilMade): long enough that a database which
 // stopped answering is not asked every second, and short beside the hour Envoy keeps a role's
-// message.
+// message. It is the wait of every such write the daemon makes; a test of the retry sets one of
+// milliseconds in its place (catchUpPacing.retry, projectPause.retry).
 const wakeWriteRetry = 15 * time.Second
 
-// writeAgainUntilMade makes again a write that has just failed, every wakeWriteRetry until it
-// succeeds or ctx ends, telling failed each further failure. It is for the writes that follow a
-// change in the wake pacing's queues and that nothing else makes before the next boot: the join
-// and the let-out that give a held catch-up its due moment (catchUpPacing), and the stop and the
-// start of a resume's stuck clock (projectPause.writeResumeClock). write bounds its own try. It
-// blocks, so a caller inside a machine's decision, a commit's hook or the pacer's turn runs it on
-// a goroutine of its own.
-func writeAgainUntilMade(ctx context.Context, write func(context.Context) error, failed func(error)) {
-	for backoff.Sleep(ctx, wakeWriteRetry) == nil {
+// writeAgainUntilMade makes again a write that has just failed, every wait until it succeeds or ctx
+// ends, telling failed each further failure. It is for the writes that follow a change in the wake
+// pacing's queues and that nothing else makes before the next boot: the join and the let-out that
+// give a held catch-up its due moment (catchUpPacing), and the stop and the start of a resume's
+// stuck clock (projectPause.writeResumeClock). wait is wakeWriteRetry in the daemon. write bounds
+// its own try. It blocks, so a caller inside a machine's decision, a commit's hook or the pacer's
+// turn runs it on a goroutine of its own.
+func writeAgainUntilMade(ctx context.Context, wait time.Duration, write func(context.Context) error, failed func(error)) {
+	for backoff.Sleep(ctx, wait) == nil {
 		err := write(ctx)
 		if err == nil || ctx.Err() != nil {
 			return
@@ -63,6 +65,9 @@ type catchUpPacing struct {
 	// wake wakes the lane of an issue's notices once its row is due (workflowRuntime.wakeOutbox).
 	wake func(string, record.OutboxKind)
 	log  *slog.Logger
+	// retry is how long a write of this type that failed waits before it is made again (again),
+	// and zero is wakeWriteRetry, which is the wait the daemon builds it with (openWorkflow).
+	retry time.Duration
 
 	mu sync.Mutex
 	// places is each held row's place, by the row's id. A nil place is a row whose join is under
@@ -86,11 +91,12 @@ func (p *catchUpPacing) again(what string, id int64, issue string, err error, wr
 	if err == nil || p.ctx.Err() != nil {
 		return
 	}
+	retry := cmp.Or(p.retry, wakeWriteRetry)
 	failed := func(err error) {
-		p.log.Warn("wake: could not "+what+"; trying again", "row", id, "issue", issue, "in", wakeWriteRetry, "error", err)
+		p.log.Warn("wake: could not "+what+"; trying again", "row", id, "issue", issue, "in", retry, "error", err)
 	}
 	failed(err)
-	go writeAgainUntilMade(p.ctx, write, failed)
+	go writeAgainUntilMade(p.ctx, retry, write, failed)
 }
 
 // join takes the held row id a place at the back of the pacer's second queue and binds the row's

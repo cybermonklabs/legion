@@ -85,6 +85,10 @@ type projectPause struct {
 	// guards the map.
 	clockMu     sync.Mutex
 	clockWrites map[claim.Token]chan struct{}
+	// retry is how long a write of a stuck clock that failed waits before it is made again
+	// (writeResumeClock), and zero is wakeWriteRetry, which is the wait the daemon builds it with
+	// (newProjectPause).
+	retry time.Duration
 }
 
 // newProjectPause builds the daemon's pause over st for cfg's project. Its flag reads no pause
@@ -375,12 +379,13 @@ func (p *projectPause) writeResumeClock(token claim.Token, issue string, role cl
 			defer cancel()
 			return write(ctx)
 		}
+		retry := cmp.Or(p.retry, wakeWriteRetry)
 		failed := func(err error) {
-			p.log.Warn("wake: could not "+what+"; trying again", "claim", token, "in", wakeWriteRetry, "error", err)
+			p.log.Warn("wake: could not "+what+"; trying again", "claim", token, "in", retry, "error", err)
 		}
 		if err := bounded(p.ctx); err != nil && p.ctx.Err() == nil {
 			failed(err)
-			writeAgainUntilMade(p.ctx, bounded, failed)
+			writeAgainUntilMade(p.ctx, retry, bounded, failed)
 		}
 	}()
 }
