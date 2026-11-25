@@ -59,8 +59,12 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_delivery.go#queueAnsweredDelivery":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_delivery.go#replyComment":            "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	// The object nodes a request's own write states - an ask block a settlement opens
-	// (docs/ask_blocks.go#createAskBlock), a document's (queueNewArtifact) and its removal's
+	// The ask block a settlement opens, whose node is written before its row and caused by the
+	// event the settlement appends: its lock steps are driven with the document service's other
+	// store writers, since api's TestEveryObjectNodeWriterTakesTheStoreLockOrder comes with the
+	// object-node writers below.
+	"docs/ask_blocks.go#createAskBlock": "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
+	// The object nodes a request's own write states - a document's (queueNewArtifact) and its removal's
 	// (removeArtifact), an approval request's (openApprovalAsk), a message's
 	// (createStoredMessage), a session's reply's (insertSessionReply) and a broadcast copy's
 	// (writeBroadcast) - come with the slices that carry those writers: S3c-documents for the
