@@ -133,7 +133,7 @@ type currentDeploysAnswer struct {
 }
 
 func programOf(check model.CheckBlock, deploys []model.Deploy) (string, string) {
-	if check.Program != "" {
+	if false {
 		return check.Program, ""
 	}
 	switch len(deploys) {
