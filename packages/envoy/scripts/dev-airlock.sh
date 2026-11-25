@@ -208,9 +208,10 @@ SECRETS_KMS_KEY_ARN="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-5
 # only when both halves name that one service, as a deployment's daemon and its worker pods do,
 # so a request of the pod's for one of those secrets is granted at once.
 SERVICE="legion-daemon"
-# The names a check asks for, the stand-in hosts their proxy blocks bind them to, and where each one
-# listens. Each host is a .test name no resolver answers: BROKER_AIRLOCK_TEST_RESOLVE tells the
-# proxy where it is and BROKER_AIRLOCK_TEST_DIAL_ALLOW lets it dial that one address.
+# The names a check asks for, the stand-in hosts the kinds their proxy tags name bind them to, and
+# where each one listens. Each host but api.anthropic.com is a .test name no resolver answers:
+# BROKER_AIRLOCK_TEST_RESOLVE tells the proxy where it is and BROKER_AIRLOCK_TEST_DIAL_ALLOW lets
+# it dial that one address.
 #
 # Every bound host listens on port 443 of a loopback address of its own, rather than on one
 # address and a port the system picks. The airlock refuses a request whose Host header is not
@@ -316,7 +317,7 @@ DEMO_VALUE="the-real-airlock-demo-token-9f3a7c"
 SCOPED_VALUE="the-real-airlock-scoped-token-4b1e"
 # The values of the judge's own five secrets, which are stored values like the two above: what
 # a judged grant releases is the same sort of credential, read back by a check from the stand-in
-# its proxy block binds it to.
+# its kind, judged, binds it to.
 JUDGED_VALUE="the-real-airlock-judged-token-7c2d"
 UNJUDGED_VALUE="the-real-airlock-unjudged-token-5a8b"
 SHARED_VALUE="the-real-airlock-shared-token-2e6f"

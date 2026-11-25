@@ -1683,9 +1683,12 @@ whose `proxy` tag names no kind of the file, a way or `max-grant` its kind does 
 profile's row outside its kind; and it exits 1 when a name behind the proxy under the old file is
 behind none under the new one (`<n> name(s) leaving the proxy: ...`). Without it, a profile with
 no `proxy` string in a file that declares a kind takes its kind from its source's tag, which the
-file does not hold, so the check writes an `UNKNOWN:` line for it, and a run that refuses nothing
-it read exits 3, never 0. Exit 1 says the broker would refuse the file; 3 says the check could not
-read all it needed, so a job with no access to the store can tell the two apart by the number.
+file does not hold, so the check writes an `UNKNOWN:` line for it; and with `--against`, a secret
+behind a kind by its own tag is no name the check can see, so it compares each kind both files
+declare instead (`widens kind "<kind>": <row>`, `hosts kind "<kind>": <host> added`) and counts
+each such kind as not read. A run that refuses nothing it read but left something unread exits 3,
+never 0. Exit 1 says the broker would refuse the file; 3 says the check could not read all it
+needed, so a job with no access to the store can tell the two apart by the number.
 
 A command that works as `agent-secrets NAME -- command` works unchanged while its grant lives when
 `NAME` is behind the airlock, except in these named cases: Bun's `node:https`; the AWS uploads and
@@ -1770,16 +1773,29 @@ what RFC 3986 says it means — reads it as a path the prefix does not bound. Wh
 profile has an `allow`, the proxy refuses more before it reads the allow rows, each a path a
 service may read otherwise than the prefix test does: an empty segment, `//` (`path has an empty
 segment`); `%2F` in any case in the path as sent (`path has an encoded slash`), which a service
-may decode into a `/` the prefix never saw; and `\`, or `%5C` in any case (`path has a
-backslash`), which some servers read as `/`. Then come the kind's rows (`not allowed by rule`) and
-the profile's (`not allowed by the profile's rule`). After them, still only where one of the two
-has an `allow`, a request that carries `X-HTTP-Method-Override`, `X-HTTP-Method` or
-`X-Method-Override` (`request carries a method override header`), or a query parameter whose name,
-in any ASCII case, is `_method` or `%5Fmethod`, with any value or none
-(`request carries a method override parameter`), is refused, because a service that honours one
-acts on the method it names and not on the one the allow read. A kind with no `allow` bounds no
-path or method, so none of these refusals applies to it, and its clients' paths pass as they
-are: `gcloud storage` sends the `/` of an object's name as `%2F`, and an S3 key may hold `//`.
+may decode into a `/` the prefix never saw; `\`, or `%5C` in any case (`path has a backslash`),
+which some servers read as `/`; a segment whose text before its first `;` is `.` or `..`, with
+the `;` sent as it is or as `%3B` and the dots as they are or as `%2E` (`path has a parameter on
+a dot segment`), since Tomcat, Jetty and Spring take a `;` parameter off a segment before they
+resolve it, so `/v1/..;/admin` reads to them as `/admin`; and `%252F`, `%252E` or `%255C` in any
+case in the path as sent (`path has a double-encoded character`), which a server that decodes
+twice reads as `/`, `.` or `\`. Then come the kind's rows (`not allowed by rule`) and the
+profile's (`not allowed by the profile's rule`). After them, still only where one of the two has
+an `allow`, a request that carries `X-HTTP-Method-Override`, `X-HTTP-Method` or
+`X-Method-Override` is refused (`request carries a method override header`), and so is one whose
+query holds a parameter named `_method`, with any value or none (`request carries a method
+override parameter`), because a service that honours one acts on the method it names and not on
+the one the allow read. The proxy reads each parameter's name as the frameworks that honour it do
+(Express, Symfony and Laravel among them): it decodes the name's percent-escapes, with `+` as a
+space, takes off leading spaces, reads `.`, a space and `[` as `_`, and folds ASCII case, so
+`_meth%6Fd`, `%5Fmethod`, `.method` and `+_method` each count as `_method`; a name with a `%` that
+starts no valid escape is refused for the same reason, since what a service makes of it is not
+known. A `_method` field of a form body is not refused: the decision never reads the body, which
+the proxy streams to the service unread, and Rails, Laravel and Symfony honour that field too, so
+a kind whose service does must not count on its `allow` to bound the method of a form post. A kind
+with no `allow` bounds no path or method, so none of these refusals applies to it, and its
+clients' paths pass as they are: `gcloud storage` sends the `/` of an object's name as `%2F`, and
+an S3 key may hold `//`.
 
 A name's fingerprint is part of what a grant of it was decided under. For a name behind a kind it
 holds the kind and that kind's `allow`, and the secret's `proxy-narrowed` tag; for a profile it
