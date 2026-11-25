@@ -3516,6 +3516,60 @@ test("a take-up that waits for the kinds of write lets a kept refused write take
   });
 });
 
+// A drop of the person's writes ends a take-up that waits for the kinds of write, and the take-up
+// does nothing once they come (`resume`). A surface that claims a text after a refused write of
+// that text went out keeps its claim while it draws it (two rows up). So the kinds coming late let
+// no such claim go. Here bob's sign-in drops what the reload kept of alice's, and his own write
+// and claim follow.
+test("a take-up a drop ended lets no unsent claim a surface still draws go once the kinds of write come", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    keepWrite(tab.storage, keyMinted(Date.now()), { target: "issue:CORE-1" });
+    const client = signedIn("alice");
+    const kinds = Promise.withResolvers<void>();
+    surface.claims = true;
+    try {
+      const writes = new Writes(client, tab.page(), memoryFiles());
+      writes.signedIn("alice");
+      writes.resume("alice", () => kinds.promise);
+      await settle();
+      client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+      writes.signedIn("bob");
+      expect(writes.notTakenUp()).toEqual([]);
+
+      void claimedPress(writes, () => Promise.reject(changed));
+      await settle();
+      const claim = writes.claimUnsent({
+        detail: { text: "Mine" },
+        kind: claimedWrite,
+        label: "Rename the priority",
+        refusal: changed,
+        request: patch,
+      });
+      expect(writes.rows()).toMatchObject([
+        { claimed: true, detail: { text: "Mine" }, login: "bob", sent: true, status: "refused" },
+        { claimed: true, detail: { text: "Mine" }, id: claim, sent: false, status: "refused" },
+      ]);
+      const claimKey = writes.rows()[1]?.key ?? "";
+
+      kinds.resolve();
+      await settle();
+      expect(
+        writes.rows().map((one) => one.id),
+        "the kinds coming let go the unsent claim a surface still draws"
+      ).toContain(claim);
+      expect(tab.kept(claimKey)).toMatchObject({ sent: false, state: keptConflict });
+    } finally {
+      // Let in whichever step failed, so no take-up is left in the module's `takeUpsWaiting`
+      // for a later row's `kindsRegistered` to end.
+      kinds.resolve();
+      await settle();
+      surface.claims = false;
+      tab.close();
+    }
+  });
+});
+
 // Whether a write goes under its key is its press's to say (`WriteSpec.method`), and a reload
 // reads it back from what was kept (`KeptWrite.keyed`), not from a request: a write its kind
 // makes again from its own record, kept before any attempt of it went out, holds none. So the

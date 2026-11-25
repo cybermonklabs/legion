@@ -115,7 +115,8 @@ export function askedSurface<P extends AskedSurfaceProps>(
     if (!open) held.text = "";
     // Whether this open's download failed online: the alert then stands in the box's place, and
     // holds the focus and the keys until the reader closes it. A closed surface keeps no failure,
-    // so the next open asks for the chunk again, also when the host closed it.
+    // so the next open asks for the chunk again: every close, the alert's own among them, is the
+    // host's (`onClose`).
     const [downloadFailed, setDownloadFailed] = useState(false);
     if (!open && downloadFailed) setDownloadFailed(false);
     // How many times the reader has closed the alert that stood in the surface's place: the
@@ -168,7 +169,6 @@ export function askedSurface<P extends AskedSurfaceProps>(
         name={name}
         onClose={() => {
           closed(closes + 1);
-          setDownloadFailed(false);
           onClose();
         }}
       />

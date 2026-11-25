@@ -249,8 +249,8 @@ test("a read of the state asked while the header's pin is out waits for its answ
   }
 });
 
-/** Opens one of the header's three text editors, as the reader does, and hands back its field. */
-const editors: Record<"parent" | "route" | "title", (user: UserEvent) => Promise<HTMLElement>> = {
+/** Opens the header's route or parent editor, as the reader does, and hands back its field. */
+const editors: Record<"parent" | "route", (user: UserEvent) => Promise<HTMLElement>> = {
   parent: async (user) => {
     await user.click(screen.getByRole("button", { name: "None, set parent issue" }));
     return screen.getByRole("textbox", { name: "Parent" });
@@ -259,18 +259,15 @@ const editors: Record<"parent" | "route" | "title", (user: UserEvent) => Promise
     await user.click(screen.getByRole("button", { name: "Messages default to no route" }));
     return screen.getByRole("textbox", { name: "Message route" });
   },
-  title: async (user) => {
-    await user.click(screen.getByRole("heading", { level: 1, name: issue.title }));
-    return screen.getByRole("textbox", { name: "Issue title" });
-  },
 };
 
-// The Escape that cancels an IME composition is the input method's key: the title's, the route's
-// and the parent's editor each stay open with the reader's draft. Chromium and Firefox mark such
-// a key `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode 229.
-// A plain Escape after it is the reader's, and drops the draft and closes the editor.
+// The Escape that cancels an IME composition is the input method's key: the route's and the
+// parent's editor each stay open with the reader's draft. Chromium and Firefox mark such a key
+// `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode 229. A plain
+// Escape after it is the reader's, and drops the draft and closes the editor. The title's editor
+// takes both keys under both marks in the row below.
 test.each(
-  (["title", "route", "parent"] as const).flatMap((editor) =>
+  (["route", "parent"] as const).flatMap((editor) =>
     COMPOSITION_MARKS.map(([mark, marked]) => [editor, mark, marked] as const)
   )
 )("an Escape that ends an IME composition in the %s's editor, marked by %s, leaves the editor open with its draft", async (editor, _mark, marked) => {
@@ -294,42 +291,6 @@ test.each(
     expect(field).not.toBeInTheDocument();
   } finally {
     view.unmount();
-  }
-});
-
-// The Enter that confirms an IME composition is the input method's key too: the title's editor
-// stays open with the reader's draft and sends nothing, where a save would write the title
-// mid-word. Both marks of such a key are pressed, one after the other. A plain Enter after them
-// is the reader's, and saves the title, once.
-test("an Enter that ends an IME composition in the title's editor keeps the editor open with its draft, and a plain Enter then saves it", async () => {
-  const client = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const typed = "Pin the issue from its tab";
-  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: typed });
-  const view = renderHeader(client, <Header state={unpinnedState} />);
-  try {
-    const field = await editors.title(view.user);
-    await waitFor(() => expect(field).toHaveFocus());
-    await view.user.clear(field);
-    await view.user.type(field, typed);
-    for (const [, marked] of COMPOSITION_MARKS) {
-      // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's
-      // keyCode 229), so the composition's Enter is sent as the event itself.
-      fireEvent.keyDown(field, { ...marked, key: "Enter" });
-      expect(field).toBeInTheDocument();
-      expect(field).toHaveValue(typed);
-      expect(field).toHaveFocus();
-    }
-    expect(patchIssue).not.toHaveBeenCalled();
-
-    await view.user.keyboard("{Enter}");
-    expect(field).not.toBeInTheDocument();
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    expect(patchIssue).toHaveBeenCalledWith(issue.key, { title: typed }, keyedAttempt);
-  } finally {
-    view.unmount();
-    patchIssue.mockRestore();
   }
 });
 

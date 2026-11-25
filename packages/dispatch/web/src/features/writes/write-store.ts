@@ -1198,21 +1198,26 @@ export class Writes {
     takingUp.ask();
     void registered.promise.then(async () => {
       takeUpsWaiting.delete(registered.resolve);
+      // A take-up ended meanwhile has nothing left to take up: a drop of the person's writes, or
+      // a Discard of the last of them, forgot every one (`#dropKept`, `clear`, `discardKept`). So
+      // it does nothing as the kinds come. Run, it would let go an unsent claim a surface still
+      // draws (`#supersedeUnsent`), at a moment only the chunk's download sets.
+      if (this.#takingUp !== takingUp) return;
       // The person's writes are taken up whoever is signed in by now - they themselves, or no one
-      // after a lapse, to wait for the sign-in that follows (`signedIn`). A drop meanwhile ended
-      // the take-up already and left it nothing to take up, and one while it reads an upload's
-      // file ends it there (`#dropKept`, `clear`).
+      // after a lapse, to wait for the sign-in that follows (`signedIn`). A drop while the take-up
+      // reads an upload's file ends it there (`#dropKept`, `clear`).
       await this.#takeUp();
       if (this.#takingUp === takingUp) this.#endTakeUp();
     });
   }
 
   /** Ends the take-up still waiting for the kinds of write, if one is: it is done, or a drop of
-   *  its person's writes left it nothing to take up (`#dropKept`, `clear`). Every write pressed
-   *  meanwhile that the store still holds joins its line now, in press order, as the newest in
-   *  it. One a drop ended stays in `takeUpsWaiting` until the kinds come, and finds nothing to
-   *  take up then (`resume`). Its list of the writes pressed meanwhile is emptied here, so such a
-   *  take-up holds none of those writes until then, nor their requests and files. */
+   *  its person's writes left it nothing to take up (`#dropKept`, `clear`, `discardKept`). Every
+   *  write pressed meanwhile that the store still holds joins its line now, in press order, as the
+   *  newest in it. One ended before the kinds come stays in `takeUpsWaiting` until they do, and
+   *  does nothing then (`resume`): it takes nothing up and lets no unsent claim go. Its list of
+   *  the writes pressed meanwhile is emptied here, so such a take-up holds none of those writes
+   *  until then, nor their requests and files. */
   #endTakeUp(): void {
     const takingUp = this.#takingUp;
     if (takingUp === undefined) return;
@@ -1650,9 +1655,11 @@ export class Writes {
   /** Lets go of each write claimed with none of it sent (`claimUnsent`) that a refused write which
    *  went out carries too (`WriteKind.supersedes`): the refused write stands for the reader's text
    *  alone, so the shell's line never names it twice. `all` lets such a claim go whether a surface
-   *  holds it still or not, as a conflict that stays lands and once a reload has taken every write
-   *  up, in whatever order. `unclaimed` lets go only one on the shell's line, as a surface hands a
-   *  write back (`unclaim`): a surface that still draws its claim keeps it until it goes too. */
+   *  holds it still or not, at two moments only, in whatever order the two writes came: as a
+   *  conflict that stays lands, and as a reload's take-up takes every write up (`#takeUp`), which
+   *  a take-up ended before the kinds came never does (`resume`). `unclaimed` lets go only one on
+   *  the shell's line, as a surface hands a write back (`unclaim`): a surface that still draws its
+   *  claim keeps it until it goes too. */
   #supersedeUnsent(which: "all" | "unclaimed"): void {
     const conflicts = [...this.#entries.values()].filter(
       ({ write }) => write.status === "refused" && isConflict(write.refusal)

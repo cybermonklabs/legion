@@ -11,22 +11,13 @@ interface ChunkBoundaryProps {
   /** What draws in the place of `children` once a chunk under them could not load
    *  (`ChunkNotLoaded`, `chunkComponent`): `fallback`, unless a host names something else. */
   readonly notLoaded?: ReactNode;
-  /** For a host whose part draws with no reader action (the two lists of writes, the
-   *  reference-preview layer): a value that changes whenever the part may be wanted again - a
-   *  change of which writes a list shows or of where one stands, pressed by the reader or
-   *  answered by Dispatch (`features/writes/write-hosts.tsx`); a card the reader asks for with a
-   *  pointer over a reference, a keyboard focus on one, or the caret entering a link of an
-   *  editable document where a hover opens no card (`features/refs/RefPreviewLayer.tsx`). For
-   *  these hosts, never a move to another address: no one waits on the download that it would
-   *  start. A boundary that has caught a throw draws `children` again once the value changes, so
-   *  the part mounts afresh and asks for its chunk again (`chunkComponent` keeps no failed
-   *  download), rather than drawing nothing for as long as its host stays mounted: no recovery
-   *  reload need follow the failure (the comment below says when none does), and the reader can
-   *  stay on that page for as long as they like. For a surface the reader opens with a key
-   *  (`askedSurface`): the count of the reader's closes of its alert, a close on a move to
-   *  another address included. A new count only draws a closed surface again, which asks for
-   *  nothing. A boundary that has not failed draws nothing anew for a change, so the value may
-   *  change often. */
+  /** A value that changes whenever the host's part may be wanted again. A boundary that has
+   *  caught a throw draws `children` again once the value changes, so the part mounts afresh and
+   *  asks for its chunk again (`chunkComponent` keeps no failed download), rather than drawing
+   *  nothing for as long as its host stays mounted: no recovery reload need follow the failure
+   *  (the comment below says when none does), and the reader can stay on that page for as long
+   *  as they like. A boundary that has not failed draws nothing anew for a change, so the value
+   *  may change often. */
   readonly reset?: unknown;
 }
 
