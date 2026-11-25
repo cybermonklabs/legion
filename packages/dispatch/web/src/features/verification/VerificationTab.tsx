@@ -62,6 +62,7 @@ const REASON_WORDS: Record<
   (repo: string | undefined) => string
 > = {
   no_pull_request_or_branch: () => "This issue holds no pull request and no branch.",
+  not_merged: () => "The work has no merge that Dispatch knows.",
   read_failed: (repo) =>
     repo === undefined
       ? "A read Dispatch made did not answer."

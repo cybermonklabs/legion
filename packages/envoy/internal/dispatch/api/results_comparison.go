@@ -435,7 +435,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 		}
 		compared := c.comparedWith(ctx, check)
 		for _, result := range check.Results {
-			if basisAt(compared.bases, result.CommitSHA) != nil {
+			if c.resultBasisAt(ctx, check.IssueKey, compared.bases, result) != nil {
 				continue
 			}
 			key := [2]string{result.CheckIssueKey, result.CommitSHA}
@@ -499,7 +499,7 @@ func (c *comparisonReader) commitStands(
 	if basis := compared.derivedAt(result); basis != nil {
 		return model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: basis}
 	}
-	if basis := basisAt(compared.bases, result.CommitSHA); basis != nil {
+	if basis := c.resultBasisAt(ctx, check.IssueKey, compared.bases, result); basis != nil {
 		return model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: basis}
 	}
 	switch compared.reason {
@@ -558,6 +558,31 @@ func basisAt(bases []model.CheckBasis, sha string) *model.CheckBasis {
 		if basis.Commit == sha {
 			found := basis
 			return &found
+		}
+	}
+	return nil
+}
+
+// resultBasisAt is the basis naming result's commit among bases that is of the repository the
+// commit is taken to be of (commitRepositoryName), and nil where none is: a basis naming no
+// repository is of the issue's own, and one naming a repository is of that one (headBasis). So a
+// result of the issue's own repository never stands at the head of a pull request of a linked
+// one, nor a linked result at a head of the issue's own, whatever commit the two heads share. A
+// commit no basis names reads nothing, and a basis a read names (`?at=`) is of every repository.
+// Where the issue resolves to no repository, or its resolve did not answer, no basis can be told
+// for the issue's own from a linked one, and the commit alone decides (basisAt).
+func (c *comparisonReader) resultBasisAt(ctx context.Context, issueKey string, bases []model.CheckBasis, result model.CheckResult) *model.CheckBasis {
+	found := basisAt(bases, result.CommitSHA)
+	if found == nil || found.Kind == model.CheckBasisNamed {
+		return found
+	}
+	if own, answered := c.repositoryOf(ctx, issueKey); !answered || own == nil {
+		return found
+	}
+	repo := c.commitRepositoryName(ctx, issueKey, result.CommitRepo)
+	for _, basis := range bases {
+		if basis.Commit == result.CommitSHA && strings.EqualFold(basis.Repo, repo) {
+			return &basis
 		}
 	}
 	return nil

@@ -5261,6 +5261,9 @@ Each item below names a path with its method and identity, then its purpose.
   A repository proved not to hold the commit gives `400 DEPLOY_COMMIT_UNKNOWN`. An unsuccessful GitHub read proves no absence.
   The caller needs deployment-wide write access. A project-scoped credential cannot record a deploy, even for its own project's repository.
   `recorded_by` names the credential's writer, never an actor chosen in the body.
+  An unbound personal token names its proved account, with the token's ID, name and scopes in `act`.
+  A credential-proved nonempty session keeps that session's identity.
+  This is audit attribution, not person-scope authority.
   `201` carries `{deploy}` for the new build. Recording the current commit again gives `200` with that unchanged row.
   A different build whose time precedes the current deploy gives `409 DEPLOY_NOT_NEWEST`.
   The delivery timeline also records program `delivery` after its configured production job succeeds.
