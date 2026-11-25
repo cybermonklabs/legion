@@ -396,9 +396,10 @@ func (w *workflowRuntime) markClaimsOfGateHolders(ctx context.Context, tx pgx.Tx
 // stop left in its phase (workflow.Engine.ReturnToWork): it resumes the phase it stands in at a new
 // phase entry, with its generation and its sessions, and every other claim of it that has run
 // comes back too. No event brings the member back, so the return reads Dispatch as the record last
-// read it (recordedReading). Its start then goes through the children-first judgement (R9): where
-// an open Dispatch child holds the start of its phase, it waits in awaiting_children instead, and
-// the start its worker was owed is finished undelivered (holdForOpenChildren).
+// read it (recordedReading). The return judges R9 before it starts anything
+// (workflow.Engine.ReturnMemberToWork): where an open Dispatch child of the member holds the start
+// of the phase it stands in, planning through accepting, it waits in awaiting_children holding
+// that start instead, and no claim of it starts, nor its step.
 //
 // The step runs before the hand-overs (step 9), so it reads the store as the release before left
 // it, as `legion members-back` reads it before the upgrade (ListMembersBack): the members it brings
@@ -416,10 +417,7 @@ func (w *workflowRuntime) bringMembersBack(ctx context.Context, tx pgx.Tx) error
 		if issue == nil {
 			return fmt.Errorf("bring back %s: the daemon records no such issue", member.Key)
 		}
-		if err := w.engine.ReturnToWork(ctx, tx, *issue, recordedReading(*issue)); err != nil {
-			return fmt.Errorf("bring back %s: %w", member.Key, err)
-		}
-		waits, err := w.holdForOpenChildren(ctx, tx, member.Key)
+		waits, err := w.engine.ReturnMemberToWork(ctx, tx, *issue, recordedReading(*issue))
 		if err != nil {
 			return fmt.Errorf("bring back %s: %w", member.Key, err)
 		}
@@ -447,40 +445,6 @@ func recordedReading(issue record.Issue) intake.DispatchIssue {
 	}
 	return intake.DispatchIssue{Key: issue.Key, Seq: issue.LastDispatchSeq, Status: status, Title: issue.Title, Parent: parent,
 		Rank: issue.Rank, Priority: issue.Priority, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo}
-}
-
-// holdForOpenChildren moves key, a member that the conversion has just brought back, into
-// awaiting_children in place of the start of its phase, where an open Dispatch child of key holds
-// that start (R9 of dispatch://INFRA-3320). This is the move that the admission pass makes of a
-// started parent whose start is written and not delivered (workflow.Engine.StopForChildren), over
-// the same judgement of its open children (record.OpenChildWaits): every start that the return
-// owes its worker is finished undelivered. The admission pass makes no such move while the
-// member's gate root waits in the line for its first start, as a returned root does, so the step
-// makes it itself. It says whether it moved key.
-func (w *workflowRuntime) holdForOpenChildren(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
-	back, err := w.records.Issue(ctx, tx, key)
-	if err != nil || back == nil || !record.OpenChildHolds(back.Phase) {
-		return false, err
-	}
-	waits, err := record.OpenChildWaits(ctx, tx, w.records, w.dispatchProject, []record.Issue{*back})
-	if err != nil {
-		return false, err
-	}
-	wait, open := waits[key]
-	if !open {
-		return false, nil
-	}
-	starts, err := w.records.OwedStarts(ctx, tx, w.dispatchProject)
-	if err != nil {
-		return false, err
-	}
-	var owed []record.OwedStart
-	for _, start := range starts {
-		if start.Issue == key {
-			owed = append(owed, start)
-		}
-	}
-	return w.engine.StopForChildren(ctx, tx, *back, wait.Open, owed)
 }
 
 // MembersBackListing is what `legion members-back` prints of a project (ListMembersBack): each

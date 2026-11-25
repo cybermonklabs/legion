@@ -113,12 +113,12 @@ func pwMidPhase(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, st
 	return token
 }
 
-// pwDeliver records start, a phase worker's start row of the parent, as delivered to token's
-// claim, as the outbox leaves a claim it ran that row on (supervise's queue): the claim holds the
-// row's task for its phase, run and entry, confirmed by a turn, it was given that entry where the
-// row carries one (a start at no entry leaves the entry the claim was given as it stands), and the
-// row is finished.
-func pwDeliver(t *testing.T, pool *pgxpool.Pool, token claim.Token, start record.SuperviseRequest) {
+// pwDeliver records start, a phase worker's start row of key, as delivered to token's claim, as
+// the outbox leaves a claim it ran that row on (supervise's queue): the claim holds the row's task
+// for its phase, run and entry, confirmed by a turn, it was given that entry where the row carries
+// one (a start at no entry leaves the entry the claim was given as it stands), and the row is
+// finished.
+func pwDeliver(t *testing.T, pool *pgxpool.Pool, key string, token claim.Token, start record.SuperviseRequest) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, entry, confirmed_at)
@@ -132,11 +132,11 @@ func pwDeliver(t *testing.T, pool *pgxpool.Pool, token claim.Token, start record
 	inTx(t, pool, func(tx pgx.Tx) {
 		var id int64
 		if err := tx.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-			and payload->>'role' = $2 order by id desc limit 1`, spParent, string(start.Role)).Scan(&id); err != nil {
-			t.Fatalf("read the %s's start of %s: %v", start.Role, spParent, err)
+			and payload->>'role' = $2 order by id desc limit 1`, key, string(start.Role)).Scan(&id); err != nil {
+			t.Fatalf("read the %s's start of %s: %v", start.Role, key, err)
 		}
 		if err := record.NewStore().FinishOutbox(ctx, tx, id, ""); err != nil {
-			t.Fatalf("finish the %s's start %d of %s: %v", start.Role, id, spParent, err)
+			t.Fatalf("finish the %s's start %d of %s: %v", start.Role, id, key, err)
 		}
 	})
 }
@@ -1301,7 +1301,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("the retry's start = %+v over the phases row %+v; want the retry's own task on entry 3, the row's task the transition's", retry, row)
 		}
 		putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateWorking, "")
-		pwDeliver(t, pool, token, retry)
+		pwDeliver(t, pool, spParent, token, retry)
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)
@@ -1350,7 +1350,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("the retry's start = %+v; want the retry's own task on entry 3, not the entry's work", retry)
 		}
 		putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateIdle, "")
-		pwDeliver(t, pool, token, retry)
+		pwDeliver(t, pool, spParent, token, retry)
 		retired, err := pool.Exec(context.Background(), `delete from pending_task_deliveries where claim_token = $1 and delivery_id = 'outbox:delivered'`,
 			string(token))
 		if err != nil || retired.RowsAffected() != 1 {
@@ -1405,7 +1405,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("the retry's start = %+v over the phases row %+v; want the retry's own task on entry 3, the row's task still empty", retry, row)
 		}
 		putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateWorking, "")
-		pwDeliver(t, pool, token, retry)
+		pwDeliver(t, pool, spParent, token, retry)
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)
@@ -1440,7 +1440,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if !resume.ResumeTask || resume.Entry != 0 || !strings.Contains(resume.Task, "Resume the existing phase work.") {
 			t.Fatalf("the catch-up's start = %+v, want the phase's resume task at no entry", resume)
 		}
-		pwDeliver(t, pool, token, resume)
+		pwDeliver(t, pool, spParent, token, resume)
 		if _, err := pool.Exec(context.Background(), `update claims set state = $2 where token = $1`,
 			string(token), string(supervise.StateWorking)); err != nil {
 			t.Fatalf("record the implementer's claim in the turn the resume task started: %v", err)

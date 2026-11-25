@@ -20,8 +20,9 @@ import (
 // keeps the start it held for the moment no open child is left (record.Issue.ChildrenWait). This
 // file holds the one move every door takes — the transition's guard (Engine.transition), the
 // release of a hold (retryPhase), the restart of a stopped task (restartTask), the promotion of a
-// carried run (carriedStartHeld) and the admission pass (StopForChildren) — what the move says,
-// and the return the admission pass makes once no open child is left (ReturnFromChildren).
+// carried run (carriedStartHeld), the return of a member the first boot brings back
+// (ReturnMemberToWork) and the admission pass (StopForChildren) — what the move says, and the
+// return the admission pass makes once no open child is left (ReturnFromChildren).
 
 // AwaitingChildrenNoticeKind is the kind of the notice a parent's architect is told when the
 // parent enters awaiting_children (awaitingChildrenNotice). It replaces the phase-finished notice
@@ -78,10 +79,11 @@ type childrenHold struct {
 
 // awaitChildren moves issue into awaiting_children in place of the start hold names, and is the
 // one move into that phase: the transition's guard, the release of a hold, the restart of a
-// stopped task at its first step (restartTask), the promotion of a carried run (carriedStartHeld)
-// and the admission pass all write it here. w is the walk of issue's run as the caller holds it,
-// after any move of its task (moveTask): each door has read it already, so the move reads it no
-// second time. In one transaction it
+// stopped task at its first step (restartTask), the promotion of a carried run (carriedStartHeld),
+// the return of a member the first boot brings back (ReturnMemberToWork) and the admission pass all
+// write it here. w is the walk of issue's run as the caller holds it, after any move of its task
+// (moveTask): each door has read it already, so the move reads it no second time. In one
+// transaction it
 //
 //   - writes in_progress where the record shows another status (Engine.status): the parent's
 //     work is under way in its children (dispatch://INFRA-3320 R11);
@@ -215,15 +217,54 @@ func (e *Engine) childrenHolding(ctx context.Context, tx pgx.Tx, issue record.Is
 // children of issue that hold it, none where to is no phase of planning through accepting or the
 // pull request has merged. The guard of a move between phases reads it after the phase the issue
 // leaves (childrenHolding); the restart of a stopped task at its first step reads it alone
-// (restartTask), since that start is raised from held whatever place the stop stood at, and so does
-// the promotion of a carried run (carriedStartHeld), whose start is of the phase it stands in. The
-// release of a hold reads it through the guard that adds the exemption of an entry a move out of
-// retro or merging raised (childrenHoldingSamePhaseStart).
+// (restartTask), since that start is raised from held whatever place the stop stood at, and so do
+// the promotion of a carried run (carriedStartHeld) and the return of a member the first boot
+// brings back (ReturnMemberToWork), whose starts are of the phase each stands in. The release of a
+// hold reads it through the guard that adds the exemption of an entry a move out of retro or
+// merging raised (childrenHoldingSamePhaseStart).
 func (e *Engine) childrenHoldingStart(ctx context.Context, tx pgx.Tx, issue record.Issue, to phase.Phase, pr *record.PullRequest) ([]record.OpenChild, error) {
 	if !record.OpenChildHolds(to) || (pr != nil && pr.State == record.PullRequestMerged) {
 		return nil, nil
 	}
 	return e.childrenOpen(ctx, tx, issue)
+}
+
+// childrenHoldingSamePhaseStart is R9's guard on the release of a hold (retryPhase), a start of the
+// phase issue already stands in on the entry that phase's role stands on: the open Dispatch
+// children of issue that hold it (childrenHoldingStart), none where R9 exempts that start for its
+// pull request or for that entry (samePhaseExempt). It answers the pull request it read too, which
+// the retry composes its task from and reads its review round on, whether or not children hold the
+// start. The promotion of a carried run raises an entry of its own and reads no such exemption
+// (carriedStartHeld).
+func (e *Engine) childrenHoldingSamePhaseStart(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.OpenChild, *record.PullRequest, error) {
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, nil, err
+	}
+	open, err := e.childrenHoldingStart(ctx, tx, issue, issue.Phase, pr)
+	if err != nil || len(open) == 0 {
+		return nil, pr, err
+	}
+	if _, exempt, err := e.samePhaseExempt(ctx, tx, issue, pr); err != nil || exempt {
+		return nil, pr, err
+	}
+	return open, pr, nil
+}
+
+// samePhaseExempt says whether R9 leaves alone a start of the phase issue stands in that open
+// children would hold: its pull request pr has merged, or the role of that phase stands on an
+// entry a move out of retro or merging raised (acceptedEntry). It answers that role's phases row,
+// which it reads only where pr has not merged. The admission pass's stop (StopForChildren) and the
+// release of a hold (childrenHoldingSamePhaseStart) each read the exemption here.
+func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (record.PhaseRow, bool, error) {
+	if pr != nil && pr.State == record.PullRequestMerged {
+		return record.PhaseRow{}, true, nil
+	}
+	entry, err := e.phaseRow(ctx, tx, issue.Key, RoleFor(issue.Phase))
+	if err != nil {
+		return record.PhaseRow{}, false, err
+	}
+	return entry, acceptedEntry(entry), nil
 }
 
 // holdForChildren moves issue to awaiting_children in place of the start of to that trigger's row
@@ -383,14 +424,14 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		return false, nil
 	}
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
-	if err != nil || (pr != nil && pr.State == record.PullRequestMerged) {
+	if err != nil {
+		return false, err
+	}
+	entry, exempt, err := e.samePhaseExempt(ctx, tx, issue, pr)
+	if err != nil || exempt {
 		return false, err
 	}
 	role := RoleFor(issue.Phase)
-	entry, err := e.phaseRow(ctx, tx, issue.Key, role)
-	if err != nil || acceptedEntry(entry) {
-		return false, err
-	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return false, err
@@ -446,10 +487,12 @@ func undeliveredStart(issue record.Issue, owed []record.OwedStart) bool {
 
 // acceptedEntry says whether row's entry was raised by a move out of retro or merging, the phases
 // past the daemon's acceptance of the issue (record.PhaseRow.EntryFrom): a role's move back out of
-// one of them, whose start R9 does not hold. It is the one statement of that exemption, read by the
-// admission pass (StopForChildren) and by the release of a hold, which restarts the held phase on
-// that same entry (retryPhase, through childrenHoldingSamePhaseStart). The promotion of a carried
-// run does not read it (carriedStartHeld): the entry it raises is of no move.
+// one of them, whose start R9 does not hold. It is the one statement of that exemption, which
+// samePhaseExempt reads for the admission pass (StopForChildren) and for the release of a hold,
+// which restarts the held phase on that same entry (retryPhase, through
+// childrenHoldingSamePhaseStart). The promotion of a carried run (carriedStartHeld) and the return
+// of a member the first boot brings back (ReturnMemberToWork) do not read it: the entry each raises
+// is of no move.
 func acceptedEntry(row record.PhaseRow) bool {
 	return record.AcceptedPhase(row.EntryFrom)
 }

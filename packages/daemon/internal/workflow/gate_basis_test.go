@@ -321,7 +321,8 @@ func TestARegistrationOnAPendingBasisLeavesTheStepClosed(t *testing.T) {
 		t.Fatalf("admission's pass moved %v into a wait, want the root left at admitted", entered)
 	}
 	seeds := pendingSeeds(t, pool, gatedRoot)
-	want := record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: gateDoc, BasisArtifactID: basisDoc, BasisVersion: 4, Ask: "ask-100", Generation: 1}
+	want := record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: gateDoc, BasisArtifactID: basisDoc, BasisVersion: 4, Ask: "ask-100",
+		Generation: 1, RegisteredAt: basisEngineNow}
 	if len(seeds) != 1 || seeds[0] != want {
 		t.Fatalf("pending-basis seeds = %#v, want %#v", seeds, want)
 	}

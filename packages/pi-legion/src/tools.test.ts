@@ -55,7 +55,7 @@ const pi = {
 } as unknown as PiApi;
 
 /** The Dispatch of a tool that must never read Dispatch. */
-const noDispatch = (): DispatchClient => {
+const noDispatch = async (): Promise<DispatchClient> => {
   throw new Error("no Dispatch read expected");
 };
 
@@ -927,7 +927,7 @@ function treeDispatch(openBlock = false) {
   });
   return {
     paths: board.paths,
-    dispatch: () =>
+    dispatch: async () =>
       new DispatchClient("http://dispatch.test", bearerCredential(DISPATCH_TOKEN), board.fetchImpl),
   };
 }
@@ -936,7 +936,7 @@ function treeDispatch(openBlock = false) {
  * over `daemon` and the pane's `dispatch`. */
 const gateTool = (
   daemon: () => LegionDaemonClient,
-  dispatch: () => DispatchClient | undefined,
+  dispatch: () => Promise<DispatchClient | undefined>,
   sessionIssue = "LEGION-208"
 ) =>
   createLegionTool({
@@ -962,7 +962,7 @@ test("register_gate takes the document reference the Dispatch tools take, and re
     artifactId: string,
     issue = "LEGION-208",
     sessionIssue = "LEGION-208",
-    pane: () => DispatchClient | undefined = dispatch
+    pane: () => Promise<DispatchClient | undefined> = dispatch
   ) =>
     gateTool(daemon, pane, sessionIssue).execute(
       "",
@@ -995,7 +995,7 @@ test("register_gate takes the document reference the Dispatch tools take, and re
       'register_gate could not look up document \\"notes\\" on LEGION-208 in Dispatch: document \\"notes\\" not found by slug',
     ],
     [
-      await run("spec", "LEGION-208", "LEGION-208", () => undefined),
+      await run("spec", "LEGION-208", "LEGION-208", async () => undefined),
       'register_gate cannot look up document \\"spec\\" on LEGION-208: this pane has no Dispatch configured; pass the document\'s id',
     ],
     [await run("spec", "LEGION-208", "LEGION-209"), `${root}; its root architect registers it`],
@@ -1257,7 +1257,7 @@ test("register_gate refuses a basis while the root's document holds an open deci
 
   // A pane with no Dispatch cannot make that test, so it registers no basis either.
   await expect(
-    gateTool(daemon, () => undefined).execute("", basisCall, undefined, undefined, context())
+    gateTool(daemon, async () => undefined).execute("", basisCall, undefined, undefined, context())
   ).resolves.toEqual({
     content: [
       {
@@ -1323,7 +1323,7 @@ test("register_plan takes the document reference the Dispatch tools take and ans
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
-      dispatch: () =>
+      dispatch: async () =>
         new DispatchClient(
           "http://dispatch.test",
           bearerCredential(DISPATCH_TOKEN),

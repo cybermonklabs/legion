@@ -549,9 +549,10 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
-// Ask reads GET /api/v1/asks/{id}: the ask's state and the actor its resolution names (the type
-// Ask). An ask Dispatch does not have is its 404 NOT_FOUND (Missing), and an answer that names no
-// state is an error, never an ask read as open or closed.
+// Ask reads GET /api/v1/asks/{id}: the ask's state and who closed it (the type Ask), the person
+// its answer names for an answered ask and the actor its resolution names for a resolved one. An
+// ask Dispatch does not have is its 404 NOT_FOUND (Missing), and an answer that names no state is
+// an error, never an ask read as open or closed.
 func (c *HTTPClient) Ask(ctx context.Context, id string) (Ask, error) {
 	var response askReadResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/asks/"+url.PathEscape(id), nil, &response); err != nil {
@@ -561,8 +562,11 @@ func (c *HTTPClient) Ask(ctx context.Context, id string) (Ask, error) {
 		return Ask{}, fmt.Errorf("Dispatch ask %q answered no state", id)
 	}
 	read := Ask{State: response.Ask.State}
-	if response.Ask.Resolution != nil {
-		read.ResolvedBy = Actor(response.Ask.Resolution.Actor)
+	switch answer, resolution := response.Ask.Answer, response.Ask.Resolution; {
+	case read.State == "answered" && answer != nil && answer.User != "":
+		read.ClosedBy = Actor{Kind: "user", ID: answer.User}
+	case resolution != nil:
+		read.ClosedBy = Actor(resolution.Actor)
 	}
 	return read, nil
 }

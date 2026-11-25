@@ -31,17 +31,20 @@ var oldestReleaseMigrations = append([]int{20261117034837, 20261119203047, 20261
 
 // The members of the world the release before left (seedMembersBackWorld).
 const (
-	backRoot       = "CAPTURE-10" // a root back in Legion's work, which owes its members
-	backReturned   = "CAPTURE-11" // a member of CAPTURE-10 in implementing, suspended by the daemon
-	backWaiting    = "CAPTURE-12" // a member of CAPTURE-10 in implementing, suspended by the daemon, with an open child
-	backOperator   = "CAPTURE-13" // a member of CAPTURE-10 whose implementer the operator suspended
-	backReleased   = "CAPTURE-14" // a member of CAPTURE-10 whose implementer the idle release suspended
-	backStopped    = "CAPTURE-15" // a member of CAPTURE-10 a person set to backlog
-	backPersonHeld = "CAPTURE-16" // a member of CAPTURE-10 whose Dispatch claim a person holds
-	backHandedOver = "CAPTURE-17" // a member of CAPTURE-20 with a hand-over in flight
-	backChild      = "CAPTURE-19" // an open Dispatch child of CAPTURE-12, which the daemon does not record
-	backParked     = "CAPTURE-20" // a root a person set to backlog, whose tree lingers
-	backTesting    = "CAPTURE-21" // a member of CAPTURE-20 in testing, suspended before the source existed
+	backRoot             = "CAPTURE-10" // a root back in Legion's work, which owes its members
+	backReturned         = "CAPTURE-11" // a member of CAPTURE-10 in implementing, suspended by the daemon
+	backWaiting          = "CAPTURE-12" // a member of CAPTURE-10 in implementing, suspended by the daemon, with an open child
+	backOperator         = "CAPTURE-13" // a member of CAPTURE-10 whose implementer the operator suspended
+	backReleased         = "CAPTURE-14" // a member of CAPTURE-10 whose implementer the idle release suspended
+	backStopped          = "CAPTURE-15" // a member of CAPTURE-10 a person set to backlog
+	backPersonHeld       = "CAPTURE-16" // a member of CAPTURE-10 whose Dispatch claim a person holds
+	backHandedOver       = "CAPTURE-17" // a member of CAPTURE-20 with a hand-over in flight
+	backAccepting        = "CAPTURE-18" // a member of CAPTURE-10 in accepting, suspended by the daemon
+	backChild            = "CAPTURE-19" // an open Dispatch child of CAPTURE-12, which the daemon does not record
+	backParked           = "CAPTURE-20" // a root a person set to backlog, whose tree lingers
+	backTesting          = "CAPTURE-21" // a member of CAPTURE-20 in testing, suspended before the source existed
+	backAcceptingWaiting = "CAPTURE-22" // a member of CAPTURE-10 in accepting, suspended by the daemon, with an open child
+	backAcceptingChild   = "CAPTURE-29" // an open Dispatch child of CAPTURE-22, which the daemon does not record
 )
 
 // seedMembersBackWorld writes, on st, a store at the schema of a release before the one that
@@ -55,8 +58,10 @@ const (
 //     it owes its members: issues.members_owed where the store holds the column, and the state its
 //     migration marks where it does not. CAPTURE-11 and CAPTURE-12 are suspended by the daemon,
 //     CAPTURE-12 under CAPTURE-19, an open Dispatch child; CAPTURE-13 by the operator; CAPTURE-14
-//     by the idle release; CAPTURE-15, which a person set to backlog, by the daemon; and CAPTURE-16,
-//     whose Dispatch claim a person holds, by the daemon;
+//     by the idle release; CAPTURE-15, which a person set to backlog, by the daemon; CAPTURE-16,
+//     whose Dispatch claim a person holds, by the daemon; and CAPTURE-18 and CAPTURE-22, in
+//     accepting, whose architect, the role of that phase, and implementer, a role that ran, are each
+//     suspended by the daemon, CAPTURE-22 under CAPTURE-29, an open Dispatch child;
 //   - CAPTURE-20, a root a person set to backlog, whose linger is ahead, with CAPTURE-21 in testing,
 //     its tester's claim suspended before the source existed (unknown), and CAPTURE-17, suspended
 //     by the daemon, which its linger's close handed over with a write that did not land.
@@ -83,6 +88,8 @@ func seedMembersBackWorld(t *testing.T, st *store.Store) *copyBoard {
 		{key: backPersonHeld, tree: backRoot, status: "in_progress", at: phase.Implementing, generation: 1, role: claim.RoleImplementer, by: supervise.SuspendedByDaemon},
 		{key: backHandedOver, tree: backParked, status: "in_progress", at: phase.Implementing, generation: 1, role: claim.RoleImplementer, by: supervise.SuspendedByDaemon},
 		{key: backTesting, tree: backParked, status: "testing", at: phase.Testing, generation: 1, role: claim.RoleTester, by: supervise.SuspendedByUnknown},
+		{key: backAccepting, tree: backRoot, status: "in_progress", at: phase.Accepting, generation: 1, role: claim.RoleArchitect, by: supervise.SuspendedByDaemon},
+		{key: backAcceptingWaiting, tree: backRoot, status: "in_progress", at: phase.Accepting, generation: 1, role: claim.RoleArchitect, by: supervise.SuspendedByDaemon},
 	}
 	board := &copyBoard{}
 	for _, c := range cases {
@@ -141,6 +148,17 @@ func seedMembersBackWorld(t *testing.T, st *store.Store) *copyBoard {
 			t.Fatalf("seed what the release before left: %v", err)
 		}
 	}
+	// The implementer of each member in accepting ran before it and stands suspended with its tree.
+	for _, key := range []string{backAccepting, backAcceptingWaiting} {
+		seedConversionClaim(t, pool, key, claim.RoleImplementer, backRoot, "suspended", "")
+		token, err := claim.NewToken("capture", key, claim.RoleImplementer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `update claims set suspended_by = $2 where token = $1`, string(token), string(supervise.SuspendedByDaemon)); err != nil {
+			t.Fatalf("seed the implementer of %s: %v", key, err)
+		}
+	}
 	var owedKept bool
 	if err := pool.QueryRow(ctx, `select exists (select 1 from information_schema.columns where table_name = 'issues'
 		and column_name = 'members_owed')`).Scan(&owedKept); err != nil {
@@ -151,7 +169,8 @@ func seedMembersBackWorld(t *testing.T, st *store.Store) *copyBoard {
 			t.Fatalf("mark %s as owing its members: %v", backRoot, err)
 		}
 	}
-	board.listing = append(board.listing, conversionSummary(backChild, "todo", 3, backWaiting))
+	board.listing = append(board.listing, conversionSummary(backChild, "todo", 3, backWaiting),
+		conversionSummary(backAcceptingChild, "todo", 3, backAcceptingWaiting))
 	return board
 }
 
@@ -293,16 +312,87 @@ func TestTheFirstBootBringsBackEachMemberItsRootsDepartureSuspended(t *testing.T
 	}
 }
 
+// stepStartsOf is each step record the outbox holds for key that starts a run, in id order.
+func stepStartsOf(t *testing.T, pool *store.Pool, key string) []record.StepRecord {
+	t.Helper()
+	var starts []record.StepRecord
+	for _, row := range rowsOfKind(t, pool, record.OutboxKindStepRecord) {
+		if row.Issue != key {
+			continue
+		}
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			t.Fatalf("decode outbox row %d: %v", row.ID, err)
+		}
+		if step := payload.(record.StepRecord); step.EndedAt == nil {
+			starts = append(starts, step)
+		}
+	}
+	return starts
+}
+
+// R9 of dispatch://INFRA-3320 judges a member the first boot brings back before its return starts
+// anything (bringMembersBack, workflow.Engine.ReturnMemberToWork), and a member in accepting, whose
+// return starts no phase worker and brings back every role of it that ran, is held as a member in
+// implementing is (CAPTURE-12 in TestTheFirstBootBringsBackEachMemberItsRootsDepartureSuspended).
+// CAPTURE-22, under CAPTURE-29, an open Dispatch child of its own project, waits in
+// awaiting_children holding the start of accepting, and the outbox holds nothing that starts,
+// stops or tells a role of it — no start of its architect or its implementer, no task retirement
+// and no phase-ended message — and no start of its step. The control is CAPTURE-18, the same
+// member with no open child: it stands in accepting with one start of each role of it that ran,
+// its architect and its implementer, with no task, and one start of its step. Negative control,
+// run when this was written, failing this test and then reverted: with bringMembersBack calling
+// workflow.Engine.ReturnToWork and then the admission pass's stop (StopForChildren), as before,
+// CAPTURE-22 waits in awaiting_children with a start of its architect queued in accepting.
+func TestTheFirstBootHoldsAMemberInAcceptingOnItsOpenChildAndStartsNoRoleOfIt(t *testing.T) {
+	t.Parallel()
+	st, _ := storeWithholding(t, "legion_members_back_accepting", releaseBeforeMigrations...)
+	board := seedMembersBackWorld(t, st)
+	convertMembersBackWorld(t, st, board)
+	pool := st.Pool()
+
+	if control := memberRecord(t, pool, backAccepting); control.Phase != phase.Accepting || control.ChildrenWait != nil {
+		t.Fatalf("%s with no open child stands in %s holding %+v after the first boot, want accepting, holding nothing",
+			backAccepting, control.Phase, control.ChildrenWait)
+	}
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer} {
+		if starts := roleStarts(t, pool, backAccepting, role); len(starts) != 1 || starts[0].Task != "" || starts[0].Phase != phase.Accepting {
+			t.Fatalf("the starts of %s's %s are %+v, want one in accepting with no task: each role of it that ran comes back", backAccepting, role, starts)
+		}
+	}
+	if steps := stepStartsOf(t, pool, backAccepting); len(steps) != 1 {
+		t.Fatalf("the step starts of %s are %+v, want one: its step starts again with its return", backAccepting, steps)
+	}
+
+	waiting := memberRecord(t, pool, backAcceptingWaiting)
+	if waiting.Phase != phase.AwaitingChildren || waiting.ChildrenWait == nil || waiting.ChildrenWait.Start != phase.Accepting ||
+		!slices.Equal(waiting.ChildrenWait.Children, []string{backAcceptingChild}) {
+		t.Fatalf("%s stands in %s holding %+v after the first boot, want awaiting_children holding the accepting start for %s alone",
+			backAcceptingWaiting, waiting.Phase, waiting.ChildrenWait, backAcceptingChild)
+	}
+	for _, kind := range []record.OutboxKind{record.OutboxKindSupervise, record.OutboxKindPhaseEnded} {
+		for _, row := range rowsOfKind(t, pool, kind) {
+			if row.Issue == backAcceptingWaiting {
+				t.Fatalf("the outbox holds the %s row %s of %s, want none: no role of it starts, stops or is told while its child is open",
+					kind, row.Payload, backAcceptingWaiting)
+			}
+		}
+	}
+	if steps := stepStartsOf(t, pool, backAcceptingWaiting); len(steps) != 0 {
+		t.Fatalf("the step starts of %s are %+v, want none: its step starts again only with the return from its children", backAcceptingWaiting, steps)
+	}
+}
+
 // `legion members-back` lists, before the upgrade, exactly the members that the first boot brings
 // back: it reads the store through the one reading that the conversion's step makes
 // (ListMembersBack, record.ReadMembersBack), on the schema of the release before, main at 4e851eb1,
 // and on that of legion-v22.16.2, which holds no issues.members_owed and whose root owing its
 // members is read by that column's migration's own mark. It gives the same answer once the store
 // has migrated to this release and before the boot, and a store whose conversion has run lists
-// none. The world is seedMembersBackWorld's: the listing names CAPTURE-11 and CAPTURE-12 under
-// CAPTURE-10, back in work and owing its members, and CAPTURE-21 under CAPTURE-20, set to backlog;
-// the boot then brings back each member it names, by a start of its phase's worker or a wait on its
-// open children, and no other.
+// none. The world is seedMembersBackWorld's: the listing names CAPTURE-11, CAPTURE-12, CAPTURE-18
+// and CAPTURE-22 under CAPTURE-10, back in work and owing its members, and CAPTURE-21 under
+// CAPTURE-20, set to backlog; the boot then brings back each member it names, by a start of a role
+// of it or a wait on its open children, and no other.
 func TestTheMembersBackListingIsTheMembersTheFirstBootBringsBack(t *testing.T) {
 	t.Parallel()
 	for _, schema := range []struct {
@@ -322,7 +412,9 @@ func TestTheMembersBackListingIsTheMembersTheFirstBootBringsBack(t *testing.T) {
 			want := []record.MemberBack{
 				{Key: backReturned, Phase: phase.Implementing, Root: backRoot, Left: record.TreeLeftReturned},
 				{Key: backWaiting, Phase: phase.Implementing, Root: backRoot, Left: record.TreeLeftReturned},
+				{Key: backAccepting, Phase: phase.Accepting, Root: backRoot, Left: record.TreeLeftReturned},
 				{Key: backTesting, Phase: phase.Testing, Root: backParked, Left: "backlog"},
+				{Key: backAcceptingWaiting, Phase: phase.Accepting, Root: backRoot, Left: record.TreeLeftReturned},
 			}
 			if before.BroughtBack || before.ConvertedAt != nil || !slices.Equal(before.Members, want) {
 				t.Fatalf("the listing on the store before the upgrade reads %+v, want the members %+v and no conversion", before, want)
@@ -336,10 +428,14 @@ func TestTheMembersBackListingIsTheMembersTheFirstBootBringsBack(t *testing.T) {
 
 			convertMembersBackWorld(t, st, board)
 			var brought []string
-			for _, key := range []string{backReturned, backWaiting, backOperator, backReleased, backStopped, backPersonHeld, backHandedOver, backTesting} {
+			for _, key := range []string{backReturned, backWaiting, backOperator, backReleased, backStopped, backPersonHeld, backHandedOver,
+				backAccepting, backTesting, backAcceptingWaiting} {
 				role := claim.RoleImplementer
-				if key == backTesting {
+				switch key {
+				case backTesting:
 					role = claim.RoleTester
+				case backAccepting, backAcceptingWaiting:
+					role = claim.RoleArchitect
 				}
 				if memberRecord(t, pool, key).Phase == phase.AwaitingChildren || len(roleStarts(t, pool, key, role)) > 0 {
 					brought = append(brought, key)

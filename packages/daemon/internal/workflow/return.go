@@ -112,24 +112,9 @@ func (e *Engine) opensNewRun(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // before its retro leaving the workflow (record.HoldForChildren). The architect above the issue,
 // where an issue above it is in Legion's work, is told the issue is back in work.
 func (e *Engine) ReturnToWork(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
-	back := observedIssue(issue, fact)
-	back.Status = fact.Status
-	status := PhaseStatus(back.Phase)
-	if err := e.status(ctx, tx, back, status, ""); err != nil {
-		return err
-	}
-	if status != "" {
-		back.Status = status
-	}
-	if err := e.store.PutIssue(ctx, tx, back); err != nil {
-		return err
-	}
-	if err := e.resumeStoppedTask(ctx, tx, back); err != nil {
-		return err
-	}
-	e.logOnCommit(ctx, "workflow: an issue a stop left came back into Legion's work", "issue", back.Key, "phase", back.Phase,
-		"generation", back.Generation, "status", back.Status)
-	if err := e.tellAbove(ctx, tx, back, fmt.Sprintf("%s is %s again; it resumes %s at a new phase entry", back.Key, fact.Status, back.Phase)); err != nil {
+	back, err := e.takeBack(ctx, tx, issue, fact, PhaseStatus(issue.Phase),
+		fmt.Sprintf("%s is %s again; it resumes %s at a new phase entry", issue.Key, fact.Status, issue.Phase))
+	if err != nil {
 		return err
 	}
 	if back.Phase == phase.Held && back.Hold != nil {
@@ -149,6 +134,76 @@ func (e *Engine) ReturnToWork(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return err
 	}
 	return e.resumeRun(ctx, tx, back)
+}
+
+// ReturnMemberToWork takes back into Legion's work a member that the first boot's conversion
+// brings back (the daemon's bringMembersBack: a member its root's departure suspended under the
+// release before), as ReturnToWork takes back any issue a stop left in its phase, but judges R9 of
+// dispatch://INFRA-3320 before the return starts anything, as the promotion of a carried run does
+// (carriedStartHeld). Where an open Dispatch child of the member holds the start of the phase it
+// stands in, planning through accepting (childrenHoldingStart, the children read from the daemon's
+// copy of Dispatch's links), the member takes the return's record, status and task (takeBack) and
+// moves to awaiting_children in place of the return's starts (awaitChildren), holding the start of
+// that phase with the return's task (returnToWorkTask). No claim of it starts, its phase's worker
+// or any other, and no step of it starts either (R11): a member in accepting, whose return starts
+// no worker and brings back every role of it that ran, is held the same way. The return from its
+// children starts that phase, or the step R12 gives it, once no open child is left
+// (ReturnFromChildren). It holds the start whatever entry the phase's role stands on, as the
+// promotion does: the return raises a new entry of no move, so the admission pass after it would
+// stop that worker as any started parent's (StopForChildren). It says whether it held the start.
+func (e *Engine) ReturnMemberToWork(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+	if err != nil {
+		return false, err
+	}
+	open, err := e.childrenHoldingStart(ctx, tx, issue, issue.Phase, pr)
+	if err != nil {
+		return false, err
+	}
+	if len(open) == 0 {
+		return false, e.ReturnToWork(ctx, tx, issue, fact)
+	}
+	back, err := e.takeBack(ctx, tx, issue, fact, PhaseStatus(phase.AwaitingChildren),
+		fmt.Sprintf("%s is %s again; it waits on its open children before %s resumes", issue.Key, fact.Status, issue.Phase))
+	if err != nil {
+		return false, err
+	}
+	w, err := e.walk(ctx, tx, back)
+	if err != nil {
+		return false, err
+	}
+	at, err := e.standingPart(ctx, tx, back, w)
+	if err != nil {
+		return false, err
+	}
+	return true, e.awaitChildren(ctx, tx, back, w, childrenHold{Start: back.Phase, Task: returnToWorkTask(back, at), Open: open,
+		Cause: fmt.Sprintf("the first boot of the release that stores no tree brought it back into Legion's work in %s", back.Phase)})
+}
+
+// takeBack writes what a return (ReturnToWork, ReturnMemberToWork) writes of issue's own record
+// and tells, whatever it starts after: the record takes fact's observation and status, the status
+// queued to Dispatch where it differs from what Dispatch shows (Engine.status; "" keeps the
+// status Dispatch shows), the task its leave stopped runs again at its step (resumeStoppedTask),
+// and the architect above the issue, where an issue above it is in Legion's work, is told the
+// words told. It answers the record as it wrote it.
+func (e *Engine) takeBack(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue, status, told string) (record.Issue, error) {
+	back := observedIssue(issue, fact)
+	back.Status = fact.Status
+	if err := e.status(ctx, tx, back, status, ""); err != nil {
+		return record.Issue{}, err
+	}
+	if status != "" {
+		back.Status = status
+	}
+	if err := e.store.PutIssue(ctx, tx, back); err != nil {
+		return record.Issue{}, err
+	}
+	if err := e.resumeStoppedTask(ctx, tx, back); err != nil {
+		return record.Issue{}, err
+	}
+	e.logOnCommit(ctx, "workflow: an issue a stop left came back into Legion's work", "issue", back.Key, "phase", back.Phase,
+		"generation", back.Generation, "status", back.Status)
+	return back, e.tellAbove(ctx, tx, back, told)
 }
 
 // resumeStoppedTask sets running again, at the place it stood, the task its leave stopped

@@ -336,7 +336,7 @@ type AncestorRead struct {
 // no longer open with no approval of the version (workflow's RequestClosed), the request's close as
 // Dispatch records it (Closed; nil for every other read). The step's pending-basis seed reads it
 // (PendingBasisRead), which every event that is a cue for the step queues (workflow's
-// PendingBasisCue), and the workflow opens or ends the wait from it alone, never from the event:
+// pendingBasisCue), and the workflow opens or ends the wait from it alone, never from the event:
 // an event delivered late, or replayed, says what Dispatch was when it was written, and the read
 // says what Dispatch is.
 type BasisRead struct {
@@ -347,10 +347,11 @@ type BasisRead struct {
 
 // BasisClose is the close of the approval request a step waits on, read from Dispatch by the ask's
 // id (dispatch.Client.Ask) where the approval shows the request closed with no approval of the
-// version: who closed it (Actor, the actor its resolution names, zero where Dispatch names none)
-// and in what state (State, `resolved` for every close but an answer), as DispatchAskClosed.Actor
-// and State hold them for the ask.* event of that close. The end of the wait names that actor as
-// the one who closed the request (workflow's judgeBasisRead).
+// version: who closed it (Actor, the person its answer names for an answered ask or the actor its
+// resolution names for a resolved one, zero where Dispatch names none) and in what state (State,
+// `answered` or `resolved`), as DispatchAskClosed.Actor and State hold them for the ask.* event of
+// that close. The end of the wait names that actor as the one who closed the request (workflow's
+// judgeBasisRead).
 type BasisClose struct {
 	Actor dispatch.Actor
 	State string
@@ -358,20 +359,23 @@ type BasisClose struct {
 
 // PendingBasisRead is the pending-basis seed's read (record.PendingBasisSeed) of the ancestor's
 // document a root's step waits on, closed, at the version the step names: the root (Issue), its
-// step, its own document (ArtifactID) and the generation that registered the step; the
-// ancestor's document, the version and the approval request the step waits on; and Dispatch's
-// state of the document and of the ancestor's issue (Read), which the workflow judges by its one
-// verdict (workflow's judgeBasisRead): the one fact that opens or ends such a wait on what
-// Dispatch shows.
+// step, its own document (ArtifactID), the generation that registered the step and when that wait
+// registered (RegisteredAt, the seed's own, which record.PendingBasisSeedOf normalized once to the
+// precision the store keeps); the ancestor's document, the version and the approval request the
+// step waits on; and Dispatch's state of the document and of the ancestor's issue (Read), which
+// the workflow judges by its one verdict (workflow's judgeBasisRead): the one fact that opens or
+// ends such a wait on what Dispatch shows.
 //
 // It is a fact of its own and never the gate seed's (intake.DispatchArtifact), whose rows are the
 // root's own document's: applied as one of those, the ancestor's read would reach the ancestor's
 // own gate as well. The workflow applies it only to a step of that generation still pending on
-// that request, so a read of a wait that has ended or opened since changes nothing.
+// that request and registration, so a read of a wait that has ended or opened since changes
+// nothing.
 type PendingBasisRead struct {
 	Issue           string
 	Step            record.DesignStep
 	Generation      uint64
+	RegisteredAt    time.Time
 	ArtifactID      string
 	BasisArtifactID string
 	BasisVersion    int

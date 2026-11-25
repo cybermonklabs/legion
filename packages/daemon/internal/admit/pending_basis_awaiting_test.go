@@ -61,7 +61,7 @@ func ancestorRead(act intake.DispatchArtifact, generation uint64) intake.Pending
 		read.Reason = new(act.Reason)
 	}
 	return intake.PendingBasisRead{Issue: "LEGION-208", Step: record.DesignStepSpec, Generation: generation, ArtifactID: "artifact-208",
-		BasisArtifactID: pendingAncestorDoc, BasisVersion: 4, Ask: pendingAsk,
+		BasisArtifactID: pendingAncestorDoc, BasisVersion: 4, Ask: pendingAsk, RegisteredAt: fixedNow,
 		Read: intake.BasisRead{Approval: read, Ancestor: intake.AncestorRead{Status: "in_progress", HandedOver: true}}}
 }
 

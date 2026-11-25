@@ -180,7 +180,7 @@ func treeEffects(t *testing.T, project, w string, architect claim.Token, artifac
 		string(record.OutboxKindControllerNotice):   {w, record.ControllerNotice{Kind: record.TickNotice}},
 		string(record.OutboxKindSupervise):          {w, record.SuperviseRequest{Op: "suspend", Tree: w, Role: claim.RoleArchitect}},
 		string(record.OutboxKindGateSeed):           {w, record.GateSeed{ArtifactID: artifact, Step: record.DesignStepSpec, Version: 1}},
-		string(record.OutboxKindPendingBasisSeed):   {w, record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: artifact, BasisArtifactID: artifact, BasisVersion: 1, Ask: "tree-proof-ask"}},
+		string(record.OutboxKindPendingBasisSeed):   {w, record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: artifact, BasisArtifactID: artifact, BasisVersion: 1, Ask: "tree-proof-ask", RegisteredAt: now}},
 		string(record.OutboxKindPhaseEnded):         {w, record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: body}},
 		string(record.OutboxKindLingerClose):        {w, record.LingerClose{Generation: generation}},
 		string(record.OutboxKindIssueSuspend):       {w, record.IssueSuspend{Tree: w, TreeGeneration: generation}},

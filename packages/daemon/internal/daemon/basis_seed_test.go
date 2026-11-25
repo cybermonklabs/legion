@@ -157,26 +157,33 @@ func (r *basisSeedRig) gate() record.DesignGate {
 // or not: the basis tests' rigs read what the daemon told an architect through it.
 func noticesOfKind(t *testing.T, pool *store.Pool, issue string, kind record.NoticeKind) []record.Notice {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select payload from outbox where kind = 'notice' and issue = $1
-		and payload->>'kind' = $2 order by id`, issue, string(kind))
+	return noticesIn(t, pool, "outbox", issue, kind)
+}
+
+// noticesIn is every notice of kind that table holds keyed by issue, oldest first: the outbox
+// itself (noticesOfKind) or its record of every row written (outbox_written, writtenNotices).
+func noticesIn(t *testing.T, pool *store.Pool, table, issue string, kind record.NoticeKind) []record.Notice {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select payload from `+table+` where kind = $1 and issue = $2
+		and payload->>'kind' = $3 order by id`, string(record.OutboxKindNotice), issue, string(kind))
 	if err != nil {
-		t.Fatalf("read the %s notices of %s: %v", kind, issue, err)
+		t.Fatalf("read the %s notices of %s in %s: %v", kind, issue, table, err)
 	}
 	defer rows.Close()
 	var notices []record.Notice
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("scan a %s notice of %s: %v", kind, issue, err)
+			t.Fatalf("scan a %s notice of %s in %s: %v", kind, issue, table, err)
 		}
 		var notice record.Notice
 		if err := json.Unmarshal(payload, &notice); err != nil {
-			t.Fatalf("decode a %s notice of %s: %v", kind, issue, err)
+			t.Fatalf("decode a %s notice of %s in %s: %v", kind, issue, table, err)
 		}
 		notices = append(notices, notice)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate the %s notices of %s: %v", kind, issue, err)
+		t.Fatalf("iterate the %s notices of %s in %s: %v", kind, issue, table, err)
 	}
 	return notices
 }
@@ -191,7 +198,7 @@ func (r *basisSeedRig) execute(payload record.OutboxPayload) {
 // basisSeedPending is the pending-basis seed a registration of the root's pending step queues.
 func basisSeedPending(generation uint64) record.PendingBasisSeed {
 	return record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: basisSeedRootDoc, BasisArtifactID: basisSeedDoc, BasisVersion: 4,
-		Ask: "ask-100", Generation: generation}
+		Ask: "ask-100", Generation: generation, RegisteredAt: basisSeedBasis(4).RegisteredAt}
 }
 
 // The pending-basis seed reads Dispatch's state of the ancestor's document and of its issue, and
@@ -249,7 +256,7 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 				rig.client.issues[basisSeedAncestor] = *tc.ancestor
 			}
 			// What Dispatch shows of the request, which only a read that finds it closed reads.
-			rig.client.asks["ask-100"] = dispatch.Ask{State: "resolved", ResolvedBy: dispatch.Actor{Kind: "session", ID: "session-architect"}}
+			rig.client.asks["ask-100"] = dispatch.Ask{State: "resolved", ClosedBy: dispatch.Actor{Kind: "session", ID: "session-architect"}}
 			generation := max(tc.generation, 1)
 
 			rig.execute(basisSeedPending(generation))
@@ -275,6 +282,72 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A step that registers again on the request it waited on, once the seed's read ended its first
+// wait, waits on a registration of its own, and the seed's read of that wait is a fact of its own:
+// the ancestor's legion label removed, given back while the step registers again on the still-open
+// request, and removed again with nothing else changed, ends the second wait as it ended the first,
+// and the root's architect is told each end. The engine's clock gives each registration a time
+// finer than the store keeps, so the seed the registration queues from the step it has not yet
+// read back still names the wait the store holds.
+func TestTheSameReadEndsAWaitRegisteredAgainOnTheSameRequest(t *testing.T) {
+	rig := newBasisSeedRig(t)
+	now := basisSeedApprovedAt.Add(time.Hour + 123456789*time.Nanosecond)
+	engine := workflow.New(rig.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
+		Clock: func() time.Time { return now }}, quietLogger())
+	rig.runner.handlers = []intake.Handler{engine}
+	register := func(id string, since int64) record.PendingBasisSeed {
+		t.Helper()
+		before := len(pendingBasisSeedsOf(t, rig.pool, basisSeedRoot))
+		if _, err := intake.ApplyFact(context.Background(), rig.pool, "test", id, intake.GateRegistered{Issue: basisSeedRoot, ArtifactID: basisSeedRootDoc,
+			Version: 4, DispatchVersion: 4, Since: record.EventMark{Seq: since}, Basis: &record.GateBasis{Issue: basisSeedAncestor, ArtifactID: basisSeedDoc,
+				Version: 4, Serves: []string{"dispatch://LEGION-100/spec#b-r1@v4"}, Reason: "LEGION-208 delivers r1 of LEGION-100.", Session: "session-architect",
+				Pending: &record.PendingBasis{Ask: "ask-100"}}}, engine); err != nil {
+			t.Fatalf("apply %s: %v", id, err)
+		}
+		if gate := rig.gate(); !gate.PendingOnBasis() || gate.Basis.Pending.Ask != "ask-100" || record.GateOpen(gate) {
+			t.Fatalf("the spec step after %s = %#v, want it closed, waiting on ask-100", id, gate)
+		}
+		seeds := pendingBasisSeedsOf(t, rig.pool, basisSeedRoot)
+		if len(seeds) != before+1 {
+			t.Fatalf("pending-basis seeds after %s = %#v, want the %d before it and the registration's", id, seeds, before)
+		}
+		return seeds[before]
+	}
+	labelled := func(on bool) {
+		issue := dispatch.Issue{Key: basisSeedAncestor, Status: "in_progress", Labels: []string{"infra"}}
+		if on {
+			issue.Labels = []string{dispatch.LegionLabel}
+			issue.HandedOver = true
+		}
+		rig.client.issues[basisSeedAncestor] = issue
+	}
+	const unlabelled = "LEGION-100 no longer carries the legion label."
+	ends := func(after string, want int) {
+		t.Helper()
+		if gate := rig.gate(); gate.Basis != nil || record.GateOpen(gate) || gate.LatestVersion != 4 {
+			t.Fatalf("the spec step after %s = %#v, want its wait ended: closed at version 4 with no basis", after, gate)
+		}
+		ended := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-ended")
+		if len(ended) != want || !strings.Contains(ended[want-1].Reason, unlabelled) {
+			t.Fatalf("basis-ended notices after %s = %#v, want %d, the last naming %q", after, ended, want, unlabelled)
+		}
+	}
+	// Dispatch shows the request open on version 4 throughout.
+	rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "awaiting", LatestVersion: 4, AskID: "ask-100", WaitingOn: "human"}
+
+	first := register("register", 6)
+	labelled(false)
+	rig.execute(first)
+	ends("the first read", 1)
+
+	labelled(true)
+	now = now.Add(time.Hour)
+	second := register("register-again", 8)
+	labelled(false)
+	rig.execute(second)
+	ends("the same read of the second wait", 2)
 }
 
 // The gate seed of a step an ancestor's approval opened keeps today's read of the root's own
@@ -480,9 +553,8 @@ func (d *countedBasisDispatch) Ask(ctx context.Context, id string) (dispatch.Ask
 	return d.basisDispatch.Ask(ctx, id)
 }
 
-// cueReadsCounted is a record store counting its reads of the steps an event can be a cue for
-// (workflow.PendingBasisCues): the steps that name a document as their basis, that wait on a
-// request, and that rest on an issue.
+// cueReadsCounted counts how often the workflow looks up steps by basis document, pending
+// request, or ancestor issue while deciding which steps an event cues.
 type cueReadsCounted struct {
 	record.Store
 	reads int
@@ -540,9 +612,9 @@ const (
 )
 
 // An event of an ancestor's document, of its approval request or of its issue leads to a read of
-// Dispatch only for a step it is a cue for (workflow.PendingBasisCue), and only through that step's
-// pending-basis seed: it queues one seed for each step it cues and none for any other, and those
-// seeds are the only reads of Dispatch it leads to, of the document and of its issue once each,
+// Dispatch only for a step it is a cue for, and only through that step's pending-basis seed: it
+// queues one seed for each step it cues and none for any other, and those seeds are the only reads
+// of Dispatch it leads to, of the document and of its issue once each,
 // and of the request none, since Dispatch shows it open (the cases that read the request are
 // TestThePendingBasisSeedReadsTheCloseOnlyWhereTheApprovalShowsTheRequestClosed's). A document
 // event at the basis version or a newer one, other than that version's own version event, a close
@@ -550,9 +622,9 @@ const (
 // R1's first condition are cues for the root's waiting step, and for no step that stands open on
 // the document. An event no step waits on queues no seed and leads to no read of Dispatch: the
 // version's own version event, an older version's review, another document's event, a close of
-// another request, another issue's leave, and every cue while no step waits. An event that can be
-// no cue at all (workflow.BasisCueEvent), a person's answer of the request, a close of a question
-// and an event that shows the ancestor at work, reads not even the store's steps.
+// another request, another issue's leave, and every cue while no step waits. A person's answer of
+// the request, a close of a question and an event that shows the ancestor at work cannot cue any
+// step, so the workflow does not even look up steps for them.
 func TestAnEventReadsDispatchOnlyThroughTheSeedOfEachStepItCues(t *testing.T) {
 	const open, openDoc = "LEGION-209", "artifact-209"
 	person := dispatch.Actor{Kind: "user", ID: "alice"}
@@ -580,7 +652,7 @@ func TestAnEventReadsDispatchOnlyThroughTheSeedOfEachStepItCues(t *testing.T) {
 			Session: "session-architect", RegisteredAt: basisSeedApprovedAt.Add(time.Hour)}
 	}
 	waiting := record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: basisSeedRootDoc, BasisArtifactID: cueDoc, BasisVersion: 4, Ask: cueAsk,
-		Generation: 1}
+		Generation: 1, RegisteredAt: basis(4).RegisteredAt}
 	for _, tc := range []struct {
 		name string
 		fact intake.Fact
@@ -696,7 +768,7 @@ func TestThePendingBasisSeedReadsTheCloseOnlyWhereTheApprovalShowsTheRequestClos
 			rig := newBasisSeedRig(t)
 			rig.pendingOnBasis(basisSeedRoot, basisSeedRootDoc)
 			rig.client.approvals[basisSeedDoc] = tc.approval
-			rig.client.asks["ask-100"] = dispatch.Ask{State: "resolved", ResolvedBy: closer}
+			rig.client.asks["ask-100"] = dispatch.Ask{State: "resolved", ClosedBy: closer}
 			client := newCountedBasisDispatch(rig.client)
 			rig.runner.dispatch = client
 
@@ -719,6 +791,20 @@ func TestThePendingBasisSeedReadsTheCloseOnlyWhereTheApprovalShowsTheRequestClos
 			}
 		})
 	}
+
+	t.Run("closed by a person's answer", func(t *testing.T) {
+		rig := newBasisSeedRig(t)
+		rig.pendingOnBasis(basisSeedRoot, basisSeedRootDoc)
+		rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "draft", LatestVersion: 4}
+		rig.client.asks["ask-100"] = dispatch.Ask{State: "answered", ClosedBy: basisSeedPerson}
+
+		rig.execute(basisSeedPending(1))
+
+		const sentence = "user:alice closed approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec), as answered, with no approval of that version."
+		if got := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-ended"); len(got) != 1 || got[0].Actor != "user:alice" || !strings.Contains(got[0].Reason, sentence) {
+			t.Fatalf("basis-ended notices = %#v, want one naming %q and actor user:alice", got, sentence)
+		}
+	})
 
 	t.Run("another closer is another fact", func(t *testing.T) {
 		read := func(actor dispatch.Actor) intake.BasisRead {
@@ -780,7 +866,7 @@ func TestAFailedPendingBasisSeedIsRetriedOnItsBackoff(t *testing.T) {
 				Seq: 60, By: basisSeedPerson}
 			if tc.closed {
 				rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "draft", LatestVersion: 4}
-				rig.client.asks["ask-100"] = dispatch.Ask{State: "resolved", ResolvedBy: dispatch.Actor{Kind: "session", ID: "session-architect"}}
+				rig.client.asks["ask-100"] = dispatch.Ask{State: "resolved", ClosedBy: dispatch.Actor{Kind: "session", ID: "session-architect"}}
 			}
 			client := newCountedBasisDispatch(rig.client)
 			client.failing, client.failure = tc.failing, tc.failure

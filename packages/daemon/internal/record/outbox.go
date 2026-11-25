@@ -1454,11 +1454,13 @@ func (GateSeed) OutboxKind() OutboxKind { return OutboxKindGateSeed }
 // a fact of its own rather than the gate seed's: a person's approval of the version opens the
 // step, a changes request, a newer version, the request's close with no approval or the
 // ancestor's leave ends the wait, and a request still waiting changes nothing. The row's issue is
-// the root. Its read is the one that opens or ends such a wait, and it is queued whenever the
-// daemon must learn what Dispatch shows of it: when the step is registered on the request, for
-// every such step of the project at the daemon's boot, whatever phase its root stands in, and on
-// every event that is a cue for the step (workflow's PendingBasisCue), which itself opens and ends
-// nothing.
+// the root, and RegisteredAt names which registration of the step it reads for (normalized once,
+// by PendingBasisSeedOf, to UTC microsecond precision, matching the stored row), so a second wait
+// registered again on the same request is a fact of its own. Its read is the one that opens or
+// ends such a wait, and it is queued whenever the daemon must learn what Dispatch shows of it:
+// when the step is registered on the request, for every such step of the project at the daemon's
+// boot, whatever phase its root stands in, and on every event that is a cue for the step
+// (workflow's pendingBasisCue), which itself opens and ends nothing.
 type PendingBasisSeed struct {
 	// Step and ArtifactID are the root's step and its own document the step was registered on.
 	Step       DesignStep `json:"step"`
@@ -1472,16 +1474,24 @@ type PendingBasisSeed struct {
 	// Generation is the root generation that registered the step; the seed's fact is that
 	// generation's.
 	Generation uint64 `json:"generation"`
+	// RegisteredAt is the daemon's own time of the registration the seed reads for
+	// (GateBasis.RegisteredAt, which PendingBasisSeedOf normalizes once to UTC microseconds as the
+	// store keeps it), so each registration of the step on the same request is a wait of its own.
+	RegisteredAt time.Time `json:"registeredAt"`
 }
 
 func (PendingBasisSeed) OutboxKind() OutboxKind { return OutboxKindPendingBasisSeed }
 
 // PendingBasisSeedOf is the seed of gate, a step that waits on an ancestor's approval request
 // (DesignGate.PendingOnBasis), for the root generation that registered it: the one row every
-// queue of such a read writes, so each reads the same ancestor, version and request.
+// queue of such a read writes, so each reads the same ancestor, version, request and registration.
+// RegisteredAt is normalized here, and nowhere else, to UTC at microsecond precision, the precision
+// Postgres stores and reads back, so a seed queued from an in-memory gate names the same wait as
+// one queued from the stored row.
 func PendingBasisSeedOf(gate DesignGate, generation uint64) PendingBasisSeed {
 	return PendingBasisSeed{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID, BasisArtifactID: gate.Basis.ArtifactID,
-		BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: generation}
+		BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: generation,
+		RegisteredAt: gate.Basis.RegisteredAt.UTC().Truncate(time.Microsecond)}
 }
 
 // ReparentSeed is R18's notice of a change of parent (dispatch://INFRA-3320): an event moved the
@@ -2772,8 +2782,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease, DesignNewsReconcile:
 	case PendingBasisSeed:
-		if !value.Step.Valid() || value.ArtifactID == "" || value.BasisArtifactID == "" || value.BasisVersion <= 0 || value.Ask == "" || value.Generation == 0 {
-			return fmt.Errorf("a pending-basis seed names the root's step and document, the ancestor's document and the version its request asks approval of, the request and the generation that registered the step")
+		if !value.Step.Valid() || value.ArtifactID == "" || value.BasisArtifactID == "" || value.BasisVersion <= 0 || value.Ask == "" || value.Generation == 0 || value.RegisteredAt.IsZero() {
+			return fmt.Errorf("a pending-basis seed names the root's step and document, the ancestor's document and the version its request asks approval of, the request, the generation that registered the step and when it registered")
 		}
 	case ReparentSeed:
 		if value.Tree == "" || value.Ran == "" {

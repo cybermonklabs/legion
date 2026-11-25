@@ -29,6 +29,7 @@ const relaySocketOtherPerson = "another-outside@example.com"
 // frame. Control: admit counting no caller; the person's next socket takes the last place, and the
 // row fails naming it.
 func TestAReplicaServesOnePersonNoMoreSocketsThanTheirCap(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withMaxSockets(relaySocketMaxPerCaller+1))
 	sessionOf := func(i int) string { return "ses_edge_many_" + strconv.Itoa(i/relaySocketMaxPerSession) }
 	for i := range relaySocketMaxPerCaller {
@@ -206,6 +207,7 @@ func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
 // client first. Control: forward taking any receipt under the family (relayReceiptOf's session
 // test removed); the first frame reaches the client, and the row fails naming it.
 func TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session, other = "ses_edge_own_receipts", "ses_edge_someone_else"
 	client, _ := rig.open(t, session)

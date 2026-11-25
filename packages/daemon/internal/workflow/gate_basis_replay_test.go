@@ -286,7 +286,8 @@ func TestEachSeedsReadDecidesOnlyItsOwnStepsWait(t *testing.T) {
 			if got := noticesOfKind(t, pool, later, "basis-ended"); len(got) != 0 {
 				t.Errorf("basis-ended notices of %s = %#v, want none", later, got)
 			}
-			want := record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: laterDoc, BasisArtifactID: basisDoc, BasisVersion: 4, Ask: tc.ask, Generation: 1}
+			want := record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: laterDoc, BasisArtifactID: basisDoc, BasisVersion: 4, Ask: tc.ask,
+				Generation: 1, RegisteredAt: waiting.RegisteredAt}
 			if seeds := pendingSeeds(t, pool, later); len(seeds) != 1 || seeds[0] != want {
 				t.Errorf("pending-basis seeds of %s = %#v, want its own, %#v", later, seeds, want)
 			}

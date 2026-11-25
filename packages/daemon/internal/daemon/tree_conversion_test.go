@@ -254,7 +254,7 @@ func TestTheFirstBootFencesEachRowTheReleaseBeforeQueued(t *testing.T) {
 		record.ControllerNotice{Kind: record.TickNotice},
 		record.GateSeed{ArtifactID: "artifact-208", Step: record.DesignStepSpec, Version: 1},
 		record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-200", BasisVersion: 2,
-			Ask: "ask-1", Generation: 1},
+			Ask: "ask-1", Generation: 1, RegisteredAt: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)},
 		record.IssueSuspend{Tree: key, Generation: 2, TreeGeneration: 2},
 		record.IssueWorkspaceCheck{Tree: key, Generation: 2, TreeGeneration: 2, Role: claim.RoleImplementer},
 		record.IssueRelease{Tree: key, Generation: 2, TreeGeneration: 2},

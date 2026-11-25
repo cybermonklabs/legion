@@ -1196,11 +1196,11 @@ func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 	}
 }
 
-// An ask reads back with its state and the actor its resolution names, as GET /api/v1/asks/{id}
-// answers it beside the ask's thread, which is not the daemon's to read: a resolved ask names its
-// resolver, and an open one, which has no resolution, names nobody. An answer that names no state
-// is an error, and an ask Dispatch does not have is Missing.
-func TestAskReadsTheStateAndTheResolver(t *testing.T) {
+// An ask reads back with its state and who closed it, as GET /api/v1/asks/{id} answers it beside
+// the ask's thread, which is not the daemon's to read: a resolved ask names its resolver, an
+// answered one the person whose answer closed it, and an open one nobody. An answer that names no
+// state is an error, and an ask Dispatch does not have is Missing.
+func TestAskReadsTheStateAndWhoClosedIt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertBearer(t, r)
 		if r.Method != http.MethodGet {
@@ -1212,6 +1212,10 @@ func TestAskReadsTheStateAndTheResolver(t *testing.T) {
 				"resolution": map[string]any{"kind": "resolved", "reason": "The request is withdrawn.",
 					"actor": map[string]any{"kind": "session", "id": "ses_architect", "origin": map[string]any{"title": "architect"}}, "at": "2026-11-24T18:00:00Z"}},
 				"replies": []any{}, "followers": []any{}, "claimant": nil, "route": nil})
+		case "/api/v1/asks/ask-answered":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-answered", "kind": "approval", "state": "answered",
+				"answer": map[string]any{"id": "b4", "user": "alice", "selected": []string{"Request changes"}, "text": "Name the rollback path.",
+					"at": "2026-11-24T18:00:00Z"}}})
 		case "/api/v1/asks/ask-open":
 			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-open", "kind": "approval", "state": "open"}})
 		case "/api/v1/asks/ask-stateless":
@@ -1224,8 +1228,12 @@ func TestAskReadsTheStateAndTheResolver(t *testing.T) {
 
 	client := New(server.URL, dispatchToken)
 	resolved, err := client.Ask(context.Background(), "ask-resolved")
-	if want := (Ask{State: "resolved", ResolvedBy: Actor{Kind: "session", ID: "ses_architect"}}); err != nil || resolved != want {
+	if want := (Ask{State: "resolved", ClosedBy: Actor{Kind: "session", ID: "ses_architect"}}); err != nil || resolved != want {
 		t.Fatalf("the resolved ask = %#v, %v; want %#v", resolved, err, want)
+	}
+	answered, err := client.Ask(context.Background(), "ask-answered")
+	if want := (Ask{State: "answered", ClosedBy: Actor{Kind: "user", ID: "alice"}}); err != nil || answered != want {
+		t.Fatalf("the answered ask = %#v, %v; want %#v", answered, err, want)
 	}
 	open, err := client.Ask(context.Background(), "ask-open")
 	if want := (Ask{State: "open"}); err != nil || open != want {

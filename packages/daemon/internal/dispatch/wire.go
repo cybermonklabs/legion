@@ -164,10 +164,14 @@ type approvalResponse struct {
 }
 
 // askReadResponse is one ask as GET /api/v1/asks/{id} answers it, its thread left undecoded: the
-// ask's state, and the actor its resolution names (no resolution for an open or answered ask).
+// ask's state, the login of the person its answer names (no answer for an ask nobody answered),
+// and the actor its resolution names (no resolution for an open or answered ask).
 type askReadResponse struct {
 	Ask struct {
-		State      string `json:"state"`
+		State  string `json:"state"`
+		Answer *struct {
+			User string `json:"user"`
+		} `json:"answer"`
 		Resolution *struct {
 			Actor actor `json:"actor"`
 		} `json:"resolution"`

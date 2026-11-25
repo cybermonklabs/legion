@@ -1544,7 +1544,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 					t.Fatalf("the reviewer's start after the tester's pass = %+v, want its task ending with its round's sentences %q", reviewing, named)
 				}
 				putWorkerClaim(t, pool, spParent, spParent, claim.RoleReviewer, 1, supervise.StateWorking, "")
-				pwDeliver(t, pool, pwRoleToken(t, spParent, claim.RoleReviewer), reviewing)
+				pwDeliver(t, pool, spParent, pwRoleToken(t, spParent, claim.RoleReviewer), reviewing)
 				return strings.TrimSuffix(reviewing.Task, named)
 			}},
 			{name: "on an entry the release before raised", stop: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) string {

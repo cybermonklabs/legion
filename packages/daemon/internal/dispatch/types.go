@@ -447,14 +447,14 @@ func (a Approval) LatestReviewer() Actor {
 
 // Ask is one ask as Dispatch reads it by its id (GET /api/v1/asks/{id}). State is the ask's state,
 // `open`, `answered` or `resolved`, the word the type of the ask.* event that closed it ends in
-// (intake's DispatchAskClosed.State). ResolvedBy is the actor its resolution names, which is the
-// actor of the ask.resolved event that closed it (intake's DispatchAskClosed.Actor): the session
-// or the person that resolved it, whoever set its issue done for the withdrawal that close records,
-// or Dispatch's settlement. It is zero for an ask with no resolution, and for a resolution that
-// names no actor.
+// (intake's DispatchAskClosed.State). ClosedBy is who closed it, the actor of the ask.* event that
+// closed it (intake's DispatchAskClosed.Actor): for an answered ask the person its answer names,
+// and for a resolved ask the actor its resolution names, the session or the person that resolved
+// it, whoever set its issue done for the withdrawal that close records, or Dispatch's settlement.
+// It is zero for an open ask, and for a close that names no actor.
 type Ask struct {
-	State      string
-	ResolvedBy Actor
+	State    string
+	ClosedBy Actor
 }
 
 // Review is one review Dispatch keeps of a document, pinned to the version it was given on. State

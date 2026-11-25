@@ -2357,7 +2357,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
 	// carries.
 	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
-	open, pr, err := e.childrenHoldingSamePhaseStart(ctx, tx, issue, phase.RoleFor(from))
+	open, pr, err := e.childrenHoldingSamePhaseStart(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
@@ -2415,29 +2415,6 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// a move does after its start (queueMovedNews). It puts the issue back in the phase the hold is
 	// from, which is no move between phases, so the merge forward stands as the hold left it.
 	return from, e.queueMovedNews(ctx, tx, issue)
-}
-
-// childrenHoldingSamePhaseStart is R9's guard on the release of a hold (retryPhase), a start of the
-// phase issue already stands in on the entry role's row holds: the open Dispatch children that hold
-// that start (childrenHoldingStart), none where the pull request has merged or that entry was
-// raised by a move out of retro or merging (acceptedEntry). It answers the pull request too, which
-// the retry reads to compose its task and check its review round, whether or not children hold the
-// start. The promotion of a carried run raises an entry of its own and reads no such exemption
-// (carriedStartHeld).
-func (e *Engine) childrenHoldingSamePhaseStart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) ([]record.OpenChild, *record.PullRequest, error) {
-	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
-	if err != nil {
-		return nil, nil, err
-	}
-	open, err := e.childrenHoldingStart(ctx, tx, issue, issue.Phase, pr)
-	if err != nil || len(open) == 0 {
-		return nil, pr, err
-	}
-	entry, err := e.phaseRow(ctx, tx, issue.Key, role)
-	if err != nil || acceptedEntry(entry) {
-		return nil, pr, err
-	}
-	return open, pr, nil
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that

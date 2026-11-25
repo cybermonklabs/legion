@@ -701,12 +701,12 @@ const DOCUMENT_ID = {
  * Dispatch, and a lookup that fails, refuse the call in `operation`'s words. */
 async function documentIdOf(
   operation: keyof typeof DOCUMENT_ID,
-  dispatch: () => DispatchClient | undefined,
+  dispatch: () => Promise<DispatchClient | undefined>,
   issue: string,
   reference: string
 ): Promise<string> {
   if (DOCUMENT_ID[operation].safeParse(reference).success) return reference;
-  const board = dispatch();
+  const board = await dispatch();
   if (board === undefined) {
     throw new Error(
       `${operation} cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
@@ -764,11 +764,12 @@ export function createLegionTool(deps: {
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
-  /** The pane's Dispatch, the one its `dispatch` commands reach, or undefined where the pane has
-   * none configured. register_gate looks a document reference up there (`resolveIssueDocumentId`,
-   * as a `dispatch` command's `--artifact` is) and, for a registration on a basis, reads the root's
-   * own document for an open decision block (`refuseOpenDecisionBlocks`). */
-  readonly dispatch: () => DispatchClient | undefined;
+  /** Resolves to the pane's Dispatch, the one its `dispatch` commands reach, or to undefined where
+   * the pane has none configured. register_gate looks a document reference up there
+   * (`resolveIssueDocumentId`, as a `dispatch` command's `--artifact` is) and, for a registration
+   * on a basis, reads the root's own document for an open decision block
+   * (`refuseOpenDecisionBlocks`). */
+  readonly dispatch: () => Promise<DispatchClient | undefined>;
   /** The clock `handoff_complete` and `sign_off` wait out a daemon restart on; a test's own. */
   readonly restartClock?: Pick<DaemonRestartRetry, "now" | "sleep">;
 }): RegisteredTool {
@@ -1132,7 +1133,7 @@ export function createLegionTool(deps: {
             if (basis === undefined) {
               artifactId = await documentIdOf("register_gate", dispatch, issue, reference);
             } else {
-              const board = dispatch();
+              const board = await dispatch();
               if (board === undefined) {
                 throw new Error(
                   `register_gate cannot register ${issue} on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open decision block`
