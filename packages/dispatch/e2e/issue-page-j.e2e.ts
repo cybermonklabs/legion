@@ -1981,6 +1981,75 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
   });
 });
 
+// The tester's finding at cf7e601c: at 390 px, the row a key left the reader on stays on screen
+// once the statements are drawn above it, as it does at 1440 px (the row above). The comment's
+// address is loaded from Settings with the coverage read and the spec's blocks read held, so the
+// comment's row is drawn alone and holds the focus; the reader presses End, then ArrowDown, on
+// it, each on a load of its own, and the reads are let go. At cf7e601c the view's hold scrolls
+// the page as the statements are drawn above the row, but takes a scroll it did not make as
+// where the row stands, so on a large issue's copy at 390 x 844 the row ended 38 906, 45 947 and
+// 1 655 px below the screen's top in 8 of 12 such loads (End, ArrowDown and a press), and on
+// screen in each of 4 loads with no act. At 32ff1e43, whose hold was the outline's
+// (`holdInPlaceOf`), the row stood on screen after each key.
+// SLOW(>=2s): a seeded issue of sixty statements, then two loads of Settings and two of the Spec
+// view, each read once every statement is drawn and the page has stopped moving.
+test("at 390 px the row a key left the reader on during the Spec view's load stays on screen once the statements are drawn above it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedTallSpec, async (page, seeded) => {
+    await page.setViewportSize({ height: 844, width: 390 });
+    const spec = presetPath(seeded.key, "spec");
+    const body = issuePage(page).locator("[data-spec-body]");
+    const statements = body.locator("[data-spec-statement]");
+    const comment = body.locator(`[data-node-row][data-node-id="${seeded.commentId}"]`);
+    const heldPaths = new Set([
+      `/api/v1/artifacts/${seeded.specArtifactId}/blocks`,
+      `/api/v1/issues/${seeded.key}/coverage`,
+    ]);
+    const heldRead = (url: URL): boolean => heldPaths.has(url.pathname);
+    for (const key of ["End", "ArrowDown"] as const) {
+      const keyHeld = Promise.withResolvers<void>();
+      await page.route(heldRead, async (route) => {
+        await keyHeld.promise;
+        await route.continue();
+      });
+      await page.goto("/settings");
+      await expect(
+        page.getByRole("heading", { level: 1, name: "Settings" }),
+        `Settings is not drawn before the comment's address is loaded, for ${key}`
+      ).toBeVisible();
+      await gotoIssue(page, `${spec}?comment=${seeded.commentId}`);
+      await expect(
+        comment,
+        `the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held, before ${key}`
+      ).toBeVisible();
+      await expect(
+        comment,
+        `the comment's row does not hold the focus while the coverage and the spec's blocks are held, before ${key}`
+      ).toBeFocused();
+      await page.keyboard.press(key);
+      keyHeld.resolve();
+      await expect(
+        statements,
+        `the comment's address, ${key} pressed on its row during the load, does not draw every statement of the spec once the coverage and the spec's blocks answer`
+      ).toHaveCount(seeded.requirements.length);
+      // Every statement is drawn above the row, and the page is read once it has stopped moving,
+      // so the hold has done what it does with the rows drawn above.
+      await settledScrollTop(page);
+      await expect(
+        comment,
+        `${key} on the comment's row during the load leaves the focus off that row once the statements are drawn above it`
+      ).toBeFocused();
+      await expectOnScreen(
+        comment,
+        `${key} on the comment's row during the load at 390 px, its statements drawn above it`
+      );
+      await page.unroute(heldRead);
+    }
+  });
+});
+
 // The tester's finding at 1f2cdd53: a key that only scrolls the page keeps the reader's place. A
 // key the Spec view's tree does not bind - Page Down, Space, Page Up - scrolls the page and leaves
 // the focus on the statement it was pressed on, so it takes the reader nowhere, and nothing may
