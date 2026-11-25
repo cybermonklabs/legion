@@ -84,16 +84,26 @@ func bearerHeader(token string) http.Header {
 }
 
 // waiterGroup is the requests a row sets waiting on the issuer, each answering on answers, and
-// the goroutines serving them, which the row's cleanup waits out.
+// the goroutines serving them, which the row's cleanup waits out. early is the first answer any
+// of them gave and answered how many have answered, which requireWaitersHoldNoReadUnit reads:
+// an answer while the service still holds every waiter is a waiter refused before it reached
+// the service, and one that will never reach it.
 type waiterGroup struct {
-	answers chan timedAnswer
-	working sync.WaitGroup
+	answers  chan timedAnswer
+	working  sync.WaitGroup
+	answered atomic.Int32
+	early    atomic.Pointer[timedAnswer]
 }
 
 func startWaiters(handler http.Handler, requests []*http.Request) *waiterGroup {
 	group := &waiterGroup{answers: make(chan timedAnswer, len(requests))}
 	for _, request := range requests {
-		group.working.Go(func() { group.answers <- serveTimed(handler, request) })
+		group.working.Go(func() {
+			answer := serveTimed(handler, request)
+			group.early.CompareAndSwap(nil, &answer)
+			group.answered.Add(1)
+			group.answers <- answer
+		})
 	}
 	return group
 }
@@ -133,14 +143,21 @@ func requireCachedCallersServed(t *testing.T, handler http.Handler, cached map[s
 // counted as it begins, a moment before it gives its unit back, so the read class is read until it
 // holds none; a waiter that held its unit across the wait would hold it until the row lets the
 // issuer answer, which comes after this, and a waiter that queued behind such units would be
-// refused at its queue wait without reaching its resolution. Each wait's one bound is the test
-// binary's deadline (testwait.Until).
-func requireWaitersHoldNoReadUnit(t *testing.T, limiter *admission.Limiter, begun func() int32, waiting func() bool) {
+// refused at its queue wait without reaching its resolution. Such a refusal fails the row at once
+// with the refused answer: that waiter will never reach its resolution, so waiting on would only
+// end at the test binary's deadline. Each wait's one bound is the test binary's deadline
+// (testwait.Until).
+func requireWaitersHoldNoReadUnit(t *testing.T, limiter *admission.Limiter, waiters *waiterGroup, begun func() int32, waiting func() bool) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("all %d waiters to reach their caller's resolution with the issuer's read held (the waiters there)", networkWaiters), func() (int32, bool) {
+	reached := testwait.Until(t, fmt.Sprintf("all %d waiters to reach their caller's resolution with the issuer's read held (the waiters there), or one to be answered first", networkWaiters), func() (int32, bool) {
 		reached := begun()
-		return reached, int(reached) == networkWaiters && waiting()
+		return reached, (int(reached) == networkWaiters && waiting()) || (int(reached) < networkWaiters && waiters.answered.Load() > 0)
 	})
+	if int(reached) < networkWaiters {
+		early := waiters.early.Load()
+		t.Fatalf("a waiter was answered status=%d after %v body=%s with %d of %d at their caller's resolution, want every waiter there holding no read unit: a waiter answered before it got there never will",
+			early.status, early.elapsed, strings.TrimSpace(early.body), reached, networkWaiters)
+	}
 	testwait.Until(t, fmt.Sprintf("the read class to hold no unit and queue no request with %d callers waiting on the issuer (its units in flight and queued)", networkWaiters), func() (string, bool) {
 		stats := limiter.Stats()[admission.Read]
 		return fmt.Sprintf("%d and %d", stats.InFlight, stats.Queued), stats.InFlight == 0 && stats.Queued == 0
@@ -367,7 +384,7 @@ func TestAnIAPKeySetReadHoldsNoAdmissionUnitWhileItsWaitersWait(t *testing.T) {
 			}
 			rig := newIAPWaitRigOn(t, nil, fetchTimeout)
 			waiters := rig.waitOnRotatedKey(t, networkWaiters)
-			requireWaitersHoldNoReadUnit(t, rig.limiter, rig.person.begun.Load, func() bool { return rig.reads.held.Load() == 1 })
+			requireWaitersHoldNoReadUnit(t, rig.limiter, waiters, rig.person.begun.Load, func() bool { return rig.reads.held.Load() == 1 })
 			requireCachedCallersServed(t, rig.handler, map[string]func() *http.Request{
 				"an agent's bearer":                   func() *http.Request { return whoamiAs(bearerHeader("agent-token")) },
 				"a browser presenting the cached key": func() *http.Request { return whoamiAs(rig.assertion(t, rig.cached)) },
@@ -552,7 +569,7 @@ func TestAServiceTokenIssuersDiscoveryHoldsNoAdmissionUnitWhileItsWaitersWait(t 
 				release()
 				waiters.working.Wait()
 			})
-			requireWaitersHoldNoReadUnit(t, limiter, verifier.begun.Load, func() bool { return discoveries.Load() == 1 })
+			requireWaitersHoldNoReadUnit(t, limiter, waiters, verifier.begun.Load, func() bool { return discoveries.Load() == 1 })
 			requireCachedCallersServed(t, handler, map[string]func() *http.Request{
 				"an agent's bearer": func() *http.Request { return whoamiAs(bearerHeader("agent-token")) },
 			})
@@ -645,7 +662,7 @@ func requireReadsHoldNoUnitOnService(t *testing.T, service string, handler http.
 		release()
 		waiters.working.Wait()
 	})
-	requireWaitersHoldNoReadUnit(t, limiter, calls, func() bool { return true })
+	requireWaitersHoldNoReadUnit(t, limiter, waiters, calls, func() bool { return true })
 	if meanwhile != nil {
 		meanwhile()
 	}
