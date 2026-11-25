@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -39,8 +40,10 @@ import (
 // (model.DecisionLink): its stale is the release before's rule, the decision's own words changed
 // after the tie and the spec node has not changed since they did, which the page of the release
 // before reads too, and its changed_since_tie is R5's, the spec node's text changed after the tie.
-// entries and open_questions stay. document and decisions go once no page of the release before
-// reads them (compat-objects).
+// entries and open_questions are the route's own, and the whole route is kept for one release
+// for a page of the release before (decisions-route): a page of this release reads the tree's
+// decisions view, which answers the same nodes (R21 of the issue-tree spec). document and
+// decisions go once no page of the release before reads them (compat-objects).
 type issueDecisions struct {
 	Entries []decisionEntry `json:"entries"`
 	// kept for one release: compat-objects
@@ -50,6 +53,7 @@ type issueDecisions struct {
 	Decisions []model.Decision `json:"decisions"`
 }
 
+// kept for one release: decisions-route
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -373,27 +377,9 @@ var entryFactKinds = []string{
 	refs.ValueUncertainty, refs.ValueUncertaintyReason,
 }
 
-// decisionEntriesRead is the statement decisionEntries reads an issue's entries with, bound to
-// the issue $1, the acting credential $2 (refs.VisibilityArg) and entryFactKinds $3. It reads no
-// node of another issue: the asks by asks.issue_key, and the decisions from the issue's own
-// documents (artifacts.issue_key), each document through its own rows: those its room keys
-// (refs.DocumentRoomSQL - the document itself, or for a document converted into its issue's
-// room the room's tree artifact) whose block the document holds (refs.BlockDocumentSQL). A
-// document the block index has indexed lists its decisions in those document_blocks rows (type
-// `decision`); one that owes that index (document_block_versions.version null) lists them as
-// well in the nodes the typed-node pass placed in it in the write's own transaction
-// (refs.PlanDecisionNodes, written by refs.DecisionIndexing.Queue): the current part_of tuples
-// into the document's own node, through graph_tuples_as_of_in, and the nodes its block_refs rows
-// name (a decision's decided_by, shaped and from_ask), keyed by its room. Each candidate is then
-// read by its own key, the present nodes of the `decision` supertag kept: a node at any state
-// but gone, so a proposed, settled or overtaken decision, ask or reading is drawn wherever its
-// node is (R5 and R12 of the node-states plan this branch carries). An entry's document is the
-// one holding its block, read as decisionread reads it: the artifact keying the block's rows - a
-// block node's address opens with its ref_key, an ask's is its block_artifact_id - mapped to the
-// document whose fragment holds the block, or, for a decision of a document that owes its block
-// index whose block the room's index names no document of yet, the document the read found its
-// node in (refs.BlockDocumentOrSQL), which the statement answers last and decisionread is given
-// (decisionread.Node.Document).
+// decisionEntriesRead shapes the Decisions query's entries for the previous release's route.
+// $4 and $5 are the node kinds and ids the query takes. The document lookup supplies a fragment
+// hint for decisions the block index has not reached; it does not select the entries.
 func decisionEntriesRead() string {
 	return `
 		with documents as (
@@ -419,22 +405,18 @@ func decisionEntriesRead() string {
 			) held
 		),
 		members as (
-			select node.kind, node.id, node.state, null::uuid as document from asks q
+			select node.kind, node.id, node.state, source.document
+			from unnest($4::text[], $5::text[]) member(kind, id)
 			cross join lateral (
 				select g.kind, g.id, g.state from graph_nodes g
-				where g.kind = '` + graphstore.KindAsk + `' and g.id = q.id::text and g.state <> '` + graphstore.StateGone + `'
+				where g.kind = member.kind and g.id = member.id and g.state <> '` + graphstore.StateGone + `'
 				  and ` + refs.VisibleRow("g", "$2") + `
 				offset 0
 			) node
-			where q.issue_key = $1 and q.kind = 'question'
-			union all
-			select node.kind, node.id, node.state, n.document from decision_nodes n
-			cross join lateral (
-				select g.kind, g.id, g.state from graph_nodes g
-				where g.kind = '` + refs.BlockNodeKind + `' and g.id = n.id and g.supertag = '` + refs.DecisionSupertag + `'
-				  and g.state <> '` + graphstore.StateGone + `' and ` + refs.VisibleRow("g", "$2") + `
-				offset 0
-			) node
+			left join lateral (
+				select d.document from decision_nodes d where d.id = member.id and member.kind = '` + refs.BlockNodeKind + `'
+				order by d.document limit 1
+			) source on true
 		)
 		select m.kind, m.id, m.state, q.question, q.options, q.urgency, q.multiple, q.created_at, coalesce(place.block_id, ''),
 		       doc.id is not null, coalesce(doc.id::text, ''), coalesce(keyed.ref_key, ''), coalesce(doc.slug, ''),
@@ -493,19 +475,31 @@ func decisionEntriesRead() string {
 		order by m.kind, m.id`
 }
 
-// decisionEntries is the Decisions read's entries for issue key, as who reads them, in one
-// statement over graph_nodes, graph_tuples and the asks row for an ask's wording, and then
-// decisionread.Decisions over the nodes it found. Both read in one read-only transaction at
-// repeatable read, so the entries answer one state of the store: a Keep or an answer committed
-// between the two reads is in both or in neither. Its members are the store's:
-//
-//   - each `ask` node, at any state but gone, of an ask of kind question (asks.kind) the issue
-//     holds, on any of its documents or on the issue itself. A copy of an answered ask on another
-//     document opens no row of its own (its block's copied_from names the source), so it is no
-//     entry; a reading in it reads the source's ask and is answered under the source's entry.
-//   - each block node of the `decision` supertag, at any state but gone, in any document of the
-//     issue, found from that document alone (decisionEntriesRead), so a decision of a document that
-//     still owes its block index is listed.
+// decisionEntryTargets takes the primary entries from the same query definition as the tree
+// view. The compatibility route nests readings under their decision or ask.
+func decisionEntryTargets(ctx context.Context, q queryer, key string) (kinds, ids []string, err error) {
+	if err := refs.TurnJITOff(ctx, q); err != nil {
+		return nil, nil, err
+	}
+	tree, err := docs.WalkIssueTree(ctx, q, key, refs.TreeCut{})
+	if err != nil {
+		return nil, nil, err
+	}
+	taken, _ := tree.Takes(graphstore.QueryDecisions)
+	for _, index := range taken {
+		node := tree.Nodes[index]
+		if node.Kind == graphstore.KindAsk || node.Type == refs.DecisionSupertag {
+			kinds = append(kinds, node.Kind)
+			ids = append(ids, node.ID)
+		}
+	}
+	return kinds, ids, nil
+}
+
+// decisionEntries reads the Decisions query's nodes (decisionEntryTargets) and shapes them for
+// the caller (decisionEntriesRead and decisionread.Decisions). The walk and those reads share one
+// read-only, repeatable-read transaction, so a Keep or answer committed during the read is in
+// all of them or in none. The route still nests each reading under its decision or ask.
 //
 // An entry names the document that holds its node's block where a document_blocks row holds that
 // block - for an ask, a row of type ask at the ask's block id - or where the document owes its block
@@ -531,7 +525,11 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 		return nil, nil, fmt.Errorf("open the read of the decisions of %s: %w", key, err)
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, decisionEntriesRead(), key, refs.VisibilityArg(who), entryFactKinds)
+	kinds, ids, err := decisionEntryTargets(ctx, tx, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("walk the decisions query of %s: %w", key, err)
+	}
+	rows, err := tx.Query(ctx, decisionEntriesRead(), key, refs.VisibilityArg(who), entryFactKinds, kinds, ids)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the decisions of %s: %w", key, err)
 	}

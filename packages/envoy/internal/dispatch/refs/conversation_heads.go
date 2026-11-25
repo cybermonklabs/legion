@@ -60,15 +60,20 @@ func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Acto
 	}
 	var listed []edgeRow
 	others := map[ItemKind][]string{}
+	askKinds := map[string]string{}
 	for rows.Next() {
 		var item edgeRow
-		if err := rows.Scan(&item.otherKind, &item.otherID); err != nil {
+		var askKind string
+		if err := rows.Scan(&item.otherKind, &item.otherID, &askKind); err != nil {
 			rows.Close()
 			return nil, false, fmt.Errorf("scan an item of %s: %w", issueKey, err)
 		}
 		listed = append(listed, item)
 		if ItemKind(item.otherKind) != ItemComment {
 			others[ItemKind(item.otherKind)] = append(others[ItemKind(item.otherKind)], item.otherID)
+		}
+		if ItemKind(item.otherKind) == ItemAsk {
+			askKinds[item.otherID] = askKind
 		}
 	}
 	rows.Close()
@@ -118,7 +123,7 @@ func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Acto
 		if !found {
 			continue
 		}
-		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
+		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node), AskKind: askKindOf(item, askKinds)})
 		for _, block := range blocks[[2]string{item.otherKind, item.otherID}] {
 			if node, found := resolved[[2]string{block.otherKind, block.otherID}]; found {
 				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})

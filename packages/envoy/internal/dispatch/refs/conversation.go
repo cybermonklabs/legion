@@ -136,15 +136,16 @@ func ConversationPageNodes(ctx context.Context, q Queryer, who model.Actor, issu
 	return conversationNodes(ctx, q, who, issueKey, at, &page)
 }
 
-// conversationItemsStatement lists an issue's items, its comments those comments selects, as c.
+// conversationItemsStatement lists an issue's items, its comments those comments selects, as c,
+// each ask with the kind its row holds (asks.kind), which is empty for a comment and a message.
 func conversationItemsStatement(comments string) string {
 	return `
-		select kind, id from (
-			select 'ask' as kind, id::text as id, created_at from asks where issue_key = $1 and created_at <= $2
+		select kind, id, ask_kind from (
+			select 'ask' as kind, k.id::text as id, k.created_at, k.kind as ask_kind from asks k where k.issue_key = $1 and k.created_at <= $2
 			union all
-			select 'comment', c.id::text, c.created_at from ` + comments + `
+			select 'comment', c.id::text, c.created_at, '' from ` + comments + `
 			union all
-			select 'message', id::text, created_at from messages where issue_key = $1 and created_at <= $2
+			select 'message', id::text, created_at, '' from messages where issue_key = $1 and created_at <= $2
 		) items
 		order by created_at, kind, id
 	`
@@ -174,14 +175,19 @@ func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey
 	}
 	var written []edgeRow
 	ids := map[ItemKind][]string{}
+	askKinds := map[string]string{}
 	for rows.Next() {
 		var item edgeRow
-		if err := rows.Scan(&item.otherKind, &item.otherID); err != nil {
+		var askKind string
+		if err := rows.Scan(&item.otherKind, &item.otherID, &askKind); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan an item of %s: %w", issueKey, err)
 		}
 		written = append(written, item)
 		ids[ItemKind(item.otherKind)] = append(ids[ItemKind(item.otherKind)], item.otherID)
+		if ItemKind(item.otherKind) == ItemAsk {
+			askKinds[item.otherID] = askKind
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -223,7 +229,7 @@ func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey
 		if !found {
 			continue
 		}
-		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
+		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node), AskKind: askKindOf(item, askKinds)})
 		for _, block := range blocks[[2]string{item.otherKind, item.otherID}] {
 			if node, found := resolved[[2]string{block.otherKind, block.otherID}]; found {
 				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
@@ -231,6 +237,15 @@ func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey
 		}
 	}
 	return nodes, nil
+}
+
+// askKindOf is the kind of the ask item is, as the items read answered its row (askKinds, by the
+// ask's id), and empty for a comment and a message.
+func askKindOf(item edgeRow, askKinds map[string]string) string {
+	if ItemKind(item.otherKind) != ItemAsk {
+		return ""
+	}
+	return askKinds[item.otherID]
 }
 
 // conversationBlocks is the current blocks of each item of items, by the item's kind and id, in

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -898,9 +899,9 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // given back in turn (store.sharedPoolSize says what that costs a loaded server).
 //
 // Batch 1 is everything keyed on the issue key alone: the issue row, its external links, the
-// issues it blocks, its artifacts, its open asks, its children, its comment count and its backlink
-// count. A key no issue carries is what the issue row's callback records, answered as that row's
-// pgx.ErrNoRows - 404 NOT_FOUND - once the batch has closed: a callback that returned the error
+// issues it blocks, its queries, its artifacts, its open asks, its children, its comment count and
+// its backlink count. A key no issue carries is what the issue row's callback records, answered
+// as that row's pgx.ErrNoRows - 404 NOT_FOUND - once the batch has closed. A callback that returned the error
 // would close the batch on it, and pgx invalidates every statement of a batch whose Close answers
 // an error in the connection's statement and description caches
 // (invalidateCachesOnBatchResultsError), so one 404 would cost that connection the whole read's
@@ -964,10 +965,16 @@ type issueDetail struct {
 	// /api/v1/issues/{key}/comments) answers, so a reader of the issue alone knows it has comments
 	// to read. An issue with none leaves it out. It comes before the lists below, so a reader that
 	// keeps only the start of a long read still has it.
-	CommentCount int                `json:"comment_count,omitempty"`
-	Artifacts    []artifactRead     `json:"artifacts"`
-	OpenAsks     []issueOpenAsk     `json:"open_asks"`
-	Children     []model.IssueChild `json:"children"`
+	CommentCount int `json:"comment_count,omitempty"`
+	// Queries is the issue's queries, Spec, Verification, Plan and Decisions in that order, each the
+	// artifact that reads it (issueQuery): its query node, or on an issue that has not converted its
+	// role document of that name. readIssue always sets it, so the read always writes it; omitzero
+	// leaves out only a nil list, and makes the field optional in the generated types, so a value
+	// typed before the field still type-checks.
+	Queries   []issueQuery       `json:"queries,omitzero"`
+	Artifacts []artifactRead     `json:"artifacts"`
+	OpenAsks  []issueOpenAsk     `json:"open_asks"`
+	Children  []model.IssueChild `json:"children"`
 	// DesignGates is the document each of this issue's Legion design-gate steps records
 	// (design_gates, PUT /api/v1/issues/{key}/design-gates), with whether the deployment's gate
 	// holds the issue's tree on that step (null where the daemon that published it said nothing
@@ -982,11 +989,12 @@ type issueDetail struct {
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
-// loaders run - loadIssueWithProgress, issueBlocksStatement, loadArtifacts, queryOwnerAsks with
-// issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
-// refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
-// for (wantsDisplayTrees): the display trees of the documents' approval reasons and of the open
-// asks' texts, which only the dashboard reads.
+// loaders run - loadIssueWithProgress, issueBlocksStatement, issueQueriesStatement with
+// scanIssueQueries, loadArtifacts, queryOwnerAsks with issueOpenAsksOf, issueChildrenStatement
+// with scanIssueChildren, issueCommentCountStatement and refs.BacklinkCounts - so the two paths
+// answer the same bytes. trees is what the request asked for (wantsDisplayTrees): the display
+// trees of the documents' approval reasons and of the open asks' texts, which only the dashboard
+// reads.
 func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
@@ -1013,6 +1021,11 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 	})
 	first.Queue(issueBlocksStatement, key).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&read.Blocks)
+	})
+	first.Queue(issueQueriesStatement, key).Query(func(rows pgx.Rows) error {
+		scanned, err := scanIssueQueries(rows, key)
+		read.Queries = scanned
+		return err
 	})
 	first.Queue(issueArtifactsStatement, key).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
@@ -1127,8 +1140,8 @@ var issueRowStatement = `
 		       ` + issueAdvancesColumns + `,
 		       i.assignee, i.route, i.created_by, i.created_at, i.updated_at, i.closed_at,
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
-		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
-		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedPlanRole + `), ''),
+		       coalesce(` + issueQueryDocumentSQL("i.key", graphstore.QueryVerification) + `, ''),
+		       coalesce(` + issueQueryDocumentSQL("i.key", graphstore.QueryPlan) + `, ''),
 		       coalesce((select a.id::text ` + refs.DecisionsDocumentOf("i.key") + `), ''), -- kept for one release: compat-objects
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
