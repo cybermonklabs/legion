@@ -1228,8 +1228,12 @@ func architectOf(session string) issueRoleHolder {
 	return issueRoleHolder{Role: "architect", Session: session}
 }
 
-// legionArchitectStatuses are the four statuses that the owning architect writes.
-var legionArchitectStatuses = []string{"done", "backlog", "icebox", model.IssueStatusTriage}
+// legionArchitectStatuses are the four statuses that the owning architect writes, and
+// legionArchitectStatusesWithChildren the three of them it writes with include_children.
+var (
+	legionArchitectStatuses             = []string{"done", "backlog", "icebox", model.IssueStatusTriage}
+	legionArchitectStatusesWithChildren = []string{"backlog", "icebox", model.IssueStatusTriage}
+)
 
 // legionStatusRoute is one of the two routes that write an issue's status, by the path that
 // writes the status of key.
@@ -1324,7 +1328,7 @@ func TestTheOwningArchitectsProvenSessionWritesAnIssueUnderIt(t *testing.T) {
 	})
 
 	t.Run("include_children over a sub-architect's issue", func(t *testing.T) {
-		for _, status := range legionArchitectStatuses[1:] {
+		for _, status := range legionArchitectStatusesWithChildren {
 			t.Run(status, func(t *testing.T) {
 				named := rig.issue(t, nil, parent, "todo")
 				sub := rig.issue(t, nil, named, "todo")
@@ -1394,19 +1398,19 @@ func TestTheOwningArchitectsProvenSessionWritesAnIssueUnderIt(t *testing.T) {
 	})
 
 	t.Run("from a personal token without the person scope that names the architect's session", func(t *testing.T) {
-		token := personalTokenHolding(t, rig.database)
+		unscoped := rig.credential(t, legionUnscopedPersonalToken)
 		child := rig.issue(t, nil, parent, "todo")
 		architect := map[string]any{"kind": "session", "id": "ses_parent_architect"}
 		for _, route := range legionStatusRoutes {
 			t.Run(route.name+" in its body's actor", func(t *testing.T) {
 				requireLegionCallRefused(t, rig.database, []string{child}, func() *httptest.ResponseRecorder {
-					return rig.serve(brokerRequest(t, route.method, route.path(child), map[string]any{"status": "done", "actor": architect}, "Bearer "+token, ""))
+					return unscoped.send(t, route.method, route.path(child), map[string]any{"status": "done", "actor": architect})
 				})
 			})
 			t.Run(route.name+" with ?session=", func(t *testing.T) {
 				requireLegionCallRefused(t, rig.database, []string{child}, func() *httptest.ResponseRecorder {
-					return rig.serve(brokerRequest(t, route.method, route.path(child)+"?session=ses_parent_architect",
-						map[string]any{"status": "done", "actor": sessionActor()}, "Bearer "+token, ""))
+					return unscoped.send(t, route.method, route.path(child)+"?session=ses_parent_architect",
+						map[string]any{"status": "done", "actor": sessionActor()})
 				})
 			})
 		}

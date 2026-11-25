@@ -255,29 +255,22 @@ func (step issueWriteStep) writtenByOwningArchitect(ctx context.Context, q pgx.T
 	if err != nil || !before {
 		return false, err
 	}
-	after := step.parentLeft()
-	if stringPointersEqual(step.parentBefore, after) {
+	if !step.changesParent() {
 		return true, nil
 	}
-	return architectAbove(ctx, q, step.key, project, after, call.session)
+	return architectAbove(ctx, q, step.key, project, step.parentLeft(), call.session)
 }
 
-// architectWrites says whether the owning architect may write status in a call with options:
-// done, backlog, icebox or triage, in a call with neither unlink_children nor include_parent. With
-// include_children it may write backlog, icebox or triage only, because R24 takes
-// include_children with done from a person at a browser alone (refuseIssueWritePlan). Every
-// status in work stays the daemon's.
+// architectWrites says whether the owning architect may write status in a call with options: a
+// status out of the workflow (model.IssueStatusesOutOfWorkflow, the daemon's
+// record.OutOfWorkflowStatuses), in a call with neither unlink_children nor include_parent. With
+// include_children it may not write done, because R24 takes include_children with done from a
+// person at a browser alone (refuseIssueWritePlan). Every status in work stays the daemon's.
 func (options statusChangeOptions) architectWrites(status string) bool {
-	if options.unlinkChildren || options.includeParent {
+	if options.unlinkChildren || options.includeParent || !slices.Contains(model.IssueStatusesOutOfWorkflow, status) {
 		return false
 	}
-	switch status {
-	case "done":
-		return !options.includeChildren
-	case "backlog", "icebox", model.IssueStatusTriage:
-		return true
-	}
-	return false
+	return status != "done" || !options.includeChildren
 }
 
 // owningArchitectSQL answers whether the chain that starts at the issue $1, the parent of a

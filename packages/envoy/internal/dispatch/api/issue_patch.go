@@ -496,9 +496,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// the owner locks the write holds. R26 (legion_status_scope.go) judges the write first, and R24
 	// (parent_status_rule.go) judges it after R26, so where both refuse, the code is R26's. With the
 	// parent-status rule off the plan is unjudged, so R24 reads no conflict that the write would
-	// not refuse. The plan of a step of a status change carries the call's options
-	// (issueWriteCallStep.options), so R26 judges an architect's write of the step as the planning
-	// check judged it. A PATCH carries none.
+	// not refuse.
 	var statusAfter *string
 	if input.Status != nil {
 		statusAfter = &status

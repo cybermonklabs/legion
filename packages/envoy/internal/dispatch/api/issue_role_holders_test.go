@@ -243,9 +243,7 @@ func TestOnlyTheDaemonsSessionPublishesRoleHolders(t *testing.T) {
 		rig := newLegionStatusRig(t, true)
 		issue := rig.issue(t, nil, "", "")
 		path := "/api/v1/issues/" + issue + "/role-holders"
-		if taken := rig.credential(t, legionDaemonToken).send(t, http.MethodPut, path, publication(set)); taken.Code != http.StatusOK {
-			t.Fatalf("the daemon's own token publishes %v: status=%d body=%s", set, taken.Code, taken.Body.String())
-		}
+		rig.publishRoles(t, issue, set...)
 		before := readStoredRoleHolders(t, rig.database, issue)
 		requireStoredRoleHolders(t, before, set, true)
 		for _, credential := range rig.credentials {
@@ -258,11 +256,9 @@ func TestOnlyTheDaemonsSessionPublishesRoleHolders(t *testing.T) {
 					requireRefused(t, response, http.StatusForbidden, credential.code)
 				} else {
 					requireRefused(t, response, http.StatusForbidden, "ROLE_HOLDER_FORBIDDEN")
-					var refusal refusalAnswer
-					_ = json.Unmarshal(response.Body.Bytes(), &refusal)
-					if !strings.Contains(refusal.Error, legionDaemonSessionOf(issue)) || !strings.Contains(refusal.Error, "legion-status") {
+					if _, message := refusalOf(t, response); !strings.Contains(message, legionDaemonSessionOf(issue)) || !strings.Contains(message, "legion-status") {
 						t.Errorf("the refusal's message %q names not both the daemon's session %s and the legion-status scope",
-							refusal.Error, legionDaemonSessionOf(issue))
+							message, legionDaemonSessionOf(issue))
 					}
 				}
 				if after := readStoredRoleHolders(t, rig.database, issue); !sameStoredRoleHolders(after, before) {
@@ -276,7 +272,7 @@ func TestOnlyTheDaemonsSessionPublishesRoleHolders(t *testing.T) {
 		rig := newLegionStatusRig(t, false)
 		issue := rig.issue(t, nil, "", "")
 		path := "/api/v1/issues/" + issue + "/role-holders"
-		shared, daemon := rig.credential(t, legionSharedToken), rig.credential(t, legionDaemonToken)
+		shared := rig.credential(t, legionSharedToken)
 		sharedPublication := map[string]any{"holders": set, "actor": daemonSessionOf(brokerTestProject)}
 		publish := func(t *testing.T, credential legionCredential, body map[string]any) []storedRoleHolder {
 			t.Helper()
@@ -290,7 +286,8 @@ func TestOnlyTheDaemonsSessionPublishesRoleHolders(t *testing.T) {
 		requireStoredRoleHolders(t, first, set, false)
 		// Each write is its own transaction, so a pair written again would take a later time.
 		time.Sleep(5 * time.Millisecond)
-		marked := publish(t, daemon, publication(set))
+		rig.publishRoles(t, issue, set...)
+		marked := readStoredRoleHolders(t, rig.database, issue)
 		requireStoredRoleHolders(t, marked, set, true)
 		for index := range marked {
 			if index < len(first) && !marked[index].RecordedAt.Equal(first[index].RecordedAt) {

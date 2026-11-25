@@ -129,9 +129,7 @@ type statusChangeConflict struct {
 	Changed []statusChangeEntry         `json:"changed"`
 }
 
-// statusChange is a status change's body as the route checked it. Its options
-// (statusChangeOptions) ride on the plan and on each step's write, so every check of the call
-// reads them.
+// statusChange is a status change's body as the route checked it.
 type statusChange struct {
 	status string
 	statusChangeOptions
@@ -766,8 +764,7 @@ func (run *statusChangeRun) finish(issue model.Issue) error {
 // call is the write of one step: the status or the unlink the step writes, as the caller writes
 // it, and, for a step an option makes, the comment of Dispatch's system actor that names the call
 // and what the write changed (issueWriteCallStep.moved). claim is the request key's claim of a
-// keyed call, nil for a call with no key. The step carries the call's options, so the step's own
-// check judges it with the options that the planning check read (issueWriteCallStep.options).
+// keyed call, nil for a call with no key.
 func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, claim *requestKeyClaim) issueWriteCall {
 	call := issueWriteCall{
 		writer:        run.writer,

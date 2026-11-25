@@ -30,8 +30,8 @@ import (
 // model.ScopeLegionStatus. Every other credential is refused 403 ROLE_HOLDER_FORBIDDEN before the
 // transaction opens. The shared token whose body names that session is refused too: a bearer that
 // proves no session of its own names its session in the body, and the body can name any session
-// (bearerSessionActor). With the setting off, the route keeps the rule of the release before it:
-// the actor must be the session legion-daemon:<project>. Dispatch takes the session that such a
+// (bearerSessionActor). With the setting off, the actor must be the session
+// legion-daemon:<project>. Dispatch takes the session that such a
 // bearer names as the bearer names it, so the deployment's shared token, and a person's own agent
 // token whatever its scopes, can name that session and write.
 //
@@ -191,7 +191,7 @@ const maxRoleHolderSessionBytes = 256
 // refuses. The credential is the daemon's own when it proves the session legion-daemon:<project>
 // of the issue's project and holds model.ScopeLegionStatus. With Deps.LegionStatusScope on, every
 // other credential is refused 403 ROLE_HOLDER_FORBIDDEN. With it off, the actor must be that
-// session, as before (this file's comment).
+// session (this file's comment).
 //
 // The daemon sends the issue's whole set, so the transaction deletes each stored pair that the
 // body does not name, then inserts the pairs that are not stored yet. A pair that changed is
@@ -296,29 +296,34 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The same statement writes this publication's mark on each stored pair that the body keeps,
+	// where the mark differs, and deletes each pair that the body does not name: the two touch
+	// different rows. An update locks only the rows it changes, so a publication that changes
+	// nothing locks no row and takes no transaction id, as before the mark. The insert below writes
+	// the mark on each pair it adds. So each pair the issue holds after the publication carries
+	// this publication's mark, and the write holds its transaction id over no more statements than
+	// before (INFRA-636; the role holders row of route_xid_window_issues_test.go).
 	if _, err := tx.Exec(r.Context(), `
+		with marked as (
+			update issue_role_holders set daemon_proven = $4
+			where issue_key = $1 and daemon_proven <> $4
+			  and (role, session) in (select * from unnest($2::text[], $3::text[]))
+		)
 		delete from issue_role_holders
 		where issue_key = $1
 		  and (role, session) not in (select * from unnest($2::text[], $3::text[]))
-	`, issue, roles, sessions); err != nil {
+	`, issue, roles, sessions, daemonProven); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// The delete above is the whole of the publication that names no holder, so the insert runs
-	// only when there is a pair to write. The insert writes this publication's mark on each pair
-	// it names. After the delete, a stored pair that has the role of a named pair has its session
-	// too, so a conflict on (issue_key, role) is a pair that the body keeps unchanged. The conflict
-	// writes the mark on that pair when its mark differs, and keeps its recorded_at. So each pair
-	// the issue holds after the publication carries this publication's mark. The mark is part of
-	// the insert, not a statement of its own, so the write holds its transaction id over no more
-	// statements than before (INFRA-636; the role holders row of route_xid_window_issues_test.go).
+	// only when there is a pair to write.
 	if len(holders) > 0 {
 		if _, err := tx.Exec(r.Context(), `
 			insert into issue_role_holders (issue_key, role, session, daemon_proven)
 			select $1::text, published.role, published.session, $4::boolean
 			from unnest($2::text[], $3::text[]) as published(role, session)
-			on conflict (issue_key, role) do update set daemon_proven = excluded.daemon_proven
-			where issue_role_holders.daemon_proven <> excluded.daemon_proven
+			on conflict (issue_key, role) do nothing
 		`, issue, roles, sessions, daemonProven); err != nil {
 			s.writeHandlerError(w, err)
 			return

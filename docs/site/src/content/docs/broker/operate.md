@@ -782,8 +782,8 @@ An entry whose fixed session is `legion-daemon:<its own project>` is a Legion da
 example `system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE`.
 The token of such an entry holds the OAuth scope `legion-status` alone, which Dispatch reads
 (`DISPATCH_LEGION_STATUS_SCOPE`): where that setting is on, a write of a Legion issue's status
-needs it or the `person` scope, but for one of the architect of an issue above, which writes
-with its own broker token. The broker reads the session the entry fixes, letter case
+needs it or the `person` scope, but for a status write of the architect of an issue above,
+which writes with its own broker token. The broker reads the session the entry fixes, letter case
 included, and never a session a request names. No other token the exchange mints holds
 `legion-status`, whatever session it carries, and a request that names that scope is refused
 `invalid_scope` under every entry.
