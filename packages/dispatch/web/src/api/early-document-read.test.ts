@@ -43,7 +43,7 @@ test("an address that started no early read takes nothing", () => {
 test("the caller's deadline aborts the early request, whenever it fires", () => {
   const first = earlyRead();
   const running = new AbortController();
-  takeEarlyDocumentRead(PATH, { signal: running.signal });
+  void takeEarlyDocumentRead(PATH, { signal: running.signal });
   expect(first.aborted).toEqual([]);
   running.abort("too slow");
   expect(first.aborted).toEqual(["too slow"]);
@@ -51,6 +51,6 @@ test("the caller's deadline aborts the early request, whenever it fires", () => 
   const second = earlyRead();
   const already = new AbortController();
   already.abort("gone");
-  takeEarlyDocumentRead(PATH, { signal: already.signal });
+  void takeEarlyDocumentRead(PATH, { signal: already.signal });
   expect(second.aborted).toEqual(["gone"]);
 });

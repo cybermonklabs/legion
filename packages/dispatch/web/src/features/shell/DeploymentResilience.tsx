@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { REQUEST_DEADLINE_MS } from "../../api/client";
+import { takeEarlyFocus } from "../../early-focus";
 import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderStrong,
@@ -351,6 +352,9 @@ export function DeploymentResilience(): ReactNode {
     };
 
     window.addEventListener("focus", checkForUpdate);
+    // A focus before this listener existed: the entry held that it came, and this is the first
+    // moment its check can run (`early-focus.ts`). A page that heard none asks for nothing here.
+    if (takeEarlyFocus()) checkForUpdate();
     return () => window.removeEventListener("focus", checkForUpdate);
   }, []);
 

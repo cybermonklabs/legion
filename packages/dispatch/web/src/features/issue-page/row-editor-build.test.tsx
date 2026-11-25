@@ -329,6 +329,6 @@ test("a row whose editor's binding fails says its editor could not open", async 
     ).toBe(false);
   } finally {
     drawn.end();
-    for (const construction of built) construction.destroy();
+    await Promise.all(built.map((construction) => construction.destroy()));
   }
 });

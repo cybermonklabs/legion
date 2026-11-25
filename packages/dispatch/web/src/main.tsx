@@ -7,6 +7,7 @@ import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-cl
 import { chunkComponent } from "./components/chunk-component";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ShellSkeleton } from "./components/ShellSkeleton";
+import { rememberEarlyFocus } from "./early-focus";
 import { rememberEarlyKeys } from "./early-keys";
 import "./styles.css";
 
@@ -77,8 +78,11 @@ const queryClient = new DispatchQueryClient({
  * page that fails to show: the app renders, and asks for each read itself as it always did.
  */
 // Hold a shortcut the reader presses at the skeleton, from this task, so the app's keymap can
-// answer it when it binds (`early-keys.ts`).
+// answer it when it binds (`early-keys.ts`), and whether the tab regains focus before the
+// deployment watch below listens, so the watch can run the check that focus asked for
+// (`early-focus.ts`).
 rememberEarlyKeys();
+rememberEarlyFocus();
 
 void import("./features/shell/boot").then(
   ({ bootThePage }) => bootThePage(queryClient, window.location.pathname, window.location.search),
@@ -91,7 +95,8 @@ const TheApp = chunkComponent(() => import("./app").then(({ App }) => App), <She
 
 /** The long-lived tab's Markdown engine and the reload a new deployment offers. It draws
  *  nothing until there is something to offer, so nothing stands where it will be, and it stays
- *  outside the app's error boundary exactly as it was outside it in this module. */
+ *  outside the app's error boundary exactly as it was outside it in this module. A focus before
+ *  it mounts is held above, and it runs that focus's check as it mounts (`early-focus.ts`). */
 const TheDeploymentWatch = chunkComponent(() =>
   import("./features/shell/DeploymentResilience").then(
     ({ DeploymentResilience }) => DeploymentResilience
