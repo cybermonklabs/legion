@@ -28,18 +28,26 @@ var (
 // nextBranch is the branch of the next change of LEGION-208.
 const nextBranch = "legion/LEGION-208"
 
-// nextBranchGitHub is acme/widgets's REST API as a next change's branch row calls it: each branch
-// of refs by its exact name, a create that adds a branch, a move that writes one, and a compare of
-// two commits answered with the status compared names for "base...head". Every create and move is
-// recorded; any other request fails the test.
+// nextBranchGitHub is acme/widgets's REST and GraphQL API as a next change's branch row calls it:
+// the repository and its node id, each branch of refs by its exact name, a create that adds a
+// branch GitHub does not have and refuses one it has, the GraphQL mutation updateRefs, the one move
+// it answers, which writes a ref only where it still points at the update's beforeOid as GitHub's
+// reference documents it, and a compare of two commits answered with the status compared names for
+// "base...head". pushAfterRead, where set, is a push of another process that lands on the branch
+// just after the first read of its ref is answered. Every create and move is recorded; any other
+// request, a REST move of a ref among them, fails the test.
 type nextBranchGitHub struct {
-	url      string
-	mu       sync.Mutex
-	refs     map[string]string
-	compared map[string]string
-	creates  []map[string]string
-	moves    []map[string]any
+	url           string
+	mu            sync.Mutex
+	refs          map[string]string
+	compared      map[string]string
+	pushAfterRead string
+	creates       []map[string]string
+	moves         []map[string]any
 }
+
+// nextRepositoryID is acme/widgets's GraphQL node id.
+const nextRepositoryID = "R_kgDOwidgets"
 
 func newNextBranchGitHub(t *testing.T, refs, compared map[string]string) *nextBranchGitHub {
 	t.Helper()
@@ -48,9 +56,10 @@ func newNextBranchGitHub(t *testing.T, refs, compared map[string]string) *nextBr
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		read, isRead := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/ref/heads/")
-		moved, isMove := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/refs/heads/")
 		basehead, isCompare := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/compare/")
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets":
+			_, _ = w.Write([]byte(`{"full_name":"acme/widgets","default_branch":"main","node_id":"` + nextRepositoryID + `"}`))
 		case r.Method == http.MethodGet && isRead:
 			commit, found := g.refs[read]
 			if !found {
@@ -59,6 +68,11 @@ func newNextBranchGitHub(t *testing.T, refs, compared map[string]string) *nextBr
 				return
 			}
 			_, _ = w.Write([]byte(`{"ref":"refs/heads/` + read + `","object":{"sha":"` + commit + `","type":"commit"}}`))
+			if read == nextBranch && g.pushAfterRead != "" {
+				g.refs[read], g.pushAfterRead = g.pushAfterRead, ""
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			g.updateRefs(t, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/widgets/git/refs":
 			var body map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -74,14 +88,6 @@ func newNextBranchGitHub(t *testing.T, refs, compared map[string]string) *nextBr
 			g.refs[name] = body["sha"]
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{}`))
-		case r.Method == http.MethodPatch && isMove:
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode the move: %v", err)
-			}
-			g.moves = append(g.moves, body)
-			g.refs[moved], _ = body["sha"].(string)
-			_, _ = w.Write([]byte(`{}`))
 		case r.Method == http.MethodGet && isCompare && g.compared[basehead] != "":
 			_, _ = w.Write([]byte(`{"status":"` + g.compared[basehead] + `"}`))
 		default:
@@ -89,6 +95,37 @@ func newNextBranchGitHub(t *testing.T, refs, compared map[string]string) *nextBr
 		}
 	}})
 	return g
+}
+
+// updateRefs answers GitHub's GraphQL mutation updateRefs over the one ref update the move sends:
+// the ref moves only where it still points at beforeOid. Otherwise it changes nothing and answers
+// as GitHub answered a stale beforeOid when it was tried on a scratch branch: a 200 with no data
+// and one error, with no type and a generic message.
+func (g *nextBranchGitHub) updateRefs(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !strings.Contains(body.Query, "updateRefs") {
+		t.Errorf("a GraphQL request other than updateRefs: %q (%v)", body.Query, err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	repository, _ := body.Variables["repositoryId"].(string)
+	name, _ := body.Variables["name"].(string)
+	before, _ := body.Variables["beforeOid"].(string)
+	after, _ := body.Variables["afterOid"].(string)
+	branch, isBranch := strings.CutPrefix(name, "refs/heads/")
+	if repository != nextRepositoryID || !isBranch || before == "" || after == "" {
+		t.Errorf("updateRefs with variables %v, want acme/widgets's node id, a branch ref, beforeOid and afterOid", body.Variables)
+	}
+	if g.refs[branch] != before {
+		_, _ = w.Write([]byte(`{"errors":[{"message":"Something went wrong while executing your query on 2026-11-25T09:17:24Z."}]}`))
+		return
+	}
+	g.refs[branch] = after
+	g.moves = append(g.moves, map[string]any{"sha": after, "force": body.Variables["force"], "before": before})
+	_, _ = w.Write([]byte(`{"data":{"updateRefs":{"clientMutationId":null}}}`))
 }
 
 // writes is every create and every move GitHub answered, and where the branch stands now.
@@ -153,14 +190,16 @@ func mergedFrom(base string) *record.BranchFrom {
 }
 
 // The branch of a next change that stands at the head its last pull request merged moves to the
-// head of the base that pull request merged into, with one forced move, and nobody is told.
+// head of the base that pull request merged into, with one forced move made only while the branch
+// still points at the merged head, and nobody is told.
 func TestABranchAtTheMergedHeadMovesToTheBase(t *testing.T) {
 	t.Parallel()
 	r := newNextBranchRig(t, map[string]string{"main": nextBaseHead, nextBranch: nextMergedHead}, nil)
 	r.run(mergedFrom("main"))
 	creates, moves, tip := r.github.writes()
-	if len(creates) != 0 || len(moves) != 1 || moves[0]["sha"] != nextBaseHead || moves[0]["force"] != true || tip != nextBaseHead {
-		t.Fatalf("creates %v and moves %v, the branch at %s; want one forced move to %s", creates, moves, tip, nextBaseHead)
+	if len(creates) != 0 || len(moves) != 1 || moves[0]["sha"] != nextBaseHead || moves[0]["before"] != nextMergedHead ||
+		moves[0]["force"] != true || tip != nextBaseHead {
+		t.Fatalf("creates %v and moves %v, the branch at %s; want one forced move from %s to %s", creates, moves, tip, nextMergedHead, nextBaseHead)
 	}
 	if told := r.told(); len(told) != 0 {
 		t.Fatalf("told %v, want nobody", told)
@@ -194,6 +233,25 @@ func TestABranchWithCommitsAfterTheMergeIsLeftAndTold(t *testing.T) {
 	told := r.told()
 	if len(told) != 1 || told[0][0] != "next-change-workspace" || !strings.Contains(told[0][1], nextLater) || !strings.Contains(told[0][1], nextBranch) {
 		t.Fatalf("told %v, want one next-change-workspace notice naming %s at %s", told, nextBranch, nextLater)
+	}
+}
+
+// A push that lands on the branch between the row's read of its tip and its move is someone's work,
+// as a commit after the merge is: the move is made only while the branch still points at the merged
+// head, so the push stays on the branch, and the owning architect is told, naming the pushed tip,
+// to merge the base forward before the next change's first task.
+func TestAPushBetweenTheReadAndTheMoveStaysOnTheBranch(t *testing.T) {
+	t.Parallel()
+	r := newNextBranchRig(t, map[string]string{"main": nextBaseHead, nextBranch: nextMergedHead},
+		map[string]string{nextBaseHead + "..." + nextLater: "diverged"})
+	r.github.pushAfterRead = nextLater
+	r.run(mergedFrom("main"))
+	if _, moves, tip := r.github.writes(); tip != nextLater {
+		t.Fatalf("moves %v, the branch at %s; want the push %s kept on the branch", moves, tip, nextLater)
+	}
+	told := r.told()
+	if len(told) != 1 || told[0][0] != "next-change-workspace" || !strings.Contains(told[0][1], nextLater) {
+		t.Fatalf("told %v, want one next-change-workspace notice naming the pushed tip %s", told, nextLater)
 	}
 }
 

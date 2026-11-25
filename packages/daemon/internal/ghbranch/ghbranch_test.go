@@ -22,19 +22,23 @@ import (
 
 const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
 
-// github is a repository's REST API as Create, Reset and DefaultBranch call it: the repository
-// itself, naming defaultBranch, each branch of refs by its exact name, a create of a ref answered
-// with create's status and body, a move of a ref answered with patch's (200 when patch is nil), and
-// a compare of two commits answered with the status compared names for "base...head". It records
-// each read, each create, each move and each compare; any other request fails the test, so a Create
-// that reads the base's tree, or posts a tree or a commit of its own, is caught by name.
+// github is a repository's REST and GraphQL API as Create, Reset and DefaultBranch call it: the
+// repository itself, naming defaultBranch and its node id, each branch of refs by its exact name, a
+// create of a ref answered with create's status and body, the GraphQL mutation updateRefs, which
+// moves a ref only while it points at the update's beforeOid and answers refuse's message as an
+// error where refuse is set, and a compare of two commits answered with the status compared names
+// for "base...head". pushAfterRead, where set, is another process's push that lands on the branch
+// it names just after the first read of that branch's ref is answered. It records each read, each
+// create, each move and each compare; any other request fails the test, so a Create that reads the
+// base's tree, or posts a tree or a commit of its own, is caught by name.
 type github struct {
 	refs          map[string]string
 	defaultBranch string
 	fullName      string
 	create        func() (int, string)
-	patch         func() (int, string)
+	refuse        string
 	compared      map[string]string
+	pushAfterRead map[string]string
 	mu            sync.Mutex
 	read          []string
 	creates       []map[string]string
@@ -43,7 +47,11 @@ type github struct {
 	authorized    []string
 }
 
-// patched is one move of a ref the fake answered: the branch its path named and the body sent.
+// widgetsNodeID is acme/widgets's GraphQL node id, which the fake names beside its full name.
+const widgetsNodeID = "R_kgDOwidgets"
+
+// patched is one move of a ref the fake made: the branch it named, and the commit it pointed at
+// before (before), the one it points at now (sha) and whether the move was forced (force).
 type patched struct {
 	branch string
 	body   map[string]any
@@ -57,7 +65,6 @@ func (g *github) serve(t *testing.T) string {
 		g.mu.Unlock()
 	}, Handle: func(w http.ResponseWriter, r *http.Request) {
 		branch, isRef := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/ref/heads/")
-		moved, isMove := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/refs/heads/")
 		basehead, isCompare := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/compare/")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets":
@@ -66,16 +73,24 @@ func (g *github) serve(t *testing.T) string {
 			if fullName == "" {
 				fullName = "acme/widgets"
 			}
-			_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+g.defaultBranch+`"}`)
+			_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+g.defaultBranch+`","node_id":"`+widgetsNodeID+`"}`)
 		case r.Method == http.MethodGet && isRef:
 			g.reading(r.URL.Path)
+			g.mu.Lock()
 			commit, found := g.refs[branch]
+			if pushed, racing := g.pushAfterRead[branch]; racing && found {
+				g.refs[branch] = pushed
+				delete(g.pushAfterRead, branch)
+			}
+			g.mu.Unlock()
 			if !found {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = io.WriteString(w, `{"message":"Not Found","status":"404"}`)
 				return
 			}
 			_, _ = io.WriteString(w, `{"ref":"refs/heads/`+branch+`","object":{"sha":"`+commit+`","type":"commit"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			g.updateRefs(t, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/widgets/git/refs":
 			var body map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -85,20 +100,6 @@ func (g *github) serve(t *testing.T) string {
 			g.creates = append(g.creates, body)
 			g.mu.Unlock()
 			status, answer := g.create()
-			w.WriteHeader(status)
-			_, _ = io.WriteString(w, answer)
-		case r.Method == http.MethodPatch && isMove:
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode the move: %v", err)
-			}
-			g.mu.Lock()
-			g.patches = append(g.patches, patched{branch: moved, body: body})
-			g.mu.Unlock()
-			status, answer := http.StatusOK, `{}`
-			if g.patch != nil {
-				status, answer = g.patch()
-			}
 			w.WriteHeader(status)
 			_, _ = io.WriteString(w, answer)
 		case r.Method == http.MethodGet && isCompare:
@@ -117,6 +118,43 @@ func (g *github) serve(t *testing.T) string {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}})
+}
+
+// updateRefs answers GitHub's GraphQL mutation updateRefs over the one ref update Reset sends, as
+// GitHub's reference documents it: the ref moves to afterOid only while it points at beforeOid.
+// Otherwise it moves nothing and answers as GitHub answered a stale beforeOid when it was tried on
+// a scratch branch: a 200 with no data and one error, with no type and a generic message. A
+// refusal the test scripts (refuse) is answered the same way, whatever the ref points at.
+func (g *github) updateRefs(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !strings.Contains(body.Query, "updateRefs") {
+		t.Errorf("a GraphQL request other than updateRefs: %q (%v)", body.Query, err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	name, _ := body.Variables["name"].(string)
+	before, _ := body.Variables["beforeOid"].(string)
+	after, _ := body.Variables["afterOid"].(string)
+	branch, isBranch := strings.CutPrefix(name, "refs/heads/")
+	if body.Variables["repositoryId"] != widgetsNodeID || !isBranch || before == "" || after == "" {
+		t.Errorf("updateRefs with variables %v, want acme/widgets's node id, a branch ref, beforeOid and afterOid", body.Variables)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	refusal := g.refuse
+	if refusal == "" && g.refs[branch] != before {
+		refusal = "Something went wrong while executing your query on 2026-11-25T09:17:24Z."
+	}
+	if refusal != "" {
+		_, _ = io.WriteString(w, `{"errors":[{"message":"`+refusal+`"}]}`)
+		return
+	}
+	g.refs[branch] = after
+	g.patches = append(g.patches, patched{branch: branch, body: map[string]any{"before": before, "sha": after, "force": body.Variables["force"]}})
+	_, _ = io.WriteString(w, `{"data":{"updateRefs":{"clientMutationId":null}}}`)
 }
 
 func (g *github) reading(path string) {
