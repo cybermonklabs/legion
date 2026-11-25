@@ -461,47 +461,6 @@ test("an overtaken node is a row at its place with its subtree open", () => {
   }
 });
 
-// An open question at or under an overtaken node opens no path, however deep under it the question
-// stands, so the page unfolds nothing down to it and draws it as no row it opens on; the same trees
-// with nothing overtaken open the path down to the question.
-test("no path to an open question passes into an overtaken node", () => {
-  const open = { question: true, state: "open" } as const;
-  const trees = (overtaken: boolean): TreeNode[] => {
-    const life = overtaken ? OVERTAKEN : {};
-    const under = overtaken ? { closed: true as const } : {};
-    const question = node("spec#b-q1", "ask", [], { ...open, ...under });
-    return [
-      // The question itself is overtaken.
-      node("CORE-1", "issue", [
-        node("spec", "document", [node("spec#b-q1", "ask", [], { ...open, ...life })]),
-      ]),
-      // It stands right under an overtaken node.
-      node("CORE-1", "issue", [
-        node("spec", "document", [node("spec#b-r1", "requirement", [question], life)]),
-      ]),
-      // It stands two levels under one.
-      node("CORE-1", "issue", [
-        node("spec", "document", [
-          node(
-            "spec#b-r1",
-            "requirement",
-            [node("spec#b-r1a", "callout", [question], under)],
-            life
-          ),
-        ]),
-      ]),
-    ];
-  };
-  for (const [index, root] of trees(false).entries()) {
-    expect(frontier(root).size, `live tree ${index}`).toBeGreaterThan(0);
-    expect(rowOf(treeRows(root), "spec#b-q1"), `live tree ${index}`).toBeDefined();
-  }
-  for (const [index, root] of trees(true).entries()) {
-    expect([...frontier(root)], `overtaken tree ${index}`).toEqual([]);
-    expect(idsOf(treeRows(root)), `overtaken tree ${index}`).toEqual(["CORE-1", "spec"]);
-  }
-});
-
 // A folded branch's count counts an overtaken node and the nodes under it as it counts every node:
 // it is the count of the same tree with nothing overtaken, and the number of rows the branch draws
 // opened, folded to one row and below the drawn levels alike.

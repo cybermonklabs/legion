@@ -12,7 +12,7 @@ import {
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
-import { closeOvertaken, marksOf } from "./node-states/node-states";
+import { closeOvertaken, marksOf, stateIdOf } from "./node-states/node-states";
 import {
   type FILTER_SIGNAL_WORDS,
   NODE_TYPE_NAMES,
@@ -624,13 +624,15 @@ function viewLines(
  * (R22).
  */
 function lineOfParent(node: TreeNode): ParentLine {
+  const readId = stateIdOf(node);
   return {
     id: node.id,
     line: parentLineOf(node),
     // The parent's marks, as the outline's stamp left them on it, so a filter's parent line says
     // what its row would.
     ...marksOf(node),
-    ...(node.readId === undefined ? {} : { readId: node.readId }),
+    // The id the parent takes its states by, which for a question is its ask's.
+    ...(readId === undefined ? {} : { readId }),
     // The parent's own address, which makes its line the link a reader follows to it (R18, and
     // R26: a step's row reaches the statement it serves).
     ...(node.reference === undefined ? {} : { reference: node.reference }),

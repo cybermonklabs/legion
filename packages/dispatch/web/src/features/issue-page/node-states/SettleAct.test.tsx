@@ -13,10 +13,11 @@ import { liveSocketFor } from "../../../api/live-socket";
 import { issueCoverageQuery } from "../../../api/queries";
 import { MIN_REFETCH_INTERVAL_MS } from "../../../api/query-refresh";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import type { TreeNode } from "../issue-tree";
+import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
 import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
+import { askRead, issueDetails } from "../spec-filter/spec-fixtures";
 import { treeAnswer as fixtureAnswer, treeNode } from "../tree-read/tree-fixtures";
 import {
   issueTreeQuery,
@@ -293,6 +294,55 @@ test("Settle sends the address and no body", async () => {
     await waitFor(() => expect(drawn.sent).toHaveLength(1));
     // `toStrictEqual`: the request holds no `body` at all, not even an undefined one.
     expect(drawn.sent).toStrictEqual([{ method: "POST", path: SETTLE_PATH }]);
+    await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
+    expect(drawn.sent).toHaveLength(1);
+  } finally {
+    drawn.unmount();
+  }
+});
+
+/** The settle's path of the ask `ask-1` of `KEY`: its whole address percent-encoded as one
+ *  segment. */
+const ASK_SETTLE_PATH = "/api/v1/issues/CORE-1/nodes/dispatch%3A%2F%2FCORE-1%2Fask%2Fask-1/settle";
+
+// A question written as an `:::ask` block of the spec is one row, drawn from the block, which
+// takes the state of the ask's node, the question itself, and names the question by the ask's
+// address: so the question its ask's node holds proposed carries Settle, and one press sends one
+// settle of the ask's address.
+test("Settle on a question's row sends its ask's address", async () => {
+  const user = userEvent.setup();
+  const outline = buildIssueTree({
+    asks: [
+      {
+        ...askRead("ask-1", ""),
+        answer: null,
+        block_artifact: { id: "artifact-spec", primary: true, slug: "spec" },
+        block_id: "q1",
+        state: "open",
+      },
+    ],
+    issue: issueDetails(),
+    tree: fixtureAnswer(
+      [
+        treeNode(KEY, "issue", null),
+        treeNode("q1", "ask", KEY, {
+          document: { artifact_id: "artifact-spec", position: 0, slug: "spec" },
+        }),
+        treeNode("ask-1", "ask", KEY, { state: "proposed" }),
+      ],
+      [],
+      { converted: true }
+    ),
+  });
+  const question = outline.children.find((node) => node.type === "ask");
+  expect(question?.readId).toBe(`${KEY}/spec#q1`);
+  expect(question?.source).toEqual({ id: "ask-1", kind: "ask" });
+  if (question === undefined) throw new Error("the outline draws no question");
+  const drawn = drawRow(async () => settled(), { node: question });
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.sent).toHaveLength(1));
+    expect(drawn.sent).toStrictEqual([{ method: "POST", path: ASK_SETTLE_PATH }]);
     await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
     expect(drawn.sent).toHaveLength(1);
   } finally {

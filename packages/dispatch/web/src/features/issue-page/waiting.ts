@@ -3,7 +3,7 @@ import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, inReviewList } from "./decision-review";
 import { isOvertaken } from "./issue-address";
-import { statesOfRead } from "./tree-read/tree-nodes";
+import { ownStatesOf } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -37,7 +37,9 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * Nothing at or under an overtaken node of the tree read waits on anybody: a later node took its
  * place, and the tree draws none of them in the waiting tone. A node is under another where the
  * read's `parent` chain reaches it, so an open ask or a decision there is not counted. A proposed
- * one still is: no node took its place yet.
+ * one still is: no node took its place yet. A question written as a block of a document is
+ * overtaken where its ask's node is, and never by a state its block's node holds (`ownStatesOf`),
+ * as the tree draws it.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -114,9 +116,10 @@ function nodeKey(node: NonNullable<TreeAnswer["nodes"]>[number]): string {
 
 /**
  * The key (`nodeKey`) of each node of `tree` at or under an overtaken one: an overtaken node, and
- * each node whose `parent` is one of these. The read answers a parent before its children
- * (`TreeAnswer.nodes`), so one pass in its order finds them all. None while the tree read has not
- * answered.
+ * each node whose `parent` is one of these. A question's block takes no state of its own here
+ * (`ownStatesOf`), so it is one of them only under an overtaken node. The read answers a parent
+ * before its children (`TreeAnswer.nodes`), so one pass in its order finds them all. None while
+ * the tree read has not answered.
  */
 function closedKeys(tree: TreeAnswer | undefined): ReadonlySet<string> {
   const closed = new Set<string>();
@@ -124,7 +127,7 @@ function closedKeys(tree: TreeAnswer | undefined): ReadonlySet<string> {
   const parents = new Set<string>();
   for (const node of tree?.nodes ?? []) {
     const under = node.parent !== null && parents.has(node.parent.id);
-    if (!under && !isOvertaken(statesOfRead(node))) continue;
+    if (!under && !isOvertaken(ownStatesOf(node))) continue;
     parents.add(node.id);
     closed.add(nodeKey(node));
   }

@@ -52,6 +52,7 @@ import {
   DECISIONS_PART_ORDER,
   type DecisionsEntry,
   type DecisionsPart,
+  headingCount,
   type NamedEntry,
   waitingOrder,
 } from "./decisions-parts";
@@ -829,7 +830,7 @@ export function DecisionsFilterBody({
                   data-decisions-count=""
                   {...authorText}
                 >
-                  {entries.length}
+                  {headingCount(part, entries)}
                 </span>
               </div>
               {entries.map((entry) => rowFor(entry, part))}

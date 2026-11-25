@@ -1,4 +1,4 @@
-import { isOvertaken, isProposed } from "./issue-address";
+import { isProposed } from "./issue-address";
 import { isCheck, type TreeNode } from "./issue-tree";
 
 /**
@@ -35,9 +35,9 @@ import { isCheck, type TreeNode } from "./issue-tree";
  * ## What is proposed or overtaken
  *
  * A proposed statement or check opens no path, since it is only put forward until a person
- * settles it. Nothing at or under an overtaken node opens one either, since a later node took its
- * place; such a node is a row at its place all the same, folded and opened by the rules above as
- * every node is.
+ * settles it. An overtaken node has no rule of its own here: the frontier runs through it as
+ * through any node, so it arrives as open as its live self would, and is folded and opened by the
+ * rules above as every node is.
  */
 
 /** How many levels below the node it is rooted at the outline draws from 1024 px up (R16): a
@@ -209,14 +209,10 @@ function unanswered(node: TreeNode): boolean {
  * unfolds whatever its depth. The open nodes themselves are not in it - what one holds is a
  * set the reader opens, like any other branch - so an open node that holds a deeper open one
  * is in it, as that one's ancestor.
- *
- * Nothing at or under an overtaken node opens a path, since a later node took its place: the
- * page unfolds nothing down to it and puts no first focus on it, though it is a row as any node.
  */
 export function frontier(root: TreeNode): ReadonlySet<string> {
   const path = new Set<string>();
   const walk = (node: TreeNode, above: readonly string[]): void => {
-    if (isOvertaken(node)) return;
     if (unanswered(node)) {
       for (const id of above) path.add(id);
     }

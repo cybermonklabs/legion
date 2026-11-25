@@ -454,8 +454,19 @@ export function statesOfRead({
 }
 
 /**
- * The marks the tree read gives each node of `answer` that carries one (`statesOfRead`), by the
- * read's own id, which `TreeNode.readId` and `ParentLine.readId` hold:
+ * The marks the tree read gives `node` as a node of its own (`statesOfRead`): none for the block
+ * a question is written as in a document (supertag `ask`, with a `document`). The question is its
+ * ask's node, and the block only its place in the document, so the question's row and every count
+ * read the state of the ask's node alone, and a state the block's node holds draws nothing.
+ */
+export function ownStatesOf(node: TreeAnswerNode): NodeStates {
+  return node.supertag === "ask" && node.document !== undefined ? {} : statesOfRead(node);
+}
+
+/**
+ * The marks the tree read gives each node of `answer` that carries one (`ownStatesOf`), by the
+ * read's own id, which `TreeNode.readId` and `ParentLine.readId` hold, and the row of a question
+ * by the id of its ask (`node-states.ts`' `stateIdOf`):
  * what `node-states.ts` puts on the tree drawn from `answer`. It reads the answer alone, so the
  * states cost no read of their own, and a node the answer does not hold has no entry: the read
  * answers nothing of a node reserved for another reader.
@@ -463,7 +474,7 @@ export function statesOfRead({
 export function nodeStatesOf(answer: TreeAnswer): ReadonlyMap<string, NodeStates> {
   const states = new Map<string, NodeStates>();
   for (const node of answer.nodes ?? []) {
-    const marks = statesOfRead(node);
+    const marks = ownStatesOf(node);
     if (marks.life !== undefined || marks.onlyYou !== undefined) states.set(node.id, marks);
   }
   return states;

@@ -62,7 +62,8 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  * only where the address names it, as any other node the address names is.
  *
  * An overtaken node stands in the same part as a live node in its state. Nothing at or under
- * an overtaken node (`TreeNode.closed`) waits on the reader (`waitingOrder`).
+ * an overtaken node (`TreeNode.closed`) waits on the reader (`waitingOrder`), and neither the open
+ * questions' heading nor the review part's counts it (`headingCount`).
  *
  * This module is pure. It holds no React and makes no request, so the body
  * (`DecisionsFilterBody.tsx`) and the unit tests read one model.
@@ -224,6 +225,17 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
     ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
     ...parts.review.map((entry) => entry.node.id),
   ];
+}
+
+/**
+ * How many entries the heading of `part` counts. In the two parts that wait on the reader, the
+ * open questions and the decisions waiting for review, it is every entry but those at or under an
+ * overtaken node (`TreeNode.closed`), which stand in the part and are drawn there though nothing
+ * waits on them; in every other part, every entry.
+ */
+export function headingCount(part: DecisionsPart, entries: readonly DecisionsEntry[]): number {
+  if (part !== "open_questions" && part !== "review") return entries.length;
+  return entries.filter((entry) => entry.node.closed !== true).length;
 }
 
 /**

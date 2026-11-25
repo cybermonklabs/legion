@@ -44,6 +44,7 @@ import {
   type DecisionsAsk,
   type DecisionsParts,
   decisionsParts,
+  headingCount,
   waitingOrder,
 } from "./decisions-parts";
 
@@ -833,7 +834,9 @@ test("what waits is each open question of the reader's, then each decision to re
   expect(waitingOrder(partsOf([openAsk("q-agent", false)]))).toEqual([]);
 });
 
-test("an overtaken decision waiting for review stands in the review part and waits on nobody", () => {
+// An overtaken decision waiting for review, and the decision under it, stand in the review part,
+// but neither counts in the part's heading count nor in what waits.
+test("an overtaken decision waiting for review stands in the review part and counts in no waiting count", () => {
   const tied = { decision: { links: [shaped(specRef("s1"))] } };
   const old = decisionNode("old", {
     children: [decisionNode("inner", { closed: true, waiting: false })],
@@ -853,11 +856,13 @@ test("an overtaken decision waiting for review stands in the review part and wai
   expect(parts.review[0]?.node.life).toBe("overtaken");
   expect(parts.review[0]?.standing).toBe("waiting_review");
   expect(waitingOrder(parts)).toEqual([D("review")]);
+  expect(headingCount("review", parts.review)).toBe(1);
 });
 
 // The question waits on the reader until the page puts the tree read's states on the tree, where
-// it is overtaken, so it is the stamp that takes the wait away.
-test("an overtaken open question stands with the open questions and waits on nobody", () => {
+// it is overtaken, so it is the stamp that takes the wait away; it stands in its part all the same,
+// and the part's heading count leaves it out.
+test("an overtaken open question stands with the open questions and counts in no waiting count", () => {
   const tree = stampStates(
     issueTree([openAsk("q-old", true, { readId: "q-old" }), openAsk("q-mine")]),
     new Map([["q-old", { life: "overtaken" as const }]])
@@ -868,6 +873,7 @@ test("an overtaken open question stands with the open questions and waits on nob
   expect(parts.open_questions[1]?.node.life).toBe("overtaken");
   expect(parts.open_questions[1]?.node.waiting).toBe(false);
   expect(waitingOrder(parts)).toEqual(["q-mine"]);
+  expect(headingCount("open_questions", parts.open_questions)).toBe(1);
 });
 
 // The tree draws from the reads that have answered: before the decisions view and the asks

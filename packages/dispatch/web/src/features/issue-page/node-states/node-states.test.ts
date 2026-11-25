@@ -593,8 +593,9 @@ test("an address to an overtaken node focuses its row", async () => {
 });
 
 // An overtaken open question that waited on the reader waits no more, so the page opens on the
-// outline's first row, though the question is a row of its own with its mark; and a question
-// under an overtaken node opens no path down to it, so that node's branch arrives folded.
+// outline's first row, though the question is a row of its own with its mark. A question under an
+// overtaken node is on the frontier as under any node, so that node's branch arrives open with the
+// question drawn in it, and the page does not open on that question either.
 test("the page does not open on an overtaken open question", async () => {
   readWide();
   const asking = { question: true, state: "open", waiting: true } as const;
@@ -610,12 +611,12 @@ test("the page does not open on an overtaken open question", async () => {
   );
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    expect(rowIds(view.container)).toEqual(["comment-1", "ask-1", "spec#b-r8"]);
+    expect(rowIds(view.container)).toEqual(["comment-1", "ask-1", "spec#b-r8", "ask-2"]);
     expect(
       rowOf(view.container, "ask-1")?.querySelector('[data-node-mark="overtaken"]')
     ).not.toBeNull();
-    expect(rowOf(view.container, "spec#b-r8")).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, "ask-2")).toBeNull();
+    expect(rowOf(view.container, "spec#b-r8")).toHaveAttribute("aria-expanded", "true");
+    expect(rowOf(view.container, "ask-2")).not.toBeNull();
     await act(async () => {});
     expect(focusedRow(view.container)).toBe("comment-1");
   } finally {
@@ -2354,54 +2355,127 @@ test("a words match lifted under a parent the outline holds under an overtaken n
   }
 });
 
-// A question written as an `:::ask` block of the spec is two nodes in the tree read, the block and
-// the ask indexed from it, and one row in the outline: the row carries the block's read id and the
-// ask as its `source`. A view that draws nothing of the question names that parent by the ask's
-// read id alone, so the statement under it takes its closing and its parent line's mark from the
-// outline's row of the question, as it would from a row that carries the ask's read id. A live
-// question closes and marks nothing.
-test("a view's row under an overtaken question drawn from a block and its ask is closed", () => {
-  const ASK = "ask-1";
-  const chain = (state: "live" | "overtaken") => {
-    const outline = buildIssueTree({
-      asks: [
-        {
-          ...askRead(ASK, ""),
-          answer: null,
-          block_artifact: { id: "artifact-spec", primary: true, slug: "spec" },
-          block_id: "q1",
-          state: "open",
-        },
-      ],
-      issue: ISSUE,
-      tree: readAnswer([
-        ISSUE_NODE,
-        readBlock("q1", "ask", "spec", 0, { state }),
-        readNode(ASK, "ask"),
-        readBlock("r1", "requirement", "spec", 1, { parent: ASK }),
-      ]),
-    });
-    const verification = readAnswer([
-      readBlock("r1", "requirement", "spec", 1, { parent: askLine(ASK), role: "context" }),
-    ]);
-    const view = presetView({ ...outline, views: { verification } }, "verification", "").root;
-    return { outline, row: readNodeOf(view, blockReadId("spec", "r1")) };
+/** The ask of the question written as block `q1` of the spec. */
+const BLOCK_ASK = "ask-1";
+
+/** The question block `id` of the spec as a view's answer names it as a node's parent. */
+function blockLine(id: string): IssueTreeParent {
+  return {
+    first_line: `Words of ${id}.`,
+    id: blockReadId("spec", id),
+    kind: "block",
+    supertag: "ask",
   };
+}
+
+/**
+ * A question written as an `:::ask` block of the spec: block `q1`, whose node the tree read
+ * answers with `block`, and the open ask `BLOCK_ASK` indexed from it, whose node it answers with
+ * `ask`, with statement `r1` under the ask. Answers the outline `buildIssueTree` draws of them, the
+ * question's row in it, and `r1`'s row in the Verification view, whose answer holds `r1` alone and
+ * names its parent by `line`.
+ */
+function blockQuestion(
+  block: ReadExtra,
+  ask: ReadExtra,
+  line: IssueTreeParent = askLine(BLOCK_ASK)
+) {
+  const outline = buildIssueTree({
+    asks: [
+      {
+        ...askRead(BLOCK_ASK, ""),
+        answer: null,
+        block_artifact: { id: "artifact-spec", primary: true, slug: "spec" },
+        block_id: "q1",
+        state: "open",
+      },
+    ],
+    issue: ISSUE,
+    tree: readAnswer([
+      ISSUE_NODE,
+      readBlock("q1", "ask", "spec", 0, block),
+      readNode(BLOCK_ASK, "ask", ask),
+      readBlock("r1", "requirement", "spec", 1, { parent: BLOCK_ASK }),
+    ]),
+  });
+  const verification = readAnswer([
+    readBlock("r1", "requirement", "spec", 1, { parent: line, role: "context" }),
+  ]);
+  const view = presetView({ ...outline, views: { verification } }, "verification", "").root;
+  return {
+    outline,
+    question: readNodeOf(outline, blockReadId("spec", "q1")),
+    row: readNodeOf(view, blockReadId("spec", "r1")),
+  };
+}
+
+// A question written as an `:::ask` block of the spec is two nodes in the tree read, the block and
+// the ask indexed from it, and one row in the outline: the row carries the block's read id and
+// names the ask as its `source`, and it takes the state the ask's node holds, the question itself.
+// Proposed, the row carries Proposed and closes nothing; overtaken, it carries Overtaken and closes
+// the statement under it. A view's row under the question takes the same, whether the view names
+// its parent by the ask or by the block, and so does a place that names the question by its
+// address.
+test("a question's row takes the state its ask's node holds", () => {
+  for (const life of ["proposed", "overtaken"] as const) {
+    for (const line of [askLine(BLOCK_ASK), blockLine("q1")]) {
+      const { outline, question, row } = blockQuestion({}, { state: life }, line);
+      const closes = life === "overtaken";
+      const at = `${life} under ${line.id}`;
+      expect(question?.source, at).toEqual({ id: BLOCK_ASK, kind: "ask" });
+      expect(question?.life, at).toBe(life);
+      expect(question?.closed === true, at).toBe(closes);
+      expect(readNodeOf(outline, blockReadId("spec", "r1"))?.closed === true, at).toBe(closes);
+      expect(question?.reference, at).toBe(`dispatch://${KEY}/ask/${BLOCK_ASK}`);
+      expect(marksAt(statesByReference(outline), question?.reference ?? "")?.life, at).toBe(life);
+      expect(row?.parentLine?.life, at).toBe(life);
+      expect(row?.closed === true, at).toBe(closes);
+    }
+  }
+});
+
+// The block a question is written as is only its place in the spec, so a state its node holds
+// draws nothing: with the block's node proposed or overtaken and the ask's node live, the
+// question's row carries no mark and closes nothing, and neither does a view's row under it or a
+// place that names the question by its address.
+test("a question's row draws nothing of a state its block's node holds", () => {
+  for (const life of ["proposed", "overtaken"] as const) {
+    for (const line of [askLine(BLOCK_ASK), blockLine("q1")]) {
+      const { outline, question, row } = blockQuestion({ state: life }, {}, line);
+      const at = `${life} under ${line.id}`;
+      expect(question?.source, at).toEqual({ id: BLOCK_ASK, kind: "ask" });
+      expect(markKeys(question), at).toEqual([]);
+      expect(markKeys(readNodeOf(outline, blockReadId("spec", "r1"))), at).toEqual([]);
+      expect(statesByReference(outline).size, at).toBe(0);
+      expect(row?.parentLine, at).toBeDefined();
+      expect(row?.parentLine?.life, at).toBeUndefined();
+      expect(markKeys(row), at).toEqual([]);
+    }
+  }
+});
+
+// A view that draws nothing of a question written as an `:::ask` block names that parent by the
+// ask's read id alone, so the statement under it takes its closing and its parent line's mark from
+// the outline's row of the question, which takes the state of the ask's node. A live question
+// closes and marks nothing.
+test("a view's row under an overtaken question drawn from a block and its ask is closed", () => {
+  const chain = (state: "live" | "overtaken") => blockQuestion({}, { state });
 
   const overtaken = chain("overtaken");
-  expect(readNodeOf(overtaken.outline, blockReadId("spec", "q1"))?.source).toEqual({
-    id: ASK,
-    kind: "ask",
-  });
+  expect(overtaken.question?.source).toEqual({ id: BLOCK_ASK, kind: "ask" });
   expect(readNodeOf(overtaken.outline, blockReadId("spec", "r1"))?.closed).toBe(true);
-  expect(overtaken.row?.parentLine).toMatchObject({ id: ASK, life: "overtaken", readId: ASK });
+  expect(overtaken.row?.parentLine).toMatchObject({
+    id: BLOCK_ASK,
+    life: "overtaken",
+    readId: BLOCK_ASK,
+  });
   expect(overtaken.row?.closed).toBe(true);
   expect(overtaken.row?.closedBy).toBe("spec#b-q1");
   expect(overtaken.row?.gaps).toEqual([]);
   expect(overtaken.row === undefined ? false : outOfCounts(overtaken.row)).toBe(true);
 
   const live = chain("live");
-  expect(live.row?.parentLine).toMatchObject({ id: ASK, readId: ASK });
+  expect(live.row?.parentLine).toMatchObject({ id: BLOCK_ASK, readId: BLOCK_ASK });
   expect(markKeys(live.row)).toEqual([]);
   expect(live.row?.parentLine?.life).toBeUndefined();
   expect(live.row === undefined ? true : outOfCounts(live.row)).toBe(false);

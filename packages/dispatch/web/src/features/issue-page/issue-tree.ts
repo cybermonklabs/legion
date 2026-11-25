@@ -157,8 +157,10 @@ export interface ParentLine {
    *  Absent for every other parent. */
   readonly onlyYou?: true;
   /** The id the tree read gives the parent (`TreeNode.readId`), by which the line takes the
-   *  parent's states: the parent's own where the tree holds it, and the id a view's answer names it
-   *  by where the view holds it only by that id. Absent for a parent drawn from another read. */
+   *  parent's states: the parent's own where the tree holds it, its ask's for a question the tree
+   *  draws from a block and its ask (`node-states.ts`' `stateIdOf`), and the id a view's answer
+   *  names it by where the view holds it only by that id. Absent for a parent drawn from another
+   *  read. */
   readonly readId?: string;
   /** The parent's own `dispatch://` address, where the model gives it one: the link a reader
    *  follows to that node, as a chip's is (R18). Absent for a parent that has none. */

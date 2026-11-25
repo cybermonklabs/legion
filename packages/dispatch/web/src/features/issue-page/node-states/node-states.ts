@@ -46,6 +46,14 @@ function withMarks<Place extends NodeStates>(place: Place, marks: NodeStates | u
   return { ...rest, ...marks } as Place;
 }
 
+/** The read id whose states `node` takes: that of the ask a question's row is drawn from
+ *  (`source`), since the ask's node is the question and the block it may be written as is only its
+ *  place in a document, which draws nothing of a state of its own (`nodeStatesOf`); every other
+ *  node's own. A question of the conversation is its ask's node, so it takes its own either way. */
+export function stateIdOf(node: TreeNode): string | undefined {
+  return node.source?.kind === "ask" ? node.source.id : node.readId;
+}
+
 /** Whether a node of `root`, or the parent line of one, carries a mark or is closed. */
 function carriesMarks(root: TreeNode): boolean {
   return (
@@ -58,8 +66,9 @@ function carriesMarks(root: TreeNode): boolean {
 
 /**
  * `root` with the states the tree read gives its nodes, by the read's own id: a node takes
- * the entry of its `readId`, a parent line that of its own `readId`, and a node or a line with
- * none takes no states. Each takes the marks its entry holds and no other, whatever it carried
+ * the entry of its `readId`, a question's row that of the ask it is drawn from (`stateIdOf`), a
+ * parent line that of its own `readId`, and a node or a line with none takes no states. Each
+ * takes the marks its entry holds and no other, whatever it carried
  * before, so a tree stamped again - a view's, whose rows are the outline's nodes - carries the
  * new states alone: a live or settled node has none. A node that is overtaken is `closed`, and so
  * is every node under it in `root`. So is a node drawn under its parent's line rather than under
@@ -92,7 +101,7 @@ export function stampStates(
   const named = new Map<string, NodeStates | undefined>();
   const index = (node: TreeNode): void => {
     if (node.reference !== undefined) {
-      named.set(withoutVersion(node.reference), statesOf(node.readId));
+      named.set(withoutVersion(node.reference), statesOf(stateIdOf(node)));
     }
     for (const child of node.children) index(child);
   };
@@ -103,7 +112,11 @@ export function stampStates(
   };
   // `above` is the topmost overtaken node the parent of `node` stands at or under, if any.
   const stamp = (node: TreeNode, above: string | undefined): TreeNode => {
-    const { closed: _closed, closedBy: _closedBy, ...own } = withMarks(node, statesOf(node.readId));
+    const {
+      closed: _closed,
+      closedBy: _closedBy,
+      ...own
+    } = withMarks(node, statesOf(stateIdOf(node)));
     const line =
       own.parentLine === undefined
         ? undefined
@@ -135,13 +148,14 @@ export function stampStates(
  * and a view's tree, drawn from that view's own answer, so a view's rows carry their own state.
  * A view's tree is handed the outline's as `outline`: a node or a parent line of the view whose
  * read id the view's answer holds no node for - a parent the view answers by its id, kind and
- * first line alone (`parent_line`), a node an address names that the view does not draw - takes
- * the marks the outline's node of that read id carries, which the read with no view gave it; or,
- * where the outline has no node of it, those of the row drawn from the ask it names. A
- * node the view's answer holds takes that answer's marks alone, so a node the view holds live
- * stays live whatever the outline says. A row the view draws under a parent's line stands under
- * that parent as the outline holds it, since the view draws nothing above the line: closed where
- * the outline holds that parent at or under an overtaken node (`stampStates`'s `closedAbove`).
+ * first line alone (`parent_line`), a node an address names that the view does not draw, a
+ * question's row whose ask (`stateIdOf`) the view does not hold - takes the marks the outline's
+ * node of that read id carries, which the read with no view gave it, the row drawn from the ask
+ * of that id among them. A node the view's answer holds takes that answer's marks alone, so a
+ * node the view holds live stays live whatever the outline says. A row the view draws under a
+ * parent's line stands under that parent as the outline holds it, since the view draws nothing
+ * above the line: closed where the outline holds that parent at or under an overtaken node
+ * (`stampStates`'s `closedAbove`).
  * For a parent the view's answer holds, which the words filter drew no row of and lifted a match
  * under the line of, that is a node above the parent, whose own life is the view's: so the match
  * is closed under the words where it is closed with none. Both come from the tree read, which
@@ -150,13 +164,15 @@ export function stampStates(
 export function closeOvertaken(root: TreeNode, answer: TreeAnswer, outline?: TreeNode): TreeNode {
   const states = nodeStatesOf(answer);
   if (outline === undefined) return stampStates(root, states);
-  // The read id of each node and parent line of `root` that the view's answer holds no node for,
-  // and of each parent line it does hold a node for.
+  // The read id each node of `root` takes its states by (`stateIdOf`) and that of each parent line
+  // of `root`, where the view's answer holds no node for it, and that of each parent line it does
+  // hold a node for.
   const held = new Set((answer.nodes ?? []).map((node) => node.id));
   const missing = new Set<string>();
   const lines = new Set<string>();
   const walk = (node: TreeNode): void => {
-    if (node.readId !== undefined && !held.has(node.readId)) missing.add(node.readId);
+    const own = stateIdOf(node);
+    if (own !== undefined && !held.has(own)) missing.add(own);
     const line = node.parentLine?.readId;
     if (line !== undefined && held.has(line)) lines.add(line);
     else if (line !== undefined) missing.add(line);
@@ -164,13 +180,12 @@ export function closeOvertaken(root: TreeNode, answer: TreeAnswer, outline?: Tre
   };
   walk(root);
   if (missing.size === 0 && lines.size === 0) return stampStates(root, states);
-  // Each missing one takes the marks of the outline's last node of that read id that carries any.
-  // Each line whose node the outline holds at or under an overtaken node - above it, for a node
-  // the view holds - closes the rows drawn under it, under the topmost such node of the first
-  // place the outline holds it closed at. A missing read id that no node of the outline carries
-  // is read as the ask the row of a question block is drawn from, which names that row by the
-  // ask's id alone (`source`): a question written as an `ask` block is the block and the ask
-  // indexed from it, one row that carries the block's read id.
+  // Each missing one takes the marks of the outline's last node of that read id that carries any,
+  // or that is a question's row drawn from the ask of that id (`stateIdOf`), which names the ask by
+  // its id alone (`source`): a question written as an `ask` block is the block and the ask indexed
+  // from it, one row that carries the block's read id. Each line whose node the outline holds at
+  // or under an overtaken node - above it, for a node the view holds - closes the rows drawn under
+  // it, under the topmost such node of the first place the outline holds it closed at.
   const merged = new Map(states);
   const closedAbove = new Map<string, string>();
   const take = (node: TreeNode, readId: string): void => {
@@ -180,19 +195,13 @@ export function closeOvertaken(root: TreeNode, answer: TreeAnswer, outline?: Tre
     const closes = missing.has(readId) || (lines.has(readId) && top !== node.id);
     if (top !== undefined && closes && !closedAbove.has(readId)) closedAbove.set(readId, top);
   };
-  const carried = new Set<string>();
-  const asked: [string, TreeNode][] = [];
   const indexOutline = (node: TreeNode): void => {
-    if (node.readId !== undefined) {
-      carried.add(node.readId);
-      take(node, node.readId);
-    }
-    const askId = node.source?.kind === "ask" ? node.source.id : undefined;
-    if (askId !== undefined && missing.has(askId)) asked.push([askId, node]);
+    if (node.readId !== undefined) take(node, node.readId);
+    const own = stateIdOf(node);
+    if (own !== undefined && own !== node.readId) take(node, own);
     for (const child of node.children) indexOutline(child);
   };
   indexOutline(outline);
-  for (const [askId, node] of asked) if (!carried.has(askId)) take(node, askId);
   return stampStates(root, merged, closedAbove);
 }
 
