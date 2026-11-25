@@ -7,9 +7,9 @@ import { pictureClassName } from "../refs/DispatchPicture";
 import { isPlainClick, openPictureLightbox } from "../refs/picture-lightbox";
 import {
   buildDispatchReference,
-  buildReferencePath,
   type DispatchReferenceRoute,
   pictureReference,
+  referenceHref,
   shortForm,
 } from "../refs/routes";
 
@@ -25,7 +25,13 @@ function fallbackLink(
   placeCaretAfter: () => void
 ): HTMLAnchorElement {
   const link = document.createElement("a");
-  link.setAttribute("href", buildReferencePath(route));
+  // Only this dashboard's own path becomes an href, and only as `appHref` writes it
+  // (`referenceHref`); anything else leaves the link with none, so the words stand and a middle
+  // click goes nowhere off the site.
+  const href = referenceHref(route);
+  if (href !== undefined) {
+    link.setAttribute("href", href);
+  }
   link.dataset.dispatchHref = buildDispatchReference(route);
   link.textContent = shortForm(route);
   // Not a drag source: the wrapper (ProseMirror's draggable leaf root) is, so a drag that starts
