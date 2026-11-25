@@ -49,10 +49,10 @@ async function blockAsks(
  * agent's next edit is where the human's decision gets written into the text. A block whose every
  * opening line records the state the server's ask holds, or that records none, is judged without
  * asking which release serves, since both read it alike. Only a real opening line counts
- * (`askOpenerLines`): a line that quotes the opener in fenced code or in front matter is the
- * document's own text, and a quote in an inline code span never starts a line, so a quote records
- * no state and neither opens a block nor hides one. The live text is read once, and only for a
- * block that needs it.
+ * (`askOpenerLines`): a line that quotes the opener in fenced or indented code or in front matter
+ * is the document's own text, and so is a later line of an inline code span that stands four
+ * columns or more past its containers. A quote records no state and neither opens a block nor
+ * hides one. The live text is read once, and only for a block that needs it.
  *
  * A block removed from the document is not judged here; `refuseRemovingOpenDecisionBlocks` keeps
  * one whose ask is open in it. A document already approved at its latest version is left to the
@@ -135,18 +135,13 @@ export async function refuseOpenDecisionBlocks(
       }
       return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
-    // A copy, judged by its source, which is read off the block's own opening line alone
-    // (openerAsks, over the version's real openers): a line that quotes it (in code, a fence
-    // opened on a footnote's label line included, or in front matter) names no ask Dispatch
-    // recorded.
+    // A copy, judged by its source, which is read off the block's own opening lines alone
+    // (openerAsks over `openers`, the version's real openers of the block): a line that quotes it
+    // (in code, a fence opened on a footnote's label line included, or in front matter) names no
+    // ask Dispatch recorded.
     const text = await liveText();
     if (!text.served && recordsSettled) return undefined;
-    if (!text.served && recordsOpen) {
-      return openCopy(
-        named,
-        openerAsks(openerLines).filter((copy) => copy.block_id === block.id)
-      );
-    }
+    if (!text.served && recordsOpen) return openCopy(named, openerAsks(openers));
     const copies = text.asks.filter((copy) => copy.block_id === block.id);
     const settled =
       copies.length > 0 &&
