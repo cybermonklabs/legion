@@ -12,7 +12,7 @@ import (
 var allWorkflowTriggers = []TriggerKind{
 	TriggerGateOpened, TriggerPlannerCompleted, TriggerImplementationReady, TriggerTesterPassed,
 	TriggerTesterFailed, TriggerReviewApproved, TriggerReviewRejected, TriggerRetroCompleted,
-	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward,
+	TriggerPullRequestMerged, TriggerChecksPassed, TriggerSignOff, TriggerBackward,
 }
 
 // testLines are the lines the table tests hold TableOf to: today's, which an issue with no plan
@@ -31,8 +31,9 @@ var testLines = [][]phase.Phase{
 }
 
 // todaysTable is the table the workflow walked before an issue's plan picked its line, written
-// out row by row as it stood: the control that TableOf(phase.Order) changes nothing for an issue
-// with no plan rows.
+// out row by row as it stood, with the merge's two rows and verifying's close in place of the one
+// merge row: the control that TableOf(phase.Order) changes nothing else for an issue with no plan
+// rows.
 func todaysTable() []Row {
 	rows := []Row{
 		{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: phase.Planning, Effects: []EffectKind{EffectStart, EffectNotice}},
@@ -44,7 +45,9 @@ func todaysTable() []Row {
 		{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: allow, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
+		{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: func(s Snapshot) bool { return !s.CloseWaits }, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
+		{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: func(s Snapshot) bool { return s.CloseWaits }, To: phase.Verifying, Effects: []EffectKind{EffectNotice}},
+		{From: phase.Verifying, Trigger: TriggerChecksPassed, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
 	}
 	for _, text := range phase.BackwardPairs() {
 		from, to, _ := phase.ParsePair(text)
@@ -62,7 +65,7 @@ func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
 	if len(got) != len(want) {
 		t.Fatalf("the table of a walk with no plan rows has %d rows, want today's %d", len(got), len(want))
 	}
-	snapshots := []Snapshot{{}, {HasOpenOrMergedPR: true}, {GateOpen: true}, {HasOpenOrMergedPR: true, GateOpen: true}}
+	snapshots := []Snapshot{{}, {HasOpenOrMergedPR: true}, {GateOpen: true}, {HasOpenOrMergedPR: true, GateOpen: true}, {CloseWaits: true}, {HasOpenOrMergedPR: true, CloseWaits: true}}
 	for i := range want {
 		g, w := got[i], want[i]
 		if g.From != w.From || g.Trigger != w.Trigger || g.To != w.To || !slices.Equal(g.Effects, w.Effects) {
@@ -74,6 +77,43 @@ func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
 		for _, s := range snapshots {
 			if g.Guard(s) != w.Guard(s) {
 				t.Fatalf("row %d (%s/%s) guards %+v %t, today's %t", i, g.From, g.Trigger, s, g.Guard(s), w.Guard(s))
+			}
+		}
+	}
+}
+
+// The merge has one row for each answer of its guard, on every line: into done where the close
+// waits for nothing, and into verifying where it waits. Verifying's own row closes the issue once
+// the checks of its goal pass, and nothing else moves an issue out of verifying.
+func TestTheTableHasOneRowForEachGuardOfTheMerge(t *testing.T) {
+	for _, line := range testLines {
+		table := TableOf(line)
+		chosen := func(from phase.Phase, trigger TriggerKind, snapshot Snapshot) (phase.Phase, int) {
+			var to phase.Phase
+			rows := 0
+			for _, row := range table {
+				if row.From != from || row.Trigger != trigger {
+					continue
+				}
+				rows++
+				if to == "" && row.Guard(snapshot) {
+					to = row.To
+				}
+			}
+			return to, rows
+		}
+		if to, rows := chosen(phase.Merging, TriggerPullRequestMerged, Snapshot{Phase: phase.Merging}); to != phase.Done || rows != 2 {
+			t.Fatalf("line %v: a merge whose close waits for nothing moves to %q over %d merge rows, want done over two", line, to, rows)
+		}
+		if to, _ := chosen(phase.Merging, TriggerPullRequestMerged, Snapshot{Phase: phase.Merging, CloseWaits: true}); to != phase.Verifying {
+			t.Fatalf("line %v: a merge whose close waits moves to %q, want verifying", line, to)
+		}
+		if to, rows := chosen(phase.Verifying, TriggerChecksPassed, Snapshot{Phase: phase.Verifying}); to != phase.Done || rows != 1 {
+			t.Fatalf("line %v: the checks' pass moves verifying to %q over %d rows, want done over one", line, to, rows)
+		}
+		for _, row := range table {
+			if row.From == phase.Verifying && row.Trigger != TriggerChecksPassed {
+				t.Fatalf("line %v: verifying moves on %s to %s, want only the checks' pass out of it", line, row.Trigger, row.To)
 			}
 		}
 	}
@@ -266,6 +306,13 @@ func validateTable(line []phase.Phase, rows []Row) error {
 			return fmt.Errorf("%s/backward -> %s is not a declared backward edge", row.From, row.To)
 		}
 	}
+	for _, merge := range []phase.Phase{phase.Done, phase.Verifying} {
+		if !slices.ContainsFunc(rows, func(row Row) bool {
+			return row.From == phase.Merging && row.Trigger == TriggerPullRequestMerged && row.To == merge
+		}) {
+			return fmt.Errorf("merging/%s -> %s is missing a transition row", TriggerPullRequestMerged, merge)
+		}
+	}
 	return nil
 }
 
@@ -295,10 +342,10 @@ func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger Tr
 		return in(phase.Testing)
 	case TriggerReviewApproved, TriggerReviewRejected:
 		return in(phase.Reviewing)
-	case TriggerRetroCompleted:
-		return in(phase.Retro)
 	case TriggerPullRequestMerged:
 		return in(phase.Merging)
+	case TriggerChecksPassed:
+		return from == phase.Verifying
 	case TriggerSignOff:
 		return in(phase.Accepting)
 	case TriggerBackward:
@@ -309,17 +356,18 @@ func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger Tr
 }
 
 // wantTarget is the phase line sends from to on trigger, ok false for a move back, which
-// requiredBackwardTargets holds: the first phase of the line out of admitted, the next phase of the
-// line on a step's own trigger, implementing on a return, and done on the merge.
+// requiredBackwardTargets holds, and for the merge, whose two rows validateTable holds: the first
+// phase of the line out of admitted, the next phase of the line on a step's own trigger,
+// implementing on a return, and done on the checks' pass out of verifying.
 func wantTarget(line []phase.Phase, from phase.Phase, trigger TriggerKind) (phase.Phase, bool) {
 	switch trigger {
 	case TriggerGateOpened:
 		return line[0], true
 	case TriggerTesterFailed, TriggerReviewRejected:
 		return phase.Implementing, true
-	case TriggerPullRequestMerged:
+	case TriggerChecksPassed:
 		return phase.Done, true
-	case TriggerBackward:
+	case TriggerBackward, TriggerPullRequestMerged:
 		return "", false
 	}
 	at := slices.Index(line, from)

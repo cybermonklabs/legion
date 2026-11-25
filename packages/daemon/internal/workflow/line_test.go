@@ -75,7 +75,8 @@ func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 // taskStands says why key's task does not stand at place in state with issues.phase the phase
 // that place derives, nil when it does. The phase and the task's row are read in one select, so
 // the two are the store's at one moment; want is the phase the move should have reached, which
-// holds the derivation (issuePhaseOf) to the line as well as to itself.
+// holds the derivation (issuePhaseOf) to the line as well as to itself. An issue in verifying
+// stands over its merged task done at its merge, which derives done (writeIssueOn).
 func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, place record.TaskPlace, state record.TaskState, want phase.Phase) error {
 	t.Helper()
 	var got string
@@ -90,7 +91,8 @@ func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, pl
 		return fmt.Errorf("the task of %s stands at %+v, %s; want %+v, %s", key, stood, stoodState, place, state)
 	}
 	derived := issuePhaseOf(walkOf(t, pool, engine, key), stood, stoodState)
-	if phase.Phase(got) != derived || phase.Phase(got) != want {
+	over := phase.Phase(got) == phase.Verifying && derived == phase.Done
+	if phase.Phase(got) != derived && !over || phase.Phase(got) != want {
 		return fmt.Errorf("issues.phase of %s = %s with its task at %+v, %s, which derives %s; want %s", key, got, stood, stoodState, derived, want)
 	}
 	return nil
@@ -226,9 +228,9 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		}
 	})
 
-	// A merge that lands while the tree lingers runs no transition: the close writes the move to
-	// done itself (closeMerged).
-	t.Run("a member of a lingering tree closed at its merge", func(t *testing.T) {
+	// A merge that lands while the tree lingers runs no transition: the move writes the issue into
+	// verifying itself, with its task done at its merge (closeMerged).
+	t.Run("a member of a lingering tree waits in verifying at its merge", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)
 		issue := child(t, pool)
@@ -248,11 +250,10 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			if err := engine.store.PutPullRequest(ctx, tx, *pr); err != nil {
 				return err
 			}
-			_, err = engine.closeMerged(ctx, tx, *stored, pr)
-			return err
+			return engine.closeMerged(ctx, tx, *stored, pr)
 		})
 
-		if err := taskStands(t, pool, engine, issue.Key, merge, record.TaskDone, phase.Done); err != nil {
+		if err := taskStands(t, pool, engine, issue.Key, merge, record.TaskDone, phase.Verifying); err != nil {
 			t.Fatal(err)
 		}
 	})

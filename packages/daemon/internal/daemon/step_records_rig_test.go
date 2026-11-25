@@ -393,13 +393,15 @@ func (r *stepRecordsRig) signOff(issue string) {
 }
 
 // merge waits for the merger's launch and publishes GitHub's merge of the pull request
-// (publishMergeOf), which ends the walk at done.
+// (publishMergeOf), which ends the walk's last step: the issue then waits in verifying for the
+// checks of its goal, since a merge closes nothing by itself. A caller that needs another phase
+// waits for it.
 func (r *stepRecordsRig) merge() {
 	r.t.Helper()
 	r.awaitLaunch(r.token(claim.RoleMerger))
 	r.github.merged(r.number)
 	r.publishMergeOf(r.number, r.key, stepRecordsHead, "main")
-	r.waitPhase(phase.Done)
+	r.waitPhase(phase.Verifying)
 }
 
 // waitPhase waits for the issue to stand in want.

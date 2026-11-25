@@ -23,12 +23,13 @@ import (
 )
 
 // A production check after one merge: under `production_check: tester`, an issue whose plan is
-// `implementer tester` is done at its merge, and the check the merge opens gives its first look to
-// the tester's own session, the one that tested the task: the claim takes it where its pane still
-// runs, and a resume of that session where the close's suspension has stopped it. An issue whose
+// `implementer tester` waits in verifying at its merge, and the check of its merge gives its first
+// look to the tester's own session, the one that tested the task: the claim takes it where its pane
+// still runs, and a resume of that session where an idle release has stopped it. An issue whose
 // plan is `implementer` runs no tester, and the check's first look opens on a fresh tester session,
-// a spawn that resumes none. Each issue is done before its check ends, and each check ends with the
-// tester's report. The control is `production_check: off`, under which the same walk opens no check.
+// a spawn that resumes none. Each issue waits in verifying while its check is open, and each check
+// ends with the tester's report. The control is `production_check: off`, under which the same walk
+// opens no check.
 func TestAProductionCheckFollowsAPlan(t *testing.T) {
 	t.Parallel()
 	t.Run("a plan with a tester and a plan with none", func(t *testing.T) {
@@ -92,8 +93,8 @@ func (r *ownerStepsRig) lookOpens(c *stepClaimant) {
 	if check := readProductionCheck(t, r.st.Pool(), r.records, r.key); check.Role != claim.RoleTester || check.Looks != 1 || !check.LookOpen || !check.Open() {
 		t.Fatalf("the check the merge of %s opened is %+v, want look 1 open for the tester", r.key, check)
 	}
-	if got := string(r.d.state().Issues[r.key].Phase); got != string(phase.Done) {
-		t.Fatalf("%s stands in %s while its production check is open, want done", r.key, got)
+	if got := string(r.d.state().Issues[r.key].Phase); got != string(phase.Verifying) {
+		t.Fatalf("%s stands in %s while its production check is open, want verifying: its close waits for the check", r.key, got)
 	}
 	var prompt shimwire.Prompt
 	for deadline := time.After(stepRecordsWait); prompt.ID == ""; {

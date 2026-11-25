@@ -17,8 +17,8 @@ import (
 )
 
 // A root's close lingers its tree and stops each member's step there, but not the merge of a member
-// that awaits it: that merge lands later, and its close in the lingering tree ends the open record
-// passed, the one end it gets.
+// that awaits it: that merge lands later, and its move into verifying in the lingering tree ends the
+// open record passed, the one end it gets.
 func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Reviewing)
@@ -42,7 +42,7 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.closeMergedTelling(ctx, tx, member, pr)
+		return engine.closeMerged(ctx, tx, member, pr)
 	})
 	var ends []record.StepRecord
 	for _, w := range stepWrites(t, pool, "LEGION-209") {
@@ -57,8 +57,8 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 	if !ends[0].EndedAt.Equal(stepClock) || ends[0].Agent != treeRoleToken(t, "LEGION-209", claim.RoleMerger) {
 		t.Fatalf("the merge's end = %+v, want it ended at the merge's %s by the merger", ends[0], stepClock)
 	}
-	if got := issueAt(t, pool, "LEGION-209"); got != phase.Done {
-		t.Fatalf("LEGION-209 stands at %s, want done", got)
+	if got := issueAt(t, pool, "LEGION-209"); got != phase.Verifying {
+		t.Fatalf("LEGION-209 stands at %s, want verifying: its close waits for its checks", got)
 	}
 }
 
