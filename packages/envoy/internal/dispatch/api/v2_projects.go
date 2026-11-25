@@ -284,11 +284,14 @@ func (s *server) v2ProjectRows() []routeRow {
 				"exclusive (400 INVALID_QUERY when from is not before to). A row written in its create's transaction holds "+
 				"that transaction's start as created_at and is seen only once it commits, so a window should end some time "+
 				"before now. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, "+
-				"spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET "+
-				"/api/v2/near-copy-checks/{id} reads one row with it. outcome is refused (nothing was written; every issue "+
-				"create the gate refused has this row, written before the answer), forced, nudged, passed or not_made, and "+
+				"spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit, read_ms, read_stage}, with "+
+				"no spec: GET /api/v2/near-copy-checks/{id} reads one row with it. outcome is refused (nothing was written; "+
+				"every issue create the gate refused has this row, written before the answer), forced, nudged, passed or "+
+				"not_made, and "+
 				"reason bound, failed or unrecorded for not_made and null otherwise; candidates are the issues the gate read "+
-				"at or above nudge_score, at most %d, best first. limit 1 to %d (default %d) and offset; {items, total, "+
+				"at or above nudge_score, at most %d, best first; read_ms is how long the create waited on the gate's read, "+
+				"in milliseconds, and read_stage the step that read ended in (connect, terms, keys or score), both null on a "+
+				"row written before they were recorded. limit 1 to %d (default %d) and offset; {items, total, "+
 				"limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist.",
 				duplicateCandidateLimit, nearCopyChecksPageMax, nearCopyChecksPageMax),
 			Handler:  s.listNearCopyChecksV2,

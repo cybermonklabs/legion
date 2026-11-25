@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/volumestat"
@@ -488,7 +489,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	if _, err := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
 		Repo: c.opts.Repo, CredentialDir: c.opts.CredentialDir, Feed: c.opts.Root,
 		Token: func() (string, error) { return config.ReadSecretPointer(tokenFileEnv, c.opts.TokenFile) },
-		Log:   c.opts.Log, Clock: workspace.WallClock{}, Bound: bound,
+		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound,
 	}); err != nil {
 		return time.Time{}, !cloned, err
 	}
