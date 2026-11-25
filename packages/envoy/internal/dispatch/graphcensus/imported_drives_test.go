@@ -608,11 +608,12 @@ func evalSeedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Drive: write(comments, seed("", eval.Comment{
 			ID: "sizing", Owner: "EVAL-1", Author: "alice", Body: "A remark on the issue.", CreatedAt: at,
 		})),
-		// The comment, as the comment path states one, and its author's node, which the seed's
-		// first comment of that author makes.
+		// The comment, as the comment path states one, in its issue's project, and its author's
+		// node, which the seed's first comment of that author makes.
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
 			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
