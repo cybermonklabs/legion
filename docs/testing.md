@@ -693,6 +693,12 @@ to migrate the template its `Clone` copies, so a test binary of `internal/store`
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports no package of the module except `internal/testwait`, which imports none, and so is open to
 every package of it.
+Each of those tests runs beside the others on databases and pools of its own, four at a time unless
+the command line names a `-parallel` (`storeTestParallelism`). A pool writes its refusals, and
+`Transact`'s lines about a commit over that `*Pool` itself, to its own log (`Pool.log`), so a test
+reads its own lines there (`captureLog`) and never swaps the default logger. `Transact`'s lines
+about a commit over any other `TxPool`, a test's wrapper of a `*Pool` included, go to the default
+logger.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
 in place, and the tests run beside each other on databases of their own. So do `internal/workflow`'s,

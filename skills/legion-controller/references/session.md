@@ -41,13 +41,13 @@ It answers `OPEN`, `MERGED` or `CLOSED`. When it fails, report `<KEY>: pull requ
 
 ## Reading Dispatch's API
 
-Each read of Dispatch's API in these references is a `curl` of a route under `DISPATCH_URL`, with the token of `DISPATCH_TOKEN_FILE` on standard input, so that no process's arguments hold it. Run it in bash:
+Each read of Dispatch's API in these references is a `dispatch api` of a route under `/api/v1`, which reads it with this session's own credential and prints Dispatch's JSON answer. Run it in bash:
 
 ```text
-printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fail-with-body -H @- "$DISPATCH_URL<route>"
+dispatch api --path '<route>'
 ```
 
-`legion controller start` sets `DISPATCH_URL` only when `controller.yaml` names `dispatch_url`, and `DISPATCH_TOKEN_FILE` beside it only with `dispatch_token_file`: under `dispatch_token_broker` it sets no token file. The daemon sets both for a controller it launches. Quote a route that carries a query, because the shell reads `?` and `&`. When the read fails, or the variables are unset, act on nothing the read would decide and name its first line in your summary.
+Quote a route that carries a query, because the shell reads `?` and `&`. When the read fails, act on nothing the read would decide and name its first line in your summary.
 
 ## Taking the controller over by hand
 
