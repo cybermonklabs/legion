@@ -188,9 +188,11 @@ export type AddressFallback =
    * that would draw it, so the page says in the outline's place that the link names nothing on
    * it, rather than leave the reader on the page's body.
    *
-   * A node that `?node=` names and the read holds none of is one too, as a block is. On
-   * Conversation's own address a block or a node goes first to a view that draws it
-   * (`slots/body.tsx`' `addressView`).
+   * A node that `?node=` names and the read holds none of is one too, but the page draws no line
+   * for it: on Conversation's own address it opens Graph at the node where Graph's read holds it,
+   * and else, on Conversation's address or Graph's, that outline's own address without it
+   * (`slots/body.tsx`' `addressView`). On Conversation's own address a block goes first to a view
+   * that draws it.
    */
   | {
       readonly kind: "absent";
