@@ -2562,7 +2562,8 @@ func (r *issueRestore) blockPointer(address string) (string, bool) {
 // document no row names: the block as that document's live tree holds it, under the id it takes,
 // its `shaped` pointers each as it reads once the pass is written (movedPointers), read back as
 // the document's own markdown pipeline makes it. On a fleet of one build it holds what a version
-// of the spec stores of it (movedBlockAsk). A copy of an ask another document of the issue holds
+// of the spec stores of it, as the spec's settlement and a version of the spec read the ask of the
+// block once it stands there (askBlockAsks). A copy of an ask another document of the issue holds
 // takes the form a version keeps of its source - the state where that is not open, the answerer
 // and time, and copied_from and copied_from_document - as the source's node holds it when the
 // step runs (keptFromItsNode), and holds no answer's words or selection and no open state
@@ -2600,10 +2601,12 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock,
 		return movedAskBlock(node, restore)
 	}
 	// kept for one release: stored-ask-state
-	indexed, source, copied, err := r.movedBlockAsk(ctx, node, restore.id)
+	rows, sources, err := askBlockAsks(ctx, r.tx, r.spec.id, &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
 	if err != nil {
 		return nil, err
 	}
+	_, indexed := rows[restore.id]
+	source, copied := sources[restore.id]
 	switch {
 	// kept for one release: stored-ask-state
 	case copied:
@@ -2619,34 +2622,6 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock,
 		withoutStoredAskAttributes(node)
 	}
 	return movedAskBlock(node, restore)
-}
-
-// movedBlockAsk is the ask node, the block movedBlockOf writes into the spec under id, has once it
-// stands there, as the spec's settlement and a version of the spec read it (askBlocksWithAnAsk):
-// indexed where a row of the spec names id, else copied where node is a copy of the ask source of
-// another document of the issue (readCopiedAskSources), source also naming that document's
-// address.
-//
-// kept for one release: stored-ask-state
-func (r *issueRestore) movedBlockAsk(ctx context.Context, node *pmdoc.Node, id string) (indexed bool, source copiedSource, copied bool, err error) {
-	rows, err := loadAskBlocks(ctx, r.tx, r.spec.id)
-	if err != nil {
-		return false, copiedSource{}, false, err
-	}
-	if _, indexed := rows[id]; indexed {
-		return true, copiedSource{}, false, nil
-	}
-	owner, err := documentOwner(ctx, r.tx, r.spec.id)
-	if err != nil {
-		return false, copiedSource{}, false, err
-	}
-	blocks, _ := readableAskBlocks(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
-	sources, err := readCopiedAskSources(ctx, r.tx, r.spec.id, owner, blocks, unindexedAskBlockIDs(blocks, rows))
-	if err != nil {
-		return false, copiedSource{}, false, err
-	}
-	source, copied = sources[id]
-	return false, source, copied, nil
 }
 
 // movedAskBlock is node, the block movedBlockOf builds for restore, read back as the document's

@@ -10,19 +10,7 @@
 // written. So the two read a line alike, and alike with the server: each rule here is the
 // server's, and a line the server refuses opens nothing.
 
-import { TYPED_BLOCK_ID_SHORTCUT_EXCLUDED } from "@legion/contracts";
-
-/** How many times `char` stands in a row in `text` from `index`. */
-export function runOf(text: string, index: number, char: string): number {
-  let end = index;
-  while (text.charAt(end) === char) end++;
-  return end - index;
-}
-
-/** directive.go's `directiveNameByte`: a letter, a digit, `_` or `-`. */
-function directiveNameChar(char: string): boolean {
-  return /^[A-Za-z0-9_-]$/.test(char);
-}
+import { directiveNameChar, runOf, TYPED_BLOCK_ID_SHORTCUT_EXCLUDED } from "@legion/contracts";
 
 /** One attribute as it is written (`#id`, `.class`, `name` or `name="value"`), under the name
  *  Dispatch reads it by: `id` for `#…` and `id="…"`, `class` for `.…`, and its key otherwise. */
