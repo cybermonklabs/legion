@@ -558,14 +558,26 @@ function readGaps(
  * The response that holds the step's completion call. It is found by that call, never by how near
  * its time lies to a read: the last such response after the start read and up to the end read.
  * Where there is none, it is the next response after the end read, where that one holds the call,
- * since the clock of the agent's machine may run ahead of the daemon's. Null where neither holds
+ * since the clock of the agent's machine may run ahead of the daemon's. That response must come
+ * before the claim's next read, so a later step's call is never this step's. Null where none holds
  * it.
  */
-function completionOf(responses: Response[], start: ReadLine, end: ReadLine): Response | null {
+function completionOf(
+  responses: Response[],
+  start: ReadLine,
+  end: ReadLine,
+  reads: ReadLine[]
+): Response | null {
   let found: Response | null = null;
   for (const response of responses) {
     if (response.at <= start.readAt) continue;
-    if (response.at > end.readAt) return found ?? (response.completes ? response : null);
+    if (response.at > end.readAt) {
+      if (found !== null || !response.completes) return found;
+      const later = reads.some(
+        (read) => read.claim === end.claim && read.readAt > end.readAt && read.readAt < response.at
+      );
+      return later ? null : response;
+    }
     if (response.completes) found = response;
   }
   return found;
@@ -576,12 +588,13 @@ function completionOf(responses: Response[], start: ReadLine, end: ReadLine): Re
  * ended, with one start read and one end read of one launch and neither final, it also gives the
  * response that holds the completion call, or null. The 2 s test of the end read leaves that
  * response out, and every other response keeps the 2 s test at both reads. Where no response holds
- * the call, the end read leaves out nothing.
+ * the call, the end read leaves out nothing. `reads` is every read line of the log.
  */
 function whyNot(
   starts: ReadLine[],
   ends: ReadLine[],
-  responses: Response[]
+  responses: Response[],
+  reads: ReadLine[]
 ): { why: string; completion?: Response | null } {
   if (starts.length !== 1) return { why: `it has ${starts.length} start reads, not one` };
   if (ends.length !== 1) return { why: `it has ${ends.length} end reads, not one` };
@@ -592,7 +605,8 @@ function whyNot(
   if (start.claim !== end.claim || start.generation !== end.generation) {
     return { why: "its two reads name two launches" };
   }
-  const completion = end.endedBy === "agent" ? completionOf(responses, start, end) : undefined;
+  const completion =
+    end.endedBy === "agent" ? completionOf(responses, start, end, reads) : undefined;
   const leftOut = completion ?? null;
   for (const [read, without] of [
     [start, null],
@@ -800,7 +814,7 @@ function stepModelsCheck(argv: string[]): { lines: string[]; code: number } {
     }
     const { starts, ends } = joinedReads(step, reads);
     const { responses } = transcript;
-    const { why, completion } = whyNot(starts, ends, responses);
+    const { why, completion } = whyNot(starts, ends, responses, reads);
     const leftOut = completion ?? null;
     const startGaps = readGaps("start", starts, responses, null);
     const endGaps = readGaps("end", ends, responses, leftOut);

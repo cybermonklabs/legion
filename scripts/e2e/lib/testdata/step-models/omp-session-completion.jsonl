@@ -36,3 +36,7 @@
 {"type":"message","timestamp":"2026-11-21T10:08:07.000Z","message":{"role":"assistant","provider":"gateway-openai","model":"openai/gpt-6.1-sol","stopReason":"toolUse","content":[{"type":"text"},{"type":"toolCall","name":"bash"}]}}
 {"type":"message","timestamp":"2026-11-21T10:08:09.950Z","message":{"role":"assistant","provider":"gateway-openai","model":"openai/gpt-6.1-sol","stopReason":"toolUse","content":[{"type":"toolCall","name":"legion","arguments":{"op":"handoff_complete"}}]}}
 {"type":"message","timestamp":"2026-11-21T10:08:13.000Z","message":{"role":"assistant","provider":"gateway-openai","model":"openai/gpt-6.1-sol","stopReason":"stop","content":[{"type":"text"}]}}
+{"type":"message","timestamp":"2026-11-21T10:09:03.000Z","message":{"role":"assistant","provider":"gateway-openai","model":"openai/gpt-6.1-sol","stopReason":"toolUse","content":[{"type":"text"},{"type":"toolCall","name":"bash"}]}}
+{"type":"message","timestamp":"2026-11-21T10:09:06.000Z","message":{"role":"assistant","provider":"gateway-openai","model":"openai/gpt-6.1-sol","stopReason":"toolUse","content":[{"type":"toolCall","name":"task"}]}}
+{"type":"message","timestamp":"2026-11-21T10:09:10.080Z","message":{"role":"assistant","provider":"gateway-openai","model":"openai/gpt-6.1-sol","stopReason":"toolUse","content":[{"type":"toolCall","name":"legion","arguments":{"op":"handoff_complete"}}]}}
+{"type":"message","timestamp":"2026-11-21T10:09:13.000Z","message":{"role":"assistant","provider":"gateway-openai","model":"openai/gpt-6.1-sol","stopReason":"stop","content":[{"type":"text"}]}}
