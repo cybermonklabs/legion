@@ -3815,27 +3815,6 @@ package api
 // false` (the Legion reviewer's Minor on #5285 at 4b123279). The forward merge of 2026-11-25 gave
 // both migrations new versions above main's newest, 20261124143026, in place of 20261123231000 and
 // 20261124041455, which no release carries and no known database applied, for the reason above.
-// (This entry took 238 at first, above main's 219 at 7cb1f229367c: a reading of `const
-// DaemonAPIVersion` at refs/pull/<n>/head for each of the 493 open pull requests of this
-// repository, made between 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237
-// declared and nothing at 238. The forward merges of 2026-11-24 brought the base's 228 (#4590's)
-// and 232 (the turn-outcome report's) in below it. Main then reached 246 (#4960). A reading of
-// version.go at the head of each of the 473 open pull requests, which ended at
-// 2026-11-24T15:48Z, found main at 246 and, above it, 247 (#4580 and #5384), 250 (#5365), 251
-// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164) declared, 247 to 249 held for a coordinated
-// change, and 256 taken by #5349's renumber at the same reading, so this entry moved to 257. #4580
-// had moved to 257 first, at 94a696cf, so by the spec's architect's ruling of 2026-11-24T17:09Z
-// this entry takes 265: a reading of version.go at the head of each of the 478 open pull requests,
-// made between 2026-11-24T17:15:34Z and 17:16:40Z, found main at 246 and, above it, 247 to 252, 254
-// to 257 and 261 declared, and nothing at 265. The forward merge of 2026-11-24 that brought in
-// b530b5a2 brought main's 250 and 256 (#5349) in below it, and a reading of the head of each of the
-// 485 open pull requests, made between 19:05:17Z and 19:06:17Z, found 257, 261 and 262 declared
-// above main's 256 and 265 by this change's pull request alone. The forward merge of 2026-11-25
-// that brought in e546d760 found main still at 256. The forward merges of 2026-11-25 that brought
-// in caa7e4a2 and cdb2baa0 brought main's 275 (#4392) in above 265, so this entry moved to 308: a
-// reading of version.go at the head of each of the 493 open pull requests, made between
-// 13:11:07Z and 13:11:35Z, found 276 to 286, 288 to 301 and 307 declared above main's 275, and
-// the contract ledger held 302 to 306 for heads not yet pushed at those numbers, so nothing
-// declared or held 308. That is a reading and never the rule: read main's own number and every
-// open head again at the next forward merge rather than from this line.)
 const DaemonAPIVersion = 308
+
+const launcherWorkspaceReadContract = 308
