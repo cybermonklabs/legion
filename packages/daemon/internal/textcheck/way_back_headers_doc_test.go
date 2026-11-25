@@ -55,11 +55,11 @@ func TestTheWayBackDocNamesEveryHeaderThatCarriesOne(t *testing.T) {
 	}
 }
 
-// The entries of the guide's list of the migrations recorded above the phase entry send an operator
-// to the rollback section of the release each came with. An entry names it by a link, or by its
-// words in double quotes. The list's own checks hold the names of migrations alone. So a heading
-// renamed under its entries, or named wrongly in one, would pass them. This test holds each section
-// an entry names to the one heading of its words, and each link to that heading's anchor.
+// Each entry of the guide's list of the migrations recorded above the phase entry sends an operator
+// to its release's rollback section. An entry names it by a link, or by its words in double quotes.
+// The list's own checks hold the names of migrations alone. So a heading renamed under its entries,
+// or named wrongly in one, would pass them. This test holds each section an entry names to the one
+// heading of its words, and each link to that heading's anchor.
 func TestEveryRollbackSectionTheMigrationListNamesIsInTheGuide(t *testing.T) {
 	guide := shippedText(t, wayBackGuide)
 	sections := phaseEntryList(t).rollbackSections()
