@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  Migration `20261124002258_btree_gin` creates the Postgres extension `btree_gin` and does nothing
+  Migration `20261125125703_btree_gin` creates the Postgres extension `btree_gin` and does nothing
   else. A later migration needs its operator classes to build a GIN index that holds a btree column
   beside an array. `btree_gin` is a contrib extension that PostgreSQL includes, and Postgres marks
   it trusted, so a login with `CREATE` on the database can create it. Where the extension already

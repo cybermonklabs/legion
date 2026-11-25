@@ -2,12 +2,12 @@ kind: Fixed
 body: |-
   A role message no longer reaches a session that does not hold the role when a read of its
   whole envelope refuses or misreads it. The session relay, a takeover pass, the kept lane's
-  walk and an edge listener's frame rule now tell a role message by one read, the one the
-  plugins' `JSON.parse` makes: past a
-  leading UTF-8 byte order mark, the top-level fields at any depth of nesting, and only `topic`
-  and `role`, each by its exact key. So a later `"TOPIC"` key, an event id written as a number,
-  or a value nested deeper than 10,000 levels no longer makes a role message look like none.
-  Its envelope is then read field by
+  walk and an edge listener's frame rule now tell a role message by one read: past a leading
+  UTF-8 byte order mark, the top-level fields at any depth of nesting, as the plugins'
+  `JSON.parse` splits them, and only `topic` and `role`, each by its exact key, as the plugins
+  read `topic`. So a later `"TOPIC"` key, an event id written as a number, or a value nested
+  deeper than 10,000 levels no longer makes a role message look like none. Its envelope is then
+  read field by
   field, so an `urgency`, `source` or `expects_reply` word a newer build adds, or an `issued_at`
   written as `1795191371979.0`, no longer ends it: when the role's claim names another session,
   or none, the relay copies it to the role's kept lane and the holder receives it, and a takeover

@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A KV call builds its subjects from its key, which nats.go checks only for the characters a key may
@@ -23,6 +24,7 @@ import (
 // subject from its key, and the key outside the alphabet on a get by revision too, which builds none,
 // whether the open created the bucket or found it.
 func TestAKeyValueHandleRefusesAKeyNATSWouldRefuse(t *testing.T) {
+	t.Parallel()
 	client, err := Connect([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -57,15 +59,15 @@ func TestAKeyValueHandleRefusesAKeyNATSWouldRefuse(t *testing.T) {
 // takes one and still takes the longest key that fits, the control keys spelled with letter.
 func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string) {
 	t.Helper()
+	// No span of its own: the leader's answer can come late on a loaded machine with nothing wrong.
+	leaderRead := testwait.Context(t)
 
 	calls := map[string]func(key string) error{
 		"Get": func(key string) error { _, err := kv.Get(key); return err },
 		// The leader-answered read builds its own request rather than letting nats.go build one,
 		// so it refuses the keys Get refuses itself, before anything is sent (RefusesRead).
 		"GetFromLeader": func(key string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, err := kv.GetFromLeader(ctx, key)
+			_, err := kv.GetFromLeader(leaderRead, key)
 			return err
 		},
 		"Put":       func(key string) error { _, err := kv.Put(key, []byte("v")); return err },
@@ -173,6 +175,7 @@ func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string
 // and the characters it rejects have several, each still reaching natsKeyValid rather than
 // stopping at check.
 func TestRefusesReadAnswersTheSameRefusalAGetOfTheKeyAnswers(t *testing.T) {
+	t.Parallel()
 	client, err := Connect([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -275,6 +278,7 @@ func TestRefusesReadAnswersTheSameRefusalAGetOfTheKeyAnswers(t *testing.T) {
 // character by character; one of them here is what pins that RefusesWrite asks the alphabet at
 // all.
 func TestRefusesWriteAnswersTheSameRefusalAPutOfTheKeyAnswers(t *testing.T) {
+	t.Parallel()
 	client, err := Connect([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -346,6 +350,7 @@ func TestRefusesWriteAnswersTheSameRefusalAPutOfTheKeyAnswers(t *testing.T) {
 // refused only where the read's own subject would be too long, and every such key still lists and
 // deletes, so a store can serve it or skip it, and a reaper can remove it, rather than fail.
 func TestAKeyAnEarlierListenerStoredStaysListableAndDeletable(t *testing.T) {
+	t.Parallel()
 	client, err := Connect([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)

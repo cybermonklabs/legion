@@ -4,11 +4,11 @@
 
 package main
 
-// The two cost measurements of this change share this file. c-write-cost is
-// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go) and c-read-cost is
-// TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go). What they
-// share is the pair of arms they compare, the corpus writer that seeds each arm through that
-// arm's own API, the clock, the order statistic and the table every reading is printed in.
+// The harness a cost tool of this tag builds on: the pair of arms it compares, the corpus writer
+// that seeds each arm through that arm's own API, the clock, the order statistic and the table
+// every reading is printed in. #3178's two cost checks that first used it, c-write-cost and
+// c-read-cost, are gone from main; the readers they used stay in read_cost_test.go and
+// write_cost_test.go, and the INFRA-1098 tree's branches build their own cost tools on this file.
 //
 // # The two arms, and why each has a database of its own
 //
@@ -74,12 +74,6 @@ const (
 	// statement on a fresh connection pays for the pages every run after it finds cached, and
 	// a measurement of a corpus is not a measurement of a cold cache (measureDismissedScale).
 	costWarmUp = 1
-	// costBudget is what c-read-cost holds every read to: a read whose p99 rises by more than
-	// this much above the same read at the commit before this child fails. c-write-cost holds
-	// its request paths to ratios instead (write_cost_test.go, writeCostEditRatio and the three
-	// beside it), and the 8,001-block version to this rise beside its ratio, the lower allowance
-	// deciding (writeCostOverAllowance).
-	costBudget = 100 * time.Millisecond
 	// writeCostRewriteRowBudget is what each store row of a whole-document rewrite may cost.
 	// The rewrite makes every block of the document new to the index, so it writes about 14,000
 	// rows the commit before this child writes none of: a total would refuse the model, where a
@@ -214,7 +208,7 @@ type costReading struct {
 // percentile is the nearest-rank percentile of this reading's runs: the ceil(q*n)th of them
 // sorted, so p50 of 200 readings is the hundredth and p99 the 198th. No interpolation, so every
 // number printed is a run that happened - the rule api/inbox_dismissed_scale_test.go's
-// percentileOfDismissedScale states, which these two measurements follow.
+// nearestRank states, which these two measurements follow.
 func (r costReading) percentile(quantile float64) time.Duration {
 	if len(r.runs) == 0 {
 		return 0

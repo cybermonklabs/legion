@@ -16,8 +16,9 @@
 #      named, because such a file starts no run whatever this check says;
 #   3. a file that is not valid YAML, which GitHub reads no further than either;
 #   4. two keys of one mapping that are equal after upper-casing. GitHub's parsers refuse both a
-#      repeated key and a key differing only in case (actions/languageservices
-#      workflow-parser/src/templates/template-reader.ts:212 and :359, actions/runner
+#      repeated key and a key differing only in case (actions/languageservices'
+#      `is already defined` errors, https://github.com/actions/languageservices/blob/00d83b8521a6a179cc55ce9c93f5564035de0c5c/workflow-parser/src/templates/template-reader.ts#L212
+#      and #L359, actions/runner
 #      TemplateReader.cs with StringComparer.OrdinalIgnoreCase), while the YAML layer passes them
 #      through on purpose (yaml-object-reader.ts parses with uniqueKeys: false). A load cannot find
 #      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the
@@ -58,7 +59,7 @@
 set -euo pipefail
 
 # The repeated-key test is workflow_paths.repeated_keys, the same one the loader every filter
-# check reads .github/ci-filters.yaml with runs, imported from beside this script's own file: a
+# check reads the changes job's filters and the workflows with runs, imported from beside this script's own file: a
 # test fixture links only this script in, and the link leads back to the module CI runs. Resolved
 # before the cd, which would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE keeps the
 # import from leaving a __pycache__ in the tree.
@@ -401,8 +402,8 @@ for path in targets:
             f"{path} is {size:,} bytes, above GitHub's own cap of {GITHUB_CAP:,} bytes (500 KB): "
             f"GitHub starts no run at all for a workflow file this size, and signals it only as a "
             f"run with no jobs in it. It is above this check's limit of {LIMIT:,} bytes as well. "
-            f"Move the filter data into .github/ci-filters.yaml, each longer shell body into a script "
-            f"under .github/scripts/ and each derivation into the workflow's notes file, as {RULE} says.",
+            f"Move each longer shell body into a script under .github/scripts/ and each derivation "
+            f"into the workflow's notes file, as {RULE} says.",
         )
     elif size > LIMIT:
         problem(
@@ -410,9 +411,9 @@ for path in targets:
             f"{path} is {size:,} bytes, above this check's limit of {LIMIT:,} bytes. GitHub starts "
             f"no run at all for a workflow file above its own cap of {GITHUB_CAP:,} bytes (500 "
             f"KB), and signals it only as a run with no jobs in it, so this limit keeps every file "
-            f"far enough below the cap that no edit crosses it unseen. Move the filter data into "
-            f".github/ci-filters.yaml, each longer shell body into a script under .github/scripts/ "
-            f"and each derivation into the workflow's notes file, as {RULE} says.",
+            f"far enough below the cap that no edit crosses it unseen. Move each longer shell body "
+            f"into a script under .github/scripts/ and each derivation into the workflow's notes "
+            f"file, as {RULE} says.",
         )
 
     node, error = composed(path)

@@ -15,6 +15,7 @@ import (
 // and never the text whole. The event column is the event, a dot and the action. Each text here
 // is 600 bytes of a letter of its own, so no text holds another.
 func TestRedeliveryReportShowsGitHubsTextToABound(t *testing.T) {
+	t.Parallel()
 	guid, event, action := strings.Repeat("g", 600), strings.Repeat("e", 600), strings.Repeat("a", 600)
 	var out bytes.Buffer
 	writeRedeliveryReport(&out, redeliver.Report{

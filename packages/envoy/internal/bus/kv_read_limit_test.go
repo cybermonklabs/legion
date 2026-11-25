@@ -100,6 +100,7 @@ func (js *slowReadsJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
 // is still waited for, since each read left unanswered doubles the next one's limit, and the start
 // opens its bucket rather than end at its hang guard over reads the server was answering.
 func TestAServerThatAnswersEveryReadLateIsStillWaitedFor(t *testing.T) {
+	t.Parallel()
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
@@ -156,6 +157,7 @@ func (js *lostUpdateJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*n
 // stream's state, sent again past its read limit (updateStream), where one lost read reported the
 // raise that landed as one that failed, "raise KV_<bucket>: ENVOY_NATS_REPLICAS=3: nats: timeout".
 func TestARaiseWhoseAnswerAndNextReadAreLostStillLands(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	const bucket = "envoy_lost_update_test"
@@ -229,6 +231,7 @@ func TestAnAnsweredReadSetsTheReadLimitBack(t *testing.T) {
 // raise, or after a read that found the stream, the stream is gone, and the wait ends on that
 // answer at once (streamStep.awaitsApply).
 func TestAStreamNotFoundIsReadAgainOnlyAfterACreate(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		step      streamStep
 		readAgain bool

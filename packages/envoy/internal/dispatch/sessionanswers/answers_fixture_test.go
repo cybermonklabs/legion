@@ -140,6 +140,9 @@ type answersItems struct {
 	// onIssue is a person's comment on an issue, and mention a person's comment that names the
 	// reader.
 	onIssue, mention *writtenComment
+	// onIssueMessage is a person's message on the issue routed to the reader, and aimed a
+	// person's message on an issue aimed at the reader.
+	onIssueMessage, aimed *writtenMessage
 }
 
 // writeItems writes the items Dispatch delivered to the reader in the window: of each kind of
@@ -200,10 +203,11 @@ func (f *answersFixture) writeItems() answersItems {
 	// issue aimed at the reader, which the listener sent it, and a direct message, which the
 	// listener stored for the reader while it did not run. A direct message's event has no owner,
 	// and so no topic.
-	f.messageCreated(f.message(fixtureMessage{issue: "AN-1", author: alice, body: "Ship it today.", at: minutes(30)}), toReader)
-	aimed := f.message(fixtureMessage{issue: "AN-2", author: alice, body: "Please resize the pool.", target: new("session:" + answersReader), at: minutes(28)})
-	f.messageCreated(aimed)
-	f.messageDelivery(aimed, answersReader, "steer", "sent", minutes(28))
+	items.onIssueMessage = f.message(fixtureMessage{issue: "AN-1", author: alice, body: "Ship it today.", at: minutes(30)})
+	f.messageCreated(items.onIssueMessage, toReader)
+	items.aimed = f.message(fixtureMessage{issue: "AN-2", author: alice, body: "Please resize the pool.", target: new("session:" + answersReader), at: minutes(28)})
+	f.messageCreated(items.aimed)
+	f.messageDelivery(items.aimed, answersReader, "steer", "sent", minutes(28))
 	direct := f.message(fixtureMessage{author: alice, body: "Are you free?", target: new("session:" + answersReader), at: minutes(26)})
 	f.messageCreated(direct)
 	f.messageDelivery(direct, answersReader, "btw", "queued", minutes(26))
@@ -553,6 +557,32 @@ func (f *answersFixture) editComment(c *writtenComment, body string, at time.Tim
 	c.EditedAt = new(at.Format(time.RFC3339Nano))
 	f.exec(`update comments set body = $2, edited_at = $3 where id = $1`, c.ID, body, at)
 	f.event(c.owner, "comment.edited", c.Author, f.commentPayload(c), at, topics...)
+}
+
+// deleteComment writes its author's delete of c at time at, as the comment delete route writes
+// it: the row's body cleared, its deleted_at and deleted_by, and a comment.deleted event,
+// delivered to topics.
+func (f *answersFixture) deleteComment(c *writtenComment, at time.Time, topics ...string) {
+	c.Body, c.DeletedAt, c.DeletedBy = "", &at, &c.Author
+	f.exec(`update comments set body = '', deleted_at = $2, deleted_by = $3 where id = $1`, c.ID, at, f.encode(c.Author))
+	f.event(c.owner, "comment.deleted", c.Author, f.commentPayload(c), at, topics...)
+}
+
+// editMessage writes its author's edit of m to body at time at, as the message edit route writes
+// it: the row's body and edited_at, and a message.edited event, delivered to topics.
+func (f *answersFixture) editMessage(m *writtenMessage, body string, at time.Time, topics ...string) {
+	m.Body, m.EditedAt = body, &at
+	f.exec(`update messages set body = $2, edited_at = $3 where id = $1`, m.ID, body, at)
+	f.event(m.owner, "message.edited", m.Author, model.MessageEventPayload{Message: m.Message, ReplyBody: m.replyBody}, at, topics...)
+}
+
+// deleteMessage writes its author's delete of m at time at, as the message delete route writes
+// it: the row's body cleared, its deleted_at and deleted_by, and a message.deleted event,
+// delivered to topics.
+func (f *answersFixture) deleteMessage(m *writtenMessage, at time.Time, topics ...string) {
+	m.Body, m.DeletedAt, m.DeletedBy = "", &at, &m.Author
+	f.exec(`update messages set body = '', deleted_at = $2, deleted_by = $3 where id = $1`, m.ID, at, f.encode(m.Author))
+	f.event(m.owner, "message.deleted", m.Author, model.MessageEventPayload{Message: m.Message}, at, topics...)
 }
 
 // rewordAsk writes its author's new wording of ask, question, at time at: the row's question and

@@ -45,8 +45,8 @@ const (
 //     and relatedProbeSQL - the newest event under each priority, which the priorities read's
 //     statement (priorityReadQuery) reads among its parts, with a report of the newest event
 //     alone with its walk keyed (priorityNewestEventKeyedWalkQuery) and one of main's text with
-//     its walk keyed (mainPriorityNewestEventKeyedWalkQuery), and the parked move
-//     (parkedMoveLateral) in the parked fault of the read's statement and in the listing with
+//     its walk keyed (mainPriorityNewestEventKeyedWalkQuery), and the move into backlog or icebox
+//     (backlogMoveLateral) in the second fault of the read's statement and in the listing with
 //     ?moved=true, each without and with
 //     events_parked_moves, with a reading of each walk over the members alone: main's
 //     (memberWalkQuery) and the walk keyed through issues_parent_key (keyedMemberWalkQuery). The
@@ -56,9 +56,9 @@ const (
 //     release's schema still holds, and the newest event and its keyed walks read issues_pkey,
 //     issues_parent_key and events_issue_key_seq_key, which no
 //     migration of this release adds; so on a database at this release's schema both texts of
-//     each are measurable, and the pair is the committed regression check. The parked move's two
+//     each are measurable, and the pair is the committed regression check. The move's two
 //     sides are one text, and the before side drops events_parked_moves, which migration
-//     20261124005151 of this release adds, in its measuring transaction, which is rolled back; so
+//     20261125131100 of this release adds, in its measuring transaction, which is rolled back; so
 //     the same database holds both of its sides too. The two related statements are gated on the
 //     document arm they share and reported whole beside it, for the reason given where that pair
 //     is measured. The newest event and the parked move are gated on their top plan node's shared
@@ -94,7 +94,7 @@ func TestStatementTimings(t *testing.T) {
 	// both sides read the same rows; the listing's status is a list where main's was one value,
 	// so each side is passed its own empty status.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
-	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false})
+	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false, false})
 	listArguments[1] = []string{}
 	runner.Pair(t, "the issue list, unpaged",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
@@ -513,7 +513,7 @@ func livePriorityIDs(t *testing.T, database *store.Store) []string {
 	return ids
 }
 
-// parkedMoveTiming names the group of the readings of the parked move (parkedMoveLateral)
+// parkedMoveTiming names the group of the readings of the parked move (backlogMoveLateral)
 // without and with events_parked_moves, in the parked fault and in the listing with ?moved=true,
 // and of each walk over the members alone, main's and the walk keyed through issues_parent_key.
 // Each reading is a subtest of the group, so one -run pattern of the group's name selects them
@@ -562,14 +562,14 @@ const keyedMemberWalkQuery = `with recursive members_seed as (
 
 // measureParkedMoveAndMemberWalk measures, in the group parkedMoveTiming:
 //
-//   - the parked fault of the priorities read's statement (priorityReadQuery), over the arguments
+//   - the second fault of the priorities read's statement (priorityReadQuery), over the arguments
 //     readPriorities binds for every live priority with no project named (ids, read by
 //     priorityReadSeed), as the newest event is measured;
 //   - the listing with ?moved=true (listIssuesQuery), over the arguments the listing route binds
 //     for `?project=<the largest project>&moved=true` (listIssues): the project of the subjects,
 //     the empty status list, no parent, no updated_since, the empty label list, open false, the
 //     empty priority list, the unset priority false, no closed window, the empty advances list,
-//     advances=none and advances=any false, and moved true;
+//     advances=none and advances=any false, moved true and own false;
 //   - each walk over the members alone: main's (memberWalkQuery), which both statements of the
 //     read take, over the live priorities, and the walk keyed through issues_parent_key
 //     (keyedMemberWalkQuery), over their relations as two arrays (keys and priorities).
@@ -763,8 +763,19 @@ func databaseHoldsDocumentSearch(t *testing.T, runner *benchtime.Runner) bool {
 // is untimed on purpose: that rebuild moves refreshed_at and writes no snapshot, so the pass
 // after it counts every project in full by this build's own rule, and timing that would measure
 // a first-use full build rather than the steady state.
+//
+// Its verdict is the passes' wall time, and no count of the work that the test can read stands
+// for it: each side sends the same few statements per project, and the items a pass reports it
+// applied are what its statement answers, not the rows Postgres read to apply them, so a step
+// that read every item of the project would still report the queue's depth. A reading of the
+// clock is the machine's load as much as the pass's work, so the protocol runs only where
+// DISPATCH_BENCH_TIMING is set as well as DISPATCH_BENCH_DATABASE_URL: a person runs it on a quiet
+// machine, and CI never does.
 func TestRelatedTermsRefreshTiming(t *testing.T) {
 	t.Parallel()
+	if os.Getenv("DISPATCH_BENCH_TIMING") == "" {
+		t.Skip("DISPATCH_BENCH_TIMING is unset: protocol 3's times are read on a quiet machine, never in CI")
+	}
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	project := runner.Subjects().Project
 	// The refresh runs each project of a pass in a transaction of its own, so it takes a pool

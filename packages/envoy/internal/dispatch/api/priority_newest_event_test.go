@@ -30,11 +30,11 @@ import (
 )
 
 // mainPriorityNewestEventQuery is the whole text that priorityNewestEventQuery sent at commit
-// 8c63a4c5af6059fe96bd8e4b0e5629202fe1cc14, before the statement read the event of last_seq of
-// each member, with priorityMemberTerms, parentDepthCapSQL and priorityProjectFilter written out
-// as they were at that commit. It is the oracle of the tests below, held letter for letter. A
-// text built from the package's own constants would move with them, and the two sides would then
-// agree however the read changed.
+// cdb2baa0c3f9f6392aa3fb1aeb8cbb9c812af5b1, before the statement read the event of last_seq of
+// each member, with priorityMemberTerms (its seed priorityRelationSeed), parentDepthCapSQL and
+// priorityProjectFilter written out as they were at that commit. It is the oracle of the tests
+// below, held letter for letter. A text built from the package's own constants would move with
+// them, and the two sides would then agree however the read changed.
 const mainPriorityNewestEventQuery = `with recursive members_seed as (
 		select ($1::text[])[i] as key, ($2::text[])[i] as priority
 		from generate_subscripts($1::text[], 1) as seed(i)
@@ -366,8 +366,8 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 // of its indexes instead, with no index condition, which is the same read under another name, in
 // a plan the server does not run. The corpus is read in three states of each issue's newest-event
 // pair (newestEventStates): as written, with every pair null, which is a deployment before
-// 20261125094600 fills it; after that fill; and with one member issue's pair a seq behind its
-// last_seq, as an append by the release before 20261125094500 leaves it during a roll or after a
+// 20261125144002 fills it; after that fill; and with one member issue's pair a seq behind its
+// last_seq, as an append by the release before 20261125143901 leaves it during a roll or after a
 // rollback. In each, the priorities read's statement (priorityReadQuery) answers main's times,
 // and each of its plans:
 //
@@ -478,7 +478,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 // newestEventStates are the three states of the corpus's newest-event pairs that
 // TestPriorityNewestEventReadsOneEventOfEachMember reads the statement in, in order, each made by
 // its setup from the one before: as written, every pair null, where the statement probes the
-// event of each member issue that has one; after 20261125094600's fill (fillNewestEventPairs),
+// event of each member issue that has one; after 20261125144002's fill (fillNewestEventPairs),
 // where it probes none; and with the pair of one member issue of both scopes - the first by key of
 // project newestEventProject's issues that state a relation and have an event - a seq behind its
 // last_seq, where it probes that one.
@@ -645,8 +645,8 @@ func planSubplan(t testing.TB, plan json.RawMessage, name, subject string) json.
 // of the newest event: the subplan priorityNewestEventCTE, with every node under it, where the
 // text reads the event of each member issue in a CTE of that name, as the priorities read's
 // statement and the text with its walk keyed do, and the whole plan where the text reads it in
-// its one select, as main's does. In the read's statement the parked list reads events too
-// (parkedMoveLateral), and that read is not the newest event's. A plan that holds more than one
+// its one select, as main's does. In the read's statement the second fault's list reads events
+// too (backlogMoveLateral), and that read is not the newest event's. A plan that holds more than one
 // such subplan fails the test.
 func newestEventRead(t testing.TB, plan json.RawMessage, subject string) json.RawMessage {
 	t.Helper()

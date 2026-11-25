@@ -12,7 +12,7 @@ import (
 // TestAnIssueAppendWritesTheNewestEventPairOnTheIssueRow holds the append (Broker.Append, which
 // queues QueueAppendWithLogins) to writing, in the `update issues` that advances last_seq, the
 // appended event's created_at and seq as the issue's last_event_at and last_event_at_seq
-// (20261125094500). The priorities read takes each member issue's newest event from that pair and
+// (20261125143901). The priorities read takes each member issue's newest event from that pair and
 // probes the event only where the pair does not name last_seq (api's priorityReadQuery), so an
 // append that stopped writing it would leave every answer right and only the read's probes would
 // show it. Two appends to one issue, each in a transaction of its own, each leave the issue's pair

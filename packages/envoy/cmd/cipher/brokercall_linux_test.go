@@ -25,17 +25,17 @@ import (
 )
 
 // TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown: the broker makes the enrollment
-// at once, and its answer would reach the helper 5 s later, past the op's 2 s bound. `enroll
+// at once, and its answer would reach the helper an hour later, past the op's 2 s bound. `enroll
 // --helper` exits 1 naming ENROLL_OUTCOME_UNKNOWN and saying the outcome is unknown, and writes
 // no enrollment file, while the broker holds the row. The answer is the one the bound's end of the
-// request gives (requestReach.settle): its cause says the request may have reached the broker, and
-// it comes before the bound plus 1 s, where the helper's timer would answer with a cause of its
-// own. The same command again, answered at once, exits 0 with that row's id, and the broker still
-// holds that one live row.
+// request gives (requestReach.settle): its cause says the request may have reached the broker, not
+// the cause the helper's timer, a second after the bound, would give, and it comes at the bound,
+// allowing for the time this process was held up (requireOnTime). The same command again,
+// answered at once, exits 0 with that row's id, and the broker still holds that one live row.
 func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T) {
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
-	slow := &slowEnrollments{base: http.DefaultTransport, hold: 5 * time.Second}
+	slow := &slowEnrollments{base: http.DefaultTransport, hold: time.Hour}
 	srv, sock := serveRealHelperWith(t, rig.URL, rig.Operator, &http.Client{Transport: slow})
 	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {
 		t.Fatalf("approved machine login (code %s): exit %d, stderr %q; want 0", code, exit, stderr)
@@ -44,7 +44,7 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	// process's own call on the socket is what orders the write before the helper reads it.
 	const bound = 2 * time.Second
 	srv.BrokerCallBound = bound
-	if status, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second); err != nil || status.LoginState != "issued" {
+	if status, err := helper.Call(sock, helper.Request{Op: "login-status"}, untilGiveUp(t)); err != nil || status.LoginState != "issued" {
 		t.Fatalf("login-status after the approved login: %+v %v; want issued", status, err)
 	}
 	runtimeID := "past-bound-box-" + t.Name()
@@ -53,9 +53,10 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	args := []string{"enroll", "--helper", "--runtime-id", runtimeID, "--thumbprint", freshThumbprint(t)}
 
 	slow.holds.Store(1)
+	meter := startStallMeter(t)
 	start := time.Now()
 	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, env, args...)
-	elapsed := time.Since(start)
+	requireCommandOnTime(t, meter, "enroll --helper past the helper's bound", start, bound)
 	rows := enrollmentsOf(t, rig, runtimeID)
 	outcome := fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
 	if n := slow.held.Load(); n != 1 {
@@ -68,9 +69,6 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	const settleCause = "the request may have reached the broker, but the helper did not get its result ("
 	if !strings.Contains(stderr, settleCause) || strings.Contains(stderr, "did not end in") {
 		t.Errorf("enroll --helper past the helper's bound: %s; want settle's cause %q, not the timer's \"did not end in\"", outcome, settleCause)
-	}
-	if elapsed >= bound+time.Second {
-		t.Errorf("enroll --helper past the helper's bound took %s; want settle's answer, before the %s bound plus 1 s, where the helper's timer answers", elapsed, bound)
 	}
 	if _, err := os.Stat(filepath.Join(keyDir, "enrollment")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("enroll --helper past the helper's bound wrote an enrollment file (%v): %s", err, outcome)

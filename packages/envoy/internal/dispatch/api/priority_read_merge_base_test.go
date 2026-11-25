@@ -29,24 +29,27 @@ import (
 // readPriorities answered it at prioritiesReadMergeBase, the commit this branch is built on,
 // frozen here letter for letter. It holds readPriorities and readPriorityRelations, the text of
 // every statement they send, prioritystore.List's among them, every term those texts splice
-// (priorityMemberTerms, priorityProjectFilter, parkedMoveLateral, issueAdvancesTerms,
-// prioritystore.AdvancesTupleRead, the status lists, the depth cap and the window), and every
-// function that scans their answers (scanPriorityCounts, scanPriorityNewestEvents,
-// queuePriorityFault, scanPriorityFault with its row, claimScan, advancesScan, prioritystore's
-// scanNode and priorityFrom). Each is that commit's code with its name prefixed by mergeBase and
-// each constant it read written out as the value it held there. Nothing here reads the package's
-// own constants, which move with the change and would carry a break into both sides. When the
-// base of this branch moves, the copy is frozen again at the new base.
+// (priorityRelationSeed, priorityMemberTerms, priorityProjectFilter, advancesOriginTerms,
+// backlogMoveLateral, issueAdvancesTerms, prioritystore.AdvancesTupleRead, the status lists, the
+// depth cap and the window), and every function that scans their answers (scanPriorityCounts,
+// scanPriorityNewestEvents, queuePriorityFault, scanPriorityFault with its row, claimScan,
+// advancesScan, prioritystore's scanNode and priorityFrom). Each is that commit's code with its
+// name prefixed by mergeBase and each constant it read written out as the value it held there.
+// Nothing here reads the package's own constants, which move with the change and would carry a
+// break into both sides. When the base of this branch moves, the copy is frozen again at the new
+// base.
 //
 // The copy is read once, by TestThePrioritiesReadAnswersAsTheMergeBaseAnswers.
 
 // prioritiesReadMergeBase is the commit the copy below is frozen at: the head of
-// cybermonklabs/legion#5316 (branch legion/INFRA-4865), on which this branch is built.
-const prioritiesReadMergeBase = "295cc953bddbe7311594b4f3144d3d94e9de3d5a"
+// cybermonklabs/legion#5316 (branch legion/INFRA-4865), on which this branch is built. It merged
+// main's #4316 and the second fault's rule that an issue in backlog or icebox is a fault only
+// where it states a priority no issue above it carries (priorityBacklogQuery there).
+const prioritiesReadMergeBase = "d7528aa821a9a62ab7322fb46223640a79c8142a"
 
 var (
 	mergeBasePriorityInFlightStatuses = []string{"in_progress", "testing", "needs_review", "retro"}
-	mergeBasePriorityParkedStatuses   = []string{"icebox", "backlog"}
+	mergeBasePriorityBacklogStatuses  = []string{"icebox", "backlog"}
 )
 
 // mergeBaseIssueStatuses is model.IssueStatuses at the merge base, which
@@ -97,9 +100,11 @@ var mergeBasePriorityRelationsQuery = `select newest.from_id, newest.to_id
 	where newest.asserted
 	order by newest.from_id, newest.to_id`
 
+const mergeBasePriorityRelationSeed = `select ($1::text[])[i] as key, ($2::text[])[i] as priority
+		from generate_subscripts($1::text[], 1) as seed(i)`
+
 var mergeBasePriorityMemberTerms = `members_seed as (
-		select ($1::text[])[i] as key, ($2::text[])[i] as priority
-		from generate_subscripts($1::text[], 1) as seed(i)
+		` + mergeBasePriorityRelationSeed + `
 	), members_spread as (
 		select s.key, s.priority, 0 as depth from members_seed s
 		union all
@@ -175,35 +180,39 @@ func mergeBasePriorityUnplacedQuery(summary bool) string {
 	) listed on true`
 }
 
-func mergeBasePriorityParkedQuery(summary bool) string {
-	parked := `with recursive ` + mergeBasePriorityMemberTerms + `, parked as (
-		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
-		from members m
-		join issues i on i.key = m.key
+func mergeBasePriorityBacklogQuery(summary bool) string {
+	faulted := `with recursive stated as (
+		` + mergeBasePriorityRelationSeed + `
+	), backlog_keys as (
+		select distinct s.key
+		from stated s join issues i on i.key = s.key
 		where i.closed_at is null
-			and i.status in (` + mergeBaseSQLStringList(mergeBasePriorityParkedStatuses) + `)
+			and i.status in (` + mergeBaseSQLStringList(mergeBasePriorityBacklogStatuses) + `)
 			and ` + mergeBasePriorityProjectFilter + `
-		group by i.key
+	), ` + mergeBaseAdvancesOriginTerms("stated", "backlog_keys") + `, in_backlog as (
+		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
+		from issues i
+		where i.key in (select key from advances_origins)
 	)`
 	if summary {
-		return parked + `
-	select count(*) from parked`
+		return faulted + `
+	select count(*) from in_backlog`
 	}
-	return parked + `, listed as (
+	return faulted + `, listed as (
 		select p.*, moved.created_at as moved_at, moved.actor as moved_by
-		from parked p
-		` + mergeBaseParkedMoveLateral("p", "") + `
+		from in_backlog p
+		` + mergeBaseBacklogMoveLateral("p", "") + `
 		order by moved.created_at desc nulls last, p.key collate "C" asc
 		limit ` + strconv.Itoa(mergeBasePriorityFaultRows) + `
 	), subjects as (
 		select key from listed
 	), ` + mergeBaseIssueAdvancesTerms + `
-	select (select count(*) from parked) as total,
+	select (select count(*) from in_backlog) as total,
 	       (select coalesce(jsonb_object_agg(counted.priority, counted.total), '{}'::jsonb)
 	        from (
-	          select m.priority, count(*) as total
-	          from members m join parked p on p.key = m.key
-	          group by m.priority
+	          select o.priority, count(*) as total
+	          from advances_origins o
+	          group by o.priority
 	        ) counted) as by_priority,
 	       i.key, i.title, i.project_key, i.status, i.assignee,
 	       i.claimed_by, i.claimed_at, i.updated_at,
@@ -213,7 +222,31 @@ func mergeBasePriorityParkedQuery(summary bool) string {
 	` + mergeBaseIssueAdvancesJoin
 }
 
-func mergeBaseParkedMoveLateral(issue, gate string) string {
+// mergeBaseAdvancesOriginTerms is advancesOriginTerms at the merge base, with parentDepthCapSQL
+// written out.
+func mergeBaseAdvancesOriginTerms(relations, keys string) string {
+	return `advances_above as (
+		select k.key, i.parent_key as above, 1 as depth
+		from ` + keys + ` k join issues i on i.key = k.key
+		where i.parent_key is not null
+		union all
+		select a.key, p.parent_key, a.depth + 1
+		from advances_above a join issues p on p.key = a.above
+		where p.parent_key is not null and a.depth < ` + mergeBaseParentDepthCapSQL + `
+	), advances_origins as (
+		select r.key, r.priority
+		from ` + relations + ` r
+		where r.key in (select key from ` + keys + `)
+			and not exists (
+				select 1
+				from advances_above a
+				join ` + relations + ` up on up.key = a.above and up.priority = r.priority
+				where a.key = r.key
+			)
+	)`
+}
+
+func mergeBaseBacklogMoveLateral(issue, gate string) string {
 	if gate != "" {
 		gate += `
 			and `
@@ -223,7 +256,7 @@ func mergeBaseParkedMoveLateral(issue, gate string) string {
 			from events e
 			where ` + gate + `e.issue_key = ` + issue + `.key and e.type = 'issue.updated'
 				and e.payload->'changed' @> '"status"'::jsonb
-				and e.payload->>'status' in (` + mergeBaseSQLStringList(mergeBasePriorityParkedStatuses) + `)
+				and e.payload->>'status' in (` + mergeBaseSQLStringList(mergeBasePriorityBacklogStatuses) + `)
 			order by e.seq desc
 			limit 1
 		) moved on true`
@@ -261,8 +294,8 @@ const mergeBaseIssueAdvancesJoin = `left join advances on advances.issue_key = i
 var (
 	mergeBaseUnplacedQuery        = mergeBasePriorityUnplacedQuery(false)
 	mergeBaseUnplacedSummaryQuery = mergeBasePriorityUnplacedQuery(true)
-	mergeBaseParkedQuery          = mergeBasePriorityParkedQuery(false)
-	mergeBaseParkedSummaryQuery   = mergeBasePriorityParkedQuery(true)
+	mergeBaseBacklogQuery         = mergeBasePriorityBacklogQuery(false)
+	mergeBaseBacklogSummaryQuery  = mergeBasePriorityBacklogQuery(true)
 )
 
 func (s *server) mergeBaseReadPriorities(ctx context.Context, projects []string, summary bool) (model.Priorities, error) {
@@ -316,7 +349,7 @@ func (s *server) mergeBaseReadPriorities(ctx context.Context, projects []string,
 			}
 			body.WorkUnderNoPriority.Issues = issues
 		})
-	mergeBaseQueuePriorityFault(batch, mergeBaseParkedQuery, mergeBaseParkedSummaryQuery, summary, arguments, true,
+	mergeBaseQueuePriorityFault(batch, mergeBaseBacklogQuery, mergeBaseBacklogSummaryQuery, summary, arguments, true,
 		func(count int, counts map[string]int, issues []model.PriorityIssue) {
 			body.PriorityWorkParked.Count = count
 			if counts != nil {
@@ -683,11 +716,11 @@ func TestThePrioritiesReadAnswersAsTheMergeBaseAnswers(t *testing.T) {
 //
 //   - after the fill, the steady state, as the corpus is seeded: the read takes each newest event
 //     from the issue row;
-//   - every pair null, as on a store before 20261125094600 fills it: the read probes the event of
+//   - every pair null, as on a store before 20261125144002 fills it: the read probes the event of
 //     last_seq of each member issue;
 //   - after an append of the release before: the fill again (fillNewestEventPairs), then, for one
 //     member issue of each live priority, what QueueAppendWithLogins of the release before
-//     20261125094500 writes (appendAsTheReleaseBefore). Its pair then names the seq before
+//     20261125143901 writes (appendAsTheReleaseBefore). Its pair then names the seq before
 //     last_seq, and its event of last_seq is the newest of every priority it advances, which only
 //     the probe reads.
 var mergeBaseCorpusStates = []struct {
@@ -708,7 +741,7 @@ var mergeBaseCorpusStates = []struct {
 	}},
 }
 
-// holdNewestEventFill holds the corpus to what 20261125094600's fill leaves, before any state is
+// holdNewestEventFill holds the corpus to what 20261125144002's fill leaves, before any state is
 // read: every issue with last_seq > 0 holds last_event_at_seq = last_seq and the created_at of its
 // event of last_seq as last_event_at, and every issue with last_seq = 0 holds both null. The COPY
 // wrote every pair null, so the issues whose pair is not null are the rows the fill wrote, which it
@@ -780,7 +813,7 @@ func firstRows(rows []string) string {
 
 // appendAsTheReleaseBefore writes, for one member issue of each live priority - the first by key
 // that states its relation (priorityCorpusSeed) - what QueueAppendWithLogins of the release before
-// 20261125094500 writes: an event at last_seq + 1 and the row's new last_seq and updated_at, in one
+// 20261125143901 writes: an event at last_seq + 1 and the row's new last_seq and updated_at, in one
 // statement, with the pair left as it was. Each event's created_at is later than every event of
 // the corpus, one minute apart, so it is the newest event of every priority its issue advances.
 // It holds that each such issue's pair then names the seq before its last_seq.

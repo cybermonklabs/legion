@@ -102,8 +102,8 @@ func seededEvent(issueKey string, seq int, kind, payload string, at time.Time) [
 
 // seededIssuePayload is the payload of an issue event: the status the issue stands in after it,
 // and the fields the write changed, where it names any. A status write's `issue.updated` names
-// `status` in `changed`, which is what the parked fault's lateral reads to say when an issue was
-// moved into `backlog` or `icebox` and by whom (parkedMoveLateral).
+// `status` in `changed`, which is what the second fault's lateral reads to say when an issue was
+// moved into `backlog` or `icebox` and by whom (backlogMoveLateral).
 func seededIssuePayload(t testing.TB, status string, changed ...string) string {
 	t.Helper()
 	fields := map[string]any{"status": status}
@@ -162,7 +162,7 @@ func seededRank(index int) string {
 // issuesLastEventAtFillMigration is the migration that fills each issue's newest-event pair
 // (last_event_at, last_event_at_seq) from its event of last_seq, skipping each row another
 // transaction holds.
-const issuesLastEventAtFillMigration = "20261125094600_issues_last_event_at_backfill.up.sql"
+const issuesLastEventAtFillMigration = "20261125144002_issues_last_event_at_backfill.up.sql"
 
 // fillNewestEventPairs runs that migration's file on database as the runner applies it
 // (applyStoreMigration), so a test runs the fill as a deployment does rather than a copy of it. A

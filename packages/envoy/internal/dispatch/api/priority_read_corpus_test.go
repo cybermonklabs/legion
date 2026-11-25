@@ -64,7 +64,11 @@ const (
 // What the full read and the summary with no project answer over the corpus, by its
 // construction: the open pairs of an issue and a priority by status, the claimed ones, the open
 // asks on them and the pairs closed in the last seven days, the 115 open issues in flight under
-// no priority, and the 729 parked issues, 7 of which advance two priorities.
+// no priority, and the second fault. Of the 729 parked issues, the second fault holds the 393 that
+// state a priority no issue above them carries (priorityBacklogTerms): the 386 roots that stand in
+// backlog (269) or icebox (117), which have no parent, and the 7 issues four levels down that
+// state a second priority beside the one they inherit, which no issue above them states. Each
+// of them states one priority of its own, so the fault's counts by priority add to 393 too.
 var readCorpusOpenPairs = map[string]int{
 	"in_progress": 972, "todo": 826, "backlog": 525, "triage": 217, "icebox": 211, "needs_review": 119, "testing": 104, "retro": 21,
 }
@@ -74,7 +78,8 @@ const (
 	readCorpusOpenAsks       = 78
 	readCorpusClosedRecently = 1461
 	readCorpusUnplaced       = 115
-	readCorpusParkedPairs    = 736
+	readCorpusBacklog        = 393
+	readCorpusBacklogPairs   = 393
 )
 
 // readCorpus is the corpus as the four tests address it: its database, whose every connection
@@ -108,7 +113,7 @@ func seedPrioritiesReadCorpus(t *testing.T) readCorpus {
 }
 
 // buildPrioritiesReadCorpus migrates the template databaseURL names with this tree's runner,
-// writes the corpus, fills each issue's newest-event pair by running 20261125094600's file as the
+// writes the corpus, fills each issue's newest-event pair by running 20261125144002's file as the
 // runner applies it (fillNewestEventPairs), so the corpus stands as a deployment does once this
 // release has migrated it, settles it (settleSpeedCorpus) and reads its counts into
 // readCorpusBuilt. It closes its pool before it returns, as storetest.OpenFrom requires of a
@@ -327,8 +332,9 @@ func readCorpusAnswerFaults(body model.Priorities, summary bool) []string {
 	if body.WorkUnderNoPriority.Count != readCorpusUnplaced {
 		faults = append(faults, fmt.Sprintf("%d issues in flight under no priority, want %d", body.WorkUnderNoPriority.Count, readCorpusUnplaced))
 	}
-	if body.PriorityWorkParked.Count != readCorpusParked {
-		faults = append(faults, fmt.Sprintf("%d parked issues, want %d", body.PriorityWorkParked.Count, readCorpusParked))
+	if body.PriorityWorkParked.Count != readCorpusBacklog {
+		faults = append(faults, fmt.Sprintf("%d issues in backlog or icebox that state a priority no issue above them carries, want %d",
+			body.PriorityWorkParked.Count, readCorpusBacklog))
 	}
 	if summary {
 		if len(body.Priorities) != 0 || len(body.WorkUnderNoPriority.Issues) != 0 || len(body.PriorityWorkParked.Issues) != 0 {
@@ -367,9 +373,9 @@ func readCorpusAnswerFaults(body model.Priorities, summary bool) []string {
 		{"pairs closed in the last seven days", closed, readCorpusClosedRecently},
 		{"priorities with no newest event", undated, 0},
 		{"issues in flight under no priority by project", sumCounts(body.WorkUnderNoPriority.ByProject), readCorpusUnplaced},
-		{"parked pairs by priority", sumCounts(body.PriorityWorkParked.ByPriority), readCorpusParkedPairs},
+		{"pairs in backlog or icebox by priority", sumCounts(body.PriorityWorkParked.ByPriority), readCorpusBacklogPairs},
 		{"rows of work in flight under no priority", len(body.WorkUnderNoPriority.Issues), priorityFaultRows},
-		{"rows of parked work", len(body.PriorityWorkParked.Issues), priorityFaultRows},
+		{"rows of work in backlog or icebox", len(body.PriorityWorkParked.Issues), priorityFaultRows},
 	} {
 		if count.got != count.want {
 			faults = append(faults, fmt.Sprintf("%d %s, want %d", count.got, count.what, count.want))

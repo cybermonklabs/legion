@@ -178,7 +178,7 @@ const statusMoveOneIn = 3
 
 // statusMoveEvent is the SQL predicate, on the event aliased e, that holds for a status move: an
 // `issue.updated` event whose payload names `status` in `changed`, which are the parked read's own
-// conditions on the event beside its status (api's parkedMoveLateral). The report counts the moves
+// conditions on the event beside its status (api's backlogMoveLateral). The report counts the moves
 // by it, and the seed's test reads them by it.
 const statusMoveEvent = `e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb`
 
@@ -191,7 +191,7 @@ const statusMoveEvent = `e.type = 'issue.updated' and e.payload->'changed' @> '"
 // to name `status` in `changed` (api's issueChangedFields). The newest move, by seq, goes into
 // the status that the issue's row holds now. So the newest move of an issue in `backlog` or
 // `icebox` is into that status, which is the event the parked read finds (api's
-// parkedMoveLateral), and the moves before it go into and out of the other statuses, the two
+// backlogMoveLateral), and the moves before it go into and out of the other statuses, the two
 // parked statuses among them.
 //
 // An issue that stands outside triage was moved there, so it takes at least one move: where the
@@ -414,7 +414,7 @@ func (r *seedRun) writeEvents(ctx context.Context) error {
 // edit written to it. An issue's statement also writes the time and the seq of the event at its
 // new `last_seq` as `last_event_at` and `last_event_at_seq`, as the append writes them beside
 // `last_seq` (QueueAppendWithLogins), so a seeded database stands as a deployment does once its
-// fill has run (20261125094600) and the priorities read takes each newest event from the row
+// fill has run (20261125144002) and the priorities read takes each newest event from the row
 // rather than probing it (api's priorityReadQuery).
 func (r *seedRun) settleEventCounters(ctx context.Context) error {
 	for _, statement := range []string{

@@ -16,7 +16,9 @@
 // over a batch of rows (batch.go) it runs the statement a writer sent, after the statements it
 // sent first, under each plan-cache mode (ExplainAfter), and holds the analyzed plan to reading
 // the batch once and each named table by a probe of one row's key (UnprobedReads,
-// RequireEachRowProbedOnce), with a control that must fail it (RequireTheCheckFails).
+// RequireEachRowProbedOnce), with a control that must fail it (RequireTheCheckFails), and it runs
+// any statement under a plan-cache mode with the planner's own settings and explains it with the
+// shared buffers each node hit and read (ExplainBuffered).
 // dispatch/api, dispatch/refs, dispatch/graphstore, dispatch/sessionanswers and cipher/requests
 // each pin a plan with these checks, so they live here once rather than as a second (or third)
 // hand copy of the same recursive walk; it is an ordinary package rather than a _test.go file
@@ -44,13 +46,14 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // planNode is what the checks below read of one "Plan" node of `EXPLAIN (FORMAT JSON)`: its
 // type, the relation and index it names, the index condition it carries - nil when it carries
 // none, which is not the same as an empty one - the condition it tests every row it reads by
-// (Filter) and the one a bitmap heap scan rechecks a row by, the name of the subplan it begins
-// and its place under its own parent, what an analyzed plan measured of it (its loops and the
-// rows each answered, the rows an index-only scan fetched from the heap, and the rows its Filter
-// and a join's Join Filter removed each time it ran, all 0 in a plan explained without ANALYZE),
-// the shared buffers it and the nodes under it hit and read (0 in a plan explained without
-// BUFFERS), the CTE it scans, the alias the statement gives the relation it reads, and its
-// children.
+// (Filter) and the one a bitmap heap scan rechecks a row by, a join's type, the condition a hash
+// or a merge join matches its two sides by (Hash Cond, Merge Cond) and the one a join tests each
+// pair it joins by (Join Filter), the name of the subplan it begins and its place under its own
+// parent, what an analyzed plan measured of it (its loops and the rows each answered, the rows an
+// index-only scan fetched from the heap, and the rows its Filter and a join's Join Filter removed
+// each time it ran, all 0 in a plan explained without ANALYZE), the shared buffers it and the
+// nodes under it hit and read (0 in a plan explained without BUFFERS), the CTE it scans, the alias
+// the statement gives the relation it reads, and its children.
 type planNode struct {
 	NodeType                string            `json:"Node Type"`
 	RelationName            string            `json:"Relation Name"`
@@ -58,6 +61,10 @@ type planNode struct {
 	IndexCond               *string           `json:"Index Cond"`
 	Filter                  string            `json:"Filter"`
 	RecheckCond             string            `json:"Recheck Cond"`
+	JoinType                string            `json:"Join Type"`
+	HashCond                string            `json:"Hash Cond"`
+	MergeCond               string            `json:"Merge Cond"`
+	JoinFilter              string            `json:"Join Filter"`
 	SubplanName             string            `json:"Subplan Name"`
 	ParentRelationship      string            `json:"Parent Relationship"`
 	ActualLoops             float64           `json:"Actual Loops"`
@@ -86,6 +93,7 @@ func (n planNode) asNode() Node {
 		CTE: n.CTEName, Alias: n.Alias, Subplan: n.subplan,
 		Loops: n.ActualLoops, Rows: n.ActualRows,
 		Filter: n.Filter, RecheckCond: n.RecheckCond,
+		JoinType: n.JoinType, HashCond: n.HashCond, MergeCond: n.MergeCond, JoinFilter: n.JoinFilter,
 		HeapFetches:         n.HeapFetches,
 		RowsRemovedByFilter: n.RowsRemovedByFilter, RowsRemovedByJoinFilter: n.RowsRemovedByJoinFilter,
 		SharedHitBlocks: n.SharedHitBlocks, SharedReadBlocks: n.SharedReadBlocks,
@@ -256,23 +264,26 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 //
 // Filter is the condition the node tests every row it reads by, IndexCond the one an index scan
 // reads its index by, and RecheckCond the one a bitmap heap scan tests a row by where its bitmap
-// cannot vouch for the row (a page the bitmap holds lossily, or an index that answers lossily);
-// each is the plan's own text, empty when the node carries none. Loops is how many times the
-// node ran and Rows how many rows it answered each time; HeapFetches is how many rows an
-// index-only scan fetched from the heap, since the visibility map did not mark their pages
-// all-visible. RowsRemovedByFilter is how many rows the node's Filter removed each time it ran,
-// and RowsRemovedByJoinFilter how many rows a join's Join Filter removed each time it ran: each is
-// the per-loop figure `EXPLAIN (ANALYZE)` prints ("Rows Removed by Filter", "Rows Removed by Join
-// Filter"), the rows removed over every loop divided by Loops and rounded to a whole number, and
-// 0 where the node prints none, as a node carrying no such filter does. Alias is the name the
-// statement gives the relation the node reads, which a condition of another node spells that
-// relation's columns with. SharedHitBlocks and SharedReadBlocks are the shared buffers the node
-// and the nodes under it hit in the cache and read into it, which a plan explained with the
-// BUFFERS option carries, and 0 in a plan explained without it.
+// cannot vouch for the row (a page the bitmap holds lossily, or an index that answers lossily).
+// JoinType is a join's type (Inner, Left, Semi, Anti and so on), HashCond and MergeCond the
+// condition a hash join and a merge join match their two sides by, and JoinFilter the one a join
+// tests each pair it joins by. Each is the plan's own text, empty when the node carries none.
+// Loops is how many times the node ran and Rows how many rows it answered each time; HeapFetches
+// is how many rows an index-only scan fetched from the heap, since the visibility map did not mark
+// their pages all-visible. RowsRemovedByFilter is how many rows the node's Filter removed each
+// time it ran, and RowsRemovedByJoinFilter how many rows a join's Join Filter removed each time it
+// ran: each is the per-loop figure `EXPLAIN (ANALYZE)` prints ("Rows Removed by Filter", "Rows
+// Removed by Join Filter"), the rows removed over every loop divided by Loops and rounded to a
+// whole number, and 0 where the node prints none, as a node carrying no such filter does. Alias is
+// the name the statement gives the relation the node reads, which a condition of another node
+// spells that relation's columns with. SharedHitBlocks and SharedReadBlocks are the shared buffers
+// the node and the nodes under it hit in the cache and read into it, which a plan explained with
+// the BUFFERS option carries, and 0 in a plan explained without it.
 type Node struct {
 	Type, Relation, Index, CTE, Alias, Subplan   string
 	Loops, Rows                                  float64
 	Filter, IndexCond, RecheckCond               string
+	JoinType, HashCond, MergeCond, JoinFilter    string
 	HeapFetches                                  float64
 	RowsRemovedByFilter, RowsRemovedByJoinFilter float64
 	SharedHitBlocks, SharedReadBlocks            float64

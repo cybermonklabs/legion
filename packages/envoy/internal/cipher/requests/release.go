@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
@@ -103,6 +104,9 @@ type releaseRead struct {
 	// airlockOnly leaves every name the airlock does not hold back out of the read: no value of
 	// it is read, and none is minted.
 	airlockOnly bool
+	// narrowing is a release body's github_app field (ValuesNarrowed), nil for none: each name is
+	// minted as narrowedServed hands it over, and none is held back by the airlock.
+	narrowing *GitHubAppNarrowing
 }
 
 // releasedName is one granted name as a release read it.
@@ -156,10 +160,28 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		// The name's proxy block, nil for a name no profile puts behind the proxy. Every entry
 		// binds at least one host (proxyrules.Validate), so an entry is a name the airlock holds back.
 		entry := m.Airlock.Lookup(g.name)
+		// A name under an entry of kind dpop is a capability the broker mints and holds, and never
+		// a stored secret's release: it is refused before anything of it is read.
+		if entry != nil && entry.Kind == proxyrules.KindDPoP {
+			return nil, fmt.Errorf("release %s: %w", g.name, ErrMintedOnly)
+		}
+		// A grant made from a github_app field releases only through that field: its recorded
+		// read_only is what cut the token, and a release that dropped the field would hand over
+		// the profile's own, wider, value. The session's release refuses it (its caller answers
+		// ErrGitHubAppFieldRefused), and so does the proxy's, which holds no such name anyway.
+		if want.narrowing == nil && g.gitHubAppField {
+			return nil, gitHubAppFieldRefused("the grant of " + g.name + " was made from a github_app field, so its release carries that field")
+		}
+		if want.narrowing != nil {
+			entry = nil
+		}
 		if entry == nil && want.airlockOnly {
 			continue
 		}
 		served := checked.set.Secrets[g.name]
+		if want.narrowing != nil {
+			served = narrowedServed(served, *want.narrowing)
+		}
 		minted, err := m.readValue(ctx, grantID, checked.enrollmentID, g, served)
 		if err != nil {
 			return nil, err

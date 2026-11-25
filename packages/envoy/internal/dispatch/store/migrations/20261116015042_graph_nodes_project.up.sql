@@ -1,0 +1,15 @@
+-- 20261116015042_graph_nodes_project.up.sql
+--
+-- Every node of a project-owned kind is to name its project, and a node no project owns (an agent
+-- conversation's document, a message outside any issue) the parties it is between. These two
+-- columns hold them for a read of one project's nodes: `project_key`, and `parties` as an array a
+-- read can test membership of (`person:<login>`, `session:<id>`), as `visibility` and `state`
+-- project their base attributes. A later slice adds the store's attributes they project, the
+-- writes that state them, and the backfill that states them for the nodes written before it.
+--
+-- Both are null on every node until then: nothing in this release writes or reads them.
+--
+-- A nullable column with no default is a catalog change: no stored row is rewritten, and the
+-- statement holds its lock for the length of a catalog write. The index that reads a project's
+-- nodes is built concurrently by the migration after this one.
+alter table graph_nodes add column project_key text, add column parties text[];

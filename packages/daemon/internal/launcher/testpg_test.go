@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // stubTestPG puts a `legion-testpg` on PATH that appends one line per call — the subcommand, the
@@ -103,19 +105,18 @@ func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.
 	if string(first) != want {
 		t.Errorf("the first call is %q, want %q", first, want)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		again, err := os.ReadFile(calls)
-		if err == nil && strings.Count(string(again), "ensure ") > 1 {
-			if got := strings.ReplaceAll(string(again), want, ""); got != "" {
-				t.Errorf("a later call is %q, want every call to be %q", got, want)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher asked once and never again: %q", again)
-		}
-		time.Sleep(5 * time.Millisecond)
+	// The second call comes on the ticker, every 20 ms; how soon it comes is not the claim, so the
+	// wait is for it under the test's hang guard.
+	var again []byte
+	if !testwait.Holds(beforeDeadline(t), 5*time.Millisecond, func() bool {
+		var err error
+		again, err = os.ReadFile(calls)
+		return err == nil && strings.Count(string(again), "ensure ") > 1
+	}) {
+		t.Fatalf("the launcher asked once and never again: %q", again)
+	}
+	if got := strings.ReplaceAll(string(again), want, ""); got != "" {
+		t.Errorf("a later call is %q, want every call to be %q", got, want)
 	}
 }
 

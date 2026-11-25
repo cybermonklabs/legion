@@ -1,0 +1,14 @@
+-- 20261125125703_btree_gin.up.sql
+--
+-- Creates the extension btree_gin, which gives GIN the operator classes of the btree types, such
+-- as timestamptz. A later migration builds a GIN index that holds a btree column beside an array,
+-- and GIN cannot index that column without these operator classes. The statement runs in the
+-- runner's transaction, as 0072_embeddings_core.up.sql creates vector. Postgres marks btree_gin
+-- trusted, so a login with CREATE on the database can create it, and the login that runs the
+-- migrations needs no superuser. `if not exists` leaves an extension that was created by hand
+-- before this migration ran as it is, at its version.
+--
+-- The migration holds this one statement and ships in a release before the index: a pending
+-- migration that creates an extension takes the census's size exemptions from every pending
+-- migration after it (cmd/dispatch/README.md, "Pre-deploy census").
+create extension if not exists btree_gin;

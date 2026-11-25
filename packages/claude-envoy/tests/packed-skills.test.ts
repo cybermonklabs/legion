@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { cp, mkdir, mkdtemp, readdir, readlink, rm, symlink } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { memoryRoot } from "@legion/test-fixtures/temporary-directories"
 
 // What the first tarball of this package held: no package/skills member at all. skills/<name> is
 // a link into the repository's skills/, `bun pm pack` packs a link as nothing, and so every
@@ -84,8 +84,15 @@ function tracked(): Record<string, string> {
   return Object.fromEntries(skillNames.map((name) => [name, `../../../skills/${name}`]))
 }
 
+// The scratch makes about 16,300 entries (two listings of 8,000 files each, `longListing`), so it
+// goes on the memory root (`memoryRoot`): on the shared disk of a loaded dev box one of those
+// listings once took 203.7 s against its row's 60 s. One run held at most 5,032 KiB there, so it
+// asks for six runs of 6 MiB, the runs that may share a host, as the dispatch e2e scratch does;
+// with less free it stays under `TMPDIR`. A run killed before its afterAll leaves its 5 MiB there.
 beforeAll(async () => {
-  scratch = await mkdtemp(join(tmpdir(), "claude-envoy-packed-skills-"))
+  scratch = await mkdtemp(
+    join(memoryRoot({ need: 6 * 6 * 2 ** 20 }), "claude-envoy-packed-skills-"),
+  )
   skillNames = (await readdir(join(packageRoot, "skills"))).sort()
   packageCopy = await copyPackage("packed")
   // As a checkout and a pack under umask 0002 leave them, the umask a systemd user unit runs

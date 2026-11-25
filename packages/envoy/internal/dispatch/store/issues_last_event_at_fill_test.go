@@ -11,14 +11,14 @@ import (
 
 // newestEventFillMigration is the migration that fills each issue's newest-event pair
 // (last_event_at, last_event_at_seq) from its event of last_seq.
-const newestEventFillMigration = "20261125094600_issues_last_event_at_backfill.up.sql"
+const newestEventFillMigration = "20261125144002_issues_last_event_at_backfill.up.sql"
 
 // newestEventFillWait bounds how long the test waits for the fill to end while a second
 // transaction holds one of its rows. It is far above what a fill of three rows takes, so a wait
 // that runs out is the fill waiting on that row, not a slow machine.
 const newestEventFillWait = 20 * time.Second
 
-// TestTheNewestEventFillNeverWaitsOnAHeldIssueRow holds 20261125094600's fill to
+// TestTheNewestEventFillNeverWaitsOnAHeldIssueRow holds 20261125144002's fill to
 // R5 of dispatch://INFRA-5791: it never waits on a row lock. A request takes its issues' rows in
 // the order its statements reach them, so a fill that waited for a row a request holds could hold
 // the row that request asks for next, and Postgres would abort one of the two. The fill leaves a
