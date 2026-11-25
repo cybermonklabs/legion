@@ -54,6 +54,14 @@ var namedProjections = map[string]string{
 // storeTables are the store's own two tables.
 var storeTables = []string{"graph_nodes", "graph_tuples"}
 
+// storesMovedRecord is the progress table the boot's move of the priority store and the workflow
+// store writes inside every batch transaction beside its graph_nodes and graph_tuples writes
+// (storesmove/copy.go#writeBatch), and drops once the swap commits (storesmove/swap.go#dropOldTables).
+// No table projects priority, step or plan after R32 (census_stores.go): the store's own node row
+// projects the node's tuples, and stores_moved_seqs is the move's own record of which old tuples
+// each batch copied, so every batch must commit all three together.
+const storesMovedRecord = "stores_moved_seqs"
+
 // projection is one table that projects the store: the census kinds that read it, and the
 // columns of it the store states, whose update is a write of the projection.
 type projection struct {
@@ -129,6 +137,14 @@ func readProjections(t *testing.T, ctx context.Context, database *store.Store) m
 		}
 		projections[table] = &projection{table: table, kinds: []string{"(" + why + ")"}, whole: true}
 	}
+	// The move's record (stores_moved_seqs) is dropped by the swap on the inventory database, so
+	// it does not stand in pg_class there; it stands as a table on every pre-move database and is
+	// written by storesmove/copy.go#writeBatch in the same transaction as the moved nodes and
+	// tuples of priority, step and plan. Holding it in the inventory makes the source scan find
+	// storesmove/copy.go#writeBatch and fail unless the behavioural half drives the move for all
+	// three kinds.
+	projections[storesMovedRecord] = &projection{table: storesMovedRecord,
+		kinds: []string{"priority", "step", "plan"}, whole: true}
 	if len(projections) == 0 {
 		t.Fatal("the census names no table that projects the store, so no writer can be held to it")
 	}
@@ -956,6 +972,15 @@ func installInjection(t *testing.T, database *store.Store, projections map[strin
 				arguments = append(arguments, "'"+column+"'")
 			}
 		}
+		if table == storesMovedRecord {
+			var exists bool
+			if err := database.Pool.QueryRow(ctx, `select to_regclass($1) is not null`, table).Scan(&exists); err != nil {
+				t.Fatalf("read whether %s stands: %v", table, err)
+			}
+			if !exists {
+				continue
+			}
+		}
 		statements = append(statements,
 			`create trigger one_writer_fail_projection before insert or update or delete on `+table+` for each row execute function one_writer_fail_projection()`,
 			`create trigger one_writer_logged after insert or update or delete on `+table+` for each row execute function one_writer_logged(`+strings.Join(arguments, ", ")+`)`)
@@ -1159,10 +1184,20 @@ type loggedWrite struct {
 func (r *oneWriterRig) digest(t *testing.T, database *store.Store) map[string]string {
 	t.Helper()
 	digests := map[string]string{}
+	ctx := context.Background()
 	for _, table := range r.digested {
+		if table == storesMovedRecord {
+			var exists bool
+			if err := database.Pool.QueryRow(ctx, `select to_regclass($1) is not null`, table).Scan(&exists); err != nil {
+				t.Fatalf("read whether %s stands: %v", table, err)
+			}
+			if !exists {
+				continue
+			}
+		}
 		var count int64
 		var sum string
-		if err := database.Pool.QueryRow(context.Background(), `select count(*), coalesce(md5(string_agg(md5(x::text), ',' order by md5(x::text))), '') from `+table+` x`).
+		if err := database.Pool.QueryRow(ctx, `select count(*), coalesce(md5(string_agg(md5(x::text), ',' order by md5(x::text))), '') from `+table+` x`).
 			Scan(&count, &sum); err != nil {
 			t.Fatalf("digest %s: %v", table, err)
 		}
@@ -1626,6 +1661,9 @@ func TestEveryGraphKindHasOneWriter(t *testing.T) {
 	t.Run("every writer the inventory finds in the sources was driven", func(t *testing.T) {
 		requireEverySourceWriterDriven(t, sources, runs)
 	})
+	t.Run("the boot's move is counted as a driven writer of priority, step and plan", func(t *testing.T) {
+		requireTheStoresMoveDrivenForEveryKind(t, sources, runs)
+	})
 	t.Run("every function body and trigger the migrations installed that writes a projection writes it beside the store", func(t *testing.T) {
 		requireEveryCatalogueWriterDriven(t, catalogue, triggers, bodies, runs)
 	})
@@ -1637,6 +1675,9 @@ func TestEveryGraphKindHasOneWriter(t *testing.T) {
 	})
 	t.Run("two writers of one kind at once leave the census at zero", func(t *testing.T) {
 		rig.requireTwoWritersAtOnce(t, cases)
+	})
+	t.Run("two moves of the priority store and the workflow store at once write each fact once", func(t *testing.T) {
+		requireTwoStoresMovesAtOnce(t)
 	})
 	t.Run("the handoff kind is driven where this head holds its writer", func(t *testing.T) {
 		requireTheHandoffWriter(t, ctx, inventoryDatabase, cases)
@@ -1756,6 +1797,55 @@ func requireEverySourceWriterDriven(t *testing.T, sources sourceInventory, runs 
 		t.Logf("driven: %s (%s %s) by the case %q, read as %s", writer.key, writer.verb, writer.table, name, how)
 	}
 	t.Logf("%d of %d writers were driven", len(sources.writers)-undriven, len(sources.writers))
+}
+
+// requireTheStoresMoveDrivenForEveryKind holds the inventory and the behavioural half to driving
+// the boot's move (internal/dispatch/storesmove/copy.go#writeBatch) for each of the three kinds
+// R32 moves into the store: priority, step and plan.
+func requireTheStoresMoveDrivenForEveryKind(t *testing.T, sources sourceInventory, runs map[string]caseRun) {
+	const moveWriterKey = "internal/dispatch/storesmove/copy.go#writeBatch"
+	var found []sourceWriter
+	for _, writer := range sources.writers {
+		if writer.key == moveWriterKey {
+			found = append(found, writer)
+		}
+	}
+	if len(found) == 0 {
+		t.Fatalf("the source inventory did not list %s as a writer", moveWriterKey)
+	}
+	for _, kind := range []string{"priority", "step", "plan"} {
+		caseName := "the boot's move of " + kind + " (storesmove/copy.go#writeBatch)"
+		run, ok := runs[caseName]
+		if !ok {
+			t.Errorf("no behavioural case %q drove %s for kind %s", caseName, moveWriterKey, kind)
+			continue
+		}
+		single := map[string]caseRun{caseName: run}
+		for _, writer := range found {
+			name, how := drivenBy(writer, single)
+			if name == "" {
+				t.Errorf("case %q did not drive %s (%s %s) for kind %s", caseName, writer.key, writer.verb, writer.table, kind)
+				continue
+			}
+			t.Logf("driven for kind %s: %s (%s %s) by the case %q, read as %s", kind, writer.key, writer.verb, writer.table, name, how)
+		}
+		// Every transaction of the move that wrote graph_tuples must also have written
+		// stores_moved_seqs in that same transaction, so a batch that wrote its tuples through a
+		// pooled connection instead of its transaction fails here even if its failure-injection run
+		// somehow escaped.
+		recorded := map[int64]bool{}
+		for _, row := range run.log {
+			if row.table == storesMovedRecord {
+				recorded[row.txid] = true
+			}
+		}
+		for _, row := range run.log {
+			if row.table == "graph_tuples" && !recorded[row.txid] {
+				t.Errorf("%s (%s): wrote graph_tuples in transaction %d without writing %s in that transaction: %s",
+					caseName, moveWriterKey, row.txid, storesMovedRecord, row.query)
+			}
+		}
+	}
 }
 
 // nearestWrites is, for a writer no case drove, up to three distinct statements of its table the
@@ -2030,6 +2120,10 @@ func (r *oneWriterRig) requireTwoWritersAtOnce(t *testing.T, cases []writerCase)
 	ctx := context.Background()
 	ran := 0
 	for _, table := range slices.Sorted(maps.Keys(r.projections)) {
+		if table == storesMovedRecord {
+			// Two moves at once run over a pre-move database of their own (requireTwoStoresMovesAtOnce).
+			continue
+		}
 		var writers []writerCase
 		for _, c := range cases {
 			if c.again != nil && c.on == "" && slices.Contains(c.tables, table) {
@@ -2079,6 +2173,112 @@ func (r *oneWriterRig) requireTwoWritersAtOnce(t *testing.T, cases []writerCase)
 	}
 	if ran == 0 {
 		t.Fatal("no two writers were run at once")
+	}
+}
+
+// requireTwoStoresMovesAtOnce runs two storesmove.Move calls at once against one database seeded
+// with the release before's priority, step and plan rows, holding the first runner on the
+// stores-moved advisory lock (Options.HoldFile) until the second is waiting on pg_locks, then
+// releasing it. Exactly one runner moves the stores, the second finds them moved and writes
+// nothing, each fact of priority, step and plan is written once, and the store census reads zero
+// differences for all three kinds.
+func requireTwoStoresMovesAtOnce(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	seedStoresMoveCorpus(t, database)
+	hold := filepath.Join(t.TempDir(), "release")
+	url := database.Pool.Config().ConnString()
+
+	type outcome struct {
+		result *storesmove.Result
+		err    error
+	}
+	first := make(chan outcome, 1)
+	go func() {
+		result, err := storesmove.Move(ctx, url, storesmove.Options{Batch: 3, HoldFile: hold})
+		first <- outcome{result, err}
+	}()
+	waitForLock(t, database, `select exists (select 1 from pg_locks where locktype = 'advisory' and granted and objid = hashtext('stores-moved'))`)
+
+	second := make(chan outcome, 1)
+	go func() {
+		result, err := storesmove.Move(ctx, url, storesmove.Options{Batch: 3})
+		second <- outcome{result, err}
+	}()
+	waitForLock(t, database, `select exists (select 1 from pg_locks where locktype = 'advisory' and not granted and objid = hashtext('stores-moved'))`)
+
+	if err := os.WriteFile(hold, nil, 0o600); err != nil {
+		t.Fatalf("release the first move: %v", err)
+	}
+	one, two := <-first, <-second
+	if one.err != nil {
+		t.Fatalf("the first move failed: %v", one.err)
+	}
+	if two.err != nil {
+		t.Fatalf("the second move failed: %v", two.err)
+	}
+	if !one.result.Moved || one.result.Copied == 0 {
+		t.Errorf("the first move answered %+v, want it to have moved the stores", one.result)
+	}
+	if two.result.Moved || two.result.Copied != 0 || two.result.SwapCopied != 0 {
+		t.Errorf("the second move answered %+v, want it to have moved nothing once the first released stores-moved", two.result)
+	}
+	report, err := graphcensus.StoreCensus(ctx, url, false, nil)
+	if err != nil {
+		t.Fatalf("run the store census after two moves at once: %v", err)
+	}
+	for _, kind := range report.Kinds {
+		if kind.Kind != "priority" && kind.Kind != "step" && kind.Kind != "plan" {
+			continue
+		}
+		if kind.Rows == 0 || kind.Nodes == 0 {
+			t.Errorf("after two moves at once, the census of %s reads %d rows and %d nodes, want both above zero", kind.Kind, kind.Rows, kind.Nodes)
+		}
+		if kind.RowDifferences+kind.NodeDifferences != 0 {
+			t.Errorf("after two moves at once, the census of %s reads %d row and %d node differences: %v %v",
+				kind.Kind, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
+			continue
+		}
+		t.Logf("after two moves at once, the census of %s reads %d rows and %d nodes, zero differences", kind.Kind, kind.Rows, kind.Nodes)
+	}
+	var duplicates int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from (
+			select from_kind, from_id, kind, to_kind, to_id, at, asserted
+			from graph_tuples
+			where from_kind in ('priority', 'step', 'plan') or (from_kind = 'issue' and kind = 'advances')
+			group by from_kind, from_id, kind, to_kind, to_id, at, asserted
+			having count(*) > 1
+		) dup`).Scan(&duplicates); err != nil {
+		t.Fatalf("check for duplicate tuples after two moves at once: %v", err)
+	}
+	if duplicates != 0 {
+		t.Errorf("two moves at once wrote %d duplicate facts of priority, step, plan or advances, want 0", duplicates)
+	}
+	var nodes int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where kind in ('priority', 'step', 'plan')`).Scan(&nodes); err != nil {
+		t.Fatalf("count moved nodes: %v", err)
+	}
+	t.Logf("two moves at once wrote %d nodes of priority, step and plan, %d tuples copied by the first runner and %d by the second, zero duplicates",
+		nodes, one.result.Copied, two.result.Copied)
+}
+
+// waitForLock polls query, a select of one boolean over database, until it answers true.
+func waitForLock(t *testing.T, database *store.Store, query string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var ready bool
+		if err := database.Pool.QueryRow(context.Background(), query).Scan(&ready); err != nil {
+			t.Fatalf("wait for lock (%s): %v", query, err)
+		}
+		if ready {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", query)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

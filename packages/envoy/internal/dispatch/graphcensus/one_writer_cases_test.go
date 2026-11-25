@@ -28,6 +28,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/seedcorpus"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove/storesmovetest"
 )
 
 // This file holds the writers TestEveryGraphKindHasOneWriter drives (one_writer_test.go), grouped by
@@ -870,7 +872,7 @@ func ownDatabaseCases() []writerCase {
 	ctx := context.Background()
 	var seed string
 	var components map[string]graphcensus.KindReport
-	return []writerCase{{
+	base := []writerCase{{
 		name: "the backfill of what a build before the store wrote", on: "backfill", batches: true,
 		tables: []string{"artifacts", "issues", "document_blocks", "block_refs", "comments", "asks", "ask_followers",
 			"issue_links", "components", "component_depends", "issue_component_members"},
@@ -980,6 +982,103 @@ func ownDatabaseCases() []writerCase {
 			}
 		},
 	}}
+	return slices.Concat(base, storesMoveCases())
+}
+
+// seedStoresMoveCorpus writes the release before's priority, step and plan rows on database.
+func seedStoresMoveCorpus(t *testing.T, database *store.Store) {
+	t.Helper()
+	storesmovetest.Write(t, database.Pool)
+}
+
+// storesMoveCases are the behavioural cases of the boot's move of the priority store and the
+// workflow store into the graph store (storesmove.Move and storesmove/copy.go#writeBatch), one
+// case per kind R32 moves: priority, step and plan.
+//
+// None of the three kinds has a separate projection table after R32 (census_stores.go): the store
+// write is the tuples written to graph_tuples, graph_nodes holds the node-row projection
+// (Node.Projection), and stores_moved_seqs is the move's record of the old seqs each batch copied.
+// Injecting a failure on stores_moved_seqs ('between') and at the store write's commit ('after')
+// proves each failing batch leaves no node, no tuple, no record row and no notification, and the
+// plain run moves the kind into the store and passes the store census with zero differences.
+func storesMoveCases() []writerCase {
+	ctx := context.Background()
+	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	who := model.Actor{Kind: "user", ID: "alice", Proven: true}
+	daemon := model.Actor{Kind: "session", ID: "session-one-writer-move"}
+	tasks := json.RawMessage(`[{"id":"default","steps":[{"role":"planner"},{"role":"implementer"}]}]`)
+	moveKind := func(kind string, seed func(t *testing.T, database *store.Store)) writerCase {
+		return writerCase{
+			name:    "the boot's move of " + kind + " (storesmove/copy.go#writeBatch)",
+			on:      "stores-move-" + kind,
+			tables:  []string{storesMovedRecord},
+			process: "internal/dispatch/storesmove/",
+			ready:   func(t *testing.T, _ *oneWriterRig, database *store.Store) { seed(t, database) },
+			drive: func(t *testing.T, _ *oneWriterRig, database *store.Store) error {
+				result, err := storesmove.Move(ctx, database.Pool.Config().ConnString(), storesmove.Options{Batch: 3})
+				if err != nil {
+					return err
+				}
+				if !result.Moved || result.Copied == 0 {
+					return fmt.Errorf("storesmove.Move of %s answered %+v, want Moved and Copied > 0", kind, result)
+				}
+				return nil
+			},
+			check: func(t *testing.T, _ *oneWriterRig, database *store.Store) {
+				report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, nil)
+				if err != nil {
+					t.Fatalf("run the store census after the boot's move of %s: %v", kind, err)
+				}
+				checked := false
+				for _, k := range report.Kinds {
+					if k.Kind != kind {
+						continue
+					}
+					checked = true
+					if k.Rows == 0 || k.Nodes == 0 {
+						t.Errorf("after the boot's move of %s, the census reads %d rows and %d nodes, want both above zero", kind, k.Rows, k.Nodes)
+					}
+					if k.RowDifferences+k.NodeDifferences != 0 {
+						t.Errorf("after the boot's move of %s, the census reads %d row and %d node differences: %v %v",
+							kind, k.RowDifferences, k.NodeDifferences, k.ReportedRows, k.ReportedNodes)
+					} else {
+						t.Logf("after the boot's move of %s, the census reads %d rows and %d nodes, zero differences", kind, k.Rows, k.Nodes)
+					}
+				}
+				if !checked {
+					t.Errorf("the store census did not report kind %s", kind)
+				}
+			},
+		}
+	}
+	return []writerCase{
+		moveKind("priority", func(t *testing.T, database *store.Store) {
+			storesmovetest.Issue(t, database.Pool, "MOVEP", "MOVEP-1", 1)
+			storesmovetest.CreatePriority(t, database.Pool, "move-goal-1",
+				map[string]string{"title": "Move goal one", "owner": "alice", "rank": "a0"}, who, at)
+			storesmovetest.CreatePriority(t, database.Pool, "move-goal-2",
+				map[string]string{"title": "Move goal two", "rank": "a1"}, who, at.Add(time.Minute))
+			storesmovetest.Advance(t, database.Pool, "MOVEP-1", "move-goal-1", true, who, at.Add(2*time.Minute))
+		}),
+		moveKind("step", func(t *testing.T, database *store.Store) {
+			storesmovetest.Issue(t, database.Pool, "MOVES", "MOVES-1", 1)
+			storesmovetest.PutNode(t, database.Pool, "step", "0f1e2d3c-0000-4000-8000-0000000001b1", "MOVES-1", []storesmovetest.Attribute{
+				storesmovetest.Text("issue", "MOVES-1"), storesmovetest.Text("project", "MOVES"),
+				{Name: "generation", Value: 1, Text: "1"}, storesmovetest.Text("task", "default"),
+				{Name: "step", Value: 1, Text: "1"}, storesmovetest.Text("kind", "step"), storesmovetest.Text("role", "planner"),
+				storesmovetest.Text("started_at", at.Format(time.RFC3339Nano)),
+			}, nil, daemon, at)
+		}),
+		moveKind("plan", func(t *testing.T, database *store.Store) {
+			storesmovetest.Issue(t, database.Pool, "MOVEPL", "MOVEPL-1", 1)
+			storesmovetest.PutNode(t, database.Pool, "plan", "0f1e2d3c-0000-4000-8000-0000000001a1", "MOVEPL-1", []storesmovetest.Attribute{
+				storesmovetest.Text("issue", "MOVEPL-1"), storesmovetest.Text("project", "MOVEPL"),
+				{Name: "generation", Value: 1, Text: "1"}, storesmovetest.Text("source", "default"),
+				storesmovetest.Text("artifact_id", ""), {Name: "version", Value: 0, Text: "0"},
+				{Name: "tasks", Value: tasks, Text: string(tasks)},
+			}, nil, daemon, at)
+		}),
+	}
 }
 
 // lastLines is the last count lines of text.
