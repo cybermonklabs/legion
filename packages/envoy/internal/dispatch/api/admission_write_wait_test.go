@@ -61,13 +61,22 @@ func bearerWriteRequest(t *testing.T, method, target string, body any) *http.Req
 // reaches the server a moment after it gives its unit back, so the class is read until it holds
 // none; a waiter that held its unit across the wait would hold it until the row lets the server
 // answer, which comes after this, and one that queued behind such units would be refused at its
-// queue wait without reaching the server. Each wait's one bound is the test binary's deadline.
-func requireWaitersHoldNoWriteUnit(t *testing.T, limiter *admission.Limiter, waiting func() int32, count int) {
+// queue wait without reaching the server. Such a refusal, an answer of waiters (nil for a row
+// whose requests were answered before their work reached the server, a detached lane's) before
+// every waiter got there, fails the row at once with the refused answer: that waiter will never
+// reach the server, so waiting on would only end at the test binary's deadline. Each wait's one
+// bound is the test binary's deadline.
+func requireWaitersHoldNoWriteUnit(t *testing.T, limiter *admission.Limiter, waiters *waiterGroup, waiting func() int32, count int) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("all %d waiters to reach the server the row holds (the waiters there)", count), func() (int32, bool) {
+	reached := testwait.Until(t, fmt.Sprintf("all %d waiters to reach the server the row holds (the waiters there), or one to be answered first", count), func() (int32, bool) {
 		reached := waiting()
-		return reached, int(reached) == count
+		return reached, int(reached) == count || (waiters != nil && waiters.answered.Load() > 0)
 	})
+	if int(reached) < count {
+		early := waiters.early.Load()
+		t.Fatalf("a waiter was answered status=%d after %v body=%s with %d of %d at the server the row holds, want every waiter there holding no write unit: a waiter answered before it got there never will",
+			early.status, early.elapsed, strings.TrimSpace(early.body), reached, count)
+	}
 	testwait.Until(t, fmt.Sprintf("the write class to hold no unit and queue no request with %d waiters on the server the row holds (its units in flight and queued)", count), func() (string, bool) {
 		stats := limiter.Stats()[admission.Write]
 		return fmt.Sprintf("%d and %d", stats.InFlight, stats.Queued), stats.InFlight == 0 && stats.Queued == 0
@@ -78,8 +87,9 @@ func requireWaitersHoldNoWriteUnit(t *testing.T, limiter *admission.Limiter, wai
 // write that waits on nothing, and requires each answered 201: admitted, as nothing of the write
 // class is held by the waiters. The row holds the waiters until after these answers, so a create
 // that queued behind them for a write unit would be refused 429 OVERLOADED once its queue wait ran
-// out (admission.DefaultWriteWait): the 201 itself, answered while they wait, is the proof, not how
-// soon it came.
+// out (admission.DefaultWriteWait), or, where the row's write wait is past any run, would not be
+// answered before the row lets them go: the 201 itself, answered while they wait, is the proof,
+// not how soon it came.
 func requireWritesServed(t *testing.T, handler http.Handler, prefix string) {
 	t.Helper()
 	for attempt := range networkWaiters {
@@ -106,7 +116,7 @@ func requireWritesHoldNoUnitOnService(t *testing.T, service string, handler http
 		release()
 		waiters.working.Wait()
 	})
-	requireWaitersHoldNoWriteUnit(t, limiter, calls, len(requests))
+	requireWaitersHoldNoWriteUnit(t, limiter, waiters, calls, len(requests))
 	requireWritesServed(t, handler, "WAIT")
 	release()
 	for _, answer := range waiters.collect(t, len(requests)) {
@@ -124,7 +134,9 @@ func requireWritesHoldNoUnitOnService(t *testing.T, service string, handler http
 // that session is still working (judgeHolder, fetchHolderLiveness) before the claim's
 // transaction opens, and the listener holds the lookup. The waiters hold no write unit while it
 // does, and each is refused 409 ISSUE_CLAIMED, as before, once the listener says the holder is
-// live.
+// live. The write class's queue wait, which six claims arriving at once and their take-backs after
+// the release queue in, and the listener client's window on the held lookup are not what the row
+// proves, and are past any run.
 func TestAClaimWaitingOnTheListenerHoldsNoWriteUnit(t *testing.T) {
 	t.Parallel()
 	live := &liveRegistry{}
@@ -132,8 +144,8 @@ func TestAClaimWaitingOnTheListenerHoldsNoWriteUnit(t *testing.T) {
 	address, calls, release := heldService(t, proxyTo(t, claimListener(t, live, nil).URL), func(r *http.Request) bool {
 		return strings.HasPrefix(r.URL.Path, "/v1/registry/")
 	})
-	limiter := networkWaitLimiter()
-	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: address, envoyTimeout: time.Minute, admission: limiter})
+	limiter := networkWaitLimiterPastTheRun()
+	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: address, envoyTimeout: pastTheRun, admission: limiter})
 	key := claimIssueKey(t, handler, "todo")
 	if first := bearerRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/claim", map[string]any{
 		"actor": claimActorBody("session-one", "Implementer"),
@@ -196,12 +208,19 @@ func isListenerSend(r *http.Request) bool {
 // write's queue wait and is never refused 429, since the listener has taken the message
 // (awayOnNetworkNeverRefused), and each is answered 201 once the row gives the units back. A
 // keyed repeat of a send is answered from its key and makes no second send.
+//
+// The write class's queue wait is the deployment's: the take-backs are held past it on purpose.
+// So the senders start one at a time, each once the one before is held at the listener, holding
+// no unit there (waiterGroup.startInTurn): none queues at admission, where six arriving at once
+// queued behind two committing their messages and a loaded machine refused one 429 after its
+// two seconds, which then never reached the listener. The listener client's own window on the
+// held send is past any run.
 func TestAKeyedSendWaitingOnTheListenerHoldsNoWriteUnitAndIsNeverRefusedAfterIt(t *testing.T) {
 	t.Parallel()
 	listener, sent := newSendListener(t)
 	address, calls, release := heldService(t, proxyTo(t, listener.URL), isListenerSend)
 	limiter := networkWaitLimiter()
-	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: address, envoyTimeout: time.Minute, admission: limiter})
+	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: address, envoyTimeout: pastTheRun, admission: limiter})
 	key := createTestIssue(t, handler, "SEND", "Sends")
 	message := func(index int) *http.Request {
 		request := writeRequestAs(t, http.MethodPost, "/api/v1/issues/"+key+"/messages", "alice", map[string]any{
@@ -214,12 +233,13 @@ func TestAKeyedSendWaitingOnTheListenerHoldsNoWriteUnitAndIsNeverRefusedAfterIt(
 	for index := range networkWaiters {
 		requests = append(requests, message(index))
 	}
-	waiters := startWaiters(handler, requests)
+	waiters := newWaiterGroup(networkWaiters)
 	t.Cleanup(func() {
 		release()
 		waiters.working.Wait()
 	})
-	requireWaitersHoldNoWriteUnit(t, limiter, calls.Load, networkWaiters)
+	waiters.startInTurn(t, handler, requests, calls.Load)
+	requireWaitersHoldNoWriteUnit(t, limiter, waiters, calls.Load, networkWaiters)
 	requireWritesServed(t, handler, "SIDE")
 
 	held := make([]*admission.Ticket, 0, networkWaitReads)
@@ -382,7 +402,7 @@ func TestADetachedLaneRunsWithNoTicketAndHoldsNoWriteUnit(t *testing.T) {
 			t.Fatalf("a comment mentioning s%d: status=%d body=%s", index, answer.status, strings.TrimSpace(answer.body))
 		}
 	}
-	requireWaitersHoldNoWriteUnit(t, limiter, calls.Load, networkWaiters)
+	requireWaitersHoldNoWriteUnit(t, limiter, nil, calls.Load, networkWaiters)
 	requireWritesServed(t, handler, "LANE")
 
 	requireLaneLeavesTheRequestsUnit(t, "a comment mentioning a session", handler, limiter, calls.Load, networkWaiters+1,
@@ -407,7 +427,9 @@ func TestADetachedLaneRunsWithNoTicketAndHoldsNoWriteUnit(t *testing.T) {
 // sync a source of its own, so each its own flight - and GitHub holds each flight's head lookup.
 // The routes hold no write unit while they wait, and each is answered 200 with its row once
 // GitHub answers. The flights' statements run on the background pool: none takes a request-pool
-// connection, and the background pool's count moves.
+// connection, and the background pool's count moves. The write class's queue wait, which six
+// syncs arriving at once and their take-backs after the release queue in, is not what the row
+// proves, and is past any run.
 func TestASyncWaitingOnTheImportHoldsNoWriteUnitAndTheImportRunsOnTheBackgroundPool(t *testing.T) {
 	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{}, repos: map[string]*fakeArchitectureRepo{}}
@@ -424,7 +446,7 @@ func TestASyncWaitingOnTheImportHoldsNoWriteUnitAndTheImportRunsOnTheBackgroundP
 	address, calls, release := heldService(t, proxyTo(t, github), func(r *http.Request) bool {
 		return strings.Contains(r.URL.Path, "/commits/")
 	})
-	limiter := networkWaitLimiter()
+	limiter := networkWaitLimiterPastTheRun()
 	options := appInstallationOptions(t, address)
 	options.admission = limiter
 	handler, database, _ := newTestServer(t, options)
@@ -446,7 +468,7 @@ func TestASyncWaitingOnTheImportHoldsNoWriteUnitAndTheImportRunsOnTheBackgroundP
 		release()
 		waiters.working.Wait()
 	})
-	requireWaitersHoldNoWriteUnit(t, limiter, calls.Load, networkWaiters)
+	requireWaitersHoldNoWriteUnit(t, limiter, waiters, calls.Load, networkWaiters)
 	requireWritesServed(t, handler, "SYNC")
 	requestAcquires, backgroundAcquires := database.Pool.Stat().AcquireCount(), background.Stat().AcquireCount()
 	release()
@@ -474,7 +496,10 @@ func TestASyncWaitingOnTheImportHoldsNoWriteUnitAndTheImportRunsOnTheBackgroundP
 // messages, and GitHub holds that read. The records hold no write unit while it does, no
 // request-pool connection is held, and no head is written yet: neither pull request's row exists
 // while GitHub still answers for the second. Each record is answered 201 once GitHub answers, and
-// both heads are written.
+// both heads are written. The write class's queue wait is not what the row proves, and is past any
+// run: six records arriving at once queued behind the class's two units, and a loaded machine
+// refused one 429 after its two seconds, which then never reached GitHub; their take-backs after
+// the release queue behind one another as well.
 func TestAResultsReadThroughWaitingOnGitHubHoldsNoWriteUnitAndWritesAfterItsReads(t *testing.T) {
 	t.Parallel()
 	var issueKey atomic.Pointer[string]
@@ -510,7 +535,7 @@ func TestAResultsReadThroughWaitingOnGitHubHoldsNoWriteUnitAndWritesAfterItsRead
 	address, calls, release := heldService(t, proxyTo(t, upstream.URL), func(r *http.Request) bool {
 		return strings.HasSuffix(r.URL.Path, "/pulls/13/commits")
 	})
-	limiter := networkWaitLimiter()
+	limiter := networkWaitLimiterPastTheRun()
 	options := appInstallationOptions(t, address)
 	options.admission = limiter
 	handler, database, _ := newTestServer(t, options)
@@ -528,7 +553,7 @@ func TestAResultsReadThroughWaitingOnGitHubHoldsNoWriteUnitAndWritesAfterItsRead
 		release()
 		waiters.working.Wait()
 	})
-	requireWaitersHoldNoWriteUnit(t, limiter, calls.Load, networkWaiters)
+	requireWaitersHoldNoWriteUnit(t, limiter, waiters, calls.Load, networkWaiters)
 	testwait.Until(t, fmt.Sprintf("the request pool to lend no connection with %d read-throughs waiting on GitHub: none is held across the wait (the connections lent)", networkWaiters), func() (int32, bool) {
 		lent := database.Pool.Stat().AcquiredConns()
 		return lent, lent == 0
@@ -569,6 +594,11 @@ func TestAResultsReadThroughWaitingOnGitHubHoldsNoWriteUnitAndWritesAfterItsRead
 // waits on nothing is admitted at once. Once the take-over ends each sender's next try lands and
 // it is answered 201. Before, each sender held its unit across every backoff, the class filled,
 // and the writes behind it were refused 429 after a write's queue wait.
+//
+// The row proves this by the order of events, so the bounds a loaded machine could run out first
+// are past any run: the take-over window, the listener client's own window on each call, and the
+// write class's queue wait, which the senders queued for its two units to renew their claims, and
+// to take them back once the take-over ends, wait in.
 func TestASendThroughAListenerTakeOverHoldsNoWriteUnitAcrossItsBackoffs(t *testing.T) {
 	t.Parallel()
 	var takingOver atomic.Bool
@@ -590,9 +620,9 @@ func TestASendThroughAListenerTakeOverHoldsNoWriteUnitAcrossItsBackoffs(t *testi
 		}
 	}))
 	t.Cleanup(listener.Close)
-	limiter := networkWaitLimiter()
+	limiter := admission.New(admission.Limits{Read: networkWaitReads, Write: networkWaitReads, WriteWait: pastTheRun})
 	handler, _, _ := newTestServer(t, testServerOptions{
-		envoyURL: listener.URL, admission: limiter, takeoverWindow: pastTheRun,
+		envoyURL: listener.URL, envoyTimeout: pastTheRun, admission: limiter, takeoverWindow: pastTheRun,
 	})
 	key := createTestIssue(t, handler, "TAKE", "Take-over")
 	requests := make([]*http.Request, 0, networkWaiters)

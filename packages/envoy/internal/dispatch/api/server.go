@@ -562,6 +562,11 @@ type server struct {
 	// so a meaning deadline no load reaches is the test's choice, and what ends a wait before it
 	// can be told from that deadline without a clock (INFRA-3904).
 	meaningBound time.Duration
+	// searchEmbedBound overrides the bound on a query's embedding (searchEmbedTimeout), a search's
+	// and a related-item check's (embedQuery); zero, which every server the deployment builds
+	// leaves it, means searchEmbedTimeout. Only a test sets it, so an embedding the test holds
+	// at its embedder waits for the test's release rather than for three seconds of wall clock.
+	searchEmbedBound time.Duration
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it: a
 	// case that reads the gate's verdict gives it a bound of its own (testServerOptions'

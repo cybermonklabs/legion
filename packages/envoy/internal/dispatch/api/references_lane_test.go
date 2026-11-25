@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -21,10 +20,11 @@ import (
 // lane's read and the 22 queued behind it. A references read past those is refused at once, 429
 // OVERLOADED naming the references lane, and the reads of another route sent while the flood holds
 // are admitted to the read units the lane left free, answered while the flood still holds: the
-// lock goes only after their answers, so a read that queued behind the flood for a unit would be
-// refused once its queue wait ran out. Without the lane the flood takes three of the read class's
-// four units, the references reads past it take the fourth or queue for it, and none of them is
-// refused.
+// lock goes only after their answers, so a read that queued behind the flood for a unit would not
+// be answered before it. Without the lane the flood takes three of the read class's four units,
+// the references reads past it take the fourth or queue for it, and none of them is refused. The
+// read class's wait, which the lane's 22 queued reads wait in for as long as the row holds the
+// lock, is not what the row proves, and is past any run.
 func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t *testing.T) {
 	t.Parallel()
 	const (
@@ -35,7 +35,7 @@ func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t
 		held  = lane + queue
 		past  = 2
 	)
-	limiter := admission.New(admission.Limits{Read: readCap, Write: 4, HeavyReadLane: lane, ReadWait: 5 * time.Second})
+	limiter := admission.New(admission.Limits{Read: readCap, Write: 4, HeavyReadLane: lane, ReadWait: pastTheRun})
 	handler, database, _ := newTestServer(t, testServerOptions{admission: limiter})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")

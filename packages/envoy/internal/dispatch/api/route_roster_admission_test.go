@@ -23,14 +23,17 @@ import (
 // The row holds one roster fetch open with more readers waiting on it than the read class has
 // units, then requires: no read unit held and none queued while they wait; a read that does not
 // ask the roster (the project list) admitted meanwhile, answered 200 while the fetch is held, where
-// one that queued behind the waiters for a unit would be refused at its queue wait; and every waiter
-// answered 200 once the listener answers. The fetch's bound and the listener client's window are
-// past any run, so the fetch ends only when the row lets the listener answer.
+// one that queued behind the waiters for a unit would not be answered before the row lets them go;
+// and every waiter answered 200 once the listener answers. The fetch's bound and the listener
+// client's window are past any run, so the fetch ends only when the row lets the listener answer,
+// and so are the read class's queue wait and a read's deadline, which the row does not prove: six
+// readers arriving at once queue behind the class's two units, and take theirs back behind one
+// another once the listener answers.
 func TestAReadWaitingOnTheListenersRosterHoldsNoReadUnit(t *testing.T) {
 	t.Parallel()
 	listenerURL, calls, release := heldRosterListener(t)
-	limiter := networkWaitLimiter()
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: pastTheRun, admission: limiter})
+	limiter := networkWaitLimiterPastTheRun()
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: pastTheRun, admission: limiter, readDeadline: pastTheRun})
 	served.rosters.ttl, served.rosters.timeout = pastTheRun, pastTheRun
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "TEST", "name": "Test project"}, "alice")
 	if project.Code != http.StatusCreated {

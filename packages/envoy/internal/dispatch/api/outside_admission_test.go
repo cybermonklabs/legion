@@ -590,21 +590,26 @@ func (rig *outsideWorkRig) start(arrival int) <-chan outsideWorkAnswer {
 }
 
 // arrive starts arrivals from up to to, one after another, each once the one before it holds its
-// place or waits in the queue for one, so they arrive in that order, and answers each's answer
-// and the moment it was seen holding or waiting.
+// place, waits in the queue for one or has been refused one, so they arrive in that order, and
+// answers each's answer and the moment just before it was started: its wait for a place, counted
+// from when it asks (admission.Outside), cannot have begun before that moment.
 func (rig *outsideWorkRig) arrive(t *testing.T, from, to int) ([]<-chan outsideWorkAnswer, []time.Time) {
 	t.Helper()
 	answers := make([]<-chan outsideWorkAnswer, 0, to-from)
-	arrived := make([]time.Time, 0, to-from)
+	started := make([]time.Time, 0, to-from)
 	for arrival := from; arrival < to; arrival++ {
+		started = append(started, time.Now())
 		answers = append(answers, rig.start(arrival))
-		waitUntil(t, fmt.Sprintf("arrival %d holding or waiting for a place", arrival), func() bool {
+		waitUntil(t, fmt.Sprintf("arrival %d holding, waiting for or refused a place", arrival), func() bool {
 			stats := rig.limiter.Outside().Stats()
-			return stats.InUse+stats.Queued == arrival+1
+			accounted := stats.InUse + stats.Queued
+			for _, refused := range stats.Refused {
+				accounted += int(refused.QueueFull + refused.WaitExceeded)
+			}
+			return accounted == arrival+1
 		})
-		arrived = append(arrived, time.Now())
 	}
-	return answers, arrived
+	return answers, started
 }
 
 // outsideWorkIdentity is the identity an outsideWorkRig's heartbeat checks resolve through: the
@@ -625,7 +630,10 @@ func (i outsideWorkIdentity) Login(r *http.Request) (string, error) {
 // arrive one after another while eight of them hold every place.
 //
 //   - In the order it asked: the eight holding are held at gates of the test's, and twelve more
-//     wait; each place given back, one at a time, goes to the work that has waited longest.
+//     wait; each place given back, one at a time, goes to the work that has waited longest. Their
+//     wait is past any run here: the order is the proof, and a queue that has stood a whole wait
+//     serves its newest first instead (admission's fifoGate), which a loaded machine reaches with
+//     a second's wait before the last place is given back.
 //   - On a held pool freed within the wait: every connection of the request pool is held, so the
 //     eight holding wait on it, and 176 more wait for a place, the most the queue holds; four more
 //     are refused at once for the full queue, the checks skipped and the sockets refused. The
@@ -634,14 +642,16 @@ func (i outsideWorkIdentity) Login(r *http.Request) (string, error) {
 //     wait is past any run here rather than a server's second, since 184 arrivals one after
 //     another take longer than a second to queue.
 //   - On a held pool past the wait: the eight holding wait on the pool and twelve more for a
-//     place, and the pool is held past the second: each of the twelve is refused once its own
-//     second has run out, the checks skipped and the sockets refused, and the eight are served once
-//     the pool frees.
+//     place, and the pool is held past the second: each of the twelve is refused for its wait, the
+//     checks skipped and the sockets refused, and the eight are served once the pool frees. The
+//     second is the server's own and stays: each refusal comes at least a second after the
+//     moment before its work was started, and the pool, whose acquire bound is past any run, is
+//     held until every one of them has come, so nothing but its wait could have ended it.
 func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T) {
 	t.Parallel()
 	const queued = 12
 	t.Run("in the order it asked", func(t *testing.T) {
-		rig := newOutsideWorkRig(t, admission.OutsideLimit+queued, 0)
+		rig := newOutsideWorkRig(t, admission.OutsideLimit+queued, pastTheRun)
 		answers, _ := rig.arrive(t, 0, admission.OutsideLimit+queued)
 		for range admission.OutsideLimit {
 			if arrival := testwait.Receive(t, "the work holding the places to report its place", rig.took); arrival >= admission.OutsideLimit {
@@ -658,7 +668,7 @@ func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T)
 			close(rig.gates[next])
 		}
 		for arrival, answer := range answers {
-			if got := <-answer; got.err != nil {
+			if got := testwait.Receive(t, fmt.Sprintf("arrival %d to be answered once every gate was let go", arrival), answer); got.err != nil {
 				t.Errorf("arrival %d: %v, want it served", arrival, got.err)
 			}
 		}
@@ -703,23 +713,22 @@ func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T)
 	})
 
 	t.Run("on a held pool past the wait", func(t *testing.T) {
-		const slack = 500 * time.Millisecond
 		rig := newOutsideWorkRig(t, 0, 0)
 		release := holdEveryConnection(t, rig.database.Pool)
-		answers, arrived := rig.arrive(t, 0, admission.OutsideLimit+queued)
+		answers, started := rig.arrive(t, 0, admission.OutsideLimit+queued)
 		for i := admission.OutsideLimit; i < len(answers); i++ {
 			got := testwait.Receive(t, fmt.Sprintf("arrival %d, no place free for it, to be refused at its %v wait", i, admission.DefaultReadWait), answers[i])
 			var refusal *admission.OutsideRefusal
 			if !errors.As(got.err, &refusal) || refusal.Reason != admission.WaitExceeded || (i%2 == 0) != errors.Is(got.err, errHeartbeatCheckSkipped) {
 				t.Fatalf("arrival %d, no place free for it: %v, want refused for its wait (a check skipped)", i, got.err)
 			}
-			if waited := got.at.Sub(arrived[i]); waited < admission.DefaultReadWait-50*time.Millisecond || waited > admission.DefaultReadWait+slack {
-				t.Errorf("arrival %d refused %v after it was seen waiting, want after its %v wait and within %v of it", i, waited, admission.DefaultReadWait, slack)
+			if waited := got.at.Sub(started[i]); waited < admission.DefaultReadWait {
+				t.Errorf("arrival %d refused %v after it was started, want at least its %v wait", i, waited, admission.DefaultReadWait)
 			}
 		}
 		release()
 		for i := range admission.OutsideLimit {
-			if got := <-answers[i]; got.err != nil {
+			if got := testwait.Receive(t, fmt.Sprintf("arrival %d, which held its place, to be answered once the pool freed", i), answers[i]); got.err != nil {
 				t.Errorf("arrival %d, which held its place: %v, want it served once the pool freed", i, got.err)
 			}
 		}

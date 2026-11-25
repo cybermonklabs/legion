@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 )
@@ -20,11 +19,13 @@ import (
 // references read inside its first refs statement, and a read of another route sent behind the
 // burst must be answered while the lock still holds the burst, not when the references reads give
 // their units back: the lock goes only after its answer, so a read that queued behind the burst for
-// a unit would be refused once its queue wait ran out, and the 200 itself is the proof.
+// a unit would not be answered before it. The read class's wait, which the burst's reads queued in
+// the lane wait in for as long as the row holds the lock, is not what the row proves, and is past
+// any run.
 func TestABurstOfSlowIssueReferencesLeavesTheReadClassToOtherReads(t *testing.T) {
 	t.Parallel()
 	const readCap = 4
-	limiter := admission.New(admission.Limits{Read: readCap, Write: 4, HeavyReadLane: 1, ReadWait: 5 * time.Second})
+	limiter := admission.New(admission.Limits{Read: readCap, Write: 4, HeavyReadLane: 1, ReadWait: pastTheRun})
 	handler, database, _ := newTestServer(t, testServerOptions{admission: limiter})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -52,7 +53,9 @@ func TestABurstOfSlowIssueReferencesLeavesTheReadClassToOtherReads(t *testing.T)
 	})
 	stats := limiter.Stats()[admission.Read]
 
-	other := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/state", nil, "alice")
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/state", nil, "alice") }()
+	other := awaitResponse(t, answered)
 	release()
 	for range readCap {
 		awaitResponse(t, burst)

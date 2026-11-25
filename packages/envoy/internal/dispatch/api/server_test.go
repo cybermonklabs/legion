@@ -248,6 +248,10 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// searchEmbedBound is the bound on a query's embedding (server.searchEmbedBound); zero keeps
+	// production's searchEmbedTimeout. A case that holds the embedding at its embedder until it
+	// lets it go passes pastTheRun, so the release and nothing else ends that embedding.
+	searchEmbedBound time.Duration
 	// mentionLookupBound is the server's bound on each listener lookup a comment's creation
 	// makes, by the target looked up (server.mentionLookupBound); nil keeps production's
 	// mentionLookupTimeout. A case whose verdict needs a lookup the listener answers to count as
@@ -488,6 +492,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	}
 	served.adviceQueryHook = options.adviceQueryHook
 	served.duplicateBound = options.duplicateBound
+	served.searchEmbedBound = options.searchEmbedBound
 	served.mentionLookupBound = options.mentionLookupBound
 	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a

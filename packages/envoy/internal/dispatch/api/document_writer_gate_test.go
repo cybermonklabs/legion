@@ -42,10 +42,11 @@ func writerGateHandler(
 	// storetest's drop of that database on any login without pg_signal_backend.
 	t.Cleanup(requests.Close)
 	service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+	// The shutdown's one bound is the test binary's deadline less testwait's margin: a hang guard,
+	// which a loaded machine's slow shutdown does not fail.
+	shutdown := testwait.Context(t)
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := service.Shutdown(ctx); err != nil {
+		if err := service.Shutdown(shutdown); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -82,16 +83,13 @@ func patientWriterLimiter() *admission.Limiter {
 	return admission.New(limits)
 }
 
-// waitForQueuedWriters waits until want writers are queued for a document's writer gate.
+// waitForQueuedWriters waits until want writers are queued for a document's writer gate. Its one
+// bound is the test binary's deadline less testwait's margin (waitUntil).
 func waitForQueuedWriters(t *testing.T, service *docs.Service, want int64) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for service.QueuedDocumentWriters() != want {
-		if time.Now().After(deadline) {
-			t.Fatalf("queued document writers = %d, want %d", service.QueuedDocumentWriters(), want)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitUntil(t, fmt.Sprintf("%d writers queued for a document's writer gate", want), func() bool {
+		return service.QueuedDocumentWriters() == want
+	})
 }
 
 // createSecondDocument uploads a second document to issue key and returns its id.
@@ -242,10 +240,16 @@ func TestAWriteToAnotherDocumentProceedsWhileWritersQueueOnTheFirst(t *testing.T
 }
 
 // A writer queued for a document gives its admission units back while it waits: with room for two
-// writes at once, two writers queued on one document leave room for a write to another.
+// writes at once, two writers queued on one document leave room for a write to another. The row
+// proves it by the order of events: the write to the other document is answered while the row
+// still holds the first document's gate, and so both writers queued behind it. The write class's
+// queue wait is not what it proves, and is past any run: the queued writers wait at the gate for
+// what is left of it (docs.AcquireDocumentWriter), and a loaded machine could run a second out
+// before the row lets the gate go. A write that queued behind writers holding their units would
+// so wait for ever, and fails at the test binary's deadline.
 func TestWritersQueuedOnADocumentLeaveAdmissionRoomForOthers(t *testing.T) {
 	t.Parallel()
-	limiter := admission.New(admission.Limits{Read: 4, Write: 2})
+	limiter := admission.New(admission.Limits{Read: 4, Write: 2, WriteWait: pastTheRun})
 	handler, service, _ := writerGateHandler(t, 8, limiter, nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Parked writers", "First line.")
 	other := createSecondDocument(t, handler, issue.Key)
@@ -258,7 +262,11 @@ func TestWritersQueuedOnADocumentLeaveAdmissionRoomForOthers(t *testing.T) {
 	defer releaseHold()
 	wait := queuedEdits(t, handler, service, issue.PrimaryArtifactID, 2)
 
-	if edited := editDocument(t, handler, other, insertAtEnd("Written while both write units' holders queue.")); edited.Code != http.StatusOK {
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- editDocument(t, handler, other, insertAtEnd("Written while both write units' holders queue."))
+	}()
+	if edited := awaitResponse(t, answered); edited.Code != http.StatusOK {
 		t.Errorf("a write to another document while two writers queue on the first: status=%d body=%s, want 200",
 			edited.Code, edited.Body.String())
 	}

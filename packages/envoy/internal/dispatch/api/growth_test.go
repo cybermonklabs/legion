@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // An answer holds at most contracts.DispatchEventBodyMax UTF-16 units (INFRA-370), so what
@@ -32,6 +33,17 @@ func roomForOneAnswer() string {
 	return strings.Repeat("word ", (pmdoc.MaxDocumentBytes-contracts.DispatchEventBodyMax-2*answerRoomHeadroom)/len("word "))
 }
 
+// statementBoundsPastTheRun serves handler with each request's commit bound and lock wait past any
+// run (store.WithCommitBoundForTest, store.WithLockWaitForTest), for a row of large documents
+// whose verdict those bounds are not: beside the other growth tests, an insert's ledger appending
+// its document's update to a document of 64,000 elements ran out production's ten seconds, and the
+// insert was answered 503 DATABASE_BUSY rather than the 200 or 413 the row reads.
+func statementBoundsPastTheRun(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(store.WithLockWaitForTest(store.WithCommitBoundForTest(r.Context(), pastTheRun), pastTheRun)))
+	})
+}
+
 // Writes add up, so a write may not leave a document's markdown past what one upload may hold, by
 // an upload's own measures - 1 MiB, and 65,536 elements as an upload's parse counts them - and
 // bigger than it was. Inserts each well within both are refused with 413 CAP_EXCEEDED, saying what
@@ -46,6 +58,10 @@ func roomForOneAnswer() string {
 // test makes only the two that show writes adding up: the first still fits beside the text before
 // it, and the second, no bigger, passes the bound only with the first. Each insert costs time in the
 // size of the whole document, and making the earlier ones one at a time took most of a minute.
+//
+// What the row reads is each write's answer, 200 or 413, so the bounds a loaded machine could run
+// out on a document this size first are past any run: each request's commit bound and lock wait
+// (statementBoundsPastTheRun) and a read's deadline.
 func TestRepeatedInsertsCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	t.Parallel()
 	tableSpec := "| a | b |\n| - | - |\n| A10 | b |\n"
@@ -71,7 +87,8 @@ func TestRepeatedInsertsCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T
 		{"a thousand table rows", tableSpec + strings.Repeat("| x | y |\n", 4_000), "A10", strings.Repeat("| x | y |\n", 1_000)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			handler := newTestHandler(t)
+			served, _, _ := newTestServer(t, testServerOptions{readDeadline: pastTheRun})
+			handler := statementBoundsPastTheRun(served)
 			issue := createInteractionIssue(t, handler, "TEST", "Repeated growth", test.spec)
 			const inserts = 2
 			refused := 0
