@@ -36,6 +36,7 @@ import {
   decisionNodes,
   inReviewList,
 } from "./decision-review";
+import { lastHeldPath } from "./graph-edit/last-held";
 import { artifactsBySlug } from "./issue-artifacts";
 import type {
   IssueTreeReads,
@@ -60,6 +61,7 @@ import {
   type NodeType,
   PRESET_NAMES,
 } from "./page-words";
+import { citedReferences } from "./row-references";
 import { storedReading } from "./stored-reading";
 
 /**
@@ -249,6 +251,17 @@ export function deletedPostLine(deleted: PostDeletion): string {
 }
 
 /**
+ * The version that last held `target`, as a reference to it carries it (`NodeChip.lastHeld`):
+ * the `last_held` the batched reference read answers for a target that is gone (R9 of
+ * INFRA-5705), and nothing for a target something answers to, which the read never names one for
+ * and no chip carries one of. The one rule a chip (`treeContext`'s `chipOf`) and the names the
+ * page publishes (`issue-tree.ts`'s `targetLastHeld`) read it by.
+ */
+export function lastHeldOf(target: ReferenceTarget | undefined): string | undefined {
+  return target?.gone === true ? target.last_held : undefined;
+}
+
+/**
  * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
  * for a node draws, from the server's reading of the node's words: `buildIssueTree` and
  * `targetNaming` give R1's rule over the words of the reading's first block (`chipLine`, which
@@ -375,6 +388,7 @@ export function treeContext(
       // A deleted post's deleted line already says what became of its text, so it carries no
       // edit mark.
       const edited = deleted === null ? target?.edited_at : undefined;
+      const lastHeld = lastHeldOf(target);
       const chip: NodeChip = {
         ...(target?.ambiguous === true ? { ambiguous: true } : {}),
         answered: target !== undefined,
@@ -382,6 +396,7 @@ export function treeContext(
         ...(deleted === null || deleted.by === null ? {} : { deletedBy: deleted.by }),
         ...(edited === undefined ? {} : { editedAt: edited }),
         gone,
+        ...(lastHeld === undefined ? {} : { lastHeld }),
         name: gone ? "" : nameOf(reference, target, deleted),
         ref: reference,
       };
@@ -632,6 +647,39 @@ export function addDocumentChips(
         ...draft.chips,
         { answered: true, gone: false, name: documentWord(reads.issue, artifact), ref },
       ];
+    }
+  }
+}
+
+/**
+ * A chip for each node a draft's own words cite that the batched reference read answers gone
+ * with the version that last held it (R9 of INFRA-5705): the chip `chipOf` makes from that
+ * answer (`NodeChip.lastHeld`), which the row's `Chip` draws as the page's gone word linked to
+ * that version (`NodeRow.tsx`), as the row's words draw the same reference in place
+ * (`RowText.tsx`), so a comment citing a node deleted in Graph reads it on a chip as well. The
+ * words are read as the page's names read reads the node the draft becomes (`issue-tree.ts`'
+ * `nodeWords`, through `citedReferences`), so each reference is the one the read answered under,
+ * and nothing is read but that answer. A reference the read answers live, ambiguous, gone with
+ * no version, or gone with one the page cannot open (`lastHeldPath`) earns no chip, and neither
+ * does one that a chip of the draft already names, however often the words cite it: the draft's
+ * own chips stand as they are, and each chip added goes after them. Until the read answers,
+ * nothing is gone, and no draft gains one.
+ */
+export function addLastHeldChips(
+  drafts: Map<string, Draft>,
+  reads: IssueTreeReads,
+  context: TreeContext
+): void {
+  if (!(reads.targets ?? []).some((target) => lastHeldOf(target) !== undefined)) return;
+  for (const draft of drafts.values()) {
+    // The words `nodeWords` reads of the node `assemble` makes of the draft, its text and reading.
+    const words = draft.tree === undefined ? draft.text : wordsOf(draft.tree);
+    for (const reference of citedReferences(words)) {
+      const chip = context.chipOf(reference);
+      if (chip.ambiguous === true || chip.lastHeld === undefined) continue;
+      if (lastHeldPath(chip.lastHeld) === undefined) continue;
+      if (draft.chips.some((held) => held.ref === reference)) continue;
+      draft.chips = [...draft.chips, chip];
     }
   }
 }

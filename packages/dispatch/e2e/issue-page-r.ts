@@ -555,6 +555,8 @@ export interface GraphEditIds {
   readonly prose: string;
   /** The person's question, the ask node the criterion stands under. */
   readonly question: string;
+  /** The question's source block, whose read id the drawn row carries. */
+  readonly questionRow: string;
   readonly reply: string;
   readonly result: string;
   /** The first, second and third statements, in the spec's order. */
@@ -609,6 +611,7 @@ export async function graphEditIds(page: Page, seed: GraphEditSeed): Promise<Gra
       "person's question",
       (node) => node.kind === "ask" && node.id === criterion.parent?.id
     ).id,
+    questionRow: ownBlock(answer, "q1", "ask").id,
     reply: nodeWhere(
       answer,
       "architect's reply",

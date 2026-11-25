@@ -205,6 +205,26 @@ function AddressProbe({ seen }: { seen: { path?: string } }): ReactNode {
   return null;
 }
 
+/** Where the page's address stands, its search and fragment with it: what an address the body
+ *  replaces opens as (`slots/body.tsx`). */
+function LocationProbe({ seen }: { seen: { at?: string } }): ReactNode {
+  const { hash, pathname, search } = useLocation();
+  seen.at = `${pathname}${search}${hash}`;
+  return null;
+}
+
+/** The body, beside a probe that marks in `seen` where the address stands (`LocationProbe`). */
+function bodySeeing(seen: { at?: string }): (props: SlotProps) => ReactNode {
+  return function SeenBody(props: SlotProps): ReactNode {
+    return (
+      <>
+        <BodySlot {...props} />
+        <LocationProbe seen={seen} />
+      </>
+    );
+  };
+}
+
 /** What the page's panel would draw the facts of: the node the tree last set as focused. */
 function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode {
   seen.node = useFocusedNode();
@@ -9596,34 +9616,47 @@ test("a line drawn after the reader's row left the outline and they pressed a co
   }
 });
 
-// The line saying the outline holds no row of the block a `#b-` address names is drawn once the
+// A `#b-` address on the issue's own address naming a block no read holds is decided once the
 // last of the tree's reads answers, which can be after a read that answered first drew the rows
 // and the reader moved to one of them by keys: the page places no focus of its own until every
-// read has answered, so they entered the outline with Tab. Drawn in place of the outline, the
-// line takes the focus the outline took off the page with it, as an item's line does. Here the
-// messages' read is the last to answer.
-test("the line that names no row of a block, drawn in place of the outline after the reader moved to a row, takes the focus", async () => {
+// read has answered, so they entered the outline with Tab. The address then opens without the
+// fragment, with no line in the outline's place (R9 of INFRA-5705, the architect's decision on
+// its plan task t12; the issue holds no document, so no read of the block is asked), as the
+// issue's own address opens: on the outline's first row, and never with the focus left on the
+// page's body. Here the messages' read is the last to answer.
+test("a block no read holds, decided after the reader moved to a row, opens the address without it, with no line and the focus on a row", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const answer = Promise.withResolvers<never[]>();
   const messages = spyOn(api, "listIssueMessages").mockReturnValue(answer.promise as never);
+  const seen: { at?: string } = {};
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}#b-no-such-block`, TWO_THREADS, BodySlot, {
+    const path = `/issues/${KEY}#b-no-such-block`;
+    const { view } = renderAddressedBody(path, TWO_THREADS, bodySeeing(seen), {
       unread: [["issue-messages", KEY]],
     });
     await waitFor(() => expect(messages).toHaveBeenCalled());
     await user.tab();
     await moveOnFromFirstRow(user, view.container);
+    expect(seen.at, "the address lost its fragment while a read was out").toBe(path);
 
     await act(async () => answer.resolve([]));
-    const title = await waitFor(() => view.getByRole("heading", { name: "No row for this block" }));
+    await waitFor(() =>
+      expect(seen.at, "the address of a block no read holds kept its fragment").toBe(
+        `/issues/${KEY}`
+      )
+    );
     await waitFor(() =>
       expect(
-        document.activeElement,
-        "the line that names no row of the block, drawn in place of the outline the reader had moved in, left the focus on the page's body"
-      ).toBe(title)
+        focusedRow(view.container),
+        "the address without the fragment left the focus off the outline's first row"
+      ).toBe("head-a")
     );
+    expect(
+      view.queryByRole("heading", { name: "No row for this block" }),
+      "the address of a block no read holds drew the line that the outline has no row for it"
+    ).toBeNull();
     view.unmount();
   } finally {
     names.mockRestore();
@@ -10662,20 +10695,17 @@ test("under a view whose slot is filled, an item's address beside the view's dra
 });
 
 // The architect's rule for an address of a node: it never leaves the reader on the page's body.
-// A `#b-` fragment on the issue's own address naming no block the tree holds, and `/children` on
-// an issue with none, landed nowhere and said nothing. Once the reads are held, each draws a
-// line in the outline's place that says what the link names is not on this issue's page, with
-// the focus on it, as an item the issue holds none of does.
-test("a block or the children an address names that the tree holds none of draw a line saying so, with the focus on it", async () => {
+// `/children` on an issue with none landed nowhere and said nothing. Once the reads are held, it
+// draws a line in the outline's place that says what the link names is not on this issue's page,
+// with the focus on it, as an item the issue holds none of does. A `#b-` fragment on the issue's
+// own address naming a block no read holds opens that address without the fragment instead, with
+// no line (R9 of INFRA-5705, the architect's decision on its plan task t12), and the outline is
+// drawn there.
+test("the children an address names that the issue has none of draw a line saying so, with the focus on it, and a block no read holds opens the address without it", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   try {
     for (const [path, heading, line] of [
-      [
-        `/issues/${KEY}#b-no-such-block`,
-        "No row for this block",
-        `That link names no row of ${KEY}'s outline.`,
-      ],
       [
         buildIssuePath({ key: KEY, kind: "children" }),
         "No child issues",
@@ -10701,6 +10731,21 @@ test("a block or the children an address names that the tree holds none of draw 
       expect(body.view.queryByRole("tree"), `${path} drew the outline beside its line`).toBeNull();
       body.view.unmount();
     }
+    (document.activeElement as HTMLElement | null)?.blur();
+    const seen: { at?: string } = {};
+    const path = `/issues/${KEY}#b-no-such-block`;
+    const block = renderAddressedBody(path, TWO_THREADS, bodySeeing(seen));
+    await waitFor(() =>
+      expect(seen.at, `${path} kept its fragment`).toBe(buildIssuePath({ key: KEY, kind: "issue" }))
+    );
+    await waitFor(() =>
+      expect(block.view.queryByRole("tree"), `${path} drew no outline`).not.toBeNull()
+    );
+    expect(
+      block.view.queryByRole("heading", { name: "No row for this block" }),
+      `${path} drew the line that the outline has no row for its block`
+    ).toBeNull();
+    block.view.unmount();
   } finally {
     names.mockRestore();
   }

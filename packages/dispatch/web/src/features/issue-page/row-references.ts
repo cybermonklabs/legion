@@ -7,6 +7,7 @@ import {
 } from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
 import { textHead } from "../refs/tree-fragment";
+import { lastHeldPath } from "./graph-edit/last-held";
 
 /** How many characters of a target's words a link to it draws: a link's title elsewhere is cut
  *  at the same count (`TITLE_HEADLINE_MAX`, `refs/reference-target.ts`). It is written again
@@ -328,5 +329,58 @@ export function linkRowReferences(
     }
     pieces.push(value.slice(at));
     text.replaceWith(...pieces);
+  }
+}
+
+/** The mark a row's own link carries while it opens the version that last held its gone target
+ *  rather than the target's own address (`linkLastHeldReferences`). */
+const ROW_LAST_HELD = "data-row-last-held";
+
+/** Where a row's link to `reference` goes while the batched read answers its target gone with the
+ *  version that last held it (`lastHeld`, each gone reference with that version where the read
+ *  names one, `useKnownLastHeldReferences`, R9 of INFRA-5705): that version's address on the page
+ *  (`lastHeldPath`). Undefined for a reference `names` names, one the read named no version of
+ *  and one whose version the page cannot read: its link goes to `RowReference.path` and reads
+ *  `rowReferenceWords`, as before. */
+export function lastHeldRowPath(
+  reference: string,
+  names: ReadonlyMap<string, string>,
+  lastHeld: ReadonlyMap<string, string | undefined>
+): string | undefined {
+  if (names.has(reference)) return undefined;
+  const held = lastHeld.get(reference);
+  return held === undefined ? undefined : lastHeldPath(held);
+}
+
+/**
+ * The pass after the row's own link pass (`linkRowReferences`) over words a reading painted into
+ * `root` (`RowText.tsx`): each of the row's links whose reference the batched read answered gone
+ * with the version that last held it (`lastHeldRowPath`) reads `words.gone`, titled
+ * `words.title`, and goes to that version, as the row's chip does (`NodeRow.tsx`'s `Chip`). A
+ * link this pass sent there whose reference the read no longer answers so goes back to its
+ * target's own address, which `linkRowReferences` has named again. Run it after every run of that
+ * pass, and whenever `lastHeld` changes.
+ */
+export function linkLastHeldReferences(
+  root: HTMLElement,
+  names: ReadonlyMap<string, string>,
+  lastHeld: ReadonlyMap<string, string | undefined>,
+  words: { readonly gone: string; readonly title: string }
+): void {
+  for (const anchor of root.querySelectorAll<HTMLAnchorElement>(`a[${ROW_REFERENCE}]`)) {
+    const reference = anchor.getAttribute(ROW_REFERENCE) ?? "";
+    const path = lastHeldRowPath(reference, names, lastHeld);
+    if (path !== undefined) {
+      if (anchor.getAttribute("href") !== path) anchor.setAttribute("href", path);
+      if (anchor.textContent !== words.gone) anchor.textContent = words.gone;
+      if (anchor.title !== words.title) anchor.title = words.title;
+      anchor.setAttribute(ROW_LAST_HELD, "");
+      continue;
+    }
+    if (!anchor.hasAttribute(ROW_LAST_HELD)) continue;
+    anchor.removeAttribute(ROW_LAST_HELD);
+    anchor.removeAttribute("title");
+    const route = parseNodeReference(reference);
+    if (route !== undefined) anchor.setAttribute("href", buildReferencePath(route));
   }
 }

@@ -34,6 +34,11 @@ interface PublishedReferences {
   readonly ambiguous: ReadonlySet<string>;
   readonly deleted: ReadonlyMap<string, PostDeletion>;
   readonly edited: ReadonlySet<string>;
+  /** Beside the four, from the same read, where the page publishes its whole batch
+   *  (`usePublishReferenceBatch`): each reference the read answered gone, with the version that
+   *  last held it where the read names one (`useKnownLastHeldReferences`, R9 of INFRA-5705).
+   *  Absent from a value `usePublishReferenceNames` publishes, which names none. */
+  readonly lastHeld?: ReadonlyMap<string, string | undefined>;
   readonly names: ReadonlyMap<string, string>;
 }
 
@@ -49,12 +54,16 @@ const NO_EDITED: ReadonlySet<string> = new Set();
 /** No deleted reference: what a page that published none has read. */
 const NO_DELETED: ReadonlyMap<string, PostDeletion> = new Map();
 
+/** No version that last held a reference: what a page that published none has read. */
+const NO_LAST_HELD: ReadonlyMap<string, string | undefined> = new Map();
+
 /** What a reader sees while no page publishes, and outside the provider: no name, no ambiguous
  *  reference, no edited one and no deleted one. */
 const NOTHING_PUBLISHED: PublishedReferences = {
   ambiguous: NO_AMBIGUOUS,
   deleted: NO_DELETED,
   edited: NO_EDITED,
+  lastHeld: NO_LAST_HELD,
   names: NO_NAMES,
 };
 
@@ -94,12 +103,16 @@ const ReferenceNamesRegistry = createContext<(publication: Publication) => void>
  * references are the union of every publisher's. A publisher whose map or set is empty adds
  * nothing to it, so where one publisher alone has names, or ambiguous references, readers get its
  * own map or set as it published it, and no copy is made.
+ * The versions that last held a gone reference (`lastHeld`) are the union of every publisher's
+ * as the ambiguous references are, the one that published last standing where two name one
+ * reference, and a publisher alone that names any hands readers its own map.
  */
 function merged(publications: ReadonlyMap<string, PublishedReferences>): PublishedReferences {
   if (publications.size === 0) return NOTHING_PUBLISHED;
   const published = [...publications.values()];
   const naming = published.filter((value) => value.names.size > 0);
   const ambiguous = published.map((value) => value.ambiguous).filter((set) => set.size > 0);
+  const lastHeld = published.flatMap((value) => (value.lastHeld?.size ? [value.lastHeld] : []));
   return {
     ambiguous:
       ambiguous.length > 1
@@ -107,6 +120,10 @@ function merged(publications: ReadonlyMap<string, PublishedReferences>): Publish
         : (ambiguous[0] ?? NO_AMBIGUOUS),
     deleted: naming.length > 1 ? deletedOfLast(naming) : (naming[0]?.deleted ?? NO_DELETED),
     edited: naming.length > 1 ? editedOfLast(naming) : (naming[0]?.edited ?? NO_EDITED),
+    lastHeld:
+      lastHeld.length > 1
+        ? new Map(lastHeld.flatMap((map) => [...map]))
+        : (lastHeld[0] ?? NO_LAST_HELD),
     names:
       naming.length > 1
         ? new Map(naming.flatMap((value) => [...value.names]))
@@ -183,6 +200,33 @@ export function usePublishReferenceNames(
   }, [ambiguous, deleted, edited, names, publisher, register]);
 }
 
+/**
+ * Publishes the page's whole batch: `names`, with `ambiguous`, `edited` and `deleted` beside them
+ * as `usePublishReferenceNames` publishes them, and `lastHeld`, each reference the read answered
+ * gone with the version that last held it where the read names one (R9 of INFRA-5705), all five
+ * from one read and in one registration, for as long as the calling page is mounted. The issue
+ * page's one names read publishes so (`useIssueTree`); every other page publishes its four. All
+ * five must be stable across renders (`useMemo`), as the four must.
+ */
+export function usePublishReferenceBatch(
+  names: ReadonlyMap<string, string> | undefined,
+  ambiguous: ReadonlySet<string>,
+  edited: ReadonlySet<string>,
+  deleted: ReadonlyMap<string, PostDeletion>,
+  lastHeld: ReadonlyMap<string, string | undefined>
+): void {
+  const register = useContext(ReferenceNamesRegistry);
+  // The key this publisher's value is held under, as `usePublishReferenceNames` keys its own.
+  const publisher = useId();
+  useEffect(() => {
+    register({
+      published: { ambiguous, deleted, edited, lastHeld, names: names ?? NO_NAMES },
+      publisher,
+    });
+    return () => register({ published: undefined, publisher });
+  }, [ambiguous, deleted, edited, lastHeld, names, publisher, register]);
+}
+
 /** The name the page read for `reference`, the words alone, or `undefined` where it read none
  *  and the caller must read its own. A reference in `useKnownEditedReferences` is drawn with
  *  ` · edited` after what the caller's cut leaves of it: in one string by `editedName`, as a
@@ -225,4 +269,14 @@ export function useKnownEditedReferences(): ReadonlySet<string> {
  *  line from the delete instead, the actor named as the page names an author (`RowText.tsx`). */
 export function useKnownDeletedReferences(): ReadonlyMap<string, PostDeletion> {
   return useContext(ReferenceNamesContext).deleted;
+}
+
+/** Every reference the page read gone, by reference, with the pinned `dispatch://` address of
+ *  the version that last held it where the read names one (`ReferenceTarget.last_held`, R9 of
+ *  INFRA-5705), and undefined where it names none; empty where the page published no batch
+ *  (`usePublishReferenceBatch`). None of them has a name (`useKnownReferenceName`): a row's words
+ *  draw one with a version as the page's gone word linked to that version (`RowText.tsx`,
+ *  `row-references.ts`), as the row's chip draws one (`NodeRow.tsx`'s `Chip`). */
+export function useKnownLastHeldReferences(): ReadonlyMap<string, string | undefined> {
+  return useContext(ReferenceNamesContext).lastHeld ?? NO_LAST_HELD;
 }

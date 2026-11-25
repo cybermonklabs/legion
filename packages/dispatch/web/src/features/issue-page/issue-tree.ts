@@ -23,7 +23,9 @@ import type { GapKind, NodeState, NodeType } from "./page-words";
 import { storedReading } from "./stored-reading";
 import {
   addDecisions,
+  addLastHeldChips,
   type Draft,
+  lastHeldOf,
   type TreeContext,
   titleReading,
   treeContext,
@@ -106,6 +108,13 @@ export interface NodeChip {
   /** The page's word for the edge this chip is, where the edge has one: a plan task's `needs`
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
+  /** The `dispatch://` address of the version that last held the target, where the batched
+   *  reference read answers it gone with one (`ReferenceTarget.last_held`, R9 of INFRA-5705): a
+   *  block of a document pinned to a version, which the row's chip draws as its gone word linked
+   *  to that version on the page (`NodeRow.tsx`'s `Chip`, `graph-edit/last-held.ts`). Absent for
+   *  every target something answers to, and for a gone one the read names no version of
+   *  (`lastHeldOf`). */
+  readonly lastHeld?: string;
   /** The words shown for the target (`treeContext`): a block's first line, as a row draws one
    *  (R1), cut from the first block of the server's reading of its words (`lineWords`); where the
    *  read answered with no reading or one that holds no words, the page's word for the block's
@@ -764,6 +773,10 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   if (tree === undefined) return assemble(reads.issue, [], words.chipOf);
   const drafts = treeDraftsFrom(tree, reads, words);
   addDecisions(drafts, reads, words, () => askNodeIds(drafts, tree, reads));
+  // A node its words cite that the names read answers deleted, with the version that last held
+  // it, is a chip of the row as well (R9 of INFRA-5705), so the chip and the words open one
+  // version.
+  addLastHeldChips(drafts, reads, words);
   const root = assemble(reads.issue, [...drafts.values()], words.chipOf);
   return nextTreeCursor(tree) === undefined ? root : { ...root, moreToRead: true };
 }
@@ -823,6 +836,26 @@ export function targetNaming(reads: IssueTreeReads): {
     if (deletion !== null) deleted.set(target.ref, deletion);
   }
   return { ambiguous, deleted, edited, names };
+}
+
+/**
+ * What the page publishes beside its names for every link beside the tree to draw
+ * (`reference-names.tsx`'s `usePublishReferenceBatch`): each target of the batched reference read
+ * (`reads.targets`) that is gone, by its address, with the version that last held it where the
+ * read names one, read by the rule a chip naming the target carries it by (`lastHeldOf`,
+ * `NodeChip.lastHeld`), so a chip and a reference in a node's words open one version (R9 of
+ * INFRA-5705), and undefined where it names none. A short reference the read answered ambiguous
+ * is left out: it names no one target, gone or not (`NodeChip.ambiguous`). No reference in it is
+ * in `targetNaming`'s `names`: a gone target is named by nothing.
+ */
+export function targetLastHeld(
+  targets: IssueTreeReads["targets"]
+): ReadonlyMap<string, string | undefined> {
+  const lastHeld = new Map<string, string | undefined>();
+  for (const target of targets ?? []) {
+    if (target.gone && target.ambiguous !== true) lastHeld.set(target.ref, lastHeldOf(target));
+  }
+  return lastHeld;
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

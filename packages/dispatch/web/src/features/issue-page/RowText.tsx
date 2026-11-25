@@ -29,10 +29,13 @@ import {
   useKnownAmbiguousReferences,
   useKnownDeletedReferences,
   useKnownEditedReferences,
+  useKnownLastHeldReferences,
   useKnownReferenceNames,
 } from "./reference-names";
 import {
   knownIssueKeys,
+  lastHeldRowPath,
+  linkLastHeldReferences,
   linkRowReferences,
   ROW_LINK,
   rowReferences,
@@ -62,6 +65,9 @@ import {
  * a gone one, or one the read has not answered yet - keeps its link, by its short form. The row
  * asks the server nothing for it (R21), so the body's own link pass, which reads one target for
  * each reference, is given nothing to link.
+ * One the read answered gone with the version that last held it (`useKnownLastHeldReferences`)
+ * reads the page's gone word instead, linked to that version and titled so, as the row's chip
+ * draws it (`NodeRow.tsx`'s `Chip`, R9 of INFRA-5705).
  *
  * A reference to a post its author corrected reads as the page published it (INFRA-1523, R2 and
  * R3): a post its author edited by its words, cut, then ` · edited` (`rowReferenceWords`,
@@ -195,6 +201,14 @@ const ROW_CHIP = "data-row-chip";
 /** The mark the deleted line carries wherever it is drawn (`DeletedBody`, `RefLink`). */
 const POST_DELETED = "data-post-deleted";
 
+/** What a row's link to a reference the read answered gone with the version that last held it
+ *  reads, and its title (R9 of INFRA-5705): the gone word and the title the row's chip draws
+ *  (`NodeRow.tsx`'s `Chip`). */
+const LAST_HELD_WORDS = {
+  gone: CONTROL_LABELS.target_gone,
+  title: CONTROL_LABELS.last_held_title,
+} as const;
+
 /** A typed block's source line in a node's words: its opening `:::requirement{#r1}`, or its
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
  *  decision's text holds the lines of a typed block inside its own `decision` block, and both
@@ -250,6 +264,7 @@ function StoredText({
   const ambiguous = useKnownAmbiguousReferences();
   const edited = useKnownEditedReferences();
   const deleted = useKnownDeletedReferences();
+  const lastHeld = useKnownLastHeldReferences();
   const { author } = useAgentText();
   const names = useMemo(
     () => chipNames(read, markdown, deleted, author),
@@ -265,6 +280,28 @@ function StoredText({
     // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
     <p className="whitespace-pre-wrap [overflow-wrap:anywhere]" onClick={follow} {...authorText}>
       {found.map((one) => {
+        // A reference the read answered gone with the version that last held it links to that
+        // version, with the page's gone word (`LAST_HELD_WORDS`).
+        const heldPath = lastHeldRowPath(one.reference, names, lastHeld);
+        if (heldPath !== undefined) {
+          const text = markdown.slice(at, one.start);
+          at = one.end;
+          return (
+            <Fragment key={`${one.start}:${one.reference}`}>
+              {text}
+              <a
+                className={ROW_LINK}
+                data-row-chip=""
+                data-row-reference={one.reference}
+                href={heldPath}
+                tabIndex={tabStops ? undefined : -1}
+                title={LAST_HELD_WORDS.title}
+              >
+                {LAST_HELD_WORDS.gone}
+              </a>
+            </Fragment>
+          );
+        }
         const before = markdown.slice(at, one.start);
         at = one.end;
         const { key, words } = rowReferenceWords(one, names, edited);
@@ -552,6 +589,12 @@ function DrawnText({
   const ambiguous = useKnownAmbiguousReferences();
   const edited = useKnownEditedReferences();
   const deleted = useKnownDeletedReferences();
+  // The versions that last held a gone reference, which the link pass reads at each paint, as it
+  // reads the page's address: the page publishes them with the names, from one read
+  // (`reference-names.tsx`), so the names it runs again for change with them.
+  const published = useKnownLastHeldReferences();
+  const lastHeld = useRef(published);
+  lastHeld.current = published;
   const { author } = useAgentText();
   const names = useMemo(
     () => chipNames(read, markdown, deleted, author),
@@ -565,6 +608,7 @@ function DrawnText({
     if (element === null) return;
     dropDirectiveLines(element);
     linkRowReferences(element, names, ambiguous, edited);
+    linkLastHeldReferences(element, names, lastHeld.current, LAST_HELD_WORDS);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
       const route = parseNodeReference(reference);

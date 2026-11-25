@@ -26,6 +26,8 @@ import {
   namedBy,
   useAddressFallback,
   useAddressTarget,
+  useLastHeldAddress,
+  useUnqualifiedLastHeld,
 } from "../address-target";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
@@ -48,8 +50,10 @@ import {
   useNextTreePage,
   useOlderComments,
   useReadUntilHeld,
+  useTreeRead,
 } from "../tree-read/tree-read";
 import { TreeReadFailed } from "../tree-read/view-read";
+import { treeReferences } from "../useIssueTree";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
 import { useFollowing } from "./following";
@@ -182,8 +186,40 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // the body draws for the row to take onto its own stage (`useOutlineEditing`).
   const { onEditing, panels } = useOutlineEditing(issue);
   const isClosed = issue.closed_at !== null;
+  // A document's address whose `#b-` fragment names a block the outline read lacks, once every
+  // read the tree is built from has answered and the outline read is held whole, opens the
+  // version that last held the block, or the same address without it, with no line (R9 of
+  // INFRA-5705, `useLastHeldAddress`), by one read of its own where the tree cites the block
+  // nowhere, since the names read then names it not. The Spec view's own address is its slot's
+  // (`view-spec.tsx`), and an address naming no document is `useUnqualifiedLastHeld`'s (below).
+  const outlineAnswer = useTreeRead(issue).answer;
+  const opened = useLastHeldAddress({
+    address,
+    cites: (reference) => treeReferences(root).includes(reference),
+    held: readsHeld ? outlineAnswer : undefined,
+    reveal: addressed.reveal,
+    route,
+  });
+  // An address on the issue's own address, Graph's, or the Plan or Verification filter's whose
+  // `#b-` fragment names a block no read holds, where the outline would say in its place that no
+  // row stands for it, sends one `reference-targets` read of the block in each document of the
+  // issue, and opens the one version its answer names, else the same address without the
+  // fragment, with no line (R9 and R12 of INFRA-5705, the architect's decision on plan task t12,
+  // `useUnqualifiedLastHeld`). The outline stays drawn while that read is out, and its landing
+  // waits on it; where it is refused, the line is drawn as before. The Decisions filter's address
+  // and every other address keep the line.
+  const unqualified = useUnqualifiedLastHeld({
+    absent:
+      undrawn === undefined && fallback?.kind === "absent" && fallback.target.kind === "block",
+    address,
+    issue,
+    others: [root.views?.spec, root.views?.verification, root.views?.plan, graph.data],
+    outline: outlineAnswer,
+    route,
+  });
   return (
     <NoTooltips>
+      {opened === undefined ? null : <Navigate replace to={opened} />}
       {given === undefined && <ReaderActsWatch into={own} key={following} />}
       {/* The outline's measure, the prototype's `#pane`: at most 1000 px, in the middle of the
           column. On a phone 4 px from the left edge and 10 px from the right, as the
@@ -200,11 +236,14 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
         <TreeReadFailed issue={issue} />
         {undrawn !== undefined ? (
           <Navigate replace to={viewPath(key, undrawn, keptZoom, search, hash)} />
+        ) : unqualified.opened !== undefined ? (
+          // In the outline's place, as `undrawn`'s address: the address it opens draws itself.
+          <Navigate replace to={unqualified.opened} />
         ) : fallback?.kind === "landing" ? (
           // Keyed on the following, so a link to the same item followed again is drawn anew and
           // takes the focus again.
           <ItemFallback fallback={fallback} key={following} takesFocus={takesFocus} />
-        ) : fallback?.kind === "absent" && fallback.target.kind !== "node" ? (
+        ) : fallback?.kind === "absent" && fallback.target.kind !== "node" && !unqualified.out ? (
           // Keyed on the following, as the item's own page is.
           <NotFoundLine
             heading={ABSENT_LINES[fallback.target.kind].heading}
@@ -236,7 +275,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             older={older}
             onEditing={onEditing}
             readsHeld={readsHeld}
-            readsSettled={readsSettled && !readingPages && !graphOut}
+            readsSettled={readsSettled && !readingPages && !graphOut && !unqualified.out}
             {...(request === undefined ? {} : { request })}
             // The children's own address lands on their section above the outline
             // (`children-section.tsx`), and on no row of the outline (R14).
@@ -531,7 +570,10 @@ const ITEM_NOUNS: Readonly<Record<ItemRoute["kind"], string>> = {
 
 /** What the page says in the outline's place of a block or the children an address names that
  *  the tree holds no node of (`absent`), for the issue `key`. A node no read holds has no line:
- *  its address opens the outline's own address without it (`addressView`). */
+ *  its address opens the outline's own address without it (`addressView`). Nor does a block on
+ *  the issue's own address, Graph's, or the Plan or Verification filter's once its one read has
+ *  answered (`useUnqualifiedLastHeld`); the line stays there where that read is refused, and
+ *  where a read the address's view draws from is refused, has a page left or holds the block. */
 const ABSENT_LINES: Readonly<
   Record<
     Exclude<Extract<AddressFallback, { kind: "absent" }>["target"]["kind"], "node">,

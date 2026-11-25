@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
-import { useLocation } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
@@ -31,7 +31,7 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   // on those alone (`SpecFilterBody`). The names read is the tree's, and the view draws from it
   // too - the name of every reference the three sentences and a plain line cite - so its line's
   // state while it stands failed (`namesFailure`) is passed on for the body to draw.
-  const { namesFailure, root } = useIssueTree(issue);
+  const { lastHeldAddress, namesFailure, root } = useIssueTree(issue);
   // Who is reading, so a decision of theirs reads as their own words (R5).
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // The address's own node, resolved against the whole tree and kept by the view
@@ -45,6 +45,11 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   const request = useOutlineRequest();
   return (
     <NoTooltips>
+      {/* A block the address names by its `#b-` fragment that the read the view draws from lacks
+          opens the version that last held it, or the view without the block (R9 of INFRA-5705,
+          `IssueTreeView.lastHeldAddress`). The view stays drawn until the router moves, so each
+          tree beside it keeps the names read it holds. */}
+      {lastHeldAddress === undefined ? null : <Navigate replace to={lastHeldAddress} />}
       {/* The view's measure, the prototype's `.spec`: at most 1080 px, in the middle of the
           column; on a phone 4 px from the left edge and 10 px from the right, as the outline. */}
       <div className="mx-auto flex w-full max-w-[1080px] min-w-0 flex-col max-[761px]:-mr-1 max-[761px]:-ml-2.5 max-[761px]:w-auto">

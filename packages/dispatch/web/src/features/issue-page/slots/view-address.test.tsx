@@ -363,24 +363,60 @@ test("fragments the browser changes under one key each land under the Plan view:
 
 // The outline decides each following of an address once: one whose tree has held the address's
 // node draws no line in the outline's place for the rest of it. A fragment the browser changes
-// under the one key "default", from a block the tree holds to one no node carries, is a following
-// of its own, so the outline says it has no row for the new block, with the focus on that line.
-test("a fragment the browser changes under one key, from a block the tree holds to one no node carries, draws the outline's line that says so, with the focus on it", async () => {
+// under the one key "default", from a block the tree holds to one no read holds, is a following of
+// its own: the page reads the block once in each document of the issue, and where no document
+// answers a version that last held it, the address opens without the fragment, with no line (R9 of
+// INFRA-5705, the architect's decision on its plan task t12). The outline is drawn there.
+test("a fragment the browser changes under one key, from a block the tree holds to one no read holds, opens the address without it, with no line", async () => {
   answerVerificationReads();
+  const blockReads: string[][] = [];
+  spyOn(api, "getReferenceTargets").mockImplementation(async (refs: string[]) => {
+    if (refs.includes(specRef("no-such-block"))) blockReads.push(refs);
+    return { targets: [] };
+  });
   const conversation = presetPath(KEY, "conversation");
-  const view = drawAtBrowserEntry(`${conversation}#b-${STATEMENT}`, verifiedIssue());
-  await rowTakesFocus(view, STATEMENT_ROW, "the statement's fragment");
-  view.follow(`${conversation}#b-no-such-block`);
-  const heading = await waitFor(
-    () => view.getByRole("heading", { name: "No row for this block" }),
-    {
-      onTimeout: () =>
-        new Error(
-          `the fragment of a block no node carries, under the same key, drew no line saying so; the focus is on ${focusedRow() ?? document.activeElement?.tagName}`
-        ),
-    }
+  // A router that keeps the browser's one key, and records where the page replaces the address.
+  const replaced: string[] = [];
+  const navigator: Navigator = {
+    createHref: (to) => (typeof to === "string" ? to : createPath(to)),
+    go: () => {},
+    push: () => {},
+    replace: (to) => {
+      replaced.push(typeof to === "string" ? to : createPath(to));
+    },
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const draw = (at: string): ReactNode => (
+    <Router location={at} navigator={navigator}>
+      <AppProviders client={client}>
+        <SeenStage issue={verifiedIssue()} />
+      </AppProviders>
+    </Router>
   );
-  await waitFor(() => expect(heading).toHaveFocus());
+  const view = render(draw(`${conversation}#b-${STATEMENT}`));
+  await rowTakesFocus(view, STATEMENT_ROW, "the statement's fragment");
+  expect(replaced, "the statement's fragment replaced the address").toEqual([]);
+  view.rerender(draw(`${conversation}#b-no-such-block`));
+  await waitFor(() =>
+    expect(
+      replaced,
+      "the fragment of a block no read holds, under the same key, did not open the address without it"
+    ).toEqual([conversation])
+  );
+  expect(blockReads, "the block was read other than once").toHaveLength(1);
+  expect(
+    view.queryByRole("heading", { name: "No row for this block" }),
+    "the fragment of a block no read holds drew the line that the outline has no row for it"
+  ).toBeNull();
+  // The address the page replaced it with draws the outline, with no line.
+  view.rerender(draw(conversation));
+  await waitFor(() =>
+    expect(
+      view.container.querySelector(STATEMENT_ROW),
+      `the address without the fragment drew no outline; the stage drew ${drawnSlot(view)}`
+    ).not.toBeNull()
+  );
+  expect(view.queryByRole("heading", { name: "No row for this block" })).toBeNull();
 });
 
 // The outline lands on the address's node until the reader's first act since they followed the

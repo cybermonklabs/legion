@@ -996,7 +996,7 @@ test("Retype gives a prose block another kind", async ({ browser }) => {
     );
 
     // A new prose block under the question becomes a criterion, which stands under the question.
-    await landOn(page, key, ids.question, "the question");
+    await landOn(page, key, ids.questionRow, "the question");
     const toCriterion = await newRowUnder(page, sent, TYPED.retypedCriterion, "the question");
     await landOn(page, key, toCriterion, "the new prose block under the question");
     await openRowMenu(page, "m", "the new prose block under the question");
@@ -1293,7 +1293,7 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
     const sent = watchNodeRequests(page, key);
 
     for (const { id, reason, under, what } of [
-      { id: ids.question, reason: EDIT_LINES.grey_kind, under: true, what: "the question" },
+      { id: ids.questionRow, reason: EDIT_LINES.grey_kind, under: true, what: "the question" },
       { id: ids.comment, reason: EDIT_LINES.grey_kind, under: true, what: "the comment" },
       { id: ids.message, reason: EDIT_LINES.grey_kind, under: true, what: "the person's message" },
       { id: ids.result, reason: EDIT_LINES.grey_kind, under: false, what: "the result" },
@@ -1340,7 +1340,7 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
 
     // Both submenus fit the screen too: Lens's on the question, and Retype's on the prose block,
     // the one node of the seed Retype is offered on.
-    await landOn(page, key, ids.question, "the question");
+    await landOn(page, key, ids.questionRow, "the question");
     await openRowMenu(page, "press", "the question");
     await menuEntry(page, LENS_WORDS.act).click();
     await expect(rowSubmenu(page), "Lens opens no submenu on the question").toBeVisible();
@@ -1697,7 +1697,10 @@ test("a citation of a node deleted in Graph opens the version that last held it 
       url.searchParams.get("v") === String(version) &&
       url.hash === "#b-s3";
     const row = await landOn(page, key, citing.id, "the second comment");
-    const link = rowWords(row).getByRole("link", { exact: true, name: CONTROL_LABELS.target_gone });
+    // Row edges follow the text in the same container. Select the inline citation itself.
+    const link = rowWords(row)
+      .getByRole("link", { exact: true, name: CONTROL_LABELS.target_gone })
+      .and(row.locator("a[data-row-reference]"));
     await expect(link, "the reference links to the version that last held it").toHaveAttribute(
       "href",
       address

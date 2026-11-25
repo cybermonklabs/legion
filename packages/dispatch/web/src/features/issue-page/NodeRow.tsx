@@ -37,6 +37,7 @@ import { openChildEntry } from "./children-section";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
+import { lastHeldPath } from "./graph-edit/last-held";
 import { RowEditLine, RowMenu } from "./graph-edit/RowMenu";
 import type { RowEdit } from "./graph-edit/row-edits";
 import { ChildIssueFacts } from "./IssueChildren";
@@ -1319,6 +1320,10 @@ function Chip({
     );
   if (!gone && words === "") return null;
   const route = chip.gone ? undefined : target;
+  // A target the read answers gone with the version that last held it opens that version on the
+  // page (R9 of INFRA-5705), by the page's own address of it and never the address as written: a
+  // `last_held` the page cannot read opens nothing, and the chip draws as any gone one does.
+  const lastHeld = gone && chip.lastHeld !== undefined ? lastHeldPath(chip.lastHeld) : undefined;
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (
@@ -1327,7 +1332,21 @@ function Chip({
       {/* A sentence about the target, so a colon sets it apart from the target's own words. */}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
       {gone ? (
-        <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
+        lastHeld === undefined ? (
+          <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
+        ) : (
+          // Its words are the page's, as a gone chip's are, and it is out of the tab order as the
+          // chip's own link is (below).
+          <Link
+            className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
+            tabIndex={tabStops ? undefined : -1}
+            title={CONTROL_LABELS.last_held_title}
+            to={lastHeld}
+            {...pageChrome}
+          >
+            {CONTROL_LABELS.target_gone}
+          </Link>
+        )
       ) : route === undefined ? (
         // An address as written may run longer than the line, so it alone may wrap.
         <span className={ambiguous ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>

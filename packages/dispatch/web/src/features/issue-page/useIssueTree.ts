@@ -1,7 +1,9 @@
 import { hashKey, queryOptions, useQueries, useQuery } from "@tanstack/react-query";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { primarySpec } from "../../api/issue-cache";
 import {
   issueCoverageQuery,
   issueResultsQuery,
@@ -14,15 +16,19 @@ import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import type { PostDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
+import { parseIssuePath } from "../refs/routes";
+import { lastHeldAsk, lastHeldOpening, lastHeldReference } from "./address-target";
+import { issueAddress, pathToTarget } from "./issue-address";
 import {
   buildIssueTree,
   type IssueTreeReads,
   nodeWords,
   type TreeNode,
   type TreeViews,
+  targetLastHeld,
   targetNaming,
 } from "./issue-tree";
-import { usePublishReferenceNames } from "./reference-names";
+import { usePublishReferenceBatch } from "./reference-names";
 import { citedReferences } from "./row-references";
 import { type TreeAnswer, type TreeRead, useTreeRead, viewQuery } from "./tree-read/tree-read";
 import { useLineRefusals } from "./useLineRefusals";
@@ -31,6 +37,13 @@ import { useLineRefusals } from "./useLineRefusals";
  *  built from what that read holds, and keeps standing on it through a refetch that fails. */
 export interface IssueTreeView
   extends Pick<TreeRead, "blocksHeld" | "blocksOf" | "blocksRead" | "failed" | "pending"> {
+  /** Where the page's address opens instead (R9 of INFRA-5705): on the Spec view's own address
+   *  naming, by its `#b-` fragment, a block the read the view draws from lacks, once the names
+   *  read under a set that holds the block's reference has answered, the version that last held
+   *  the block, or the same address without its fragment where none is named
+   *  (`address-target.ts`' `lastHeldOpening`). Undefined for every other address, and while that
+   *  read is out or answers the block live. The Spec view's slot opens it (`view-spec.tsx`). */
+  readonly lastHeldAddress: string | undefined;
   /** The names line's state while the names stand failed (`useLineRefusals`), and none while
    *  they do not: what a view reads to draw the page's line that the names failed. The names
    *  are the batched names read's (`useIssueTree`); they stand failed from a failure of that read
@@ -86,7 +99,7 @@ export interface NamesFailure {
  * `citedReferences` (`row-references.ts`), over the one reader of a text's citations
  * (`text-references.ts`).
  */
-function treeReferences(root: TreeNode): string[] {
+export function treeReferences(root: TreeNode): string[] {
   const refs = new Set<string>();
   const walk = (node: TreeNode): void => {
     for (const chip of [...node.chips, ...node.alsoUnder]) refs.add(chip.ref);
@@ -113,6 +126,11 @@ const NO_EDITED_TARGETS: ReadonlySet<string> = new Set();
 /** The references the page publishes as deleted until the batched name read answers: none, and
  *  the same empty map on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_DELETED_TARGETS: ReadonlyMap<string, PostDeletion> = new Map();
+
+/** The versions that last held a gone reference the page publishes until the batched name read
+ *  answers: none, and the same empty map on every render, as `NO_TARGET_NAMES` is the same empty
+ *  map. */
+const NO_LAST_HELD_TARGETS: ReadonlyMap<string, string | undefined> = new Map();
 
 /** The set of addresses the batched names read is given until the gate first opens: none, and
  *  the same empty set on every render, so the read's options are made once meanwhile. */
@@ -387,6 +405,53 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     !messages.isPending &&
     !results.isPending &&
     !who.isPending;
+  // R9 and R12 of INFRA-5705: the Spec view's own address naming, by its `#b-` fragment, a block
+  // the read the view draws from conclusively lacks - its own view read once held, else the
+  // outline read, as `presetView` draws it, with no page of it left, and no node of the block in
+  // it or in the tree drawn from the reads (`lastHeldAsk`) - adds that block's reference to this
+  // one names read, where the tree does not cite it already, so its answer says where the block
+  // went (`lastHeldAddress`) and no read of its own is sent. The gate waits for that view read
+  // while it is out with no read in hand to tell the block absent by, and opens as before for
+  // every other address, which adds nothing. One such reference at most is in the set: the one
+  // the address asks now, else the one it asked last, which stays until another address asks one,
+  // so the address the answer opens - which pins a version and so names no block to ask for -
+  // reads the same set from the cache and sends nothing.
+  const { hash, pathname, search } = useLocation();
+  const route = parseIssuePath(pathname, search);
+  const address =
+    route?.kind === "spec"
+      ? issueAddress(route, search, hash, primarySpec(issue)?.slug)
+      : undefined;
+  const addressed =
+    route === undefined || address === undefined
+      ? undefined
+      : lastHeldReference(route, address, hash);
+  const block = address?.target?.kind === "block" ? address.target : undefined;
+  const blockDocument = block?.document;
+  const blockId = block?.id;
+  const reveal = useMemo(
+    () =>
+      addressed === undefined || blockId === undefined
+        ? undefined
+        : pathToTarget(unnamed, { document: blockDocument, id: blockId, kind: "block" }),
+    [addressed, blockDocument, blockId, unnamed]
+  );
+  const viewHeld = spec ?? read.answer;
+  const missing =
+    route === undefined || address === undefined
+      ? undefined
+      : lastHeldAsk({ address, hash, held: viewHeld, reveal, route });
+  const [kept, setKept] = useState<string | undefined>(undefined);
+  if (missing !== undefined && missing !== kept) setKept(missing);
+  const extra = missing ?? kept;
+  const asked = useMemo(
+    () => (extra === undefined || refs.includes(extra) ? refs : [...refs, extra]),
+    [extra, refs]
+  );
+  const addressOut =
+    addressed !== undefined &&
+    viewHeld === undefined &&
+    viewReads[TREE_FILTERS.indexOf("spec")].fetchStatus !== "idle";
   // The last answer stands while the next one loads and after it fails, because the key is the
   // set of addresses itself: one comment, message, ask or block arriving changes that set, and
   // without this the whole page would fall back to no names at all - every chip with its raw
@@ -412,7 +477,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // read that ran answers with words that cite an address the tree did not hold, the gate opens
   // on a new set, and the line stays while the read under it is out, with the same alert and the
   // focus its Retry holds (`useLineRefusals`). Until the gate first opens the set is none.
-  const askedFor = useLastAnswer(answered ? refs : undefined) ?? NO_REFS;
+  const askedFor = useLastAnswer(answered && !addressOut ? asked : undefined) ?? NO_REFS;
   const targetsQuery = useMemo(() => referenceTargetsQuery(askedFor), [askedFor]);
   const targetsHash = useMemo(() => hashKey(targetsQuery.queryKey), [targetsQuery]);
   const targets = useQuery({ ...targetsQuery, ...EVENT_FRESH });
@@ -424,6 +489,17 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     enabled: false,
   });
   const answer = targets.data ?? heldAnswer.data;
+  // Where the Spec view's address opens instead (`IssueTreeView.lastHeldAddress`): read only from
+  // the answer of the set the names read is asked under, once that set holds the block's
+  // reference, and never from an older set's (`heldAnswer`), which may name the block as it
+  // stood before.
+  const lastHeldAddress = useMemo(() => {
+    if (missing === undefined || targets.data === undefined || !askedFor.includes(missing)) {
+      return undefined;
+    }
+    const member = (targets.data.targets ?? []).find((one) => one.ref === missing);
+    return lastHeldOpening(member, `${pathname}${search}`);
+  }, [askedFor, missing, pathname, search, targets.data]);
   const named = useMemo(
     () => (answer === undefined ? undefined : (answer.targets ?? [])),
     [answer]
@@ -470,19 +546,26 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // of any other read - an ask, a comment, the coverage, the reader's login - publishes nothing
   // new, which would draw every link beside the tree again. Until the names answer there is
   // nothing to publish.
-  const { ambiguous, deleted, edited, names } = useMemo(
+  // Beside them go the versions that last held each gone reference, by the rule its chip
+  // carries one by (`targetLastHeld`, R9 of INFRA-5705), so a reference in a node's words opens
+  // the version its chip does.
+  const { ambiguous, deleted, edited, lastHeld, names } = useMemo(
     () =>
       named === undefined
         ? {
             ambiguous: NO_AMBIGUOUS_TARGETS,
             deleted: NO_DELETED_TARGETS,
             edited: NO_EDITED_TARGETS,
+            lastHeld: NO_LAST_HELD_TARGETS,
             names: NO_TARGET_NAMES,
           }
-        : targetNaming({ issue, targets: named, tree: read.answer }),
+        : {
+            ...targetNaming({ issue, targets: named, tree: read.answer }),
+            lastHeld: targetLastHeld(named),
+          },
     [issue, named, read.answer]
   );
-  usePublishReferenceNames(names, ambiguous, edited, deleted);
+  usePublishReferenceBatch(names, ambiguous, edited, deleted, lastHeld);
   const built = useMemo(
     () => (named === undefined ? unnamed : builtTree({ ...reads, targets: named })),
     [named, reads, unnamed]
@@ -543,6 +626,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       blocksOf: read.blocksOf,
       blocksRead: read.blocksRead,
       failed: read.failed,
+      lastHeldAddress,
       namesFailure,
       namesHeld,
       pending: read.pending,
@@ -553,6 +637,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       read.blocksOf,
       read.blocksRead,
       read.failed,
+      lastHeldAddress,
       namesFailure,
       namesHeld,
       read.pending,
