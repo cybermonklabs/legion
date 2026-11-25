@@ -741,13 +741,17 @@ type replacementReading struct {
 // claims the round asks that answered it (answeredClaims), the claims that hold the replacement
 // for an answer (unanswered, unansweredClaims), the roles whose turns run, and the roles whose
 // activity reports hold the round (backgroundClaims). It is what the line of a replacement the
-// bound made names (replacePodForRound).
+// bound made names (replacePodForRound). lineWritten is whether that line is written already: the
+// walk ends a round whose pod a launch replaced with the launch's reading at each sweep until the
+// store finishes the replacement's record (endRoundALaunchReplaced), and only the first end writes
+// the line (the Legion reviewer's item 1 on #5285 at 69e00593).
 type roundEnd struct {
-	past       bool
-	answered   []supervise.Claim
-	unanswered []supervise.Claim
-	working    []string
-	background backgroundHold
+	past        bool
+	answered    []supervise.Claim
+	unanswered  []supervise.Claim
+	working     []string
+	background  backgroundHold
+	lineWritten bool
 }
 
 // holding is what holds the round's pod replacement at this reading of the round's end: before
@@ -1283,7 +1287,9 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	}
 	// The bound's line comes before the finish: the replacement is made, and a retry of a refused
 	// finish (finishReplacements) carries no reading of the bound, so this is the line's one chance.
-	if bounded {
+	// The walk's retry of a launch's replacement carries the launch's reading again, which says the
+	// line is written (roundEnd.lineWritten, endRoundALaunchReplaced).
+	if bounded && !ended.lineWritten {
 		s.log.Info("supervise pod update replaced at the bound",
 			append([]any{"issue", issue, "round", round, "pod", pod,
 				"answered", namesOf(ended.answered), "unanswered", namesOf(ended.unanswered), "working", ended.working},
@@ -2156,6 +2162,17 @@ func (s *supervision) launchReplaced(issue, round string) (replacedLaunch, bool)
 	return *at.replaced, true
 }
 
+// launchBoundLineWritten keeps that the bound's line of a launch's replacement of round's pod is
+// written (roundEnd.lineWritten), where podUpdateLaunchReplaced still holds that replacement: the
+// walk's next end of the round, after a finish the store refused, writes it no second time.
+func (s *supervision) launchBoundLineWritten(issue, round string) {
+	s.podUpdateLaunchMu.Lock()
+	defer s.podUpdateLaunchMu.Unlock()
+	if at := s.podUpdateLaunchReplaced[issue]; at != nil && at.round == round && at.replaced != nil {
+		at.replaced.ended.lineWritten = true
+	}
+}
+
 // forgetLaunchRound drops what podUpdateLaunchReplaced keeps of round for the issue: the sweep has
 // ended that round (endPodUpdates), and no launch is kept for it any more.
 func (s *supervision) forgetLaunchRound(issue, round string) {
@@ -2189,19 +2206,23 @@ func (s *supervision) forgetLaunchRounds(byIssue map[string][]supervise.Claim) {
 // names every member of the round that had not answered it, with a session or with none
 // (unansweredMembers: lostClaims, read unmasked as noticeGroup reads them), and what the pod's
 // launcher read of the workspace before the replacement (read); the bound's own line where the
-// bound let the replacement through (ended, what the launch read under the pod's launch turn); and,
-// where the read found work or failed, the architect's notice of what the replacement took
-// (finishReplacement). It is not podWentWithoutItsRound's end, which tells the issue that its pod
-// went before its round was over: this round was over, and its own replacement took the pod. The
-// in-memory record goes with the end (endPodUpdates), and the end comes once the notice is queued.
+// bound let the replacement through (ended, what the launch read under the pod's launch turn),
+// written at the first end alone, since a store that refuses the finish has the walk end the round
+// again at each sweep with the same reading (launchBoundLineWritten); and, where the read found
+// work or failed, the architect's notice of what the replacement took (finishReplacement). It is
+// not podWentWithoutItsRound's end, which tells the issue that its pod went before its round was
+// over: this round was over, and its own replacement took the pod. The in-memory record goes with
+// the end (endPodUpdates), and the end comes once the notice is queued.
 //
 // The read and the record are kept in memory, and the record in the store too: a daemon that
 // restarts between the launch and the sweep finishes the replacement from the store's record
 // (finishReplacements), as the round's own, from the read the launcher made before it.
 func (s *supervision) endRoundALaunchReplaced(ctx context.Context, issue string, group []supervise.Claim, round string, launch replacedLaunch) {
 	told := s.noticeGroup(group)
-	s.roundReplaced(ctx, issue, round, strings.TrimPrefix(round, supervise.PodRoundPrefix), roundReasons(told, round), launch.ended,
-		lostClaims(told, round), launch.read, told, launch.record, false)
+	if _, ended := s.roundReplaced(ctx, issue, round, strings.TrimPrefix(round, supervise.PodRoundPrefix), roundReasons(told, round), launch.ended,
+		lostClaims(told, round), launch.read, told, launch.record, false); !ended {
+		s.launchBoundLineWritten(issue, round)
+	}
 }
 
 // viewsRecordRound is whether a claim of the issue that has not retired records round, read from
