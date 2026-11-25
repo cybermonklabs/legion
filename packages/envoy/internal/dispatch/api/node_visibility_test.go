@@ -63,8 +63,14 @@ type privateNodeFixture struct {
 
 // author and reader are the two people of this test: the one who owns the private node and one
 // who owns none of it and acts for every read below.
-func privateNodeAuthor() model.Actor { return model.Actor{Kind: "user", ID: "alice"} }
-func privateNodeReader() model.Actor { return model.Actor{Kind: "user", ID: "bob"} }
+// Both read with a viewer that sees every project (model.ServerViewer), so the author rule alone
+// decides what each reads.
+func privateNodeAuthor() model.Actor {
+	return model.Actor{Kind: "user", ID: "alice", Viewer: model.ServerViewer}
+}
+func privateNodeReader() model.Actor {
+	return model.Actor{Kind: "user", ID: "bob", Viewer: model.ServerViewer}
+}
 
 // privateBlockID is the private block's own id inside its document, which a search hit names as
 // the block it matched (model.SearchResult.BlockID).
@@ -676,8 +682,11 @@ func requireOneAuthorRule(t *testing.T) {
 	if !bearer.SameCredential(model.Actor{}) {
 		t.Error("two holders of the shared bearer are two credentials, and the refusal below has no reason")
 	}
-	if refs.VisibilityArg(bearer) != nil {
+	if graphstore.ActingCredential(bearer) != nil {
 		t.Error("a credential that proves no author binds a name an author-private read could match")
+	}
+	if !strings.Contains(string(refs.VisibilityArg(bearer).([]byte)), `"author":null`) {
+		t.Errorf("the visibility argument of a credential that proves no author = %s, want its author null", refs.VisibilityArg(bearer))
 	}
 	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(bearer))
 	if !errors.Is(err, graphstoretest.ErrAuthorNamesNobody) {
