@@ -221,6 +221,11 @@ type Broker struct {
 	// handed the wait and the device authorization, which it may lapse, and the poll follows at once,
 	// so a test reads every wait without waiting it out. No production caller sets it.
 	testLoginWait func(wait time.Duration, da *oauth2.DeviceAuthResponse)
+	// testLoginNow, when set, takes the place of the clock readings Login makes around the device
+	// authorization's request: the moment it asks, and the two after the answer arrives. A test
+	// hands it the moments, so the round trip it measures is the one the test names, not the time
+	// the runner took. No production caller sets it.
+	testLoginNow func() time.Time
 
 	// unsaved is the held login whose save failed, while no save has landed since. The failed
 	// save removed the machine file at once (unsaveFile), since it named a token the broker had
@@ -503,7 +508,7 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 	cfg := b.oauthConfig()
 	ctx, reach := traceReach(ctx)
 	// Read before x/oauth2 reads its own start of the request, from which it dates the code's end.
-	asked := time.Now()
+	asked := b.loginNow()
 	da, err := cfg.DeviceAuth(context.WithValue(ctx, oauth2.HTTPClient, b.contextClient(ctx)),
 		oauth2.SetAuthURLParam("request", compact), oauth2.SetAuthURLParam("dpop_jkt", thumbprint))
 	if err != nil {
@@ -513,13 +518,22 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 		return "", reach.settle(errors.New("broker returned no device_code/user_code"))
 	}
 	named := da.Interval
-	hourEnds := cipherclient.BoundDeviceAuth(da, time.Now())
-	if left := time.Until(da.Expiry); time.Duration(da.Interval)*time.Second >= left {
+	hourEnds := cipherclient.BoundDeviceAuth(da, b.loginNow())
+	if left := da.Expiry.Sub(b.loginNow()); time.Duration(da.Interval)*time.Second >= left {
 		return "", unpollableCode(da.Expiry.Sub(asked), left, named, da.Interval, hourEnds)
 	}
 	b.recordLogin(&loginState{Code: da.UserCode, State: "pending", VerificationURI: da.VerificationURI})
 	go b.pollLogin(key, cfg, da, operator)
 	return da.UserCode, nil
+}
+
+// loginNow is the clock Login reads around the device authorization's request: time.Now, or in a
+// test the moments testLoginNow hands it.
+func (b *Broker) loginNow() time.Time {
+	if b.testLoginNow != nil {
+		return b.testLoginNow()
+	}
+	return time.Now()
 }
 
 // unpollableCode is Login's refusal of a device code that lapses, left from now, no later than
@@ -543,9 +557,9 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 // second that no reading of lived tells from a pause. So a line never names a cure the code's own
 // end may already meet: where it names a lifetime the interval is no shorter than, it says the
 // codes must also outlive the interval by more than the answers take (transit), which holds
-// whatever lived holds, and a cure by the answer's speed that this answer already met names the
-// time lived leaves instead of the whole seconds. A code that had lapsed by the time its answer
-// arrived meets no cure by a lifetime: its end is past.
+// whatever lived holds, and a cure by the answer's speed names no more time than lived leaves, to
+// a millisecond (the whole seconds, or the time lived leaves where that is less). A code that had
+// lapsed by the time its answer arrived meets no cure by a lifetime: its end is past.
 func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool) error {
 	var poll string
 	switch {
@@ -593,12 +607,16 @@ func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool)
 	if left > 0 {
 		rest = fmt.Sprintf("%.3f s of it: %s", left.Seconds(), lapses)
 	}
-	// An answer in less than the lifetime's whole seconds over the interval works, unless this one
-	// came in that and was refused: lived, short of those seconds, leaves less, to the millisecond.
+	// An answer in less than the time the code's end leaves over the interval works: lived less the
+	// interval, to the millisecond, or the lifetime's whole seconds over it where lived holds as
+	// many, so the line never names more time than lived holds (a lifetime x/oauth2 wraps forward by
+	// half a second or more reads as the next whole second). lived is off the whole seconds by the
+	// moments between Login's and x/oauth2's clock readings (lifetime, above), so one within a
+	// millisecond of them holds them.
 	over := lifetime - interval
 	within := fmt.Sprintf("%d s", over/time.Second)
-	if trip < over {
-		within = fmt.Sprintf("%.3f s", (lived - interval).Truncate(time.Millisecond).Seconds())
+	if held := (lived - interval).Truncate(time.Millisecond); held < over-time.Millisecond {
+		within = fmt.Sprintf("%.3f s", held.Seconds())
 	}
 	return fmt.Errorf("%s, which left %s; a machine login works at that broker where its answer arrives in less than %s, or "+outlive, took, rest, within)
 }

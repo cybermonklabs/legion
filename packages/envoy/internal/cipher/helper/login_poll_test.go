@@ -438,10 +438,8 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 		// 18446744074 s wraps forward to about 0.29 s: a code that had not passed, so no lapsed one,
 		// but one of 0 s in whole seconds, which a slow answer may outlast.
 		{"a lifetime x/oauth2 wraps forward to under a second", map[string]any{"expires_in": int64(18446744074)}, 0, `a device code that lives [01] s, with a poll interval of 1 s(` + lapses + `its codes live longer than 1 s, the least poll interval this machine keeps` + outlive + `|, but its answer took \d+\.\d{3} s to arrive, so the code had lapsed; no machine login works at that broker until its codes live longer than 1 s, the least poll interval this machine keeps` + outlive + `)`},
-		// 18446744075 s wraps forward to about 1.29 s, which a slow answer, here 0.5 s, leaves under
-		// the interval: the line reads "lives 1 s", and its cure is no lifetime the code already has.
-		// A pause before x/oauth2's start of 0.21 s makes it 2 s.
-		{"a lifetime x/oauth2 wraps forward to over a second, answered slowly", map[string]any{"expires_in": int64(18446744075)}, 500 * time.Millisecond, `a device code that lives (1 s, with a poll interval of 1 s` + lapses + `its codes live longer than 1 s, the least poll interval this machine keeps` + outlive + `|2 s, with a poll interval of 1 s, but its answer took \d+\.\d{3} s to arrive, which left \d\.\d{3} s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than (1 s|\d\.\d{3} s), or once its codes outlive its poll interval by more than its answers take to arrive)`},
+		// 18446744075 s, which x/oauth2 wraps forward to about 1.29 s, is a subtest of its own below:
+		// its round trip is handed to Login, not waited for.
 		// An interval of the hour or more cannot be polled whatever the lifetime: the hour must go.
 		{"a code that had already lapsed and an interval past the hour", map[string]any{"interval": 5000, "expires_in": -5}, 0, lapsed + `a poll interval of 5000 s, so one of 3600 s; no machine login works at that broker until its poll interval is shorter than an hour and its codes live longer than it` + unwrapped},
 		// A slow answer leaves less than the hour of a code that lives past it, but no faster answer
@@ -484,16 +482,42 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 			t.Fatalf("Login answered %q, %v, want a code and no refusal", code, err)
 		}
 	})
-	// The same lifetime answered fast is polled: its refusal above is the round trip's, which the
-	// line's last clause says (a 1.29 s code leaves 0.29 s for it).
-	t.Run("a lifetime x/oauth2 wraps forward to over a second, answered fast", func(t *testing.T) {
+	// 18446744075 s wraps forward to about 1.29 s. The round trip Login measures is the one the
+	// subtest hands it (testLoginNow: Login asks at t0 and reads the clock at t0 plus the round
+	// trip after the answer), not the time the runner took. A round trip of 0.5 s leaves the 1 s
+	// interval 0.79 s of the code: refused, reading "lives 1 s", and its cure is no lifetime the
+	// code already has (a pause of 0.21 s or more before x/oauth2's start makes it 2 s); answered
+	// at once the code leaves it 1.29 s and is polled.
+	wrapped := func(t *testing.T, roundTrip time.Duration) (string, error) {
+		t.Helper()
 		f := newFakeBroker(t)
 		f.mu.Lock()
 		f.deviceAuthFields = map[string]any{"expires_in": int64(18446744075)}
 		f.mu.Unlock()
 		b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 		t.Cleanup(b.Close)
-		if code, err := b.Login(context.Background(), "host-a"); err != nil || code == "" {
+		t0, reads := time.Now(), 0
+		b.testLoginNow = func() time.Time {
+			reads++
+			if reads == 1 {
+				return t0
+			}
+			return t0.Add(roundTrip)
+		}
+		return b.Login(context.Background(), "host-a")
+	}
+	t.Run("a lifetime x/oauth2 wraps forward to over a second, answered slowly", func(t *testing.T) {
+		code, err := wrapped(t, 500*time.Millisecond)
+		if err == nil {
+			t.Fatalf("Login answered the code %q, want a refusal", code)
+		}
+		want := regexp.MustCompile(`^the broker answered a device code that lives (1 s, with a poll interval of 1 s` + lapses + `its codes live longer than 1 s, the least poll interval this machine keeps` + outlive + `|2 s, with a poll interval of 1 s, but its answer took 0\.500 s to arrive, which left \d\.\d{3} s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than (1 s|\d\.\d{3} s), or once its codes outlive its poll interval by more than its answers take to arrive)$`)
+		if !want.MatchString(err.Error()) {
+			t.Fatalf("Login refused with %q, want it to match %s", err, want)
+		}
+	})
+	t.Run("a lifetime x/oauth2 wraps forward to over a second, answered at once", func(t *testing.T) {
+		if code, err := wrapped(t, 0); err != nil || code == "" {
 			t.Fatalf("Login answered %q, %v, want a code and no refusal", code, err)
 		}
 	})
@@ -516,7 +540,7 @@ func TestTheRefusalReadsTheBrokersWholeSecondsThoughAClockReadingIsLate(t *testi
 	}{
 		{"a pause between x/oauth2's readings", 900*s - pause, 900*s - pause - 5*time.Millisecond, 900, `a device code that lives 900 s, with a poll interval of 900 s: the code would lapse before its first poll; no machine login works at that broker until its poll interval is shorter than its codes' lifetime, and then only once its codes outlive its poll interval by more than its answers take to arrive`},
 		{"a pause before x/oauth2's start", 900*s + pause, 900*s - 5*time.Millisecond, 900, `a device code that lives 900 s, with a poll interval of 900 s: the code would lapse before its first poll; no machine login works at that broker until its poll interval is shorter than its codes' lifetime, and then only once its codes outlive its poll interval by more than its answers take to arrive`},
-		{"a pause between x/oauth2's readings, the round trip taking the margin", 2*s - pause, 200 * time.Millisecond, 1, `a device code that lives 2 s, with a poll interval of 1 s, but its answer took 1.500 s to arrive, which left 0.200 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 1 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
+		{"a pause between x/oauth2's readings, the round trip taking the margin", 2*s - pause, 200 * time.Millisecond, 1, `a device code that lives 2 s, with a poll interval of 1 s, but its answer took 1.500 s to arrive, which left 0.200 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 0.700 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			err := unpollableCode(c.lived, c.left, c.interval, c.interval, false)
@@ -533,8 +557,8 @@ func TestTheRefusalReadsTheBrokersWholeSecondsThoughAClockReadingIsLate(t *testi
 // so the helper cannot name what the broker sent. Its line must then name no cure the code's own end
 // may already meet: the wrapped code of 1.29 s is polled where its answer arrives in under 0.29 s,
 // and the line for a slow one says the codes must outlive the interval by more than the answers
-// take, and, where the answer arrived in less than the lifetime's whole seconds over the
-// interval and was still refused, the time the code leaves, not those seconds.
+// take, and a cure by the answer's speed names no more time than lived leaves over the interval,
+// not the lifetime's whole seconds where lived holds fewer.
 func TestTheRefusalNamesNoCureAForwardWrappedLifetimeAlreadyMeets(t *testing.T) {
 	const s = time.Second
 	for _, c := range []struct {
@@ -548,8 +572,12 @@ func TestTheRefusalNamesNoCureAForwardWrappedLifetimeAlreadyMeets(t *testing.T) 
 		// 36893488149 s wraps to 1.580896768 s; the answer took 0.7 s, in less than the 1 s the whole
 		// seconds name, and left 0.881 s: it needs under 0.580 s.
 		{"a wrap to 1.58 s, answered in 0.7 s", 1580896768, 880896768, 1, `a device code that lives 2 s, with a poll interval of 1 s, but its answer took 0.700 s to arrive, which left 0.881 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 0.580 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
-		// The same code answered in 1.2 s, over the 1 s, keeps the whole seconds.
-		{"a wrap to 1.58 s, answered in 1.2 s", 1580896768, 380896768, 1, `a device code that lives 2 s, with a poll interval of 1 s, but its answer took 1.200 s to arrive, which left 0.381 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 1 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
+		// The same code answered in 1.2 s, over the whole second the 0.7 s answer met, still names
+		// the time lived leaves, not the second.
+		{"a wrap to 1.58 s, answered in 1.2 s", 1580896768, 380896768, 1, `a device code that lives 2 s, with a poll interval of 1 s, but its answer took 1.200 s to arrive, which left 0.381 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 0.580 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
+		// A code whose end holds the whole seconds (2.1 s, a pause before x/oauth2's start) keeps
+		// them: lived over the interval is 1.1 s, more than the 1 s.
+		{"a code of 2.1 s, answered in 1.2 s", 2100 * time.Millisecond, 900 * time.Millisecond, 1, `a device code that lives 2 s, with a poll interval of 1 s, but its answer took 1.200 s to arrive, which left 0.900 s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 1 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
 		// 18446747674 s wraps to 3600.290448384 s; the answer took 0.4 s.
 		{"a wrap to 3600.29 s, answered in 0.4 s", 3600*s + 290448384, 3600*s + 290448384 - 400*time.Millisecond, 3600, `a device code that lives 3600 s, with a poll interval of 3600 s: the code would lapse before its first poll; no machine login works at that broker until its poll interval is shorter than its codes' lifetime, and then only once its codes outlive its poll interval by more than its answers take to arrive`},
 	} {
