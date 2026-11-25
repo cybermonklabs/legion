@@ -960,8 +960,9 @@ type plan struct {
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
 	// startAtRefused tells the owning architect that the shim refused to start a next change's
-	// working copy at its branch; nil without a workflow, where nobody is told.
-	startAtRefused func(c supervise.Claim, d supervise.Delivery, reason string)
+	// working copy at its branch, and answers whether that notice is durable; nil without a
+	// workflow, where nobody is told.
+	startAtRefused func(ctx context.Context, c supervise.Claim, d supervise.Delivery, reason string) error
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)

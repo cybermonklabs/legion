@@ -2652,29 +2652,24 @@ func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 // startAtRefused tells the owning architect that the shim refused to start a next change's working
 // copy at its branch (supervise's Deps.StartAtRefused), in one `next-change-workspace` notice with
 // the shim's words: a person or the architect resolves the branch by the refusal's ways out, and
-// the task waits for that, charged nothing. The machine tells it once per task and calls it inside
-// its own decision, so the notice is queued on a goroutine of its own, bounded by
-// readyReleaseTimeout. A failure is logged and is not the daemon's end: the task waits either way.
-func (w *workflowRuntime) startAtRefused(c supervise.Claim, d supervise.Delivery, reason string) {
+// the task waits for that, charged nothing. It answers nil only once the notice's row has
+// committed, in its own transaction under ctx, the machine's claim-write deadline, since the
+// machine marks the task told on that answer alone. An error is the notice's enqueue failing, and
+// the task's next refusal tells again.
+func (w *workflowRuntime) startAtRefused(ctx context.Context, c supervise.Claim, d supervise.Delivery, reason string) error {
 	if c.Issue == "" || c.Role == claim.RoleController {
-		return
+		return nil
 	}
-	notice := startAtRefusedNotice(c, d, reason)
-	go func() {
-		// This goroutine runs beside the machine that started it and every other, so it takes a
-		// hold mark of its own (store.ForConcurrentWorker).
-		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
-		defer cancel()
-		row, err := record.NewOutboxRow(c.Issue, notice, time.Now().UTC())
-		if err == nil {
-			err = store.TransactWith(ctx, w.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-				return w.records.Enqueue(ctx, tx, row)
-			})
-		}
-		if err != nil {
-			w.log.Warn("tell the architect of a working copy that did not start at its branch", "claim", c.Token, "error", err)
-		}
-	}()
+	row, err := record.NewOutboxRow(c.Issue, startAtRefusedNotice(c, d, reason), time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		return w.records.Enqueue(ctx, tx, row)
+	}); err != nil {
+		return fmt.Errorf("queue the notice that %s's working copy did not start at its branch: %w", c.Token, err)
+	}
+	return nil
 }
 
 // startAtRefusedNotice is the owning architect's notice of a start the shim refused: which role's

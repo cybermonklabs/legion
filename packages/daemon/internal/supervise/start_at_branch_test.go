@@ -162,7 +162,10 @@ func TestANextChangesFirstTaskStartsTheWorkingCopyAtTheBranchFirst(t *testing.T)
 		}
 		var tellings []told
 		h := identityHarness(t, func(deps *Deps) {
-			deps.StartAtRefused = func(_ Claim, d Delivery, reason string) { tellings = append(tellings, told{d.ID, reason}) }
+			deps.StartAtRefused = func(_ context.Context, _ Claim, d Delivery, reason string) error {
+				tellings = append(tellings, told{d.ID, reason})
+				return nil
+			}
 		})
 		const conflict = "Bookmark legion/LEGION-209 is conflicted. The working copy did not move."
 		h.rt.FailStartAtBranch(startRefusal(conflict))
@@ -200,6 +203,45 @@ func TestANextChangesFirstTaskStartsTheWorkingCopyAtTheBranchFirst(t *testing.T)
 		h.wantCalls("AdoptWorkingCopy", 1)
 		h.wantCalls("StartAtBranch", 0)
 	})
+}
+
+// The told mark of a refused start (StartAt.Told) stands only on a notice the daemon has made
+// durable: the hook answers whether its enqueue committed. A telling that failed leaves the mark
+// unset in the store, so the next refusal of the same task tells again, and once a telling commits
+// no later refusal tells a second time. Without that, a lost enqueue would leave the task waiting
+// for ever with nobody told.
+func TestARefusedStartIsToldUntilItsNoticeIsDurable(t *testing.T) {
+	var tellings int
+	failing := true
+	h := identityHarness(t, func(deps *Deps) {
+		deps.StartAtRefused = func(context.Context, Claim, Delivery, string) error {
+			tellings++
+			if failing {
+				return errBoom
+			}
+			return nil
+		}
+	})
+	h.rt.FailStartAtBranch(startRefusal("Bookmark legion/LEGION-209 is conflicted. The working copy did not move."))
+
+	h.must(nextChangeTask())
+	if stored := h.store.load(h.token).Pending; stored == nil || stored.StartAt.Told {
+		t.Fatalf("the store holds the delivery as %+v after a telling whose enqueue failed, want it not marked told", stored)
+	}
+
+	failing = false
+	h.observe(runtime.Alive)
+	if tellings != 2 {
+		t.Fatalf("told %d times after the second refusal, want the failed telling made again", tellings)
+	}
+	if stored := h.store.load(h.token).Pending; stored == nil || !stored.StartAt.Told {
+		t.Fatalf("the store holds the delivery as %+v after a telling that committed, want it marked told", stored)
+	}
+
+	h.observe(runtime.Alive)
+	if tellings != 2 {
+		t.Fatalf("told %d times after the third refusal, want no second telling of a durable notice", tellings)
+	}
 }
 
 // A start the shim answered is kept, so the task's next send, after a prompt the transport lost,

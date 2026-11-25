@@ -1143,12 +1143,14 @@ type Deps struct {
 	// the machine's decision, so it returns at once.
 	TaskConfirmed func(c Claim)
 	// StartAtRefused is told of each task whose start of the working copy at its issue's branch the
-	// shim refused (Delivery.StartAt, runtime.ErrStartAtRefused), once per task (StartAt.Told), with
-	// the shim's words: the daemon tells the owning architect (`next-change-workspace`), and a
-	// person or the architect resolves the branch by the refusal's ways out. The task waits,
-	// charged nothing. Nil tells no one. It is called inside the machine's decision, as
-	// TaskConfirmed is, so it returns at once.
-	StartAtRefused func(c Claim, d Delivery, reason string)
+	// shim refused (Delivery.StartAt, runtime.ErrStartAtRefused), with the shim's words: the daemon
+	// tells the owning architect (`next-change-workspace`), and a person or the architect resolves
+	// the branch by the refusal's ways out. The task waits, charged nothing. It answers nil only once
+	// its notice is durable, and the machine marks the task told on that answer alone (StartAt.Told,
+	// tellStartRefused), so a telling that failed is made again at the task's next refusal. It is
+	// called inside the machine's decision under the claim-write deadline (Machine.write), as
+	// PauseStopped is. Nil tells no one.
+	StartAtRefused func(ctx context.Context, c Claim, d Delivery, reason string) error
 	// SessionLost is told of each claim whose recorded session the launch forgot, once, at the
 	// forget and before the fresh agent that replaces it is spawned (startFresh), so a spawn that
 	// fails leaves the issue, its architect and the controller told all the same: each has to know

@@ -1756,9 +1756,14 @@ func (m *Machine) startAtBranch(ctx context.Context, token claim.Token, loc *run
 // copy at its issue's branch, with the shim's words (Deps.StartAtRefused): the owning architect
 // reads it, and a person or the architect resolves the branch by the refusal's ways out. The task
 // waits, charged nothing (refused), since only that act resolves it and a charge that failed the
-// claim would not wait for it. The mark reaches the store with the refusal's own write of the
-// delivery.
-func (m *Machine) tellStartRefused(p *Delivery, err error) {
+// claim would not wait for it.
+//
+// The hook answers whether its notice is durable, and runs under the claim-write deadline as a
+// write of the decision does (Machine.write). The mark is set only on that answer, and reaches the
+// store with the refusal's own write of the delivery, so a notice whose enqueue failed leaves the
+// task unmarked, and the task's next refusal tells again. A crash between the notice's commit and
+// that write tells twice. Of the two faults, that is the one that leaves nobody untold.
+func (m *Machine) tellStartRefused(ctx context.Context, p *Delivery, err error) {
 	if !p.StartAt.Set() || p.StartAt.Told || m.deps.StartAtRefused == nil {
 		return
 	}
@@ -1766,8 +1771,13 @@ func (m *Machine) tellStartRefused(p *Delivery, err error) {
 	if reason == "" {
 		reason = err.Error()
 	}
+	told := m.current()
+	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.StartAtRefused(ctx, told, *p, reason) }); err != nil {
+		m.log.Warn("supervise: the owning architect could not be told that the shim refused to start the working copy; the next refusal tells again",
+			"delivery", p.ID, "error", err)
+		return
+	}
 	p.StartAt.Told = true
-	m.deps.StartAtRefused(m.current(), *p, reason)
 }
 
 // confirmCarrying records that the pending delivery's turn started: the claim and the delivery
