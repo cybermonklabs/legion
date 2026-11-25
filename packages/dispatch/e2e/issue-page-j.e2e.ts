@@ -33,6 +33,7 @@ import {
   listComments,
   listIssueAsks,
 } from "./api";
+import { expectTimeout } from "./expect-timeout";
 import { nextFrames } from "./frames";
 import {
   seedNoChildren,
@@ -861,34 +862,40 @@ test("a spec node shows the decisions that shaped it at every version", async ({
     // quote: the seeded question is one sentence, so its first sentence is the whole of it.
     const question = answered.ask.question;
     expect(question, "the seeded question is not one sentence").toMatch(/^[^.!?]+[.!?]$/u);
-    const lines = await becauseLines(page);
-    for (const index of [3, 4, 5]) {
-      expect(
-        lines[statement(index)],
-        `statement ${index} carries no line for its decision`
-      ).toContain(`${SPEC_WORDS.because} ${question} “${quote}”`);
-      expect(
-        lines[statement(index)]?.startsWith(`${SPEC_WORDS.because} ${question} `),
-        `statement ${index}'s line does not start with the question its decision answers: "${lines[statement(index)]}"`
-      ).toBe(true);
-      expect(lines[statement(index)]).toContain("alice");
-    }
-    for (const index of [4, 5]) {
-      expect(
-        lines[statement(index)],
-        `statement ${index} does not name the second decision that shaped it`
-      ).toContain(SPEC_WORDS.informed_by);
-    }
-    for (const index of [1, 2]) {
-      expect(
-        lines[statement(index)],
-        `statement ${index} carries no line for the agent's decision`
-      ).toContain(`${SPEC_WORDS.because} “${agentQuote}”`);
-    }
-    // A replaced decision draws no line: the statement it shaped stands with none, and its
-    // cell says so, as does the cell of a statement no decision shaped (R35).
-    expect(lines[statement(6)] ?? "", "the replaced decision draws a line").toBe("");
-    expect(lines[statement(7)] ?? "", "a statement no decision shaped carries a line").toBe("");
+    // The lines are read again until every one of them holds what follows: a line is drawn from
+    // the tree as well as from the decisions and asks reads, and a quote or a question names a
+    // reference it cites by the names read, which the page sends last. `toPass` keeps no expect
+    // timeout of its own, so it is given the one every other assertion of the row waits under.
+    await expect(async () => {
+      const lines = await becauseLines(page);
+      for (const index of [3, 4, 5]) {
+        expect(
+          lines[statement(index)],
+          `statement ${index} carries no line for its decision`
+        ).toContain(`${SPEC_WORDS.because} ${question} “${quote}”`);
+        expect(
+          lines[statement(index)]?.startsWith(`${SPEC_WORDS.because} ${question} `),
+          `statement ${index}'s line does not start with the question its decision answers: "${lines[statement(index)]}"`
+        ).toBe(true);
+        expect(lines[statement(index)]).toContain("alice");
+      }
+      for (const index of [4, 5]) {
+        expect(
+          lines[statement(index)],
+          `statement ${index} does not name the second decision that shaped it`
+        ).toContain(SPEC_WORDS.informed_by);
+      }
+      for (const index of [1, 2]) {
+        expect(
+          lines[statement(index)],
+          `statement ${index} carries no line for the agent's decision`
+        ).toContain(`${SPEC_WORDS.because} “${agentQuote}”`);
+      }
+      // A replaced decision draws no line: the statement it shaped stands with none, and its
+      // cell says so, as does the cell of a statement no decision shaped (R35).
+      expect(lines[statement(6)] ?? "", "the replaced decision draws a line").toBe("");
+      expect(lines[statement(7)] ?? "", "a statement no decision shaped carries a line").toBe("");
+    }).toPass({ timeout: expectTimeout });
     const unshaped = cells.find((cell) => cell.ids.includes(statement(6)));
     expect(
       unshaped?.said,
@@ -1349,6 +1356,8 @@ test("the Spec view draws statements alone, each parent once, and no check once"
     const stops = await keyedRow.locator("a[href], button").count();
     for (let step = 0; step < stops; step += 1) {
       await page.keyboard.press("f");
+      // The keymap moves the focus inside its keydown listener (`useTreeKeymap.ts`'s
+      // `tree-link`), which has run once the press resolves, so one read is where `f` left it.
       if (await keyedCount.evaluate((count) => count === document.activeElement)) break;
     }
     await expect(keyedCount, "f does not reach a statement's count of checks").toBeFocused();
