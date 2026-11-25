@@ -226,7 +226,9 @@ The implementer then writes the pull request body's `Look at first` and `Not pro
 at each round, and before each completion, its retro's included, answers and resolves each bot
 review thread still open, naming each one it declined to the architect. With no acceptance step,
 the last step passing starts the retro; a parent that gets there while an issue beneath it is
-still in the workflow is held before its retro until the last one leaves.
+still in the workflow is held before its retro until the last one leaves. Every task, a parent or
+not, also waits there while a fix of its task runs, and until each check a CI job runs passes at
+its head.
 `dispatch steps --issue <KEY>` prints each run of each step of an issue.
 
 ## Admission and the `legion` label
