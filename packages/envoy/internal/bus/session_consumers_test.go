@@ -762,6 +762,9 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 	}
 }
 
+// Serial: it holds a wall-clock bound close to what it waits for, the pull's own expiry (1 s) and
+// idle heartbeat (400 ms), which parallel load pushed past (#5217).
+//
 // A pull sends its next pull request once the server has delivered the last one's whole batch or
 // it expired, and an idle heartbeat keeps a pull that waits longer than two heartbeats alive, so it
 // delivers every message in stream order however many requests that takes.

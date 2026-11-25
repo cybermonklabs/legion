@@ -250,6 +250,9 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	}
 }
 
+// Serial: it holds a wall-clock bound close to what it waits for, the outbox's 2 s probe budget
+// and the negative control's 100 ms status read, which parallel load pushed past (#5217).
+//
 // A window does not take a connection that stays connected for a lost one while a write holds
 // nats.go's connection lock: a slow socket holds it for as long as the write takes, and nothing
 // about the connection has changed. A send and a Probe of a window pinned before the write answer
