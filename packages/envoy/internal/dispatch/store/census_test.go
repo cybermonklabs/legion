@@ -1810,8 +1810,10 @@ func TestCensusRefusesALockHeldOnATouchedTableByAnOldTransaction(t *testing.T) {
 // is not a fact it holds for the whole wait: a signal that wakes its backend (the process-signal
 // barrier a dropdb sends to every backend, as the tests beside this one drop their databases)
 // takes it out of the wait until it waits again, and a census that reads it then prints its wait
-// as none. So the census is taken again until its diagnosis reads the wait, and every other part
-// of the refusal is held to that same census.
+// as none. So the census is taken again until its diagnosis reads the wait. Every census the row
+// reads is held to everything else: the refusal, the holder's state, transaction start, query and
+// locks, which a wake does not change, and a report that prints no literal of the holder's query,
+// awake or asleep. Only a missing wait is taken again.
 func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1832,32 +1834,37 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 	}
 	time.Sleep(1100 * time.Millisecond)
 	pid := "pid " + strconv.FormatUint(uint64(holder.PgConn().PID()), 10)
-	var report *pgmigrate.Report
+	steady := []string{
+		"has held a lock on things for ",
+		"; diagnosis of " + pid + ", read when refused: state idle in transaction, xact_start 20",
+		", backend_xid none, wait_event ",
+		", query \"select count(*) from things where kind = ?\"; its locks: ",
+		"relation things AccessShareLock granted",
+		"virtualxid ExclusiveLock granted",
+	}
+	reads := 0
 	refusal := testwait.UntilPolling(t, 100*time.Millisecond, "a census whose diagnosis of "+pid+" reads its wait for its client", func() (string, bool) {
-		var err error
-		report, err = census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
+		report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
 		if err != nil {
 			t.Fatalf("census: %v", err)
 		}
+		reads++
+		if out := reportText(report); strings.Contains(out, sentinel) {
+			t.Fatalf("census %d prints a literal of the holder's query:\n%s", reads, out)
+		}
 		got := refusals(report)
 		if len(got) != 1 {
-			t.Fatalf("refusals = %v, want the one old holder", got)
+			t.Fatalf("census %d: refusals = %v, want the one old holder", reads, got)
+		}
+		for _, want := range steady {
+			if !strings.Contains(got[0], want) {
+				t.Fatalf("census %d: refusal lacks %q:\n%s", reads, want, got[0])
+			}
 		}
 		return got[0], strings.Contains(got[0], ", wait_event Client/ClientRead, ")
 	})
-	for _, want := range []string{
-		"has held a lock on things for ",
-		"; diagnosis of " + pid + ", read when refused: state idle in transaction, xact_start 20",
-		", backend_xid none, wait_event Client/ClientRead, query \"select count(*) from things where kind = ?\"; its locks: ",
-		"relation things AccessShareLock granted",
-		"virtualxid ExclusiveLock granted",
-	} {
-		if !strings.Contains(refusal, want) {
-			t.Errorf("refusal lacks %q:\n%s", want, refusal)
-		}
-	}
-	if out := reportText(report); strings.Contains(out, sentinel) {
-		t.Errorf("the report prints a literal of the holder's query:\n%s", out)
+	if want := ", backend_xid none, wait_event Client/ClientRead, query \"select count(*) from things where kind = ?\"; its locks: "; !strings.Contains(refusal, want) {
+		t.Errorf("refusal lacks %q:\n%s", want, refusal)
 	}
 }
 
