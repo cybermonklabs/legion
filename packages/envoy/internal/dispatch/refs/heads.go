@@ -66,23 +66,23 @@ type HeadRow struct {
 // block loader and BlockTexts read it (itemBlockNodes): the comment's issue and author; the
 // comment's body, or the block's text at its newest revision, nil where that revision holds none;
 // when the comment was written and last edited, or the block made and changed; the comment it
-// replies to, the block it replies to and its ask; the document its row names (artifact_id), and
-// the document and version it is written on; of a block its changed revision (Version), its id,
-// its excerpt and its position; and of both the comment's marks, when its author last edited it
-// (EditedAt) and when and by whom it was deleted (DeletedAt, DeletedBy), as model.DeletedPostMark
-// reads them.
+// replies to (its thread's head), the comment it answers and its ask, which name its parent
+// (commentReplyParent); the document its row names (artifact_id), and the document and version it
+// is written on; of a block its changed revision (Version), its id, its excerpt and its position;
+// and of both the comment's marks, when its author last edited it (EditedAt) and when and by whom
+// it was deleted (DeletedAt, DeletedBy), as model.DeletedPostMark reads them.
 type HeadItem struct {
-	IssueKey                       *string
-	Author                         []byte
-	Text                           *string
-	MadeAt, ChangedAt              *time.Time
-	ReplyTo, RepliesToBlock, AskID *string
-	ArtifactID, DocumentID         *string
-	Version                        *int
-	BlockID, Excerpt               *string
-	Position                       *int
-	EditedAt, DeletedAt            *time.Time
-	DeletedBy                      []byte
+	IssueKey                *string
+	Author                  []byte
+	Text                    *string
+	MadeAt, ChangedAt       *time.Time
+	ReplyTo, Answers, AskID *string
+	ArtifactID, DocumentID  *string
+	Version                 *int
+	BlockID, Excerpt        *string
+	Position                *int
+	EditedAt, DeletedAt     *time.Time
+	DeletedBy               []byte
 }
 
 // headRowsStatement is the rows of the issue $1 the head projection holds while a mark names the
@@ -140,7 +140,7 @@ func headRowsStatement(rows string) string {
 // rows of an issue of the most comments 2 ms to build, a record a third of that.
 const headItemSQL = `case when heads.node_kind in ('` + graphstore.KindComment + `', '` + graphstore.KindCommentBlock + `') then row(
 	       heads.item_issue_key, heads.item_author::text, heads.item_text, heads.item_made_at, heads.item_changed_at,
-	       heads.item_reply_to, heads.item_replies_to_block, heads.item_ask_id, heads.item_artifact_id::text, heads.item_document_id::text,
+	       heads.item_reply_to, heads.item_answers, heads.item_ask_id, heads.item_artifact_id::text, heads.item_document_id::text,
 	       heads.item_version, heads.item_block_id, heads.item_excerpt, heads.item_position,
 	       heads.item_edited_at, heads.item_deleted_at, heads.item_deleted_by::text) end`
 
@@ -153,7 +153,7 @@ func headItemOf(plan pgtype.ScanPlan, raw []byte) (*HeadItem, error) {
 	var item HeadItem
 	var author, deletedBy *string
 	fields := pgtype.CompositeFields{&item.IssueKey, &author, &item.Text, &item.MadeAt, &item.ChangedAt, &item.ReplyTo,
-		&item.RepliesToBlock, &item.AskID, &item.ArtifactID, &item.DocumentID, &item.Version, &item.BlockID, &item.Excerpt, &item.Position,
+		&item.Answers, &item.AskID, &item.ArtifactID, &item.DocumentID, &item.Version, &item.BlockID, &item.Excerpt, &item.Position,
 		&item.EditedAt, &item.DeletedAt, &deletedBy}
 	if err := plan.Scan(raw, fields); err != nil {
 		return nil, fmt.Errorf("decode the conversation columns of a head row: %w", err)

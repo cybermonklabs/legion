@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -1640,6 +1641,37 @@ const (
 	ArtifactSlugPlan         = "plan-md"
 )
 
+// CarriedReviewReasonPrefix starts the legacy reason that records the approval's source
+// version. Dispatch still writes it for older readers, including the Legion daemon.
+const CarriedReviewReasonPrefix = "Carried forward from the approval of version "
+
+// CarriedFromVersion reads a source version from the legacy carry reason. The API fallback and
+// the store census share this parser, so they agree on which historical reasons mark a carry.
+func CarriedFromVersion(reason string) (int, bool) {
+	rest, found := strings.CutPrefix(reason, CarriedReviewReasonPrefix)
+	if !found {
+		return 0, false
+	}
+	digits, _, found := strings.Cut(rest, ":")
+	if !found {
+		return 0, false
+	}
+	version, err := strconv.Atoi(digits)
+	if err != nil || version < 1 {
+		return 0, false
+	}
+	return version, true
+}
+
+// ReviewOrder is the SQL order of artifact reviews, newest first. A sequence orders reviews of
+// one document by their events' commit order. A review from before migration 0120 has no
+// sequence and sorts after all sequenced reviews, by its time and UUID. Qualifying the UUID
+// keeps ORDER BY on the UUID itself when the select list casts id to text.
+const ReviewOrder = ReviewEventOrder + `, created_at desc, artifact_reviews.id desc`
+
+// ReviewEventOrder is the leading SQL sort key of ReviewOrder.
+const ReviewEventOrder = `event_seq desc nulls last`
+
 // ArtifactReview is one human review of a document, pinned to the version it was
 // given on: an approval, or a request for changes with a reason. EventSeq is the
 // sequence of the artifact.* event the review appended on its document's owner, nil
@@ -1660,6 +1692,7 @@ type ArtifactReview struct {
 	CreatedAt           time.Time `json:"created_at"`
 	ContentSHA256       *string   `json:"content_sha256"`
 	ContentSHA256Source *string   `json:"content_sha256_source"`
+	CarriedFromVersion  *int      `json:"carried_from_version,omitempty"`
 	EventSeq            *int64    `json:"-"`
 }
 
@@ -1688,6 +1721,7 @@ type ArtifactApproval struct {
 	AskID               *string `json:"ask_id,omitempty"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+	CarriedFromVersion  *int    `json:"carried_from_version,omitempty"`
 	RequestedBy         *Actor  `json:"requested_by,omitempty"`
 	WaitingOn           string  `json:"waiting_on,omitempty"`
 	// Kind is the latest review's Kind, so a reader can say an approval is a plan review's
@@ -1714,6 +1748,7 @@ type ArtifactReviewEventPayload struct {
 	AskID               *string `json:"ask_id"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+	CarriedFromVersion  *int    `json:"carried_from_version,omitempty"`
 }
 
 // DocumentRetiredEventType is the event docs.RetireDocument appends, once, for the document it

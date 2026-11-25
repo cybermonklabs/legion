@@ -1,0 +1,33 @@
+-- 20261125120200_issue_tree_reply_parent.up.sql — the comment a reply answers, on its head row.
+--
+-- A reply hangs under what it answers (this issue's spec R8): a comment's parent is
+-- coalesce(answers, reply_to, ask_id), the comment it answers, else its thread's head, else its
+-- ask (refs' loadCommentNodes), and the block a reply names in replies_to_block is its parent no
+-- more. A reply to a reply holds its thread's head in reply_to and the comment it answers in
+-- answers, and nothing else of its row tells the two apart, so its head row
+-- (20261123180100_issue_tree_head) holds answers in place of replies_to_block, for the head read to
+-- hang it where the walk hangs it (refs' headCommentNode).
+--
+-- issue_head_nodes trades one column for another:
+--
+--   item_replies_to_block   dropped: no read of the head rows reads the block a reply names.
+--   item_answers            for a comment, its row's answers as text: the comment it answers, null
+--                           where it answers none. Null for every other node.
+--
+-- The head write writes item_answers from what the store holds (graphstore.HeadRowsSQL), the census
+-- of the head projection compares it with the store as it compares every other column of a row
+-- (graphstore.HeadColumns), and the backfill fills it. The insert of a comment is the one write
+-- that sets comments.answers: no writer of this release or of the release before updates it. So
+-- the triggers of comments that 20261123180100 creates take no new column: the insert trigger takes
+-- away the mark of an issue whose comment a write of the release before inserts, and no update of
+-- the release before moves the column. Its update trigger still names replies_to_block, so an
+-- update of that column by the release before takes an issue's mark away that it need not take:
+-- the tick fills the issue again, and no head row is read stale.
+--
+-- Rolling deploy. issue_head_nodes is 20261123180100's, which ships in this same release, so it
+-- holds no row when this migration applies; a column dropped is marked dropped in the catalog, and
+-- the column added is nullable, with no default, so neither rewrites a row. The release before names
+-- neither the table nor either column. Rolling back past this migration is an image rollback alone
+-- to a build of the release before, which reads nothing of the table, and the rollback script puts
+-- the column dropped back.
+alter table issue_head_nodes drop column item_replies_to_block, add column item_answers text;

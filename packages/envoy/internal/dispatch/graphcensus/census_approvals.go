@@ -1,9 +1,8 @@
 package graphcensus
 
-// approvalProjections are the census's kinds of the approvals given over a version (projections).
-// It holds none.
+// approvalProjections holds no node or tuple projections. The census checks carry rows
+// against their review reasons in censusOfReviewCarries.
 var approvalProjections []projection
 
-// approvalBackfills are the backfill's passes over the approvals given over a version
-// (backfillPasses). It holds none.
-var approvalBackfills []backfillPass
+// approvalBackfills includes the pass over carried reviews (backfillPasses).
+var approvalBackfills = []backfillPass{oneKind(backfillReviewCarries)}

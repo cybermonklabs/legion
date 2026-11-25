@@ -679,6 +679,19 @@ var indexPasses = map[string]string{
 	// names - a result's, a retraction's or an issue room's settlement's - once that write has
 	// committed, under the mark's event.
 	"docs/query_marks.go#drainQueryMark": "the issue's query mark, and each query's record and its document's render at a cut of the drain's transaction, its newest version and the mark's event",
+	// R2's daemon-thread step re-places a block that stands under a message of a thread the Legion
+	// daemon's session began under its issue's node, from the part_of and its seq it reads again
+	// under the issue's owner lock: it mends no projection.
+	"docs/daemon_thread_step.go#queueDaemonThreadMoves": "the blocks that stand under a message of a daemon thread, each with the seq of its part_of, read again under its issue's owner lock",
+	// R6's conversion states the issue's tree, query nodes and moves from the rooms it read under
+	// their locks and the rows those rooms' blocks held, in one transaction an issue.
+	"docs/issue_conversion.go#writeTree":           "the issue the conversion converts and the tree it draws",
+	"docs/issue_conversion.go#writeQueries":        "the issue's converted documents and whether it holds a decisions query",
+	"docs/issue_conversion.go#writeDecisionsQuery": "the issue the conversion converts and the decisions query it creates",
+	"docs/issue_conversion.go#writeMoves":          "each moved block's old and new address, and the authored_by, kept_by and kept_text_sum tuples its old node states, else the authors of the first version that held it",
+	"docs/issue_conversion.go#moveAsks":            "the asks rows whose block the converted documents hold, and the block ids the conversion re-minted",
+	"docs/issue_conversion.go#movePointers":        "the tuples, refs rows and block_refs rows at the moved blocks' old addresses, and the check_results rows of the converted documents' checks",
+	"docs/issue_conversion.go#finish":              "the facts the conversion's retirement and room passes stated, and the artifact.version it appended",
 	// A component's node and its relations (dispatch://INFRA-1253 R9): an import states them from
 	// the model it fetched, read against the part_of and depends_on each node states now only to
 	// state what moved, and the components it drops from the source's rows as they stood; a

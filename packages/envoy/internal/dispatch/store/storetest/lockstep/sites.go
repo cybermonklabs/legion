@@ -91,6 +91,13 @@ var storeWriteCallSites = map[string]string{
 	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the
 	// owner lock writeReasoningNodes takes first too.
 	"api/reasoning_write.go#writeNodeState": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// A node's move (api/node_move.go, PATCH /api/v1/issues/{key}/nodes/{id}): the owner locks of
+	// the issue and of every issue the moved node's subtree and the parent's chain stand under, in
+	// one call (lockIssueOwners), then, where the move writes the block's text, the room's lock and
+	// the version's write, and in its write phase the move's tuples alone at the sentinel
+	// (QueueWrite, no node), the block's parent_block_id, the issue's query mark and the head rows.
+	// api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds a flat move to those steps.
+	"api/node_move.go#queueNodeMove": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// An issue's own field write made for a run (api/issue_patch.go's writeIssue, the write core the
 	// PATCH and each step of a status change run), which names the issue changed: the issue's owner
 	// lock (lockPatchOwners), the issue's row, then, on a context that carries a run alone, the
@@ -370,6 +377,23 @@ var storeWriteCallSites = map[string]string{
 	// mark, then one call of Caused under the mark's event and the head rows, after the rows its
 	// path holds, whose order refs' TestCausedTakesTheStoreLockOrder proves.
 	"docs/query_marks.go#drainQueryMark": "refs#TestCausedTakesTheStoreLockOrder",
+	// R2's daemon-thread step (docs.DaemonThreadStep): it reads with no lock the blocks that stand
+	// under a message of a thread the Legion daemon's session began, then takes every owner lock of
+	// their issues in one call of store.LockOwners and each of their rooms' locks in room-id order,
+	// reads each block's part_of again, and sends one batch: the retraction and the part_of to the
+	// issue's node, the query mark and the head rows.
+	"docs/daemon_thread_step.go#queueDaemonThreadMoves": "docs#TestANodeUnderADaemonThreadMovesUnderItsIssue",
+	// R6's conversion of an issue into its room (docs.ConvertIssue), one transaction an issue
+	// under its owner lock and then each room's lock in sorted order: the tree, the query nodes and
+	// the decisions query, the moves of the blocks, the asks and the pointers at the old addresses,
+	// then the facts its passes stated, caused under each document's artifact.version.
+	"docs/issue_conversion.go#writeTree":           "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#writeQueries":        "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#writeDecisionsQuery": "refs#TestCausedTakesTheStoreLockOrder",
+	"docs/issue_conversion.go#writeMoves":          "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#moveAsks":            "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#movePointers":        "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#finish":              "refs#TestCausedTakesTheStoreLockOrder",
 	// The backfill's passes over the components a process of the release before wrote with no
 	// node (R9 of this branch's spec): the architecture source rows of the batch's projects first,
 	// in ascending (project, id), then the rows read again under them, then the component nodes and

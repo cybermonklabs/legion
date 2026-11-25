@@ -441,7 +441,8 @@ func readIssueDecisionsWithTrees(t *testing.T, handler http.Handler, key string)
 }
 
 // requireDecisionAsRead fails unless the tree read's decision node d1 answers every member of
-// model.Decision as the decisions read answers it for the same decision, byte for byte.
+// model.Decision as the decisions read answers it for the same decision, byte for byte, and its
+// uncertainty and uncertainty_reason as that read's entry for it answers them.
 func requireDecisionAsRead(t *testing.T, what string, handler http.Handler, key, node string) model.Decision {
 	t.Helper()
 	read := treeRead(t, handler, key, "", "alice", true)
@@ -449,13 +450,23 @@ func requireDecisionAsRead(t *testing.T, what string, handler http.Handler, key,
 	if held.Decision == nil {
 		t.Fatalf("%s: the tree read's decision %s answers no decision members", what, node)
 	}
-	want := decisionByBlock(t, readIssueDecisionsWithTrees(t, handler, key).Decisions, "d1")
-	got, _ := json.Marshal(held.Decision)
+	decisions := readIssueDecisionsWithTrees(t, handler, key)
+	want := decisionByBlock(t, decisions.Decisions, "d1")
+	got, _ := json.Marshal(held.Decision.Decision)
 	expected, _ := json.Marshal(want)
 	if !bytes.Equal(got, expected) {
 		t.Errorf("%s: the tree read's decision answers\n%s\nwant the decisions read's\n%s", what, got, expected)
 	}
-	return *held.Decision
+	for _, entry := range decisions.Entries {
+		if entry.Node.Kind != refs.BlockNodeKind || entry.Node.ID != node {
+			continue
+		}
+		if entryJSON(t, held.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, held.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {
+			t.Errorf("%s: the tree read's decision %s answers the uncertainty %s and its reason %s, want the decisions read's entry's %s and %s", what, node,
+				entryJSON(t, held.Decision.Uncertainty), entryJSON(t, held.Decision.UncertaintyReason), entryJSON(t, entry.Uncertainty), entryJSON(t, entry.UncertaintyReason))
+		}
+	}
+	return held.Decision.Decision
 }
 
 // TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes: on a converted issue, the
@@ -1003,8 +1014,12 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 			t.Errorf("%s: ?view=decisions answers the entry %s with no decision, want the decisions read's %s", what, entryKey(entry), entryJSON(t, want))
 			continue
 		}
-		if got, expected := entryJSON(t, node.Decision), entryJSON(t, want); got != expected {
+		if got, expected := entryJSON(t, node.Decision.Decision), entryJSON(t, want); got != expected {
 			t.Errorf("%s: ?view=decisions answers the entry %s with the decision\n%s\nwant the decisions read's\n%s", what, entryKey(entry), got, expected)
+		}
+		if entryJSON(t, node.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, node.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {
+			t.Errorf("%s: ?view=decisions answers the entry %s with the uncertainty %s and its reason %s, want the entry's %s and %s", what, entryKey(entry),
+				entryJSON(t, node.Decision.Uncertainty), entryJSON(t, node.Decision.UncertaintyReason), entryJSON(t, entry.Uncertainty), entryJSON(t, entry.UncertaintyReason))
 		}
 		got := node.Decision
 		blockID := ""

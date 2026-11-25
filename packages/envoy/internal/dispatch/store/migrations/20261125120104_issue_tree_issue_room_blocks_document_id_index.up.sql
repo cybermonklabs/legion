@@ -1,0 +1,21 @@
+-- pgmigrate:non-transactional
+-- 20261125120104_issue_tree_issue_room_blocks_document_id_index.up.sql - the blocks of an issue
+-- room, by the document whose fragment holds each.
+--
+-- The removal of a document deletes its artifacts row (api's removeArtifact), and Postgres checks
+-- every foreign key to artifacts (id) for that row. issue_room_blocks_document_id_fkey takes no
+-- action, so its check reads the room blocks whose document_id names the row and locks each for
+-- key share. The one index of issue_room_blocks, issue_room_blocks_block (20261118230000), leads
+-- with tree_artifact_id, so the check read every row of issue_room_blocks, while the removal holds
+-- the issue's owner lock that every comment, ask and upload of the issue waits on. This index is
+-- keyed by document_id alone, so the check is one probe of it (this issue's spec R7).
+--
+-- issue_room_blocks holds one row for each block of every converted issue's room. A concurrent
+-- build does not hold off its writers while it scans the table, so the migration runs outside a
+-- transaction, alone in its file, as the census admits a concurrent build of any table's size
+-- (pgmigrate's ConcurrentIndex, this issue's spec R19). It is a performance index: no constraint and
+-- no later migration depends on it. The release before names issue_room_blocks nowhere. A failed
+-- concurrent build leaves an INVALID index of this name on issue_room_blocks, which the runner drops
+-- with DROP INDEX CONCURRENTLY and builds again on the next attempt.
+create index concurrently if not exists issue_room_blocks_document_id
+    on issue_room_blocks (document_id);

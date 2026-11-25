@@ -62,6 +62,9 @@ type routeShape struct {
 	// `query:"<key>"`; nil for a route that reads none. Path parameters are not here: they are
 	// read off the pattern.
 	Params any
+	// Headers are the request headers the route reads beyond the ones every route reads, each with
+	// whether a request must send it, which the emitter declares as header parameters.
+	Headers []routeHeader
 	// Advice is a zero value of the advice shape the success answer carries beside its payload
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
@@ -78,6 +81,23 @@ type routeShape struct {
 	// OpaqueRequest is why this route's body carries no schema, for a route that reads the bytes
 	// whole rather than modelling them; empty for every other route, and never beside Request.
 	OpaqueRequest string
+}
+
+// routeHeader is one request header a route reads (routeShape.Headers): its name, whether a
+// request must send it, and what it carries.
+type routeHeader struct {
+	Name        string
+	Required    bool
+	Description string
+}
+
+// placementIfMatch is the If-Match header of a node's move: the node's placement_seq as the tree
+// read answers it, as a quoted entity tag, compared strongly (RFC 9110 section 13.1.1).
+var placementIfMatch = routeHeader{
+	Name: "If-Match", Required: true,
+	Description: `the node's placement_seq, the seq of its current part_of that the tree read answers on every node, as a ` +
+		`quoted entity tag ("123"): none is 428 PRECONDITION_REQUIRED, and a tag that is no longer the node's ` +
+		`placement_seq is 412 PRECONDITION_FAILED`,
 }
 
 // --- the query-parameter structs -------------------------------------------------------------
@@ -836,6 +856,12 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/issues/{key}/nodes/{id}/settle": {
 		Status: http.StatusOK, Response: nodeStateWritten{}, Request: actorInput{}, OptionalRequest: true,
+	},
+	// The move of a node (node_move.go): its parent and its place among its siblings, answered with
+	// the parent, the sibling it follows and the new placement_seq.
+	"PATCH /api/v1/issues/{key}/nodes/{id}": {
+		Status: http.StatusOK, Response: nodeMoved{}, Request: nodeMoveInput{},
+		Headers: []routeHeader{placementIfMatch},
 	},
 	"GET /api/v1/issues/{key}/proposed": {Status: http.StatusOK, Response: issueProposed{}},
 	// The pre-mortem conversion (premortem_convert.go): the map from each

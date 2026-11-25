@@ -612,8 +612,8 @@ func openAPICamel(segment string) string {
 }
 
 // parameters are the row's path parameters, in the pattern's own order, then the keys the shape's
-// query struct declares, in the struct's own order, then the `session` parameter every operation
-// carries.
+// query struct declares, in the struct's own order, then the headers the shape names, in its own
+// order, then the `session` parameter every operation carries.
 func (e *openAPIEmitter) parameters(
 	route apiRoute,
 	shape routeShape,
@@ -634,6 +634,16 @@ func (e *openAPIEmitter) parameters(
 			return nil, err
 		}
 		parameters = append(parameters, query...)
+	}
+	for _, header := range shape.Headers {
+		parameter := openapi31.Parameter{
+			Name:   header.Name,
+			In:     openapi31.ParameterInHeader,
+			Schema: map[string]any{"type": "string"},
+		}
+		parameter.WithRequired(header.Required)
+		parameter.WithDescription(header.Description)
+		parameters = append(parameters, openapi31.ParameterOrReference{Parameter: &parameter})
 	}
 	session := openapi31.Parameter{
 		Name:   "session",

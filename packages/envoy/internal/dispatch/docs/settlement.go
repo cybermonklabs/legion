@@ -789,8 +789,8 @@ func (st *settlement) stateCopiesAndReadability(ctx context.Context, at time.Tim
 }
 
 // commitVersion renders the document the settlement settled, writes its version when the document
-// now reads differently from the latest one, and commits the transaction all of that and the
-// settlement's stored updates are in.
+// now reads differently from the latest one and its rendering reads back (readsBack), and commits
+// the transaction all of that and the settlement's stored updates are in.
 //
 // A settlement of a closed issue's document wakes nobody: the text it saves was in the live
 // document already, often for long, so an edit notice would report nothing new. Its version opens
@@ -886,18 +886,23 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	settledVersion := st.latest.Number
 	// An issue room versions each of its documents on its own (roomFragments): a version of each
 	// document whose fragment reads differently from that document's latest version, the tree
-	// artifact's own fragment among them, settledVersion being the tree's.
+	// artifact's own fragment among them, settledVersion being the tree's. Every rendering the
+	// settlement would store as a version reads back first, and one that does not leaves it writing
+	// no version (readsBack, holdUnreadableRoom).
 	var fragments []roomFragment
 	if len(st.layout) > 0 {
 		if fragments, err = st.roomFragments(ctx, contentChanged); err != nil {
 			return settleDone, st.abandon(err)
 		}
+		st.holdUnreadableRoom(fragments)
 		versioning = slices.ContainsFunc(fragments, func(fragment roomFragment) bool { return fragment.changed })
 		if fragments[0].changed {
 			settledVersion = fragments[0].latest.number + 1
 		}
-	} else if versioning {
+	} else if versioning && st.readsBack(room, markdown) {
 		settledVersion++
+	} else {
+		versioning = false
 	}
 	// Every update this settlement read is settled once it commits, so the row that left the
 	// settlement to a later load goes with that commit. It goes before the first event this
@@ -1353,8 +1358,9 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 }
 
 // commitRoomVersions writes, in the settlement's transaction, one version of each document of the
-// issue room whose fragment changed (fragments), each through writeVersionTx with the version's
-// own approval move, anchors and edit notice, then indexes the room once under its tree artifact
+// issue room whose fragment changed (fragments), every such fragment's rendering having read back
+// (holdUnreadableRoom), each through writeVersionTx with the version's own approval move, anchors
+// and edit notice, then indexes the room once under its tree artifact
 // (indexRoom): each fragment's own rendering, the bytes its version holds, laid end to end in the
 // room's order with its blocks' ranges (fragmentsText), at the version of each fragment's document
 // - the one just written, or its latest - so each block records its own document's version and the

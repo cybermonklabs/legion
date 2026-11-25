@@ -157,9 +157,9 @@ func nodeKeyColumns(nodes []NodeKey) (kinds, ids []string) {
 const HeadColumns = `parent_kind, parent_address, rank, text, supertag, state, visibility, made_at, made_by,
 	authors, first_authors, first_at, document_id, block_type, text_sha256, changed_version,
 	value_kinds, value_texts, relation_kinds, relation_to_kinds, relation_to_ids,
-	item_issue_key, item_author, item_text, item_made_at, item_changed_at, item_reply_to, item_replies_to_block,
-	item_ask_id, item_artifact_id, item_document_id, item_version, item_block_id, item_excerpt, item_position,
-	item_edited_at, item_deleted_at, item_deleted_by`
+	item_issue_key, item_author, item_text, item_made_at, item_changed_at, item_reply_to, item_ask_id,
+	item_artifact_id, item_document_id, item_version, item_block_id, item_excerpt, item_position,
+	item_edited_at, item_deleted_at, item_deleted_by, item_answers`
 
 // KindCommentBlock is the store kind of a block of a comment, addressed
 // `comment/<comment uuid>#<block id>` (refs.ItemComment.BlockKind), which the store holds no
@@ -258,8 +258,9 @@ const headFactFarEnd = `t.to_kind collate "C", (case when t.to_kind = '` + KindV
 // document_blocks row's document (its issue room's document for a block of a room), type, text sum
 // and changed version, with the authors and time of the version that first held it where Dispatch
 // knows the block was made there (refs' blockNodesStatement); for a comment, the columns of its row
-// the comment loader reads (refs' loadCommentNodes: its issue, author, body, times, the comment, the
-// block and the ask it answers, its document and the document and version it is written on), and
+// the comment loader reads (refs' loadCommentNodes: its issue, author, body, times, the comment it
+// replies to (reply_to), the comment it answers (answers) and the ask it answers, its document and
+// the document and version it is written on), and
 // for a current block of a comment, its comment_blocks row, its text at its newest revision and its
 // comment's issue, author and document, as the comment block loader and the block texts read read
 // them (refs' itemBlockNodes, BlockTexts); and of both, the comment's marks, when its author last
@@ -285,13 +286,14 @@ func HeadRowsSQL(nodes string) string {
 		       coalesce(comment.body, item_block.text) as item_text,
 		       coalesce(comment.created_at, item_block.made_at) as item_made_at,
 		       coalesce(comment.edited_at, item_block.changed_at) as item_changed_at,
-		       comment.reply_to as item_reply_to, comment.replies_to_block as item_replies_to_block, comment.ask_id as item_ask_id,
+		       comment.reply_to as item_reply_to, comment.ask_id as item_ask_id,
 		       coalesce(comment.artifact_id, item_block.artifact_id) as item_artifact_id, comment.document_id as item_document_id,
 		       coalesce(comment.version, item_block.changed_revision) as item_version,
 		       item_block.block_id as item_block_id, item_block.excerpt as item_excerpt, item_block.position as item_position,
 		       coalesce(comment.edited_at, item_block.post_edited_at) as item_edited_at,
 		       coalesce(comment.deleted_at, item_block.deleted_at) as item_deleted_at,
-		       coalesce(comment.deleted_by, item_block.deleted_by) as item_deleted_by
+		       coalesce(comment.deleted_by, item_block.deleted_by) as item_deleted_by,
+		       comment.answers as item_answers
 		from head_targets target
 		left join graph_nodes node on node.kind = target.kind and node.id = target.id
 		left join lateral (
@@ -356,7 +358,7 @@ func HeadRowsSQL(nodes string) string {
 		) known on true
 		left join lateral (
 			select c.issue_key, c.author, c.body, c.created_at, c.edited_at, c.deleted_at, c.deleted_by,
-			       c.reply_to::text as reply_to, c.replies_to_block,
+			       c.reply_to::text as reply_to, c.answers::text as answers,
 			       c.ask_id::text as ask_id, c.artifact_id, coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id) as document_id,
 			       case when c.anchor->>'artifact_id' is not null then ` + headAnchorVersionSQL + ` else c.written_version end as version
 			from comments c

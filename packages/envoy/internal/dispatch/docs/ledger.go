@@ -167,9 +167,13 @@ type Ledger struct {
 	// referenced is, per source, the targets its references cite once this transaction's queued
 	// reconciliation of them is written, and blockIndexes, per document, what its block index holds
 	// once its queued indexing is written: what a later reconciliation of the same source in this
-	// transaction plans against (planReplaceCounted, planBlockIndex).
+	// transaction plans against (planReplaceCounted, planBlockIndex). storedBlocks is, by node
+	// address, each block a move of the node route places in this transaction
+	// (HoldStoredBlock), which every block index this transaction plans reads in place of what the
+	// store holds of the block (heldBlockIndex).
 	referenced   map[refs.Target][]refs.Target
 	blockIndexes map[string]refs.BlockIndex
+	storedBlocks map[string]refs.StoredBlock
 	// askParts holds, per ask this transaction has planned the parts of, what its part index
 	// holds once that plan is written: what a later plan of the same ask's parts in this
 	// transaction runs against (planAskPartIndex).
