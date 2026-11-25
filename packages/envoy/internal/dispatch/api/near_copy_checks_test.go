@@ -240,16 +240,16 @@ func gateTermReadWaiting(t *testing.T, database *store.Store) int {
 	return pid
 }
 
-// A read that does not answer names the step it was waiting at. The gate's bound is a minute, so
-// only the test ends the read: it holds search_term_stats, sees the gate's term pick wait for it,
-// and cancels that statement, which the gate reads as a read that did not answer (SQLSTATE 57014,
-// nearCopyBoundHit). Nothing here races the machine's speed: the read is seen at the term pick
-// before it is ended there.
+// A read that does not answer names the step it was waiting at. The gate's bound is
+// nearCopyVerdictBound, past every wait of this test, so the test itself ends the read: it holds
+// search_term_stats, sees the gate's term pick wait for it, and cancels that statement, which the
+// gate reads as a read that did not answer (SQLSTATE 57014, nearCopyBoundHit). Nothing here races
+// the machine's speed: the read is seen at the term pick before it is ended there.
 func TestNearCopyChecksRecordTheStepAReadWaitedAt(t *testing.T) {
 	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "STEP")
-	served.duplicateBound = time.Minute
+	served.duplicateBound = nearCopyVerdictBound(t)
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin the lock transaction: %v", err)
