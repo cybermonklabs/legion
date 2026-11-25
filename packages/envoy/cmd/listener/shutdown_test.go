@@ -425,12 +425,24 @@ func postListener(t *testing.T, port int, path, body string) {
 	}
 }
 
-// health reads the listener's /healthz body, whatever its status. The request has a timeout, so one
-// that waits on a socket nothing serves cannot outlast its caller's deadline.
+// health reads the listener's /healthz body, whatever its status, and is nil when no health report
+// came. The request carries the shared wait's context (testwait.Context), so one that waits on a
+// socket nothing serves ends where the wait does, and no request has a bound of its own.
 func (p *listenerProcess) health(t *testing.T) map[string]any {
 	t.Helper()
-	client := &http.Client{Timeout: 5 * time.Second}
-	response, err := client.Get("http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz")
+	return p.healthUnder(testwait.Context(t), t)
+}
+
+// healthUnder is health under ctx, for a wait that asks again and again and so makes the context
+// once, rather than once for each request.
+func (p *listenerProcess) healthUnder(ctx context.Context, t *testing.T) map[string]any {
+	t.Helper()
+	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("build the /healthz request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil
 	}
@@ -442,33 +454,35 @@ func (p *listenerProcess) health(t *testing.T) map[string]any {
 	return health
 }
 
-// waitHealth waits up to 30 s for the listener to log that it listens on its own loopback port,
-// then up to 30 s more for /healthz there to report "healthy" with every field of want, and kills
-// the listener and fails the test when it never does. The socket the listener inherited is not
-// readiness: the kernel queues connections on it from before the process starts, so a request
-// there waits rather than fails until the process serves, and only its listening line says it
-// does. /healthz answers 503 "starting" from the moment the listener serves until it is ready,
-// which it is only after it installs its SIGTERM handler, and a SIGTERM before that kills the
-// process without an ordered shutdown.
+// waitHealth waits through the shared wait for the listener to log that it listens on its own
+// loopback port, then for /healthz there to report "healthy" with every field of want, and fails
+// the test when it never does. The socket the listener inherited is not readiness: the kernel
+// queues connections on it from before the process starts, so a request there waits rather than
+// fails until the process serves, and only its listening line says it does. Each request carries
+// the shared wait's context (testwait.Context), so one that waits on a process that does not
+// answer ends where the wait does, and no request has a bound of its own. /healthz answers 503
+// "starting" from the moment the listener serves until it is ready, which it is only after it
+// installs its SIGTERM handler, and a SIGTERM before that kills the process without an ordered
+// shutdown.
 //
 // A listener that exits during its start-up fails this wait at once, naming its exit status and
-// its last output line, rather than waiting the whole 30 s out: a process that has exited answers
-// nothing, so every further poll reads the same closed port, and the health timeout the wait
-// would report names neither the exit nor its reason. Either failure also names the last /healthz
-// answer, so a listener still binding ("starting") reads differently from one whose dependency
-// is down ("unhealthy", with the error that endpoint reports), or from a standby of another pod.
+// its last output line, rather than being waited for until the test binary's own deadline: a
+// process that has exited answers nothing, so every further poll reads the same closed port, and
+// the wait's own give-up names neither the exit nor its reason. Either failure also names the
+// last /healthz answer, so a listener still binding ("starting") reads differently from one
+// whose dependency is down ("unhealthy", with the error that endpoint reports), or from a standby
+// of another pod.
 func (p *listenerProcess) waitHealth(t *testing.T, what string, want map[string]any) {
 	t.Helper()
 	if addr, own := listeningAddr(t, p.Process), "127.0.0.1:"+strconv.Itoa(p.port); addr != own {
 		_ = p.Cmd.Process.Kill()
 		t.Fatalf("the listener logged that it listens on %s, not on its own %s:\n%s", addr, own, p.Output.String())
 	}
-	deadline := time.Now().Add(30 * time.Second)
+	ctx := testwait.Context(t)
 	answer := "none: no request to /healthz was answered with a health report"
-	// failIfExited ends the wait the moment the process is gone. It is read inside the loop and
-	// once more after it, because a listener that dies in the last sleep, or between the last poll
-	// and the deadline, would otherwise fall out below and be reported as still running, which is
-	// the misreading this helper exists to remove.
+	// failIfExited ends the wait the moment the process is gone, which is the misreading this
+	// helper exists to remove: without it a listener that died would be waited for until the
+	// test binary's deadline and then reported as still running.
 	failIfExited := func() {
 		t.Helper()
 		select {
@@ -480,23 +494,20 @@ func (p *listenerProcess) waitHealth(t *testing.T, what string, want map[string]
 		default:
 		}
 	}
-	for time.Now().Before(deadline) {
-		if health := p.health(t); health != nil {
+	testwait.Until(t, "the listener to become "+what, func() (string, bool) {
+		if health := p.healthUnder(ctx, t); health != nil {
 			matches := health["status"] == "healthy"
 			for field, value := range want {
 				matches = matches && health[field] == value
 			}
 			if matches {
-				return
+				return answer, true
 			}
 			answer = fmt.Sprintf("%v", health)
 		}
 		failIfExited()
-		time.Sleep(200 * time.Millisecond)
-	}
-	failIfExited()
-	_ = p.Cmd.Process.Kill()
-	t.Fatalf("the listener never became %s within 30s; it was still running, and the last /healthz answer was %s:\n%s", what, answer, p.Output.String())
+		return fmt.Sprintf("%s; the listener's last line was %q", answer, lastOutputLine(p.Output.String())), false
+	})
 }
 
 // lastOutputLine is the final non-empty line of a process's output, the one a start-up that ended

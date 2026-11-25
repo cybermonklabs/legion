@@ -50,6 +50,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
@@ -134,7 +135,18 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
-	waiting := storetest.WaitForLockWaiters(t, holder, 3, 2*time.Second)
+	// A reading, not a wait for a fact: the lock is released once Shutdown's settlement queues
+	// behind it too (three waiters) or two seconds after the document service started, as the
+	// comment above says, and the count is only logged; the settled document below is the verdict.
+	waiting := 0
+	testwait.Holds(2*time.Second, 10*time.Millisecond, func() bool {
+		count, err := storetest.LockWaiters(context.Background(), holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waiting = count
+		return count >= 3
+	})
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
@@ -169,9 +181,12 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 		status, err := process.renameIssue(key, "Committed after the lock")
 		answered <- answer{status, err}
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
-		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
-	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("Dispatch's output:\n%s", process.Output.String())
+		}
+	})
+	storetest.WaitForLockWaiters(t, holder, 1)
 
 	signalled := process.Terminate(t)
 	select {
@@ -1034,9 +1049,12 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	go func() {
 		_, _ = process.trySend(http.MethodPost, "/api/v1/issues", `{"project":"STOP","title":"Never answered"}`, asUser(dispatchTestLogin))
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
-		t.Fatalf("the issue create never queued behind the project lock:\n%s", process.Output.String())
-	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("Dispatch's output:\n%s", process.Output.String())
+		}
+	})
+	storetest.WaitForLockWaiters(t, holder, 1)
 
 	relay.freeze()
 	signalled := process.Terminate(t)

@@ -205,10 +205,10 @@ func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing
 		t.Fatalf("locked the hold rows %v (%v), want %v: process 0 held no hold to lapse", locked, err, holds)
 	}
 	// Each lapses at most 15 s (the hold's TTL) after process 0's last renewal, and the standby
-	// tries for it at the lapse; the bound is a hang guard.
-	if queued := storetest.WaitForLockWaiters(t, locker, len(holds), 40*time.Second); queued < len(holds) {
-		t.Fatalf("%d of the standby's takings of the intakes' holds queued behind the row lock, want %d", queued, len(holds))
-	}
+	// tries for it at the lapse: each of its takings queues behind the row lock held here. The wait
+	// ends on that fact, one backend for each hold, and its one bound is the test binary's deadline
+	// (less testwait's margin), which fails the test naming the count it last read.
+	storetest.WaitForLockWaiters(t, locker, len(holds))
 	if err := locker.Rollback(ctx); err != nil {
 		t.Fatalf("let the standby's takings of the holds go: %v", err)
 	}

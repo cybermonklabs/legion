@@ -7,6 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
+    "maxSize": 2097152,
     "includes": [
       "**",
       "!!packages/contracts/fixtures/classification",
@@ -50,6 +51,9 @@
       "recommended": true,
       "suspicious": {
         "noImportCycles": "error"
+      },
+      "nursery": {
+        "noFloatingPromises": "error"
       }
     }
   },
