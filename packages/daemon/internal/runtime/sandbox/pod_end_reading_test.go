@@ -312,13 +312,13 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 // as the daemon makes them — an issue's close or idle release through SuspendIssue, a launch
 // that cannot use the pod it found through the relaunch that replaces it, whose roles are reported
 // displaced as they always were, the bare JSON patch of the mode that a suspension naming nothing
-// beside the mode sends (suspend), and the relabel of a Sandbox an issue's old tree left Running,
-// which suspends it in the relabel's own patch and records its end beside it (ensureSandbox). A
-// launch whose pod is not live enough to displace and the suspension of a failed launch, which
-// name nothing beside the mode (suspendOver), and a repository cache's own end their pod through
-// that patch, whose sender writes the record under daemonSuspendedAct and takes no act, so that
-// none of them can end a pod without one. The record is consumed by the end it was written for, so
-// the runtime holds none afterwards.
+// beside the mode sends (suspend, sendSuspended), and the relabel of a Sandbox an issue's old tree
+// left Running, which suspends it in the relabel's own patch and records its end beside it
+// (ensureSandbox). A launch whose pod is not live enough to displace and the suspension of a
+// failed launch, which name nothing beside the mode (suspendOver, daemonEnd), and a repository
+// cache's own (suspend) end their pod through that patch, and whoever sends it records the end
+// under daemonSuspendedAct first, so that none of them can end a pod without one. The record is
+// consumed by the end it was written for, so the runtime holds none afterwards.
 func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 	t.Run("a suspending patch of the sandbox", func(t *testing.T) {
 		g := runningIssuePod(t)

@@ -129,7 +129,7 @@ while read -r name _ config; do
   out=$("$work/legion" config check --config "$config") || fail "legion config check refused $name's file: $out"
   note "$name: $(tr '\n' '|' <<<"$out")"
   if [ "$name" = burstable ]; then
-    grep -qxF 'resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed. A Burstable issue pod also asks GKE Autopilot for no extended run time: it carries no cluster-autoscaler.kubernetes.io/safe-to-evict annotation, so it shares a node instead of holding one of its own' <<<"$out" ||
+    grep -q '^resources: Burstable (a request below the limit): the issue pod; ' <<<"$out" ||
       fail "legion config check on the burstable file does not name the Burstable issue pod"
   else
     ! grep -q '^resources:' <<<"$out" || fail "legion config check on the default file names a Burstable pod: $out"

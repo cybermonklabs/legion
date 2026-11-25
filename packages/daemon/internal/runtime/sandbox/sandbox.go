@@ -1042,14 +1042,15 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 
 // daemonSuspendedAct is the act the daemon's end of a pod is recorded under (meanToEndPodOf) where
 // that end is a suspension with no words of its own: a repository cache's own (reconcileCachePod),
-// which suspend sends, and each suspension that names nothing beside its mode (suspendOver) — an
-// issue's close and release (endIssuePod), a launch's suspension of a pod whose end carries no
-// reason to record (suspendRecordingEnd), and a failed launch's (suspendFailedLaunch).
-// suspendOver records it only where it suspends a Sandbox not yet Suspended: one already
-// Suspended takes no patch that ends its pod, so the launch that writes the reset mark on such a
-// Sandbox (relaunch) records nothing. It is given by what the suspension names, never read from
-// the shape of the patch, so it is recorded whichever patch suspends the Sandbox: the JSON patch
-// suspend sends, or the merge patch a reset mark makes of it (suspendOver).
+// which suspend sends, and each suspension that names nothing beside its mode (daemonEnd,
+// suspendOver) — an issue's close and release (endIssuePod), a launch's suspension of a pod whose
+// end carries no reason to record (suspendRecordingEnd), and a failed launch's
+// (suspendFailedLaunch). suspendOver records it only where it suspends a Sandbox not yet
+// Suspended: one already Suspended takes no patch that ends its pod, so the launch that writes the
+// reset mark on such a Sandbox (relaunch) records nothing. It is given by what the suspension
+// names, never read from the shape of the patch, so it is recorded whichever patch suspends the
+// Sandbox: the bare JSON patch of the mode (sendSuspended), or the merge patch a reset mark makes
+// of it (suspendOver).
 const daemonSuspendedAct = "the daemon suspended the pod's sandbox"
 
 // daemonDeletedAct is the act the daemon's end of a pod is recorded under (meanToEndPodOf) where
@@ -1058,23 +1059,37 @@ const daemonDeletedAct = "the daemon deleted the pod's sandbox"
 
 // suspend sets the Sandbox read as s Suspended, the daemon's own end of the pod s owns in no words
 // of its own: it records first that the daemon means to end that pod, under daemonSuspendedAct
-// (meanToEndPodOf), then sends the JSON patch of the mode, fenced to the Sandbox read (patch): a
-// Sandbox replaced in between is never written. An end with no record reads as pod_end_not_ours,
-// which continues every claim of that pod uncharged. For a pod whose init container keeps failing
-// that is the relaunch-for-ever the initFailed reading exists to stop. It takes no act, so no patch
-// it sends records the end in other words, or in none.
+// (meanToEndPodOf), then sends the bare JSON patch of the mode (sendSuspended). An end with no
+// record reads as pod_end_not_ours, which continues every claim of that pod uncharged. For a pod
+// whose init container keeps failing that is the relaunch-for-ever the initFailed reading exists
+// to stop. It takes no act, so no patch it sends records the end in other words, or in none.
 //
-// It is the one sender of that patch: for a repository cache's own suspension (reconcileCachePod),
-// and for each suspension that names nothing beside the mode and whose pod calls for no reset mark
-// (suspendOver). Every other suspension records its end beside its own patch. A merge patch that
-// suspends a Sandbox records it under the act of what the suspension names, a live pod's
-// replacement, or under daemonSuspendedAct where the reset mark alone makes it; a pod's own end
-// names no act, since that pod ended of its own (suspendOver). The relabel of a Sandbox its
-// issue's old tree left Running records it before the relabel's own patch suspends the Sandbox
-// (ensureSandbox). The two deletes write theirs (deleteSandbox, deleteFenced).
+// A repository cache's own suspension (reconcileCachePod) comes through here. Each suspension
+// that names nothing beside the mode and whose pod calls for no reset mark sends the same bare
+// patch, but from suspendOver, which records the end itself (daemonEnd) and so does not call
+// this. Every other suspension records its end beside its own patch. A merge patch that suspends
+// a Sandbox records it under the act of what the suspension names, a live pod's replacement, or
+// under daemonSuspendedAct where the reset mark alone makes it; a pod's own end names no act,
+// since that pod ended of its own (suspendOver). The relabel of a Sandbox its issue's old tree
+// left Running records it under an act of its own, then sends the mode's operation
+// (suspendedMode) among the relabel's operations, in the relabel's one patch (ensureSandbox). The
+// two deletes write theirs (deleteSandbox, deleteFenced).
 func (r *Runtime) suspend(ctx context.Context, s *sandbox) error {
 	r.meanToEndPodOf(s, daemonSuspendedAct)
-	_, err := r.patch(ctx, s, jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended})
+	return r.sendSuspended(ctx, s)
+}
+
+// suspendedMode is the JSON patch operation that sets a Sandbox Suspended. The bare JSON patch of
+// the mode sends it alone (sendSuspended), and the relabel of a Sandbox its issue's old tree left
+// Running sends it among the relabel's operations (ensureSandbox).
+var suspendedMode = jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended}
+
+// sendSuspended sends the bare JSON patch of the mode, suspendedMode alone, fenced to the Sandbox
+// read as s (patch): a Sandbox replaced in between is never written. It records nothing: its two
+// callers, suspend and suspendOver, record the daemon's end of the pod before they call it, so
+// each suspension it sends is recorded once.
+func (r *Runtime) sendSuspended(ctx context.Context, s *sandbox) error {
+	_, err := r.patch(ctx, s, suspendedMode)
 	return err
 }
 
