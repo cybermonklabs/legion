@@ -5,7 +5,7 @@ import { api } from "../../api/client";
 /** Pinned's reads of the issue's questions, comments and messages (`emptyDetailsReads`), which a
  *  case asserts on or answers with the items its pins name. */
 export interface PinReads {
-  readonly asks: Mock<typeof api.listIssueAsks>;
+  readonly asks: Mock<typeof api.listIssueAskThreads>;
   readonly comments: Mock<typeof api.listComments>;
   readonly messages: Mock<typeof api.listIssueMessages>;
 }
@@ -39,9 +39,13 @@ export function emptyDetailsReads(): DetailsReads {
     spyOn(api, "getIssueEvents").mockResolvedValue([]),
     // Details' Steps reads the issue's step records while Details is open (`DetailsSteps.tsx`).
     spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] }),
+    // Details' history and the focused row's facts read the issue's asks while Details is open
+    // (`IssueHistory.tsx`, `FocusedNodeFacts.tsx`).
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
   ];
   const pinReads: PinReads = {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    // Pinned reads the outline's asks read, with each question's thread (`IssuePins.tsx`).
+    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     comments: spyOn(api, "listComments").mockResolvedValue([]),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
   };

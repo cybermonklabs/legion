@@ -523,6 +523,13 @@ export function decisionUnderAskGate(answer: IssueTreeRead, decision: string, as
   };
 }
 
+/** The reconciliation updates the index but emits no event for the page to refresh coverage.
+ *  Replace this gate with a check for that event when the server publishes it. */
+export const coverageIndexEventGate: Gate = {
+  met: false,
+  owed: `owed until the block index emits a coverage completion event; ${OWED_BY}`,
+};
+
 /** How many frames the page's writer looks for its line in after a Reply (`outline-writer.tsx`:
  *  ten after the first), and one more, as the rows of `e2e/issue-page-g.e2e.ts` wait them out. */
 const WRITER_FRAMES = 12;

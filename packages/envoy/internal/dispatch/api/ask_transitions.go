@@ -262,6 +262,8 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			// kept for one release: roll-window-attributes
 			// kept for one release: stored-ask-state
 			ask.State, ask.Answer = asks.StateAnswered, &answer
+			// kept for one release: roll-window-attributes
+			// kept for one release: stored-ask-state
 			return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 		},
 	})
@@ -403,6 +405,8 @@ func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor
 	// kept for one release: roll-window-attributes
 	// kept for one release: stored-ask-state
 	ask.State = asks.StateResolved
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 }
 

@@ -395,14 +395,15 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 //
 // A change of words that keeps every statement's rows keeps the rule, and records its digest in
 // place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
-// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea on main, from
-// 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954 on #4173's branch, whose
-// statements also read the project columns above, and from the digest above on this change, whose
-// statements also hold the supertag read: the backfill's block selection
-// (graphcensus.BlockRowsStatement) wrote its version lookups `caused as materialized (`, a planner
-// hint that runs them once per batch, which changes the statement's plan and not its rows
-// (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot walks a seed
-// with the word and without it, under both plan-cache modes, and holds the two to the same rows).
+// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea, main's before
+// #5491, from 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954, #5491's own
+// before the hint below, whose statements also read the project columns above, and from the
+// digest above on this change, whose statements also hold the supertag read: the backfill's block
+// selection (graphcensus.BlockRowsStatement) wrote its version lookups `caused as materialized (`,
+// a planner hint that runs them once per batch, which changes the statement's plan and not its
+// rows (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot walks a
+// seed with the word and without it, under both plan-cache modes, and holds the two to the same
+// rows).
 // The documents a pass of rule 1 marks are the same, so a build of either text beside the other
 // reads rule 1's cursors, horizons and marks as its own rightly. The digest below holds the word
 // and the supertag read together: the statements are the ones of the digest above with the word

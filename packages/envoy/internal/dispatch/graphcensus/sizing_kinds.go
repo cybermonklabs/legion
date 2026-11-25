@@ -110,8 +110,8 @@ const (
 //     reference, the pair's assertion and, at most, the retraction that ends it, which no table
 //     records once the pair is gone;
 //   - the node and three base attributes of an issue, an artifact, an ask and a message, and the
-//     gone state a document's removal states of its node, each written by its own create or
-//     removal on this branch;
+//     gone state a document's removal states of its node, each written by this build's own create
+//     or removal;
 //   - the values of each block a version wrote: the text value of each block whose text it wrote,
 //     the rank, the placement, the text_parent and the text_rank of a block's first row, and the
 //     new rank and the new place in the text of a block it moved under another parent (refs'

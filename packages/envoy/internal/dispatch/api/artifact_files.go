@@ -70,21 +70,23 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, writer 
 
 // refuseUploadBeforeItsObject answers, from the pool and locking nothing, the refusal
 // storeArtifact's transaction would make of a file or image upload by writer to target under
-// name, in that transaction's order: a project that does not exist, an artifact the name or slug
-// finds whose kind is not kind, a new artifact whose name or reference key is past its bound, the
-// check of who writes an issue's spec or Verification document (refuseSpecWriterOfDocument),
-// which passes a row of no issue without a read, and last a first upload naming a token
-// (namesToken), which storeArtifact's one statement of that rule refuses (uploadNoTokenRefusal).
-// The writer check judges the row the upload would store or replace as the transaction does: the
-// row the name or slug finds, or a new row with the slug nextArtifactSlug gives it and no role,
-// since only a document takes a role (documentRole) and a document writes no object
-// (putUploadedFile). A file is the issue's Verification document only by its slug
-// (specWriterDocumentName), so a file named verification.md, whose slug reads as that document's,
-// is refused here before its object is written. It reads as that transaction reads, so the two
-// refuse alike whenever nothing writes the owner's artifacts, or the issue's chain and its role
-// holders, between them; the transaction's check still decides, under the owner's lock. With no
-// refusal it answers the id of the artifact the upload writes a version of, "" for a new one, for
-// the check of the token the upload names (refuseFileBase).
+// name, in the order it makes them: a project that does not exist; for an artifact the name or
+// slug finds, a retired one (readRetiredDocumentRefusal), then one whose kind is not kind, then the
+// check of who writes an issue's spec or Verification document (refuseSpecWriterOfDocument); for
+// a new artifact, a name past its bound, a name on an issue that is a decisions document's
+// (decisionsAreNodes), a reference key past its bound, the same writer check, and last a first
+// upload naming a token (namesToken), which storeArtifact's one statement of that rule refuses
+// (uploadNoTokenRefusal). The writer check passes a row of no issue without a read, and judges
+// the row the upload would store or replace as the transaction does: the row the name or slug
+// finds, or a new row with the slug nextArtifactSlug gives it and no role, since only a document
+// takes a role (documentRole) and a document writes no object (putUploadedFile). A file is the
+// issue's Verification document only by its slug (specWriterDocumentName), so a file named
+// verification.md, whose slug reads as that document's, is refused here before its object is
+// written. It reads as that transaction reads, so the two refuse alike whenever nothing writes
+// the owner's artifacts, or the issue's chain and its role holders, between them; the
+// transaction's check still decides, under the owner's lock. With no refusal it answers the id
+// of the artifact the upload writes a version of, "" for a new one, for the check of the token
+// the upload names (refuseFileBase).
 func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, writer specWriter, name, kind string, namesToken bool) (string, error) {
 	pool := s.deps.Store.Pool
 	if target.IssueKey == nil && target.Session == "" {
@@ -94,6 +96,9 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 	}
 	artifact, err := lookupArtifactByNameOrSlug(ctx, pool, target, name)
 	if err == nil {
+		if artifact.Retired {
+			return "", readRetiredDocumentRefusal(ctx, pool, artifact, name)
+		}
 		if artifact.Kind != kind {
 			return "", artifactKindMismatch(name, artifact, kind)
 		}
@@ -106,6 +111,9 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 		return "", err
 	}
 	if refusal := newArtifactNameRefusal(name); refusal != nil {
+		return "", refusal
+	}
+	if refusal := decisionsAreNodes(target, name); refusal != nil {
 		return "", refusal
 	}
 	slug, err := s.nextArtifactSlug(ctx, pool, target, name)

@@ -555,10 +555,13 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
       "a line of the axis stands outside the head row's middle cell"
     ).toEqual([]);
 
-    // The box: 1300 px wide, 22 px under the view row, and 120 px above the page's foot.
+    // At 1440 px the Contents pane stands beside Plan, leaving the view 1068 px.
     const column = page.getByTestId("issue-column");
     const box = await boxOf(planBody(page), "the view's box at 1440 px");
-    expect(box.width, "the view's box is not 1300 px wide at 1440 px").toBeCloseTo(1300, 0);
+    expect(box.width, "the view is not 1068 px wide beside Contents at 1440 px").toBeCloseTo(
+      1068,
+      0
+    );
     expect(
       Math.abs(box.y - (await boxOf(column, "the issue's column")).y - 22),
       "the view's box is not 22 px under the view row at 1440 px"
@@ -653,8 +656,8 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
     );
     await expectPlainView(page, "the steps");
 
-    // The same order on a phone, in both views, where the page fits in one direction, in
-    // a box 10 px under the view row and 10 px in from each side of the column.
+    // The same order on a phone, in both views. The three sentences start 10 px below the view
+    // row. Plan follows their 16 px bottom margin and stays 10 px in from each side.
     await page.setViewportSize(PHONE_K);
     await expectIssuePageDrawn(page);
     await expect
@@ -662,10 +665,17 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
         message: "the steps' order is not the same at 390 px",
       })
       .toEqual(stepped);
+    const synopsis = column.getByTestId("issue-three-things");
+    await expect(synopsis).toBeVisible();
+    const synopsisBox = await boxOf(synopsis, "the three sentences above Plan at 390 px");
     const phoneBox = await boxOf(planBody(page), "the view's box at 390 px");
     expect(
-      Math.abs(phoneBox.y - (await boxOf(column, "the issue's column")).y - 10),
-      "the view's box is not 10 px under the view row at 390 px"
+      Math.abs(synopsisBox.y - (await boxOf(column, "the issue's column")).y - 10),
+      "the three sentences do not start 10 px under the view row at 390 px"
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(phoneBox.y - (synopsisBox.y + synopsisBox.height) - 16),
+      "Plan is not 16 px below the three sentences at 390 px"
     ).toBeLessThanOrEqual(1);
     expect(
       Math.abs(phoneBox.width - 342),

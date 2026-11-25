@@ -509,7 +509,7 @@ function linkOfAddress(root: HTMLElement, link: HTMLAnchorElement): HTMLAnchorEl
   const mark = link.hasAttribute("data-row-reference") ? "data-row-reference" : "href";
   const address = link.getAttribute(mark);
   if (address === null) return undefined;
-  return [...root.querySelectorAll("a")].find((anchor) => anchor.getAttribute(mark) === address);
+  return root.querySelector<HTMLAnchorElement>(`a[${mark}="${CSS.escape(address)}"]`) ?? undefined;
 }
 
 /** A text drawn from its reading, with every control it holds taken out of the tab order unless

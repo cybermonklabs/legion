@@ -160,6 +160,8 @@ export interface TreeDraftContext extends TreeWords {
   readonly lineOf: (readId: string) => string | undefined;
   /** The node of the answer `readId` names. */
   readonly nodeOf: (readId: string) => TreeAnswerNode | undefined;
+  /** The node of the answer by its drawn id, for a pointer written as a document address. */
+  readonly nodeByTreeId: (id: string) => TreeAnswerNode | undefined;
   /** Where the read places `node`, as the tree draws it: under the nearest node a draft stands
    *  for, walking up from its parent, which is the nearest node before it in the walk that its
    *  `parent` names, since a parent comes before its children; and under the issue, `[]`, where
@@ -198,7 +200,8 @@ export type TreeDraftMark = (
  * the first that answers one. These steps draw the kinds the outline draws, a fixed list read
  * from each node's supertag and not from the page's names for kinds (`NODE_TYPE_NAMES`), which
  * later parts widen: a requirement, a check and a plan task, a result, a decision, an ask, a
- * comment and a message, a callout and an image, a paragraph, a reading, and a child issue.
+ * comment and a message, a callout and an image, a paragraph and every other plain block
+ * (`isPlainBlock`), a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
   draftRequirement,
@@ -246,6 +249,7 @@ export function treeDraftsFrom(
     pushInto(ending, tuple.to.id, tuple);
   }
   const idOfNode = nodeIdsIn(reads);
+  let byTreeId: Map<string, TreeAnswerNode> | undefined;
   const idOf = (readId: string): string => {
     const node = nodes.get(readId);
     return node === undefined ? readId : idOfNode(node);
@@ -264,6 +268,16 @@ export function treeDraftsFrom(
       return draft === undefined ? undefined : context.lineWords(draft);
     },
     nodeOf: (readId) => nodes.get(readId),
+    nodeByTreeId: (id) => {
+      if (byTreeId === undefined) {
+        byTreeId = new Map();
+        for (const node of answer.nodes ?? []) {
+          const drawn = idOfNode(node);
+          if (!byTreeId.has(drawn)) byTreeId.set(drawn, node);
+        }
+      }
+      return byTreeId.get(id);
+    },
     // A node under a kind the page does not draw stands under that node's nearest drawn
     // ancestor, and a chain of parents that runs in a circle ends where it comes round.
     placeOf: (node) => {
@@ -473,18 +487,13 @@ function draftRequirement(
   // Where the answer counts the checks that serve it (`checks`, which every read of the route
   // answers on a requirement), a statement lacks a check by that count, whatever the coverage
   // read says (R9).
-  const { checks: served } = node as CountedRequirement;
+  const { checks: served } = node;
   if (draft.statement === true && typeof served === "number") {
     const others = draft.gaps.filter((gap) => gap !== "no_check");
     draft.gaps = served === 0 ? [...others, "no_check"] : others;
   }
   return draft;
 }
-
-/** A requirement node as every read of the route answers it once the model serves the count:
- *  with `checks`, the number of checks that serve it at the read's cut, of the issue and of each
- *  issue under it, which the generated contract does not name yet. */
-type CountedRequirement = TreeAnswerNode & { readonly checks?: unknown };
 
 /** Whether `node` is a decision, by the rule the decisions read's entries are read by
  *  (`isDecisionEntry`): a decision node is an agent's decision, and an ask is a person's where a
@@ -537,6 +546,21 @@ function draftServing(
     const target = tuple.kind === "serves" ? context.nodeOf(tuple.to.id) : undefined;
     return target === undefined || isForeign(target, context.key) ? [] : [target];
   });
+  // The Plan read omits a tuple whose statement is outside its answer. When the outline
+  // supplies that statement as context, read the step's authored pointer to it.
+  if (node.supertag === "plan_task" && node.role === "query") {
+    for (const pointer of pointersOf(node, "serves")) {
+      const id = context.nodeIdOf(pointer);
+      const target = id === undefined ? undefined : context.nodeByTreeId(id);
+      if (
+        target !== undefined &&
+        !isForeign(target, context.key) &&
+        isStatementNode(target, context)
+      ) {
+        served.push(target);
+      }
+    }
+  }
   const requirements = served.flatMap((target) =>
     isStatementNode(target, context) ? [context.treeIdOf(target.id)] : []
   );
@@ -766,15 +790,17 @@ function draftTurn(
 function onNodeText(
   node: TreeAnswerNode,
   context: TreeDraftContext,
-  passed: Set<string> = new Set()
+  passed?: Set<string>
 ): boolean {
   const { parent } = node;
-  if (node.supertag !== "comment" || parent === null || passed.has(node.id)) return false;
-  passed.add(node.id);
+  if (node.supertag !== "comment" || parent === null || passed?.has(node.id)) return false;
   if (context.kept.anchored.has(node.id)) return parent.supertag !== "issue";
   if (parent.supertag !== "comment") return false;
   const above = context.nodeOf(parent.id);
-  return above !== undefined && onNodeText(above, context, passed);
+  if (above === undefined) return false;
+  const seen = passed ?? new Set<string>();
+  seen.add(node.id);
+  return onNodeText(above, context, seen);
 }
 
 /** A callout or an image: a typed block with its words and nothing more. */
@@ -787,16 +813,36 @@ function draftBlock(
   return draftOf(node, node.supertag, context);
 }
 
-/** A prose node: a document's plain paragraph, as the model stores it, drawn by its kind and its
- *  words and nothing more. It stands under the parent the read gives it, as every draft whose
+/** A prose node: a block of a document's text that opens no typed block - a paragraph, a list, a
+ *  heading - drawn by its kind and its words and nothing more, whether the read names it by the
+ *  supertag `prose` or answers it as a plain block of this issue (`isPlainBlock`): a plain block
+ *  the read marks as another issue's is a block of that issue's text, which the conversation of
+ *  this issue never wrote. It stands under the parent the read gives it, as every draft whose
  *  step names no parent does (`placeOf`). */
 function draftProse(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
-  if (node.supertag !== "prose") return undefined;
+  if (node.supertag !== "prose" && !(isPlainBlock(node) && !isForeign(node, context.key))) {
+    return undefined;
+  }
   return draftOf(node, "prose", context);
+}
+
+/**
+ * Whether `node` is a plain block, which the read's `kind` filter takes as prose by the server's
+ * kind rule (`nodeKind` in `api/issue_tree_kinds.go`) while every read answers it as a block node
+ * of the supertag `block`: a block node that is no finding and whose text opens no typed block.
+ * The read types a block by the typed block its text opens and answers that type as its
+ * supertag (`typedNodeOf` reads the typed node of that reading), an ask's block's `ask` among
+ * them, so a block of the supertag `block` opens none. A finding is a block whose id names its
+ * lens, `lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id. A block of
+ * an ask, a comment or a message is a node of its item's own block kind (`comment_block`), part
+ * of that item, and no block node.
+ */
+function isPlainBlock(node: TreeAnswerNode): boolean {
+  return node.kind === "block" && node.supertag === "block" && !node.id.startsWith("lens/");
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn
@@ -1383,19 +1429,15 @@ export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): T
   const [first] = pages;
   if (pages.length === 1) return first;
   const last = pages[pages.length - 1] ?? first;
-  const merged: PagedAnswer = {
+  const merged: TreeAnswer = {
     ...first,
     cursor: last.cursor ?? null,
     nodes: pages.flatMap((page) => page.nodes ?? []),
-    remaining: (last as PagedAnswer).remaining,
+    remaining: last.remaining,
     tuples: pages.flatMap((page) => page.tuples ?? []),
   };
   return merged;
 }
-
-/** A page of the tree read with the count of the nodes the read holds after it (`remaining`),
- *  which the server answers beside `cursor` and the generated contract does not name yet. */
-type PagedAnswer = TreeAnswer & { readonly remaining?: unknown };
 
 /**
  * How many nodes the read holds after the pages `answer` holds (`remaining`), the exact number the
@@ -1403,7 +1445,7 @@ type PagedAnswer = TreeAnswer & { readonly remaining?: unknown };
  * (`nextTreeCursor`) or gives no count.
  */
 export function nodesRemaining(answer: TreeAnswer): number | undefined {
-  const { remaining } = answer as PagedAnswer;
+  const { remaining } = answer;
   return nextTreeCursor(answer) !== undefined && typeof remaining === "number"
     ? remaining
     : undefined;
@@ -1477,9 +1519,16 @@ function compareIds(left: string, right: string): number {
  */
 export function mergeCommentPage(answer: TreeAnswer, page: TreeAnswer): TreeAnswer {
   const nodes = [...(answer.nodes ?? [])];
-  const held = new Set(nodes.map((node) => node.id));
-  for (const run of commentRuns((page.nodes ?? []).filter((node) => !held.has(node.id)))) {
-    nodes.splice(placeOfRun(nodes, run[0], answer.issue), 0, ...run);
+  const parents = new Map(nodes.map((node) => [node.id, node.parent]));
+  const runs = commentRuns((page.nodes ?? []).filter((node) => !parents.has(node.id)));
+  for (const run of runs) {
+    const at = placeOfRun(nodes, run[0], answer.issue, parents);
+    nodes.splice(at, 0, ...run);
+    for (const node of run) {
+      // If a page repeats an id, keep the last placement in the merged walk.
+      const last = parents.has(node.id) ? nodes[lastPlaceOf(nodes, node.id)] : node;
+      parents.set(node.id, last?.parent ?? null);
+    }
   }
   return {
     ...answer,
@@ -1515,22 +1564,26 @@ function commentRuns(nodes: readonly TreeAnswerNode[]): [TreeAnswerNode, ...Tree
  * where that node's branch ends. A parent's branch is every node after it whose chain of parents
  * reaches it, which the read's walk keeps together, each node after its parent.
  */
-function placeOfRun(nodes: readonly TreeAnswerNode[], head: TreeAnswerNode, issue: string): number {
-  const at = new Map(nodes.map((node, place) => [node.id, place]));
-  const named = head.parent === null ? undefined : at.get(head.parent.id);
+function placeOfRun(
+  nodes: readonly TreeAnswerNode[],
+  head: TreeAnswerNode,
+  issue: string,
+  parents: ReadonlyMap<string, TreeAnswerNode["parent"]>
+): number {
+  const named = head.parent === null ? -1 : lastPlaceOf(nodes, head.parent.id);
   const parentAt =
-    named ??
-    nodes.findIndex(
-      (node) => node.supertag === "issue" && (node.id === issue || node.parent === null)
-    );
+    named >= 0
+      ? named
+      : nodes.findIndex(
+          (node) => node.supertag === "issue" && (node.id === issue || node.parent === null)
+        );
   const parent = nodes[parentAt];
   if (parent === undefined) return nodes.length;
   const reaches = (node: TreeAnswerNode): boolean => {
     let above = node.parent;
     for (let steps = 0; above !== null && steps < nodes.length; steps += 1) {
       if (above.id === parent.id) return true;
-      const place = at.get(above.id);
-      above = place === undefined ? null : (nodes[place]?.parent ?? null);
+      above = parents.get(above.id) ?? null;
     }
     return false;
   };
@@ -1540,6 +1593,14 @@ function placeOfRun(nodes: readonly TreeAnswerNode[], head: TreeAnswerNode, issu
     if (node.parent?.id === parent.id && sortsAfter(node, head)) return place;
   }
   return nodes.length;
+}
+
+/** The last placement of `id`, as the map of a walk's ids would see it. */
+function lastPlaceOf(nodes: readonly TreeAnswerNode[], id: string): number {
+  for (let at = nodes.length - 1; at >= 0; at -= 1) {
+    if (nodes[at]?.id === id) return at;
+  }
+  return -1;
 }
 
 /** Whether the read orders `sibling` after `node` under one parent: ranked siblings first, by

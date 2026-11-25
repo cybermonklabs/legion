@@ -1,4 +1,4 @@
-import type { TreeFilter } from "../../api/queries";
+import { TREE_FILTERS, type TreeFilter } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
@@ -220,10 +220,6 @@ export function filterOfUndrawn(node: TreeNode): Filter | undefined {
   return node.children.length === 0 ? NO_CONVERSATION_ROW[node.type] : undefined;
 }
 
-/** The filters whose held view answer an address of a block Conversation's read holds no node of
- *  is looked up in, in this order (`filterHolding`): Decisions' view is the decisions read. */
-const VIEW_FILTERS = ["spec", "verification", "plan"] as const satisfies readonly Filter[];
-
 /**
  * The filter whose view answer the page holds (`TreeNode.views`) answers the block `target` names
  * as a node of that filter's own kinds (`ROW_KINDS`): the filter an address of a node
@@ -234,7 +230,7 @@ export function filterHolding(
   views: TreeViews | undefined,
   target: BlockTarget
 ): Filter | undefined {
-  return VIEW_FILTERS.find((filter) => answerHolds(views?.[filter], target, ROW_KINDS[filter]));
+  return TREE_FILTERS.find((filter) => answerHolds(views?.[filter], target, ROW_KINDS[filter]));
 }
 
 /** The block an address names: its id, and the document that holds it where the address names
@@ -294,9 +290,11 @@ export function isThreadContext(node: Pick<TreeNode, "children" | "type">): bool
  * The page with no filter on, or Graph: the whole tree but the memo, or under a words filter each
  * match with the chain above it as context. In Conversation (`conversation`), which draws
  * Conversation's read and nothing else (R9), a result and a plan task are no row
- * (`NO_CONVERSATION_ROW`) but where a row stands under one or the address names it, and a message
- * under which a node it produced stands - any node but a turn of its thread - is one context row
- * with its kind. Graph draws every node of the tree as a row.
+ * (`NO_CONVERSATION_ROW`), and neither is a block of a converted document drawn as prose (root
+ * R1: the conversation's own blocks are the ones written in it), but where a row stands under one
+ * or the address names it; and a message under which a node it produced stands - any node but a
+ * turn of its thread - is one context row with its kind. Graph draws every node of the tree as a
+ * row, a block of a converted document among them.
  */
 function conversationView(
   root: TreeNode,
@@ -312,9 +310,13 @@ function conversationView(
     const children = node.children
       .map(prune)
       .filter((child): child is TreeNode => child !== undefined);
+    // A prose node is a block of a converted document where its draft is addressed in that
+    // document (`tree-read/tree-nodes.ts`' `referenceOf`, from the node's `document`); a block
+    // written in the conversation, the room's own fragment, has no address of its own.
+    const documentProse = node.type === "prose" && node.reference !== undefined;
     if (
       conversation &&
-      NO_CONVERSATION_ROW[node.type] !== undefined &&
+      (NO_CONVERSATION_ROW[node.type] !== undefined || documentProse) &&
       children.length === 0 &&
       !named.has(node.id)
     ) {
@@ -435,7 +437,7 @@ function filterView(
  * so a row reads as it does in the outline, under the row the read places it under, else at the
  * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. A node the
  * outline's tree holds no node of is drawn as the node of the tree the view's own answer builds
- * (`TreeViews.trees`), so the view draws its own read's rows whatever the outline read holds or
+ * (`TreeViews.treeOf`), so the view draws its own read's rows whatever the outline read holds or
  * whether it was sent at all (R4, R5). Verification draws each statement the view holds as
  * context, with each check under each statement it serves and each result under its check. A
  * node neither tree drafts - a criterion - is no row, and neither is the memo, a callout. A
@@ -485,7 +487,7 @@ function heldFilterView(
     }
   };
   index(root, true);
-  const own = root.views?.trees?.[filter];
+  const own = root.views?.treeOf?.(filter);
   if (own !== undefined) index(own, false);
   // The node's other parents (`TreeNode.alsoUnder`), each chip with no words named by its
   // parent's line, where a tree holds that parent.

@@ -80,6 +80,7 @@ import { nodesInOrder } from "./tree-keys";
 import {
   commentNode,
   treeAnswer as fixtureAnswer,
+  pagedAnswer,
   type TreeNodeExtra,
   treeNode,
   treeTuple,
@@ -1403,14 +1404,6 @@ test("a remount after 30 s sends no read", async () => {
   }
 });
 
-/** `page` as the server answers it where the read goes on past it: the `cursor` that names the
- *  next page, and how many nodes the read holds after this one (`remaining`), which the server
- *  answers beside the cursor and the generated contract does not name yet. */
-function pagedAnswer(page: TreeAnswer, cursor: string | null, remaining?: number): TreeAnswer {
-  const count = remaining === undefined ? {} : { remaining };
-  return { ...page, cursor, ...count };
-}
-
 // R5, R15: the tree read holds data once its first page does: the load reads that page alone,
 // though it names a next one, and the tree and a role's blocks are drawn from it. The reader's
 // press reads the next page, and a refetch then reads both pages again, so one whose second page
@@ -1676,6 +1669,44 @@ test("a held view answer reaches presetView through root.views", async () => {
     ).toBe(true);
     view.unmount();
   } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+test("Plan names both statements a step serves when only the outline holds those statements", async () => {
+  const spec = { ...plan, id: "artifact-spec", name: "Spec", primary: true, slug: "spec" };
+  const shown = { ...issue, artifacts: [plan, spec], primary_artifact_id: spec.id };
+  const statements = ["r1", "r2"].map((id, position) =>
+    answerNode(id, "requirement", {
+      document: { artifact_id: spec.id, position, slug: spec.slug },
+      text: `Statement ${id}`,
+    })
+  );
+  const step = answerNode("t2", "plan_task", {
+    attributes: { serves: `dispatch://${KEY}/spec#b-r1 dispatch://${KEY}/spec#b-r2` },
+    document: { artifact_id: plan.id, position: 1, slug: PLAN },
+    parent: statements[0]?.id,
+    role: "query",
+  });
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+    tree: fixtureAnswer([answerNode(KEY, "issue", { parent: null }), ...statements]),
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(viewKey(KEY, "plan"), viewAnswer(step));
+  try {
+    const view = renderHook(() => useIssueTree(shown).root, {
+      wrapper: ({ children }) => <RoutedQueries client={client}>{children}</RoutedQueries>,
+    });
+    await waitFor(() => {
+      const [row] = presetView(view.result.current, "plan", "").root.children;
+      expect(row?.id).toBe(`${PLAN}#b-t2`);
+      expect(row?.parentLine?.id).toBe("spec#b-r1");
+      expect(row?.alsoUnder.map((chip) => chip.ref)).toEqual([
+        `dispatch://${KEY}/artifact/spec#b-r2`,
+      ]);
+    });
+  } finally {
+    client.clear();
     for (const stub of stubs) stub.mockRestore();
   }
 });

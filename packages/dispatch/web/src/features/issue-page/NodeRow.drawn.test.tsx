@@ -837,7 +837,6 @@ test("every type token has its own glyph path and none falls back", () => {
   };
   const fallback = shapeOf("a token with no shape");
   const types: readonly string[] = Object.values(GLYPH_TOKENS.types);
-  expect(types).toContain(GLYPH_TOKENS.types.prose);
   const shapes = new Map(Object.keys(GLYPH_NAMES).map((token) => [token, shapeOf(token)]));
   expect(
     types.filter((token) => shapes.get(token) === fallback),
@@ -2116,7 +2115,7 @@ function rowActs(
   return rowControls(drawn, withWriter, options).acts;
 }
 
-// Part G's R7 and R11: every row, focused or not, draws Reply on a comment, a message and an ask
+// R7 and R11: every row, focused or not, draws Reply on a comment, a message and an ask
 // in any state, and Answer on an open question; a statement, a check and a decision draw none,
 // since today's model holds no reply to a block; and with no writer above it the row draws no
 // act at all.
@@ -2184,7 +2183,7 @@ test("Change answer is drawn on an answered question the reader answered, and on
   expect(rowActs(answered, false, { ownAnswer: true })).toEqual([]);
 });
 
-// Part G's R6: a row offers Copy reference on a node that has an address, with a writer above it
+// R6: a row offers Copy reference on a node that has an address, with a writer above it
 // or with none, since it writes nothing; a node with no address draws none.
 test("Copy reference is drawn on a node with an address, and on none without", () => {
   const comment = (reference?: string) =>

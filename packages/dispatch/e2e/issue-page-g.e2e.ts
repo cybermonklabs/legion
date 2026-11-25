@@ -204,14 +204,11 @@ test("a node draws its kind at the right of its row and every node starts at one
       rows.filter((row) => leftOut.includes(row.id ?? "")).map((row) => row.id),
       "Conversation draws a row its read does not hold"
     ).toEqual([]);
-    // A one-line statement with no state is 29 px tall at 1440 px (R1).
-    const oneLine = (await rowLayouts(page, seeded.slugs.spec)).find(
-      (row) => row.id === `${seeded.slugs.spec}#b-r-one`
-    );
-    expect(
-      oneLine?.height ?? 1e6,
-      "the one-line statement is taller than 29 px"
-    ).toBeLessThanOrEqual(29);
+    // The statement's words take one line. Its face and acts are now drawn underneath even
+    // without focus, so the old 29 px limit for the whole closed card no longer applies.
+    const oneLine = rowWords(nodeRow(page, `${seeded.slugs.spec}#b-r-one`).first());
+    await expect(oneLine).toBeVisible();
+    expect((await oneLine.boundingBox())?.height, "the statement is taller than one line").toBe(24);
 
     // A child: its status, what blocks it and who holds it, and no author (R5).
     const child = nodeRow(page, seeded.child).first();

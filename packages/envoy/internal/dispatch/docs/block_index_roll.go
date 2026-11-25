@@ -208,8 +208,8 @@ var MarkVersionedDocumentsStatement = markVersionedDocuments
 // document already marked keeps its mark and its time. A document marked here is listed by the
 // owed documents this same tick reads next, and drained by it when its batch has room.
 //
-// It answers, as owed, the time since which this build owes the object pass
-// (writeObjectNodesAnotherBuildWrote), nil where it owes none. The tick owes the pass while a
+// It answers what this build owes of the object pass (objectPassDebt,
+// writeObjectNodesAnotherBuildWrote), nothing where it owes none. The tick owes the pass while a
 // process of another build serves and on the first tick that finds none after one did
 // (block_index_event_cursors.another_build_seen), since that build writes rows with no node; where
 // an event it reads names a row of an issue, a document, an ask or a message with no node, or a
@@ -219,28 +219,29 @@ var MarkVersionedDocumentsStatement = markVersionedDocuments
 // conversation's file such a build uploads appends no event, and a process that starts may follow
 // a release that wrote while none of this build's ran. That tick sets the time in the cursor's
 // row, in the statement that moves the cursor, and a debt an earlier tick left stands until a pass
-// clears it, so whichever process of the build holds the lease next runs it. It answers owed only
-// once its transaction has committed, and nil where it fails. Before a horizon is proven the
+// clears it, so whichever process of the build holds the lease next runs it. It answers a debt
+// only once its transaction has committed, and none where it fails. Before a horizon is proven the
 // cursor holds no row, so no debt can be recorded: such a tick owes the pass only while another
-// build serves (rollNow), and the process's next tick owes it otherwise. A rollNow pass does not
-// count as the process's pass (objectPassFinished), so the process's first tick with a proven
-// horizon owes the pass however recently a rollNow pass ran: the other build may have removed or
-// made a document after it and stopped before that tick, and no event that tick reads names it.
-func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTick) (full bool, owed *time.Time, err error) {
+// build serves, a debt no row records, and the process's next tick owes it otherwise. A pass of a
+// debt no row records does not count as the process's pass (objectPassFinished), so the process's
+// first tick with a proven horizon owes the pass however recently such a pass ran: the other build
+// may have removed or made a document after it and stopped before that tick, and no event that
+// tick reads names it.
+func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTick) (full bool, debt objectPassDebt, err error) {
 	safe, err := s.blockIndexHorizon().Safe(ctx)
 	if err != nil {
-		return false, nil, fmt.Errorf("read the event log's safe horizon: %w", err)
+		return false, objectPassDebt{}, fmt.Errorf("read the event log's safe horizon: %w", err)
 	}
 	live, err := processes.Live(ctx, s.store.Pool)
 	if err != nil {
-		return false, nil, err
+		return false, objectPassDebt{}, err
 	}
 	tick.AnotherBuild = slices.ContainsFunc(live, func(process processes.Process) bool {
 		return process.Commit != s.buildCommit
 	})
 	tx, err := s.store.Pool.Begin(ctx)
 	if err != nil {
-		return false, nil, err
+		return false, objectPassDebt{}, err
 	}
 	defer tx.Rollback(ctx)
 	queued, ledger := queueWrites(ctx, tx)
@@ -260,13 +261,10 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 				$2::bigint) end),
 			coalesce((select another_build_seen from block_index_event_cursors where build_commit = $1), false)
 	`, s.buildCommit, safe, s.markingRule).Scan(&cursor, &seen); err != nil {
-		return false, nil, fmt.Errorf("read this build's block-index event cursor: %w", err)
+		return false, objectPassDebt{}, fmt.Errorf("read this build's block-index event cursor: %w", err)
 	}
 	if cursor == nil {
-		if tick.AnotherBuild {
-			return false, &rollNow, nil
-		}
-		return false, nil, nil
+		return false, objectPassDebt{owed: tick.AnotherBuild}, nil
 	}
 	// Another process of this build may have moved the cursor past this process's horizon; the
 	// cursor never moves back.
@@ -286,29 +284,29 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 		if err := tx.QueryRow(queued, readEventPage, *cursor, safe, blockIndexEventPage).Scan(
 			&read, &last, &named, &comments, &causes,
 		); err != nil {
-			return false, nil, fmt.Errorf("read the events after the cursor: %w", err)
+			return false, objectPassDebt{}, fmt.Errorf("read the events after the cursor: %w", err)
 		}
 		if full = read == blockIndexEventPage; full {
 			next = *last
 		}
 		if !owes {
 			if owes, err = graphcensus.EventsOweObjectPass(queued, tx, *cursor, next); err != nil {
-				return false, nil, err
+				return false, objectPassDebt{}, err
 			}
 		}
 		if len(comments) > 0 {
 			if err := refs.LockCommentOwners(queued, tx, comments); err != nil {
-				return false, nil, err
+				return false, objectPassDebt{}, err
 			}
 			if commented, err = refs.CommentsNamingNoNode(queued, tx, comments, causes); err != nil {
-				return false, nil, err
+				return false, objectPassDebt{}, err
 			}
 		}
 	}
 	// The write phase, in the store's lock order: the cursor, the documents' marks, the comments.
 	// The cursor row records the build's marking rule beside where it has read to, and whether
 	// this build owes the object pass.
-	var debt *time.Time
+	var recorded *time.Time
 	if err := write(queued, tx, func(b *store.WriteBatch) error {
 		b.Queue("move this build's block-index event cursor", `
 			insert into block_index_event_cursors (build_commit, event_id, marking_rule, another_build_seen, object_nodes_owed_at)
@@ -320,11 +318,11 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 			    object_nodes_owed_at = coalesce(excluded.object_nodes_owed_at, block_index_event_cursors.object_nodes_owed_at)
 			returning object_nodes_owed_at
 		`, s.buildCommit, next, owes, tick.AnotherBuild, s.markingRule).QueryRow(func(row pgx.Row) error {
-			return row.Scan(&debt)
+			return row.Scan(&recorded)
 		})
 		return nil
 	}); err != nil {
-		return false, nil, err
+		return false, objectPassDebt{}, err
 	}
 	if len(named) > 0 {
 		if err := write(queued, tx, func(b *store.WriteBatch) error {
@@ -333,7 +331,7 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 			})
 			return nil
 		}); err != nil {
-			return false, nil, err
+			return false, objectPassDebt{}, err
 		}
 	}
 	if commented.Comments() > 0 {
@@ -341,19 +339,19 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 			commented.Queue(b)
 			return nil
 		}); err != nil {
-			return false, nil, fmt.Errorf("write the nodes of the comments the events after the cursor name: %w", err)
+			return false, objectPassDebt{}, fmt.Errorf("write the nodes of the comments the events after the cursor name: %w", err)
 		}
 		written = commented.Comments()
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {
-		return false, nil, fmt.Errorf("write what the events after the cursor name: %w", err)
+		return false, objectPassDebt{}, fmt.Errorf("write what the events after the cursor name: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, nil, fmt.Errorf("commit what the events after the cursor name: %w", err)
+		return false, objectPassDebt{}, fmt.Errorf("commit what the events after the cursor name: %w", err)
 	}
 	// What the tick counts is what it committed: a read that fails counts nothing.
 	tick.Events, tick.Marked, tick.Comments = read, int(marked), written
-	return full, debt, nil
+	return full, objectPassDebt{owed: recorded != nil, recorded: recorded}, nil
 }
 
 // objectPassBatches bounds the batches one tick's object pass writes across the four kinds, so a
@@ -384,13 +382,18 @@ const orphanedNodesSwept = 20
 // interval while this build serves alone, and on every tick while another build serves.
 const objectPassInterval = 10 * time.Minute
 
-// rollNow is the debt a tick answers while another build serves before any horizon is proven
-// (readEventsAfterCursor): no cursor row holds it, so the pass runs, no row is cleared, and the
-// pass does not count as the process's own (objectPassFinished).
-var rollNow time.Time
+// objectPassDebt is what a block-index tick owes of the object pass (readEventsAfterCursor): owed
+// is whether the tick runs it, and recorded the time the build's cursor row holds the debt at,
+// which the pass clears once it finishes. A tick that owes the pass while another build serves
+// before any horizon is proven has no cursor row to hold it, and its recorded is nil: the pass
+// runs, no row is cleared, and the pass does not count as the process's own (objectPassFinished).
+type objectPassDebt struct {
+	owed     bool
+	recorded *time.Time
+}
 
 // writeObjectNodesAnotherBuildWrote is the block-index tick's second step: while this build owes
-// the object pass (readEventsAfterCursor's owed), it writes the node of every issue, document, ask
+// the object pass (readEventsAfterCursor's debt), it writes the node of every issue, document, ask
 // and message whose row names none, through the backfill's object pass (graphcensus's
 // WriteOwedObjectNodes), states gone the node of every document a build before this one removed
 // (graphcensus's OrphanedDocumentNodes and StateOrphanedGone), and then states every stale lens
@@ -435,8 +438,8 @@ var rollNow time.Time
 //
 // The pass and the sweep stay for good: a rollback to any earlier release, and a write an older
 // build makes in any later roll, still reach them.
-func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, owed *time.Time) (more bool, err error) {
-	if owed == nil {
+func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, debt objectPassDebt) (more bool, err error) {
+	if !debt.owed {
 		return false, nil
 	}
 	pass, passErr := graphcensus.WriteOwedObjectNodes(ctx, s.store, objectPassBatches)
@@ -472,7 +475,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 	case more:
 		return more, nil
 	}
-	if owed == &rollNow {
+	if debt.recorded == nil {
 		// A pass no cursor row records is not the process's pass: its first tick with a proven
 		// horizon still owes one, which reads what another build did after this pass.
 		return false, nil
@@ -481,7 +484,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 	if _, err := s.store.Pool.Exec(ctx, `
 		update block_index_event_cursors set object_nodes_owed_at = null
 		where build_commit = $1 and object_nodes_owed_at = $2
-	`, s.buildCommit, *owed); err != nil {
+	`, s.buildCommit, *debt.recorded); err != nil {
 		return false, fmt.Errorf("clear this build's debt of the object pass: %w", err)
 	}
 	return false, nil

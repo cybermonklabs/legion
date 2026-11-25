@@ -35,7 +35,7 @@ import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
-import { issueAddress } from "../issue-address";
+import { presetOf } from "../issue-address";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
 import {
@@ -317,15 +317,6 @@ const TREE_FRESH = {
   retryOnMount: mayReadOnMount,
 } as const;
 
-/** The issue's whole tree, one query over the pages read (`readTree`): Graph's read (R10), the
- *  tree read with no view. */
-export const issueTreeQuery = (key: string) =>
-  queryOptions({
-    ...TREE_FRESH,
-    queryKey: issueTreeKey(key),
-    queryFn: (context) => readTree(key, OUTLINE_QUERIES.graph, context),
-  });
-
 /** The read of `outline`, one query over the pages read (`readTree`): Graph's under the tree's own
  *  key (`issueTreeQuery`), Conversation's under its own (`conversationTreeKey`), the kinds it
  *  names the last member of its key, in their one order, so its key is the same in every load.
@@ -336,6 +327,13 @@ export const outlineQuery = (key: string, outline: Outline) =>
     queryKey: outline === "graph" ? issueTreeKey(key) : conversationTreeKey(key),
     queryFn: (context) => readTree(key, OUTLINE_QUERIES[outline], context),
   });
+
+/** The issue's whole tree: Graph's read, with no view. */
+export const issueTreeQuery = (key: string) => outlineQuery(key, "graph");
+
+function viewRouteQuery(view: TreeFilter, version: number | undefined): TreeQuery {
+  return version === undefined ? { view } : { view, v: version };
+}
 
 /** One view of the issue's tree, one query over the pages read (`readTree`). A plain query rather
  *  than one per page, so an observer that is never enabled can watch a view a slot read. A filter
@@ -354,12 +352,7 @@ export const viewQuery = (key: string, filter: TreeFilter, version?: number) =>
       version === undefined
         ? viewKey(key, filter)
         : ([...viewKey(key, filter), { v: version }] as const),
-    queryFn: (context) =>
-      readTree(
-        key,
-        version === undefined ? { view: filter } : { view: filter, v: version },
-        context
-      ),
+    queryFn: (context) => readTree(key, viewRouteQuery(filter, version), context),
   });
 
 /** Which outline read a load of `preset` holds (R1, R4, R13): Graph's in Graph (R10),
@@ -400,8 +393,7 @@ interface OutlineChoice {
 function useOutlineChoice(): OutlineChoice {
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
-  const preset =
-    route === undefined ? "conversation" : issueAddress(route, "", "", undefined).preset;
+  const preset = route === undefined ? "conversation" : presetOf(route);
   const outline = outlineOf(preset);
   return {
     filter: TREE_FILTERS.find((filter) => filter === preset),
@@ -426,6 +418,11 @@ function observedOutline(key: string, { outline, sends }: OutlineChoice) {
     enabled: (query: Pick<Query, "state">) =>
       outline !== undefined && (sends || outlineBegun(query)) && mayReadNow(query),
   };
+}
+
+function useOutlineRead(key: string) {
+  const choice = useOutlineChoice();
+  return { choice, read: useQuery(observedOutline(key, choice)) };
 }
 
 /** Sends Conversation's read of issue `key` where nothing has sent it (`outlineBegun`), and
@@ -508,7 +505,7 @@ export interface TreeRead {
  * pending: nothing is out, and the reads that wait on every read of the page do not wait on it.
  */
 export function useTreeRead(issue: IssueDetails): TreeRead {
-  const choice = useOutlineChoice();
+  const { choice, read } = useOutlineRead(issue.key);
   const { filter } = choice;
   const {
     data: answer,
@@ -518,7 +515,7 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     isPending,
     isSuccess,
     refetch,
-  } = useQuery(observedOutline(issue.key, choice));
+  } = read;
   const sent = choice.outline !== undefined && (choice.sends || fetchStatus !== "idle");
   const view = useQuery({ ...viewQuery(issue.key, filter ?? TREE_FILTERS[0]), enabled: false });
   const viewAnswer = filter === undefined ? undefined : view.data;
@@ -526,7 +523,9 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     () => byRole((role) => blocksOfRole(role === filter ? viewAnswer : answer, role, issue)),
     [answer, filter, issue, viewAnswer]
   );
-  const { errorUpdateCount: viewErrors, isError: viewRefused, refetch: viewRefetch } = view;
+  const viewErrors = filter === undefined ? 0 : view.errorUpdateCount;
+  const viewRefused = filter !== undefined && view.isError;
+  const viewRefetch = view.refetch;
   const blocksOf = useMemo(
     () =>
       byRole(
@@ -562,7 +561,7 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
  *  it starts and ends only where it reads this: a view that draws a failed read's Retry busy while
  *  it runs. */
 export function useTreeReadRunning(key: string): boolean {
-  return useQuery(observedOutline(key, useOutlineChoice())).isFetching;
+  return useOutlineRead(key).read.isFetching;
 }
 
 /** Whether the outline read the page holds answers older comments it has not read
@@ -581,8 +580,10 @@ export interface OlderComments {
  *  Contents list. Neither reads anything until it is pressed. */
 export function useOlderComments(issue: IssueDetails): OlderComments {
   const queryClient = useQueryClient();
-  const choice = useOutlineChoice();
-  const answer = useQuery(observedOutline(issue.key, choice)).data;
+  const {
+    choice,
+    read: { data: answer },
+  } = useOutlineRead(issue.key);
   const outline = choice.outline;
   const remain =
     outline !== undefined && answer !== undefined && olderCommentsBefore(answer) !== undefined;
@@ -599,6 +600,36 @@ export function useOlderComments(issue: IssueDetails): OlderComments {
 /** The older comment pages out, by client, each by its query and the position it reads from
  *  (`readOlderComments`). */
 const commentPagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
+
+/** Starts a page read only if that client has no matching read out. */
+function joinedPage(
+  pagesOut: WeakMap<QueryClient, Map<string, Promise<void>>>,
+  client: QueryClient,
+  page: string,
+  readPage: () => Promise<void>
+): Promise<void> {
+  let pages = pagesOut.get(client);
+  if (pages === undefined) {
+    pages = new Map();
+    pagesOut.set(client, pages);
+  }
+  const reading = pages.get(page);
+  if (reading !== undefined) return reading;
+  const read = readPage().finally(() => pages.delete(page));
+  pages.set(page, read);
+  return read;
+}
+
+function writeKeepingStale(
+  client: QueryClient,
+  query: Pick<Query, "state">,
+  queryKey: QueryKey,
+  answer: TreeAnswer
+): void {
+  const stale = query.state.isInvalidated;
+  client.setQueryData(queryKey, answer);
+  if (stale) void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
+}
 
 /**
  * Reads the next older comment page of `outline`'s read of issue `key` (R15), one request with
@@ -623,30 +654,18 @@ export function readOlderComments(
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   const before = held === undefined ? undefined : olderCommentsBefore(held);
   if (before === undefined) return Promise.resolve();
-  let out = commentPagesOut.get(queryClient);
-  if (out === undefined) {
-    out = new Map();
-    commentPagesOut.set(queryClient, out);
-  }
-  const pages = out;
-  const page = `${hashKey(queryKey)} ${before}`;
-  const reading = pages.get(page);
-  if (reading !== undefined) return reading;
-  const read = api
-    .getIssueTree(key, { ...OUTLINE_QUERIES[outline], comments_before: before })
-    .then((older) => {
-      const now = queryClient.getQueryData<TreeAnswer>(queryKey);
-      const query = queryClient.getQueryCache().find({ exact: true, queryKey });
-      if (now === undefined || query === undefined || olderCommentsBefore(now) !== before) return;
-      const merged = mergeCommentPage(now, older);
-      commentPagesOf.set(query, { reached: olderCommentsBefore(merged) ?? null });
-      const stale = query.state.isInvalidated;
-      queryClient.setQueryData(queryKey, merged);
-      if (stale) void queryClient.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
-    })
-    .finally(() => pages.delete(page));
-  pages.set(page, read);
-  return read;
+  return joinedPage(commentPagesOut, queryClient, `${hashKey(queryKey)} ${before}`, () =>
+    api
+      .getIssueTree(key, { ...OUTLINE_QUERIES[outline], comments_before: before })
+      .then((older) => {
+        const now = queryClient.getQueryData<TreeAnswer>(queryKey);
+        const query = queryClient.getQueryCache().find({ exact: true, queryKey });
+        if (now === undefined || query === undefined || olderCommentsBefore(now) !== before) return;
+        const merged = mergeCommentPage(now, older);
+        commentPagesOf.set(query, { reached: olderCommentsBefore(merged) ?? null });
+        writeKeepingStale(queryClient, query, queryKey, merged);
+      })
+  );
 }
 
 /** A read whose pages past the first the page reads one at a time (R15): an outline's
@@ -664,7 +683,7 @@ function pagedQuery(
     return { query: OUTLINE_QUERIES[read], queryKey: outlineQuery(key, read).queryKey };
   }
   return {
-    query: version === undefined ? { view: read } : { view: read, v: version },
+    query: viewRouteQuery(read, version),
     queryKey: viewQuery(key, read, version).queryKey,
   };
 }
@@ -702,18 +721,8 @@ export function readNextTreePage(
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   const cursor = held === undefined ? undefined : nextTreeCursor(held);
   if (cursor === undefined) return Promise.resolve();
-  let out = treePagesOut.get(queryClient);
-  if (out === undefined) {
-    out = new Map();
-    treePagesOut.set(queryClient, out);
-  }
-  const pages = out;
-  const page = `${hashKey(queryKey)} ${cursor}`;
-  const reading = pages.get(page);
-  if (reading !== undefined) return reading;
-  const next = api
-    .getIssueTree(key, { ...query, cursor })
-    .then((answered) => {
+  return joinedPage(treePagesOut, queryClient, `${hashKey(queryKey)} ${cursor}`, () =>
+    api.getIssueTree(key, { ...query, cursor }).then((answered) => {
       const now = queryClient.getQueryData<TreeAnswer>(queryKey);
       const cached = queryClient.getQueryCache().find({ exact: true, queryKey });
       if (now === undefined || cached === undefined || nextTreeCursor(now) !== cursor) return;
@@ -725,13 +734,9 @@ export function readNextTreePage(
         pages: (walk?.pages ?? 1) + 1,
         walked: (walk?.walked ?? now.nodes?.length ?? 0) + (answered.nodes?.length ?? 0),
       });
-      const stale = cached.state.isInvalidated;
-      queryClient.setQueryData(queryKey, mergeTreePages([now, answered]));
-      if (stale) void queryClient.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
+      writeKeepingStale(queryClient, cached, queryKey, mergeTreePages([now, answered]));
     })
-    .finally(() => pages.delete(page));
-  pages.set(page, next);
-  return next;
+  );
 }
 
 /** The next page of a read whose answer names one (`cursor`, R15): how many nodes the read holds
@@ -746,8 +751,10 @@ export interface NextTreePage {
 /** The next page of the outline read the page holds (`OutlineChoice`), for the control after the
  *  outline's last row; undefined while its answer names none. It reads nothing until asked. */
 export function useNextTreePage(issue: IssueDetails): NextTreePage | undefined {
-  const choice = useOutlineChoice();
-  const answer = useQuery(observedOutline(issue.key, choice)).data;
+  const {
+    choice,
+    read: { data: answer },
+  } = useOutlineRead(issue.key);
   return useNextPage(issue.key, choice.outline, answer);
 }
 
@@ -790,8 +797,10 @@ function useNextPage(
  */
 export function useReadUntilHeld(issue: IssueDetails, wanted: boolean): boolean {
   const queryClient = useQueryClient();
-  const choice = useOutlineChoice();
-  const answer = useQuery(observedOutline(issue.key, choice)).data;
+  const {
+    choice,
+    read: { data: answer },
+  } = useOutlineRead(issue.key);
   const { outline } = choice;
   const cursor = answer === undefined ? undefined : nextTreeCursor(answer);
   // The cursor whose page was refused, past which nothing is read for the address.

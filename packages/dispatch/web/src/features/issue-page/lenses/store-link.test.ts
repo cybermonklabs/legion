@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { parsePath } from "react-router-dom";
 
 import { buildIssuePath, parseIssuePath } from "../../refs/routes";
 import { outlineRowPath, storeLinkPath } from "./store-link";
@@ -67,9 +68,7 @@ test("outlineRowPath builds the row's path with buildIssuePath", () => {
   const readId = `lens/${LENS}#first`;
   for (const filter of [undefined, "two regions"]) {
     const path = outlineRowPath("CORE-1", readId, filter);
-    const query = path.indexOf("?");
-    const pathname = path.slice(0, query);
-    const search = path.slice(query);
+    const { pathname = "", search = "" } = parsePath(path);
     expect(pathname, `the filter ${filter}`).toBe(buildIssuePath({ key: "CORE-1", kind: "issue" }));
     expect(parseIssuePath(pathname, search), `the filter ${filter}`).toMatchObject({
       key: "CORE-1",

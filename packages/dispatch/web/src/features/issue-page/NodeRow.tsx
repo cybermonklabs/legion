@@ -1,4 +1,3 @@
-import { replaceEqualDeep } from "@tanstack/react-query";
 import {
   type CSSProperties,
   type ReactNode,
@@ -34,7 +33,7 @@ import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-m
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { openChildEntry } from "./children-section";
-import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
+import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts } from "./IssueChildren";
@@ -729,11 +728,10 @@ export function RowMargin({
     return (
       <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
         <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
-          {/* A plain span: its control stays inline, so the 6 px a control's touch target takes
-              above and below it on a phone adds nothing to the line's height. */}
-          <span data-node-tag="">
+          {/* The button keeps its touch padding without raising the height of the line. */}
+          <span className="inline-flex" data-node-tag="">
             <button
-              className={`dispatch-inline-link font-semibold whitespace-nowrap ${pageKindTag.child}`}
+              className={`dispatch-inline-link font-semibold whitespace-nowrap max-[1279px]:-my-[6px] ${pageKindTag.child}`}
               data-child-key=""
               onClick={() => openChildEntry(key)}
               tabIndex={tabStops ? undefined : -1}
@@ -762,7 +760,7 @@ export function RowMargin({
               <KindTag node={node} />
             ) : (
               <Link
-                className="dispatch-inline-link inline-flex items-center gap-1 underline decoration-page-hair underline-offset-[3px]"
+                className="dispatch-inline-link inline-flex items-center gap-1 underline decoration-page-hair underline-offset-[3px] max-[1279px]:-my-[6px]"
                 data-node-tag-link=""
                 tabIndex={tabStops ? undefined : -1}
                 to={tagTo}
@@ -849,8 +847,7 @@ export function RowMargin({
 }
 
 /** A typed node's kind, as its tag draws it: its type's word and shape, and the word alone for a
- *  `requirement` block of a document other than the spec, which is no statement (decision
- *  246). */
+ *  `requirement` block of a document other than the spec, which is no statement. */
 function KindTag({ node }: { node: TreeNode }): ReactNode {
   return node.type === "requirement" && !isStatement(node) ? (
     <span {...pageChrome}>{BLOCK_TYPE_NAMES.requirement}</span>
@@ -931,7 +928,7 @@ export function NodeOptions({
               // press leaves the focus where it is until it ends, so the press ends on the option
               // it went down on, in a view whose body opens on focus as much as on the outline's
               // rows. Once the press has picked, the focus goes to the row: one press picks the
-              // option and moves the reader to the row it is drawn on (decision 120).
+              // option and moves the reader to the row it is drawn on.
               <button
                 aria-pressed={picks.includes(option.label)}
                 className={`dispatch-inline-link ${pageRowOption} ${
@@ -1509,21 +1506,13 @@ export function MoreWords({
  * before the page is painted, and while it stands within one screen of the viewport but wholly
  * outside the view, and again when its width or its words change or the page's typeface
  * arrives; never for any other row. A row in view keeps its length until a scroll leaves it
- * wholly outside the view, save where it draws other words: `drawnFrom` is what the words are
- * drawn from, and where a commit draws them from other words, a row measured before is measured
- * again in that commit as one that mounts, before the page is painted (`clampRedrawn`). Other
- * words are words of another value, as TanStack Query's `replaceEqualDeep` compares two answers of
- * a read (`api/queries.ts`): a later read answers the same words in objects of its own - a names
- * read under a new key, which a new comment on the issue starts, shares none with the last - and
- * a row drawn from them draws nothing new, so it keeps its length. A caller that cannot say what
- * its words are drawn from passes nothing. Undefined where the words are drawn whole, or not
+ * wholly outside the view. Undefined where the words are drawn whole, or not
  * measured yet; a row the reader scrolled away from keeps the cut it last had, save one measured
  * on the fallback face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
-  cuttable: boolean,
-  drawnFrom?: unknown
+  cuttable: boolean
 ): Clamp | undefined {
   const [clamp, setClamp] = useState<Clamp | undefined>(undefined);
   useLayoutEffect(() => {
@@ -1534,15 +1523,5 @@ export function useClamp(
     }
     return watchClamp(element, (next) => setClamp((held) => (sameClamp(held, next) ? held : next)));
   }, [cuttable, words]);
-  // After the watch above: in a commit that watches the words anew, the measurer has not
-  // measured them yet, and leaves them to the mount's own pass.
-  const drawn = useRef(drawnFrom);
-  useLayoutEffect(() => {
-    // `replaceEqualDeep` gives back the old value where the new one holds the same values.
-    const same = replaceEqualDeep(drawn.current, drawnFrom) === drawn.current;
-    drawn.current = drawnFrom;
-    const element = words.current;
-    if (!same && cuttable && element !== null) clampRedrawn(element);
-  }, [cuttable, drawnFrom, words]);
   return cuttable ? clamp : undefined;
 }

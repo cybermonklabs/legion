@@ -91,6 +91,10 @@ const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
   verification: "verification",
 };
 
+/** The preset a route opens, without reading its target or version. */
+export function presetOf(route: IssueRoute): Preset {
+  return ROUTE_PRESETS[route.kind] ?? "conversation";
+}
 /** The address of `preset` on `key`, which is the address its own control carries (R2, R20):
  *  each filter its old tab's, Graph its own (`/graph`), and Conversation, the page with no
  *  filter on, the issue's own. */
@@ -202,16 +206,17 @@ export function issueAddress(
   // and which opens no document, and there it wins over `#b-`, `?ask=` and `?comment=`.
   const nodeId = query.get("node") ?? "";
   const outline = route.kind === "graph" || ROUTE_PRESETS[route.kind] === undefined;
+  const zoom = route.kind === "graph" && route.node !== undefined ? { zoom: route.node } : {};
   if (nodeId !== "" && outline && addressed === undefined) {
     return {
       document: undefined,
       documentItem: undefined,
       filter: query.get("q") ?? "",
       nodeMenu: false,
-      preset: ROUTE_PRESETS[route.kind] ?? "conversation",
+      preset: presetOf(route),
       target: { id: nodeId, kind: "node" },
       version,
-      ...(route.kind === "graph" && route.node !== undefined ? { zoom: route.node } : {}),
+      ...zoom,
     };
   }
   const marked = query.get("mark") ?? "";
@@ -227,7 +232,7 @@ export function issueAddress(
     documentItem,
     filter: query.get("q") ?? "",
     nodeMenu: route.kind === "artifacts",
-    preset: ROUTE_PRESETS[route.kind] ?? "conversation",
+    preset: presetOf(route),
     target:
       documentItem === undefined
         ? outlineItem
@@ -235,7 +240,7 @@ export function issueAddress(
           : named
         : { id: documentItem.id, kind: "item" },
     version,
-    ...(route.kind === "graph" && route.node !== undefined ? { zoom: route.node } : {}),
+    ...zoom,
   };
 }
 

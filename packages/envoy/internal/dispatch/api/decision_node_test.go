@@ -348,8 +348,10 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 		}
 		requireCaused(t, "a shaped tuple of d1", tuple, "alice", uploaded)
 	}
-	if parents := currentTies(t, database, d1, graphstore.TuplePartOf); len(parents) != 1 || parents[0].ToKind != "artifact" || parents[0].ToID != decisions.refKey {
-		t.Errorf("d1 states the part_of %+v, want one, to its document %s: its placement and its shaped stay apart", parents, decisions.refKey)
+	// d1's from_ask names the ask of an ask block of asks.md, a document of its issue, so d1 stands
+	// under that ask's node (R2 of the issue-tree spec), while its shaped stays a relation of its own.
+	if parents := currentTies(t, database, d1, graphstore.TuplePartOf); len(parents) != 1 || parents[0].ToKind != graphstore.KindAsk || parents[0].ToID != askID {
+		t.Errorf("d1 states the part_of %+v, want one, to the ask %s it settles: its placement and its shaped stay apart", parents, askID)
 	}
 	fromAsk := currentTies(t, database, d1, refs.TupleFromAsk)
 	if len(fromAsk) != 1 || fromAsk[0].ToKind != graphstore.KindAsk || fromAsk[0].ToID != askID {

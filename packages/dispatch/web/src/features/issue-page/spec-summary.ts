@@ -5,7 +5,7 @@ import type { TreeNode } from "./issue-tree";
  *  draws no row of it (`slots/body.tsx`), and the Spec view draws it as the issue's three
  *  sentences. It is found in the outline's tree, and where that tree holds none - a Spec view
  *  loaded cold below 1024 px sends no outline read - in the tree the Spec view's own answer
- *  builds (`TreeViews.trees`), which holds the memo. */
+ *  builds (`TreeViews.treeOf`), which holds the memo. */
 export function specSummary(root: TreeNode, specSlug: string): TreeNode | undefined {
   const prefix = `${specSlug}#b-`;
   const walk = (node: TreeNode): TreeNode | undefined => {
@@ -17,6 +17,8 @@ export function specSummary(root: TreeNode, specSlug: string): TreeNode | undefi
     return undefined;
   };
   if (specSlug === "") return undefined;
-  const spec = root.views?.trees?.spec;
-  return walk(root) ?? (spec === undefined ? undefined : walk(spec));
+  const memo = walk(root);
+  if (memo !== undefined) return memo;
+  const spec = root.views?.treeOf?.("spec");
+  return spec === undefined ? undefined : walk(spec);
 }

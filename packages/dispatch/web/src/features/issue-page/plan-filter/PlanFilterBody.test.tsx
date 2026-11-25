@@ -798,6 +798,37 @@ function renderSlot(
   return { ...view, redraw: (issue) => view.rerender(draw(issue)) };
 }
 
+test("a Plan block address focuses the task from the view even when the outline has no task", async () => {
+  setViewport(1440);
+  const client = slotClient({ specHeld: false });
+  client.setQueryData(
+    outlineQuery(KEY, "conversation").queryKey,
+    treeAnswer([treeNode(KEY, "issue", null)])
+  );
+  client.setQueryData(
+    viewQuery(KEY, "plan").queryKey,
+    treeAnswer([
+      { ...taskBlock("t1", 0), role: "query" },
+      { ...taskBlock("t2", 1), role: "query" },
+    ])
+  );
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = renderSlot(client, issueRead(), {
+    path: `/issues/${KEY}/plan#b-t2`,
+    route: { key: KEY, kind: "plan" },
+  });
+  try {
+    await waitFor(() => expect(rowOf(view, "t2")).toHaveFocus());
+    await userEvent.click(view.getByRole("button", { name: PLAN_WORDS.steps }));
+    expect(view.getByRole("button", { name: PLAN_WORDS.steps })).toHaveFocus();
+    expect(rowOf(view, "t2")).not.toHaveFocus();
+  } finally {
+    view.unmount();
+    names.mockRestore();
+    client.clear();
+  }
+});
+
 // A Verification or decisions document made while the reader is on Plan rebuilds the issue's
 // tree and opens a read of its blocks that holds nothing yet, and the slot draws the same body
 // again over the same tasks, still mounted (`slots/view-plan.tsx`): the reader's press of

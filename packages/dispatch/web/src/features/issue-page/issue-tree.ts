@@ -327,11 +327,8 @@ export interface TreeViews {
   readonly decisions?: IssueDecisions;
   readonly plan?: TreeAnswer;
   readonly spec?: TreeAnswer;
-  /** The tree each view answer held builds alone (`buildIssueTree` over the same reads, with that
-   *  answer as the tree read's), by filter: its filter draws a node of the view as this tree's
-   *  node where the outline's tree holds no node of that id - where the outline read is not sent,
-   *  as on Spec loaded cold below 1024 px (R13), or holds no such node (R4). */
-  readonly trees?: Readonly<Partial<Record<TreeFilter, TreeNode>>>;
+  /** Builds a held view's tree on first use, with context from the outline (R4, R5). */
+  readonly treeOf?: (filter: TreeFilter) => TreeNode | undefined;
   readonly verification?: TreeAnswer;
 }
 

@@ -2,11 +2,14 @@ package refs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -108,6 +111,10 @@ type TypedFacts struct {
 	// its ask block shows (TypedSources.Shown): the block's own row's, or for a copy of another
 	// document's ask, the source's.
 	askParents map[string]string
+	// settles is each decision whose from_ask names an ask of the document's issue whose row
+	// names its node, with that ask's id (settledAsks): the decision's part_of is the ask's node,
+	// whatever its placement (planBlockParents), as a reading's in an answered ask is.
+	settles map[string]string
 	// askBlocks is every ask block of the version, by id, with the id of the ask whose row names
 	// its node, "" for a block no such row holds yet: the shaped of a block with none waits for
 	// the row settlement opens.
@@ -212,13 +219,20 @@ type heldTie struct {
 // block's own document (TypedFacts.versionOf).
 //
 // It reads the ask row of each ask block, the ask each ask block holding a reading shows
-// (TypedSources.Shown), and, of each decision and reading node, its supertag and state and the
-// newest tuple of each value it holds and of its decided_by and its authored_by.
+// (TypedSources.Shown), the asks row of each ask a decision's from_ask names (settledAsks), and,
+// of each decision and reading node, its supertag and state and the newest tuple of each value it
+// holds and of its decided_by and its authored_by.
 //
 // A reading in an ask block stands under the ask the block shows, a person's decision once that
 // ask holds an answer: its node is a reading's, its part_of that ask's node. A reading in an ask
 // block that shows no ask, or one whose ask holds no answer, which settlement flags (docs'
 // flagReadingsWithoutAnswers), is a block like any other until the ask holds an answer.
+//
+// A decision whose from_ask names an ask of the document's issue stands under that ask's node,
+// "a decision under the ask it answers" (R2 of the issue-tree spec): an issue-level ask, which no
+// block holds, or the ask of an ask block of any document of the issue. Its from_ask stays a tie
+// of its own, which says what the decision means, and its part_of says where it stands. Where the
+// issue holds no node of that ask, the decision stands where its text puts it.
 //
 // Whose a decision's tie is, the schema says (pmdoc.BlockTypeAttributes): a relation attribute
 // its writer writes - from_ask, of kind `ask` - is read off the tree, and decided_by, an `actor`
@@ -333,6 +347,9 @@ func DecisionFacts(ctx context.Context, q Queryer, artifactID string, record Ind
 		}
 	}
 	facts.foreign = foreignTies(record.Issue, facts.shaped, facts.ties)
+	if facts.settles, err = settledAsks(ctx, q, record.Issue, facts.ties, facts.foreign); err != nil {
+		return TypedFacts{}, err
+	}
 	if err := facts.readHeld(ctx, q, sources); err != nil {
 		return TypedFacts{}, err
 	}
@@ -471,6 +488,88 @@ func foreignTies(issue string, ties ...[]Pointer) map[tieKey]struct{} {
 		}
 	}
 	return foreign
+}
+
+// settledAsks is, by decision id, the ask each decision's from_ask among ties names, where that ask
+// is one of issue, the document's, and its row names its node, read in one statement: the ask the
+// decision settles, under whose node it stands (R2 of the issue-tree spec). A tie naming another
+// issue (foreign) settles none, since no pass states it, and neither does one naming an ask no
+// row of the issue holds, or whose row names no node yet: such a decision stands where its text
+// puts it. The ask is matched by the id its row's node is keyed by, spelled as the store spells
+// it, which is the far end the decision's from_ask tuple names. A document no issue holds settles
+// none.
+func settledAsks(ctx context.Context, q Queryer, issue string, ties []Pointer, foreign map[tieKey]struct{}) (map[string]string, error) {
+	if issue == "" {
+		return nil, nil
+	}
+	settling := map[string][]string{}
+	var asks []string
+	for _, tie := range ties {
+		if tie.Kind != TupleFromAsk || tie.Target.Kind != askType {
+			continue
+		}
+		target, _ := TargetOf(tie.Target)
+		if _, other := foreign[tieKey{block: tie.Block, kind: tie.Kind, target: target}]; other {
+			continue
+		}
+		if canonical, ok := canonicalUUID(target.ID); !ok || canonical != target.ID {
+			continue
+		}
+		if _, seen := settling[target.ID]; !seen {
+			asks = append(asks, target.ID)
+		}
+		settling[target.ID] = append(settling[target.ID], tie.Block)
+	}
+	if len(asks) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		select k.id::text from asks k
+		where k.id = any($1::uuid[]) and k.issue_key = $2
+		  and k.node_kind is not null and k.node_address is not null
+	`, asks, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the asks the decisions of %s settle: %w", issue, err)
+	}
+	defer rows.Close()
+	var settles map[string]string
+	for rows.Next() {
+		var ask string
+		if err := rows.Scan(&ask); err != nil {
+			return nil, fmt.Errorf("scan an ask a decision of %s settles: %w", issue, err)
+		}
+		for _, decision := range settling[ask] {
+			if settles == nil {
+				settles = map[string]string{}
+			}
+			settles[decision] = ask
+		}
+	}
+	return settles, rows.Err()
+}
+
+// DecisionFromAsk is the ask the decision block node at address holds a current from_ask to, as
+// its dispatch:// address where the ask's marked row names its issue and as the ask's store
+// address, ask/<id>, where no row does, and whether it holds one. Such a decision stands under the
+// ask it settles whatever a move would store (DecisionFacts), so the node route moves none (R7 of
+// the issue-tree spec, api's NODE_NOT_MOVABLE). It reads through q.
+func DecisionFromAsk(ctx context.Context, q Queryer, address string) (string, bool, error) {
+	var ask string
+	err := q.QueryRow(ctx, `
+		select coalesce('dispatch://' || k.issue_key || '/ask/' || held.to_id, '`+graphstore.KindAsk+`/' || held.to_id)
+		from (`+graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted`,
+		`t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_kind = '`+graphstore.KindAsk+`'`)+`) held
+		left join asks k on k.node_kind = '`+graphstore.KindAsk+`' and k.node_address = held.to_id
+		where held.asserted
+		order by held.to_id limit 1
+	`, BlockNodeKind, address, TupleFromAsk).Scan(&ask)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read the from_ask of the decision %s: %w", address, err)
+	}
+	return ask, true, nil
 }
 
 // namedAskRows is, of blocks, ask blocks of document artifactID, each whose row names the ask's
@@ -634,6 +733,13 @@ func (f TypedFacts) supertag(id, typ string) string {
 // unchanged decision or reading as it stands under such facts.
 func (f TypedFacts) decides(typ string) bool {
 	return f.read || f.bare || (typ != decisionType && typ != readingType)
+}
+
+// asks is the blocks of the version that stand under an ask's node, as planBlockParents places
+// them: each reading in an answered ask (askParents) and each decision that settles an ask of its
+// issue (settles).
+func (f TypedFacts) asks() askPlacements {
+	return askPlacements{readings: f.askParents, decisions: f.settles}
 }
 
 // withTies is pointers with each decision's written ties beside them (a from_ask), which the
@@ -1028,7 +1134,7 @@ func (d *DecisionIndexing) planTies(ctx context.Context, q Queryer, index BlockI
 	if err != nil {
 		return err
 	}
-	_, parents, placed, err := d.blocks.planBlockParents(ctx, q, index, document, facts.nodes, facts.fits, fragments, facts.askParents, only, authoredSources{})
+	_, parents, placed, err := d.blocks.planBlockParents(ctx, q, index, document, facts.nodes, facts.fits, fragments, facts.asks(), only, authoredSources{})
 	if err != nil {
 		return err
 	}

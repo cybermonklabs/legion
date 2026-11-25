@@ -1856,7 +1856,7 @@ export interface paths {
     delete: operations["deleteApiV1IssuesByKeyNodesById"];
     options?: never;
     head?: never;
-    /** @description Move the node {id} names {parent?, after?, actor?}: under the node parent names, among its siblings where after names one, in one write. {id} is the node's store address under the issue, percent-encoded as one path segment, read as the state route reads it; a node the caller may not see under the issue is 404 NOT_FOUND, and so is a parent the caller may not see. The request names the placement it read in If-Match: the node's placement_seq, the seq of its current part_of, which the tree read answers on every node, as a quoted entity tag; a move with no If-Match is 428 PRECONDITION_REQUIRED, and one whose tag is no longer the node's placement_seq 412 PRECONDITION_FAILED, so a move taken against a parent that has since changed stores nothing. A body with neither parent nor after is 400 MOVE_INPUT. A parent appends one part_of tuple from the node to the new parent and one retraction of the old, at no event, and touches no descendant and no serves; a ranked node takes a rank of its own document's band between after and the next ranked sibling of that band, after null placing it first in its band (after the issue's memo, for a block of the spec's band under the issue) and no after after every ranked sibling of its band; an after that is no ranked child of the parent, the node itself, or of another band, and an after on a node that holds no rank, are 400 INVALID_POINTER naming after. A block of a document holds the placement stored, which every later index pass keeps but where an edit names another parent in a typed block's parent attribute or takes the block's parent out of the text. Where Markdown can show the block's new place - under its document's top level, a callout or a list item that stands in no decision, reading, ask, requirement, criterion, check or plan_task - its text moves there in the same transaction, under the room's lock, and a typed block's parent attribute names the new parent, or is taken out where it can name none (a lens, a finding, a risk, a constraint, a result, an issue or a document); a change of the text writes one version of the document, with its artifact.version, which moves the document's open approval request; a text move that would leave a callout or a list item with no block of its own - its last block, or a list item's own first paragraph - is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. Where the move changes a query of a converted issue, the issue's queries are marked owed in the write and their versions written once it has committed. Refusals, in order: an ask, a comment or a message is 400 NODE_NOT_MOVABLE, naming it and its kind; a constraint under any node but an issue's is 400 INVALID_POINTER; a body with neither parent nor after is 400 MOVE_INPUT, and a move with no If-Match 428 PRECONDITION_REQUIRED; on an issue Legion runs, a move of a requirement, criterion or check by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT; a caller who holds no person scope moving a person's decision - an answered ask, the :::ask block of one, or a decision a person decided - is 409 ANSWERED_ASK_KEPT, quoting it; then, under the owner locks of the issue and of every issue a node of the node's subtree or the parent's chain stands under, a tag that is no longer the node's placement_seq is 412 PRECONDITION_FAILED; a node under an issue the move did not lock at each of two attempts is 409 PARENT_CONTENDED; a parent inside the node's subtree, one outside the issue's own tree, and a node that reads its issue from its own row under a node of an issue below are 400 INVALID_POINTER; a parent that is, or stands under, the node of a document a removal could take, where only a lens, a finding or a risk stands, is 409 PARENT_DOCUMENT_REMOVABLE, naming the node and its kind, the parent and the document; a parent the walk of its issue does not reach - gone, a comment or a message the conversation test does not pass, or under one - is 409 PARENT_NOT_REACHED, naming the parent and why; an after that is no ranked sibling of the node's band is 400 INVALID_POINTER, naming after; and last, under the room locks, a text move that would leave a callout or a list item with no block of its own is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. A refused move stores nothing. Answers 200 {parent, after, placement_seq}: the parent's store address, the ranked sibling the node now follows or null, and the new placement_seq, the tag the next If-Match of the node takes. */
+    /** @description Move the node {id} names {parent?, after?, actor?}: under the node parent names, among its siblings where after names one, in one write. {id} is the node's store address under the issue, percent-encoded as one path segment, read as the state route reads it; a node the caller may not see under the issue is 404 NOT_FOUND, and so is a parent the caller may not see. The request names the placement it read in If-Match: the node's placement_seq, the seq of its current part_of, which the tree read answers on every node, as a quoted entity tag; a move with no If-Match is 428 PRECONDITION_REQUIRED, and one whose tag is no longer the node's placement_seq 412 PRECONDITION_FAILED, so a move taken against a parent that has since changed stores nothing. A body with neither parent nor after is 400 MOVE_INPUT. A parent appends one part_of tuple from the node to the new parent and one retraction of the old, at no event, and touches no descendant and no serves; a ranked node takes a rank of its own document's band between after and the next ranked sibling of that band, after null placing it first in its band (after the issue's memo, for a block of the spec's band under the issue) and no after after every ranked sibling of its band; an after that is no ranked child of the parent, the node itself, or of another band, and an after on a node that holds no rank, are 400 INVALID_POINTER naming after. A block of a document holds the placement stored, which every later index pass keeps but where an edit names another parent in a typed block's parent attribute, takes the block's parent out of the text, or gives a decision a from_ask naming an ask of its issue, under which it then stands. Where Markdown can show the block's new place - under its document's top level, a callout or a list item that stands in no decision, reading, ask, requirement, criterion, check or plan_task - its text moves there in the same transaction, under the room's lock, and a typed block's parent attribute names the new parent, or is taken out where it can name none (a lens, a finding, a risk, a constraint, a result, an issue or a document); a change of the text writes one version of the document, with its artifact.version, which moves the document's open approval request; a text move that would leave a callout or a list item with no block of its own - its last block, or a list item's own first paragraph - is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. Where the move changes a query of a converted issue, the issue's queries are marked owed in the write and their versions written once it has committed. Refusals, in order: an ask, a comment or a message is 400 NODE_NOT_MOVABLE, naming it and its kind, and so is a decision that holds a from_ask, which stands under the ask it settles, naming the decision and that ask; a constraint under any node but an issue's is 400 INVALID_POINTER; a body with neither parent nor after is 400 MOVE_INPUT, and a move with no If-Match 428 PRECONDITION_REQUIRED; on an issue Legion runs, a move of a requirement, criterion or check by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT; a caller who holds no person scope moving a person's decision - an answered ask, the :::ask block of one, or a decision a person decided - is 409 ANSWERED_ASK_KEPT, quoting it; then, under the owner locks of the issue and of every issue a node of the node's subtree or the parent's chain stands under, a tag that is no longer the node's placement_seq is 412 PRECONDITION_FAILED; a node under an issue the move did not lock at each of two attempts is 409 PARENT_CONTENDED; a parent inside the node's subtree, one outside the issue's own tree, and a node that reads its issue from its own row under a node of an issue below are 400 INVALID_POINTER; a parent that is, or stands under, the node of a document a removal could take, where only a lens, a finding or a risk stands, is 409 PARENT_DOCUMENT_REMOVABLE, naming the node and its kind, the parent and the document; a parent the walk of its issue does not reach - gone, a comment or a message the conversation test does not pass, or under one - is 409 PARENT_NOT_REACHED, naming the parent and why; an after that is no ranked sibling of the node's band is 400 INVALID_POINTER, naming after; and last, under the room locks, a text move that would leave a callout or a list item with no block of its own is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. A refused move stores nothing. Answers 200 {parent, after, placement_seq}: the parent's store address, the ranked sibling the node now follows or null, and the new placement_seq, the tag the next If-Match of the node takes. */
     patch: operations["patchApiV1IssuesByKeyNodesById"];
     trace?: never;
   };
@@ -2073,7 +2073,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
+    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, its attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
     get: operations["getApiV1IssuesByKeySteps"];
     put?: never;
     post?: never;
@@ -2093,6 +2093,23 @@ export interface paths {
     get?: never;
     /** @description Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyStepsById"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/steps/{id}/experiment": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Write the experiment and the variant of a run's issue {actor, experiment, variant, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: experiment is the experiment a draw put the issue in and variant the variant it drew there, each a name of 1 to 32 characters of a-z, 0-9 and -. The Legion daemon writes it under the id of the run, after the run's own write, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the experiment and the variant are written once. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A body naming neither, one naming one alone, and a name outside its form are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    put: operations["putApiV1IssuesByKeyStepsByIdExperiment"];
     post?: never;
     delete?: never;
     options?: never;
@@ -3123,7 +3140,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. */
+    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. */
     get: operations["getApiV1ProjectsByKeyPlans"];
     put?: never;
     post?: never;
@@ -5539,6 +5556,7 @@ export interface components {
       duration_seconds: null | number;
       /** Format: date-time */
       ended_at: null | string;
+      experiment: null | string;
       failed_steps: number;
       issue: string;
       plan: components["schemas"]["PlanRecord"] | null;
@@ -5546,6 +5564,7 @@ export interface components {
       /** Format: date-time */
       started_at: null | string;
       title: string;
+      variant: null | string;
     };
     ForeignChildOpen: {
       key: string;
@@ -7849,6 +7868,29 @@ export interface components {
       code: string;
       error: string;
     };
+    StepExperimentInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      agent?: null | string;
+      /** Format: date-time */
+      ended_at?: null | string;
+      experiment: null | string;
+      generation?: null | number;
+      /** @enum {null|string} */
+      kind?: "step" | "retro" | "merge" | null;
+      model?: null | string;
+      report?: null | string;
+      /** @enum {null|string} */
+      result?: "passed" | "failed" | "stopped" | null;
+      returned_to?: null | number;
+      role?: null | string;
+      session?: null | string;
+      /** Format: date-time */
+      started_at?: null | string;
+      step?: null | number;
+      task?: null | string;
+      type?: null | string;
+      variant: null | string;
+    };
     StepRatingInput: {
       actor?: components["schemas"]["Actor"] | null;
       agent?: null | string;
@@ -7877,6 +7919,7 @@ export interface components {
       attempt: number;
       /** Format: date-time */
       ended_at: null | string;
+      experiment: null | string;
       /** Format: int64 */
       generation: number;
       id: string;
@@ -7897,6 +7940,7 @@ export interface components {
       step: number;
       task: string;
       type: string;
+      variant: null | string;
     };
     StepRecordInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -13682,6 +13726,45 @@ export interface operations {
       };
     };
   };
+  putApiV1IssuesByKeyStepsByIdExperiment: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StepExperimentInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StepRecord"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   putApiV1IssuesByKeyStepsByIdRating: {
     parameters: {
       query?: {
@@ -17655,6 +17738,7 @@ export type StatusChangeConflict = components["schemas"]["StatusChangeConflict"]
 export type StatusChangeEntry = components["schemas"]["StatusChangeEntry"];
 export type StatusChangeInput = components["schemas"]["StatusChangeInput"];
 export type StatusChangeRefusal = components["schemas"]["StatusChangeRefusal"];
+export type StepExperimentInput = components["schemas"]["StepExperimentInput"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];
 export type StepRecordInput = components["schemas"]["StepRecordInput"];

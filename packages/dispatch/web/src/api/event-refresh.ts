@@ -983,22 +983,10 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
       }
       // A view follows the outline the page holds: the tree read below, Graph's, and where the
       // cache holds none, Conversation's read, which the view waits on and is judged by alike.
-      const conversation = client
-        .getQueryCache()
-        .get(hashKey(conversationTreeKey(String(query.queryKey[1]))));
-      if (
-        conversation !== undefined &&
-        client.getQueryCache().get(hashKey(query.queryKey.slice(0, 2))) === undefined
-      ) {
-        const answer = conversation.state.data;
-        const judged = typeof answer === "object" && answer !== null && held.get(answer) === true;
-        if (conversation.state.fetchStatus !== "idle" && !judged) {
-          waitForOutline(client, conversation, query, issues);
-          return false;
-        }
-        return holds(answer, issues);
-      }
-      const outline = client.getQueryCache().get(hashKey(query.queryKey.slice(0, 2)));
+      const cache = client.getQueryCache();
+      const outline =
+        cache.get(hashKey(query.queryKey.slice(0, 2))) ??
+        cache.get(hashKey(conversationTreeKey(String(query.queryKey[1]))));
       if (outline === undefined) {
         return false;
       }

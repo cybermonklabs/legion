@@ -6,14 +6,7 @@
       "filters": {
         "decisions": {
           "count": 9,
-          "rows": [
-            "openQuestion.blockId",
-            "decisions[0]",
-            "decisions[4]",
-            "decisions[5]",
-            "decisions[1]",
-            "answeredAskId"
-          ]
+          "rows": ["openQuestion.blockId", "decisions[0]", "decisions[4]", "decisions[5]", "/ask#1"]
         },
         "plan": {
           "count": 9,
@@ -97,6 +90,29 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [],
+          "counts": ["1 row hidden inside"],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
         },
         {
           "alsoUnder": [],
@@ -935,68 +951,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "answeredAskId",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "answeredAskId",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": null,
           "chips": [],
@@ -1110,6 +1064,84 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": {
+              "author": "alice",
+              "choices": [],
+              "text": "All of them."
+            },
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Which addresses must the new page still answer?"
+          },
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": null,
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
+          },
+          "chips": [],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "/ask#1",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
         },
         {
           "alsoUnder": [],
@@ -2708,84 +2740,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": {
-              "author": "alice",
-              "choices": [],
-              "text": "All of them."
-            },
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Which addresses must the new page still answer?"
-          },
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "answeredAskId",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": null,
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-          },
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "answeredAskId",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": {
             "answer": null,
@@ -3019,11 +2973,10 @@
             "openQuestion.blockId",
             "decisions[5]",
             "decisions[0]",
-            "decisions[1]",
             "decisions[4]",
             "declinedAskId",
             "optionedAskId",
-            "answeredAskId"
+            "/ask#3"
           ]
         },
         "plan": {
@@ -3108,6 +3061,29 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [],
+          "counts": ["1 row hidden inside"],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
         },
         {
           "alsoUnder": [],
@@ -3946,68 +3922,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "answeredAskId",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "answeredAskId",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": null,
           "chips": [],
@@ -4167,6 +4081,84 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": {
+              "author": "alice",
+              "choices": [],
+              "text": "All of them."
+            },
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Which addresses must the new page still answer?"
+          },
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": null,
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
+          },
+          "chips": [],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "/ask#1",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
         },
         {
           "alsoUnder": [],
@@ -5765,84 +5757,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": {
-              "author": "alice",
-              "choices": [],
-              "text": "All of them."
-            },
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Which addresses must the new page still answer?"
-          },
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "answeredAskId",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": null,
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-          },
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "answeredAskId",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": {
             "answer": null,
@@ -7247,7 +7161,7 @@
       "filters": {
         "decisions": {
           "count": 4,
-          "rows": ["/ask#0", "decisions[0]", "decisions[1]", "/ask#1"]
+          "rows": ["/ask#0", "decisions[0]", "/ask#1"]
         },
         "plan": {
           "count": 9,
@@ -7329,6 +7243,29 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [],
+          "counts": ["1 row hidden inside"],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
         },
         {
           "alsoUnder": [],
@@ -8003,68 +7940,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "/ask#1",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "/ask#1",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": null,
           "chips": [],
@@ -8216,6 +8091,84 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": {
+              "author": "alice",
+              "choices": [],
+              "text": "All of them."
+            },
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Which addresses must the new page still answer?"
+          },
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": null,
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
+          },
+          "chips": [],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "/ask#1",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
         },
         {
           "alsoUnder": [],
@@ -9618,84 +9571,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": {
-              "author": "alice",
-              "choices": [],
-              "text": "All of them."
-            },
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Which addresses must the new page still answer?"
-          },
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "/ask#1",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": null,
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-          },
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "/ask#1",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": {
             "answer": null,
@@ -11060,7 +10935,7 @@
       "filters": {
         "decisions": {
           "count": 6,
-          "rows": ["/ask#0", "decisions[0]", "decisions[1]", "/ask#1"]
+          "rows": ["/ask#0", "decisions[0]", "/ask#1"]
         },
         "plan": {
           "count": 18,
@@ -11181,6 +11056,29 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [],
+          "counts": ["1 row hidden inside"],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
         },
         {
           "alsoUnder": [],
@@ -12483,68 +12381,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "/ask#1",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "/ask#1",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": null,
           "chips": [],
@@ -12810,6 +12646,84 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": {
+              "author": "alice",
+              "choices": [],
+              "text": "All of them."
+            },
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Which addresses must the new page still answer?"
+          },
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": null,
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
+          },
+          "chips": [],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "/ask#1",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
         },
         {
           "alsoUnder": [],
@@ -15587,84 +15501,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": {
-              "author": "alice",
-              "choices": [],
-              "text": "All of them."
-            },
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Which addresses must the new page still answer?"
-          },
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "/ask#1",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": null,
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-          },
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "/ask#1",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": {
             "answer": null,
@@ -16529,14 +16365,7 @@
       "filters": {
         "decisions": {
           "count": 9,
-          "rows": [
-            "openQuestion.blockId",
-            "decisions[0]",
-            "decisions[4]",
-            "decisions[5]",
-            "decisions[1]",
-            "answeredAskId"
-          ]
+          "rows": ["openQuestion.blockId", "decisions[0]", "decisions[4]", "decisions[5]", "/ask#1"]
         },
         "plan": {
           "count": 9,
@@ -16620,6 +16449,29 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [],
+          "counts": ["1 row hidden inside"],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
         },
         {
           "alsoUnder": [],
@@ -17458,68 +17310,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "answeredAskId",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "answeredAskId",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": null,
           "chips": [],
@@ -17633,6 +17423,84 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": {
+              "author": "alice",
+              "choices": [],
+              "text": "All of them."
+            },
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Which addresses must the new page still answer?"
+          },
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": null,
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
+          },
+          "chips": [],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "/ask#1",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
         },
         {
           "alsoUnder": [],
@@ -19228,84 +19096,6 @@
           "state": null,
           "time": null,
           "words": "Child 7 of the redesign"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": {
-              "author": "alice",
-              "choices": [],
-              "text": "All of them."
-            },
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Which addresses must the new page still answer?"
-          },
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "answeredAskId",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": null,
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-          },
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "answeredAskId",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -19538,14 +19328,7 @@
       "filters": {
         "decisions": {
           "count": 9,
-          "rows": [
-            "openQuestion.blockId",
-            "decisions[0]",
-            "decisions[4]",
-            "decisions[5]",
-            "decisions[1]",
-            "answeredAskId"
-          ]
+          "rows": ["openQuestion.blockId", "decisions[0]", "decisions[4]", "decisions[5]", "/ask#1"]
         },
         "plan": {
           "count": 9,
@@ -19629,6 +19412,29 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [],
+          "counts": ["1 row hidden inside"],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
         },
         {
           "alsoUnder": [],
@@ -20467,68 +20273,6 @@
         },
         {
           "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "answeredAskId",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": null,
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "answeredAskId",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
           "author": "alice",
           "body": null,
           "chips": [],
@@ -20642,6 +20386,84 @@
           },
           "time": "made",
           "words": "At which width does the identity block condense?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": {
+              "author": "alice",
+              "choices": [],
+              "text": "All of them."
+            },
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Which addresses must the new page still answer?"
+          },
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "/ask#1",
+          "kind": {
+            "tag": "question",
+            "type": "ask"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "answered",
+            "unsure": null,
+            "word": "Answered"
+          },
+          "time": "made",
+          "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": null,
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
+          },
+          "chips": [],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "/ask#1",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…."
         },
         {
           "alsoUnder": [],
@@ -22237,84 +22059,6 @@
           "state": null,
           "time": null,
           "words": "Child 7 of the redesign"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": {
-              "author": "alice",
-              "choices": [],
-              "text": "All of them."
-            },
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Which addresses must the new page still answer?"
-          },
-          "chips": [],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "answeredAskId",
-          "kind": {
-            "tag": "question",
-            "type": "ask"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "answered",
-            "unsure": null,
-            "word": "Answered"
-          },
-          "time": "made",
-          "words": "Which addresses must the new page still answer?"
-        },
-        {
-          "alsoUnder": [],
-          "author": "Planner",
-          "body": {
-            "answer": null,
-            "author": "Planner (issue layout)",
-            "lines": [],
-            "options": [],
-            "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
-          },
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[2]}",
-              "label": null,
-              "name": "Requirement 3 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[3]}",
-              "label": null,
-              "name": "Requirement 4 of the redesign…"
-            },
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": null,
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[1]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 2,
-          "parentKey": "answeredAskId",
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
