@@ -2587,7 +2587,7 @@ func startFenceOf(issue record.Issue, payload record.SuperviseRequest, rows func
 	if payload.Phase != "" && !issue.HoldsQueued(payload.Role, payload.Phase) {
 		return fenceStep, nil
 	}
-	if payload.Entry <= 0 || payload.Phase == "" {
+	if !stepStart(payload) {
 		return fenceHolds, nil
 	}
 	read, err := rows()
@@ -2626,18 +2626,20 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	}
 	// The issue's phases rows are read at most once, where the entry fence or the claim of a row that
 	// names none needs them, so the two are judged on one read.
-	var rows []record.PhaseRow
-	read := false
-	phaseRows := func() ([]record.PhaseRow, error) {
-		if !read {
-			var err error
-			if rows, err = r.phaseRows(ctx, row.Issue); err != nil {
-				return nil, err
+	phaseRows := func() func() ([]record.PhaseRow, error) {
+		var rows []record.PhaseRow
+		var read bool
+		return func() ([]record.PhaseRow, error) {
+			if !read {
+				var err error
+				if rows, err = r.phaseRows(ctx, row.Issue); err != nil {
+					return nil, err
+				}
+				read = true
 			}
-			read = true
+			return rows, nil
 		}
-		return rows, nil
-	}
+	}()
 	// A check start (CheckLook) runs after the close: its issue holds no phase, its generation may
 	// be a later run's and its tree may linger, so it is fenced on the open check — the instance the
 	// row names — and its look (checkLookHolds) where every other row is fenced on the generation,
@@ -2662,8 +2664,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role, "stepRole", issue.StepRole)
 			return nil
 		case fenceEntry:
+			read, err := phaseRows()
+			if err != nil {
+				return err
+			}
 			r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
-				"phase", payload.Phase, "entry", payload.Entry, "current", record.PhaseRowOf(rows, payload.Role).Entry, "role", payload.Role, "claim", payload.Claim)
+				"phase", payload.Phase, "entry", payload.Entry, "current", record.PhaseRowOf(read, payload.Role).Entry, "role", payload.Role, "claim", payload.Claim)
 			return nil
 		}
 	}
@@ -2676,10 +2682,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// which can be the claim of a key's agent that started on an earlier step of another role.
 	token := payload.Claim
 	if token == "" {
-		if _, err := phaseRows(); err != nil {
+		read, err := phaseRows()
+		if err != nil {
 			return err
 		}
-		if token, err = record.WorkerClaim(r.project, row.Issue, payload.Role, rows); err != nil {
+		if token, err = record.WorkerClaim(r.project, row.Issue, payload.Role, read); err != nil {
 			return fmt.Errorf("derive claim for outbox row %d: the %s of %s: %w", row.ID, payload.Role, row.Issue, err)
 		}
 	}
@@ -3904,7 +3911,7 @@ func (r *outbox) declineFor(issue string, role claim.Role, told claim.Token, rea
 			"the workspace could not be read: " + storetext.FarSideError(failed.Error()), nil
 	}
 	hold := workflow.IdleHoldUnpushedWork
-	decline := store.IdleReleaseDecline{At: at, Role: role, Reason: hold.String(),
+	decline := store.IdleReleaseDecline{At: at, Role: role, Claim: told, Reason: hold.String(),
 		Head: work.Head, Commits: work.Count, Changed: work.Changed, PodUID: pod}
 	message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(told), Body: declineMessage(issue, work)}, at)
 	if err != nil {
