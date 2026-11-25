@@ -20,10 +20,11 @@ import (
 // test writes under another commit names the build a rollback reaches.
 const storesMovedBuild = "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
 
-// storesMovedObjectsSQL is every object of the eight the move keeps for the release before that
+// storesMovedObjectsSQL is every object of the nine the move keeps for the release before that
 // the catalog holds, as "<catalog> <name>": the two triggers on graph_nodes in pg_trigger, the
-// functions of their names in pg_proc, and each of the four names that pg_class holds, with its
-// relkind, so a name that is still a table reads as one.
+// functions of their names in pg_proc, each of the four names that pg_class holds, with its
+// relkind, so a name that is still a table reads as one, and the index graph_tuples_workflow_inbound
+// (relkind i).
 const storesMovedObjectsSQL = `
 select 'pg_trigger ' || t.tgname from pg_trigger t
  where t.tgrelid = to_regclass('graph_nodes') and t.tgname in ('graph_nodes_workflow_state', 'graph_nodes_workflow_project')
@@ -33,21 +34,31 @@ select 'pg_proc ' || p.proname from pg_proc p
 union all
 select 'pg_class ' || c.relname || ' ' || c.relkind::text from pg_class c
  where c.relnamespace = current_schema()::regnamespace
-   and c.relname in ('priority_nodes', 'priority_tuples', 'workflow_nodes', 'workflow_tuples')
+   and c.relname in ('priority_nodes', 'priority_tuples', 'workflow_nodes', 'workflow_tuples', 'graph_tuples_workflow_inbound')
 order by 1`
+
+// storesMovedIndex is how storesMovedObjectsSQL names the index the move keeps for the release
+// before's read of the workflow tuples through their view.
+const storesMovedIndex = "pg_class graph_tuples_workflow_inbound i"
 
 // storesMovedObjects is what storesMovedObjectsSQL answers over a database the move swapped.
 var storesMovedObjects = []string{
+	storesMovedIndex,
 	"pg_class priority_nodes v", "pg_class priority_tuples v", "pg_class workflow_nodes v", "pg_class workflow_tuples v",
 	"pg_proc graph_nodes_workflow_project", "pg_proc graph_nodes_workflow_state",
 	"pg_trigger graph_nodes_workflow_project", "pg_trigger graph_nodes_workflow_state",
 }
 
 // storesTablesStand is what storesMovedObjectsSQL answers over a database whose four names are
-// still the tables main's migrations create, before the move.
+// still the tables main's migrations create, before the move: the migrations built the index too.
 var storesTablesStand = []string{
+	storesMovedIndex,
 	"pg_class priority_nodes r", "pg_class priority_tuples r", "pg_class workflow_nodes r", "pg_class workflow_tuples r",
 }
+
+// storesTablesLeft is what it answers over that database once the step ran: the step drops the
+// index, which serves no read through a view that was never made, and leaves the four tables.
+var storesTablesLeft = storesTablesStand[1:]
 
 // TestTheBootStepDropsTheMovedStoresObjectsOnlyAfterStoresMoved holds the boot step's entry
 // StoresMovedRetirement (dispatch://INFRA-1098's R32) to its guard, the capability stores_moved of
@@ -55,19 +66,24 @@ var storesTablesStand = []string{
 // startup.Retire as the boot runs it. In each database but the last, the test writes the old
 // tables in the release before's shapes (storesmovetest.Write) and runs the boot's move
 // (storesmove.Move), which swaps them for the four views and creates the two triggers with their
-// functions; it prints what the catalog holds before and after each run of the step:
-//   - the newest announcement of another build lists stores_moved: all eight go, and the graph
+// functions; the migrations built the index graph_tuples_workflow_inbound beside them. It prints
+// what the catalog holds before and after each run of the step:
+//   - the newest announcement of another build lists stores_moved: all nine go, and the graph
 //     store keeps every row of the three kinds;
-//   - it does not: all eight stand, and the log names the announcement and the missing
+//   - it does not: all nine stand, and the log names the announcement and the missing
 //     capability;
-//   - the boot created the database from empty: all eight go;
-//   - another transaction holds graph_nodes past the half second: all eight stand, the log names
+//   - the boot created the database from empty: all nine go;
+//   - another transaction holds graph_nodes past the half second: all nine stand, the log names
 //     the statement that waited and the timeout, and the next run of the step, once the holder
 //     ends, drops them;
-//   - a second run after a drop finds nothing, logs nothing, and leaves the database as it was;
+//   - another transaction holds graph_tuples past the half second: the triggers, the functions and
+//     the views go with the transaction, so all nine stand, the log names the drop of the index as
+//     the statement that waited, and the next run drops them all;
+//   - a second run after a drop finds nothing, logs nothing, and leaves the database as it was,
+//     with no graph_tuples_workflow_inbound;
 //   - a database this boot created from empty whose four names are still the tables main's
-//     migrations create, as before the move: the step drops no table, logs no failure, and the
-//     tables keep their rows.
+//     migrations create, as before the move: the step drops no table, logs no failure, drops the
+//     index and no more, and the tables keep their rows.
 func TestTheBootStepDropsTheMovedStoresObjectsOnlyAfterStoresMoved(t *testing.T) {
 	t.Run("released", func(t *testing.T) {
 		database := movedStoresDatabase(t)
@@ -75,6 +91,7 @@ func TestTheBootStepDropsTheMovedStoresObjectsOnlyAfterStoresMoved(t *testing.T)
 		announceBuild(t, database.Pool, "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", []string{"anchored_to", processes.CapabilityStoresMoved})
 		logged := retireStoresMoved(t, database.Pool, false)
 		requireStoresMovedObjects(t, database.Pool, nil)
+		requireNoWorkflowInboundIndex(t, database.Pool)
 		requireLoggedLine(t, logged, `msg="dispatch: the boot's retirement deleted its objects"`, "announcement_commit=c1c1c1c1")
 		if after := movedKindsRows(t, database.Pool); after != before {
 			t.Errorf("the graph store held %s of the three kinds before the drop and %s after it, want them unchanged", before, after)
@@ -83,6 +100,7 @@ func TestTheBootStepDropsTheMovedStoresObjectsOnlyAfterStoresMoved(t *testing.T)
 		// A second run after the drop finds nothing and changes nothing.
 		again := retireStoresMoved(t, database.Pool, false)
 		requireStoresMovedObjects(t, database.Pool, nil)
+		requireNoWorkflowInboundIndex(t, database.Pool)
 		if strings.Contains(again, StoresMovedRetirement.Name) {
 			t.Errorf("the second run after the drop logged a line of the entry, want none:\n%s", again)
 		}
@@ -129,20 +147,68 @@ func TestTheBootStepDropsTheMovedStoresObjectsOnlyAfterStoresMoved(t *testing.T)
 		requireStoresMovedObjects(t, database.Pool, nil)
 		requireLoggedLine(t, next, `msg="dispatch: the boot's retirement deleted its objects"`)
 	})
+	t.Run("lock timeout on graph_tuples", func(t *testing.T) {
+		database := movedStoresDatabase(t)
+		announceBuild(t, database.Pool, "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4", []string{processes.CapabilityStoresMoved})
+		ctx := context.Background()
+		holder, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the holder: %v", err)
+		}
+		if _, err := holder.Exec(ctx, `lock table graph_tuples in access share mode`); err != nil {
+			t.Fatalf("hold graph_tuples: %v", err)
+		}
+		started := time.Now()
+		logged := retireStoresMoved(t, database.Pool, false)
+		took := time.Since(started)
+		if err := holder.Rollback(ctx); err != nil {
+			t.Fatalf("end the holder: %v", err)
+		}
+		// The drop of the index is the statement that waits, last of the nine, and the transaction
+		// rolls back the triggers, the functions and the views the statements before it dropped.
+		requireStoresMovedObjects(t, database.Pool, storesMovedObjects)
+		requireLoggedLine(t, logged, "failed and changed nothing",
+			"drop index graph_tuples_workflow_inbound waited longer than 500ms for its lock", "55P03")
+		t.Logf("the step gave up after %s with graph_tuples held", took)
+		if took > 4*time.Second {
+			t.Errorf("the step waited %s on graph_tuples, want about the half second its lock_timeout bounds", took)
+		}
+
+		next := retireStoresMoved(t, database.Pool, false)
+		requireStoresMovedObjects(t, database.Pool, nil)
+		requireNoWorkflowInboundIndex(t, database.Pool)
+		requireLoggedLine(t, next, `msg="dispatch: the boot's retirement deleted its objects"`)
+	})
 	t.Run("from empty before the move", func(t *testing.T) {
 		database := storetest.Open(t)
 		storesmovetest.Write(t, database.Pool)
 		before := oldTablesRows(t, database.Pool)
 		requireStoresMovedObjects(t, database.Pool, storesTablesStand)
 		logged := retireStoresMoved(t, database.Pool, true)
-		requireStoresMovedObjects(t, database.Pool, storesTablesStand)
-		if strings.Contains(logged, StoresMovedRetirement.Name) {
-			t.Errorf("the step logged a line of the entry over the four tables, want none:\n%s", logged)
+		requireStoresMovedObjects(t, database.Pool, storesTablesLeft)
+		requireNoWorkflowInboundIndex(t, database.Pool)
+		requireLoggedLine(t, logged, `msg="dispatch: the boot's retirement deleted its objects"`, "created_from_empty=true")
+		if strings.Contains(logged, "failed") {
+			t.Errorf("the step logged a failure over the four tables, want none:\n%s", logged)
 		}
 		if after := oldTablesRows(t, database.Pool); after != before {
 			t.Errorf("the four tables held %s before the step and %s after it, want them unchanged", before, after)
 		}
 	})
+}
+
+// requireNoWorkflowInboundIndex fails t where pool's database holds an index named
+// graph_tuples_workflow_inbound, whatever table it stands on.
+func requireNoWorkflowInboundIndex(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	var standing int
+	if err := pool.QueryRow(context.Background(),
+		`select count(*) from pg_class where relname = 'graph_tuples_workflow_inbound'`).Scan(&standing); err != nil {
+		t.Fatalf("read whether graph_tuples_workflow_inbound stands: %v", err)
+	}
+	if standing != 0 {
+		t.Errorf("graph_tuples_workflow_inbound stands after the step, want it dropped")
+	}
 }
 
 // movedStoresDatabase is a migrated database whose old tables hold the release before's rows and

@@ -1,0 +1,39 @@
+-- pgmigrate:non-transactional
+-- 20261125093000_graph_tuples_workflow_inbound_index.up.sql — the index the release before's read of
+-- an issue's runs and plans takes through the view workflow_tuples, once the boot has moved the
+-- workflow store into the graph store.
+--
+-- The release before (the build a rollback reaches) reads the workflow store through four views the
+-- boot's move makes in place of the old tables (storesmove). Its read of a project's finished
+-- issues with their plans (workflowstore.ProjectPlans) joins each issue to the `part_of` tuples
+-- into it that come from a step or a plan, and through workflow_tuples those are graph_tuples rows
+-- whose near end is a step or a plan. The old table held no other tuple and was indexed
+-- (to_kind, to_id, kind, from_kind, from_id, seq desc), so that lookup read the runs and plans of
+-- one issue and nothing else. graph_tuples holds every other `part_of` child of the issue too (its
+-- comments, blocks, asks, messages and artifacts), and the only index that serves a lookup by the
+-- far end, graph_tuples_as_of_in (to_kind, to_id, kind, at desc, seq desc), has no near end's kind
+-- to key by, so the read fetched each of those children from the heap and dropped it, where the
+-- old table held none of them.
+--
+-- This index is that index of the old table, over the rows the view holds. It is partial on the
+-- view's own predicate, so every read through workflow_tuples satisfies it, and no other tuple pays
+-- a write for it: a comment, a block, an ask, a message or any value tuple is none of a step or a
+-- plan. It is partial on `to_kind <> 'value'` too, and keeps that predicate whole: every index of
+-- graph_tuples that keys the far end leaves the value tuples out, since a btree key is bounded at
+-- about 2,704 bytes and a plan's `tasks` value can be longer.
+--
+-- It is for the release before alone and one release long: startup.StoresMovedRetirement drops it
+-- with the views, in the boot step that drops them, once no build a rollback reaches reads through
+-- them. No constraint and no later migration depends on it. A failed concurrent build leaves an
+-- INVALID index of this name, which the runner drops with DROP INDEX CONCURRENTLY and builds again
+-- on the next attempt.
+--
+-- Its version stands after 20261123134318_stores_moved, whose supertag tuples are bounded inserts
+-- into graph_tuples: the census admits such an insert into a table above its limit only where no
+-- earlier pending migration touches that table with more than bounded writes, and a concurrent
+-- index build is more where the census does not read it as no change. It also stands after
+-- 20261123185607_graph_nodes_artifact_id_index and after every migration of this tree's children
+-- that a deployment of this tree applies with it.
+create index concurrently if not exists graph_tuples_workflow_inbound
+    on graph_tuples (to_kind, to_id, kind, from_kind, from_id, seq desc)
+    where to_kind <> 'value' and from_kind in ('step', 'plan');

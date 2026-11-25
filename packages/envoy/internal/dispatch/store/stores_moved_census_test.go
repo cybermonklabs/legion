@@ -17,9 +17,14 @@ const storesMovedMigration = "20261123134318_stores_moved.up.sql"
 
 // artifactIndexName is the name, after its version, of this issue's concurrent build of
 // graph_nodes_artifact_id, 20261123185607_graph_nodes_artifact_id_index, which sorts after
-// storesMovedMigration. The test finds it by that name, so a version that sorts it before the
-// supertag migration fails on the order and not on a missing name.
-const artifactIndexName = "_graph_nodes_artifact_id_index.up.sql"
+// storesMovedMigration, and workflowInboundIndexName that of its concurrent build of
+// graph_tuples_workflow_inbound, 20261125093000_graph_tuples_workflow_inbound_index, which sorts
+// after both. The test finds each by its name, so a version that sorts one before the supertag
+// migration fails on the order and not on a missing name.
+const (
+	artifactIndexName        = "_graph_nodes_artifact_id_index.up.sql"
+	workflowInboundIndexName = "_graph_tuples_workflow_inbound_index.up.sql"
+)
 
 // TestStoresMovedPassesTheCensusAtAOneByteLimit is c-moved-bounded's: the pre-deploy census admits
 // dispatch://INFRA-1098's own pending migrations at any size of the two graph tables. Over a
@@ -32,14 +37,16 @@ const artifactIndexName = "_graph_nodes_artifact_id_index.up.sql"
 // admitted for bounded writes. The census admits a table for bounded writes only where no earlier
 // pending migration touched it with more than bounded writes (changedBy).
 //
-// It also reads the names of this issue's own migrations and asserts that the concurrent build of
-// graph_nodes_artifact_id, 20261123185607_graph_nodes_artifact_id_index, sorts after the supertag
-// migration, printing both. The order no longer rests on a refusal of a concurrent build:
-// dispatch://INFRA-1950's 59fc9e43, which da4952b0e3 of dispatch://INFRA-1150's
+// It also reads the names of this issue's own migrations and asserts that each concurrent build,
+// graph_nodes_artifact_id (20261123185607_graph_nodes_artifact_id_index) and
+// graph_tuples_workflow_inbound (20261125093000_graph_tuples_workflow_inbound_index), sorts after
+// the supertag migration, printing the order. The order no longer rests on a refusal of a
+// concurrent build: dispatch://INFRA-1950's 59fc9e43, which da4952b0e3 of dispatch://INFRA-1150's
 // cybermonklabs/legion#4173 carries word for word, makes the census read one non-unique concurrent
 // index build as no change of its table. Until this line holds that change, a concurrent build
-// versioned before the supertag migration still makes changedBy refuse graph_nodes, so the order
-// keeps the census of this line passing on either side of that merge.
+// versioned before the supertag migration still makes changedBy refuse the table it builds on,
+// graph_tuples for the second, so the order keeps the census of this line passing on either side
+// of that merge.
 func TestStoresMovedPassesTheCensusAtAOneByteLimit(t *testing.T) {
 	ctx := context.Background()
 	own := storesmove.OwnMigrations()
@@ -102,22 +109,28 @@ func TestStoresMovedPassesTheCensusAtAOneByteLimit(t *testing.T) {
 }
 
 // holdStoresMovedOrder holds own, this issue's own migrations, to the order the census of this line
-// rests on: the concurrent build of graph_nodes_artifact_id (artifactIndexName) sorts after the
-// supertag migration (storesMovedMigration). It prints both names in the order they sort, and fails
-// where the build sorts first or where own lacks either.
+// rests on: each concurrent build (artifactIndexName, workflowInboundIndexName) sorts after the
+// supertag migration (storesMovedMigration). It prints each pair in the order they sort, and fails
+// where a build sorts first or where own lacks any of them.
 func holdStoresMovedOrder(t *testing.T, own []string) {
 	t.Helper()
-	index := slices.IndexFunc(own, func(name string) bool { return strings.HasSuffix(name, artifactIndexName) })
-	if index < 0 || !slices.Contains(own, storesMovedMigration) {
-		t.Errorf("this issue's own migrations %v hold no %s or no migration named %s after its version", own, storesMovedMigration, artifactIndexName)
+	if !slices.Contains(own, storesMovedMigration) {
+		t.Errorf("this issue's own migrations %v hold no %s", own, storesMovedMigration)
 		return
 	}
-	build := own[index]
-	order := []string{storesMovedMigration, build}
-	slices.Sort(order)
-	t.Logf("c-moved-bounded: this issue's own migrations sort %s, then %s", order[0], order[1])
-	if order[0] == build {
-		t.Errorf("%s sorts before %s: the concurrent build of graph_nodes_artifact_id must sort after the supertag migration, "+
-			"or on a line without da4952b0e3 changedBy refuses graph_nodes in the census of %s", build, storesMovedMigration, storesMovedMigration)
+	for _, suffix := range []string{artifactIndexName, workflowInboundIndexName} {
+		index := slices.IndexFunc(own, func(name string) bool { return strings.HasSuffix(name, suffix) })
+		if index < 0 {
+			t.Errorf("this issue's own migrations %v hold no migration named %s after its version", own, suffix)
+			continue
+		}
+		build := own[index]
+		order := []string{storesMovedMigration, build}
+		slices.Sort(order)
+		t.Logf("c-moved-bounded: this issue's own migrations sort %s, then %s", order[0], order[1])
+		if order[0] == build {
+			t.Errorf("%s sorts before %s: a concurrent build must sort after the supertag migration, "+
+				"or on a line without da4952b0e3 changedBy refuses the table it builds on in the census of %s", build, storesMovedMigration, storesMovedMigration)
+		}
 	}
 }

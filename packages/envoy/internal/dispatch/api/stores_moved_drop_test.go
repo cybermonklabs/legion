@@ -17,13 +17,13 @@ import (
 
 // TestTheMovedStoresWriteAfterTheDropStep holds every writer of the three kinds the move of
 // dispatch://INFRA-1098's R32 took into the graph store to the graph store alone: over a database
-// the boot moved (storesmove.Move) and whose boot step then dropped the four views and the two
-// triggers with their functions (startup.StoresMovedRetirement, at a boot that created the
-// database from empty), each writer writes once through its route and each write reads back - a
-// priority's create, its rank move and its delete, an issue's advances (writeIssueAdvances), a
-// run's start and end (PutStep), a plan (PutPlan) and a retro's rating. A writer that still wrote
-// through one of the four names would fail on a relation the database no longer holds, and its
-// route would answer 500.
+// the boot moved (storesmove.Move) and whose boot step then dropped the four views, the two
+// triggers with their functions and the index graph_tuples_workflow_inbound
+// (startup.StoresMovedRetirement, at a boot that created the database from empty), each writer
+// writes once through its route and each write reads back - a priority's create, its rank move and
+// its delete, an issue's advances (writeIssueAdvances), a run's start and end (PutStep), a plan
+// (PutPlan) and a retro's rating. A writer that still wrote through one of the four names would
+// fail on a relation the database no longer holds, and its route would answer 500.
 func TestTheMovedStoresWriteAfterTheDropStep(t *testing.T) {
 	ctx := context.Background()
 	handler, database := newTestHandlerWithStore(t)
@@ -41,12 +41,13 @@ func TestTheMovedStoresWriteAfterTheDropStep(t *testing.T) {
 		select array(select name from unnest(array['priority_nodes', 'priority_tuples', 'workflow_nodes', 'workflow_tuples']) name
 		             where to_regclass(name) is not null)
 		    || array(select tgname::text from pg_trigger where tgname in ('graph_nodes_workflow_state', 'graph_nodes_workflow_project'))
-		    || array(select proname::text from pg_proc where proname in ('graph_nodes_workflow_state', 'graph_nodes_workflow_project'))`,
+		    || array(select proname::text from pg_proc where proname in ('graph_nodes_workflow_state', 'graph_nodes_workflow_project'))
+		    || array(select relname::text from pg_class where relname = 'graph_tuples_workflow_inbound')`,
 	).Scan(&standing); err != nil {
 		t.Fatalf("read what the drop left: %v", err)
 	}
 	if len(standing) != 0 {
-		t.Fatalf("the boot step left %v standing, want none of the eight objects", standing)
+		t.Fatalf("the boot step left %v standing, want none of the nine objects", standing)
 	}
 
 	// A priority's create, its rank move and its delete.

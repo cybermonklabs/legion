@@ -46,6 +46,7 @@ var ownMigrations = []string{
 	"20261123120000_graph_edges_one_tuple_arm.up.sql",
 	"20261123134318_stores_moved.up.sql",
 	"20261123185607_graph_nodes_artifact_id_index.up.sql",
+	"20261125093000_graph_tuples_workflow_inbound_index.up.sql",
 }
 
 // OwnMigrations is ownMigrations, a fresh slice for each caller: store's

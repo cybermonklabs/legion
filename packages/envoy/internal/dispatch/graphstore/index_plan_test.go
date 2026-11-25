@@ -1464,6 +1464,23 @@ var laterGraphNodesIndexes = []requiredGraphIndex{
 	},
 }
 
+// laterGraphTuplesIndexes are the indexes of graph_tuples a migration after the first declares,
+// held as laterGraphNodesIndexes' are to a concurrent build in a non-transactional migration of its
+// own, since graph_tuples holds every tuple of a deployment by then. graph_tuples_workflow_inbound
+// is the index of the workflow store's old tuples table that the release before's read of an
+// issue's runs and plans needs, through the view that took the table's name
+// (workflowstore.ProjectPlans at the release before: the view's rows are the tuples out of a step
+// or a plan, and the read keys them by the issue they are part of and by the near end's kind). It
+// is partial on the near end being a step or a plan, so no other tuple pays a write for it, and on
+// to_kind <> 'value', which keeps a value, a plan's tasks among them, out of a key a btree bounds.
+// startup.StoresMovedRetirement drops it with the views.
+var laterGraphTuplesIndexes = []requiredGraphIndex{
+	{
+		name: "graph_tuples_workflow_inbound", table: "graph_tuples",
+		keys: "to_kind, to_id, kind, from_kind, from_id, seq desc", predicate: "to_kind <> 'value' and from_kind in ('step', 'plan')",
+	},
+}
+
 // declaredIndex is one create index a migration file holds, with the statement that declares
 // it. An index declared under no name of its own has the empty name: Postgres makes one up.
 type declaredIndex struct {
@@ -1537,7 +1554,7 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 				want.unique, want.table, want.keys, wherePart(want.predicate))
 		}
 	}
-	for _, want := range laterGraphNodesIndexes {
+	for _, want := range slices.Concat(laterGraphNodesIndexes, laterGraphTuplesIndexes) {
 		found := declared[want.name]
 		if len(found) != 1 {
 			t.Errorf("%s is declared %d times, want once, in a migration of its own", want.name, len(found))
@@ -1546,8 +1563,8 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 		index := found[0]
 		if index.migration == graphStoreMigration || !index.concurrent {
 			t.Errorf("%s is declared in %s with concurrent=%v, want a concurrent build in a later, non-transactional migration:"+
-				" graph_nodes holds a row for every block by then, and a plain build stops every writer of the store while it scans",
-				want.name, index.migration, index.concurrent)
+				" %s holds a row for every block or tuple by then, and a plain build stops every writer of the store while it scans",
+				want.name, index.migration, index.concurrent, want.table)
 		}
 		if index.table != want.table || index.keys != want.keys || index.predicate != want.predicate || index.unique != want.unique {
 			t.Errorf("%s is declared as unique=%v on %s (%s)%s, want unique=%v on %s (%s)%s",
@@ -1575,16 +1592,19 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 		}
 	}
 
-	// The set is the whole of graph_tuples' indexes. Each index on that table is one more write
-	// every tuple pays for, and the set leaves out the ones no read needs: an index keyed on the
-	// far end with the near end after it cost a delivered_to tuple 8.1 WAL records where the four
-	// read indexes cost 6.1, and served no read graph_tuples_as_of_in does not.
+	// The set is the whole of graph_tuples' indexes, and the one later index of laterGraphTuplesIndexes.
+	// Each index on that table is one more write every tuple pays for, and the set leaves out the
+	// ones no read needs: an index keyed on the far end with the near end after it cost a
+	// delivered_to tuple 8.1 WAL records where the four read indexes cost 6.1, and served no read
+	// graph_tuples_as_of_in does not. The later index is partial on the near end's kind, so a
+	// delivered_to tuple pays nothing for it.
 	for _, indexes := range declared {
 		for _, index := range indexes {
-			inTheSet := slices.ContainsFunc(requiredGraphIndexes, func(want requiredGraphIndex) bool { return want.name == index.name })
+			inTheSet := slices.ContainsFunc(requiredGraphIndexes, func(want requiredGraphIndex) bool { return want.name == index.name }) ||
+				slices.ContainsFunc(laterGraphTuplesIndexes, func(want requiredGraphIndex) bool { return want.name == index.name })
 			if index.table == "graph_tuples" && !inTheSet {
-				t.Errorf("%s declares %s on graph_tuples (%s)%s, an index outside the store's index set: graph_tuples carries its four read indexes %v and its two repeat keys, and no other; the statement: %s",
-					index.migration, index.called(), index.keys, wherePart(index.predicate), graphTupleReadIndexes, index.statement)
+				t.Errorf("%s declares %s on graph_tuples (%s)%s, an index outside the store's index set: graph_tuples carries its four read indexes %v and its two repeat keys, and %d later index, and no other; the statement: %s",
+					index.migration, index.called(), index.keys, wherePart(index.predicate), graphTupleReadIndexes, len(laterGraphTuplesIndexes), index.statement)
 			}
 		}
 	}
@@ -1650,6 +1670,21 @@ func requireIndexSetInTheCatalog(t *testing.T, ctx context.Context, pool *store.
 			t.Errorf("the migrated database holds %s as unique=%v on %s (%s)%s, want unique=%v on %s (%s)%s",
 				want.name, got.unique, got.table, got.keys, wherePart(got.predicate),
 				want.unique, want.table, want.keys, wherePart(want.predicate))
+		}
+	}
+	// The catalog writes the later index's predicate in its own form (`from_kind = ANY (ARRAY[...])`
+	// for `from_kind in (...)`), so it is held to its table, its key list and a predicate that
+	// names both columns it is partial on.
+	for _, want := range laterGraphTuplesIndexes {
+		got, held := standing[want.name]
+		switch {
+		case !held:
+			t.Errorf("the migrated database holds no index %s on %s; the release before's read of the workflow store's tuples through their view rests on it, so a migration dropped it or never built it",
+				want.name, want.table)
+		case got.table != want.table || got.keys != want.keys || got.unique != want.unique ||
+			!strings.Contains(got.predicate, "to_kind <> 'value'") || !strings.Contains(got.predicate, "from_kind"):
+			t.Errorf("the migrated database holds %s as unique=%v on %s (%s)%s, want unique=%v on %s (%s), partial on to_kind <> 'value' and from_kind",
+				want.name, got.unique, got.table, got.keys, wherePart(got.predicate), want.unique, want.table, want.keys)
 		}
 	}
 	if nodesPrimaryKey != "kind, id" {

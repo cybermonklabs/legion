@@ -99,6 +99,7 @@ func TestThePreDeployCensusRehearsesTheMoveAndChangesNothing(t *testing.T) {
 			"census: rehearsal: it skips the pending migration 20261123120000_graph_edges_one_tuple_arm.up.sql, of this issue's own",
 			"census: rehearsal: it applies the pending migration 20261123134318_stores_moved.up.sql, of this issue's own",
 			"census: rehearsal: it skips the pending migration 20261123185607_graph_nodes_artifact_id_index.up.sql, of this issue's own",
+			"census: rehearsal: it skips the pending migration 20261125093000_graph_tuples_workflow_inbound_index.up.sql, of this issue's own",
 			"census: rehearsal: its copy ended: " + strconv.Itoa(priorityTuples+workflowTuples) + " tuples of the four tables in ",
 			"census: rehearsal: priority: tuples: old " + strconv.Itoa(priorityTuples) + " ",
 			"census: rehearsal: workflow: tuples: old " + strconv.Itoa(workflowTuples) + " ",
