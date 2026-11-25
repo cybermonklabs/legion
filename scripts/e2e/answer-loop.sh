@@ -405,6 +405,10 @@ PY
 
 # pg_sql DATABASE SQL prints the statement's rows as one JSON array, through Bun's Postgres client
 # (the host has no psql).
+# The reads of the session table through it (check_postgres_store, lib/answer-loop-reads.sh's
+# conversation_text) name each table public.<table> and set no pin, unlike lib/session-db.sh's
+# session_psql: they run on the run's own scratch Postgres, which the rig starts and whose only
+# clients are the rig, its daemon and its panes. The daemon's own reads of it are pinned.
 pg_sql() {
   bun "$work/pg-sql.ts" "postgres://postgres@127.0.0.1:$port_pg/$1?sslmode=disable" "$2"
 }
@@ -1907,7 +1911,7 @@ check_boot() {
 check_postgres_store() {
   local rows files
   printf '== store (%s): the panes keep their conversations in the session table\n' "$store"
-  rows=$(pg_sql "omp_sessions_$run_tag" "select path, byte_len from omp_session_files order by path")
+  rows=$(pg_sql "omp_sessions_$run_tag" "select path, byte_len from public.omp_session_files order by path")
   files=0
   for name in architect planner tester_old tester; do
     [ ! -e "${agent[$store:$name.file]}" ] || files=$((files + 1))

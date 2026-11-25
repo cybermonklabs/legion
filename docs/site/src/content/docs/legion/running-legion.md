@@ -905,9 +905,10 @@ What each part is for:
   reply in a stopped agent's name. In each case the daemon boots, logs one line saying why (the
   broker line under the broker, else the provider line when no store is named either), which
   `legion config check` prints right after `Config OK`, and a message to a stopped agent is
-  refused and dropped as it is without the block. Its one tool is `gh`, run on the daemon's host
-  with an allow list and the agent's own GitHub access, so with the loop on the daemon needs the
-  real gh (`LEGION_GH_PATH`, else `PATH`, never a script; in the worker image,
+  refused and dropped as it is without the block. Its tools are `gh`, `dispatch` where boot finds
+  the dispatch command, and `web_search` where `answers.web_search` configures it. It runs `gh` on
+  the daemon's host with an allow list and the agent's own GitHub access, so with the loop on the
+  daemon needs the real gh (`LEGION_GH_PATH`, else `PATH`, never a script; in the worker image,
   `LEGION_GH_PATH=/usr/local/bin/gh`) and refuses to boot without one. Unset, the daemon answers
   nothing. The
   Envoy listener's and Dispatch's halves, which hand the daemon a message for a stopped agent, land

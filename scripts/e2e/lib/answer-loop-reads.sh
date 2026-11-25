@@ -352,7 +352,7 @@ phase_changed() {
 conversation_text() {
   local file=${agent[$store:$1.file]}
   if [ "$store" = postgres ] && [ "$1" != pre_change ]; then
-    pg_sql "omp_sessions_$run_tag" "select coalesce(string_agg(content, '' order by start_offset), '') as text from (select 0 as start_offset, content from omp_session_files where path = '$file' union all select start_offset, content from omp_session_files_parts where path = '$file') p" |
+    pg_sql "omp_sessions_$run_tag" "select coalesce(string_agg(content, '' order by start_offset), '') as text from (select 0 as start_offset, content from public.omp_session_files where path = '$file' union all select start_offset, content from public.omp_session_files_parts where path = '$file') p" |
       jq -r '(.[0].text // "")'
   else
     cat -- "$file"
