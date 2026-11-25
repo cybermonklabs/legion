@@ -6005,6 +6005,9 @@ describe("envoy OMP extension", () => {
         const file = join(agentDirectory, "envoy.json");
         const notifications: string[] = [];
         const context = notifying("ses_profile", notifications);
+        const stop = rowShutdown(async () =>
+          fixture.handlers.get("session_shutdown")?.({}, context)
+        );
         await fixture.handlers.get("session_start")?.({}, context);
 
         expect(process.env.ENVOY_CONFIG_FILE).toBe(file);
@@ -6022,7 +6025,7 @@ describe("envoy OMP extension", () => {
         ).rejects.toThrow(
           `Envoy is off for this session: no envoy.json at ${file}: Envoy is off; ${old} is not read for this profile; copy or link it to ${file}, or write that file`
         );
-        await fixture.handlers.get("session_shutdown")?.({}, context);
+        await stop();
         expect(requests).toEqual([]);
         expect(natsState.connectedNames).toEqual([]);
       } finally {
@@ -6478,6 +6481,16 @@ console.log(JSON.stringify(args));
       const fixture = allHandlers();
       await envoyExtension(fixture.pi);
       const notifications: string[] = [];
+      // The session the switch below moves to, which the row shuts down.
+      const next = {
+        ...gateContext(notifications),
+        sessionManager: {
+          ...topLevelSession,
+          getSessionId: () => "ses_askgate_next",
+          getLeafId: () => null,
+        },
+      } as SessionContext;
+      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, next));
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
       const first = recordOf("ses_askgate");
       expect(first).toMatchObject([{ v: 2, pid: process.pid, mode: "warn" }]);
@@ -6487,23 +6500,21 @@ console.log(JSON.stringify(args));
       expect(statSync(first?.[0]?.file ?? "").mode & 0o777).toBe(0o600);
       expect(statSync(dirname(first?.[0]?.file ?? "")).mode & 0o777).toBe(0o700);
 
-      const next = {
-        ...gateContext(notifications),
-        sessionManager: {
-          ...topLevelSession,
-          getSessionId: () => "ses_askgate_next",
-          getLeafId: () => null,
-        },
-      } as SessionContext;
       await fixture.handlers.get("session_switch")?.({ reason: "new" }, next);
       expect(recordOf("ses_askgate_next")).toMatchObject([{ pid: process.pid, store }]);
       expect(recordOf("ses_askgate")).toMatchObject([{ pid: process.pid, store }]);
 
-      await fixture.handlers.get("session_shutdown")?.({}, next);
+      await stop();
       expect(recordOf("ses_askgate")).toBeNull();
       expect(recordOf("ses_askgate_next")).toBeNull();
       expect(existsSync(store)).toBe(false);
       expect(notifications).toEqual([]);
+      // A hang guard: what can hang is the session's start, its switch or its shutdown. Worst
+      // measured cost: 897 ms in envoy.test.ts run whole at the 96 rung in the Job
+      // infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two CPUs and 8 GiB (137 busy
+      // loops, at which row A's runs took 31.6 s against the calibration's 31.2 s), at 06d187e7;
+      // 395 ms in the Job infra-1580-r27wf-4rk46 (148 busy loops, row A 39.8 s), at 82306880.
+      // Main's 30_000 is 33.4 times the worst, so it is kept.
     }, 30_000);
     // A process of another pid namespace that shares the state directory (the host, seen from an
     // agent box, or the other way round) cannot look this one up by its pid: it counts the record
@@ -6562,6 +6573,7 @@ console.log(JSON.stringify(args));
       await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
+      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
       await fixture.handlers.get("session_start")?.({}, context);
       const [own] = recordOf("ses_askgate") ?? [];
       // The gate records block for this session on a main-agent call, as an arm that is on does.
@@ -6572,7 +6584,13 @@ console.log(JSON.stringify(args));
       // A switch back onto the same session rebinds it, as a resume or a branch does.
       await fixture.handlers.get("session_switch")?.({ reason: "resume" }, context);
       expect(recordOf("ses_askgate")).toMatchObject([{ pid: process.pid, mode: "block" }]);
-      await fixture.handlers.get("session_shutdown")?.({}, context);
+      await stop();
+      // A hang guard: what can hang is the session's start, its switch or its shutdown. Worst
+      // measured cost: 1 498 ms in envoy.test.ts run whole at the 96 rung in the Job
+      // infra-1580-r27wf-4rk46 of the cluster's `builds` namespace, two CPUs and 8 GiB (148 busy
+      // loops, at which row A's runs took 39.8 s against the calibration's 31.2 s), at 82306880;
+      // 699 ms in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A 31.6 s), at 06d187e7.
+      // Main's 30_000 is 20.0 times the worst, so it is kept.
     }, 30_000);
     // A record AskGate cannot write after a switch turns the CLI's check off for that session, so
     // the user is told at once, as at session start, and not only in the log.
@@ -6584,30 +6602,38 @@ console.log(JSON.stringify(args));
       const fixture = allHandlers();
       await envoyExtension(fixture.pi);
       const notifications: string[] = [];
+      // The session the switch below moves to, which the row shuts down.
+      const locked = {
+        ...gateContext(notifications),
+        sessionManager: {
+          ...topLevelSession,
+          getSessionId: () => "ses_askgate_locked",
+          getLeafId: () => null,
+        },
+      } as SessionContext;
+      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, locked));
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
       expect(notifications).toEqual([]);
       const dir = sessionDirectory(process.env, "ses_askgate_locked");
       mkdirSync(dir, { recursive: true });
       chmodSync(dir, 0o500);
       try {
-        const locked = {
-          ...gateContext(notifications),
-          sessionManager: {
-            ...topLevelSession,
-            getSessionId: () => "ses_askgate_locked",
-            getLeafId: () => null,
-          },
-        } as SessionContext;
         await fixture.handlers.get("session_switch")?.({ reason: "new" }, locked);
         expect(notifications).toEqual([
           expect.stringContaining(
             "envoy: AskGate could not write its record for session ses_askgate_locked"
           ),
         ]);
-        await fixture.handlers.get("session_shutdown")?.({}, locked);
+        await stop();
       } finally {
         chmodSync(dir, 0o700);
       }
+      // A hang guard: what can hang is the session's start, its switch or its shutdown. Worst
+      // measured cost: 808 ms in envoy.test.ts run whole at the 96 rung in the Job
+      // infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two CPUs and 8 GiB (137 busy
+      // loops, at which row A's runs took 31.6 s against the calibration's 31.2 s), at 06d187e7;
+      // 600 ms in the Job infra-1580-r27wf-4rk46 (148 busy loops, row A 39.8 s), at 82306880.
+      // Main's 30_000 is 37.1 times the worst, so it is kept.
     }, 30_000);
     test("no record is written with the switch off, with Dispatch off, or by a task subagent's instance", async () => {
       // The switch off: this suite's default envoy.json turns AskGate off.
@@ -6676,6 +6702,9 @@ console.log(JSON.stringify(args));
         );
         const fixture = allHandlers();
         await envoyExtension(fixture.pi);
+        const stop = rowShutdown(async () =>
+          fixture.handlers.get("session_shutdown")?.({}, gateContext([]))
+        );
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
         const root = join(stateHome, "dispatch");
         expect(process.env.DISPATCH_STATE_DIR).toBe(root);
@@ -6685,17 +6714,20 @@ console.log(JSON.stringify(args));
         expect(shell.DISPATCH_STATE_DIR).toBe(root);
         const moved = { ...shell, HOME: "/elsewhere", XDG_STATE_HOME: "/elsewhere/state" };
         expect(askgateState(sessionDirectory(moved, "ses_askgate")).kind).toBe("on");
-        await fixture.handlers.get("session_shutdown")?.({}, gateContext([]));
+        await stop();
 
         stillOn(ownRow, "setting DISPATCH_STATE_DIR again");
         process.env.DISPATCH_STATE_DIR = preset;
         const again: EnvoyModule = await import("./envoy.ts?askgate-state-dir-set");
         const fixtureAgain = allHandlers();
         await again.default(fixtureAgain.pi);
+        const stopAgain = rowShutdown(async () =>
+          fixtureAgain.handlers.get("session_shutdown")?.({}, gateContext([]))
+        );
         await fixtureAgain.handlers.get("session_start")?.({}, gateContext([]));
         expect(process.env.DISPATCH_STATE_DIR).toBe(preset);
         expect(askgateState(sessionDirectory(process.env, "ses_askgate")).kind).toBe("on");
-        await fixtureAgain.handlers.get("session_shutdown")?.({}, gateContext([]));
+        await stopAgain();
       } finally {
         if (ownRow()) restoreStateHome();
         rmSync(stateHome, { recursive: true, force: true });
@@ -7054,6 +7086,9 @@ console.log(JSON.stringify(args));
       const fixture = allHandlers();
       await envoyExtension(fixture.pi);
       const context = gateContext([]);
+      const shutdown = rowShutdown(async () =>
+        fixture.handlers.get("session_shutdown")?.({}, context)
+      );
       await fixture.handlers.get("session_start")?.({}, context);
       const dispatch = hangingRecordProject();
       await runDispatchCli(
@@ -7086,7 +7121,7 @@ console.log(JSON.stringify(args));
         ...dispatch,
         readLedger,
         entriesOf,
-        shutdown: () => fixture.handlers.get("session_shutdown")?.({}, context),
+        shutdown,
       };
     };
 
@@ -7109,6 +7144,14 @@ console.log(JSON.stringify(args));
       expect(published).toEqual([]);
       expect(run.entriesOf("advisor-gate-record")).toEqual([]);
       await run.shutdown();
+      // A hang guard: what can hang is the session's start, the `dispatch` command run in this
+      // process (`runDispatchCli`), the wait for the record to reach the stand-in Dispatch
+      // (`reached`), which has no deadline of its own, or the tool result, which never returns
+      // when it waits on that record. Worst measured cost: 1 994 ms in envoy.test.ts run whole at
+      // the 96 rung in the Job infra-1580-r27wf-4rk46 of the cluster's `builds` namespace, two CPUs
+      // and 8 GiB (148 busy loops, at which row A's runs took 39.8 s against the calibration's
+      // 31.2 s), at 82306880; 1 993 ms in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A
+      // 31.6 s), at 06d187e7. Main's 30_000 is 15.0 times the worst, so it is kept.
     }, 30_000);
 
     test("a record the session could not write lands as an advisor-gate-record follow-up keyed on the unmarked entry", async () => {
@@ -7132,6 +7175,14 @@ console.log(JSON.stringify(args));
         },
       ]);
       expect(run.entriesOf("advisor-gate")[0]).not.toHaveProperty("recordError");
+      // A hang guard: what can hang is the session's start, the `dispatch` command run in this
+      // process (`runDispatchCli`), the tool result, the wait for the record to reach the stand-in
+      // Dispatch (`reached`), which has no deadline of its own, or the shutdown. Worst measured
+      // cost: 2 500 ms in envoy.test.ts run whole at the 96 rung in the Job
+      // infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two CPUs and 8 GiB (137 busy
+      // loops, at which row A's runs took 31.6 s against the calibration's 31.2 s), at 06d187e7;
+      // 1 702 ms in the Job infra-1580-r27wf-4rk46 (148 busy loops, row A 39.8 s), at 82306880.
+      // Main's 30_000 is 12.0 times the worst, so it is kept.
     }, 30_000);
 
     // #2161: the record of an unmarked write is the host's, the record of a gated call the core's,
@@ -7506,6 +7557,9 @@ console.log(JSON.stringify(args));
         );
         const fixture = createPi();
         await envoyExtension(fixture.pi);
+        const stop = rowShutdown(async () =>
+          fixture.handlers.get("session_shutdown")?.({}, gateContext([]))
+        );
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
         // The gate did not load, so it records no mode; the record carries the session's choice,
         // and a gated write the gate never saw is refused by the CLI, not posted with a warning.
@@ -7530,7 +7584,7 @@ console.log(JSON.stringify(args));
         expect(stdout).toContain("dispatch comment was not called: AskGate is on for this session");
         expect(code).toBe(1);
         expect(sent).toEqual([]);
-        await fixture.handlers.get("session_shutdown")?.({}, gateContext([]));
+        await stop();
       } finally {
         if (ownRow()) {
           delete process.env.OMP_ASKGATE;
@@ -21187,10 +21241,13 @@ console.log(JSON.stringify(args));
       const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pictures-shutdown");
       const fixture = createPi();
       await envoyExtension(fixture.pi);
+      const stop = rowShutdown(async () =>
+        fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_pictures_shutdown"))
+      );
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pictures_shutdown"));
       shownPictures("ses_pictures_shutdown").add("dispatch://LEGION-1/artifact/shut-png@v1");
 
-      await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_pictures_shutdown"));
+      await stop();
 
       expect(shownPictures("ses_pictures_shutdown").size).toBe(0);
     });
@@ -21205,9 +21262,12 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
+      const stop = rowShutdown(async () =>
+        fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_pictures_subagent"))
+      );
       shownPictures("ses_pictures_subagent").add("dispatch://LEGION-1/artifact/sub-png@v1");
 
-      await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_pictures_subagent"));
+      await stop();
 
       expect(shownPictures("ses_pictures_subagent").size).toBe(0);
     });
@@ -21375,11 +21435,12 @@ console.log(JSON.stringify(args));
         return { replyText: "too late" };
       },
     };
+    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
     await fixture.handlers.get("session_start")?.({}, context);
     const agent = natsState.controls.get("notifications.agent.ses_delivery");
     if (agent === undefined) throw new Error("agent subject was not subscribed");
 
-    const shutdown = fixture.handlers.get("session_shutdown")?.({}, context);
+    const shutdown = stop();
     agent.push(targetedDispatchEnvelope("btw", "targeted-shutdown"), "_INBOX.shutdown-btw");
     for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
     deregistration.resolve(response({}));
@@ -22470,13 +22531,16 @@ console.log(JSON.stringify(args));
     try {
       const posted = recordingMessages();
       const host = await subagentProcess("shutdown-parent", "ses_parent", fixture.transcript);
+      const stopParent = rowShutdown(async () =>
+        host.parent.handlers.get("session_shutdown")?.({}, host.parent.context)
+      );
       const child = await host.boot(
         "ses_child",
         fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent/Scout.jsonl")
       );
       // The session deregisters with the listener here, so it is no longer an address a reply
       // reaches — the `no live session` failure this whole record exists to stop.
-      await host.parent.handlers.get("session_shutdown")?.({}, host.parent.context);
+      await stopParent();
 
       const whoami = child.tools.find((tool) => tool.name === "envoy_whoami");
       const result = await whoami?.execute("call-1", {}, undefined, undefined, child.context);
@@ -24955,6 +25019,9 @@ console.log(JSON.stringify(args));
       const fixture = createPi();
       await envoyExtension(fixture.pi);
       const after = timedContext("ses_follow_to", Date.now());
+      const stop = rowShutdown(async () =>
+        fixture.handlers.get("session_shutdown")?.({}, after.context)
+      );
       const all = () => [...before.notifications, ...after.notifications];
       const named = () =>
         all().find(({ message }) => message.includes("could not take the new session's token"));
@@ -25011,7 +25078,7 @@ console.log(JSON.stringify(args));
       expect(settled).toBe(true);
       expect(all().some(({ message }) => message.includes("did not settle within"))).toBe(false);
       await switching;
-      await fixture.handlers.get("session_shutdown")?.({}, after.context);
+      await stop();
     });
     // A hang guard, not a bound on work: what can hang is the wait for the boot or for the follow's
     // trade (`clock.waitOn`, `clock.wait`), which has no bound of turns, because each trade reads
@@ -25133,6 +25200,7 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
     await envoyExtension(fixture.pi);
     const first = sessionContext("ses_ring_a");
+    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, first));
     await fixture.handlers.get("session_start")?.({}, first);
     const second = sessionContext("ses_ring_b");
     await fixture.handlers.get("session_switch")?.({}, second);
@@ -25158,7 +25226,13 @@ console.log(JSON.stringify(args));
     // The replay can carry a turn at all: B's own is in it.
     expect(replayed).toContain(ownTurn);
     expect(replayed).not.toContain(returnedTurn);
-    await fixture.handlers.get("session_shutdown")?.({}, first);
+    await stop();
+    // A hang guard: what can hang is the session's start, its switch, a turn's end
+    // (`message_end`) or its shutdown. Worst measured cost: 602 ms in envoy.test.ts run whole at
+    // the 96 rung in the Job infra-1580-r27wf-4rk46 of the cluster's `builds` namespace, two CPUs
+    // and 8 GiB (148 busy loops, at which row A's runs took 39.8 s against the calibration's
+    // 31.2 s), at 82306880; 298 ms in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A
+    // 31.6 s), at 06d187e7. Main's 30_000 is 49.8 times the worst, so it is kept.
   }, 30_000);
 
   test("natsCredential is kept renewed for the connection's life, and the keeper stops at shutdown", async () => {
@@ -26139,8 +26213,11 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
 
     await envoyExtension(fixture.pi);
+    const stop = rowShutdown(async () =>
+      fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"))
+    );
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
-    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
+    await stop();
 
     expect(drainHadStartedAtDeregistration).toBe(false);
     expect(requests).toEqual([
@@ -26225,9 +26302,13 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
 
     await envoyExtension(fixture.pi);
+    const stop = rowShutdown(async () =>
+      fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"))
+    );
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
-    const shutdown = fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
-    if (shutdown === undefined) throw new Error("session_shutdown handler was not registered");
+    if (fixture.handlers.get("session_shutdown") === undefined)
+      throw new Error("session_shutdown handler was not registered");
+    const shutdown = stop();
 
     await deleteStarted.promise;
     await Promise.resolve();
@@ -28449,6 +28530,13 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
           else process.env.NATS_NKEY_SEED = originalSeed;
         }
       }
+      // A hang guard: what can hang is the session's start on a real connection, or a flush of
+      // the requester's connection (`runReplayGrantScenario`), which has no deadline of its own.
+      // The scenario's other waits are bounded: 10 s for the first answer, 10 s for the server's
+      // log line and 5 s for the last answer. The row runs only with LEGION_E2E=1, which the
+      // whole-file Jobs infra-1580-t27-j1-l27pc and infra-1580-r27wf-4rk46 did not set. Worst
+      // measured cost: 172.17 ms, its one run in CI's pi-envoy job at 06d187e7 (run
+      // 45437325102). Main's 60_000 is 348.5 times that, so it is kept.
     }, 60_000);
   }
 );
