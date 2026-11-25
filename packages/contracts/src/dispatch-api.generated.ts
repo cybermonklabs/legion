@@ -5551,6 +5551,7 @@ export interface components {
       priority: null | number;
       progress: components["schemas"]["IssueProgress"];
       project: string;
+      pull_request?: components["schemas"]["IssuePullRequest"];
       rank: string;
       referenced_by_count: number;
       repo: null | string;
@@ -5616,6 +5617,13 @@ export interface components {
     IssueProgress: {
       children: components["schemas"]["ProgressCount"] | null;
       tasks: components["schemas"]["ProgressCount"] | null;
+    };
+    IssuePullRequest: {
+      number: number;
+      repo: string;
+      /** @enum {string} */
+      state: "open" | "merged" | "closed";
+      url: string;
     };
     IssueRankInput: {
       after?: null | string;
@@ -15821,6 +15829,7 @@ export type IssueDetails = components["schemas"]["IssueDetails"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
 export type IssueOpenAsk = components["schemas"]["IssueOpenAsk"];
 export type IssueProgress = components["schemas"]["IssueProgress"];
+export type IssuePullRequest = components["schemas"]["IssuePullRequest"];
 export type IssueRankInput = components["schemas"]["IssueRankInput"];
 export type IssueRefResolved = components["schemas"]["IssueRefResolved"];
 export type IssueReferenceSummary = components["schemas"]["IssueReferenceSummary"];

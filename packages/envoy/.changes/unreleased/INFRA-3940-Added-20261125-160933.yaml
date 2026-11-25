@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `GET /api/v1/issues/{key}` answers `pull_request`, the pull request attributed to the issue: its
+  repository, number, state (`open`, `merged` or `closed`) and address. An open one comes first,
+  else the newest merged one, else the newest closed one. The address is the one stored for the
+  pull request, or `https://github.com/<repo>/pull/<number>` where none is stored. An issue with no
+  pull request leaves the field out. The read makes no extra round trip to the database for it.
+time: 2026-11-25T16:09:33Z
+custom:
+    Issue: INFRA-3940

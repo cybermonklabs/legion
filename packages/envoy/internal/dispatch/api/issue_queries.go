@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -876,6 +877,9 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // (invalidateCachesOnBatchResultsError), so one 404 would cost that connection the whole read's
 // prepared statements. The other callbacks run against an issue with no row, answer empty lists,
 // and readIssue drops them with the rest of the read.
+// Batch 1 also reads the issue's pull request (issuePullRequestStatement). An issue with none
+// answers no row, and its callback takes that row's pgx.ErrNoRows as no pull request rather than
+// returning it, for the reason above.
 //
 // Batch 2 is what only batch 1's answers name: every artifact's versions in one statement, the
 // documents' latest reviews and open approval requests, and the open asks' identity events and
@@ -930,6 +934,12 @@ type issueDetail struct {
 	// must never be stored in one (model.IssueClaimLiveness carries the rest of the reason).
 	model.IssueClaimLiveness
 	Progress model.IssueProgress `json:"progress"`
+	// PullRequest is the pull request pull_request_heads attributes to the issue
+	// (issuePullRequestStatement), nil where none is. omitempty leaves a nil one out and makes the
+	// field optional in the generated types, so a value typed before the field still type-checks.
+	// It comes before the lists below, so a reader that keeps only the start of a long read still
+	// has it.
+	PullRequest *issuePullRequest `json:"pull_request,omitempty"`
 	// CommentCount is how many comments the issue holds, each one its comment list (GET
 	// /api/v1/issues/{key}/comments) answers, so a reader of the issue alone knows it has comments
 	// to read. An issue with none leaves it out. It comes before the lists below, so a reader that
@@ -951,12 +961,27 @@ type issueDetail struct {
 	ReferencedByCount int `json:"referenced_by_count"`
 }
 
+// issuePullRequest is the pull request an issue's read names (issueDetail.PullRequest): its
+// repository, under the name pull_request_heads keys its row by, its number, its state and its
+// address on GitHub.
+type issuePullRequest struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	State  string `json:"state" enum:"open,merged,closed"`
+	// URL is the address the row stores, the one GitHub's event or read named, else
+	// https://github.com/<repo>/pull/<number> where the row stores none (scanIssuePullRequest).
+	URL string `json:"url"`
+}
+
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
 // loaders run - loadIssueWithProgress, issueBlocksStatement, loadArtifacts, queryOwnerAsks with
 // issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
 // refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
 // for (wantsDisplayTrees): the display trees of the documents' approval reasons and of the open
 // asks' texts, which only the dashboard reads.
+//
+// One statement of the first batch has no sequential loader beside it: the issue's pull request
+// (issuePullRequestStatement), which this read alone answers.
 func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
@@ -1006,6 +1031,17 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 	})
 	first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&read.CommentCount)
+	})
+	// No row is an issue no pull request is attributed to, which the read leaves without one. The
+	// callback answers nil for it, as the issue row's does for a missing issue: an error returned
+	// here would close the batch on it (getIssue).
+	first.Queue(issuePullRequestStatement, key).QueryRow(func(row pgx.Row) error {
+		pullRequest, err := scanIssuePullRequest(row)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		read.PullRequest = pullRequest
+		return err
 	})
 	if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
 		return issueDetail{}, err
@@ -1126,6 +1162,35 @@ const issueBlocksStatement = `
 // list answers (loadOwnerComments with no ?artifact=), a reply to an ask and a comment on one of
 // its documents among them. It answers one row for any key, 0 for a key no issue carries.
 const issueCommentCountStatement = `select count(*) from comments where issue_key = $1`
+
+// issuePullRequestStatement reads the pull request pull_request_heads attributes to an issue, $1
+// its key: an open one first, since it is the one a reader acts on, else a merged one, which says
+// the work landed, else a closed one. In each state the newest by event_at comes first, a row
+// whose event reported no time after every dated row, and the higher number first where two rows
+// share both, as baseBranchMergedForQuery orders (delivery/pull_request_heads.go). It answers no
+// row for an issue none is attributed to. Its filter is the leading column of
+// pull_request_heads_issue_head (issue_key, head_sha), and an issue's rows are its handful of pull
+// requests. scanIssuePullRequest decodes it.
+const issuePullRequestStatement = `
+		select repo, number, state, url from pull_request_heads
+		where issue_key = $1
+		order by case state when 'open' then 0 when 'merged' then 1 else 2 end, event_at desc nulls last, number desc
+		limit 1
+	`
+
+// scanIssuePullRequest decodes the row issuePullRequestStatement answers. Its address is the url
+// the row stores, else https://github.com/<repo>/pull/<number>, the one GitHub gives the pull
+// request, where the row stores none: an empty url, the column's default.
+func scanIssuePullRequest(row pgx.Row) (*issuePullRequest, error) {
+	var pullRequest issuePullRequest
+	if err := row.Scan(&pullRequest.Repo, &pullRequest.Number, &pullRequest.State, &pullRequest.URL); err != nil {
+		return nil, err
+	}
+	if pullRequest.URL == "" {
+		pullRequest.URL = "https://github.com/" + pullRequest.Repo + "/pull/" + strconv.Itoa(pullRequest.Number)
+	}
+	return &pullRequest, nil
+}
 
 // scanIssueRow decodes one issueRowStatement row into the issue and the progress the read
 // carries beside it. ExternalLinks is left nil: issueExternalLinksStatement carries them, run

@@ -23416,6 +23416,9 @@
           "project": {
             "type": "string"
           },
+          "pull_request": {
+            "$ref": "#/components/schemas/IssuePullRequest"
+          },
           "rank": {
             "type": "string"
           },
@@ -23756,6 +23759,34 @@
         "required": [
           "tasks",
           "children"
+        ],
+        "type": "object"
+      },
+      "IssuePullRequest": {
+        "properties": {
+          "number": {
+            "type": "integer"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "merged",
+              "closed"
+            ],
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "number",
+          "state",
+          "url"
         ],
         "type": "object"
       },

@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `IssueDetails` carries `pull_request`, the pull request attributed to the issue
+  (`IssuePullRequest`: `repo`, `number`, `state` and `url`). It is in
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`. It is optional, so a value
+  typed before it still type-checks.
+time: 2026-11-25T16:09:33Z
+custom:
+    Issue: INFRA-3940
