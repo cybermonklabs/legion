@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math/big"
 	"net/http"
@@ -166,37 +167,51 @@ func TestAnX509CredentialsFileSignsTheStoreIn(t *testing.T) {
 }
 
 // TestAnEnterpriseCertificateProxyCredentialsFileIsRefused: a credentials file whose certificate
-// configuration names no workload certificate and key, but an enterprise certificate proxy's
-// signer, is refused in the machine source's words before Google's library would start that
-// signer. Control: the signer runs when Google's library alone reads the file.
+// configuration Google's library reads as an enterprise certificate proxy's is refused in the
+// machine source's words before the library would start the signer it names. So is one whose
+// configuration names a workload certificate and key and then a null workload, in either case of
+// its key: the library reads the null, and so no workload. Control: for each, the signer runs
+// when Google's library alone reads the file.
 func TestAnEnterpriseCertificateProxyCredentialsFileIsRefused(t *testing.T) {
-	dir := t.TempDir()
-	ran := filepath.Join(dir, "ran")
-	signer := filepath.Join(dir, "signer")
-	if err := os.WriteFile(signer, []byte("#!/bin/sh\ntouch '"+ran+"'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	files := writeStoreX509(t, dir, "http://127.0.0.1:9", "https://iamcredentials.invalid", "store-robot@example-project.iam.gserviceaccount.com")
-	config := `{"cert_configs":{"pkcs11":{"module":"/nowhere","slot":1,"label":"key"}},"libs":{"ecp":"` + signer + `"}}`
-	if err := os.WriteFile(files.config, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(files.credential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = credentials.NewCredentialsFromJSON(credentials.ExternalAccount, data, &credentials.DetectOptions{Scopes: secretmanager.DefaultAuthScopes()})
-	if err := os.Remove(ran); err != nil {
-		t.Fatalf("control: Google's library did not start the signer the configuration names: %v", err)
-	}
+	for _, row := range []struct{ name, workload string }{
+		{"an enterprise certificate proxy's configuration", ``},
+		{"a workload, then a null workload", `"workload":{"cert_path":%q,"key_path":%q},"workload":null,`},
+		{"a workload, then a null Workload", `"workload":{"cert_path":%q,"key_path":%q},"Workload":null,`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ran := filepath.Join(dir, "ran")
+			signer := filepath.Join(dir, "signer")
+			if err := os.WriteFile(signer, []byte("#!/bin/sh\ntouch '"+ran+"'\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			files := writeStoreX509(t, dir, "http://127.0.0.1:9", "https://iamcredentials.invalid", "store-robot@example-project.iam.gserviceaccount.com")
+			workload := row.workload
+			if workload != "" {
+				workload = fmt.Sprintf(workload, filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem"))
+			}
+			config := `{"cert_configs":{` + workload + `"pkcs11":{"module":"/nowhere","slot":1,"label":"key"}},"libs":{"ecp":"` + signer + `"}}`
+			if err := os.WriteFile(files.config, []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(files.credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = credentials.NewCredentialsFromJSON(credentials.ExternalAccount, data, &credentials.DetectOptions{Scopes: secretmanager.DefaultAuthScopes()})
+			if err := os.Remove(ran); err != nil {
+				t.Fatalf("control: Google's library did not start the signer the configuration names: %v", err)
+			}
 
-	_, err = gcpCredentialsFile(context.Background(), files.credential)
-	refusal := credentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err)
-	if want := "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: the certificate configuration its credential_source names holds no workload certificate and private key"; err == nil || refusal.Error() != want {
-		t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, want)
-	}
-	if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
+			_, err = gcpCredentialsFile(context.Background(), files.credential)
+			refusal := credentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err)
+			if want := "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: the certificate configuration its credential_source names holds no workload certificate and private key"; err == nil || refusal.Error() != want {
+				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, want)
+			}
+			if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
+			}
+		})
 	}
 }
 
