@@ -908,6 +908,10 @@ The runner runs `tokenCommand` once per process and sends its standard output, t
 A `tokenCommand` that runs past a minute is ended, and the read fails naming the host and the limit.
 It keeps the token in memory alone, and never prints it or puts it in an error message.
 A host that no entry names, other than GHCR, is not read.
+Each request of an image's read (the token GHCR gives, a manifest, the config blob) is given up after 30 seconds, its body included; the token command's own limit is not inside it.
+A request that timed out, met a connection failure, or was answered 429 or 5xx is sent again by the rule GitHub reads follow (after 5, 15, 45 and 135 seconds, each retry said on standard error and counted with the GitHub reads'), and after its last try the read fails naming the image and that try's failure.
+A configured registry that answers 401 or 403 has refused its token: the read fails at once, naming the host, the image and the status.
+A 404 is no such image, and on GHCR's anonymous read a 401 or 403 is an image that is not public: either gives no OCI config.
 Set `deploymentImages` to name the images that the deployment repository builds on a worker image.
 Each entry is `{"repository": "registry.example.test/acme/deploy/worker", "dockerfile": "images/worker.Dockerfile"}`: the image's reference without tag or digest, and the path of its Dockerfile in the deployment repository.
 A Legion pod's image of such a repository takes the commit of the worker image it is built on (below).

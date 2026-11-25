@@ -3,8 +3,10 @@
  * line, strict option parsing, the configuration as a refusal, the two errors a command's `main`
  * turns into its exit status (`Refused` 2, `Stopped` 3), a SKILL.md's text as Oh My Pi reads,
  * splits and names it (`ompText`, `splitFrontmatter`, `readFrontmatter`, `ompSkillName`: the
- * runner's one frontmatter reader), and the one rule by which a gh call that failed is sent again
- * (`GhRetries`). It imports no other command's file, so every one of them can import it.
+ * runner's one frontmatter reader), and the one rule by which a gh call or a registry's request
+ * that failed is sent again (`GhRetries`), with the words a registry request's failure is read in
+ * (`httpFailure`, `fetchFailure`). It imports no other command's file, so every one of them can
+ * import it.
  */
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -267,8 +269,8 @@ export const MAX_RATE_RETRIES = 5;
  *  tree of 17 MB, cut short, and the same call gives it whole again); GitHub's end reset the
  *  HTTP/2 stream of gh's answer (`stream error: stream ID <n>; <code>; received from peer`, gh's
  *  words: the same tree's read ended so on 2026-11-24); GitHub's front end answered
- *  a 5xx, or the npm registry a 429 (`HTTP 429 (too many requests)`, the words of build.ts's
- *  registry read alone: GitHub's 429 is a rate limit, RATE_LIMITED, waited out at most
+ *  a 5xx, or a registry a 429 (`HTTP 429 (too many requests)`, the words of the registry reads'
+ *  `httpFailure` alone: GitHub's 429 is a rate limit, RATE_LIMITED, waited out at most
  *  MAX_RATE_RETRIES times and then not sent again); the gh process ran past the time limit its
  *  caller gave it and was ended (context.ts's reads have one); a name did not resolve, or did not
  *  resolve yet; a pipe broke; or the text names a timeout in any other words. The first pattern
@@ -322,6 +324,41 @@ export function triesError(errors: readonly string[]): string {
   return `${errors.length} tries: ${errors.map((error, index) => `try ${index + 1}: ${error}`).join("; ")}`;
 }
 
+/** The reason, in the words of TRANSIENT_FAILURES, of each error code with which Bun's fetch fails
+ *  a connection that a later try may make (Bun 1.4.4: a connection refused, or reset or closed
+ *  before the answer ended; a name getaddrinfo did not resolve, or did not resolve yet), so a
+ *  registry read that fails so is sent again as a gh read that fails so is. */
+const CONNECTION_FAILURES: Readonly<Record<string, string>> = {
+  ECONNREFUSED: "connection refused",
+  ECONNRESET: "connection reset",
+  ENOTFOUND: "no such host",
+  EAI_AGAIN: "temporary failure",
+};
+
+/** The failure of a registry's answer of `status`, one that is not OK, in the words of
+ *  TRANSIENT_FAILURES: a 429, a registry's "too many requests", is sent again as a 5xx is
+ *  (`HTTP 429`), and no other 4xx is. The registry reads' one wording: build.ts's npm tarball
+ *  read's and pod-image.ts's image config read's. */
+export function httpFailure(status: number): string {
+  return status === 429 ? "HTTP 429 (too many requests)" : `HTTP ${status}`;
+}
+
+/** The failure, in the words of TRANSIENT_FAILURES, of a registry read's fetch that threw `error`
+ *  under `signal`, the read's time limit of `timeoutMs`: that limit, once `signal` has ended the
+ *  fetch, or a connection that failed (CONNECTION_FAILURES, with fetch's own words); undefined for
+ *  any other error, which its caller throws as fetch threw it. The failure is read from these words
+ *  alone, never from the URL, so a package named connect-timeout makes no failure transient. */
+export function fetchFailure(
+  error: unknown,
+  signal: AbortSignal,
+  timeoutMs: number
+): string | undefined {
+  if (signal.aborted) return `timed out after ${timeoutMs} ms`;
+  const code = error instanceof Error && "code" in error ? error.code : undefined;
+  if (typeof code !== "string" || !Object.hasOwn(CONNECTION_FAILURES, code)) return undefined;
+  return `${CONNECTION_FAILURES[code]} (${messageFor(error)})`;
+}
+
 /** What one try of a gh call gave, as `GhRetries` reads it. */
 export interface GhTry {
   readonly code: number;
@@ -351,7 +388,8 @@ const A_GH_CALL = "a gh call";
 
 /**
  * The one rule by which the runner sends a gh call again (copies.ts's reads, build.ts's
- * `GithubReads`, context.ts's `ghSource`), with its count of the calls it sent again. A call whose
+ * `GithubReads`, context.ts's `ghSource`), and a registry's request (build.ts's npm tarball read,
+ * pod-image.ts's image config read), with its count of the calls it sent again. A call whose
  * error names a transient failure (TRANSIENT_FAILURES) is sent again after 5, 15, 45 and 135 s, at
  * most 4 times more (TRANSIENT_WAITS_MS), each retry counted by its reason and said on standard
  * error; but a GraphQL batch of more than one item that GitHub answers as a batch too large

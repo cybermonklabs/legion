@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { GhRetries } from "./common";
 import {
   type ImageConfig,
   type RegistryFetch,
@@ -21,17 +22,61 @@ const CONFIG = `sha256:${"c".repeat(64)}`;
 const TOKEN = "tok-made-up-1";
 const LAYERS = [1, 2, 3].map((n) => `sha256:${String(n).repeat(64)}`);
 
-/** A stand-in fetch over `routes` (the JSON body of each URL; a 500 for `fail`, a 404 for any
- *  other URL), and the URL and Authorization header of each read it took. */
-function standinFetch(routes: Readonly<Record<string, unknown>>, fail?: string) {
+/** How long a stand-in read that never answers waits for its request's own time limit before the
+ *  stand-in ends it itself, so a request with no limit of its own fails its row in seconds, naming
+ *  why, rather than holding it. A real timer: the limit under test is the read's own
+ *  `AbortSignal.timeout`, which no fake clock ends. */
+const HANG_GUARD_MS = 2_000;
+
+/** A stand-in registry's answer to one try: an HTTP status with no body, or `hang`, an answer that
+ *  never comes, which only the request's own time limit ends. */
+type Answer = number | "hang";
+
+/** A stand-in fetch over `routes` (the JSON body of each URL; a 404 for any other URL), whose
+ *  `n`-th try (from 0) of `url` is answered by `answer(url, n)` instead when it gives one, and the
+ *  URL and Authorization header of each read it took. */
+function standinFetch(
+  routes: Readonly<Record<string, unknown>>,
+  answer: (url: string, n: number) => Answer | undefined = () => undefined
+) {
   const reads: { url: string; authorization: string | undefined }[] = [];
   const send: RegistryFetch = async (url, init) => {
+    const n = reads.filter((read) => read.url === url).length;
     reads.push({ url, authorization: init.headers?.Authorization });
-    if (url === fail) return new Response("upstream failed", { status: 500 });
+    const given = answer(url, n);
+    if (given === "hang") {
+      const { promise, reject } = Promise.withResolvers<Response>();
+      const guard = setTimeout(
+        () => reject(new Error(`the read of ${url} had no time limit of its own`)),
+        HANG_GUARD_MS
+      );
+      init.signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(guard);
+          reject(init.signal.reason);
+        },
+        { once: true }
+      );
+      return promise;
+    }
+    if (given !== undefined) return new Response(null, { status: given });
     if (!Object.hasOwn(routes, url)) return new Response("not found", { status: 404 });
     return Response.json(routes[url]);
   };
   return { reads, send };
+}
+
+/** The runner's retry rule (common.ts's GhRetries) as build-cases holds it, sending a read again
+ *  with no wait: each wait it asks for kept in `waits`, each line it says in `lines`. */
+function retryRule() {
+  const waits: number[] = [];
+  const lines: string[] = [];
+  const retries = new GhRetries(
+    { sleep: async (ms) => void waits.push(ms), err: (line) => void lines.push(line) },
+    "build-cases"
+  );
+  return { retries, waits, lines };
 }
 
 /** The registry's answers for the image `<root>@INDEX`: an index of two platforms, the linux/amd64
@@ -65,8 +110,9 @@ test("registryImageConfig reads a configured registry with the Bearer token its 
   ];
   const root = "https://registry.example.test/v2/acme/deploy/worker";
   const image = `registry.example.test/acme/deploy/worker@${INDEX}`;
+  const { retries } = retryRule();
   const fetched = standinFetch(imageRoutes(root));
-  expect(await registryImageConfig(image, { registries, fetch: fetched.send })).toEqual({
+  expect(await registryImageConfig(image, { registries, fetch: fetched.send, retries })).toEqual({
     labels: { "org.opencontainers.image.revision": "de".repeat(20) },
     env: ["OMP_PROFILE=legion"],
     diffIds: LAYERS,
@@ -83,6 +129,7 @@ test("registryImageConfig reads a configured registry with the Bearer token its 
     await registryImageConfig(`other.example.test/acme/worker@${INDEX}`, {
       registries,
       fetch: unnamed.send,
+      retries,
     })
   ).toBeUndefined();
   expect(unnamed.reads).toEqual([]);
@@ -92,23 +139,31 @@ test("registryImageConfig reads a configured registry with the Bearer token its 
   const tokenUrl = "https://ghcr.io/token?scope=repository%3Aacme%2Fworker%3Apull";
   const ghcr = standinFetch({ [tokenUrl]: { token: "anonymous" }, ...imageRoutes(ghcrRoot) });
   expect(
-    (await registryImageConfig(`ghcr.io/acme/worker@${INDEX}`, { registries, fetch: ghcr.send }))
-      ?.diffIds
+    (
+      await registryImageConfig(`ghcr.io/acme/worker@${INDEX}`, {
+        registries,
+        fetch: ghcr.send,
+        retries,
+      })
+    )?.diffIds
   ).toEqual(LAYERS);
   expect(ghcr.reads[0]).toEqual({ url: tokenUrl, authorization: undefined });
   expect(ghcr.reads.slice(1).map((read) => read.authorization)).toEqual(
     Array(3).fill("Bearer anonymous")
   );
 
-  // A registry that fails: the error names the image and the status, and no token.
-  const failing = standinFetch(imageRoutes(root), `${root}/manifests/${INDEX}`);
+  // A registry that fails on every try: the error names the image and the last try's status, and
+  // no token.
+  const failing = standinFetch(imageRoutes(root), (url) =>
+    url === `${root}/manifests/${INDEX}` ? 500 : undefined
+  );
   let said = "";
   try {
-    await registryImageConfig(image, { registries, fetch: failing.send });
+    await registryImageConfig(image, { registries, fetch: failing.send, retries });
   } catch (error) {
     said = (error as Error).message;
   }
-  expect(said).toBe(`reading ${image}: registry HTTP 500`);
+  expect(said).toBe(`reading ${image}: registry HTTP 500 on the last of 5 tries`);
   // The token command ran once for both reads of the configured registry.
   expect(readFileSync(log, "utf8")).toBe("run\n");
 });
@@ -127,6 +182,7 @@ test("registryImageConfig ends a token command that runs past its time limit, an
   const said = await registryImageConfig(`slow.example.test/acme/worker@${INDEX}`, {
     registries,
     fetch: fetched.send,
+    retries: retryRule().retries,
     tokenTimeoutMs: 200,
   }).then(
     () => "read",
@@ -137,6 +193,132 @@ test("registryImageConfig ends a token command that runs past its time limit, an
   );
   expect(performance.now() - started).toBeLessThan(4_000);
   expect(fetched.reads).toEqual([]);
+});
+
+// registryImageConfig on a configured registry under load: its token command prints a made-up
+// token, and each request's time limit is short so a row whose request meets it takes well under
+// a second.
+const LOADED_TOKEN = "tok-made-up-loaded";
+const LOADED = [{ host: "loaded.example.test", tokenCommand: ["printf", LOADED_TOKEN] }];
+const LOADED_ROOT = "https://loaded.example.test/v2/acme/worker";
+const LOADED_IMAGE = `loaded.example.test/acme/worker@${INDEX}`;
+const REQUEST_LIMIT_MS = 50;
+/** The line the rule says before it sends `url` again after `failure`, at its `retry`-th retry. */
+const sentAgain = (url: string, wait: number, retry: number, failure: string) =>
+  `build-cases: the registry read of ${url} failed (${failure}); sending it again in ${wait} s, retry ${retry} of 4`;
+
+// Catches: one time limit for the whole read, and each request sent once, so a read slowed by load
+// on the pod (23.6 s for one image, measured) failed its profile with "The operation timed out.".
+test("registryImageConfig gives each request its own time limit and sends a request that timed out or answered 503 again by the runner's retry rule, counted and said, and reads the config", async () => {
+  const rule = retryRule();
+  const fetched = standinFetch(imageRoutes(LOADED_ROOT), (url, n) => {
+    if (n > 0) return undefined;
+    if (url === `${LOADED_ROOT}/manifests/${INDEX}`) return "hang";
+    return url === `${LOADED_ROOT}/blobs/${CONFIG}` ? 503 : undefined;
+  });
+  expect(
+    await registryImageConfig(LOADED_IMAGE, {
+      registries: LOADED,
+      fetch: fetched.send,
+      retries: rule.retries,
+      requestTimeoutMs: REQUEST_LIMIT_MS,
+    })
+  ).toEqual({
+    labels: { "org.opencontainers.image.revision": "de".repeat(20) },
+    env: ["OMP_PROFILE=legion"],
+    diffIds: LAYERS,
+  });
+  const [index, amd64, blob] = [`manifests/${INDEX}`, `manifests/${AMD64}`, `blobs/${CONFIG}`].map(
+    (each) => `${LOADED_ROOT}/${each}`
+  );
+  expect(fetched.reads.map((read) => read.url)).toEqual([index, index, amd64, blob, blob]);
+  expect(rule.retries.record()).toEqual({ "HTTP 503": 1, "time limit": 1 });
+  expect(rule.waits).toEqual([5_000, 5_000]);
+  expect(rule.lines).toEqual([
+    sentAgain(index ?? "", 5, 1, `timed out after ${REQUEST_LIMIT_MS} ms`),
+    sentAgain(blob ?? "", 5, 1, "HTTP 503"),
+  ]);
+});
+
+// Catches: a registry's "too many requests" failing the read at its first answer, as a refusal
+// for good does.
+test("registryImageConfig sends a request that answers 429 on every try again by the rule, and after its last try fails naming the image and the last failure, never the token", async () => {
+  const rule = retryRule();
+  const index = `${LOADED_ROOT}/manifests/${INDEX}`;
+  const fetched = standinFetch(imageRoutes(LOADED_ROOT), (url) =>
+    url === index ? 429 : undefined
+  );
+  const said = await registryImageConfig(LOADED_IMAGE, {
+    registries: LOADED,
+    fetch: fetched.send,
+    retries: rule.retries,
+    requestTimeoutMs: REQUEST_LIMIT_MS,
+  }).then(
+    () => "read",
+    (error: Error) => error.message
+  );
+  expect(said).toBe(
+    `reading ${LOADED_IMAGE}: registry HTTP 429 (too many requests) on the last of 5 tries`
+  );
+  expect(fetched.reads.map((read) => read.url)).toEqual(Array(5).fill(index));
+  expect(rule.retries.record()).toEqual({ "HTTP 429": 4 });
+  expect(rule.waits).toEqual([5_000, 15_000, 45_000, 135_000]);
+  expect([said, ...rule.lines].filter((line) => line.includes(LOADED_TOKEN))).toEqual([]);
+});
+
+// Catches: a configured registry that refuses its token read as an image with no OCI config, so
+// the case was left out as if the image had no labels.
+test("registryImageConfig of a configured registry that answers 403 or 401 fails at once naming the host, the image and the status, and a 404 is no such image", async () => {
+  for (const status of [403, 401]) {
+    const rule = retryRule();
+    const fetched = standinFetch(imageRoutes(LOADED_ROOT), () => status);
+    const said = await registryImageConfig(LOADED_IMAGE, {
+      registries: LOADED,
+      fetch: fetched.send,
+      retries: rule.retries,
+    }).then(
+      () => "read",
+      (error: Error) => error.message
+    );
+    expect(said).toBe(
+      `reading ${LOADED_IMAGE}: loaded.example.test refused the token of its tokenCommand (HTTP ${status})`
+    );
+    expect(fetched.reads).toHaveLength(1);
+    expect(rule.waits).toEqual([]);
+  }
+  const rule = retryRule();
+  const missing = standinFetch(imageRoutes(LOADED_ROOT), () => 404);
+  expect(
+    await registryImageConfig(LOADED_IMAGE, {
+      registries: LOADED,
+      fetch: missing.send,
+      retries: rule.retries,
+    })
+  ).toBeUndefined();
+  expect(missing.reads).toHaveLength(1);
+  expect(rule.waits).toEqual([]);
+});
+
+// Catches: GHCR's anonymous read of an image that is not public (its token or its manifest
+// answered 401) taken for a refusal of a token, as a configured registry's is.
+test("registryImageConfig of GHCR's anonymous read that answers 401, for its token or its manifest, is no public image: undefined, not sent again", async () => {
+  const root = "https://ghcr.io/v2/acme/worker";
+  const tokenUrl = "https://ghcr.io/token?scope=repository%3Aacme%2Fworker%3Apull";
+  for (const refused of [tokenUrl, `${root}/manifests/${INDEX}`]) {
+    const rule = retryRule();
+    const fetched = standinFetch(
+      { [tokenUrl]: { token: "anonymous" }, ...imageRoutes(root) },
+      (url) => (url === refused ? 401 : undefined)
+    );
+    expect(
+      await registryImageConfig(`ghcr.io/acme/worker@${INDEX}`, {
+        fetch: fetched.send,
+        retries: rule.retries,
+      })
+    ).toBeUndefined();
+    expect(fetched.reads.map((read) => read.url).at(-1)).toBe(refused);
+    expect(rule.waits).toEqual([]);
+  }
 });
 
 // sessionPodImage on made-up repositories: acme/deploy pins the pod's image in pods/stack.yaml

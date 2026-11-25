@@ -245,6 +245,17 @@ function toolUses(value: unknown): unknown[] {
   return Object.values(value).flatMap(toolUses);
 }
 
+/** `value` with every `cache_control` key taken out, at any depth. */
+function withoutCacheControl(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutCacheControl);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== "cache_control")
+      .map(([key, field]) => [key, withoutCacheControl(field)])
+  );
+}
+
 /** The hints a capture's scratch profile holds, by Oh My Pi's key, read before the next capture
  *  of the case writes that profile again. */
 function profileHints(capture: Capture): Map<string, string> {
@@ -794,7 +805,13 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       expect(bodies.length).toBe(2);
       const [first, second] = bodies.map((body) => JSON.parse(body));
       // The hook gives each request exactly the arm's messages, the run's own dropped.
-      expect(second.messages).toEqual(first.messages);
+      // Oh My Pi's Anthropic provider puts prompt-cache breakpoints on a request's last two
+      // messages whenever it gives that request cache control, and whether it does for the turn
+      // after a tool result varies by run, so the two turns are compared without `cache_control`.
+      // A capture has one turn only, which carries no message breakpoint (the first turn here),
+      // and the hook's contract is the messages' content and order.
+      expect(withoutCacheControl(first.messages)).toEqual(first.messages);
+      expect(withoutCacheControl(second.messages)).toEqual(withoutCacheControl(first.messages));
       const sent = texts(first.messages);
       for (const index of [0, 2]) {
         const text = messages[index]?.content?.[0]?.text ?? "";

@@ -1,6 +1,15 @@
 import { z } from "zod";
 import type { GithubReads } from "./build";
-import { pastLimit, textOf, timeLimit } from "./common";
+import {
+  fetchFailure,
+  type GhRetries,
+  type GhTry,
+  httpFailure,
+  lastTryError,
+  pastLimit,
+  textOf,
+  timeLimit,
+} from "./common";
 import type { Registry, SkillCutsConfig } from "./config";
 
 const SHA = /^[a-f0-9]{40}$/;
@@ -16,6 +25,11 @@ const REFERENCE =
  *  holds or asks its issuer for, so a minute is room for a slow issuer, and a command that hangs
  *  holds no read, and no later read of that registry, past it. */
 export const REGISTRY_TOKEN_TIMEOUT_MS = 60_000;
+/** The longest one HTTP request of an image's read (the token GHCR gives, a manifest, the config
+ *  blob) may take, its body included, before it is given up and sent again: a fetch has no time
+ *  limit of its own, and a read of one image under load on the pod took 23.6 s in all (measured),
+ *  so each request has room for a slow answer. The token command's limit is its own, not in it. */
+const REGISTRY_REQUEST_TIMEOUT_MS = 30_000;
 
 export class PodNotMeasurable extends Error {
   constructor(why: string) {
@@ -44,13 +58,26 @@ export type RegistryFetch = (
   init: { readonly headers?: Record<string, string>; readonly signal: AbortSignal }
 ) => Promise<Response>;
 
-/** What `registryImageConfig` reads a registry with: the registries the configuration names
- *  (`registries`), the fetch it sends (`fetch` when absent), and the time limit of a registry's
- *  tokenCommand (REGISTRY_TOKEN_TIMEOUT_MS when absent). */
+/** What `registryImageConfig` reads a registry with: the rule by which a request that failed for
+ *  a transient reason is sent again, which counts and says each retry (`retries`: the profile's
+ *  GitHub reads' own in a real run, build.ts's `githubReads`), the registries the configuration
+ *  names (`registries`), the fetch it sends (`fetch` when absent), the time limit of a registry's
+ *  tokenCommand (REGISTRY_TOKEN_TIMEOUT_MS when absent) and that of each request
+ *  (REGISTRY_REQUEST_TIMEOUT_MS when absent). */
 export interface RegistryAccess {
+  readonly retries: GhRetries;
   readonly registries?: readonly Registry[];
   readonly fetch?: RegistryFetch;
   readonly tokenTimeoutMs?: number;
+  readonly requestTimeoutMs?: number;
+}
+
+/** One try of a registry's request, as `GhRetries.send` reads it: code 0 with the answer's JSON
+ *  (none for an answer that names no image), else code 1 with its failure in common.ts's words
+ *  (`httpFailure`, `fetchFailure`); `status` is the answer's HTTP status, none when none came. */
+interface RegistryTry extends GhTry {
+  readonly status?: number;
+  readonly json?: unknown;
 }
 
 const Manifest = z.object({
@@ -104,11 +131,18 @@ function registryToken(registry: Registry, timeoutMs: number): Promise<string> {
 
 /** Read an image's config, not its layers, from its registry: a registry the configuration names
  *  (`access.registries`) with the Bearer token its tokenCommand prints, else a public GHCR image
- *  with the anonymous pull token GHCR gives; undefined for any other host. The reference must pin
- *  a digest. No message names the token. */
+ *  with the anonymous pull token GHCR gives; undefined for any other host, and for an image the
+ *  registry does not have (a 404; on GHCR's anonymous read a 401 or 403 too: no public image). The
+ *  reference must pin a digest. Each request is given up after its own time limit, its body
+ *  included, and one that failed for a transient reason (that limit, a connection that failed, an
+ *  HTTP 429 or 5xx) is sent again by the runner's one rule (`access.retries`, common.ts's
+ *  `GhRetries`); after its last try the read fails naming the image and that try's failure. A
+ *  configured registry's 401 or 403 is a refusal of its token: the read fails at once, naming the
+ *  host, the image and the status. The token command runs outside every request's limit. No
+ *  message names the token. */
 export async function registryImageConfig(
   image: string,
-  access: RegistryAccess = {}
+  access: RegistryAccess
 ): Promise<ImageConfig | undefined> {
   const [, host, repository, digest] = REFERENCE.exec(image) ?? [];
   if (host === undefined || repository === undefined || digest === undefined) return undefined;
@@ -117,12 +151,38 @@ export async function registryImageConfig(
   const registry = access.registries?.find((each) => each.host === host);
   if (registry === undefined && host !== "ghcr.io") return undefined;
   const send = access.fetch ?? ((url, init) => fetch(url, init));
-  const signal = AbortSignal.timeout(30_000);
+  const limitMs = access.requestTimeoutMs ?? REGISTRY_REQUEST_TIMEOUT_MS;
   const get = async (url: string, headers?: Record<string, string>): Promise<unknown> => {
-    const response = await send(url, { headers, signal });
-    if ([401, 403, 404].includes(response.status)) return undefined;
-    if (!response.ok) throw new Error(`reading ${image}: registry HTTP ${response.status}`);
-    return response.json();
+    let tries = 0;
+    const read = await access.retries.send(
+      async (): Promise<RegistryTry> => {
+        tries++;
+        const signal = AbortSignal.timeout(limitMs);
+        try {
+          const response = await send(url, { headers, signal });
+          const { status } = response;
+          if (status === 404 || (registry === undefined && (status === 401 || status === 403)))
+            return { code: 0, stderr: "", status };
+          if (!response.ok) return { code: 1, stderr: httpFailure(status), status };
+          return { code: 0, stderr: "", status, json: await response.json() };
+        } catch (error) {
+          const failure = fetchFailure(error, signal, limitMs);
+          if (failure === undefined) throw error;
+          return { code: 1, stderr: failure };
+        }
+      },
+      { read: `the registry read of ${url}` }
+    );
+    if (read.code === 0) return read.json;
+    if (read.status === 401 || read.status === 403) {
+      throw new Error(
+        `reading ${image}: ${host} refused the token of its tokenCommand (HTTP ${read.status})`
+      );
+    }
+    const last = lastTryError(read);
+    throw new Error(
+      `reading ${image}: registry ${last}${tries > 1 ? ` on the last of ${tries} tries` : ""}`
+    );
   };
   let token: string;
   if (registry === undefined) {
