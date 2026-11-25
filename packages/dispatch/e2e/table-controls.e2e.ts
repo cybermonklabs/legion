@@ -7153,13 +7153,37 @@ test("clear brush window pressed with the Window control scrolled out of sight s
             return height === (await page.evaluate(() => document.documentElement.scrollHeight));
           })
           .toBe(true);
-        // The reader's own scroll: the select's foot 2 px above the window's top, the button on
-        // the line under it wholly in the window; or the select's top 24 px under the window's top.
+        // The reader's own scroll, of the box the page scrolls in: from `xl` up the page scrolls
+        // inside its own section where it overflows the window (main's #4631, the section's
+        // `xl:overflow-y-auto` in DeliveryPage.tsx), else the document. The select's foot 2 px
+        // above that box's visible top, the button on the line under it wholly in sight; or the
+        // select's top 24 px under that top. The box is marked, so the reads below find it again.
         const before = await windowSelect.evaluate((node, out) => {
+          let scroller: Element = document.scrollingElement ?? document.documentElement;
+          for (let box = node.parentElement; box !== null; box = box.parentElement) {
+            const { overflowY } = getComputedStyle(box);
+            if (
+              (overflowY === "auto" || overflowY === "scroll") &&
+              box.scrollHeight > box.clientHeight
+            ) {
+              scroller = box;
+              break;
+            }
+          }
+          scroller.setAttribute("data-case-scroller", "");
+          const sightTop =
+            scroller === document.scrollingElement ? 0 : scroller.getBoundingClientRect().top;
           const box = node.getBoundingClientRect();
-          window.scrollTo(0, window.scrollY + (out ? box.bottom + 2 : box.top - 24));
-          return Math.round(window.scrollY);
+          scroller.scrollTop += out ? box.bottom - sightTop + 2 : box.top - sightTop - 24;
+          return Math.round(scroller.scrollTop);
         }, placed === "out of sight");
+        /** The top of what the reader sees of the page: the marked scroll box's, or the window's. */
+        const sightTop = await page.evaluate(() => {
+          const scroller = document.querySelector("[data-case-scroller]");
+          return scroller === null || scroller === document.scrollingElement
+            ? 0
+            : Math.round(scroller.getBoundingClientRect().top);
+        });
         const select = await windowSelect.evaluate((node) => {
           const box = node.getBoundingClientRect();
           return { bottom: Math.round(box.bottom), top: Math.round(box.top) };
@@ -7171,9 +7195,9 @@ test("clear brush window pressed with the Window control scrolled out of sight s
         });
         const selectAsPlaced =
           placed === "out of sight"
-            ? select.bottom < 0
-            : select.top >= 0 && select.bottom <= size.height;
-        if (!selectAsPlaced || button.top < 0 || button.bottom > size.height) {
+            ? select.bottom < sightTop
+            : select.top >= sightTop && select.bottom <= size.height;
+        if (!selectAsPlaced || button.top < sightTop || button.bottom > size.height) {
           wrong.push(
             `${at}: the page could not be scrolled to the case (scrollY ${before}, select ${select.top}..${select.bottom} px, button ${button.top}..${button.bottom} px)`
           );
@@ -7196,24 +7220,28 @@ test("clear brush window pressed with the Window control scrolled out of sight s
         // One read is the answer: every hand-off has run, and nothing else moves the focus.
         const holder = await focusHolder(page);
         // Read after the same hand-offs as the read above, so where the focus is is settled.
-        const landed = await page.evaluate(() => {
+        const landed = await page.evaluate((sightTop) => {
           const active = document.activeElement;
           const box = active?.getBoundingClientRect();
+          const scroller =
+            document.querySelector("[data-case-scroller]") ??
+            document.scrollingElement ??
+            document.documentElement;
           return {
             body: active === null || active === document.body,
             bottom: Math.round(box?.bottom ?? 0),
             meets:
               box !== undefined &&
-              box.bottom > 0 &&
+              box.bottom > sightTop &&
               box.top < window.innerHeight &&
               box.right > 0 &&
               box.left < window.innerWidth,
             ownStop:
               active instanceof HTMLElement && active.matches('main, [data-testid="main-content"]'),
-            scrollY: Math.round(window.scrollY),
+            scrollY: Math.round(scroller.scrollTop),
             top: Math.round(box?.top ?? 0),
           };
-        });
+        }, sightTop);
         // Read after the same hand-offs as the reads above, so where the focus is is settled.
         const onSelect = await windowSelect.evaluate((node) => node === document.activeElement);
         const where = `${holder.name} at ${landed.top}..${landed.bottom} px, scrollY ${before} -> ${landed.scrollY}`;
