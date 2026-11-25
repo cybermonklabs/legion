@@ -5,7 +5,7 @@ GATE = gate("pi_envoy", "pi-envoy", reads=reads(
     ("packages/pi-shared/test/**", "packages/pi-envoy/extensions/dispatch-first-omp.test.ts:4-14, src/skills-guard.test.ts:9-23, scripts/prepack.test.ts:6"),
     (TEST_FIXTURES_SRC, "packages/pi-envoy's extensions and src tests import @legion/test-fixtures"),
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
-    ("packages/envoy-client/test/**", "packages/pi-envoy/extensions/envoy.test.ts:67-84 imports six of its modules, and extensions/askgate/decision-record.test.ts:9 its fake-dispatch"),
+    ("packages/envoy-client/test/**", "packages/pi-envoy/extensions/envoy.test.ts:69-86 imports six of its modules, and extensions/askgate/decision-record.test.ts:9 its fake-dispatch"),
     ("packages/envoy-client/bin/dispatch.ts", "packages/pi-envoy/package.json:26 build and scripts/pi-plugin-prepack.sh:96 run build-dispatch-cli.sh, entry bin/dispatch.ts"),
     ("packages/envoy-client/scripts/build-dispatch-cli.sh", "packages/pi-envoy/package.json:26; scripts/pi-plugin-prepack.sh:96"),
     (CONTRACTS_SRC, f"{at('pi-envoy', 'Build contracts for pi-envoy')}; tsconfig paths @legion/contracts"),
