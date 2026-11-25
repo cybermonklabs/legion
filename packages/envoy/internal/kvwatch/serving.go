@@ -173,6 +173,15 @@ func (w *Watcher) wakeApplied() {
 	}
 }
 
+// advanceApplied raises applied to seq for a record of the current epoch and wakes every
+// WaitCaughtUp waiter, under mu.
+func (w *Watcher) advanceApplied(epoch, seq uint64) {
+	if epoch == w.epoch && seq > w.applied {
+		w.applied = seq
+		w.wakeApplied()
+	}
+}
+
 // Disconnected says the connection the watcher reads through was lost. nats.go reconnects forever
 // and keeps the watcher's subscription open through the outage, so the watcher does not end and
 // nothing else would say its copy stopped following the bucket: the listener calls this from the

@@ -211,6 +211,7 @@ type Watcher struct {
 	unreadSince time.Time
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
+	bound time.Duration
 	// applied is the highest stream sequence this epoch's copy has applied: the highest
 	// Entry.Revision handed to Cache.Apply (applyCurrent), and the stream's LastSeq of any read
 	// that completed in this epoch (completeRead). A new epoch (a recreated bucket's watch)
@@ -219,7 +220,6 @@ type Watcher struct {
 	// installs, so steady-state Apply calls allocate nothing.
 	applied        uint64
 	appliedChanged chan struct{}
-	bound          time.Duration
 	// streamReads counts the reads of the bucket's stream that this watcher's watches began, each
 	// one the start of a read (Read.StreamRead), whether or not its watch then installed.
 	streamReads uint64
@@ -833,10 +833,7 @@ func (w *Watcher) completeRead(generation uint64, read Read) {
 		w.following = true
 		w.completedOnce = true
 		w.staleSince = time.Time{}
-		if read.Epoch == w.epoch && read.LastSeq > w.applied {
-			w.applied = read.LastSeq
-			w.wakeApplied()
-		}
+		w.advanceApplied(read.Epoch, read.LastSeq)
 		w.armScheduledRead(generation)
 		// The copy can be served now, so a caller waiting for one (WaitComplete) is released.
 		w.wakeComplete()
@@ -894,10 +891,7 @@ func (w *Watcher) applyCurrent(entry Entry, generation uint64, read Read) {
 	}
 	w.cache.Apply(entry, read)
 	w.mu.Lock()
-	if read.Epoch == w.epoch && entry.Revision > w.applied {
-		w.applied = entry.Revision
-		w.wakeApplied()
-	}
+	w.advanceApplied(read.Epoch, entry.Revision)
 	w.mu.Unlock()
 }
 

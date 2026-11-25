@@ -612,22 +612,6 @@ func TestAKnownSessionWriteStoppedAtAnyStepLeavesTheOldRecordAndItsChunksCollect
 	requireKnownTopics(t, "the store after the collection", known, "ses_known_crashed", old)
 }
 
-// heldKnownManifest stalls the cache before Apply takes the store lock, like a stall between
-// the watcher's delivery queue and the cache. The watcher still reports Following.
-type heldKnownManifest struct {
-	knownCache
-	key          string
-	held, resume chan struct{}
-}
-
-func (c heldKnownManifest) Apply(entry kvwatch.Entry, read kvwatch.Read) {
-	if entry.Key == c.key {
-		close(c.held)
-		<-c.resume
-	}
-	c.knownCache.Apply(entry, read)
-}
-
 // A copy that took a chunk but stalled before taking its manifest must not decide a delete
 // after the grace, even while it still reports Following.
 func TestAKnownSessionChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) {
@@ -643,11 +627,12 @@ func TestAKnownSessionChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := heldKnownManifest{knownCache{known}, id, make(chan struct{}), make(chan struct{})}
+	cache := &holdingCache{Cache: knownCache{known}}
+	gate := cache.holdApply(t, id)
 	known.watcher = kvwatch.New("known session store", kv, cache, kvwatch.WithLogger(log))
 	known.chunkBarrierWait = 20 * time.Millisecond
 	t.Cleanup(known.StopWatch)
-	defer close(cache.resume)
+	defer gate.open()
 	known.watcher.Start()
 	if err := known.WaitForCacheReady(ctx); err != nil {
 		t.Fatal(err)
@@ -675,7 +660,7 @@ func TestAKnownSessionChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) 
 		_, _, err := known.chunks.Join(manifest)
 		return err == nil
 	})
-	chunks, err := kv.ReadStreamState(ctx)
+	beforeManifest, err := kv.ReadStreamState(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,11 +668,7 @@ func TestAKnownSessionChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-cache.held:
-	case <-ctx.Done():
-		t.Fatal("the manifest did not reach Apply")
-	}
+	waitClosed(t, gate.reached, "the manifest to reach Apply")
 	if !known.watch().Following() {
 		t.Fatal("the stalled copy no longer reports Following")
 	}
@@ -705,7 +686,7 @@ func TestAKnownSessionChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) 
 	}
 	warning := fmt.Sprintf("level=WARN msg=%q store=%q applied_seq=%d last_seq=%d",
 		"known session store skipped chunk collection: its cache is behind its bucket",
-		"known session store", chunks.LastSeq, headSeq)
+		"known session store", beforeManifest.LastSeq, headSeq)
 	if got := logs.String(); strings.Count(got, "level=WARN") != 1 || !strings.Contains(got, warning+"\n") {
 		t.Fatalf("log = %s, want one warning with %s", got, warning)
 	}

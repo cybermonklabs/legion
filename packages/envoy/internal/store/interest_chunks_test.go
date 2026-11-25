@@ -370,8 +370,8 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 	requireOldServed("and its chunks were collected")
 }
 
-// Hold the manifest's Apply before it takes the registry lock, after the copy took the chunks.
-// Following stays true, as it does when delivery stalls between nats.go and the cache.
+// A copy that took a chunk but stalled before taking its manifest skips the collection past the
+// grace with one WARN and deletes nothing, even while it still reports Following.
 func TestAnInterestChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) {
 	const id = "ses_interest_chunk_stalled"
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -416,7 +416,7 @@ func TestAnInterestChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) {
 		_, _, err := reg.chunks.Join(manifest)
 		return err == nil
 	})
-	chunks, err := kv.ReadStreamState(ctx)
+	beforeManifest, err := kv.ReadStreamState(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func TestAnInterestChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) {
 	}
 	const msg = "interest registry skipped chunk collection: its cache is behind its bucket"
 	warning := fmt.Sprintf("level=WARN msg=%q store=%q applied_seq=%d last_seq=%d",
-		msg, "interest registry", chunks.LastSeq, headSeq)
+		msg, "interest registry", beforeManifest.LastSeq, headSeq)
 	if line := logLine(t, logs, msg); logLines(logs, msg) != 1 || !strings.HasSuffix(line, warning) {
 		t.Fatalf("log = %s, want one warning with %s", logs.String(), warning)
 	}

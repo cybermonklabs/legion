@@ -52,7 +52,6 @@ func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
 		}
 	})
 	t.Run("without a lease", func(t *testing.T) {
-		t.Parallel()
 		_, denied := consumerInfoUnansweredNATS(t, "box-stuck-unleased")
 		client, err := bus.ConnectOwningStream([]string{denied}, bus.WithReplicas(1), bus.WithName("receive-test without a lease"))
 		if err != nil {
