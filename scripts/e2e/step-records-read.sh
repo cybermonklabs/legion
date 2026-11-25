@@ -85,10 +85,14 @@ planned=$(awk -v project="$project" -v issue="$issue" '
 ' <<<"$read_out") || read_unknown "$planned"
 printf '%s\n' "${planned%%$'\n'*}"
 
-# Each line after the header is one run, as `dispatch steps` prints it:
+# The answer is the lines `dispatch steps` prints
+# (packages/envoy-client/src/dispatch-commands/steps.ts): a header; where the records of the
+# issue's newest run name an experiment, the line `Experiment <experiment>: variant <variant>.`,
+# and no such line where they name none; then one run per line:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running> set <set model|-> answered <answers>
-# A set model is `-` or a model: printable ASCII with no space, 1 to 128 characters. The answers
-# are `running`, `unknown`, `none`, or each model as `<model>=<calls>(<share>%)`, joined by `,`. A
+# The line `Experiment …` is read only right after the header; anywhere else it is no run. A set
+# model is `-` or a model: printable ASCII with no space, 1 to 128 characters. The answers are
+# `running`, `unknown`, `none`, or each model as `<model>=<calls>(<share>%)`, joined by `,`. A
 # line in another form is no run.
 awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit status }
@@ -104,6 +108,7 @@ awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
     next
   }
   NF == 0 { next }
+  NR == 2 && /^Experiment [a-z0-9-]+: variant [a-z0-9-]+\.$/ { next }
   {
     if (NF != 16 || $6 != "attempt" || $13 != "set" || $15 != "answered") unknown("the line is no run: " $0)
     if ($14 !~ /^[!-~]+$/ || length($14) > 128 || $16 !~ answers) unknown("the line is no run: " $0)

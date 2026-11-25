@@ -55,7 +55,7 @@ func registerReady(t *testing.T, d *daemon, spec runtime.SpawnSpec) {
 	session := "ses_" + string(spec.Claim)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: spec.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + string(spec.Claim) + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s at generation %d = %d; body %s", spec.Claim, spec.Generation, status, body)
@@ -271,15 +271,35 @@ func (r *stopsEarlierRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec)
 
 // dialShimUntilAcked dials as worker-shim does, again after a refused hello until one is acked,
 // and returns the acknowledged connection: a claim's stream slot is free again once the listener
-// has read its previous connection's close.
+// has read its previous connection's close. It fails the test naming the boot token and the last
+// refusal once no hello is acked within 10 s (ackedShim).
 func dialShimUntilAcked(t *testing.T, address, bootToken string) *shim {
 	t.Helper()
 	return dialHelloUntilAcked(t, address, shimwire.Hello2{BootToken: bootToken})
 }
 
 // dialHelloUntilAcked dials the worker stream at address and sends hello, again after a refused
-// hello until one is acked, and returns the acknowledged connection (dialShimUntilAcked).
+// hello until one is acked, and returns the acknowledged connection (dialShimUntilAcked). It fails
+// the test naming the boot token and the last refusal (ackedHello).
 func dialHelloUntilAcked(t *testing.T, address string, hello shimwire.Hello2) *shim {
+	t.Helper()
+	acked, err := ackedHello(t, address, hello)
+	if err != nil {
+		t.Fatalf("no hello with %s was acked: %v", hello.BootToken, err)
+	}
+	return acked
+}
+
+// ackedShim is dialShimUntilAcked's dialing, answering the shim's last refusal rather than failing
+// the test, for a caller that can say more of why the daemon refused the boot token than the
+// refusal does: the worker stream closes a refused hello with no frame, which reads here as an EOF.
+func ackedShim(t *testing.T, address, bootToken string) (*shim, error) {
+	t.Helper()
+	return ackedHello(t, address, shimwire.Hello2{BootToken: bootToken})
+}
+
+// ackedHello is ackedShim's dialing with any hello, as dialHelloUntilAcked sends it.
+func ackedHello(t *testing.T, address string, hello shimwire.Hello2) (*shim, error) {
 	t.Helper()
 	var last error
 	var acked *shim
@@ -309,9 +329,9 @@ func dialHelloUntilAcked(t *testing.T, address string, hello shimwire.Hello2) *s
 		last = fmt.Errorf("hello refused: %v", err)
 		return false
 	}) {
-		t.Fatalf("no hello with %s was acked: %v", hello.BootToken, last)
+		return nil, last
 	}
-	return acked
+	return acked, nil
 }
 
 // What restoration's gate keeps from a hello, the boot still keeps. A hello still waits until every
@@ -337,7 +357,7 @@ func TestAPreRestartProcessAdmittedBeforeItsRelaunchNeitherMovesItsClaimNorLocks
 
 	old := dialShim(t, record.address, oldBootToken)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: oldBootToken, SessionID: "old-session", OmpSessionFile: "/sessions/old.jsonl", AgentID: "old-agent", PluginContract: api.DaemonAPIVersion,
+		BootToken: oldBootToken, SessionID: "old-session", OmpSessionFile: "/sessions/old.jsonl", AgentID: "old-agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusConflict || !strings.Contains(string(body), "previous launch") {
 		t.Fatalf("the pre-restart process's registration = %d %s, want a named 409", status, body)

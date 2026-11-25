@@ -68,7 +68,9 @@ func TestTheReadScriptsPassIsReadAsTheCommandPrintedTheRatings(t *testing.T) {
 
 // planLine is one finished issue as `dispatch plans` prints it: `<ISSUE> closed <closed_at> plan
 // <plan> ratings <ratings> time <time> failed steps <n> on set model <on> off <off> unknown
-// <unknown>` (envoy-client's plans.ts). printedRatings is the ratings' text as printed, and ratings
+// <unknown>` (envoy-client's plans.ts), the line of an issue in no experiment's group, which every
+// issue read here and in the live proof is; the line of an issue of a group adds ` variant
+// <experiment>/<variant>` at its end. printedRatings is the ratings' text as printed, and ratings
 // is that text read.
 type planLine struct {
 	text, issue, closed, plan, printedRatings, time string

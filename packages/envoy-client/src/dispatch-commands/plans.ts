@@ -51,6 +51,10 @@ function setModelStepsText(counts: SetModelSteps | undefined): string {
   return `on set model ${counts.on} off ${counts.off} unknown ${counts.unknown}`;
 }
 
+/** One finished issue: its close, plan, ratings, time, failed steps and its step records counted
+ *  against their set model, and last the experiment a draw put it in with the variant drawn, where
+ *  its newest run's records name one. A Dispatch older than the two fields answers an issue without
+ *  them, which names none either. */
 function issueLine(issue: FinishedIssue): string {
   return [
     issue.issue,
@@ -62,12 +66,15 @@ function issueLine(issue: FinishedIssue): string {
     "failed steps",
     issue.failed_steps,
     setModelStepsText(issue.set_model_steps),
+    ...(issue.experiment == null || issue.variant == null
+      ? []
+      : [`variant ${issue.experiment}/${issue.variant}`]),
   ].join(" ");
 }
 
 /** `dispatch plans`: each finished issue of a project with its plan, its ratings, its time, its
- *  count of failed steps and its step records counted against their set model, as Dispatch lists
- *  them. */
+ *  count of failed steps, its step records counted against their set model and its variant, as
+ *  Dispatch lists them. */
 export async function plansCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
   const read = await client.listProjectPlans(stringArg(args, "project"), {

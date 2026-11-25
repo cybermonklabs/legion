@@ -15,8 +15,9 @@ import (
 // when the run's work starts and again at each later version of the owner's plan that Legion takes
 // (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's finished issues
 // (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro gave it with the
-// reason, the time from the first start of its step records to the last end, and its count of
-// failed steps. The read also counts each issue's step records that name an agent on their set
+// reason, the time from the first start of its step records to the last end, its count of failed
+// steps, and the experiment and the variant the step records of its newest run name, null where
+// they name none. The read also counts each issue's step records that name an agent on their set
 // model. Both live in internal/dispatch/workflowstore, the one writer of the nodes and tuples that
 // hold the plans and the step records.
 //
@@ -159,6 +160,10 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		if issue.Plan != nil {
 			plan := planRecord(*issue.Plan)
 			listed.Plan = &plan
+		}
+		if issue.Experiment != nil {
+			drawn := *issue.Experiment
+			listed.Experiment, listed.Variant = &drawn.Experiment, &drawn.Variant
 		}
 		for place, rating := range issue.Ratings {
 			listed.Ratings[place] = model.PlanRating(rating)

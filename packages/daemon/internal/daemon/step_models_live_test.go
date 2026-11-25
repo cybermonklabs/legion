@@ -1495,7 +1495,7 @@ func (r *stepModelsLive) meetArchitect(issue *stepModelsIssue) *stepModelsArchit
 	writeProofFile(t, sessionFile, "")
 	a.sh = dialShim(t, r.rt.stream, spec.BootToken)
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: spec.BootToken, SessionID: a.session, OmpSessionFile: sessionFile, AgentID: a.session, PluginContract: api.DaemonAPIVersion,
+		BootToken: spec.BootToken, SessionID: a.session, OmpSessionFile: sessionFile, AgentID: a.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", issue.architect, status, body)

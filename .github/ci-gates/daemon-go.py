@@ -54,7 +54,15 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
         (DAEMON, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
         for under in DAEMON_RACE_IMPOSSIBLE_PACKAGES
     ]),
+    # The shape gate's second run, stamped with HEAD's merge order: the step's whole script is
+    # pinned (ci_job_reads.py's DAEMON_STAMPED_GATE_SCRIPT says why). What it compiles is
+    # internal/api's test build, which the plain step compiles too; the stamp changes the link
+    # alone.
+    pinned_step("daemon-go", DAEMON_STAMPED_GATE_STEP, DAEMON, DAEMON_STAMPED_GATE_SCRIPT, [
+        (DAEMON, ["./internal/api/"], "go test of internal/api's two shape tests, linked with HEAD's stamp", {}),
+    ]),
 ], reads=reads(
+    ("scripts/daemon-contract-order.sh", at("daemon-go", DAEMON_CONTRACT_ORDER_STEP)),
     ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
     ("scripts/e2e/lib/rig.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/rig.sh` sources it"),
     ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),
@@ -62,21 +70,23 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh's keep_port and _held_exec (start_held, start_kept) run it to hold a port for the daemon"),
     ("scripts/e2e/lib/process-tree.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/process-tree.sh\"` line, the last)"),
     ("scripts/e2e/lib/built-from.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/built-from.sh` runs it over the checkout"),
-    ("packages/pi-legion/package.json", "`scripts/e2e/stage1-skeleton.sh#jq '{name, version, legion}'` copies its name, version "
-                                        "and legion block into the pi-legion plugin the proof's home holds"),
+    ("packages/pi-legion/package.json", "`scripts/e2e/stage1-skeleton.sh#{name, version, legion}` copies its name, version "
+                                        "and legion block, with this tree's contract written in it, into the pi-legion plugin the proof's home holds"),
     ("packages/pi-envoy/package.json", "`scripts/e2e/stage1-skeleton.sh#jq '{name, version}'` copies its name and version "
                                        "into the pi-envoy plugin the proof's home holds"),
     (".github/actions/install-uv/**", at("daemon-go", "./.github/actions/install-uv")),
     (".github/ci-tools.yaml", "`.github/actions/install-uv/action.yml#ci_tools_fetch uv` installs the uv row's binary"),
     (".github/scripts/ci-tools.sh", "`.github/actions/install-uv/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` sources it, and ci_tools_fetch "
                                     "reads the uv row's two sources"),
-    (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
-    (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const Image, "
+    (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS and PgBouncer test container images")),
+    (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS and PgBouncer test container images')} const Image, "
                                             f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                             f"consts Image, SkippingImage"),
     (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                            f"const HubImage"),
+    (f"{DAEMON}/internal/ompsessions/searchpath_test.go", f"{at('daemon-go', 'Pull the NATS and PgBouncer test container images')} const PoolImage"),
 ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP) + ceiling_reads("daemon-go-race", job_file("daemon-go"))
+  + crash_safety_reads("daemon-go") + crash_safety_reads("daemon-go-race", job_file("daemon-go"))
   + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod"))
 GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter daemon_go_tests held packages/daemon/** by hand before the filters were computed: it selected 171 file(s) no other read of this gate declares", but=('**/*_test.go',)),

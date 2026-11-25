@@ -33,7 +33,20 @@ function stepLine(record: StepRecord): string {
   ].join(" ");
 }
 
-/** `dispatch steps`: each run of each step of an issue, task by task, as Dispatch lists them. */
+/** The experiment a draw put the issue in and the variant it drew there, as the records of its
+ *  newest run, its highest generation, name them: `Experiment <experiment>: variant <variant>.`,
+ *  or nothing where none of those records names one. A Dispatch older than the two fields answers
+ *  a record without them, which names none either. */
+function variantLines(records: readonly StepRecord[]): string[] {
+  const newest = Math.max(...records.map((record) => record.generation));
+  const named = records.find(
+    (record) => record.generation === newest && record.experiment != null && record.variant != null
+  );
+  return named === undefined ? [] : [`Experiment ${named.experiment}: variant ${named.variant}.`];
+}
+
+/** `dispatch steps`: each run of each step of an issue, task by task, as Dispatch lists them, with
+ *  the variant of the issue above them where its records name one. */
 export async function stepsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { client, issue } = context;
   const read = await client.listSteps(issue());
@@ -43,6 +56,7 @@ export async function stepsCommand(context: CommandContext): Promise<DispatchToo
   return {
     text: [
       `${read.issue}: ${records.length} steps in ${tasks.length} tasks`,
+      ...variantLines(records),
       ...records.map(stepLine),
     ].join("\n"),
     details: { issue: read.issue, tasks },

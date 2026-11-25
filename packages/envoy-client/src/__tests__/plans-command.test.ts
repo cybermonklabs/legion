@@ -24,11 +24,12 @@ import { executeDispatchTool } from "../dispatch-execute";
 // `dispatch plans --project <KEY>`: each finished issue of a project, as Dispatch's
 // `GET /api/v1/projects/{key}/plans` answers them, one header line and one line per issue: its
 // plan, each rating its retros gave the plan with the reason, its time, its count of failed steps,
-// and its step records counted on, off or unknown against their set model. The Legion whole-daemon
-// driver parses the line, so each case asserts it whole. The format cases drive
-// `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`) as a fetch, so
-// each reads the text and the details a host is handed; the command-line cases drive the real CLI
-// against that fake on a loopback port, and read its exit code and output.
+// its step records counted on, off or unknown against their set model, and, where the records of
+// the issue's newest run name an experiment, `variant <experiment>/<variant>` at its end. The
+// Legion whole-daemon driver parses the line, so each case asserts it whole. The format cases
+// drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`) as a fetch,
+// so each reads the text and the details a host is handed; the command-line cases drive the real
+// CLI against that fake on a loopback port, and read its exit code and output.
 
 /** The Dispatch bearer each command-line case is handed. */
 const TOKEN = fixtureSecret("dsp");
@@ -72,6 +73,8 @@ const ratedOnce: FinishedIssue = {
   duration_seconds: 5400,
   failed_steps: 1,
   set_model_steps: { on: 0, off: 0, unknown: 0 },
+  experiment: null,
+  variant: null,
 };
 
 /** INFRA-11's plan: its owner's, in three tasks. The first task is neither the first nor the last
@@ -103,6 +106,8 @@ const unrated: FinishedIssue = {
   duration_seconds: 3725,
   failed_steps: 0,
   set_model_steps: { on: 0, off: 0, unknown: 0 },
+  experiment: null,
+  variant: null,
 };
 
 /** Three retros, so three ratings, in the order the retros ran: neither by score (4, 2, 5) nor by
@@ -152,6 +157,8 @@ const neverRan: FinishedIssue = {
   duration_seconds: null,
   failed_steps: 0,
   set_model_steps: { on: 0, off: 0, unknown: 0 },
+  experiment: null,
+  variant: null,
 };
 
 /** A finished issue whose time Dispatch cannot count: a plan and a rating, a start and an end,
@@ -205,6 +212,8 @@ const otherProject: FinishedIssue = {
   duration_seconds: 9300,
   failed_steps: 3,
   set_model_steps: { on: 0, off: 0, unknown: 0 },
+  experiment: null,
+  variant: null,
 };
 
 const config = {
@@ -292,6 +301,22 @@ describe("dispatch plans", () => {
     expect(result.text.split("\n")[1]).toEndWith(
       " ratings none time 1h2m failed steps 0 on set model - off - unknown -"
     );
+  });
+
+  // An issue a draw put in an experiment names the experiment and the variant its newest run's
+  // records name, at the end of its line, after its three counts; an issue that names none prints
+  // nothing more.
+  test("an issue in an experiment prints its variant on its line, and another prints none", async () => {
+    const drawn: FinishedIssue = { ...ratedOnce, experiment: "planning", variant: "b" };
+    const answer: ProjectPlans = { project: "INFRA", issues: [drawn, unrated] };
+
+    const { result } = await readPlans({ project: "INFRA" }, answer);
+
+    expect(result.text.split("\n")).toEqual([
+      "INFRA: 2 finished issues",
+      'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1 on set model 0 off 0 unknown 0 variant planning/b',
+      "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0 on set model 0 off 0 unknown 0",
+    ]);
   });
 
   test("an issue with three ratings lists each in the order the retros ran, each reason one JSON string", async () => {
