@@ -911,9 +911,10 @@ identity therefore stops renewing within the hour, and its sessions lapse one
 `BROKER_LEASE_SECONDS` later; a copy of a session's key and enrollment id taken off the box renews
 nothing once the box's login has ended. The broker answers such a renewal `401
 ENROLLMENT_NOT_LIVE` and logs `broker: machine session renewal refused: its machine login has
-ended`. Only a machine's own session is held this way: a person's session on that box renews until
-they revoke the sign-in, which ends it at once, and a pod's renewal proves the pod's own projected
-token.
+ended`. A person's sign-in session on that box is held the same way, to the credential its
+sign-in holds there, and logs `broker: sign-in session renewal refused: its sign-in credential has
+ended` when refused ([Holding a sign-in's sessions to its credential](#holding-a-sign-ins-sessions-to-its-credential)).
+A pod's renewal is not: it proves the pod's own projected token.
 
 Dispatch's machine-login page lists each machine's login, its host and no
 approver, and anyone signed in may revoke it, which ends that machine's enrollment; the machine
@@ -1890,6 +1891,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: pod enrollment renewed without its projected token enrollment=… pod_uid=… slot=…` | At WARN: a pod enrollment renewed without its token, and no enrollment naming its pod UID has ever renewed with one, so the broker accepted it; for that pod a token copied out of it still keeps an enrollment alive. It is expected from a pod on a worker image whose `agent-secrets renew` predates `--pod-token-file`. A pod on the current image sends its token from its first renewal, so a line naming such a pod means a holder of an enrollment key for it is renewing outside the cluster before the pod's own first token renewal. List pod images below and replace an older-image pod. If its pod UID is absent or every image is current, end the login that made the line's enrollment, which ends every enrollment it made, once its `subject` shows whether it is a Legion daemon's ([the renew token check](#the-renew-token-check) gives the query and both ways to end it); never pick a machine-login row by its machine name. |
 | `broker: pod enrollment renewal refused: projected token required enrollment=…` | At WARN: a pod enrollment renewed without its token after an enrollment naming the same pod UID, this one or another, had renewed with one, and was refused. One cause is someone holding its key, possibly enrolled under another machine login with a token copied out of the pod, renewing outside the cluster. The other is an old-image pod refused because someone else marked its UID first: whoever holds an unexpired copy of an old-image pod's token and a launcher credential that enrolls pods can enroll a key of their own on that UID and renew it with the copy, which marks the UID, and from then on the real old-image pod, whose renewer sends no token, is refused here until its lease lapses. That is weaker than what the copy already allowed, which was to enroll and renew as the pod. The refused enrollment's pod UID names the pod: list pod images (below). If that pod runs an older image, the copy's rows are the marked rows of that pod UID: end each one's login once its `subject` shows whether it is a Legion daemon's ([the renew token check](#the-renew-token-check)), never picking a machine-login row by its machine name, and replace the pod with a current image. Otherwise the copy is the line's own enrollment, as that section says. A current-image renewer that cannot read its token file sends nothing at all, so the broker logs nothing for it; `agent-secrets renew` prints `ERROR: enrollment <id> cannot read its pod token` instead, which the worker shim relays into the pod's log. Its lease and grants end one `BROKER_LEASE_SECONDS` after its last valid renewal. |
 | `broker: machine session renewal refused: its machine login has ended enrollment=…` | At WARN: a machine's own session asked to renew while the launcher credential its Google identity token minted was no longer live — revoked, past the hour's expiry that token gave it, or its account no longer listed for its service in `BROKER_VM_SERVICES`. The renewal is answered `401 ENROLLMENT_NOT_LIVE` and the session lapses within one `BROKER_LEASE_SECONDS`. It is expected after a fleet is taken out of the settings and after a machine stops trading. A line for a machine that is still running and still listed means something holding that session's key is renewing after its box's login has ended, which is what this refusal is for: see [a copied machine token](#a-copied-machine-token). |
+| `broker: sign-in session renewal refused: its sign-in credential has ended enrollment=…` | At WARN: a session enrolled under a person's sign-in on a machine asked to renew while the launcher credential that sign-in holds there was no longer live — revoked, past the expiry the person's last traded Google identity token gave it, or the machine's account no longer listed for its service in `BROKER_VM_SERVICES`. The renewal is answered `401 ENROLLMENT_NOT_LIVE` ("the sign-in that enrolled this session has ended") and the session lapses within one `BROKER_LEASE_SECONDS`. It is expected for a person who can no longer be traded (a suspended or deleted Google account, a grant revoked at Google), after a fleet is taken out of the settings, and on a machine whose sign-in client is not set. For a person still employed on a machine still listed, it means that machine stopped trading the sign-in: an `agent-secrets-helper` from before this rule, which trades only when it enrols, or a client that cannot reach the broker or Google ([Holding a sign-in's sessions to its credential](#holding-a-sign-ins-sessions-to-its-credential)). |
 | `broker draining drain=<drain>` | SIGTERM or SIGINT: from here on `GET /healthz` answers `503 SHUTTING_DOWN` while every other route is served and the listener stays open, for `BROKER_DRAIN_SECONDS`. A second signal ends the wait at once, logged as `broker: a second signal ended the drain early`. |
 | `broker shutting down` | The drain is over: the broker stops accepting, and the requests still in flight get 60 seconds to finish. That is the server's own `WriteTimeout` — the 45-second request deadline plus the 15 seconds a handler needs to write its answer — because it is the longest exchange the broker allows a request past its headers: one admitted in the drain's last instant still gets its whole deadline. Shutdown closes idle connections at once, and one that has gone five seconds without sending its headers counts as idle, so the budget covers the requests in flight rather than every connection open. |
 | `broker: listening for the other pods' secret rereads channel=…` | The reread fan-out's receiving half has its `LISTEN` connection. The boot waits up to five seconds for this line before it binds, so on a healthy pod it comes just before `broker listening`; after that it reappears on every redial. |
@@ -2513,6 +2515,76 @@ hold:
 That release refuses every pod renewal without a token, so it also removes what only the ratchet
 needs: the pod-UID lookup in `Renew` (`podTokenRatcheted`) and its partial index
 `enrollments_pod_token_renewed`.
+
+## Holding a sign-in's sessions to its credential
+
+A broker of this release renews a session enrolled under a person's sign-in on a machine only
+while the launcher credential that sign-in holds there is live: not revoked, not past the expiry
+the person's last traded Google identity token gave it, about an hour after the trade, and the
+machine's account still listed for its service in `BROKER_VM_SERVICES`
+([A sign-in's renewal](/legion/broker/concepts/#a-sign-ins-renewal)). Otherwise it answers the
+renewal `401 ENROLLMENT_NOT_LIVE` and logs `broker: sign-in session renewal refused: its sign-in
+credential has ended`. A broker from before renewed such a session for as long as something renewed
+it, so a person whose Google account was suspended kept the machine's access through it. The
+clients of the same release keep the credential live by trading the person's identity again
+before it expires; the clients from before do not:
+
+| Client | What it does under this broker |
+| --- | --- |
+| `agent-secrets` of this release | Its renewer trades the sign-in again each time a third of the credential's life has passed, so its enrollment renews on. Refused, it exits 76, and the next command registers a new enrollment. |
+| `agent-secrets` from before | It renews no sign-in enrollment, which lapses one `BROKER_LEASE_SECONDS` after the command, as before. The rule changes nothing for it. |
+| `agent-secrets-helper` of this release | It trades the sign-in while a session or box it enrolled under it may need it. Refused, it enrols the session again. |
+| `agent-secrets-helper` from before | It trades the sign-in only when it enrols a session. Once it has enrolled nothing for the credential's hour, every session it holds under the sign-in is refused its next renewal; it enrols each again, trading then. A session that names itself takes its grants and pending requests with it to the new enrollment; one that names none loses them. A box it enrolled under the sign-in (`agent-secrets enroll --helper`) renews with its own `agent-secrets renew`, which exits 76 when refused, and the box is enrolled again only by running that command again. |
+| Pods, machines' own sessions, machine logins a person approved | Not sign-in sessions: the rule changes nothing for them. |
+
+So the clients go first. Release them, and make each machine run the new helper: a release does
+not restart a helper that is running, and `agent-secrets-helper install` restarts one only while it
+has no sessions, or with `--restart-with-sessions`. On a machine, the running helper's release is
+the `version` of its last start line:
+
+```sh
+journalctl --user -u agent-secrets-helper.service -g 'agent-secrets-helper listening' -n 1 -o cat
+```
+
+The helper tells the broker no version, so the broker's database is where to check every machine
+at once. This query lists each live sign-in session whose credential has lapsed, or lapses within
+ten minutes, with the person, the machine and its account. A client of this release keeps more
+than ten minutes of the credential while its trades go through; a row is a session that nothing
+trades for, which this broker refuses at its next renewal:
+
+```sql
+select e.id as enrollment_id, c.operator as person, c.host,
+       split_part(split_part(c.subject, '|', 2), '#', 1) as machine_account,
+       e.session_id, c.expires_at as credential_expires_at,
+       c.revoked_at is not null as credential_revoked
+from enrollments e
+join launcher_credentials c on c.id = e.launcher_credential_id
+where e.kind = 'session' and e.revoked_at is null
+  and enrollment_lease_live(e.lease_expires_at)
+  and c.subject like 'signin:%'
+  and (c.revoked_at is not null or c.expires_at < now() + interval '10 minutes')
+order by c.expires_at;
+```
+
+Deploy the broker once the query answers no row, and again no row an hour later. A helper from
+before that enrolled a session within the credential's hour holds a live credential and shows no
+row until that hour has passed with no enrolment; the second run, an hour on, is what catches it.
+A row whose `machine_account` `BROKER_VM_SERVICES` no longer lists, or whose person has left, is a
+session the rule is meant to end. After the deploy, the WARN line above names each enrollment the
+rule refused; the query's `enrollment_id` finds its person and machine.
+
+To roll back:
+
+1. Move the broker's pin back to the release before. That broker renews every sign-in session
+   again whatever its credential. The release changes no schema, so nothing in the database is
+   undone, and the release before starts on the same database. A session the rule already ended
+   stays ended: a helper enrols its sessions again itself, a command-line sign-in registers a new
+   enrollment at its next command, and a box enrolled with `agent-secrets enroll --helper` is
+   enrolled again by running that command.
+2. Leave the clients: under the broker before, the clients of this release only trade the sign-in
+   more often, which moves the credential's expiry and nothing else. Roll a client back only for a
+   fault of its own, and only after step 1, since a helper from before under this broker is what
+   the rule refuses.
 
 ## A copied machine token
 

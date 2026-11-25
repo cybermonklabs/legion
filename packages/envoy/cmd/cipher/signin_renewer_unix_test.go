@@ -107,13 +107,18 @@ func unitRenewer(t *testing.T, clock *renewerClock, broker http.Handler) (*signI
 // it, trading at its start and each time a third of the credential's life has passed; every
 // trade after the first fails, as for a person whose Google account was suspended, so the
 // credential lapses within its hour after several tries, the broker refuses the renewal, and the
-// renewer exits 76; and the machine is told of no sign-in client, so it tries once, says so, and
-// the enrollment ends at the expiry its registration gave it.
+// renewer exits 76; the machine is told of no sign-in client, so it tries once, says so, and the
+// enrollment ends at the expiry its registration gave it; and the broker's answer names no expiry,
+// or one already past, which no retry mends, so the renewer says so once, trades no more, and
+// exits 76 once the credential its one trade moved lapses.
 func TestARenewerKeepsItsSignInsCredentialLive(t *testing.T) {
 	const lease, life = 15 * time.Minute, time.Hour
 	for _, row := range []struct {
-		name                  string
-		trade                 func(n int) error
+		name  string
+		trade func(n int) error
+		// answered is the expiry a trade that went through names, given the one it moved the
+		// credential to; nil names that one.
+		answered              func(now, moved time.Time) time.Time
 		wantCode              int
 		wantLog               string
 		ranAtLeast, ranAtMost time.Duration
@@ -123,6 +128,10 @@ func TestARenewerKeepsItsSignInsCredentialLive(t *testing.T) {
 		{name: "every trade goes through", wantCode: 0, wantLog: "stopped: nothing has used it",
 			trade:      func(int) error { return nil },
 			ranAtLeast: 5 * time.Hour, ranAtMost: 5*time.Hour + lease, tradesAtLeast: 14, tradesAtMost: 17},
+		// The first trade moves the expiry to an hour on; the next is due 20 minutes later, and
+		// the rest are retries. A retry once the smaller of a third of the lease and a third of the
+		// credential's remaining life has passed makes 17 of them before the credential lapses (18
+		// trades in all); one at a third of the lease alone makes 8 (9 in all).
 		{name: "every trade after the first fails", wantCode: exitRenewRefused, wantLog: "the trade of the person's identity failed",
 			trade: func(n int) error {
 				if n == 1 {
@@ -130,11 +139,22 @@ func TestARenewerKeepsItsSignInsCredentialLive(t *testing.T) {
 				}
 				return errors.New("renew the sign-in at https://accounts.google.com: invalid_grant")
 			},
-			ranAtLeast: life, ranAtMost: life + lease/3 + time.Minute, tradesAtLeast: 9, tradesAtMost: 20},
+			ranAtLeast: life, ranAtMost: life + lease/3 + time.Minute, tradesAtLeast: 16, tradesAtMost: 20},
 		{name: "no sign-in client", wantCode: exitRenewRefused, wantLog: "this machine cannot trade the person's identity",
 			trade: func(int) error {
 				return &unrenewableSignIn{reason: "this machine is told of no sign-in client", why: "no sign-in client is set"}
 			},
+			ranAtLeast: life, ranAtMost: life + lease/3 + time.Minute, tradesAtLeast: 1, tradesAtMost: 1},
+		// The broker moves the credential at each trade but its answer names no expiry: the
+		// renewer says so once and trades no more, so the credential lapses an hour after that one
+		// trade and the broker refuses the next renewal.
+		{name: "the answer names no expiry", wantCode: exitRenewRefused, wantLog: "the trade of the person's identity got an answer no retry mends",
+			trade:      func(int) error { return nil },
+			answered:   func(time.Time, time.Time) time.Time { return time.Time{} },
+			ranAtLeast: life, ranAtMost: life + lease/3 + time.Minute, tradesAtLeast: 1, tradesAtMost: 1},
+		{name: "the answer names an expiry already past", wantCode: exitRenewRefused, wantLog: "already past",
+			trade:      func(int) error { return nil },
+			answered:   func(now, _ time.Time) time.Time { return now.Add(-time.Minute) },
 			ranAtLeast: life, ranAtMost: life + lease/3 + time.Minute, tradesAtLeast: 1, tradesAtMost: 1},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -171,6 +191,9 @@ func TestARenewerKeepsItsSignInsCredentialLive(t *testing.T) {
 					return time.Time{}, err
 				}
 				expires = clock.now().Add(life)
+				if row.answered != nil {
+					return row.answered(clock.now(), expires), nil
+				}
 				return expires, nil
 			}
 			holdLock(t, renewer)
@@ -194,6 +217,81 @@ func TestARenewerKeepsItsSignInsCredentialLive(t *testing.T) {
 				t.Fatalf("the log %q; want %q", log.String(), row.wantLog)
 			}
 		})
+	}
+}
+
+// TestANewSignInIsTradedWhereTheLastOneCouldNotBe: what the renewer knows of a sign-in's
+// credential is about one box key. The first sign-in's trade cannot be made (no sign-in client
+// for it), so the renewer trades no more for it; the person signs in again, which writes a record
+// with a box key and an enrollment of its own, and the renewer, renewing the new enrollment,
+// trades the new sign-in: what it learnt of the old box key is not carried to the new one.
+func TestANewSignInIsTradedWhereTheLastOneCouldNotBe(t *testing.T) {
+	const lease = 15 * time.Minute
+	clock := &renewerClock{t: t, at: time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)}
+	start := clock.now()
+	var mu sync.Mutex
+	var renewer *signInRenewer
+	renewals := map[string]int{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/enrollments/{id}/renew", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		renewals[r.PathValue("id")]++
+		signInAgain := r.PathValue("id") == "enrollment-1" && renewals["enrollment-1"] == 3
+		mu.Unlock()
+		if signInAgain {
+			key, err := proof.NewKey()
+			if err != nil {
+				t.Error(err)
+			}
+			thumbprint, err := proof.Thumbprint(&key.PublicKey)
+			if err != nil {
+				t.Error(err)
+			}
+			if err := renewer.store.Write(cipherclient.SignInRecord{
+				Person: renewer.renewal.person, Issuer: "https://accounts.google.com", ClientID: "device-client", RefreshToken: "not-a-secret-refresh-token",
+				BoxKey: string(keyPEM(key)), Thumbprint: thumbprint, EnrollmentID: "enrollment-2", SignedInAt: clock.now().UTC(),
+			}); err != nil {
+				t.Error(err)
+			}
+		}
+		renewsFor(clock, lease)(w, r)
+	})
+	mux.HandleFunc("GET /v1/enrollments/self", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]any{"enrollment_id": "enrollment-1", "kind": "session", "lease_expires_at": clock.now().Add(lease),
+			"grants": []map[string]any{{"grant_id": "grant-1", "request_id": "request-1", "expires_at": start.Add(time.Hour)}}})
+	})
+	renewer, log := unitRenewer(t, clock, mux)
+	first, err := renewer.store.Read(renewer.renewal.record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tradesFor := map[string]int{}
+	renewer.trade = func(_ context.Context, record cipherclient.SignInRecord, _ *ecdsa.PrivateKey) (time.Time, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		tradesFor[record.EnrollmentID]++
+		if record.Thumbprint == first.Thumbprint {
+			return time.Time{}, &unrenewableSignIn{reason: "this machine is told of no sign-in client", why: "no sign-in client is set"}
+		}
+		return clock.now().Add(time.Hour), nil
+	}
+	holdLock(t, renewer)
+	if err := os.Chtimes(renewer.renewal.path(renewalUsedFile), start, start); err != nil {
+		t.Fatal(err)
+	}
+	if code := runSignInRenewer(context.Background(), renewer); code != 0 {
+		t.Fatalf("run = %d, want 0 once the grant has ended (log %q)", code, log.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if renewals["enrollment-2"] == 0 {
+		t.Fatalf("the renewer never renewed the new sign-in's enrollment (renewals %v, log %q)", renewals, log.String())
+	}
+	if tradesFor["enrollment-1"] != 1 {
+		t.Fatalf("the first sign-in was traded %d times; want once, the try that found no sign-in client (log %q)", tradesFor["enrollment-1"], log.String())
+	}
+	if tradesFor["enrollment-2"] == 0 {
+		t.Fatalf("the new sign-in was never traded: what the renewer learnt of the old box key was carried to the new one (log %q)", log.String())
 	}
 }
 
@@ -689,13 +787,40 @@ func TestRenewerEnvironmentKeepsOnlyWhatItReads(t *testing.T) {
 		"EDITOR=vi",
 		cipherclient.PersonVar + "=bob@example.com",
 		renewerStageVar + "=" + renewerStageDetach,
-	}, "ada@example.com")
+	}, "ada@example.com", "")
 	want := []string{
 		"HOME=/home/ada",
 		"AGENT_SECRETS_URL=https://broker.example",
 		"HTTPS_PROXY=http://proxy.example:3128",
 		"GOOGLE_APPLICATION_CREDENTIALS=/etc/agent-secrets/credentials.json",
 		"GCE_METADATA_HOST=metadata.example",
+		cipherclient.PersonVar + "=ada@example.com",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("renewerEnv = %q, want %q", got, want)
+	}
+}
+
+// TestARenewersPathsAreTheCommandsPaths: the renewer runs in /, so each path a kept variable names
+// relative to the command's working directory is made absolute against it, an entry of
+// SSL_CERT_DIR's list included, while an absolute path, an empty value and a variable that names
+// no path are kept as they came.
+func TestARenewersPathsAreTheCommandsPaths(t *testing.T) {
+	got := renewerEnv([]string{
+		"GOOGLE_APPLICATION_CREDENTIALS=credentials.json",
+		cipherclient.SignInClientSecretFileVar + "=secrets/client-secret",
+		cipherclient.SignInDirVar + "=/var/lib/agent-secrets/signins",
+		cipherclient.MachineTokenFileVar + "=",
+		"SSL_CERT_DIR=certs:/etc/ssl/certs",
+		"AGENT_SECRETS_URL=broker.example",
+	}, "ada@example.com", "/home/ada/work")
+	want := []string{
+		"GOOGLE_APPLICATION_CREDENTIALS=/home/ada/work/credentials.json",
+		cipherclient.SignInClientSecretFileVar + "=/home/ada/work/secrets/client-secret",
+		cipherclient.SignInDirVar + "=/var/lib/agent-secrets/signins",
+		cipherclient.MachineTokenFileVar + "=",
+		"SSL_CERT_DIR=/home/ada/work/certs:/etc/ssl/certs",
+		"AGENT_SECRETS_URL=broker.example",
 		cipherclient.PersonVar + "=ada@example.com",
 	}
 	if !slices.Equal(got, want) {

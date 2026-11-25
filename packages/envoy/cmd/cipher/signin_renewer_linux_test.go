@@ -117,6 +117,17 @@ func (r *renewalRig) enrollmentLive() bool {
 	return live
 }
 
+// leaseExpiry is when the sign-in's enrollment's lease lapses, as the broker holds it.
+func (r *renewalRig) leaseExpiry() time.Time {
+	r.t.Helper()
+	var expires time.Time
+	if err := r.broker.Store.Pool.QueryRow(context.Background(),
+		`select lease_expires_at from enrollments where id = $1`, r.enrollmentID).Scan(&expires); err != nil {
+		r.t.Fatal(err)
+	}
+	return expires
+}
+
 // requestRow is what the broker holds of one secret request.
 type requestRow struct {
 	ID, State, RecordID, Detail string
@@ -478,6 +489,12 @@ func TestASignInsRenewerStopsWhenNothingNeedsTheEnrollment(t *testing.T) {
 	t.Run("record removed", func(t *testing.T) {
 		rig := newRenewalRig(t)
 		use(t, rig, "1m")
+		// use waits for a renewer's process, which is counted from its exec, before it has read
+		// the record: removed then, the record is gone when that renewer first reads it, and it
+		// exits saying nobody is signed in. Its first renewal comes once it holds the lock, so
+		// after that renewal the record is taken from the renewer that runs.
+		leased := rig.leaseExpiry()
+		rig.waitFor("the renewer's first renewal", func() bool { return rig.leaseExpiry().After(leased) })
 		if err := os.Remove(cipherclient.SignIns(rig.machine.getenv).Path(rig.broker.Operator)); err != nil {
 			t.Fatal(err)
 		}

@@ -272,11 +272,14 @@ func TestAMachineSessionRenewsOnlyWhileItsMachineLoginIsLive(t *testing.T) {
 
 // TestAPersonsSignInSessionRenewsOnlyWhileItsSignInIsTraded: a person's sign-in on a box mints
 // a credential of the same shape and of the same hour's life as a machine's, and its session is
-// held to it too. It renews while the credential is live, is refused ErrSignInLapsed once the
-// expiry the person's last identity token gave it has passed, and renews again once the box
-// trades the person's identity again: the trade moves the expiry of the same credential row, so
-// the same enrollment renews on and keeps what it holds. A session under a machine login a
-// person approved, which carries an operator and no subject, still renews past its expiry.
+// held to it as a machine's session is held to its own. It renews while the credential is live,
+// is refused ErrSignInCredentialEnded once the expiry the person's last identity token gave it
+// has passed, and renews again once the box trades the person's identity again: the trade moves
+// the expiry of the same credential row, so the same enrollment renews on and keeps what it
+// holds. It is refused too while the box's account is dropped from BROKER_VM_SERVICES, and renews
+// again once it is listed again, so this is the configuration as it is now and not a mark on the
+// row. A session under a machine login a person approved, which carries an operator and no
+// subject, still renews past its expiry.
 func TestAPersonsSignInSessionRenewsOnlyWhileItsSignInIsTraded(t *testing.T) {
 	ctx := context.Background()
 	const person = "ada@example.com"
@@ -323,8 +326,8 @@ func TestAPersonsSignInSessionRenewsOnlyWhileItsSignInIsTraded(t *testing.T) {
 	if _, err := svc.Store.Pool.Exec(ctx, `update launcher_credentials set expires_at = now() - interval '1 second' where id = $1`, credID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Renew(ctx, id, ""); !errors.Is(err, ErrSignInLapsed) {
-		t.Fatalf("the renewal of a person's sign-in session past its credential's expiry = %v, want ErrSignInLapsed", err)
+	if _, err := svc.Renew(ctx, id, ""); !errors.Is(err, ErrSignInCredentialEnded) {
+		t.Fatalf("the renewal of a person's sign-in session past its credential's expiry = %v, want ErrSignInCredentialEnded", err)
 	}
 
 	if again := trade(time.Now().Add(time.Hour)); again != credID {
@@ -332,6 +335,16 @@ func TestAPersonsSignInSessionRenewsOnlyWhileItsSignInIsTraded(t *testing.T) {
 	}
 	if _, err := svc.Renew(ctx, id, ""); err != nil {
 		t.Fatalf("the renewal after the person's identity was traded again: %v; want it renewed", err)
+	}
+
+	// The box's fleet is taken out of the settings while the credential is live.
+	svc.VMServicesByAccount = map[string]string{}
+	if _, err := svc.Renew(ctx, id, ""); !errors.Is(err, ErrSignInCredentialEnded) {
+		t.Fatalf("the renewal of a person's sign-in session on a delisted box = %v, want ErrSignInCredentialEnded", err)
+	}
+	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
+	if _, err := svc.Renew(ctx, id, ""); err != nil {
+		t.Fatalf("the renewal after the box's account was listed again: %v; want it renewed", err)
 	}
 
 	// A machine login a person approved names the person and no subject, and lasts as long as

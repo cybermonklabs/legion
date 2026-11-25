@@ -28,16 +28,17 @@
 //
 // While it renews, the renewer also keeps the sign-in's launcher credential live (keepCredential):
 // the broker renews a sign-in's session only while that credential is live (enroll.Service.Renew,
-// ErrSignInLapsed), and its expiry is the person's last traded Google identity token's, about an
-// hour. So the renewer trades the person's identity again (tradeSignIn) after its first renewal
-// and each time a third of the credential's remaining life has passed, which moves the expiry of
-// the same credential row. A trade that fails is tried again once the smaller of a third of the
-// lease and a third of the credential's remaining life has passed, never sooner than renew's
-// longest backoff; a trade is made only between renewals, so a renewal the broker keeps failing
-// holds the next trade back. On a machine told of no sign-in client nothing is traded at all. A
-// trade that cannot be made, as for a person whose Google account is suspended, therefore lets
-// the credential lapse within its life, the broker refuses the next renewal, and the enrollment
-// ends one lease later: access ends without anybody's act.
+// ErrSignInCredentialEnded), and its expiry is the person's last traded Google identity token's,
+// about an hour. So the renewer trades the person's identity again (tradeSignIn) after its first
+// renewal and each time a third of the credential's remaining life has passed, which moves the
+// expiry of the same credential row. A trade that fails is tried again once the smaller of a
+// third of the lease and a third of the credential's remaining life has passed, never sooner than
+// renew's longest backoff; a trade is made only between renewals, so a renewal the broker keeps
+// failing holds the next trade back. On a machine told of no sign-in client nothing is traded at
+// all, and a trade whose answer names no credential expiry still to come ends the trading too,
+// said once. A trade that cannot be made, as for a person whose Google account is suspended,
+// therefore lets the credential lapse within its life, the broker refuses the next renewal, and
+// the enrollment ends one lease later: access ends without anybody's act.
 //
 // One renewer runs for each sign-in: it holds the exclusive flock of the renewal directory's
 // lock file for its whole life, and a command starts one only where it can take that lock
@@ -66,6 +67,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -326,8 +328,12 @@ func (r keptSignIn) startRenewer() error {
 	defer log.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), renewerStartBound)
 	defer cancel()
+	// The renewer runs in /, so the paths the command's environment names relative to where it
+	// runs are made absolute here (renewerEnv); a working directory this process cannot read
+	// leaves them as they came.
+	dir, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, self, "renew", "--sign-in")
-	cmd.Env = append(renewerEnv(os.Environ(), r.person), renewerStageVar+"="+renewerStageDetach)
+	cmd.Env = append(renewerEnv(os.Environ(), r.person, dir), renewerStageVar+"="+renewerStageDetach)
 	cmd.Stdout, cmd.Stderr, cmd.Dir = log, log, "/"
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("start the renewer: %w", err)
@@ -340,19 +346,54 @@ func (r keptSignIn) startRenewer() error {
 const renewerStartBound = 10 * time.Second
 
 // renewerEnv is environ as a renewer of person's sign-in keeps it (renewerEnvironment), naming
-// person in cipherclient.PersonVar so the renewer renews that sign-in whoever else signed in here.
-func renewerEnv(environ []string, person string) []string {
+// person in cipherclient.PersonVar so the renewer renews that sign-in whoever else signed in here,
+// and with each path a kept variable names made absolute against dir, the starting command's
+// working directory (absoluteIn): the renewer runs in /, and must read the files the command
+// read. dir "" leaves every value as it came.
+func renewerEnv(environ []string, person, dir string) []string {
 	kept := make([]string, 0, len(renewerEnvironment)+8)
 	for _, variable := range environ {
-		name, _, _ := strings.Cut(variable, "=")
+		name, value, _ := strings.Cut(variable, "=")
 		if name == cipherclient.PersonVar || name == renewerStageVar {
 			continue
 		}
 		if renewerEnvironment[name] || strings.HasPrefix(name, "AGENT_SECRETS_") {
-			kept = append(kept, variable)
+			kept = append(kept, name+"="+absoluteIn(dir, name, value))
 		}
 	}
 	return append(kept, cipherclient.PersonVar+"="+person)
+}
+
+// renewerPaths are the kept variables that name one file or directory: the credentials file and
+// the token file the trade proves this machine's identity with, the sign-in client's secret file,
+// the sign-in store, the TLS roots, and the home, state, configuration, runtime and temporary
+// directories every other path is found under.
+var renewerPaths = map[string]bool{
+	"HOME": true, "TMPDIR": true, "XDG_CONFIG_HOME": true, "XDG_STATE_HOME": true, "XDG_RUNTIME_DIR": true,
+	"SSL_CERT_FILE": true, "GOOGLE_APPLICATION_CREDENTIALS": true,
+	cipherclient.SignInDirVar: true, cipherclient.SignInClientSecretFileVar: true, cipherclient.MachineTokenFileVar: true,
+	"AGENT_SECRETS_KEY_DIR": true, "AGENT_SECRETS_HELPER_SOCK": true,
+}
+
+// absoluteIn is value, the value of the variable name, with each relative path it names joined to
+// dir: one path for a variable of renewerPaths, each entry of the list SSL_CERT_DIR holds, and
+// nothing of any other variable. An empty value, or an empty dir, is left as it came.
+func absoluteIn(dir, name, value string) string {
+	switch {
+	case dir == "" || value == "":
+		return value
+	case name == "SSL_CERT_DIR":
+		entries := filepath.SplitList(value)
+		for i, entry := range entries {
+			if entry != "" && !filepath.IsAbs(entry) {
+				entries[i] = filepath.Join(dir, entry)
+			}
+		}
+		return strings.Join(entries, string(filepath.ListSeparator))
+	case renewerPaths[name] && !filepath.IsAbs(value):
+		return filepath.Join(dir, value)
+	}
+	return value
 }
 
 // cmdRenewSignIn is `agent-secrets renew --sign-in`. Started as the first stage, it starts the
@@ -397,7 +438,8 @@ func cmdRenewSignIn(stderr io.Writer) int {
 }
 
 // tradeForRenewal is a renewer's trade of a sign-in at the broker base names (tradeSignIn): it
-// answers when the credential the trade moved now expires, zero where the broker named no expiry.
+// answers when the credential the trade moved now expires, the zero time where the broker named no
+// expiry, which keepCredential takes as an answer no retry mends (errNoLiveExpiry).
 func tradeForRenewal(base cipheraddr.Address) func(context.Context, cipherclient.SignInRecord, *ecdsa.PrivateKey) (time.Time, error) {
 	return func(ctx context.Context, record cipherclient.SignInRecord, key *ecdsa.PrivateKey) (time.Time, error) {
 		token, err := tradeSignIn(ctx, base, record, key)
@@ -409,7 +451,8 @@ func tradeForRenewal(base cipheraddr.Address) func(context.Context, cipherclient
 }
 
 // startDetachedRenewer is the first stage: it starts this program again as the renewer, in a
-// session of its own (detach) with the same standard output and error, and exits.
+// session of its own (detach) with the same standard output and error, and exits. The command
+// that started it made every path its environment names absolute already (startRenewer).
 func startDetachedRenewer(stderr io.Writer) int {
 	self, err := os.Executable()
 	if err != nil {
@@ -417,7 +460,7 @@ func startDetachedRenewer(stderr io.Writer) int {
 		return 1
 	}
 	cmd := exec.Command(self, "renew", "--sign-in")
-	cmd.Env = renewerEnv(os.Environ(), os.Getenv(cipherclient.PersonVar))
+	cmd.Env = renewerEnv(os.Environ(), os.Getenv(cipherclient.PersonVar), "")
 	cmd.Stdout, cmd.Stderr, cmd.Dir = os.Stdout, os.Stderr, "/"
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
@@ -690,22 +733,35 @@ func (c credentialKeep) wait(now time.Time, renewAfter time.Duration) time.Durat
 // that failed is tried again once the smaller of a third of the lease and a third of the
 // credential's remaining life has passed (a third of the lease where nothing is known of the
 // expiry), never sooner than renew's longest backoff (leasetime.RenewBackoffMax), so a person the
-// issuer refuses is not asked for every ten seconds of an hour: at a 15-minute lease, a dozen or
-// so more tries before an hour's credential lapses, every five minutes and then closer together.
-// A machine told of no sign-in client cannot trade at all (errSignInUnrenewable): the renewer
-// says so once and trades no more, and the broker ends the enrollment once its credential
-// expires.
+// issuer refuses is not asked for every ten seconds of an hour: at a 15-minute lease, 17 more
+// tries before an hour's credential lapses, every five minutes and then closer together.
+//
+// Two answers end the trading instead, each said once: a machine told of no sign-in client
+// cannot trade at all (errSignInUnrenewable), and a trade whose answer names no credential
+// expiry, or one already past, is one no retry mends (errNoLiveExpiry): the broker names the
+// expiry beside every credential it answers, so the broker that left it out leaves it out of
+// every retry too, as agent-secrets-helper's own trade loop takes such an answer
+// (errAnswerLacksCredential). After either, the renewer trades no more for this sign-in, and the
+// broker ends the enrollment once its credential expires (exit 76), within the hour the last
+// trade gave it; a new sign-in, a box key of its own, trades again.
 func (r *signInRenewer) keepCredential(ctx context.Context, record cipherclient.SignInRecord, key *ecdsa.PrivateKey, lease time.Duration, c credentialKeep) credentialKeep {
 	expires, err := r.trade(ctx, record, key)
 	now := r.now()
+	if err == nil && !expires.After(now) {
+		err = noLiveExpiry(expires)
+	}
 	switch {
 	case ctx.Err() != nil:
 		return c
-	case err == nil && expires.After(now):
+	case err == nil:
 		c.expires, c.next = expires, now.Add(leasetime.RenewAfter(expires.Sub(now)))
 		return c
 	case errors.Is(err, errSignInUnrenewable):
 		r.logf("this machine cannot trade the person's identity (%v), so enrollment %s ends once its sign-in credential expires", err, record.EnrollmentID)
+		c.off = true
+		return c
+	case errors.Is(err, errNoLiveExpiry):
+		r.logf("the trade of the person's identity got an answer no retry mends (%v), so this renewer trades no more and enrollment %s ends once its sign-in credential expires", err, record.EnrollmentID)
 		c.off = true
 		return c
 	}
@@ -714,10 +770,6 @@ func (r *signInRenewer) keepCredential(ctx context.Context, record cipherclient.
 		retry = min(retry, leasetime.RenewAfter(c.expires.Sub(now)))
 	}
 	c.next = now.Add(max(retry, leasetime.RenewBackoffMax))
-	if err == nil {
-		// The broker named no expiry: try again as after a failure, and say nothing.
-		return c
-	}
 	if c.expires.IsZero() {
 		r.logf("the trade of the person's identity failed (%v); trying again in %s", err, c.next.Sub(now).Round(time.Second))
 	} else {
@@ -725,6 +777,18 @@ func (r *signInRenewer) keepCredential(ctx context.Context, record cipherclient.
 			err, c.next.Sub(now).Round(time.Second), c.expires.UTC().Format(time.RFC3339))
 	}
 	return c
+}
+
+// errNoLiveExpiry is a trade the broker answered with a credential but no expiry for it still to
+// come (noLiveExpiry): no credential_expires_at, or one already past.
+var errNoLiveExpiry = errors.New("the broker's answer names no expiry of the sign-in credential still to come")
+
+// noLiveExpiry is errNoLiveExpiry for expires, the expiry the answer named (zero for none).
+func noLiveExpiry(expires time.Time) error {
+	if expires.IsZero() {
+		return fmt.Errorf("%w: it named no %s", errNoLiveExpiry, oauthwire.ExtraCredentialExpiresAt)
+	}
+	return fmt.Errorf("%w: it named %s, already past", errNoLiveExpiry, expires.UTC().Format(time.RFC3339))
 }
 
 // endRefused is the stop after the broker refused enrollment id for good: the renewer goes on,

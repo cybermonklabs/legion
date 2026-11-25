@@ -171,7 +171,10 @@ environment:
                                runtime directory and not at a path a second helper shares);
                                records found beside this helper's socket, where they used to
                                live, are moved here once (default: sessions.json beside
-                               AGENT_SECRETS_MACHINE_FILE, so ~/.config/agent-secrets/sessions.json)
+                               AGENT_SECRETS_MACHINE_FILE, so ~/.config/agent-secrets/sessions.json).
+                               Beside them, signin-boxes.json names the boxes the helper enrolled
+                               under a person's sign-in, whose sign-in it keeps traded until each
+                               is unenrolled
   AGENT_SECRETS_MACHINE_IDENTITY
                                the identity this machine proves at the broker's token exchange:
                                kubernetes (AGENT_SECRETS_MACHINE_TOKEN_FILE), metadata
@@ -265,7 +268,7 @@ func serve(cfg config) error {
 		// package that holds them (internal/cipher/leasetime): the whole-call timeout a
 		// renewal an outage black-holes costs, and the floor under the renew cadence.
 		Broker: &helper.Broker{URL: cfg.URL, OperatorFile: cfg.OperatorFile, MachineFile: cfg.MachineFile,
-			Identity: identity, SignIns: signInAuthority(cfg, log),
+			Identity: identity, SignIns: signInAuthority(cfg, log), SignInBoxesFile: helper.SignInBoxesPath(cfg.StatePath),
 			HTTP: &http.Client{Timeout: leasetime.RenewClientTimeout}, Log: log},
 		Hostname: hostname,
 		PeerOf:   helper.PeerOf,

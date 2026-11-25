@@ -230,8 +230,8 @@ func registerSignInSession(ctx context.Context, record cipherclient.SignInRecord
 // (token.CredentialExpiresAt): the same credential row at every trade of the same box key, so a
 // session enrolled under it renews on. registerSignInSession enrolls under it, and a sign-in's
 // renewer trades again before it expires (signin_renewer.go), since the broker renews no
-// sign-in's session past it (enroll.Service.Renew, ErrSignInLapsed). A sign-in this machine
-// cannot renew is errSignInUnrenewable (signInRenewal).
+// sign-in's session past it (enroll.Service.Renew, ErrSignInCredentialEnded). A sign-in this
+// machine cannot renew is errSignInUnrenewable (signInRenewal).
 func tradeSignIn(ctx context.Context, base cipheraddr.Address, record cipherclient.SignInRecord, boxKey *ecdsa.PrivateKey) (*cipherclient.Token, error) {
 	flow, err := signInRenewal(record)
 	if errors.Is(err, errSignInUnrenewable) {
