@@ -13,6 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // catchupBucket is the bucket the rows below create on a cluster, one per row.
@@ -288,9 +289,9 @@ func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 	}
 	const unlimited = 1 << 30
 	watcher := newRaiseWatcher(js, 3, unlimited, nil)
-	// A hang guard: a start that waited for the copies would wait until this context ended.
-	ctx, cancel := context.WithTimeout(countedReads(t.Context()), time.Minute)
-	defer cancel()
+	// A hang guard: a start that waited for the copies would wait until this context ended. It has
+	// no span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := countedReads(testwait.Context(t))
 	if _, err := EnsureKeyValue(ctx, conn, watcher, config); err != nil {
 		t.Fatalf("ensure the bucket a start raises nothing on: %v", err)
 	}

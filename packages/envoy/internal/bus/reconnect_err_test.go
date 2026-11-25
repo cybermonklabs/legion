@@ -71,7 +71,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 
 	awaitWarnings := func(want int) {
 		t.Helper()
-		waitFor(t, 30*time.Second, fmt.Sprintf("%d reconnect failures of %s", want, name), func() bool {
+		waitFor(t, fmt.Sprintf("%d reconnect failures of %s", want, name), func() bool {
 			return logs.count(name, reconnectFailed) >= want
 		})
 		if got := logs.count(name, reconnectFailed); got != want {
@@ -138,7 +138,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 
 	srv.Start(t)
 	gate.Open()
-	waitFor(t, 60*time.Second, "the client to reconnect", func() bool { return client.Conn.IsConnected() })
+	waitFor(t, "the client to reconnect", func() bool { return client.Conn.IsConnected() })
 	if got := logs.count(name, reconnectFailed); got != 11 {
 		t.Fatalf("%d reconnect failures logged across a successful reconnect, want 11", got)
 	}

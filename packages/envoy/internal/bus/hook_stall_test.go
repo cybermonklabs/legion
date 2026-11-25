@@ -53,7 +53,7 @@ func TestRewatchRetryAfterAReconnectLogsNoError(t *testing.T) {
 		}
 	}
 	// The retry clears the stall as it records the events it covered, just after the hook returned.
-	waitFor(t, 15*time.Second, "the retry that covered the reconnect", func() bool {
+	waitFor(t, "the retry that covered the reconnect", func() bool {
 		stall, hookErr := client.HookStall()
 		return stall == 0 && hookErr == nil
 	})
@@ -91,7 +91,7 @@ func TestHookStallReportsTheStallAndTheLastHookError(t *testing.T) {
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect in place: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the failed run of the hooks to be recorded", func() bool {
+	waitFor(t, "the failed run of the hooks to be recorded", func() bool {
 		_, hookErr := client.HookStall()
 		return hookErr != nil
 	})

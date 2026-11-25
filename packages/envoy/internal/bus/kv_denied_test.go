@@ -452,10 +452,24 @@ func refusalOfAnotherSubject(t *testing.T, relay *unansweredRelay, owner *Client
 		t.Errorf("flush the publishes the server refuses: %v", err)
 		return nil
 	}
-	var denial error
-	awaitRefusal(func() bool {
-		denial = owner.deniedPublish(subject, sentAt)
-		return denial != nil
-	})
-	return denial
+	// Both refusals must be in the record before one is taken: nats.go hands each -ERR to the
+	// client's error handler on its own callback goroutine (nc.ach), so the flush above can return
+	// with the second refusal not yet recorded. A row that judged the record then would read the
+	// missing refusal as one the step took (besideRefusal's requireLeft); it did, under load, in CI.
+	awaitRefusal(func() bool { return owner.recordedDenials(subject, sentAt) >= 2 })
+	return owner.deniedPublish(subject, sentAt)
+}
+
+// recordedDenials is how many refusals of subject the record holds that were recorded at or after
+// sentAt, read without taking any (deniedPublish takes one).
+func (c *Client) recordedDenials(subject string, sentAt time.Time) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	recorded := 0
+	for _, denial := range c.deniedPublishes[subject] {
+		if !denial.at.Before(sentAt) {
+			recorded++
+		}
+	}
+	return recorded
 }
