@@ -16,6 +16,7 @@ import {
   getArtifactText,
   getAsk,
   getComment,
+  getIssueCoverage,
   getIssueResults,
   recordCheckResult,
   requestApproval,
@@ -32,16 +33,16 @@ import {
   requirementText,
   specBlockRef,
 } from "./issue-layout-seed-text";
-import { blockNode, READER } from "./issue-page-g";
+import { blockNode, longWords, READER } from "./issue-page-g";
 import { rowsOfType } from "./issue-page-i";
 import { composer } from "./issue-page-l";
 
 /**
  * What the rows of `e2e/issue-page-y.e2e.ts` seed and read of the new issue page: criteria,
- * readings, a child issue's checks under the parent's statements, and editing a converted issue
- * in its one room. Each of those rows is selected by its title from the issue's checks. This
- * file is those rows' own: it imports the other issue-page e2e files' readers and changes none
- * of them.
+ * readings, a child issue's checks under the parent's statements, editing a converted issue in
+ * its one room on the outline and in each filter, and the Verification view drawing long words
+ * whole. Each of those rows is selected by its title from the issue's checks. This file is
+ * those rows' own: it imports the other issue-page e2e files' readers and changes none of them.
  *
  * - **The tree read** `GET /api/v1/issues/{key}/tree` is a read `@legion/contracts` does not
  *   generate yet, so `treeAnswerOf` reads it with a plain request signed in as the reader,
@@ -71,6 +72,8 @@ const BLOCKS = {
   check: "c-child",
   decision: "d-model",
   decisionReading: "rd-decision",
+  longCheck: "c-long",
+  longStatement: "r-long",
   questionReading: "rd-question",
   task: "t-child",
 } as const;
@@ -141,10 +144,8 @@ async function readAnswer<T>(
   return (await response.json()) as T;
 }
 
-/** The gate of this file's rows: every row reads the issue's tree read
- *  (`GET /api/v1/issues/{key}/tree`). The server's route index (`GET /api/v1`, public, so read
- *  with no sign-in) says whether it is served, so a row skips, owed, on a server that does not
- *  serve it and runs for real on one that does. */
+/** Whether the server serves the issue's tree read, from its public route index. Only rows
+ * that need a converted issue use this gate; the long-words row reads coverage and results. */
 export async function treeReadServed(): Promise<boolean> {
   const response = await fetch(new URL("/api/v1", baseUrl));
   if (!response.ok) throw new Error(`GET /api/v1 failed: ${response.status}`);
@@ -638,5 +639,88 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
       row: thread,
     },
     tree,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The seed of row 5: a 200-word statement and a 200-word check that serves it.
+// ---------------------------------------------------------------------------------------------
+
+/** One long block `seedLongWords` wrote: the node id the tree and the Verification view draw
+ *  its row under (`blockNode`), and the 200 words written into it. */
+export interface LongNode {
+  readonly id: string;
+  readonly words: string;
+}
+
+/** What `seedLongWords` wrote over `seedWholeIssue`, and the two long nodes row 5 reads. */
+export interface LongWordsSeed extends WholeIssueSeed {
+  readonly longCheck: LongNode;
+  readonly longStatement: LongNode;
+}
+
+/**
+ * `seedWholeIssue` with two 200-word blocks appended, as the seed's writer (`asPlanner`): one
+ * statement at the end of the spec and one check at the end of `verification.md` whose `serves`
+ * names that statement. It waits, at most 20 s, until the issue's coverage read counts one check
+ * for the statement and its results read holds the check, so the Verification view reads both on
+ * load rather than the indexing. It reads no tree read.
+ */
+export async function seedLongWords(): Promise<LongWordsSeed> {
+  const seeded = await seedWholeIssue();
+  const { key } = seeded;
+  const [{ slug: specSlug }, { slug: verificationSlug }] = await Promise.all([
+    getArtifact(seeded.specArtifactId),
+    getArtifact(seeded.verificationArtifactId),
+  ]);
+  const statementWords = longWords("stated", 200);
+  const checkWords = longWords("checked", 200);
+  const serves = specBlockRef(key, BLOCKS.longStatement);
+  const statementBlock = `:::requirement{#${BLOCKS.longStatement}}\n${statementWords}\n:::\n`;
+  const checkBlock =
+    `:::check{#${BLOCKS.longCheck} serves="${serves}" surface="browser"` +
+    ' run="bun run e2e -- e2e/issue-page-y.e2e.ts" when="before_merge"' +
+    ' negative_control="Cut either long block at six lines and the row fails."}\n' +
+    `${checkWords}\n:::\n`;
+
+  // Write the statement first, so the check names a block that has already been written.
+  await editArtifact(
+    seeded.specArtifactId,
+    { ops: [{ after: "end", markdown: statementBlock, op: "insert" }] },
+    asPlanner
+  );
+  await editArtifact(
+    seeded.verificationArtifactId,
+    { ops: [{ after: "end", markdown: checkBlock, op: "insert" }] },
+    asPlanner
+  );
+
+  const deadline = Date.now() + SETTLED_WITHIN_MS;
+  for (;;) {
+    const [coverage, results] = await Promise.all([getIssueCoverage(key), getIssueResults(key)]);
+    const covered = (coverage.requirements ?? []).some(
+      (one) => one.block_id === BLOCKS.longStatement && one.checks === 1
+    );
+    const checked = (results.checks ?? []).some((one) => one.block_id === BLOCKS.longCheck);
+    if (covered && checked) break;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `${key}'s coverage and results reads do not hold ${BLOCKS.longStatement} (covered=${covered}) ` +
+          `and ${BLOCKS.longCheck} (checked=${checked}) within ${SETTLED_WITHIN_MS / 1000} s`
+      );
+    }
+    await pause(100);
+  }
+
+  return {
+    ...seeded,
+    longCheck: {
+      id: blockNode(verificationSlug, BLOCKS.longCheck),
+      words: checkWords,
+    },
+    longStatement: {
+      id: blockNode(specSlug, BLOCKS.longStatement),
+      words: statementWords,
+    },
   };
 }
