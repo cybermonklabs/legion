@@ -1420,6 +1420,17 @@ produce_pre_change() {
   note "the pre-change reviewer's transcript: effort \"$(transcript_effort "$transcript")\", $(transcript_thinking "$transcript") thinking blocks, $(grep -c . <<<"$(transcript_signatures "$transcript")" || true) thinking signatures (A10 replays each byte for byte)"
 }
 
+# ask_instruction ISSUE WHAT prints the sentence that ends a task whose agent opens one Dispatch
+# ask on ISSUE, asking a person whether WHAT, and waits (produce_agents, check_a6). It names the
+# command and its flags, as the GPT-6.1 merger's task names `pwd` (questions.json): told only to
+# open one Dispatch ask, the parked child's tester of proof run 45573435593 ran `dispatch ask
+# --issue … --body '…'`, which dispatch refused (`unknown flag --body`; the question is
+# `--question`), and, allowed one tool call, made no other, so it opened no ask and neither A6's
+# second leg nor its control had an ask to reply on.
+ask_instruction() {
+  printf '%s\n' "Then make exactly one tool call: run \`dispatch ask --issue $1 --question '<your question>'\` with your bash tool, asking a person whether $2, and wait."
+}
+
 # produce_agents runs the branch daemon's own agents and stops each the way its kind is made:
 #   architect, the tree's root: suspended, as a person parking the tree leaves it;
 #   planner, on a child: stopped (retired), as a closed child's claim ends;
@@ -1438,8 +1449,8 @@ produce_agents() {
   # With the workflow on, a pane has Dispatch: the architect also opens the ask A1 replies on, and
   # the replacing tester the ask A6's first leg replies on.
   if [ "$mode" = workflow ]; then
-    task+=" Then make exactly one tool call: open one Dispatch ask on ${agent[$store:root]} asking a person whether to keep the 7-minute TTL, and wait."
-    replacement+=" Then make exactly one tool call: open one Dispatch ask on ${agent[$store:tester.issue]} asking a person whether to keep the 20-run rerun as the release gate, and wait."
+    task+=" $(ask_instruction "${agent[$store:root]}" "to keep the 7-minute TTL")"
+    replacement+=" $(ask_instruction "${agent[$store:tester.issue]}" "to keep the 20-run rerun as the release gate")"
   fi
   spawn_agent architect architect "${agent[$store:root]}" "${agent[$store:root]}" "$task"
   spawn_agent planner planner "${agent[$store:root]}" "${agent[$store:planner.issue]}" "$(jq -r .agents.planner.task "$questions_file")"
@@ -2419,7 +2430,7 @@ check_a6() {
     note "the second leg is not run: $why"
   else
     spawn_agent a6_child tester "$root6" "$child6" \
-      "$(jq -r .agents.a6_child.task "$questions_file") Then make exactly one tool call: open one Dispatch ask on $child6 asking a person whether to quarantine TestGarnetFalcon, and wait."
+      "$(jq -r .agents.a6_child.task "$questions_file") $(ask_instruction "$child6" "to quarantine TestGarnetFalcon")"
     await_turn a6_child
     if suspend_agent a6_child; then
       note "the parked child's tester ${agent[$store:a6_child.session]} is suspended; the tree's architect $architect is $(claim_json "$architect" | jq -c '{state, session}')"
