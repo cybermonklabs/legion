@@ -140,7 +140,8 @@ def commands(run: str) -> list:
             rest.append("")
         else:
             rest.append(line)
-    for words in RawScanner().scan("\n".join(rest)):
+    scanner = RawScanner()
+    for words in scanner.scan("\n".join(rest)):
         words = list(words)
         shed_prefix(words, KEYWORDS, runners=())
         if words and words[0] in WRAPPERS:
@@ -148,7 +149,9 @@ def commands(run: str) -> list:
         elif words and words[0].rsplit("/", 1)[-1] in RUNNERS:
             out.append((False, words))
         elif words:
-            out += [(False, w) for w in command_of(words)]
+            # A string the command hands a shell (eval, `bash -c`, a trap) is read with this text's
+            # arrays and aliases.
+            out += [(False, w) for w in command_of(words, scanner)]
     return out
 
 

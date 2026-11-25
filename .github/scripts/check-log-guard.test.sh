@@ -295,6 +295,22 @@ check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 1 proble
 # closes is a call.
 echo "case: the forms that run no command read as none, and those that run one as one, as bash runs them"
 cat >"$work/forms.sh" <<'SH'
+x=$(cat <<'EOF'
+hello
+EOF )
+curl -sS https://example.com/y
+y=$(cat <<'EOF'
+hello
+EOF	)
+curl -sS https://example.com/z
+z=`cat <<'EOF'
+hello
+EOF`
+curl -sS https://example.com/A
+b=(curl -sS https://example.com/B)
+eval '"${b[@]}"'
+((echo "))"; curl -sS https://example.com/C) || true)
+case x in "$(echo ")"; curl -sS https://example.com/D)") : ;; esac
 a=(curl -sS https://example.com/k)
 "${a[@]}"
 coproc curl -sS https://example.com/l
@@ -370,8 +386,8 @@ for client in curl gh jq; do
 done
 : >"$work/ran"
 (cd "$work" && PATH="$work/bin:$PATH" bash -c ". '$script_dir/ci-log-guard.sh'; . ./forms.sh" >/dev/null 2>&1)
-check "bash runs gh three times, curl twenty-two and jq once" \
-  "$(is "$(sort "$work/ran" | uniq -c | tr -s ' \n' ' ')" " 22 curl 3 gh 1 jq ")"
+check "bash runs gh three times, curl twenty-eight and jq once" \
+  "$(is "$(sort "$work/ran" | uniq -c | tr -s ' \n' ' ')" " 28 curl 3 gh 1 jq ")"
 root=$(fixture forms "$(cat "$work/forms.sh")")
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -383,13 +399,15 @@ check "and not the quoted body's" "$(is "$(contains "$out" 'repos/o/w')" false)"
 # e to j: the forms of review 6052147931; k to x: those of 5aef29db5a's two reviews, each a
 # command word a shell builds rather than one written (an array, a coprocess, a trap, a one-line
 # function, a here-string, a piped echo, xargs -I, an alias, an ANSI-C escape, two subshells, a
-# case pattern, env with an expansion of many words, env -S).
-for form in e f g h i j k l m n o p q r s t u v w x; do
+# case pattern, env with an expansion of many words, env -S); y to D: review 6058074395's (a body
+# ended by `EOF )`, `EOF<tab>)` or a backtick close, an array set outside an eval string and run
+# inside it, and a quoted paren in `((` and in a case pattern's substitution).
+for form in e f g h i j k l m n o p q r s t u v w x y z A B C D; do
   check "names the curl of form $form" "$(contains "$out" "step \"Fetch\" runs .[^\`]*https://example.com/$form.")"
 done
 check "names the stderr guard after the string, and not the one inside it" \
   "$(contains "$out" 'runs .ci_log_guard_stderr gh api repos/o/t" ; ci_log_guard_stderr gh api repos/o/u.: ci_log_guard_stderr blocks only stderr')"
-check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 25 problem(s)$')"
+check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 31 problem(s)$')"
 
 echo "case: each routed form passes"
 root=$(fixture routed "$(cat <<'SH'

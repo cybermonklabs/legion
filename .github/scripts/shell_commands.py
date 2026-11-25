@@ -20,18 +20,20 @@ backticks open a command of their own, inside a double-quoted string too, and at
 string and the command around them resume, so a word after the close is that command's (`is
 "$(cut …)" gh` runs `is`); `(…)` is a subshell, whose commands are its own, and `((` opens
 arithmetic only where bash reads it so, the `)` closing its inner `(` followed at once by `)`
-(`((cmd) || true)` is two subshells); an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a
+(`((cmd) || true)` is two subshells), its parentheses counted as bash's matched-pair parse counts
+them, none inside a quoted string (`((echo "))"; cmd) || true)` is two subshells too); an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a
 command, and a redirection's target (`>/dev/null`, `>> "$GITHUB_OUTPUT"`, `2>&1`) is not one of its
 words. A here-document's body, from the newline after its `<<WORD` (or `<<-WORD`, whose body's
-lines may start with tabs) to the line that is WORD (or, inside a `$(…)`, WORD and the `)`, as bash
-5.2 accepts), is a script when a command of the line that writes it is a shell reading its
+lines may start with tabs) to the line that is WORD (or, inside a `$(…)` or a backtick pair, WORD,
+any blanks and the close, as bash 5.2 accepts: `EOF)`, `EOF )`, ``EOF` ``), is a script when a command of the line that writes it is a shell reading its
 standard input, before the `<<` or after it, behind any of RUNNERS (`bash <<'EOT'`, `cat <<'EOT' |
 bash`, `setsid bash <<'EOT'`, `bash /dev/stdin <<'EOT'`, `. /dev/stdin <<EOT`, `xargs -I{} bash -c
 '{}'`: feeds_shell), and is read as one; so is a here-string (`bash <<< 'cmd'`) and the text an
 echo or printf pipes straight into such a shell (`echo 'cmd' | bash`). Any other body is text, but
 with an unquoted WORD bash expands its `$(…)` and backtick substitutions, which are read as the
 commands they run; commands_of's `every_body`, the release check's rule, reads every body as
-commands instead. Arithmetic (`$(( … ))`, `(( … ))`) runs no command but its substitutions
+commands instead, in a string the text hands a shell (`bash -c '…'`, eval, a trap) too. Such a
+string is read by the rules of the text that holds it, knowing its arrays and aliases. Arithmetic (`$(( … ))`, `(( … ))`) runs no command but its substitutions
 (`$(( $(cmd) ))` runs `cmd`). An array's values (`tools+=(curl jq)`), to the first `)` outside
 their quotes and comments, are words of no command, but a substitution among them runs, `<(…)` and
 `>(…)` too. A case pattern runs no command but its substitutions (`case x in "$(cmd)")` runs cmd),
@@ -131,6 +133,16 @@ class Scanner:
         part.every_body = self.every_body
         return part
 
+    def string_scanner(self) -> "Scanner":
+        """A scanner of a string this text hands a shell to run (a `-c` script, eval's words, a
+        trap's string): by the same rules, knowing the arrays and aliases of the whole text, and
+        collecting those the string itself defines."""
+        part = type(self)()
+        part.arrays = {name: [list(values) for values in lists] for name, lists in self.arrays.items()}
+        part.aliases = dict(self.aliases)
+        part.every_body = self.every_body
+        return part
+
     def add(self, char: str) -> None:
         self.word += char
         self.started = True
@@ -185,8 +197,9 @@ class Scanner:
         return expanded
 
     def record(self, words: list[str]) -> None:
-        """Notes the command an ended simple command's words run (command_of)."""
-        self.commands += command_of(words)
+        """Notes the command an ended simple command's words run (command_of), a string it hands a
+        shell (`bash -c`, eval, trap) read by this scanner's rules and with its arrays and aliases."""
+        self.commands += command_of(words, self)
 
     def suspend(self, placeholder: str) -> tuple:
         """The command a `$(…)`, a backtick pair or a process substitution interrupts, which takes
@@ -275,11 +288,12 @@ class Scanner:
             self.heredocs.append((delimiter, strip, quoted))
         return i
 
-    def skip_heredocs(self, text: str, i: int, in_substitution: bool = False) -> int:
+    def skip_heredocs(self, text: str, i: int, closer: str = "") -> int:
         """Reads the body of each here-document pending, from `i`, the start of a line; a body no
         delimiter line ends runs to the end, as bash reads it, and inside a `$(…)` or a process
-        substitution a line that is the delimiter and the substitution's `)` ends it too, as bash
-        5.2 accepts (`EOF)`), the `)` then read as the close. When a command of the line that wrote
+        substitution (`closer` `)`) or a backtick pair (`closer` a backtick) a line that is the
+        delimiter, any blanks and the closer ends it too, as bash 5.2 accepts (`EOF)`, `EOF )`,
+        ``EOF` ``), the closer then read as the substitution's close. When a command of the line that wrote
         them is a shell reading its standard input (`bash <<'EOT'`, `cat <<'EOT' | bash`, `setsid
         bash <<'EOT'`), or when the scanner reads every body (`every_body`), each body is commands,
         read as a script: the line is read whole, before the body, so the shell may stand after the
@@ -296,8 +310,9 @@ class Scanner:
                 content = line.lstrip("\t") if strip else line
                 if content == delimiter:
                     break
-                if in_substitution and content.startswith(delimiter + ")"):
-                    close = i + len(line) - len(content) + len(delimiter)
+                ended = closer and re.match(re.escape(delimiter) + r"[ \t]*" + re.escape(closer), content)
+                if ended:
+                    close = i + len(line) - len(content) + ended.end() - 1
                     break
                 i = after
             body = text[start:i]
@@ -348,11 +363,8 @@ class Scanner:
             self.pattern += "x"
             return len(text) if end < 0 else end + 1
         if char == '"':
-            j = i + 1
-            while j < len(text) and text[j] != '"':
-                j += 2 if text[j] == "\\" else 1
             self.pattern += "x"
-            return j + 1
+            return double_quote_end(text, i)
         if char == "\\":
             self.pattern += "x"
             return i + 2
@@ -371,6 +383,8 @@ class Scanner:
             if "=(" in text or "alias" in text:
                 first = type(self)()
                 first.collecting = first.prepared = True
+                first.every_body = self.every_body
+                first.arrays, first.aliases = self.arrays, self.aliases
                 first.scan(text)
                 self.arrays, self.aliases = first.arrays, first.aliases
         quote = None
@@ -494,8 +508,10 @@ class Scanner:
                 self.end_command()
                 self.read_line_strings()
                 if self.heredocs:
-                    in_substitution = any(kind == "paren" and saved is not None for kind, _, saved in open_subs)
-                    i = self.skip_heredocs(text, i + 1, in_substitution)
+                    # The innermost substitution open, whose close can end a body (skip_heredocs).
+                    inner = next((kind for kind, _, saved in reversed(open_subs)
+                                  if kind == "tick" or (kind == "paren" and saved is not None)), "")
+                    i = self.skip_heredocs(text, i + 1, {"tick": "`", "paren": ")"}.get(inner, ""))
                     continue
                 self.end_line()
             elif char == ";" and self.cases and after in (";", "&"):
@@ -586,18 +602,31 @@ def printed_text(words: list[str]) -> str:
 def is_arithmetic(text: str, i: int) -> bool:
     """Whether the `((` at `i` opens arithmetic, as bash decides it: the `)` that closes its inner
     `(` is followed at once by a `)`. Otherwise it is a subshell in a subshell, or a command
-    substitution of one (`((cmd) || true)`, `$((cmd) | sort)`)."""
+    substitution of one (`((cmd) || true)`, `$((cmd) | sort)`, `((echo "))"; cmd) || true)`)."""
     inner = arithmetic_end(text, i + 1)
     return text[inner:inner + 1] == ")"
 
 
 def arithmetic_end(text: str, i: int) -> int:
-    """Just past the `))` that closes the `((` at `i`, counting the parentheses between."""
+    """Just past the `)` that closes the `(` at `i` (for a `((`, past its `))`), counting the
+    parentheses between as bash's matched-pair parse does: none inside a `'…'` or `"…"` string
+    (double_quote_end) or after a backslash."""
     depth = 0
     while i < len(text):
-        if text[i] == "(":
+        char = text[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char == "'":
+            end = text.find("'", i + 1)
+            i = len(text) if end < 0 else end + 1
+            continue
+        if char == '"':
+            i = double_quote_end(text, i)
+            continue
+        if char == "(":
             depth += 1
-        elif text[i] == ")":
+        elif char == ")":
             depth -= 1
             if depth == 0:
                 return i + 1
@@ -605,10 +634,32 @@ def arithmetic_end(text: str, i: int) -> int:
     return i
 
 
+def double_quote_end(text: str, i: int) -> int:
+    """Just past the `"` that closes the double-quoted string at `i`: a backslash escapes the
+    character after it, and a `$(…)` or a backtick pair inside opens text of its own, whose quotes
+    are its own (`"$(echo ")")"` is one string)."""
+    i += 1
+    while i < len(text):
+        char = text[i]
+        if char == "\\":
+            i += 2
+        elif char == '"':
+            return i + 1
+        elif char == "$" and text[i + 1:i + 2] == "(":
+            i = arithmetic_end(text, i + 1)
+        elif char == "`":
+            end = text.find("`", i + 1)
+            i = len(text) if end < 0 else end + 1
+        else:
+            i += 1
+    return i
+
+
 def substitutions(text: str) -> list[str]:
     """The text inside each outermost `$(…)` (not `$((`) and backtick pair of `text`, which bash
-    expands in an unquoted here-document's body and in arithmetic. A quote there is a character,
-    not a quote, so the parentheses are counted as written, as bash counts them in a body."""
+    expands in an unquoted here-document's body, in arithmetic and in a case pattern. Outside a
+    substitution a quote there is a character, not a quote; inside one, the substitution's own
+    quotes hold its parentheses, as bash's parse of it does (arithmetic_end)."""
     found, i = [], 0
     while i < len(text):
         if text[i] == "\\":
@@ -781,17 +832,22 @@ def quoted_line_starts(text: str) -> dict:
     return scanner.line_quotes
 
 
-# A word that is wholly an expansion of many words: `$@`, `$*`, `${@}`, `${name[@]}`, `${name[*]}`.
-WHOLE_EXPANSION = re.compile(r"\$[@*]|\$\{[@*]\}|\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]\}")
+# A word that is wholly an expansion of many words: `$@`, `$*`, `${@}`, `${name[@]}`, `${name[*]}`,
+# `${!name[@]}`, and an operator form such as `set -u`'s `${name[@]+"${name[@]}"}`, its quotes taken
+# off as the scanner takes them.
+WHOLE_EXPANSION = re.compile(r"\$[@*]|\$\{[@*]\}|\$\{!?[A-Za-z_][A-Za-z0-9_]*\[[@*]\]"
+                             r"(?::?[-+=?](?:[^{}]|\$\{[^{}]*\})*)?\}")
 
 
-def commands_of(run: str, every_body: bool = False) -> list[list[str]]:
+def commands_of(run: str, every_body: bool = False, within: "Scanner | None" = None) -> list[list[str]]:
     """Each simple command of a `run:`, as its words with the command first. With `every_body`
     (check-release-credentials.sh's rule), every here-document body is read as commands, whatever
     its line runs, so a body that reaches a shell by any route the reader does not follow
-    (`eval "$(cat <<'EOT' …)"`, `. <(cat <<'EOT' …)`, a runner it does not know) is read too."""
-    scanner = Scanner()
-    scanner.every_body = every_body
+    (`eval "$(cat <<'EOT' …)"`, `. <(cat <<'EOT' …)`, a runner it does not know) is read too. A
+    string that a text `within` hands a shell is read by that text's scanner's rules
+    (string_scanner)."""
+    scanner = within.string_scanner() if within is not None else Scanner()
+    scanner.every_body = scanner.every_body or every_body
     return scanner.scan(EXPRESSION.sub("EXPR", run))
 
 
@@ -821,7 +877,7 @@ def shed_prefix(words: list[str], keywords: frozenset | set = frozenset(), runne
 
 
 
-def command_of(words: list[str]) -> list[list[str]]:
+def command_of(words: list[str], within: "Scanner | None" = None) -> list[list[str]]:
     """The command the words run, after the assignments and keywords before it (env, exec and time
     with their options, as strip_runner reads them; `function NAME`, which a body on the same line
     follows; coproc, with the NAME a compound command after it takes): the words from the command
@@ -830,7 +886,8 @@ def command_of(words: list[str]) -> list[list[str]]:
     (`sh -c 'bun install && go build'` runs `bun install` and `go build`); or, when it is `eval`,
     each command of the words after it, joined (`eval "bun install"` and `eval bun install` both
     run `bun install`); or, when it is `trap`, each command of the string it sets (`trap 'curl …'
-    EXIT` runs curl when the shell exits)."""
+    EXIT` runs curl when the shell exits). Each such string is read by the rules, the arrays and
+    the aliases of the scanner `within`, the one reading the text that holds it."""
     shed_prefix(words)
     if not words:
         return []
@@ -838,9 +895,9 @@ def command_of(words: list[str]) -> list[list[str]]:
         rest = words[1:]
         if rest[:1] == ["--"]:
             rest = rest[1:]
-        return commands_of(rest[0]) if rest and not rest[0].startswith("-") else []
+        return commands_of(rest[0], within=within) if rest and not rest[0].startswith("-") else []
     if words[0] == "eval":
-        return commands_of(" ".join(words[1:]))
+        return commands_of(" ".join(words[1:]), within=within)
     if words[0] not in INTERPRETERS:
         return [words]
     words.pop(0)
@@ -849,7 +906,7 @@ def command_of(words: list[str]) -> list[list[str]]:
         if flag.startswith("--"):
             continue
         if "c" in flag:
-            return commands_of(words[0]) if words else []
+            return commands_of(words[0], within=within) if words else []
         if flag.endswith(("o", "O")) and words:
             words.pop(0)
-    return command_of(words)
+    return command_of(words, within)

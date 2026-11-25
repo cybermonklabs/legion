@@ -607,6 +607,105 @@ for step in 'Eval of a substitution' 'Bash -c of a substitution' 'Source of a pr
   check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
 done
 
+# The forms of review 6058074395 and of 5aef29db5a's reviews: a string handed a shell (`bash -c`,
+# eval) is read by the release check's own every-body rule and with the arrays of the text around
+# it; a quoted paren counts for nothing in `((` or in a case pattern's substitution, as bash parses
+# them; and each command word a shell builds that the text says what it is: a trap's string, a
+# coprocess, a one-line function, a here-string, an echo piped to a shell, xargs -I running a
+# shell's script, an alias, an ANSI-C escape, env -S, and env's `set -u` form of an array. Each runs
+# bunx in a credentialed job under bash, and each is refused by name.
+echo "case: the strings, quoted parens and built command words that run bunx, in a credentialed job"
+root=$(fixture built-word-forms)
+add_publish_step "$root" "$(cat <<'YAML'
+      - name: Bash -c of eval of a body
+        run: |
+          bash -c 'eval "$(cat <<"EOT"
+          bunx evil-package
+          EOT
+          )"'
+      - name: Eval of eval of a body
+        run: |
+          eval 'eval "$(cat <<"EOT"
+          bunx evil-package
+          EOT
+          )"'
+      - name: Bash -c of a body ended by EOF paren
+        run: |
+          bash -c 'x=$(cat <<"EOF"
+          bunx evil-package
+          EOF)
+          eval "$x"'
+      - name: Eval of a body that sets an array
+        run: |
+          eval "$(cat <<'EOT'
+          a=(bunx evil-package)
+          "${a[@]}"
+          EOT
+          )"
+      - name: Piped body that sets an array
+        run: |
+          cat <<'EOT' |
+          a=(bunx evil-package)
+          "${a[@]}"
+          EOT
+          bash
+      - name: Quoted paren in two subshells
+        run: |
+          ((echo "))"; bunx evil-package) || true)
+      - name: Quoted paren in a case pattern
+        run: |
+          case x in "$(echo ")"; bunx evil-package)") : ;; esac
+      - name: Trap
+        run: |
+          trap 'bunx evil-package' EXIT
+      - name: Coprocess
+        run: |
+          coproc bunx evil-package
+      - name: Named coprocess
+        run: |
+          coproc C { bunx evil-package; }
+      - name: One-line function
+        run: |
+          function f { bunx evil-package; }
+          f
+      - name: Here-string
+        run: |
+          bash <<< 'bunx evil-package'
+      - name: Echo piped to a shell
+        run: |
+          echo 'bunx evil-package' | bash
+      - name: Xargs running a shell script
+        run: |
+          cat <<'EOT' | xargs -I{} bash -c '{}'
+          bunx evil-package
+          EOT
+      - name: Alias
+        run: |
+          shopt -s expand_aliases
+          alias b='bunx evil-package'
+          b
+      - name: ANSI-C escape
+        run: |
+          $'\x62unx' evil-package
+      - name: Env -S
+        run: |
+          env -S 'bunx evil-package'
+      - name: Env with a set -u array
+        run: |
+          env ${args[@]+"${args[@]}"} bash <<'EOT'
+          bunx evil-package
+          EOT
+YAML
+)"$'\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Bash -c of eval of a body' 'Eval of eval of a body' 'Bash -c of a body ended by EOF paren' \
+  'Eval of a body that sets an array' 'Piped body that sets an array' 'Quoted paren in two subshells' \
+  'Quoted paren in a case pattern' 'Trap' 'Coprocess' 'Named coprocess' 'One-line function' 'Here-string' \
+  'Echo piped to a shell' 'Xargs running a shell script' 'Alias' 'ANSI-C escape' 'Env -S' 'Env with a set -u array'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
 echo "case: a built binary under out/ in a credentialed job"
 root=$(fixture out-path)
 add_publish_step "$root" $'      - name: Smoke test\n        run: out/legion version\n'
