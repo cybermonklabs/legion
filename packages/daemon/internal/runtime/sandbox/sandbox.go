@@ -53,6 +53,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -128,6 +129,10 @@ type Runtime struct {
 	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
 	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
 	keptVolumeBound time.Duration
+	// clock is what the runtime's waits run on: each wait's budget and rechecks (await) and a role
+	// launcher's wait's own deadline (awaitRoleLauncher). clock.Real outside the tests; a test
+	// that asserts which of those deadlines a launch meets hands it a clocktest.Fake.
+	clock clock.Clock
 	// helloBindBound is how long a binding of a pod's launchers at a hello may hold the pod's
 	// launch turn (bindCurrentPod): apiTimeout, the longest a hello waits for it, which a test sets
 	// short.
@@ -466,7 +471,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, clock: clock.Real(), helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
@@ -737,14 +742,17 @@ func (r *Runtime) notify(obj any) {
 	}
 }
 
-// await re-checks done after every informer event, and every recheck interval, until it reports
-// true, fails, or budget passes; what names the wait in the timeout. done is handed ctx bounded by
-// budget, and that one bound is the wait's: a request done makes, a launch's waiting out an
-// overloaded server included (resend), ends with the wait rather than up to a boot timeout past it.
+// await re-checks done after every informer event, and recheckInterval after each check that saw
+// no event since, until it reports true, fails, or budget passes; what names the wait in the
+// timeout. done is handed ctx bounded by budget, and that one bound is the wait's: a request done
+// makes, a launch's waiting out an overloaded server included (resend), ends with the wait rather
+// than up to a boot timeout past it. The budget and the recheck run on r.clock; the recheck is
+// armed anew after each check, so on a test's fake clock a recheck armed recheckInterval past the
+// fake's moment says a check ran at that moment.
 func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, done func(context.Context) (bool, error)) error {
-	bounded, cancel := context.WithTimeout(ctx, budget)
+	bounded, cancel := r.clock.WithTimeout(ctx, budget)
 	defer cancel()
-	recheck := time.NewTicker(recheckInterval)
+	recheck := r.clock.NewTimer(recheckInterval)
 	defer recheck.Stop()
 	for {
 		r.mu.Lock()
@@ -754,6 +762,7 @@ func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, 
 		if err != nil || ok {
 			return err
 		}
+		recheck.Reset(recheckInterval)
 		select {
 		case <-bounded.Done():
 			if ctx.Err() != nil {
@@ -761,7 +770,7 @@ func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, 
 			}
 			return fmt.Errorf("timed out after %s waiting for %s", budget, what)
 		case <-changed:
-		case <-recheck.C:
+		case <-recheck.C():
 		}
 	}
 }

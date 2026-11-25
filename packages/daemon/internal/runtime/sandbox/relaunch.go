@@ -449,7 +449,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err != nil {
 		return fail("wait for its role launcher", err)
 	}
-	starting, cancel := context.WithDeadline(bounded, deadline.Add(r.terminationGrace))
+	starting, cancel := r.clock.WithDeadline(bounded, deadline.Add(r.terminationGrace))
 	defer cancel()
 	if ended {
 		// The pod this launch waited on has ended — gone, replaced, terminal, or its init container
@@ -744,7 +744,7 @@ func (r *Runtime) startBound(s *sandbox) time.Duration {
 // its start bound alone, and the failure names that bound.
 func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator, start time.Duration) (bool, time.Time, error) {
 	what := "role launcher " + string(loc.Claim)
-	began := time.Now()
+	began := r.clock.Now()
 	deadline := began.Add(start)
 	var first time.Time
 	ended := false
@@ -756,7 +756,7 @@ func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator, st
 	backstop := launcherBackstop(start, r.bootTimeout, r.ProvisionBound())
 	err := r.await(ctx, backstop, what, func(context.Context) (bool, error) {
 		view, err := r.view(loc.Sandbox.Name)
-		if serverBusy(err) && time.Now().Before(deadline) {
+		if serverBusy(err) && r.clock.Now().Before(deadline) {
 			// A store whose list or watch the API server answers overloaded is waited out within the
 			// wait's deadline, as the launch's own requests are (resend): the informer lists and
 			// watches again by itself.
@@ -773,7 +773,7 @@ func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator, st
 		if _, ready := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); ready {
 			return true, nil
 		}
-		now := time.Now()
+		now := r.clock.Now()
 		if !now.Before(deadline) {
 			return false, fmt.Errorf("timed out after %s waiting for %s%s", deadline.Sub(began), what, r.stillFetching(view.pod))
 		}

@@ -28,6 +28,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -1354,14 +1355,16 @@ func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
 // probe path already reads it. The timeout carries it too, so the operator reads one line instead
 // of going to the cluster for the condition the daemon had in its store all along.
 func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
-	// Not parallel: the error reads the controller's condition from the runtime's store when the
-	// boot timeout runs out (waitedOut), so the store must catch up with the patch inside that
-	// span, which other tests' load would move.
+	t.Parallel()
 	blocked := metav1.Condition{
 		Type: conditionReady, Status: metav1.ConditionFalse, Reason: "PodSchedulingBlocked",
 		Message: "0/3 nodes are available: 3 Insufficient cpu.",
 	}
-	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
+	// The error reads the controller's condition from the runtime's store when the wait for the
+	// new pod runs out (waitedOut), so the launch's waits run on the rig's fake clock, moved past
+	// that wait's boot timeout only once the store holds the condition.
+	fc := clocktest.New(rigNow)
+	g := newRig(t, nil, withClock(fc), withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
 	g.hold.Store(true)
 	// The controller reports on the generation it observed, and a condition of an earlier one is
 	// not read as this launch's, so the rig writes it as the controller would: after the Running
@@ -1389,7 +1392,20 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 		return true, patched, g.dyn.Tracker().Update(sandboxGVR, patched, testNamespace)
 	})
 
-	_, err := g.r.Spawn(g.ctx, workerSpec(t))
+	result := make(chan error, 1)
+	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
+	name, waiting := SandboxName(workerToken), fc.Now().Add(g.r.bootTimeout)
+	g.eventually("the store to hold the controller's condition, and the launch to wait for its new pod", func() bool {
+		u, err := g.r.storedObject(name)
+		if err != nil || u == nil {
+			return false
+		}
+		conditions, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
+		return len(conditions) > 0 && slices.ContainsFunc(fc.Armed(), waiting.Equal)
+	})
+	fc.Advance(g.r.bootTimeout)
+
+	err := testwait.Receive(t, "the launch", result)
 
 	if err == nil {
 		t.Fatal("Spawn returned no error though its pod never came")

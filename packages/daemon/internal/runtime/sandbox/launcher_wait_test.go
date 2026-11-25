@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -453,34 +454,82 @@ func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 
 // The cap is counted from the first time the wait sees the pod provisioning, not from the wait's
 // start: an image pull before workspace-fetch does not eat into the fetch's bound. With a 2 s boot
-// timeout and a 3 s bound, the pod pulls for 1.5 s and provisions until 5.5 s after it appeared,
-// past the 5 s a cap from the wait's start would allow; its launcher connects then, and the launch
-// starts the role.
+// timeout and a 3 s bound, the pod pulls for the wait's first second and provisions until 5.5 s
+// after the wait began, past the 5 s a cap from the wait's start would allow; its launcher
+// connects then, and the launch starts the role. The wait runs on the rig's fake clock, moved one
+// recheck at a time once the wait has checked what the stores hold (step), so the wait first sees
+// the pod provisioning at 1 or 1.5 s on any machine, and its cap is 6 or 6.5 s.
 func TestALaunchCountsItsProvisioningBoundFromTheFirstInitContainer(t *testing.T) {
-	// Not parallel: it moves its pod into provisioning by the wall clock 500 ms before the 2 s boot
-	// timeout runs out, a window other tests' load could make the runtime miss.
-	g := newRig(t, nil)
+	t.Parallel()
+	fc := clocktest.New(rigNow)
+	g := newRig(t, nil, withClock(fc))
 	g.autoStart.Store(false)
 	g.r.provisionBound = 3 * time.Second
 	spec := workerSpec(t)
 	result := make(chan error, 1)
 	go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
+	ended := func() bool { return len(result) > 0 }
 	name := SandboxName(spec.Claim)
-	appeared := g.pendingPod(name, pulling)
-	time.Sleep(time.Until(appeared.Add(1500 * time.Millisecond)))
-	g.update(g.pod(name), fetching)
-	time.Sleep(time.Until(appeared.Add(5500 * time.Millisecond)))
-	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
-	g.launcher(spec.Claim)
+	g.pendingPod(name, pulling)
+	began := g.launcherWaitBegun(fc, g.r.bootTimeout)
 
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatalf("Spawn = %v %s after its pod appeared, want the role started", err, time.Since(appeared).Round(time.Millisecond))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the launch did not start the role once its launcher connected")
+	g.stepTo(fc, began.Add(time.Second), ended)
+	g.provisions(name)
+	g.stepTo(fc, began.Add(5500*time.Millisecond), ended)
+	if ended() {
+		t.Fatalf("Spawn ended %s into its wait for the launcher of a pod still provisioning, before its cap: %v", fc.Now().Sub(began), <-result)
 	}
+	g.launcherConnects(spec.Claim, name)
+	if err := testwait.Receive(t, "the launch", result); err != nil {
+		t.Fatalf("Spawn = %v %s into its wait, want the role started", err, fc.Now().Sub(began))
+	}
+}
+
+// launcherWaitBegun waits until the launch under test is in its wait for its role launcher
+// (awaitRoleLauncher) on fc, the clock its rig's runtime waits on (withClock), and returns the
+// moment the wait began: fc stands still until the test moves it, and the wait's backstop
+// (launcherBackstop), given start, the pod's start bound, is the one deadline that far past it.
+func (g *rig) launcherWaitBegun(fc *clocktest.Fake, start time.Duration) time.Time {
+	g.t.Helper()
+	began := fc.Now()
+	backstop := began.Add(launcherBackstop(start, g.r.bootTimeout, g.r.ProvisionBound()))
+	testwait.Eventually(g.t, "the launch's wait for its role launcher", func() bool { return slices.ContainsFunc(fc.Armed(), backstop.Equal) })
+	return began
+}
+
+// stepTo moves fc one recheck at a time (step) until it stands at at, or the wait under test is
+// over.
+func (g *rig) stepTo(fc *clocktest.Fake, at time.Time, ended func() bool) {
+	g.t.Helper()
+	for fc.Now().Before(at) && !ended() {
+		g.step(fc, ended)
+	}
+}
+
+// provisions moves the pod named name into workspace-fetch and waits until the runtime's store
+// holds it there, so the next check of the launch's wait sees it provisioning.
+func (g *rig) provisions(name string) {
+	g.t.Helper()
+	g.update(g.pod(name), fetching)
+	g.eventually("the store to hold the pod in workspace-fetch", func() bool {
+		pod := g.r.storedPod(name)
+		return pod != nil && provisioning(pod)
+	})
+}
+
+// launcherConnects ends provisioning for the pod named name, connects token's launcher, and once
+// the runtime holds the launcher's state nudges the pod, so the launch's wait reads it with fc
+// standing still: the launcher's state wakes no wait, and a recheck comes only when fc moves.
+func (g *rig) launcherConnects(token claim.Token, name string) {
+	g.t.Helper()
+	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
+	g.launcher(token)
+	uid := string(g.pod(name).UID)
+	g.eventually("the runtime to hold the launcher's state", func() bool {
+		_, ready := g.r.launchers.state(token, uid)
+		return ready
+	})
+	g.update(g.pod(name), func(*corev1.Pod) {})
 }
 
 // neverStartedWarning is what a launch logs when it replaces a pod that its node never started
@@ -508,13 +557,13 @@ const neverStartedWarning = "sandbox runtime: replacing a pod older than its sta
 // On the wall clock, the rig sets the boot timeout and the kept-volume bound short. A launch whose
 // launcher never connects then gives up at its pod's start bound and names it: the kept-volume
 // bound for a kept pod where that bound is longer, the boot timeout for a pod with an ephemeral
-// volume in the same rig, and the boot timeout for a kept pod where the timeout is longer. When
-// the wait first sees a kept pod provisioning just before its start bound, the wait runs on to the
-// deadline that launcherDeadline sets, and the wait's backstop does not end it first. With
-// keep_volume on, the launch try's own bound (LaunchBound) counts a start of 7 minutes.
+// volume in the same rig, and the boot timeout for a kept pod where the timeout is longer. On the
+// rig's fake clock, when the wait first sees a kept pod provisioning just before its start bound,
+// the wait runs on to the deadline that launcherDeadline sets, and the wait's backstop does not
+// end it first. With keep_volume on, the launch try's own bound (LaunchBound) counts a start of 7
+// minutes.
 func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
-	// Not parallel: a subtest moves its pod into provisioning by the wall clock 1 s before an 8 s
-	// start bound runs out, a window other tests' load could make the runtime miss.
+	t.Parallel()
 	const boot, infraBoot = 120 * time.Second, 600 * time.Second
 	for _, tc := range []struct {
 		name string
@@ -684,15 +733,17 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 		})
 	}
 
-	// The start bound is 8 s and ProvisionBound 3 s. The wait first sees the pod provisioning 7 s
-	// after the pod appeared, and from then on its deadline is the boot timeout after the last time
+	// The start bound is 8 s and ProvisionBound 3 s. The wait first sees the pod provisioning at
+	// 6.5 or 7 s of its own, and from then on its deadline is the boot timeout after the last time
 	// it sees the pod provisioning, up to the boot timeout plus ProvisionBound after the first
-	// (launcherDeadline): 12 s. The launcher connects at 10 s, past the 8 s backstop that twice
-	// the boot timeout would set (2*boot + ProvisionBound + 2*recheckInterval). Each step has a
-	// margin of 1 s or more, so a loaded runner does not move one past the next.
+	// (launcherDeadline): 11.5 or 12 s. The launcher connects at 10 s, past the 8 s backstop that
+	// twice the boot timeout would set (2*boot + ProvisionBound + 2*recheckInterval), and before the
+	// 14 s the start bound sets. The wait runs on the rig's fake clock, moved one recheck at a time
+	// once the wait has checked what the stores hold (step), so no step depends on the machine.
 	t.Run("a kept pod first seen provisioning just before its start bound", func(t *testing.T) {
 		const boot, kept, provision = 2 * time.Second, 8 * time.Second, 3 * time.Second
-		g := newRig(t, nil, withOptions(func(o *Options) {
+		fc := clocktest.New(rigNow)
+		g := newRig(t, nil, withClock(fc), withOptions(func(o *Options) {
 			keptVolumes(SandboxMicroVM)(o)
 			o.BootTimeout = boot
 		}))
@@ -702,22 +753,19 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 		name := SandboxName(spec.Claim)
 		result := make(chan error, 1)
 		go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-		appeared := g.pendingPod(name, pulling)
-		time.Sleep(time.Until(appeared.Add(kept - time.Second)))
-		g.update(g.pod(name), fetching)
-		time.Sleep(time.Until(appeared.Add(2*boot + provision + 2*recheckInterval + 2*time.Second)))
-		g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
-		g.launcher(spec.Claim)
-		// The launcher's state wakes no wait: this update does, so the wait reads it at once.
-		g.update(g.pod(name), func(*corev1.Pod) {})
+		ended := func() bool { return len(result) > 0 }
+		g.pendingPod(name, pulling)
+		began := g.launcherWaitBegun(fc, kept)
 
-		select {
-		case err := <-result:
-			if err != nil {
-				t.Fatalf("Spawn = %v %s after its pod appeared, want the role started", err, time.Since(appeared).Round(time.Millisecond))
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("the launch did not start the role once its launcher connected")
+		g.stepTo(fc, began.Add(kept-time.Second-recheckInterval), ended)
+		g.provisions(name)
+		g.stepTo(fc, began.Add(10*time.Second), ended)
+		if ended() {
+			t.Fatalf("Spawn ended %s into its wait for the launcher of a pod still provisioning, before its cap: %v", fc.Now().Sub(began), <-result)
+		}
+		g.launcherConnects(spec.Claim, name)
+		if err := testwait.Receive(t, "the launch", result); err != nil {
+			t.Fatalf("Spawn = %v %s into its wait, want the role started", err, fc.Now().Sub(began))
 		}
 		if !ownsKeptVolume(g.sandbox(name)) {
 			t.Fatal("the issue's Sandbox owns no kept volume")
