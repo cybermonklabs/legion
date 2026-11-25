@@ -198,8 +198,8 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 		s.afterReadWarm(artifactID)
 	}
 
-	timer := time.NewTimer(s.markWait)
-	defer timer.Stop()
+	wait, stop := s.markTimer(s.markWait)
+	defer stop()
 	final := false
 	for {
 		tree, err := s.anchorTree(ctx, artifactID, fromStore)
@@ -219,12 +219,19 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 
 		select {
 		case <-updates:
-		case <-timer.C:
+		case <-wait:
 			final = true
 		case <-ctx.Done():
 			return Anchored{}, ctx.Err()
 		}
 	}
+}
+
+// wallMarkTimer is the timer VerifyMark arms for a browser's update (Service.markTimer): a wall
+// timer of d, and the function that stops it.
+func wallMarkTimer(d time.Duration) (<-chan time.Time, func() bool) {
+	timer := time.NewTimer(d)
+	return timer.C, timer.Stop
 }
 
 // anchorTree is the document a mark is verified against: the stored document for a comment's

@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,26 +99,87 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		browserMark(t, service, artifactID, "proofComment", "b1", "brown")
-	}()
-	anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
-	if err != nil || anchored.Quote != "brown" {
-		t.Fatalf("VerifyMark = %q, %v", anchored.Quote, err)
+	// VerifyMark's wait for a browser's update is the row's own (markTimer): each arm hands the
+	// row the duration it was armed with and the channel that fires it. So the row writes the
+	// browser's mark only once the first call's wait is armed, and the second call's wait fires
+	// only when the row fires it: no verdict reads a wall clock or races a real timer. (A 1 s
+	// bound on the whole call failed under the package's parallel load in envoy-go-race-docs job
+	// 138998017546, and a browser write 100 ms after the call's start raced its real 300 ms timer.)
+	type armedWait struct {
+		d    time.Duration
+		fire func()
+	}
+	arms := make(chan armedWait, 2)
+	var fires []func()
+	service.markTimer = func(d time.Duration) (<-chan time.Time, func() bool) {
+		fired := make(chan time.Time)
+		var once sync.Once
+		fire := func() { once.Do(func() { close(fired) }) }
+		arms <- armedWait{d: d, fire: fire}
+		return fired, func() bool { return true }
+	}
+	// A row that fails before it fires a wait leaves no call waiting on it.
+	testcleanup.Add(t, func() {
+		for _, fire := range fires {
+			fire()
+		}
+	})
+	awaitArm := func(call string) armedWait {
+		t.Helper()
+		select {
+		case arm := <-arms:
+			fires = append(fires, arm.fire)
+			if arm.d != 300*time.Millisecond {
+				t.Errorf("VerifyMark of %s armed its wait for %v, want MarkWait, 300ms", call, arm.d)
+			}
+			return arm
+		case <-time.After(roomWait(t)):
+			t.Fatalf("VerifyMark of %s armed no wait", call)
+			return armedWait{}
+		}
 	}
 
-	// The call answers ErrAnchorMissing only from the look after its MarkWait timer fires, so it
-	// takes at least MarkWait. What it takes beyond that is the machine's: the owner's read, the
-	// room's load and the looks cost what the package's parallel tests leave them (2.08 s against
-	// a 300 ms MarkWait in envoy-go-race-docs job 138998017546). So the upper bound is only the
-	// package's hang guard (roomWait), never a multiple of MarkWait.
-	started := time.Now()
-	if _, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never"); !errors.Is(err, ErrAnchorMissing) {
-		t.Fatalf("missing mark err = %v", err)
+	// A mark the browser writes while the call waits is the call's answer, with the wait unfired.
+	type verified struct {
+		anchored Anchored
+		err      error
 	}
-	if waited, bound := time.Since(started), roomWait(t); waited < 250*time.Millisecond || waited > bound {
-		t.Fatalf("waited %v, want at least MarkWait (300ms) and at most the hang guard %v", waited, bound)
+	found := make(chan verified, 1)
+	go func() {
+		anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
+		found <- verified{anchored, err}
+	}()
+	awaitArm("the mark the browser writes")
+	browserMark(t, service, artifactID, "proofComment", "b1", "brown")
+	select {
+	case got := <-found:
+		if got.err != nil || got.anchored.Quote != "brown" {
+			t.Fatalf("VerifyMark = %q, %v", got.anchored.Quote, got.err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("VerifyMark did not answer the mark the browser wrote while it waited")
+	}
+
+	// A mark the document never takes is answered ErrAnchorMissing, and only once the wait fires.
+	var fired atomic.Bool
+	missing := make(chan error, 1)
+	go func() {
+		_, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never")
+		if !fired.Load() {
+			err = fmt.Errorf("answered %v before its wait fired", err)
+		}
+		missing <- err
+	}()
+	wait := awaitArm("a mark the document never takes")
+	fired.Store(true)
+	wait.fire()
+	select {
+	case err := <-missing:
+		if !errors.Is(err, ErrAnchorMissing) {
+			t.Fatalf("VerifyMark of a mark the document never takes = %v, want ErrAnchorMissing once its wait fired", err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("VerifyMark did not answer once its wait fired")
 	}
 }
 

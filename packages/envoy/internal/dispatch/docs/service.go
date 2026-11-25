@@ -431,6 +431,10 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
+	// markTimer arms the wait VerifyMark gives a browser's update, markWait long: a wall timer
+	// (wallMarkTimer), set in New. Tests replace it, as they replace now, to read the duration it
+	// was armed with and to fire it themselves.
+	markTimer func(time.Duration) (<-chan time.Time, func() bool)
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks).
 	now      func() time.Time
 	settleWG sync.WaitGroup
@@ -911,6 +915,7 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
+		markTimer:         wallMarkTimer,
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
