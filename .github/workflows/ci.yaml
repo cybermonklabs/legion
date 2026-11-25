@@ -64,7 +64,6 @@ env:
       "envoy-go-race": "envoy_go_race",
       "envoy-go-race-api": "envoy_go_race_api",
       "envoy-go-race-docs": "envoy_go_race_docs",
-      "envoy-go-docs-finalizers": "envoy_go_race_docs",
       "dispatch-memory": "dispatch_memory",
       "dispatch-multiprocess": "dispatch_multiprocess",
       "dispatch-two-builds": "dispatch_two_builds",
@@ -793,18 +792,6 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # why: .github/ci-notes/ci.md#the-cleanup-detector-run-of-the-document-service
-  envoy-go-docs-finalizers:
-    needs: changes
-    if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    permissions:
-      contents: read
-      actions: read
-      checks: write
-    uses: ./.github/workflows/ci-job-envoy-go-docs-finalizers.yaml
-    with:
-      ci-ok-changes: ${{ toJSON(needs.changes) }}
-
   # why: .github/ci-notes/ci.md#the-real-process-memory-tests-and-why-they-are-a-job-of-their-own
   dispatch-memory:
     needs: changes
@@ -1076,7 +1063,6 @@ jobs:
       - envoy-go-race-api
       - envoy-go-claim-model
       - envoy-go-race-docs
-      - envoy-go-docs-finalizers
       - dispatch-memory
       - dispatch-multiprocess
       - dispatch-two-builds
