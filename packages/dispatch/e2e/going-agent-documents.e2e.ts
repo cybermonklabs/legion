@@ -171,7 +171,7 @@ test("edit the spec directly gives a row that edits the spec", async ({ browser 
     await openBarOver(page, `/issues/${issue}`);
     await askTheAgent(page, words);
     await expect(planRows(planCard(page))).toHaveCount(1, { timeout: RUN_STEPS_MS });
-    await expect(planRows(planCard(page))).toContainText("Edit the text of spec");
+    await expect(planRows(planCard(page))).toContainText(`Edit the text of the spec of ${issue}`);
     await approveAndFinish(page);
     expect((await getIssueArtifactText(issue, "spec")).markdown).toContain("numbered from 1.");
   });

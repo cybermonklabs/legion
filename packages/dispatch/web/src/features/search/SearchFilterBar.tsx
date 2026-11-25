@@ -206,13 +206,15 @@ export function SearchFilterBar({
       ) : null}
       {filters.author === undefined ? (
         // The pill names its field in the dark words the other pills use and takes the author
-        // after it, its "Anyone" in the grey of their values (review M6), as wide as its words
-        // and ending in the caret theirs end in (review a6), so the four read alike.
+        // after it, its "Anyone" in the grey of their values (review M6), ending in the caret
+        // theirs end in (review a6), so the four read alike. The box is as wide as its words and
+        // no wider - no width kept past them, and no room for a search box's clear button - so
+        // its caret stands as far from "Anyone" as theirs from their values.
         <label className={`${pill} cursor-text ${focusWithinBorder}`}>
           <span className={textPrimaryOnSurface}>Author</span>
           <input
             aria-label="Author"
-            className={`field-sizing-content min-w-[6ch] outline-none ${bgTransparent}`}
+            className={`field-sizing-content outline-none [&::-webkit-search-cancel-button]:hidden ${bgTransparent}`}
             onBlur={takeAuthor}
             onChange={(event) => setAuthor(event.target.value)}
             onKeyDown={(event) => {

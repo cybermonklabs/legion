@@ -1399,7 +1399,10 @@ function PaletteDialog({
           hints and then the message rather than the row the reader is on. As a conversation it
           is 80% of the window's height, the conversation scrolls inside it, and the box sits at
           its foot. The children keep their places in both states (an empty place where a part
-          does not show), so the box is the same element throughout. */}
+          does not show), so the box is the same element throughout. The frame clips
+          (`overflow-clip`) rather than hides what overflows it: a hidden overflow is still a
+          scroll that a script, a focus or a scroll into view moves, and one moved the header
+          and the box out of the frame (review B1). Only the list and the conversation scroll. */}
       <div className="pointer-events-none fixed inset-x-0 top-12 bottom-0 z-50 flex items-start justify-center xl:top-20 xl:bottom-4 xl:px-4">
         {/* biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this
             follows in place: an item's chip in an answer opens its item with the router, rather
@@ -1407,7 +1410,7 @@ function PaletteDialog({
         <div
           aria-label="Search"
           aria-modal="true"
-          className={`pointer-events-auto relative flex max-h-full w-full flex-col overflow-hidden rounded-b-lg border shadow-2xl xl:max-w-[720px] xl:rounded-lg ${talking ? "h-[80vh]" : ""} ${card} ${borderDefault}`}
+          className={`pointer-events-auto relative flex max-h-full w-full flex-col overflow-clip rounded-b-lg border shadow-2xl xl:max-w-[720px] xl:rounded-lg ${talking ? "h-[80vh]" : ""} ${card} ${borderDefault}`}
           data-state={talking ? "conversation" : "search"}
           onClick={follow}
           ref={dialog.containerRef}

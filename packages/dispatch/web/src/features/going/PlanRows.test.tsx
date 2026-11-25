@@ -299,7 +299,7 @@ test("a document row names the issue whose document it changes by its chip", asy
     const chip = within(suggestion).getByTestId("item-chip");
     await waitFor(() => expect(chip).toHaveTextContent("DEMO-15In progressThe issue DEMO-15"));
     expect(suggestion).toHaveTextContent(
-      /^Suggest a change to spec on DEMO-15In progressThe issue DEMO-15$/u
+      /^Suggest a change to the spec of DEMO-15In progressThe issue DEMO-15$/u
     );
     const upload = within(drawnRow(1)).getByTestId("going-plan-document");
     await waitFor(() =>
@@ -514,7 +514,9 @@ test("a row that closes or removes something is marked in red, and a removed lab
     );
     expect(drawnRow(0).querySelector('[data-mark="removed"]')?.textContent).toBe("removed a11y");
     expect(drawnRow(1)).toHaveAttribute("data-removes", "true");
-    expect(within(drawnRow(1)).getByTestId("going-plan-removes")).toHaveTextContent(/^Closes$/u);
+    // A close says nothing more than its red mark and its status line: no lone "Closes" under
+    // them (review a1).
+    expect(within(drawnRow(1)).queryByTestId("going-plan-removes")).toBeNull();
     // The new status reads as its word, as a priority does, with one Edit that opens the issue
     // page's own status menu, set to the status the row writes.
     expect(within(fieldOf(drawnRow(1), "status")).getByTestId("going-plan-next")).toHaveTextContent(
@@ -1497,9 +1499,10 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
         /^Message to no session on DEMO-1In progressThe issue DEMO-1$/u
       )
     );
+    // The issue's chip stands in the line above, so the result names no issue again (review N1).
     await waitFor(() =>
       expect(within(drawnRow(2)).getByTestId("going-plan-row-state")).toHaveTextContent(
-        /^Posted on DEMO-1In progressThe issue DEMO-1$/u
+        /^Posted in the issue's conversation$/u
       )
     );
     expect(screen.getByTestId("going-undo-button")).toHaveTextContent(/^Undo 2 changes$/u);
@@ -1518,16 +1521,14 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
       "Sent, not undone"
     );
     expect(screen.queryByTestId("going-undo-button")).toBeNull();
-    // The change Undo took back reads reverted: no check, and its line grey, the value it wrote
-    // struck out beside the old value it put back. The change someone else kept, and the message
-    // sent, keep their check.
+    // The change Undo took back reads reverted: no check, its line as the plan card drew it,
+    // plain "old → new" with no strike (review N3), and "Reverted" under it, above. The change
+    // someone else kept, and the message sent, keep their check.
     expect(marks()).toEqual(["reverted", "done", "done"]);
     const priority = fieldOf(drawnRow(0), "priority");
-    expect(priority).toHaveAttribute("data-reverted", "true");
-    expect(shownText(priority)).toBe("Priority: P1 → P3");
-    expect(within(priority).getByTestId("going-plan-next").tagName).toBe("DEL");
-    expect(within(priority).getByTestId("going-plan-now")).toHaveTextContent("P3");
-    expect(fieldOf(drawnRow(1), "title")).not.toHaveAttribute("data-reverted");
+    expect(shownText(priority)).toBe("Priority: P3 → P1");
+    expect(priority.querySelector("del")).toBeNull();
+    expect(shownText(fieldOf(drawnRow(1), "title"))).toBe("Title: Dome → Raise the dome");
     expect(screen.getByTestId("going-plan").textContent ?? "").not.toMatch(/[{}"]|GOING_/u);
   } finally {
     reread.mockRestore();
@@ -1535,9 +1536,9 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
   }
 });
 
-// A message that reached a session says "Sent", as before: "Posted on" is for the message that
-// reached no session, whose line above says so (review a8).
-test("a sent message that reached a session reads Sent, not Posted on", async () => {
+// A message that reached a session says "Sent", as before: "Posted in the issue's conversation"
+// is for the message that reached no session, whose line above says so (review a8).
+test("a sent message that reached a session reads Sent, not Posted in the issue's conversation", async () => {
   const reaching = spyOn(api, "getIssueSubscribers").mockResolvedValue([
     {
       last_seen: 0,
@@ -1583,23 +1584,26 @@ test("a sent message that reached a session reads Sent, not Posted on", async ()
 });
 
 // Review A1: the pinned Approve bar hides the rows scrolled under it, and Enter approves all of
-// them. While rows stand under the bar, its top edge says so - how many, and how many of those
-// nothing takes back - a press of it scrolls to the first of them, and it goes once none is under
-// the bar (the view's scroll, at its end).
-test("rows under the pinned Approve bar are counted on it with those that cannot be undone, a press scrolls to them, and the line goes once none is hidden", async () => {
+// them. While rows stand under the bar, its top edge says so - how many, and which of those
+// nothing takes back, each named by its kind - and its "3 more ↓" is a button, a press of which
+// scrolls to the first of them; the line goes once none is under the bar (the view's scroll, at
+// its end). Review B1: the press scrolls the conversation that holds the card, and never the
+// frame around it, whose header and box stay where they are.
+test("rows under the pinned Approve bar are counted on it with those that cannot be undone named, its button scrolls the conversation and not the frame, and the line goes once none is hidden", async () => {
   const user = userEvent.setup();
-  // The bar's top edge, and each row's foot as a browser lays them out: row n ends at 100(n+1).
+  // The bar's top edge, and each row as a browser lays them out: row n from 100n to 100(n+1),
+  // and every other box, the conversation's scroll among them, at the window's top.
   let edge = 250;
   const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
-    const bottom =
-      this.dataset.testid === "going-plan-actions"
-        ? edge + 60
-        : this.dataset.testid === "going-plan-row"
-          ? (Number(this.dataset.row) + 1) * 100
-          : 0;
-    const top = this.dataset.testid === "going-plan-actions" ? edge : bottom - 100;
+    const { row: number, testid } = this.dataset;
+    const [top, bottom] =
+      testid === "going-plan-actions"
+        ? [edge, edge + 60]
+        : testid === "going-plan-row"
+          ? [Number(number) * 100, (Number(number) + 1) * 100]
+          : [0, 0];
     return {
       bottom,
       height: bottom - top,
@@ -1612,12 +1616,9 @@ test("rows under the pinned Approve bar are counted on it with those that cannot
       y: top,
     };
   });
-  const scrolled: (string | undefined)[] = [];
-  const scrollTo = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-    this: Element
-  ) {
-    scrolled.push((this as HTMLElement).dataset.row);
-  });
+  // A scroll into view moves every ancestor that can scroll, the frame's own hidden overflow
+  // among them: the press uses none.
+  const intoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => undefined);
   const restore = await openPlan(
     planOf([
       row(0, { arguments: { issue: "DEMO-1", priority: 1 }, fields: ["priority"], item: "DEMO-1" }),
@@ -1635,19 +1636,33 @@ test("rows under the pinned Approve bar are counted on it with those that cannot
     ])
   );
   try {
-    renderWithQueries(<Card />);
+    // The card in a conversation that scrolls, inside a frame that hides what overflows it, as
+    // the bar's dialog and the panel hold it.
+    renderWithQueries(
+      <div data-testid="frame" style={{ overflow: "hidden" }}>
+        <div data-testid="conversation" style={{ overflowY: "auto" }}>
+          <Card />
+        </div>
+      </div>
+    );
     await screen.findByTestId("going-plan-card-rows");
     const more = await screen.findByTestId("going-plan-more");
     // Rows 2, 3 and 4 stand under the bar; the delete and the message cannot be undone.
-    expect(more).toHaveTextContent("3 more ↓ · 2 cannot be undone");
+    expect(more).toHaveTextContent(
+      "3 more ↓ · includes a comment's deletion and a message that cannot be undone"
+    );
     expect(screen.getByTestId("going-plan-actions").className).toContain("shadow-");
-    await user.click(more);
-    expect(scrolled).toEqual(["2"]);
+    await user.click(within(more).getByRole("button", { name: "3 more" }));
+    // The conversation scrolled the first row under the bar, row 2, to its top; the frame did
+    // not move.
+    expect(screen.getByTestId("conversation").scrollTop).toBe(200);
+    expect(screen.getByTestId("frame").scrollTop).toBe(0);
+    expect(intoView).not.toHaveBeenCalled();
 
     // A row that is unticked is not run, so it is not one the line warns of.
     await user.click(within(drawnRow(4)).getByRole("checkbox"));
     expect(screen.getByTestId("going-plan-more")).toHaveTextContent(
-      "3 more ↓ · 1 cannot be undone"
+      "3 more ↓ · includes a comment's deletion that cannot be undone"
     );
 
     // The view scrolled to its end: no row stands under the bar, and the line and shadow go.
@@ -1659,7 +1674,7 @@ test("rows under the pinned Approve bar are counted on it with those that cannot
     expect(screen.getByTestId("going-plan-actions").className).not.toContain("shadow-");
   } finally {
     restore();
-    scrollTo.mockRestore();
+    intoView.mockRestore();
     boxes.mockRestore();
   }
 });

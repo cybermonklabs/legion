@@ -157,9 +157,12 @@ export function SidePanel(): ReactNode {
     search: false,
   });
   return (
+    // The panel clips what overflows it (`overflow-clip`), so no script, focus or scroll into
+    // view can scroll its header and its box out of place: only the conversation scrolls
+    // (review B1).
     <aside
       aria-label="Command bar at the side"
-      className={`fixed top-0 right-0 bottom-0 z-40 flex w-full flex-col border-l shadow-2xl sm:w-[420px] ${card} ${borderDefault}`}
+      className={`fixed top-0 right-0 bottom-0 z-40 flex w-full flex-col overflow-clip border-l shadow-2xl sm:w-[420px] ${card} ${borderDefault}`}
       data-testid="going-side-panel"
       id={SIDE_PANEL_ID}
       onClick={follow}

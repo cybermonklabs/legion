@@ -441,14 +441,15 @@ export function rowRemoves(row: GoingPlanRow, changes: readonly RowChange[]): bo
 
 /** What a row `rowRemoves` marks in red says in words beside the mark (design v3, state 6), given
  *  the row's `changes`: each value they take out, by name, so the person reads before Approve
- *  what the row drops - "Removes board", "Removes board and api" - and "Closes" where it closes
- *  its issue. A row whose tool removes something and names no value of a field says nothing
- *  more: its red mark and its own words ("Delete the comment") say it, and a bare "Removes" under
+ *  what the row drops - "Removes board", "Removes board and api" - and "Closes, and removes
+ *  board" where it also closes its issue. A row that only closes its issue, or whose tool removes
+ *  something and names no value of a field, says nothing more: its red mark and its own words
+ *  ("Status: Triage → Done", "Delete the comment") say it, and a lone "Closes" or "Removes" under
  *  them is no sentence (review a1). */
 export function removalWords(changes: readonly RowChange[]): string {
   const removed = changes.flatMap(removedValues).filter((words) => words !== "");
+  if (removed.length === 0) return "";
   const closes = changes.some((change) => change.field === "status" && change.next === "done");
-  if (removed.length === 0) return closes ? "Closes" : "";
   return `${closes ? "Closes, and removes" : "Removes"} ${listed(removed)}`;
 }
 
@@ -480,6 +481,31 @@ export function rowKind(row: GoingPlanRow): RowKind {
  *  ("Cannot be undone once sent"). */
 export function rowIrreversible(row: GoingPlanRow): boolean {
   return rowKind(row) === "message" || postToolOf(row.tool)?.deletes === true;
+}
+
+/** What a row that cannot be undone (`rowIrreversible`) is, as the line over the pinned Approve
+ *  names it, one of it and more: a message, sent; or a post's deletion. */
+function irreversibleNouns(row: GoingPlanRow): { readonly one: string; readonly many: string } {
+  const post = postToolOf(row.tool);
+  return post?.deletes === true
+    ? { many: `${post.kind}s' deletions`, one: `a ${post.kind}'s deletion` }
+    : { many: "messages", one: "a message" };
+}
+
+/** The rows of `rows` that cannot be undone (`rowIrreversible`), each kind named and counted, in
+ *  the order the rows first name it (review A1): "a message", "a message and a comment's
+ *  deletion", "2 messages and a comment's deletion"; "" where none of them is one. */
+export function irreversibleWords(rows: readonly GoingPlanRow[]): string {
+  const kinds = new Map<string, { readonly many: string; count: number }>();
+  for (const row of rows.filter(rowIrreversible)) {
+    const { many, one } = irreversibleNouns(row);
+    const kind = kinds.get(one) ?? { count: 0, many };
+    kind.count += 1;
+    kinds.set(one, kind);
+  }
+  return listed(
+    [...kinds].map(([one, { count, many }]) => (count === 1 ? one : `${count} ${many}`))
+  );
 }
 
 /** How a message reaches its session, in the words the row says it with. */
@@ -805,7 +831,7 @@ function clauseCount(clause: TitleClause): number {
  * "File 2 issues and move 3", "Send 1 message". Each kind of change is one part, in the order the
  * rows first name it: new issues are filed; changes of an issue's fields change, move or close
  * their issues, an issue named by its key where the part names one; messages are sent; a
- * suggested change to a document is suggested, as its row says ("Suggest a change to spec on
+ * suggested change to a document is suggested, as its row says ("Suggest a change to the spec of
  * DEMO-15"), and any other change of a document edits it; a comment or an issue message is
  * edited or deleted, in its tool's verb ("Edit 1 comment"); and the rest made. A part that counts
  * the same thing as the one before it leaves out its noun. Past two kinds the sentence no longer
@@ -1133,8 +1159,9 @@ export function undoWords(line: GoingUndoLine): string {
 
 /** Whether Undo took a row's change back whole (design v3, state 7): no field of it kept as
  *  another writer left it, nothing refused, and no message, which is sent, not undone. Such a row
- *  reads reverted - grey, its old value restored, and no check - where a change that stayed keeps
- *  its check and says why. */
+ *  reads reverted - the revert arrow in place of its check, its change still drawn as the plan
+ *  card drew it, and "Reverted" under it - where a change that stayed keeps its check and says
+ *  why. */
 export function wasReverted(line: GoingUndoLine): boolean {
   return (
     line.undo !== "not_undone" &&
@@ -1299,6 +1326,48 @@ export function documentChange(row: GoingPlanRow, summary: string): DocumentChan
     default:
       return undefined;
   }
+}
+
+/** What a document row does, in the page's own words (review N4): the words before the issue
+ *  whose document it changes, and that issue ("" for a project's document), which the row draws
+ *  as its chip after them. */
+export interface DocumentNaming {
+  readonly words: string;
+  readonly issue: string;
+}
+
+/** Each document tool's verb, and the word that joins the document to the issue it is of. */
+const DOCUMENT_ACTIONS: Readonly<
+  Partial<Record<string, { readonly verb: string; readonly join: string }>>
+> = {
+  dispatch_artifact: { join: "to", verb: "Upload" },
+  dispatch_doc_edit: { join: "of", verb: "Edit the text of" },
+  dispatch_suggest: { join: "of", verb: "Suggest a change to" },
+};
+
+/** The document a `dispatch://` reference names: "spec" for an issue's spec, the slug of an
+ *  artifact; "" for any other reference. */
+const DOCUMENT_REF = /^dispatch:\/\/[^/]+\/(?:(spec)|artifact\/([^/#@?]+))(?:[/#@?]|$)/u;
+
+/**
+ * How a document row names what it does (`DocumentNaming`), drawn from the row's own data - its
+ * tool, the document's name, the issue it is of - and never from the tool's label, whose words
+ * the server and the model share (review N4): an issue's spec is "the spec", any other document
+ * its name or slug, and the issue follows: "Suggest a change to the spec of" DEMO-15, "Edit the
+ * text of notes.md of" DEMO-15, "Upload design.md to" DEMO-16. A project's document ends with its
+ * project in words, "Upload design.md to DEMO", or with its name where the row names none.
+ */
+export function documentNaming(row: GoingPlanRow): DocumentNaming {
+  const args = argumentsOf(row);
+  const action = DOCUMENT_ACTIONS[row.tool] ?? { join: "of", verb: "Change" };
+  const referred = DOCUMENT_REF.exec(textOf(args.ref));
+  const name = textOf(args.artifact) || textOf(args.name) || referred?.[1] || referred?.[2] || "";
+  const document = name === "" ? "a document" : name === "spec" ? "the spec" : name;
+  const named = `${action.verb} ${document}`;
+  const issue = row.issue || textOf(args.issue);
+  if (issue !== "") return { issue, words: `${named} ${action.join}` };
+  const project = textOf(args.project);
+  return { issue: "", words: project === "" ? named : `${named} ${action.join} ${project}` };
 }
 
 /** The refusals of an upload whose document moved after the plan read its name: a document made

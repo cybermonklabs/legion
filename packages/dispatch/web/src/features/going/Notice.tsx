@@ -149,6 +149,9 @@ function NoticeCard({ notice }: { readonly notice: ShownNotice }): ReactNode {
     ...issueSummaryQuery(notice.issue),
     enabled: notice.issue !== undefined,
   }).data?.title;
+  // The words keep on their right the room each action keeps inside its fill (`px-1.5`), so each
+  // "·" stands as far from what comes before it as from the action after it (review N5).
+  const followed = (notice.actions ?? []).length > 0 || notice.undo !== undefined;
   return (
     <div
       className={`flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm shadow-lg ${card} ${borderDefault} ${textPrimaryOnSurface}`}
@@ -156,7 +159,7 @@ function NoticeCard({ notice }: { readonly notice: ShownNotice }): ReactNode {
       role="status"
     >
       <p>
-        <span data-testid="going-notice-text">
+        <span className={followed ? "pr-1.5" : undefined} data-testid="going-notice-text">
           {notice.text}
           {title === undefined || title === "" ? null : `: ${title}`}
         </span>

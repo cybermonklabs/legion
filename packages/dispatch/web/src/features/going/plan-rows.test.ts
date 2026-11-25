@@ -8,7 +8,9 @@ import {
   approvalOf,
   cardTitle,
   changeLabel,
+  documentNaming,
   fieldWords,
+  irreversibleWords,
   keptValue,
   labelMarks,
   messageReach,
@@ -359,7 +361,7 @@ test("a row that adds labels keeps the issue's others and shows them, and nothin
   expect(removalWords(edited)).toBe("Removes API");
 });
 
-test("a row that takes values out names each of them, a close says it closes, and a delete says no more than its words", () => {
+test("a row that takes values out names each of them, and a close or a delete says no more than its words", () => {
   const words = (planned: GoingPlanRow) => removalWords(rowChanges(planned, undefined, new Map()));
   const labels = (now: string[], next: string[], extra: Record<string, unknown> = {}) =>
     row(0, {
@@ -371,7 +373,8 @@ test("a row that takes values out names each of them, a close says it closes, an
   expect(words(labels(["board", "a11y"], ["accessibility"]))).toBe("Removes board and a11y");
   expect(words(labels(["board"], ["accessibility"]))).toBe("Removes board");
   expect(words(labels(["board", "api", "ui"], []))).toBe("Removes board, api and ui");
-  expect(words(update(0, "DEMO-1", { status: "done" }))).toBe("Closes");
+  // A close alone says nothing under its red mark: "Status: Triage → Done" says it (review a1).
+  expect(words(update(0, "DEMO-1", { status: "done" }))).toBe("");
   expect(words(labels(["board"], [], { status: "done" }))).toBe("Closes, and removes board");
   expect(
     words(
@@ -518,6 +521,79 @@ test("each kind of row is told apart", () => {
   ).toBe("document");
   expect(rowKind(row(0, { tool: "dispatch_claim" }))).toBe("claim");
   expect(rowKind(row(0, { tool: "dispatch_resolve_ask" }))).toBe("other");
+});
+
+// The line over the pinned Approve names each row under it that cannot be undone by its kind
+// (review A1): a message, a post's deletion; two or more of one kind counted.
+test("rows that cannot be undone are named by their kind, and counted where one kind comes twice", () => {
+  const removeComment = post(1, "dispatch_delete_comment");
+  expect(irreversibleWords([message(0)])).toBe("a message");
+  expect(irreversibleWords([message(0), removeComment])).toBe("a message and a comment's deletion");
+  expect(
+    irreversibleWords([message(0), removeComment, message(2), post(3, "dispatch_delete_message")])
+  ).toBe("2 messages, a comment's deletion and a message's deletion");
+  // A change Undo takes back, and an edit of a post, are none of them.
+  expect(
+    irreversibleWords([
+      update(0, "DEMO-1", { priority: 1 }),
+      post(1, "dispatch_edit_comment", { body: "x" }),
+    ])
+  ).toBe("");
+});
+
+// A document row names what it does from its own data, never from its tool's label (review N4):
+// an issue's spec is "the spec", and the issue it is of follows the words, for the row's chip.
+test("a document row is named from its own data: the document, then the issue it is of", () => {
+  const suggest = { quote: "a", replace_with: "b" };
+  expect(
+    documentNaming(
+      row(0, {
+        arguments: { artifact: "spec", issue: "DEMO-5", ...suggest },
+        issue: "DEMO-5",
+        tool: "dispatch_suggest",
+      })
+    )
+  ).toEqual({ issue: "DEMO-5", words: "Suggest a change to the spec of" });
+  expect(
+    documentNaming(
+      row(0, {
+        arguments: { artifact: "notes.md", issue: "DEMO-5", ops: [] },
+        tool: "dispatch_doc_edit",
+      })
+    )
+  ).toEqual({ issue: "DEMO-5", words: "Edit the text of notes.md of" });
+  // A reference names the document where no name does.
+  expect(
+    documentNaming(
+      row(0, {
+        arguments: { ops: [], ref: "dispatch://DEMO-5/spec#b-x" },
+        issue: "DEMO-5",
+        tool: "dispatch_doc_edit",
+      })
+    )
+  ).toEqual({ issue: "DEMO-5", words: "Edit the text of the spec of" });
+  expect(
+    documentNaming(
+      row(0, {
+        arguments: { content: "x", issue: "DEMO-16", name: "design.md" },
+        tool: "dispatch_artifact",
+      })
+    )
+  ).toEqual({ issue: "DEMO-16", words: "Upload design.md to" });
+  // A project's document is of no issue: its words end with the project, or with its name.
+  expect(
+    documentNaming(
+      row(0, {
+        arguments: { content: "x", name: "design.md", project: "DEMO" },
+        tool: "dispatch_artifact",
+      })
+    )
+  ).toEqual({ issue: "", words: "Upload design.md to DEMO" });
+  expect(
+    documentNaming(
+      row(0, { arguments: { artifact: "notes.md", ...suggest }, tool: "dispatch_suggest" })
+    )
+  ).toEqual({ issue: "", words: "Suggest a change to notes.md" });
 });
 
 // An edit and a delete of a comment or an issue message are one kind of row, the post's, named by

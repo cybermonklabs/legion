@@ -19,7 +19,7 @@
  *  to the workspace's Planner, so a message to the Planner is placed on the dome. A row reads
  *  their keys from the seed file and scripts the fake models with them, and writes nothing
  *  before it opens the bar but what its own login must have done: state 1 opens the two issues
- *  its Recent lists, and state 6 writes the two comments on the shutter its plan edits and
+ *  its Recent lists, and state 6 writes the three comments on the shutter its plan edits and
  *  deletes, since a plan edits or deletes only a comment its person wrote.
  *
  *  WHAT A ROW LEAVES. A row signs in as a login of its own (`bar-<state>`), so its runs, its
@@ -27,7 +27,7 @@
  *  waits reaches that login's Inbox alone, never alice's, whose Inbox the pages' rows shoot. And
  *  each row ends what it starts: a run it holds working is stopped, a plan it leaves waiting is
  *  discarded, and a plan it applies is undone. What stays is a message on an issue of OPS, which
- *  Undo does not take back; the two comments state 6 writes on the shutter, which its discarded
+ *  Undo does not take back; the three comments state 6 writes on the shutter, which its discarded
  *  plan leaves as they were, whose words match no row's search, and which no row after it reads;
  *  and the one issue the filing row files, which no other row reads: the chart and the table
  *  read the seven seeded issues by key, and its words - a weather station on the roof - match
@@ -307,25 +307,77 @@ async function hintUnderBox(surface: Locator): Promise<void> {
   ).toBeLessThanOrEqual(1);
 }
 
-/** Reads that the plan card's pinned bar (`surface`'s) says rows stand under it, how many and how
- *  many of those cannot be undone, with its soft shadow on its top edge (review A1): a person
- *  sees at once that more is below, and that Enter would approve it. */
+/** Reads that the plan card's pinned bar (`surface`'s) says rows stand under it, how many and
+ *  which of those cannot be undone, by name, with its soft shadow on its top edge (review A1): a
+ *  person sees at once that more is below, and what Enter would approve there that nothing
+ *  takes back. Of the rows that stand under the bar in each shot, the message is the one. */
 async function rowsUnderTheBar(surface: Locator): Promise<void> {
   const more = surface.getByTestId("going-plan-more");
   await expect(more).toBeVisible();
-  await expect(more).toHaveText(/^\d+ more ↓ · \d+ cannot be undone$/u);
+  await expect(more).toHaveText(/^\d+ more ↓ · includes a message that cannot be undone$/u);
+  await expect(more.getByRole("button", { name: /^\d+ more$/u })).toBeVisible();
   await expect(surface.getByTestId("going-plan-actions")).toHaveClass(/shadow-/u);
 }
 
-/** Presses that line, which scrolls to the rows, then the scroll's end, so every row kind of the
- *  plan has stood above the bar and the line and shadow are gone: the bar shows no cue because
- *  nothing stands under it. At the end the bar is the card's last part, not pinned: the
- *  conversation's own foot padding stands below it. So the scroll is at its end, and no row of
- *  the card meets the bar. */
+/** Where the parts of `surface` that never scroll stand in the window (review B1): its header -
+ *  the title, History, New, the move and Close - and its box, each as the left, top, width and
+ *  height of its box. */
+function framePlaces(surface: Locator): Promise<number[]> {
+  return surface.evaluate((frame) =>
+    [
+      frame.querySelector('[data-testid="going-header"]'),
+      frame.querySelector('[aria-label="Ask the command bar"]')?.parentElement,
+    ].flatMap((part) => {
+      if (part === null || part === undefined) throw new Error("no header or box is drawn");
+      const { height, width, x, y } = part.getBoundingClientRect();
+      return [x, y, width, height];
+    })
+  );
+}
+
+/** How far, in pixels, the furthest edge of `surface`'s header or box now stands from where
+ *  `placed` (`framePlaces`) says it stood. */
+async function frameMoved(surface: Locator, placed: readonly number[]): Promise<number> {
+  const now = await framePlaces(surface);
+  return Math.max(...now.map((value, at) => Math.abs(value - Number(placed[at]))));
+}
+
+/** How many rows of the plan card in `surface` meet its Approve bar, as the window lays them
+ *  out. */
+function rowsMeetingTheBar(surface: Locator): Promise<number> {
+  return surface.evaluate((frame) => {
+    const bar = frame.querySelector('[data-testid="going-plan-actions"]')?.getBoundingClientRect();
+    if (bar === undefined) throw new Error("the plan's Approve bar is not drawn");
+    return [...frame.querySelectorAll('[data-testid="going-plan-row"]')].filter((row) => {
+      const box = row.getBoundingClientRect();
+      return (
+        box.left < bar.right && bar.left < box.right && box.top < bar.bottom && bar.top < box.bottom
+      );
+    }).length;
+  });
+}
+
+/** Presses that line's button, which scrolls the conversation to the rows, then scrolls the
+ *  conversation to its end, so every row kind of the plan has stood above the bar and the line
+ *  and shadow are gone: the bar shows no cue because nothing stands under it. Only the
+ *  conversation scrolls (review B1): the header and the box of `surface` stand where they stood
+ *  before the press, to the pixel, after it and at the end. At the end the bar is the card's
+ *  last part, not pinned: the conversation's own foot padding stands below it. So the end is
+ *  read once it has settled: the scroll at its end, the header and the box in place, and no row
+ *  of the card meeting the bar. */
 async function scrollPlanToItsEnd(surface: Locator): Promise<void> {
   const view = surface.getByTestId("going-conversation-view");
   const actions = surface.getByTestId("going-plan-actions");
-  await surface.getByTestId("going-plan-more").click();
+  await expect(surface.getByTestId("going-header")).toBeVisible();
+  await expect(surface.getByRole("textbox", { name: "Ask the command bar" })).toBeVisible();
+  // The waits above drew the header and the box, so each has a place to read before the press.
+  const placed = await framePlaces(surface);
+  await surface.getByTestId("going-plan-more-button").click();
+  await expect
+    .poll(() => frameMoved(surface, placed), {
+      message: "how far the header or the box moved at the press of the line",
+    })
+    .toBeLessThanOrEqual(1);
   await view.evaluate((scroll) => {
     scroll.scrollTop = scroll.scrollHeight;
   });
@@ -333,17 +385,16 @@ async function scrollPlanToItsEnd(surface: Locator): Promise<void> {
   await expect(actions).not.toHaveClass(/shadow-/u);
   await expect
     .poll(
-      () => view.evaluate((scroll) => scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop),
-      { message: "how far the conversation's scroll stands from its end" }
+      async () => ({
+        atItsEnd: await view.evaluate(
+          (scroll) => scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 1
+        ),
+        inPlace: (await frameMoved(surface, placed)) <= 1,
+        rowsMeetingTheBar: await rowsMeetingTheBar(surface),
+      }),
+      { message: "the plan at its end: its scroll, the header and the box, and its rows" }
     )
-    .toBeLessThanOrEqual(1);
-  const approve = await actions.boundingBox();
-  for (const [index, row] of (await planRows(surface).all()).entries()) {
-    expect(
-      boxesMeet(await row.boundingBox(), approve),
-      `the plan's row ${index + 1} meets its Approve bar at the scroll's end`
-    ).toBe(false);
-  }
+    .toEqual({ atItsEnd: true, inPlace: true, rowsMeetingTheBar: 0 });
 }
 
 /** Whether two boxes a locator measured share any point. A box that is not drawn is refused: the
@@ -500,12 +551,12 @@ const barRows: readonly BarRow[] = [
     state: "02",
   },
   {
-    // State 3. Scripts a run that looks for a tool, reads two issues in one model call under
-    // the words it wrote beside them, searches, then streams without end: four finished steps,
-    // of which the newest three show as lines and the oldest, the look, folds into the one grey
-    // line above them (review a7), then "Thinking…" with the run's timer, since no call runs while
-    // the model writes, and
-    // the run still working. Words sent while it works wait under it; the row drops them before
+    // State 3. Scripts a run that looks for a tool twice, reads two issues in one model call
+    // under the words it wrote beside them, searches, then streams without end: five finished
+    // steps, of which the newest three show as lines and the two oldest, the looks, fold into
+    // the one grey line above them, which counts them (review a7, N2); then "Thinking…" with the
+    // run's timer, since no call runs while the model writes, and the run still working. Words
+    // sent while it works wait under it; the row drops them before
     // it stops the run.
     reach: async (page, seed) => {
       const words = "check the telescope work";
@@ -529,7 +580,13 @@ const barRows: readonly BarRow[] = [
       };
       await script(seed, [
         {
-          turns: [findTools("list the issues of a project"), reading, searching, endlessStream()],
+          turns: [
+            findTools("list the issues of a project"),
+            findTools("read an issue"),
+            reading,
+            searching,
+            endlessStream(),
+          ],
           words,
         },
       ]);
@@ -537,11 +594,11 @@ const barRows: readonly BarRow[] = [
       await askTheAgent(page, words);
       const run = newestRun(page);
       const finished = '[data-testid="going-step"][data-running="false"]';
-      // The fourth finished step folds at once: the look, the oldest, into the line above.
-      await expect(run.getByTestId("going-steps-older")).toHaveAccessibleName(
-        "Looked for a way once",
-        { timeout: RUN_STEPS_MS }
-      );
+      // The fifth finished step folds at once: the two looks, the oldest, into the line above,
+      // which says how many steps it holds.
+      await expect(run.getByTestId("going-steps-older")).toHaveAccessibleName("2 earlier steps", {
+        timeout: RUN_STEPS_MS,
+      });
       await expect(run.locator(finished)).toHaveCount(3);
       await expect(run.getByTestId("going-step-label").first()).toHaveText(/^Read OPS-\d+$/u);
       // Both calls under the model's words ended, so its header reads in the past tense.
@@ -691,23 +748,31 @@ const barRows: readonly BarRow[] = [
   },
   {
     // State 6. Scripts a run that proposes, in a slow turn, one row of each kind - a new issue, an
-    // edit and a delete of a comment (a post's two rows), a change of fields, a document's text, a
-    // message to an agent and a close - and waits. A plan edits or deletes only a comment its
-    // person wrote, so the row writes the two comments on the shutter itself, as its own login,
-    // before it opens the bar. Their rows come right after the new issue's, so each shot shows
-    // them under the question. The message goes to the Planner, whom the seed routes the dome to
-    // (`seedBarIssues`), so its row names the session, the issue it is posted on and its delivery
-    // (R7). The row discards the plan, so nothing is sent, edited or deleted.
+    // edit and a delete of a comment (a post's two rows), a change of fields, an edit of a long
+    // comment, a document's text, a message to an agent and a close - and waits. A plan edits or
+    // deletes only a comment its person wrote, so the row writes the three comments on the
+    // shutter itself, as its own login, before it opens the bar. The short edit's and the
+    // delete's rows come right after the new issue's, so each shot shows them under the
+    // question; the long edit's comes later, so the plan's end shows its folded diff. The message
+    // goes to the Planner, whom the seed routes the dome to (`seedBarIssues`), so its row names
+    // the session, the issue it is posted on and its delivery (R7). The row discards the plan, so
+    // nothing is sent, edited or deleted.
     reach: async (page, seed) => {
       const words = "plan a motor for the observatory dome";
       const { dome, mount, project, shutter } = seed.bar;
-      // Short, and sharing no word with any row's search, so neither comment is a hit of one:
-      // state 13's shot draws the hits of its words.
+      // Sharing no word with any row's search, so no comment is a hit of one: state 13's shot
+      // draws the hits of its words. Two are short; the third is long enough to fold, so its edit
+      // reads as its first sentences with its diff closed under them (review a3).
       const hingeNow = "Oil its hinge every week.";
       const hingeNext = "Oil its hinge every month.";
       const latchNow = "Its latch rattles in wind.";
+      const railsNow =
+        "Wipe its rails with a dry cloth after each night of use.\n\nTighten the four bolts at both ends of the track once a month, and replace the felt strip when it frays.";
+      const railsNext =
+        "Wipe its rails with a dry cloth after each night of use.\n\nTighten the four bolts at both ends of the track every two weeks, and replace the felt strip when it frays.";
       const hingeNote = await commentOn(page, shutter, hingeNow);
       const latchNote = await commentOn(page, shutter, latchNow);
+      const railsNote = await commentOn(page, shutter, railsNow);
       await script(seed, [
         {
           afterwards: say("Discarded."),
@@ -734,6 +799,10 @@ const barRows: readonly BarRow[] = [
                   {
                     arguments: { issue: mount, labels: ["optics"], priority: 2 },
                     tool: "dispatch_issue_update",
+                  },
+                  {
+                    arguments: { body: railsNext, comment: railsNote },
+                    tool: "dispatch_edit_comment",
                   },
                   {
                     arguments: {
@@ -768,15 +837,17 @@ const barRows: readonly BarRow[] = [
           words,
         },
       ]);
-      // The two post rows, in the bar and then in the panel: each says what it does to whose
+      // The three post rows, in the bar and then in the panel: each says what it does to whose
       // comment on the shutter, by the shutter's chip - "your comment", since the author is the
-      // row's own login (`drawState`; review a3). The edit shows its body once, the words it
-      // changes marked as a diff marks them; the delete shows the words it takes out, struck
-      // through, and that a delete cannot be undone. Both stand in view under the question.
+      // row's own login (`drawState`; review a3). The short edit shows its body once, the words
+      // it changes marked as a diff marks them; the delete shows the words it takes out, struck
+      // through, and that a delete cannot be undone. Both stand in view under the question. The
+      // long edit reads as the first sentences of what it writes, its diff folded under them.
       const postRows = planCard(page).locator('[data-testid="going-plan-row"][data-kind="post"]');
+      const longEdit = postRows.nth(2);
       const postRowsDrawn = async (): Promise<void> => {
-        await expect(postRows).toHaveCount(2);
-        const edit = postRows.first();
+        await expect(postRows).toHaveCount(3);
+        const edit = postRows.nth(0);
         await expect(edit.getByTestId("going-plan-post")).toHaveText(
           new RegExp(`^Edit your comment on ${shutter}(?!\\d)`)
         );
@@ -785,7 +856,7 @@ const barRows: readonly BarRow[] = [
         await expect(body).not.toContainText("Body:");
         await expect(body.locator("del")).toHaveText(/^week/u);
         await expect(body.locator("ins")).toHaveText(/^month/u);
-        const remove = postRows.last();
+        const remove = postRows.nth(1);
         await expect(remove.getByTestId("going-plan-post")).toHaveText(
           new RegExp(`^Delete your comment on ${shutter}(?!\\d)`)
         );
@@ -795,6 +866,13 @@ const barRows: readonly BarRow[] = [
         );
         await expect(edit).toBeInViewport();
         await expect(remove).toBeInViewport();
+        await expect(longEdit.getByTestId("going-plan-post")).toHaveText(
+          new RegExp(`^Edit your comment on ${shutter}(?!\\d)`)
+        );
+        await expect(longEdit.getByTestId("going-plan-sentences")).toHaveText(
+          /^Wipe its rails with a dry cloth after each night of use\. /u
+        );
+        await expect(longEdit.getByTestId("going-plan-diff")).toHaveJSProperty("open", false);
       };
       await openTheBar(page, seed);
       await askTheAgent(page, words);
@@ -804,7 +882,7 @@ const barRows: readonly BarRow[] = [
       await expect(planCard(page)).toHaveAttribute("data-state", "waiting", {
         timeout: RUN_STEPS_MS,
       });
-      await expect(planRows(planCard(page))).toHaveCount(7);
+      await expect(planRows(planCard(page))).toHaveCount(8);
       await expect(
         planCard(page)
           .getByTestId("item-chip")
@@ -816,7 +894,7 @@ const barRows: readonly BarRow[] = [
         new RegExp(`^Message to Planner on ${dome}(?!\\d).* · as a BTW$`)
       );
       await expect(planCard(page).getByTestId("going-plan-document")).toHaveText(
-        new RegExp(`^Suggest a change to spec on ${dome}(?!\\d)`)
+        new RegExp(`^Suggest a change to the spec of ${dome}(?!\\d)`)
       );
       await postRowsDrawn();
       // The card is taller than the view: it shows from its question down, its Approve and
@@ -829,13 +907,16 @@ const barRows: readonly BarRow[] = [
       await expect(bar(page).getByTestId("going-box-hint")).toHaveText("↵ Approve");
       await hintUnderBox(bar(page));
       // Rows stand under the pinned bar, which says so and what Enter would approve there
-      // (review A1); the shot after it is the plan scrolled to its end, every row kind read.
+      // (review A1); the shot after it is the plan scrolled to its end, every row kind read, the
+      // header and the box where they stood (review B1), and the long edit's diff folded under
+      // its sentences.
       await rowsUnderTheBar(bar(page));
       await shoot(page, "06-plan-bar");
       await scrollPlanToItsEnd(bar(page));
+      await expect(longEdit).toBeInViewport({ ratio: 1 });
       await shoot(page, "06-plan-end");
       await keepAtTheSide(page);
-      await expect(planRows(planCard(page))).toHaveCount(7);
+      await expect(planRows(planCard(page))).toHaveCount(8);
       await expect(
         planCard(page)
           .getByTestId("item-chip")
@@ -851,6 +932,8 @@ const barRows: readonly BarRow[] = [
       await hintUnderBox(sidePanel(page));
       await rowsUnderTheBar(sidePanel(page));
       await shoot(page, "06-plan-panel");
+      // The panel's line scrolls its conversation alone, as the bar's does (review B1).
+      await scrollPlanToItsEnd(sidePanel(page));
       await planCard(page).getByTestId("going-plan-reject").click();
       await expect(planCard(page)).not.toHaveAttribute("data-state", "waiting", {
         timeout: RUN_STEPS_MS,
@@ -921,12 +1004,13 @@ const barRows: readonly BarRow[] = [
       // Undo names what Dispatch says it can take back: the two changes, never the message.
       await expect(planCard(page).getByTestId("going-undo-button")).toHaveText("Undo 2 changes");
       await expect(message).toHaveText(reachesNoSession);
-      // The message reached no session, so its result says where it went (review a8).
+      // The message reached no session, so its result says where it went (review a8), and names
+      // the issue no second time: its chip stands in the line above (review N1).
       await expect(
         planCard(page)
           .locator('[data-testid="going-plan-row"][data-kind="message"]')
           .getByTestId("going-plan-row-state")
-      ).toHaveText(new RegExp(`^Posted on ${eyepiece}(?!\\d)`));
+      ).toHaveText("Posted in the issue's conversation");
       const fold = newestRun(page).getByTestId("going-steps-fold");
       await expect(fold).toHaveAccessibleName(/^Worked for \d+ s · applied 3 changes$/);
       const finderChip = planCard(page)
@@ -946,6 +1030,9 @@ const barRows: readonly BarRow[] = [
       await expect(fold).toHaveAccessibleName(/^Worked for \d+ s · applied 3 changes$/);
       await expect(newestRun(page).getByTestId("going-run-state")).toHaveText("Undone");
       await expect(finderChip).not.toContainText("to the mount");
+      // Each row shows its change as the plan card did, plain "old → new" with no strike, and
+      // its own status says it was reverted (review N3).
+      await expect(planCard(page).getByTestId("going-plan-field").locator("del")).toHaveCount(0);
       await shoot(page, "07-undone");
     },
     shows: "a plan applied, and undone",

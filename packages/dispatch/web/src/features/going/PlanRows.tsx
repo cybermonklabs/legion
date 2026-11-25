@@ -66,11 +66,14 @@ import {
   type ChangePiece,
   cardTitle,
   type DocumentChange,
+  type DocumentNaming,
   deletedSince,
   deliveryWords,
   documentChange,
+  documentNaming,
   editedDraft,
   fieldWords,
+  irreversibleWords,
   type LabelMark,
   labelMarks,
   MARK_WORDS,
@@ -90,7 +93,6 @@ import {
   removalWords,
   reviewWords,
   rowChanges,
-  rowIrreversible,
   rowKind,
   rowLabel,
   rowOutcome,
@@ -464,8 +466,8 @@ const VALUE_BUTTON = `rounded text-left underline decoration-dotted underline-of
  * person may replace with an issue's key. The edit box starts from the new value of the plan it
  * is drawn for, and its caller keys it to that plan, so a revised plan or a new run's never opens
  * with an earlier plan's value or the person's unsaved typing. An edited value says "Edited".
- * Once Undo took the change back (`reverted`), a line reads "Priority: ~~P2~~ → No priority", all
- * grey, and a body its diff back to the words it holds again.
+ * Once Undo took the change back, a line reads as the plan card drew it, "Priority: No priority →
+ * P2", with no strike: the row's own status says it was reverted (review N3).
  */
 function FieldChange({
   change,
@@ -474,7 +476,6 @@ function FieldChange({
   newIssues,
   onEdit,
   project,
-  reverted,
   shape,
 }: {
   readonly change: RowChange;
@@ -483,9 +484,6 @@ function FieldChange({
   readonly newIssues: ReadonlyMap<number, string>;
   readonly onEdit: (value: unknown) => void;
   readonly project: string;
-  /** Whether Undo took the row's change back whole, which a line draws as the value it wrote,
-   *  struck out, and the old value it put back. */
-  readonly reverted: boolean;
   readonly shape: "line" | "title" | "part" | "diff";
 }): ReactNode {
   const { field, next, now } = change;
@@ -525,42 +523,6 @@ function FieldChange({
     setEditing(false);
   };
   const nextValue = <FieldValue against={now} field={field} newIssues={shown} value={next} />;
-  if (reverted && shape === "diff") {
-    // Undo put the words back: the diff from what the edit wrote to what the post holds again.
-    return (
-      <div
-        className={`text-sm ${textMutedOnSurface}`}
-        data-field={field}
-        data-reverted="true"
-        data-testid="going-plan-field"
-      >
-        <BodyDiff next={textOf(now)} now={textOf(next)} />
-      </div>
-    );
-  }
-  if (reverted && shape === "line") {
-    // Undo took the change back: the value it wrote, struck out, then the old value it put back,
-    // all in the bar's grey (design v3, state 7).
-    return (
-      <div
-        className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs"
-        data-field={field}
-        data-reverted="true"
-        data-testid="going-plan-field"
-      >
-        <span className={`font-medium ${textMutedOnSurface}`}>{fieldWords(field)}:</span>{" "}
-        <del className={textMutedOnSurface} data-testid="going-plan-next">
-          <FieldValue field={field} newIssues={shown} value={next} />
-        </del>{" "}
-        <span aria-hidden="true" className={textMutedOnSurface}>
-          →
-        </span>{" "}
-        <span className={textMutedOnSurface} data-testid="going-plan-now">
-          <FieldValue field={field} newIssues={undefined} value={now} />
-        </span>
-      </div>
-    );
-  }
   let value: ReactNode;
   if (edit === "priority" && (editing || (!lineEdit && next !== null))) {
     value = (
@@ -927,9 +889,9 @@ function MessageBody({
 
 /**
  * What a message on an issue's conversation, `row`, says once it was sent (R7): where it went,
- * "Posted on DEMO-15" by the issue's chip, where it reaches no session (`reachesNoSession`), since
- * "Sent" under "Message to no session" leaves the person asking to whom (review a8); "Sent" where
- * a session takes it.
+ * "Posted in the issue's conversation", where it reaches no session (`reachesNoSession`), since
+ * "Sent" under "Message to no session" leaves the person asking to whom (review a8), and the
+ * issue's chip stands in the line above it already (review N1); "Sent" where a session takes it.
  */
 function SentOnIssue({
   issue,
@@ -939,13 +901,7 @@ function SentOnIssue({
   readonly row: GoingPlanRow;
 }): ReactNode {
   const reach = useIssueReach(issue);
-  return reachesNoSession(reach, row) ? (
-    <>
-      Posted on <ItemSlot item={issue} />
-    </>
-  ) : (
-    "Sent"
-  );
+  return reachesNoSession(reach, row) ? "Posted in the issue's conversation" : "Sent";
 }
 
 /**
@@ -1016,42 +972,25 @@ function PostBody({
   );
 }
 
-/** An issue key in a row's words, as a word of its own (`going/agent/labels.go` writes keys so),
- *  captured so that splitting the words keeps it. */
-const KEY_IN_WORDS = /(?<![\w-])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![\w-])/u;
-
-/** A change of a document's text (R4): what the row does, naming the issue whose document it
- *  changes (`issue`, "" for a project's document) by its chip - in place of its key where the
- *  row's words write it ("Upload notes.md to DEMO-15"), else after them ("Suggest a change to
- *  spec on DEMO-15") - then two or three sentences on what it changes, and its diff under them,
- *  closed. */
+/** A change of a document's text (R4): what the row does, in the page's words drawn from the
+ *  row's data (`documentNaming`), the issue whose document it changes by its chip after them -
+ *  "Suggest a change to the spec of DEMO-15", "Upload notes.md to DEMO-15" - then two or three
+ *  sentences on what it changes, and its diff under them, closed. */
 function DocumentBody({
   document,
-  issue,
-  label,
+  naming,
 }: {
   readonly document: DocumentChange;
-  readonly issue: string;
-  readonly label: string;
+  readonly naming: DocumentNaming;
 }): ReactNode {
-  // The words between the keys at the even places, each key at the odd place after them.
-  const parts = label.split(KEY_IN_WORDS);
-  const named = parts.some((part, index) => index % 2 === 1 && part === issue);
   return (
     <div className="space-y-1">
       <p className={textPrimaryOnSurface} data-testid="going-plan-document">
-        {parts.map((part, index) =>
-          index % 2 === 1 && part === issue ? (
-            // biome-ignore lint/suspicious/noArrayIndexKey: a part is its place in the row's words, which never change for one row
-            <ItemSlot item={issue} key={index} />
-          ) : (
-            part
-          )
-        )}
-        {issue === "" || named ? null : (
+        {naming.words}
+        {naming.issue === "" ? null : (
           <>
-            {" on "}
-            <ItemSlot item={issue} />
+            {" "}
+            <ItemSlot item={naming.issue} />
           </>
         )}
       </p>
@@ -1139,8 +1078,9 @@ function NewIssueBody({
  * while it runs, a check once it ran - and says how it stands (`rowOutcome`): a message's result,
  * a failure's reason with "Say what to do instead" (`onFix`, where given), "Not run: it needs the
  * change above". Once its run was undone, it says what became of its change (`undo`): a change
- * Undo took back whole reads reverted - grey, the value it wrote struck out beside the old value
- * it put back, and no check - while a change that stayed keeps its check and says why.
+ * Undo took back whole reads reverted - the revert arrow in place of its check, its change drawn
+ * as the plan card drew it, plain "old → new" with no strike, and "Reverted" under it (review
+ * N3) - while a change that stayed keeps its check and says why.
  */
 export function PlanRowView({
   draft,
@@ -1169,11 +1109,19 @@ export function PlanRowView({
   const removes = rowRemoves(row, changes);
   const changed = row.changed && tickable;
   const session = textOf(args.session);
-  const label = rowLabel(
-    row,
-    session === "" ? edits : { ...edits, session: agents.sessionText(session, undefined) },
-    newIssues
-  );
+  // A document row names what it does from its own data (`documentNaming`), and its tick is named
+  // so as well.
+  const naming = kind === "document" ? documentNaming(row) : undefined;
+  const label =
+    naming === undefined
+      ? rowLabel(
+          row,
+          session === "" ? edits : { ...edits, session: agents.sessionText(session, undefined) },
+          newIssues
+        )
+      : naming.issue === ""
+        ? naming.words
+        : `${naming.words} ${naming.issue}`;
   const review = reviewWords(plan, row);
   // A row says how it stands once its plan no longer waits, and where it failed while the plan
   // waits (a row Auto-review ran); a discarded plan's rows ran nothing and say nothing of it.
@@ -1208,7 +1156,6 @@ export function PlanRowView({
       newIssues={newIssues}
       onEdit={(value) => setDraft(editedDraft(draft, row.row, change.field, value))}
       project={project}
-      reverted={reverted}
       shape={shape}
     />
   );
@@ -1227,10 +1174,8 @@ export function PlanRowView({
         waiting={tickable}
       />
     );
-  } else if (kind === "document" && document !== undefined) {
-    body = (
-      <DocumentBody document={document} issue={row.issue || textOf(args.issue)} label={label} />
-    );
+  } else if (kind === "document" && document !== undefined && naming !== undefined) {
+    body = <DocumentBody document={document} naming={naming} />;
   } else if (kind === "change" || kind === "claim") {
     // The chip, then each field it changes under it, in the bar and in the panel alike: the
     // fields start at one edge in every row, whatever the width of the chip above them.
@@ -1460,6 +1405,25 @@ function useRanAt(plan: GoingPlanAnswer | undefined): number | undefined {
 /** The soft shadow the pinned Approve bar casts up over the rows while some stand under it. */
 const COVERING_SHADOW = "shadow-[0_-6px_12px_-6px_rgba(15,23,42,0.18)]";
 
+/** The scroll that holds `element`: its nearest ancestor whose content scrolls (`overflow-y` auto
+ *  or scroll), the conversation of the bar or of the panel; undefined where none does. */
+function scrollerOf(element: HTMLElement): HTMLElement | undefined {
+  for (let at = element.parentElement; at !== null; at = at.parentElement) {
+    const { overflowY } = getComputedStyle(at);
+    if (overflowY === "auto" || overflowY === "scroll") return at;
+  }
+  return undefined;
+}
+
+/** Scrolls the conversation that holds `row` until the row's top stands at the conversation's
+ *  top edge, and moves nothing else. `scrollIntoView` scrolls every ancestor that can scroll, and
+ *  it scrolled the bar's frame under its header and its box (review B1). */
+function scrollToRow(row: HTMLElement): void {
+  const scroller = scrollerOf(row);
+  if (scroller === undefined) return;
+  scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+}
+
 /**
  * The rows of a waiting plan's card that its pinned Approve and Discard (`bar`) cover, by their
  * numbers, read again on every scroll, resize and change of the list's size (review A1): each row
@@ -1511,9 +1475,10 @@ function useHiddenRows(
  * title made from the plan's rows and its approval mode, linked to its setting; the rows no page
  * on the screen draws, with "2 changes show on this page" for the rest; and the plan's Approve and
  * Discard, pinned at the foot of the view while the card is taller than it. While rows stand under
- * that bar (review A1), its top edge casts a soft shadow and it says how many and whether any of
- * them cannot be undone - "3 more ↓ · 1 cannot be undone" - a press of which scrolls to them, so
- * Enter never approves a row the person was not shown was there. A row the page draws
+ * that bar (review A1), its top edge casts a soft shadow and it says how many and names those of
+ * them that cannot be undone - "3 more ↓ · includes a message that cannot be undone" - its "3
+ * more ↓" a button that scrolls the conversation to them, so Enter never approves a row the
+ * person was not shown was there. A row the page draws
  * (`PlannedChanges`) shows there and not here, so the rows of one plan can show in both places,
  * each once, and Approve approves the ticked rows of both. While the plan waits, the box's ↑
  * moves the focus onto the card's rows (`usePlanCardKeys`).
@@ -1600,13 +1565,11 @@ export function PlanCard({
   const unmatched = (lines ?? []).filter(
     (line) => line.plan !== plan.plan || !rows.some((row) => row.row === line.row)
   );
-  // The rows the pinned bar covers (`useHiddenRows`), and how many of those Approve would run that
-  // nothing takes back once they run (`rowIrreversible`).
+  // The rows the pinned bar covers (`useHiddenRows`), and those of them Approve would run that
+  // nothing takes back once they run, named (`irreversibleWords`).
   const covered = rows.filter((row) => hidden.includes(row.row));
   const unticked = untickedRows(plan, draft);
-  const final = covered.filter(
-    (row) => rowWaits(row) && !unticked.has(row.row) && rowIrreversible(row)
-  ).length;
+  const final = irreversibleWords(covered.filter((row) => rowWaits(row) && !unticked.has(row.row)));
   // Undo is offered for what the record says it can still take back, and names that count; an
   // Undo pressed on this page has answered, and its rows say what became of each change.
   const undoable = recorded?.undoable ?? 0;
@@ -1742,18 +1705,24 @@ export function PlanCard({
           ref={actions}
         >
           {covered.length === 0 ? null : (
-            <button
-              className={`mb-2 block text-left text-xs hover:underline ${textMutedOnSurface}`}
-              data-testid="going-plan-more"
-              onClick={() =>
-                list.current
-                  ?.querySelector(`${ROW}[data-row="${covered[0]?.row}"]`)
-                  ?.scrollIntoView({ block: "start" })
-              }
-              type="button"
-            >
-              {covered.length} more ↓{final === 0 ? null : ` · ${final} cannot be undone`}
-            </button>
+            // The line is an action, in the link's blue with a ring on focus, and it names each
+            // row under the bar that nothing takes back once Approve runs it (review A1).
+            <p className={`mb-2 text-xs ${textMutedOnSurface}`} data-testid="going-plan-more">
+              <button
+                className={`rounded font-medium outline-none hover:underline focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`}
+                data-testid="going-plan-more-button"
+                onClick={() => {
+                  const first = list.current?.querySelector<HTMLElement>(
+                    `${ROW}[data-row="${covered[0]?.row}"]`
+                  );
+                  if (first !== null && first !== undefined) scrollToRow(first);
+                }}
+                type="button"
+              >
+                {covered.length} more <span aria-hidden="true">↓</span>
+              </button>
+              {final === "" ? null : ` · includes ${final} that cannot be undone`}
+            </p>
           )}
           <PlanControls answering={answering} draft={draft} enterApproves />
         </div>

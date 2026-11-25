@@ -258,27 +258,14 @@ function workedRest(
 }
 
 /**
- * The one line steps fold into. Once the run's answer or its plan came, or the run ended (design
- * v2, state 4), it is every step's, with how long the run worked: "Worked for 1 min 48 s · read
- * 14 items, searched twice". A run whose time `workedTime` does not say, and older steps folded
- * while the run works (state 3), say what the steps were made of alone: "Read 6 items, searched
- * twice". Steps that were all slips say only the time, "Worked for 12 s", or with no time to
- * say, "Steps". `plan` is what the run's plan did once it ran (`foldWords`).
+ * The one line steps fold into once the run's answer or its plan came, or the run ended (design
+ * v2, state 4): every step's, with how long the run worked, "Worked for 1 min 48 s · read 14
+ * items, searched twice". A run whose time `workedTime` does not say says what the steps were
+ * made of alone: "Read 6 items, searched twice". Steps that were all slips say only the time,
+ * "Worked for 12 s", or with no time to say, "Steps". `plan` is what the run's plan did once it
+ * ran (`foldWords`). The time stands in an element of its own (`going-steps-fold-time`), so that
+ * a screenshot can mask the one part that moves with the run's pace.
  */
-export function workedWords(
-  steps: readonly RunStep[],
-  workedMs: number | undefined,
-  plan?: string
-): string {
-  const time = workedTime(workedMs);
-  const rest = workedRest(steps, time, plan);
-  if (time === undefined) return rest;
-  return rest === "" ? `Worked for ${time}` : `Worked for ${time} · ${rest}`;
-}
-
-/** `workedWords` as the folded line draws them, the time in an element of its own
- *  (`going-steps-fold-time`), so that a screenshot can mask the one part that moves with the
- *  run's pace. */
 function WorkedLine({
   plan,
   steps,
@@ -302,7 +289,7 @@ function WorkedLine({
 /** Which steps draw as lines while the run works (design v2, state 3). */
 export interface StepLines {
   /** The finished steps that fold into one line above the rest: all but the newest
-   *  `FINISHED_LINES`. */
+   *  `FINISHED_LINES`, where they are two or more. */
   readonly older: readonly RunStep[];
   /** The steps drawn as lines, in their order: the newest finished ones and the first
    *  `RUNNING_LINES` of those that run. */
@@ -312,13 +299,13 @@ export interface StepLines {
 }
 
 /** Which of `steps` draw as lines while the run works, and which fold. The finished steps past
- *  the newest `FINISHED_LINES` fold into one line, however few they are, so no more than that
- *  many finished lines ever show (review a7). */
+ *  the newest `FINISHED_LINES` fold into one line where they are two or more (review a7); one
+ *  such step shows as its own line, since a line folded into one line saves nothing (review N2). */
 export function stepLines(steps: readonly RunStep[]): StepLines {
   const finished = steps.filter((step) => !step.running);
   const running = steps.filter((step) => step.running);
   const past = finished.length - FINISHED_LINES;
-  const older = past > 0 ? finished.slice(0, past) : [];
+  const older = past >= 2 ? finished.slice(0, past) : [];
   const folded = new Set([...older, ...running.slice(RUNNING_LINES)]);
   return {
     more: Math.max(0, running.length - RUNNING_LINES),
@@ -545,8 +532,9 @@ function FoldLine({
  * The steps of one run, as the bar over the page and the panel at the side both draw them.
  *
  * While the run works (design v2, state 3), each call has a line, as Happy's section is live:
- * the newest finished ones, at most `FINISHED_LINES`, under one grey line that folds every older
- * one ("Read 6 items, searched twice ›", which opens them), then the
+ * the newest finished ones, at most `FINISHED_LINES`, under one grey line that folds the older
+ * ones where they are two or more and says how many ("2 earlier steps ›", which opens them; one
+ * older step shows as its own line, review N2), then the
  * calls that run, at most `RUNNING_LINES` of them and "and 2 more…" for the rest. The prose the
  * model wrote beside its calls heads them as a grey line and folds with them. The newest line
  * carries the run's timer, counted from `since`.
@@ -609,7 +597,7 @@ export function StepSection({
           onToggle={() => setOlderOpen((open) => !open)}
           open={olderOpen}
           testId="going-steps-older"
-          words={workedWords(lines.older, undefined)}
+          words={`${lines.older.length} earlier steps`}
         />
       )}
       {olderOpen ? (

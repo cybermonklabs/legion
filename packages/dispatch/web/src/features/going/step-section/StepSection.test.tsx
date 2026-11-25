@@ -5,13 +5,13 @@ import userEvent from "@testing-library/user-event";
 import { onFakeClock, tick } from "../../../__tests__/fake-clock";
 import { dangerText, textMutedOnSurface, textSecondaryOnSurface } from "../../../theme/classes";
 import type { RunStep } from "../run-frames";
-import { elapsedTimeWords, foldWords, pastHeader, StepSection, workedWords } from "./StepSection";
+import { elapsedTimeWords, foldWords, pastHeader, StepSection } from "./StepSection";
 
 // A run's steps as the bar draws them (design v2, states 3 and 4): one line for each call, the
 // running ones in the present tense with a shimmer and the ended ones in the past tense, the
 // newest line with the run's timer; past three calls at once, "and 2 more…"; at most three
-// finished lines, every older one folded into one line that opens on a click; the model's prose
-// as a grey header above its calls; keys as
+// finished lines, two or more older ones folded into one line that counts them and opens on a
+// click; the model's prose as a grey header above its calls; keys as
 // plain links; and once the run no longer works, every step folded into "Worked for 1 min 48 s ·
 // read 14 items, searched twice ›".
 
@@ -45,6 +45,14 @@ function labels(): readonly (string | null)[] {
   return screen
     .queryAllByTestId("going-step")
     .map((line) => within(line).getByTestId("going-step-label").textContent);
+}
+
+/** The one line `steps` fold into once their run ended, having worked for `workedMs`, drawn on
+ *  its own in place of whatever was drawn before. */
+function foldedLine(steps: readonly RunStep[], workedMs: number | undefined): HTMLElement {
+  cleanup();
+  render(<StepSection folded live={false} since={Date.now()} steps={steps} workedMs={workedMs} />);
+  return screen.getByTestId("going-steps-fold");
 }
 
 test("an elapsed time is said in its smallest useful units", () => {
@@ -91,12 +99,12 @@ test("a fold says what its steps were made of: items read, how often it searched
       step(4, { kind: "", tool: "call_tool" }),
     ])
   ).toBe("read 3 items, searched twice, 1 other step, 1 step failed");
-  expect(workedWords([step(0), search(1), search(2)], 108_000)).toBe(
+  expect(foldedLine([step(0), search(1), search(2)], 108_000)).toHaveAccessibleName(
     "Worked for 1 min 48 s · read 1 item, searched twice"
   );
   // A run that worked for less than a second, or for a time the page does not know, says none.
-  expect(workedWords([step(0)], 400)).toBe("Read 1 item");
-  expect(workedWords([step(0)], undefined)).toBe("Read 1 item");
+  expect(foldedLine([step(0)], 400)).toHaveAccessibleName("Read 1 item");
+  expect(foldedLine([step(0)], undefined)).toHaveAccessibleName("Read 1 item");
 });
 
 test("a running call's line is its present words with a shimmer, and the newest line carries the run's timer", async () => {
@@ -214,7 +222,9 @@ test("calls that run at once each have a line, and past three the rest fold into
   expect(screen.getAllByTestId("going-step-timer")).toHaveLength(1);
 });
 
-test("at most three finished lines show, and the older ones fold into one line that a click opens", async () => {
+// The design shows at most three finished lines (review a7); the older ones fold into one grey
+// line that says in plain words how many steps it holds (review N2), and opens them on a click.
+test("at most three finished lines show, and two or more older ones fold into one line that counts them and a click opens", async () => {
   const user = userEvent.setup();
   render(
     <StepSection
@@ -234,9 +244,11 @@ test("at most three finished lines show, and the older ones fold into one line t
   );
   expect(labels()).toEqual(["Read DEMO-3", "Read DEMO-4", "Read DEMO-5", "Reading DEMO-6…"]);
   const older = screen.getByTestId("going-steps-older");
-  expect(older.textContent).toBe("Read 1 item, searched once›");
-  expect(older).toHaveAccessibleName("Read 1 item, searched once");
+  expect(older.textContent).toBe("2 earlier steps›");
+  expect(older).toHaveAccessibleName("2 earlier steps");
   expect(older.getAttribute("aria-expanded")).toBe("false");
+  // The fold is the bar's one grey, as every hint and status line is.
+  expect(older.className).toContain(textMutedOnSurface);
 
   await user.click(older);
   expect(older.getAttribute("aria-expanded")).toBe("true");
@@ -252,10 +264,9 @@ test("at most three finished lines show, and the older ones fold into one line t
   expect(labels()).toHaveLength(4);
 });
 
-// The design shows at most three finished lines (review a7): a fourth finished step folds, alone,
-// into the one grey line above the rest, which says what that step was.
-test("at most three finished lines show: one step past the newest three folds on its own", async () => {
-  const user = userEvent.setup();
+// A line folded into one line saves nothing (review N2): one finished step past the newest three
+// shows as its own line, in its own words, and no fold line shows.
+test("one finished step past the newest three shows as itself, and nothing folds", () => {
   const look = "Looked for a way to list an issue's messages";
   render(
     <StepSection
@@ -271,13 +282,8 @@ test("at most three finished lines show: one step past the newest three folds on
       workedMs={undefined}
     />
   );
-  expect(labels()).toEqual(["Read DEMO-2", "Read DEMO-3", "Read DEMO-4"]);
-  const older = screen.getByTestId("going-steps-older");
-  expect(older).toHaveAccessibleName("Looked for a way once");
-  // The fold is the bar's one grey, as every hint and status line is.
-  expect(older.className).toContain(textMutedOnSurface);
-  await user.click(older);
   expect(labels()).toEqual([look, "Read DEMO-2", "Read DEMO-3", "Read DEMO-4"]);
+  expect(screen.queryByTestId("going-steps-older")).toBeNull();
 });
 
 test("the model's prose heads its calls as one grey line, and folds with them", async () => {
@@ -389,11 +395,13 @@ test("a slip counts in no fold, and a failure the person can act on still counts
   expect(foldWords([step(0), slip(1), step(2, { refused: true })])).toBe(
     "read 1 item, 1 step failed"
   );
-  expect(workedWords([step(0), slip(1)], 108_000)).toBe("Worked for 1 min 48 s · read 1 item");
+  expect(foldedLine([step(0), slip(1)], 108_000)).toHaveAccessibleName(
+    "Worked for 1 min 48 s · read 1 item"
+  );
   // Steps that were all slips say only how long the run worked, or that they are steps.
   expect(foldWords([slip(0), slip(1)])).toBe("");
-  expect(workedWords([slip(0)], 12_000)).toBe("Worked for 12 s");
-  expect(workedWords([slip(0)], undefined)).toBe("Steps");
+  expect(foldedLine([slip(0)], 12_000)).toHaveAccessibleName("Worked for 12 s");
+  expect(foldedLine([slip(0)], undefined)).toHaveAccessibleName("Steps");
 });
 
 test("a slip's line is grey with what the model tried, and a failure's line is red", async () => {
