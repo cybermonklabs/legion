@@ -1,16 +1,182 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+
+import type { IssueDetails } from "../../../api/types";
+import { borderDefault, surfaceBg, textPrimaryOnSurface } from "../../../theme/classes";
+import { MARGIN_WORDS, type Preset } from "../page-words";
+import { rowTextOf, textRuns } from "./row-text-runs";
+import type { SelectedWords } from "./SelectionComposer";
+import { quoteOf } from "./selection-quote";
+import { quotedNodeOf, useTextComposer } from "./TextMargin";
+import { MOUNTED_GATES, subjectOf, writeFor } from "./text-comment-write";
+import { useStageIssue, useTextThreads, type ViewThreads } from "./useTextThreads";
 
 /**
  * The control that comments on selected words (R5): while a selection lies inside the words of
  * one row it draws a button beside the selection's end (`position: fixed`, `left` and `top` in
  * px from the last client rectangle of the range), and `$mod+Alt+m` (matched by
- * `event.code === "KeyM"`) does what the button does. A press, or the chord with a quote, opens
- * the composer (`useTextComposer`) and closes Details first. It draws no control on an
- * author-only node, a child issue's row, or a kind whose gate is off (`text-comment-write.ts`).
- * It takes no property: it reads the nodes the stage draws from the provider that
- * `slots/providers.tsx` mounts. The stage mounts it only where `GATES.COMPOSER` is on. Built by
- * t8; it draws nothing until then.
+ * `event.code === "KeyM"`, so macOS's Alt+M, which types "µ", still takes it) does what the button
+ * does. A press, or the chord with a quote, opens the composer (`useTextComposer`), which closes
+ * Details first; the chord with no quote does nothing. It draws no control on an author-only
+ * node, a child issue's row, or a kind whose gate is off (`text-comment-write.ts`). It takes no
+ * property: it reads the view the stage draws from the reads the page holds (`useStageIssue`,
+ * `useTextThreads`). The stage mounts it only where `GATES.COMPOSER` is on.
+ *
+ * The chord is a `keydown` listener of the document's, not a binding of the page's keymap: the
+ * keymap matches a key by the character it types and by its place only on a Mac (`keymap.ts`),
+ * and the chord is matched by its place on every platform (decision 12). A chord with a quote
+ * takes the key before the keymap's own listener, on the window, reads it; one with none leaves
+ * it to the keymap, so an editor's own `$mod+Alt+m` still takes it there.
  */
 export function SelectionComment(): ReactNode {
-  return null;
+  const stage = useStageIssue();
+  return stage === undefined ? null : <Control issue={stage.issue} preset={stage.preset} />;
+}
+
+/** How far right of the selection's end the control stands, in px. */
+const GAP = 4;
+
+/** The words a selection quotes and where the control stands for them. */
+interface Selected {
+  readonly left: number;
+  readonly top: number;
+  readonly words: SelectedWords;
+}
+
+/** The mark every row carries, which names its node by its tree id. */
+const ROW = "[data-node-id]";
+
+/** What a row draws a text block of its node's words as: a paragraph, a heading, a code block, a
+ *  list item, a table cell, a term or its description. */
+const TEXT_BLOCK = "p, h1, h2, h3, h4, h5, h6, pre, li, td, th, dt, dd";
+
+/**
+ * Whether `range` takes the words of one text block of `words`, the row's words element: the
+ * block of the first character it takes is the block of its last, its edges read as `quoteOf`
+ * reads them (a range that ends at the start of the next block ends in the block before). The
+ * server's search refuses words that span text blocks (`pmdoc.ErrTargetSpansBlocks`), so such a
+ * selection takes no control, as one across two blocks of an item takes none (`quoteOf`).
+ */
+function inOneTextBlock(range: Range, words: HTMLElement): boolean {
+  const runs = textRuns(words);
+  const start = runs.offsetOf(range.startContainer, range.startOffset);
+  const end = runs.offsetOf(range.endContainer, range.endOffset);
+  if (start === null || end === null) return false;
+  const first = runs.runs.find((run) => run.end > start);
+  const last = runs.runs.filter((run) => run.start < end).at(-1);
+  if (first === undefined || last === undefined) return false;
+  const blockOf = (run: Node) => run.parentElement?.closest(TEXT_BLOCK) ?? null;
+  return blockOf(first.node) === blockOf(last.node);
+}
+
+/**
+ * What the document's selection quotes in the row its start is in, on the issue `page`'s page
+ * drawn as `view`, or null: no single range, a collapsed one, no row the view draws a node of, a
+ * node no write is offered on (`writeFor`), a selection that is not inside that row's own words
+ * (`quoteOf`), or one across two of their text blocks (`inOneTextBlock`). The control stands
+ * right of the last rectangle of the range, at its top.
+ */
+function selectedIn(view: ViewThreads, page: string): Selected | null {
+  const selection = document.getSelection();
+  if (selection === null || selection.rangeCount !== 1 || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  const start = range.startContainer;
+  const row = (start instanceof Element ? start : start.parentElement)?.closest<HTMLElement>(ROW);
+  const nodeId = row?.dataset.nodeId;
+  const node = nodeId === undefined ? undefined : view.nodes.get(nodeId);
+  if (row === null || row === undefined || nodeId === undefined || node === undefined) return null;
+  if (writeFor(subjectOf(node, page), MOUNTED_GATES) === null) return null;
+  const quoted = quotedNodeOf(view, nodeId);
+  const quote = quoted === undefined ? null : quoteOf(selection, row, quoted);
+  const words = rowTextOf(row);
+  if (quote === null || words === null || !inOneTextBlock(range, words)) return null;
+  const rects = range.getClientRects();
+  const end = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
+  return {
+    left: end.right + GAP,
+    top: end.top,
+    words: {
+      block: quote.block?.block_id ?? null,
+      nodeId,
+      occurrence: quote.occurrence,
+      quote: quote.quote,
+    },
+  };
+}
+
+/** Whether `event` is `$mod+Alt+m` by the key's place: Meta or Control, as the page's keymap
+ *  reads `$mod`, with Alt and no Shift. */
+function isChord(event: KeyboardEvent): boolean {
+  return (
+    event.code === "KeyM" && event.altKey && (event.metaKey || event.ctrlKey) && !event.shiftKey
+  );
+}
+
+function Control({ issue, preset }: { readonly issue: IssueDetails; readonly preset: Preset }) {
+  const view = useTextThreads(issue, preset);
+  const composer = useTextComposer();
+  const [selected, setSelected] = useState<Selected | null>(null);
+  // The listeners read the view and the composer as they stand, so they are not bound again
+  // whenever a read answers.
+  const now = useRef({ composer, view });
+  now.current = { composer, view };
+  const key = issue.key;
+  const find = useCallback(() => selectedIn(now.current.view, key), [key]);
+
+  // The selection is read again at most once in an animation frame, however often it changes.
+  useEffect(() => {
+    let frame: number | undefined;
+    const changed = () => {
+      if (frame !== undefined) return;
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        setSelected(find());
+      });
+    };
+    document.addEventListener("selectionchange", changed);
+    return () => {
+      document.removeEventListener("selectionchange", changed);
+      if (frame !== undefined) cancelAnimationFrame(frame);
+    };
+  }, [find]);
+
+  // The chord reads the selection as it stands when pressed.
+  useEffect(() => {
+    const chord = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || !isChord(event)) return;
+      const found = find();
+      if (found === null) return;
+      event.preventDefault();
+      now.current.composer.open(found.words);
+    };
+    document.addEventListener("keydown", chord);
+    return () => document.removeEventListener("keydown", chord);
+  }, [find]);
+
+  const landed = composer.landed;
+  const box = `rounded border text-sm shadow-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnSurface}`;
+  return (
+    <>
+      {selected === null ? null : (
+        <div className="fixed z-30" style={{ left: selected.left, top: selected.top }}>
+          <button
+            className={`px-2 py-0.5 ${box}`}
+            onClick={() => composer.open(selected.words)}
+            // The press keeps the selection the control stands for.
+            onMouseDown={(event) => event.preventDefault()}
+            type="button"
+          >
+            {MARGIN_WORDS.comment}
+          </button>
+        </div>
+      )}
+      {landed === undefined || !("notice" in landed) ? null : (
+        <p
+          className={`fixed bottom-4 left-1/2 z-30 max-w-md -translate-x-1/2 px-3 py-2 ${box}`}
+          role="status"
+        >
+          {landed.notice}
+        </p>
+      )}
+    </>
+  );
 }

@@ -232,6 +232,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
    *  finished with is pressed no longer, so while `?` reads the bindings this is false. */
   const scrollsABlock = (): boolean => {
     const event = pressing.current;
+    if ((event?.target as Element | null)?.closest?.("[data-text-threads]")) return true;
     return (
       event !== null &&
       event.eventPhase !== Event.NONE &&

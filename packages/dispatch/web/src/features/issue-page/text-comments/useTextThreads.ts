@@ -1,14 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
+import { useLocation } from "react-router-dom";
 
+import { primarySpec } from "../../../api/issue-cache";
 import {
   issueCoverageQuery,
+  issueQuery,
   issueResultsQuery,
   TREE_FILTERS,
   whoAmIQuery,
 } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
+import { parseIssuePath } from "../../refs/routes";
+import { issueAddress } from "../issue-address";
 import type { IssueTreeReads } from "../issue-tree";
 import type { Preset } from "../page-words";
 import { treeIdOf } from "../tree-read/tree-nodes";
@@ -129,4 +134,26 @@ export function useTextThreads(issue: IssueDetails, preset: Preset): ViewThreads
     () => (answer === undefined ? NO_VIEW_THREADS : viewThreadsOf(answer, reads)),
     [answer, reads]
   );
+}
+
+/**
+ * The issue the router is at, as the page reads it, and the view its address opens: what the
+ * control (`SelectionComment.tsx`) and each node's sheet (`NodeThreads.tsx`), which are handed no
+ * issue, read the view's threads by. The issue's read is the page's own (`IssueOutlinePage`),
+ * which holds its answer before the stage draws a row, so this observer sends no request of its
+ * own there; where nothing has read it - a part of the page drawn alone - it reads it once.
+ * Undefined off an issue's address and until the read answers.
+ */
+export function useStageIssue():
+  | { readonly issue: IssueDetails; readonly preset: Preset }
+  | undefined {
+  const { hash, pathname, search } = useLocation();
+  const route = parseIssuePath(pathname, search);
+  const issue = useQuery({
+    ...issueQuery(route?.key),
+    enabled: route !== undefined,
+    refetchOnMount: false,
+  }).data;
+  if (route === undefined || issue === undefined) return undefined;
+  return { issue, preset: issueAddress(route, search, hash, primarySpec(issue)?.slug).preset };
 }

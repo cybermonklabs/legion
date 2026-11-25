@@ -28,7 +28,7 @@ import type { SlotProps } from "../slot-props";
 import { useFollowing } from "../slots/following";
 import { moveToRow } from "../useTreeKeymap";
 import { highlightThreadWords, type ThreadWords } from "./highlights";
-import { quoteLine } from "./quote-line";
+import { SelectionComposer, type TextComposerOutcome, wordsKeyOf } from "./SelectionComposer";
 import { itemBlocksOf, type QuotedNode, rangeOf } from "./selection-quote";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
 import type { NodeThreads, TextThread } from "./text-threads";
@@ -64,20 +64,32 @@ export interface TextComposerRequest {
   readonly quote: string;
 }
 
-/** The composer of this part: the request it is open on, or undefined while none is open. */
+/** The composer of this part: the request it is open on, or undefined while none is open, and
+ *  what its last send left the page to do. */
 export interface TextComposer {
   /** Closes the composer, keeping its draft as `MentionComposer` keeps one. */
   readonly close: () => void;
+  /** Closes the composer on its send's 201 and holds what the page does next (R5): the new
+   *  thread's root takes the focus once the re-read draws it, or one sentence says a reply's
+   *  quote was not kept. */
+  readonly land: (outcome: TextComposerOutcome) => void;
+  /** What the last send left the page to do, until the page has done it (`settle`) or a
+   *  composer opens again. */
+  readonly landed: TextComposerOutcome | undefined;
   /** Opens the composer in the column beside the request's node, or in that node's sheet below
    *  1024 px; the column is drawn for it. Details closes first where it is open (R2). */
   readonly open: (request: TextComposerRequest) => void;
   readonly request: TextComposerRequest | undefined;
+  /** Says the page has done what the last send left it to do. */
+  readonly settle: () => void;
 }
 
-/** The composer's one state for one app: the issue it is open on and the request, which the
- *  column and the control share wherever each is drawn on the page. */
+/** The composer's one state for one app: the issue it is open on and the request, and what its
+ *  last send left for that issue's page, which the column and the control share wherever each is
+ *  drawn on the page. */
 interface ComposerStore {
   held: { readonly key: string; readonly request: TextComposerRequest } | undefined;
+  landed: { readonly key: string; readonly outcome: TextComposerOutcome } | undefined;
   readonly listeners: Set<() => void>;
   readonly subscribe: (listener: () => void) => () => void;
 }
@@ -93,6 +105,7 @@ function composerStoreOf(client: QueryClient): ComposerStore {
     const listeners = new Set<() => void>();
     store = {
       held: undefined,
+      landed: undefined,
       listeners,
       subscribe: (listener) => {
         listeners.add(listener);
@@ -104,9 +117,15 @@ function composerStoreOf(client: QueryClient): ComposerStore {
   return store;
 }
 
-/** Sets what `store` holds and tells each reader. */
-function holdComposer(store: ComposerStore, held: ComposerStore["held"]): void {
+/** Sets what `store` holds - the composer open, and what its last send left - and tells each
+ *  reader. */
+function holdComposer(
+  store: ComposerStore,
+  held: ComposerStore["held"],
+  landed: ComposerStore["landed"] = store.landed
+): void {
   store.held = held;
+  store.landed = landed;
   for (const listener of [...store.listeners]) listener();
 }
 
@@ -132,21 +151,35 @@ export function useTextComposer(): TextComposer {
   const { pathname, search } = useLocation();
   const key = parseIssuePath(pathname, search)?.key;
   const held = useSyncExternalStore(store.subscribe, () => store.held);
+  const landedHeld = useSyncExternalStore(store.subscribe, () => store.landed);
   const closeDetails = useCloseDetails();
   const request = held !== undefined && held.key === key ? held.request : undefined;
+  const landed =
+    landedHeld !== undefined && landedHeld.key === key ? landedHeld.outcome : undefined;
   return useMemo(
     () => ({
       close: () => {
         if (store.held !== undefined && store.held.key === key) holdComposer(store, undefined);
       },
+      land: (outcome: TextComposerOutcome) => {
+        if (key === undefined) return;
+        const open = store.held !== undefined && store.held.key === key;
+        holdComposer(store, open ? undefined : store.held, { key, outcome });
+      },
+      landed,
       open: (next: TextComposerRequest) => {
         if (key === undefined) return;
         closeDetails();
-        holdComposer(store, { key, request: next });
+        holdComposer(store, { key, request: next }, undefined);
       },
       request,
+      settle: () => {
+        if (store.landed !== undefined && store.landed.key === key) {
+          holdComposer(store, store.held, undefined);
+        }
+      },
     }),
-    [closeDetails, key, request, store]
+    [closeDetails, key, landed, request, store]
   );
 }
 
@@ -168,12 +201,19 @@ export function TextMargin({ issue, route }: SlotProps): ReactNode {
   const wide = useMediaQuery(CONTENTS_PANE_QUERY);
   const view = useTextThreads(issue, address.preset);
   const composer = useTextComposer();
-  // A composer open on the issue goes with its page, so it is not open again on a later visit.
+  // A composer open on the issue goes with its page, so it is not open again on a later visit,
+  // and so does what its last send left the page to do.
   const store = composerStoreOf(useQueryClient());
   const key = issue.key;
   useEffect(
     () => () => {
-      if (store.held?.key === key) holdComposer(store, undefined);
+      const { held, landed } = store;
+      if (held?.key !== key && landed?.key !== key) return;
+      holdComposer(
+        store,
+        held?.key === key ? undefined : held,
+        landed?.key === key ? undefined : landed
+      );
     },
     [key, store]
   );
@@ -253,8 +293,9 @@ interface Words {
   readonly quote: string;
 }
 
-/** The node `nodeId` as `rangeOf` reads its words: its text, and an item's blocks in order. */
-function quotedNodeOf(view: ViewThreads, nodeId: string): QuotedNode | undefined {
+/** The node `nodeId` as `rangeOf` and `quoteOf` read its words: its text, and an item's blocks in
+ *  order. */
+export function quotedNodeOf(view: ViewThreads, nodeId: string): QuotedNode | undefined {
   const node = view.nodes.get(nodeId);
   if (node === undefined) return undefined;
   const item =
@@ -364,10 +405,11 @@ function Column({
 
   // Places each box at its wanted top against the column's own origin (`regionOrigin`'s rule):
   // the top of the first rectangle of its words in its node's row, else of the row. Before pull
-  // request 3125 each stands at its wanted top (the stacking, `useCardStack`, comes at G5). A box
-  // whose node has no row drawn - folded or paged away - is not drawn, and the column draws
-  // nothing while no box has a row. While any box is drawn, the page's row that holds the stage
-  // carries `TEXT_MARGIN_ATTRIBUTE`. The words measured are marked (`highlights.ts`).
+  // request 3125 each stands at its wanted top (the stacking, `useCardStack`, comes at G5). A
+  // thread's box whose node has no row drawn - folded or paged away - is not drawn, while the
+  // composer's stays where that row last stood, with its draft; the column draws nothing while no
+  // box is drawn. While any box is drawn, the page's row that holds the stage carries
+  // `TEXT_MARGIN_ATTRIBUTE`. The words measured are marked (`highlights.ts`).
   const measure = useCallback(() => {
     const column = aside.current;
     const region = list.current;
@@ -380,8 +422,15 @@ function Column({
     for (const box of region.querySelectorAll<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)) {
       const nodeId = box.getAttribute(THREAD_NODE_ATTRIBUTE) ?? "";
       const row = rowIn(stage, nodeId, box.dataset.textThreadParent);
-      box.hidden = row === null;
-      if (row === null) continue;
+      const composing = box.hasAttribute(TEXT_COMPOSER_ATTRIBUTE);
+      box.hidden = row === null && !composing;
+      if (row === null) {
+        if (composing) {
+          shown += 1;
+          bottom = Math.max(bottom, (Number.parseFloat(box.style.top) || 0) + box.offsetHeight);
+        }
+        continue;
+      }
       shown += 1;
       const key = box.dataset.textThread;
       const boxWords =
@@ -483,6 +532,25 @@ function Column({
     focusBefore.current = target;
   });
 
+  // The root of the thread a send of this part wrote takes the focus once the re-read draws its
+  // card, as the item an address names does (R5).
+  const sent = composer.landed;
+  useEffect(() => {
+    if (sent === undefined || !("root" in sent) || detailsOpen) return;
+    const thread = placed.find(({ thread: one }) => one.thread.root.comment.id === sent.root);
+    const card =
+      thread === undefined
+        ? null
+        : (list.current?.querySelector<HTMLElement>(
+            `[data-margin-item="${CSS.escape(thread.thread.thread.key)}"]`
+          ) ?? null);
+    if (card === null) return;
+    if (!card.hasAttribute("tabindex")) card.tabIndex = -1;
+    card.focus();
+    focusBefore.current = card;
+    composer.settle();
+  });
+
   useEffect(() => {
     const column = aside.current;
     const before = focusBefore.current;
@@ -534,6 +602,17 @@ function Column({
     if (!(next instanceof Node) || !event.currentTarget.contains(next)) focusThread(undefined);
   };
 
+  // Escape in the composer, and its own Close, close it with its draft kept and give the focus
+  // to the row of its node (R5's table, R6).
+  const leaveComposer = () => {
+    const nodeId = request?.nodeId;
+    const stage = aside.current?.previousElementSibling ?? null;
+    composer.close();
+    if (nodeId === undefined || stage === null) return;
+    const row = rowIn(stage, nodeId, view.threads.get(nodeId)?.parent);
+    if (row !== null) moveToRow(row);
+  };
+
   return (
     // biome-ignore lint/a11y/useSemanticElements: the column is an `aside` beside the main column that is named as a region of its own (R6).
     <aside
@@ -578,9 +657,14 @@ function Column({
                 className="absolute inset-x-0"
                 {...{ [THREAD_NODE_ATTRIBUTE]: request.nodeId, [TEXT_COMPOSER_ATTRIBUTE]: "" }}
               >
-                <blockquote className="border-l-2 pl-2 text-sm">
-                  {quoteLine(request.quote)}
-                </blockquote>
+                <SelectionComposer
+                  issue={issue}
+                  key={wordsKeyOf(request)}
+                  onLand={composer.land}
+                  onLeave={leaveComposer}
+                  view={view}
+                  words={request}
+                />
               </div>
             )}
           </div>
