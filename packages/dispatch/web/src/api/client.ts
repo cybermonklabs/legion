@@ -14,6 +14,7 @@ import {
   type InboxThreadKind,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  parentStatusConflictIssues,
   REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
@@ -46,7 +47,6 @@ import type {
   IDCandidate,
   IssueAskThreadRow,
   IssueReferencesAnswer,
-  NewIssueSettings,
   ParentStatusConflictIssue,
   StatusChangeEntry,
   UserIssueState,
@@ -115,7 +115,7 @@ export class ApiError extends Error {
     this.status = status;
     this.state = payload.state;
     this.candidates = payload.candidates ?? undefined;
-    this.issues = payload.issues ?? undefined;
+    this.issues = parentStatusConflictIssues(payload.code, payload.issues);
     this.changed = payload.changed ?? undefined;
     this.retryAfterMs = retryAfterMs;
   }

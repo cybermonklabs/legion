@@ -447,9 +447,7 @@ func TestADeleteWhoseSendMovesWhileItIsWrittenAnswersDeleteContended(t *testing.
 
 			deleted := make(chan *httptest.ResponseRecorder, 1)
 			go func() { deleted <- dispatchRequest(t, handler, http.MethodDelete, kind.route+id, nil, "alice") }()
-			if queued := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); queued < 1 {
-				t.Fatalf("the delete never queued its settle behind the sender's write on the attempt")
-			}
+			storetest.WaitForLockWaiters(t, holder, 1)
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatalf("commit the sender's write: %v", err)
 			}

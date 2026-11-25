@@ -1000,16 +1000,17 @@ An identity with one of its variables missing is an error that names the variabl
 `AGENT_SECRETS_DEVICE_LOGIN_FILE` names, else `~/.config/legion/device-login.json`, mode 0600:
 the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credential_id` and
 `expires_at`, its `refresh_token`, the `broker` it was made at, and the last `access_token` with
-its `access_expires_at`. The file is refused when its group or anyone else may read it, when its
-directory lets them write to it, or when another user owns either. A trade presents that access
-token as the subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with
-no actor, and every proof is signed with the login's key. A login made at another broker than
-`AGENT_SECRETS_URL` names is refused, and so is a broker on `http` off this machine's loopback:
-the login's tokens cross that connection. It names the projects `AGENT_SECRETS_PROJECTS` lists,
-and its session is the caller's own, else `AGENT_SECRETS_SESSION`, else
-`device-login-<thumbprint>`, the first 12 characters of the key's thumbprint. The login is the
-person's own credential, so no `agent-secrets login` sign-in on the machine is read beside it, and
-a process with `PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is
+its `access_expires_at` and `access_life_seconds`, the life in whole seconds that token had when it
+landed. The file is refused when its group or anyone else may read it, when its directory lets
+them write to it, or when another user owns either. A trade presents that access token as the
+subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with no actor, and
+every trade's DPoP proof is signed with the login's key; a read trade adds a holder proof (below).
+A login made at another broker than `AGENT_SECRETS_URL` names is refused, and so is a broker on
+`http` off this machine's loopback: the login's tokens cross that connection. It names the projects
+`AGENT_SECRETS_PROJECTS` lists, and its session is the caller's own, else `AGENT_SECRETS_SESSION`,
+else `device-login-<thumbprint>`, the first 12 characters of the key's thumbprint. The login is the
+person's own credential, so no `agent-secrets login` sign-in on the machine is read beside it, and a
+process with `PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is
 refused it, since the broker mints its trade as that person. Only this client trades a device
 login. The Go tools that read `AGENT_SECRETS_MACHINE_IDENTITY` (`agent-secrets`, the helper,
 `legion controller start`) refuse `device-login`, naming it as the TypeScript client's alone, so a
@@ -1025,13 +1026,18 @@ looks at the lock again just before it replaces the file, and a trade of it the 
 traded again. Under the lock a process reads the file again, refreshes when the access token kept
 there has less than a minute left, or when the broker refuses it as a token it no longer honours
 ("Token is not valid or has expired", or the login ended: a revoke ends a login before its token
-lapses), keeps the rotated login, and trades. A refusal of the trade's session or projects is
-not refreshed: a refresh cures none of those. A refresh the broker did not answer is sent once
-more at once: the broker redeems the spent refresh token again within its five-minute grace, and
-past it the login ends. The broker's `invalid_grant` to a refresh is final (`DeviceLoginEndedError`
-in `token-errors.ts`): the login was revoked or ran out, and only a new `dispatch login --device`
-cures it. A trade whose time ran out while another process of the machine held the lock says so
-(`LockHeldError`), and not that the broker did not answer.
+lapses), keeps the rotated login, and trades. A read trade refreshes first while the access token
+has less than the client's renewal window and a second left, capped at half the life the last
+refresh gave it (`access_life_seconds`) and never under the minute: a token fresh from a refresh
+meets it wherever that life is over a minute, and the next refresh comes no sooner than half a life
+later wherever that half is over the minute. A file with no `access_life_seconds`, as an older
+build writes it, keeps the minute alone until the next refresh. A refusal of the trade's session or
+projects is not refreshed: a refresh cures none of those. A refresh the broker did not answer is
+sent once more at once: the broker redeems the spent refresh token again within its five-minute
+grace, and past it the login ends. The broker's `invalid_grant` to a refresh is final
+(`DeviceLoginEndedError` in `token-errors.ts`): the login was revoked or ran out, and only a new
+`dispatch login --device` cures it. A trade whose time ran out while another process of the
+machine held the lock says so (`LockHeldError`), and not that the broker did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1092,7 +1098,8 @@ trades that person, as the Go client does:
 Dispatch gives the token that names a person the `person` scope, so the session writes as that
 person. It never gives a broker token `approve`: a review, an answer to an approval request, a
 machine login's decision and a personal token's mint need the person's browser, or a personal
-token (`DISPATCH_TOKEN`) the person gave `approve`.
+token (`DISPATCH_TOKEN`) the person gave `approve`. A read trade's token
+(`DISPATCH_TOKEN_BROKER_READ`, below) holds `person` too, and writes nothing.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -1154,13 +1161,15 @@ one that traded at the broker as the machine. A session that used a bearer did n
 broker, so you can resume it.
 
 Each person's trade costs one refresh at the issuer and one `launcher_credential.token_login`
-audit row at the broker. The broker writes that row for every person's trade, and it lets no
-person's trade decline the launcher credential (`personDeclinesNothing`). The client also reads
-the issuer's discovery document once. A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS`
-(900 seconds by default), and the client trades again five minutes before the token lapses
-(`DEFAULT_RENEW_BEFORE_MS`). So with the broker's default, a long-lived session that keeps
-calling trades about every ten minutes. Every `dispatch` command, Claude Code hook and
-`envoy-send` is a process of its own, so each one trades once.
+audit row at the broker. The broker writes that row for every person's ordinary trade, and it lets
+no such trade decline the launcher credential (`personDeclinesNothing`). A person's read trade
+declines it and writes no such row. The client also reads the issuer's discovery document once.
+A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS` (900 seconds by default), and the client
+trades again five minutes before the token lapses (`DEFAULT_RENEW_BEFORE_MS`), and never before
+half the life the token had when it landed (`renewalAt`, the Go client's rule too), so a token of
+less than ten minutes is traded again at its half life. So with the broker's default, a long-lived
+session that keeps calling trades about every ten minutes. Every `dispatch` command, Claude Code
+hook and `envoy-send` is a process of its own, so each one trades once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
 refused with words that name `agent-secrets login`. Dispatch gives the sign-in's tokens no
@@ -1180,6 +1189,36 @@ person's envoy.json holds their `dispatch.token`. Any other value of the variabl
 naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`. The start also sets
 `PERSON_SIGNIN_TRADE=off` for the controller, so its broker route trades the machine and never
 the operator's sign-in (above).
+
+`DISPATCH_TOKEN_BROKER_READ=1` narrows the trade of Dispatch's credential to reading. The trade
+asks the broker for the scope `read`, and the token keeps the identity the same trade would have
+had and writes nothing. `DISPATCH_TOKEN_BROKER_AS_OF=<an RFC 3339 time>` beside it adds a cut
+(`as_of`), the past time the token reads at. Either setting takes the broker route as
+`DISPATCH_TOKEN_BROKER=1` does and reads no bearer, so a shell that also holds `DISPATCH_TOKEN`
+never writes with it. `DISPATCH_TOKEN_BROKER_READ` takes `1` alone. A cut without
+`DISPATCH_TOKEN_BROKER_READ=1`, a cut that is not an RFC 3339 time with at most six fractional
+digits, and a cut at the zero time (`0001-01-01T00:00:00Z`, under any offset), which the broker
+refuses since it would read as no cut, turn Dispatch off with an error that names the setting. No
+such error quotes the value.
+
+The two settings narrow the Dispatch trade alone (`brokerCredential`'s `read`). The Dispatch
+credential gets a broker client of its own, keyed by the session, the broker variables and the two
+settings. The Envoy listener and NATS keep the session's shared client, which asks for no scope,
+since both refuse a read-only token and a session's inbound messages must keep working. A
+person's read trade sends no `launcher_credential`, which the broker reads as declined. It makes a
+P-256 key of its own for the process and sends it as the holder key (`DPoP-Holder`) beside the box
+key's DPoP proof. That key signs every proof Dispatch sees, so the box key signs the trade alone.
+A device login's read trade also sends a holder key of its own beside the login key's DPoP proof,
+because the login's key signs the machine login's launcher proofs and a key that signs launcher
+proofs is bound to no read token.
+The machine's own trade already proves a key the process made, which holds no launcher credential,
+so it sends no holder key. A person's read trade is refused once the sign-in's launcher credential
+lapses, until one ordinary trade renews it (the token files, below).
+
+Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
+`dispatch whoami` says that the credential may only read, and names its cut where it has one.
+Under a cut, every other read prints `AS_OF_TOKEN_NOT_SERVED: …` and exits 1, because Dispatch
+serves no read at a past time yet.
 
 ### The `dispatch` command
 
@@ -1220,11 +1259,12 @@ and others cannot write to, it exits 2 before any request, so no person approves
 machine could not keep there. It exits 2 too, before any request, for a file setting that names
 something other than a regular file, a link to one included: a directory, which no save can
 replace, a named pipe, which a read waits on until a process writes to it, a socket, a device or a
-loop of links. It reads the login a new one replaces, and every login it trades, only from a
-regular file of at most 64 KiB, in a directory it checks before it opens the file; where the
-setting names a link, it checks the directory of each link on the way and of the file at its
-end as well. Every directory on the way to those but the ones above the home directory, which
-hold the home directory itself, must be one that this user or root owns, the directory each
+loop of links. Asked for anything but its `--help`, it exits 2, before any request, while either of
+the command's token files is set (below). It reads the login a new one replaces, and every login it
+trades, only from a regular file of at most 64 KiB, in a directory it checks before it opens the
+file; where the setting names a link, it checks the directory of each link on the way and of the
+file at its end as well. Every directory on the way to those but the ones above the home directory,
+which hold the home directory itself, must be one that this user or root owns, the directory each
 link on the way sits in included, and that others may not write to unless it has the sticky
 bit, as /tmp has. Its group may write to it only where that group is this user's private group:
 /etc/passwd and /etc/group name this user in it and no other member, as a Legion pod's /legion,
@@ -1322,6 +1362,61 @@ at most once a day.
 `bun bin/stand-in-gateway.ts --status 502 --body html` serves one non-Dispatch answer (`html`,
 `empty`, `text` or `json`, from `src/stand-in-gateway.ts`) on `--port` (ephemeral by default) and
 prints its URL, for proving what a command shows when a gateway, not Dispatch, answers.
+
+### The `dispatch` command's token files
+
+A copy of the command can use a broker token that was traded elsewhere, so the copy holds no
+subject token and trades nothing. Two settings name two files (`file-token-credential.ts`):
+
+- `DISPATCH_BROKER_TOKEN_FILE` names a file that holds one broker access token and nothing else.
+  Whitespace around it is trimmed.
+- `DISPATCH_BROKER_DPOP_KEY_FILE` names a file that holds the P-256 private key the token is bound
+  to, as one PKCS#8 PEM block (a block labelled `PRIVATE KEY`, as
+  `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256` writes it). A SEC1
+  (`EC PRIVATE KEY`) or PKCS#1 block is refused, though the runtime would read it.
+
+The key is made for the copy that holds the file. It is never a sign-in's box key, it signs no
+launcher proof and holds no launcher credential, and no token is bound to it but the read-only
+tokens traded for that copy. The broker's read trade binds such a key and refuses a key that a
+live launcher credential is bound to. Keeping every other token off the key is the rule of the
+driver that trades for the copy.
+
+With both set, the command's one Dispatch credential presents `Authorization: DPoP <token>` and a
+proof signed with the key, naming the request's method, its URL and the token (`ath`). It sends
+them to `DISPATCH_URL` alone, and refuses a request to any other origin. `DISPATCH_URL` must be
+Dispatch's public origin, because Dispatch checks each proof's URL against it. The command reads
+both files again before each request and keeps neither, so the driver renews the token by writing
+a new file and renaming it over the old one, and keeps the key. The Envoy listener never gets the
+token: it takes only its own settings (`ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`, `envoy.token`), and the
+command makes no trade at the broker for Dispatch or for any other service.
+
+A person's read trade does not extend the launcher credential of the person's sign-in. Once that
+credential lapses, the broker refuses the driver's read trades and names the cure: one ordinary
+trade of the person, which `agent-secrets` makes. The read tokens traded under the lapsed
+credential end with it.
+
+Each proof carries the process's own clock in `iat`, and Dispatch takes a proof only within one
+minute of its own time, so the command must run on the real clock.
+
+The command refuses to start, exits 2 and names every setting at fault, when one of the two
+settings is set alone, when `DISPATCH_URL` is not set, or when any of these is set beside them:
+`DISPATCH_TOKEN_BROKER`, `DISPATCH_TOKEN_BROKER_READ`, `DISPATCH_TOKEN_BROKER_AS_OF`,
+`DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE`, `AGENT_SECRETS_URL`, `AGENT_SECRETS_MACHINE_IDENTITY`, a
+`dispatch.token` in the chosen `envoy.json`, or a `dispatch.token` in the checkout's
+`.envoy/envoy.json`. The checkout's file is read for this check even with `DISPATCH_URL` set, and
+one that cannot be read is refused too, since whether it holds a token cannot be told. A `!`
+command in either `dispatch.token` is found by the field's presence and never run. `dispatch login`
+exits 2 too, `--help` aside, before any request, while either setting is set, and names each of the
+variables above that is set beside them: a device login asks the broker and keeps a login in a file,
+and the token files trade nothing. A file that cannot be read, a token file that is empty or blank,
+and a key that is not P-256 in one PKCS#8 PEM block each fail the request with an error that names
+the setting and the file and quotes none of its bytes. Under a read-only token, a write prints
+Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
+
+Only the `dispatch` command reads the two settings: it passes `tokenFiles` to
+`sessionDispatchSettings`. Every other caller of `dispatchSettings` that finds either set, each
+plugin and its hooks included (claude-envoy, its Codex server, pi-envoy, pi-legion), turns Dispatch
+off with an error that says so, rather than writing with another credential beside them.
 
 ## Command specs
 
