@@ -401,11 +401,12 @@ jobs:
 
   # go-envoy-test, on go-envoy's Go and runners. A job of its own, so its restore comes before
   # every build that writes what it restores: it restores its newest entry, then builds the
-  # listener and natsd as the envoy job does and the test binary of every package, and saves. Its
-  # entry holds go-envoy's objects too, built here on its own entry: envoy-go's tests build the
-  # listener and natsd, and the browser lane's jobs that restore this family build commands of the
-  # same module. In one job with the envoy fill, this restore unpacked over that fill's build and
-  # needed the module cache made writable first.
+  # listener and natsd as the envoy job does and builds and starts the test binary of every
+  # package, running no test, and saves without the module zips. Its entry holds go-envoy's
+  # objects too, built here on its own entry: envoy-go's tests build the listener and natsd, and
+  # the browser lane's jobs that restore this family build commands of the same module. In one job
+  # with the envoy fill, this restore unpacked over that fill's build and needed the module cache
+  # made writable first.
   envoy-test:
     if: inputs.only != 'dispatch-builds'
     strategy:
@@ -458,18 +459,36 @@ jobs:
         working-directory: packages/envoy
 
       # envoy-go's set: the test binary of every package of the envoy module, the integration
-      # package's and the natslive build of internal/testnats among them. `go test -c` links each
-      # package's test binary and `-o /dev/null` writes none of them, so every object the restored
-      # build cache holds is made and no test runs: envoy-go's tests want the job's Postgres
-      # service and container images, which a cache fill has no reason to start.
-      - name: Build the test binary of every package of the envoy module
+      # package's among them, and the natslive build of the five packages envoy-go's natslive step
+      # tests. Each binary is built and started as envoy-go's go test builds and starts it, and
+      # `-run '^$'` matches no test, so none runs: envoy-go's tests want the job's Postgres service
+      # and container images, which a cache fill has no reason to start, and every TestMain of the
+      # module opens its database, NATS server or build only when a test asks for one. A `go test
+      # -c` fill left one compile per package out, the compile of its test main, which go test
+      # compiles without DWARF for a binary it runs and deletes and with DWARF for a binary `-c`
+      # writes, so the two are different cache entries and envoy-go compiled every test main again.
+      # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-starts-each-test-binary
+      - name: Build and start the test binary of every package of the envoy module, running no test
         run: |
-          go test -c -o /dev/null ./...
-          go test -c -o /dev/null -tags natslive ./internal/testnats/
+          go test -count=1 -run '^$' ./...
+          go test -count=1 -run '^$' -tags natslive ./internal/testnats/ ./internal/bus/ ./internal/cipher/natscallout/ ./natsgrant/ ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Delete the build cache's entries neither envoy build used
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-test-working-set"
+
+      # A module Go has extracted is read from its tree under ~/go/pkg/mod/<module>@<version>; the
+      # zip it came from is read only to extract it again, which no job restoring this entry does.
+      # Deleted here rather than left out by a `!` line in the save's path list, which would
+      # exclude nothing, since the save archives each directory it lists whole, and which would
+      # change the entry's version, so every restore would have to name the same lines.
+      # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-deletes-the-module-zips
+      - name: Delete the module zips, which no job that restores this entry reads
+        run: |
+          download="$(go env GOMODCACHE)/cache/download"
+          find "$download" -type f -name '*.zip' -printf '%s\n' |
+            awk '{ n++; bytes += $1 } END { printf "deleting %d module zips, %d bytes\n", n, bytes }'
+          find "$download" -type f -name '*.zip' -delete
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
