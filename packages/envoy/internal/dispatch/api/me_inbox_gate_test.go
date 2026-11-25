@@ -9,8 +9,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // gateSeeded is one issue the gate test seeds, with the row it puts in alice's Inbox and the gate
@@ -155,9 +158,30 @@ func versionReads(texts []string) (probes int, beside []string) {
 	return probes, beside
 }
 
+// newGateRig is newMeInboxRig's test server, its store traced by a meInboxStatements of its own
+// that counts each statement of a batch on its own (eachOfABatch) for the one request marked
+// countedRead, the read the test sends. It is not newMeInboxRig because that rig's recorder may
+// count by a window the test arms rather than by the marked request (legion/INFRA-1152's
+// f43afdc7), which this test does not arm; a recorder built here counts the marked request on
+// either.
+func newGateRig(t *testing.T) *meInboxRig {
+	t.Helper()
+	database := storetest.Open(t)
+	statements := &meInboxStatements{eachOfABatch: true}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
+	handler, _, _ := newTestServer(t, testServerOptions{
+		store:    traced,
+		identity: headerIdentity(database),
+		// A document's settlement is database work of its own on the traced pool; a delay no
+		// test reaches keeps it out of the read's statements.
+		settle: time.Hour,
+	})
+	return &meInboxRig{database: database, traced: traced, handler: handler, statements: statements}
+}
+
 // The one read carries each entry's approval gate in its one statement (c-approval-one-statement):
 // over 3 issues with a row each and over 12, alice's Inbox is one statement. The rig counts each
-// statement of a batch on its own (newMeInboxRig's eachOfABatch) and leaves out only the four that
+// statement of a batch on its own (newGateRig's eachOfABatch) and leaves out only the four that
 // frame the read's statement in its read-only transaction and read nothing: its begin, its two
 // set local settings and its commit (meInboxReadStatements). So no statement beside it, in its
 // batch or not, reads a gate document's versions, its review or its request for each document;
@@ -167,7 +191,7 @@ func versionReads(texts []string) (probes int, beside []string) {
 // and on its thread; and the issue read answers the same gate, field for field, so one
 // computation answers both reads.
 func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
-	rig := newMeInboxRig(t)
+	rig := newGateRig(t)
 	handler := rig.handler
 	createReferenceAPIProject(t, handler, "GATE")
 	publishGatedSteps(t, handler, "GATE", []string{model.GatedStepCriteria, model.GatedStepSpec})
