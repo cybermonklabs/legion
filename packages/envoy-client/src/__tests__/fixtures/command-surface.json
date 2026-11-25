@@ -1437,6 +1437,41 @@
       ]
     },
     {
+      "tool": "dispatch_project_update",
+      "call": "valid",
+      "args": {
+        "project": "CORE",
+        "proven_sessions": "on"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/CORE/proven-sessions",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Project CORE (Core): proven sessions on."
+      ]
+    },
+    {
       "tool": "dispatch_projects",
       "call": "valid",
       "args": {},
