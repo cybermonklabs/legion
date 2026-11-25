@@ -165,6 +165,7 @@ const partOneDriverFiles = ["driver_file", "steps_file", "seed_file"].map(script
 const controlSeamFiles = [
   "approved-version-news-control-transact.go.txt",
   "approved-version-news-control-task.go.txt",
+  "approved-version-news-control-contract.go.txt",
 ].map((name) => join("scripts", "e2e", "lib", name));
 // This checkout's sessions_file, line by line.
 const sessionsLines = readFileSync(join(repoRoot, sessionsFile), "utf8").split("\n");
