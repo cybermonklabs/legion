@@ -1290,7 +1290,6 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
       .poll(() => answers.filter((answer) => answer.status === 200).map((answer) => answer.key), {
         message:
           "the reloaded page sends the priority pick again, under the key it was pressed under",
-        timeout: 30_000,
       })
       .toContain(pick?.key);
     await expect.poll(async () => (await getIssue(issue.key)).priority).toBe(1);
@@ -1334,7 +1333,6 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
     await expect
       .poll(async () => (await getIssue(issue.key)).status, {
         message: "the reloaded page sends the write the failed take-up held",
-        timeout: 30_000,
       })
       .toBe("todo");
     await expect
