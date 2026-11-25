@@ -65,7 +65,7 @@ func openLegionIssuePage(t *testing.T, hub string, rig *hubRig, key string) *leg
 	}
 	page := &legionIssuePage{hub: hub, rig: rig, conn: newFakeLiveConn(), key: key, view: spec.key}
 	rig.hub.Subscribe(page.conn, subscribeFrame(legionIssueSub, view))
-	snapshot := page.conn.snapshot(t, 5*time.Second, legionIssueSub)
+	snapshot := page.conn.snapshot(t, legionIssueSub)
 	requireLegionNames(t, key, decodeLegionIssue(t, snapshot.Body))
 	requireSameBody(t, "hub "+hub+"'s snapshot of "+key, snapshot.Body,
 		getBody(t, rig.handler, "/api/v1/issues/"+key+"/legion"))
@@ -82,12 +82,20 @@ func (p *legionIssuePage) answer(t *testing.T) wireLegionIssue {
 // what names the page in a failure: its issue and its hub.
 func (p *legionIssuePage) what() string { return p.key + " at hub " + p.hub }
 
-// next reads the page's next frame, which must be a delta and arrive by deadline; requires it to
-// set exactly the members set names and nothing of another issue (L-14), and the body it leaves
-// to be the GET body of the moment; and answers that body.
+// next reads the page's next frame, which must be a delta that the hub sent by deadline, the 5
+// seconds after its store that the live view promises (R2); requires it to set exactly the members
+// set names and nothing of another issue (L-14), and the body it leaves to be the GET body of the
+// moment; and answers that body. R2 is judged on the moment the hub sent the frame
+// (fakeLiveConn.deltaSent), not on when the test reads it: every row gives all its pages one
+// deadline and reads them in turn, so page B's frame is read only after page A's checks, however
+// long those take. The read itself waits until the test binary's deadline, so a delta that never
+// comes fails by name, and one the hub sent late fails here on R2's bound.
 func (p *legionIssuePage) next(t *testing.T, deadline time.Time, set ...string) wireLegionIssue {
 	t.Helper()
-	delta := p.conn.delta(t, max(time.Until(deadline), 0), legionIssueSub)
+	delta, sent := p.conn.deltaSent(t, legionIssueSub)
+	if late := sent.Sub(deadline); late > 0 {
+		t.Fatalf("hub %s sent %s's delta %v past the 5 s after its store that the live view promises", p.hub, p.key, late.Round(time.Millisecond))
+	}
 	raw, err := json.Marshal(delta)
 	if err != nil {
 		t.Fatalf("encode %s's delta: %v", p.what(), err)
@@ -248,8 +256,8 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	// No store below comes before each hub's listener holds its LISTEN, so none is sent unheard,
 	// and none before each hub ran the recompute that connection and its event feed mark every
 	// Legion view for, so no store of two rows is read half made by that recompute.
-	rig.waitFor(t, 0, 5*time.Second, "hub A's listener's first connection", listenerConnected)
-	rigB.waitFor(t, 0, 5*time.Second, "hub B's listener's first connection", listenerConnected)
+	rig.waitFor(t, 0, "hub A's listener's first connection", listenerConnected)
+	rigB.waitFor(t, 0, "hub B's listener's first connection", listenerConnected)
 	rig.settle(t)
 	rigB.settle(t)
 
@@ -441,7 +449,7 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	observe("LIVE", "LIVE-1", legion.FieldPhase, `"testing"`, state.since)
 	pages[0].conn.none(t, viewMaxWait+time.Second, "L-13, a phase stored with no notify while hub A's listener was down")
 	blind.Store(false)
-	rig.waitFor(t, start, 5*time.Second, "L-13, hub A's listener's reconnection", listenerConnected)
+	rig.waitFor(t, start, "L-13, hub A's listener's reconnection", listenerConnected)
 	pages[0].step(t, time.Now().Add(5*time.Second), body, "state")
 }
 
@@ -455,7 +463,7 @@ func TestAnIssuesLegionLiveViewOfAKeyDispatchDoesNotHoldIsRefusedAsTheRouteRefus
 	nameLegionDaemon(t, rig.handler, "LIVE", "http://legion-live.internal:13370")
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame(legionIssueSub, legionIssueSubscription("LIVE-999")))
-	refusal := conn.refusal(t, 5*time.Second, legionIssueSub, "NOT_FOUND")
+	refusal := conn.refusal(t, legionIssueSub, "NOT_FOUND")
 	conn.none(t, time.Second, "the refusal of a key Dispatch does not hold")
 	routed := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/issues/LIVE-999/legion", nil, "alice")
 	var answer refusalAnswer
@@ -482,7 +490,7 @@ func TestAnIssuesLegionLiveViewOfAnIssueTheDaemonDoesNotRecordAnswersNullThenIts
 
 	page := openLegionIssuePage(t, "A", rig, key)
 	requireLegionBody(t, page.what(), page.answer(t), legionIssueBody{configured: true, read: read})
-	rig.waitFor(t, 0, 5*time.Second, "the listener's first connection", listenerConnected)
+	rig.waitFor(t, 0, "the listener's first connection", listenerConnected)
 
 	phased := read.At.Add(time.Minute)
 	seedLegionObservation(t, rig.database, "LIVE", key, legion.FieldPhase, `"planning"`, phased)

@@ -33,6 +33,7 @@ import (
 // and confirmed, so it is not handed over twice, and the two copies after it were never read by
 // the drain that failed and must still be delivered.
 func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-forward-failed"
@@ -110,6 +111,7 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 // killed there and is deterministic. Nothing released that claim, so the role's next drain takes
 // it over once it is past bus.KeptRoleClaimWindow.
 func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCopy(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-confirm-lost"
@@ -196,6 +198,7 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 // wrote it can still be forwarding that copy, no other drain forwards it a second time, and once
 // it cannot be, the copy reaches the role's holder rather than nobody.
 func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-claim-abandoned"
