@@ -1,0 +1,4 @@
+jj git push --dry-run --ignore-working-copy --color=never --bookmark fresh
+Changes to push to origin:
+  Add bookmark fresh to 2b90beefa6c7
+Dry-run requested, not pushing.
