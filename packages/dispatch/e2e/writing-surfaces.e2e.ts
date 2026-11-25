@@ -383,7 +383,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expectRow(page, field, "decisions-change", "comment", () =>
         page
           .getByRole("form", { name: `Change ${DECISION}` })
-          .getByRole("button", { exact: true, name: "Send" })
+          .getByRole("button", { exact: true, name: "Send change" })
           .click()
       );
     },

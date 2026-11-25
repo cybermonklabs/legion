@@ -326,11 +326,16 @@ export function AskBody({
         ? agentText.label(displayedAsk.author)
         : `${agentText.label(sessionAuthor)} · ${sessionAuthor.id}`;
   // The asker's name, cut with its tooltip where one is drawn, and never cut to nothing: in a
-  // 384 px margin the first line's end leaves it little room. Inside `NoTooltips`, where no
-  // tooltip gives back what an ellipsis cut, it is a value that breaks anywhere instead.
+  // 384 px margin the first line's end leaves it little room. On a phone, where the name shares
+  // its line with the time, it wraps onto a second line before it is cut, so a name two lines
+  // hold stays whole. Inside `NoTooltips`, where no tooltip gives back what an ellipsis cut, it
+  // is a value that breaks anywhere instead.
   const askerName = (name: ReactNode) =>
     tooltips ? (
-      <TruncatedText className="min-w-8" title={askerTitle}>
+      <TruncatedText
+        className="min-w-8 max-[761px]:line-clamp-2 max-[761px]:whitespace-normal max-[761px]:[overflow-wrap:anywhere]"
+        title={askerTitle}
+      >
         {name}
       </TruncatedText>
     ) : (
@@ -577,7 +582,9 @@ export function AskBody({
   // phone, a window 760 px wide or narrower as the new page's rows take it (`NODE_ROW_LAYOUT`),
   // the line stands under the words, in the same order from the left, and each of its parts
   // moves to a line of its own before it gives up width: beside the words there the asker's name
-  // kept a few letters, and the words a column too narrow for two short links on two lines.
+  // kept a few letters, and the words a column too narrow for two short links on two lines. Who
+  // asked and when are one part, on a phone and wide: the time never opens a line of its own,
+  // and the asker's name gives up the width the time needs (`askerName` says how).
   const firstLineEnd = (
     <div
       className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 max-[761px]:max-w-full max-[761px]:basis-full max-[761px]:flex-wrap max-[761px]:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
@@ -602,9 +609,11 @@ export function AskBody({
           <Dot />
         </>
       )}
-      {asker}
-      <Dot />
-      <Timestamp at={displayedAsk.created_at} />
+      <span className="flex min-w-0 items-center gap-x-1.5">
+        {asker}
+        <Dot />
+        <Timestamp at={displayedAsk.created_at} className="shrink-0" />
+      </span>
     </div>
   );
   const rest = (

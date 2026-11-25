@@ -197,7 +197,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
         ? [
             connected,
             page
-              .locator("[data-margin-item]")
+              .locator("[data-margin-item] [data-decision-statements]")
               .getByText("One command, a seeded corpus, a signed-in browser."),
           ]
         : [connected];
@@ -299,7 +299,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // and needs no mask, because the words are the spec block `e2e/review-seed.ts` names.
     ready: (page) => [
       page.getByRole("region", { name: "Waiting for your review" }),
-      page.getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
+      page
+        .locator("[data-decision-statements]")
+        .getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
     ],
   },
   {
