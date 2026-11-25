@@ -132,7 +132,8 @@ func TestLiveIsReady(t *testing.T) {
 }'
 # Two packages whose e2e test binaries are the drivers of scripts/e2e/scratch-driver.sh, as the
 # repository's live proofs build theirs (go test -c -tags e2e): e2edriver builds at the base, and
-# e2ebroken's own e2e test file calls Three, which the base lacks, so its driver does not build there.
+# e2ebroken's own e2e test file calls Three, which the base lacks, so its driver does not build
+# there.
 write e2edriver/driver.go 'package e2edriver
 
 func Ready() bool { return true }'
