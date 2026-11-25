@@ -13,10 +13,10 @@ body: |-
   A required status nobody reported (EXPECTED) is not counted as running, since nothing is under
   way to report it. A `blocked` head with a review request open waits, and the architect and the
   reviewer are told once, with the count; a `blocked` or `unknown` head whose `mergeable` GitHub
-  answers null waits quietly while GitHub computes and is told when a second null read in a row
-  comes at least 90 s after the first, whatever state GitHub gave beside each, or when any null
-  read comes thirty minutes after the first (90 s is six times the longest computation measured
-  after 6 pushes to main, 14.9 s); one a check of which runs, or whose count or rollup no read has
+  answers null waits quietly while GitHub computes and is told when a null read of the run comes
+  at least 90 s after the run's first, read to read, whatever state GitHub gave beside each, or
+  when thirty minutes have passed since the first by the clock (90 s is six times the longest
+  computation measured after 6 pushes to main, 14.9 s); one a check of which runs, or whose count or rollup no read has
   given, waits quietly while the daemon reads it again. A head is told of once for each finding -
   its state, or the null `mergeable` or review request that holds it - and the decision keeps every
   finding told, so findings that take turns on one head are not told again. The verdict, the count

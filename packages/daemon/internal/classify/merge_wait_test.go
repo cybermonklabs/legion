@@ -106,11 +106,10 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 // head whose own checks are over and that only a push, a person or GitHub's own computation will
 // clear is told of. A `blocked` or `unknown` head is judged on the evidence the read that recorded
 // its state wrote, so an older read's evidence - a rollback's leftover - is no evidence. GitHub's
-// `mergeable` null is told from the second null read in a row at least NullMergeableFloor after
-// the first - so the climb's second read 30 seconds after a push to the base tells nothing - or
-// once the first is NullMergeableTellAfter old at the moment of the fact, beside `blocked` and
-// `unknown` alike: an `unknown`-only run was left waiting quietly for good until it was found
-// while fixing the alternation hole.
+// `mergeable` null is told once a null read of the run comes at least NullMergeableFloor after the
+// run's first, read to read - so the climb's second read 30 seconds after a push to the base, and
+// a read that failed at 90 s, tell nothing - or once the first is NullMergeableTellAfter old by the
+// clock, beside `blocked` and `unknown` alike.
 func TestAMergeOutcomeTellsOnlyWhatNothingOnItsWayWillClear(t *testing.T) {
 	const head = "h2"
 	none, one := 0, 1
@@ -122,15 +121,18 @@ func TestAMergeOutcomeTellsOnlyWhatNothingOnItsWayWillClear(t *testing.T) {
 		change(&pr)
 		return pr
 	}
-	null := func(reads int) func(*record.PullRequest) {
+	// null is a run of that many null reads of the head, the first at read and the latest span after it.
+	null := func(reads int, span time.Duration) func(*record.PullRequest) {
 		return func(pr *record.PullRequest) {
 			pr.Mergeability, pr.HeadChecks, pr.NullMergeableReads, pr.NullMergeableSince = record.MergeabilityUnknown, record.HeadChecksUnread, reads, read
+			pr.StateReadAt, pr.EvidenceReadAt = read.Add(span), read.Add(span)
 		}
 	}
-	unknownNull := func(reads int) func(*record.PullRequest) {
-		return func(pr *record.PullRequest) { null(reads)(pr); pr.MergeState = record.MergeStateUnknown }
+	unknownNull := func(reads int, span time.Duration) func(*record.PullRequest) {
+		return func(pr *record.PullRequest) { null(reads, span)(pr); pr.MergeState = record.MergeStateUnknown }
 	}
-	older := func(pr *record.PullRequest) { pr.EvidenceReadAt = read.Add(-time.Minute) }
+	older := func(pr *record.PullRequest) { pr.EvidenceReadAt = pr.StateReadAt.Add(-time.Minute) }
+	floor := NullMergeableFloor
 	for _, tc := range []struct {
 		name string
 		pr   record.PullRequest
@@ -148,24 +150,26 @@ func TestAMergeOutcomeTellsOnlyWhatNothingOnItsWayWillClear(t *testing.T) {
 		// the same one: none open and nothing running, of an older read. It is read as unread.
 		{"blocked with an older read's evidence", base(older), read, MergeWaitsQuietly},
 		{"blocked with an older read's review request", base(func(pr *record.PullRequest) { older(pr); pr.ReviewsRequested = &one }), read, MergeWaitsQuietly},
-		{"blocked with a first null read", base(null(1)), read.Add(time.Minute), MergeWaitsQuietly},
+		{"blocked with a first null read", base(null(1, 0)), read.Add(time.Minute), MergeWaitsQuietly},
 		// A second null read 30 seconds after the first is the climb after a push to the base,
 		// meeting GitHub's routine recompute: below the floor it tells nothing.
-		{"blocked with a second null read below the floor", base(null(2)), read.Add(30 * time.Second), MergeWaitsQuietly},
-		{"blocked with a second null read just below the floor", base(null(2)), read.Add(NullMergeableFloor - time.Second), MergeWaitsQuietly},
-		{"blocked with a second null read at the floor", base(null(2)), read.Add(NullMergeableFloor), MergeWaitsToldNullMergeable},
-		{"blocked with a first null read the bound old", base(null(1)), read.Add(NullMergeableTellAfter), MergeWaitsToldNullMergeable},
-		{"blocked with a first null read just inside the bound", base(null(1)), read.Add(NullMergeableTellAfter - time.Second), MergeWaitsQuietly},
+		{"blocked with a second null read below the floor", base(null(2, 30*time.Second)), read.Add(30 * time.Second), MergeWaitsQuietly},
+		{"blocked with a second null read just below the floor", base(null(2, floor-time.Second)), read.Add(floor - time.Second), MergeWaitsQuietly},
+		{"blocked with a second null read at the floor", base(null(2, floor)), read.Add(floor), MergeWaitsToldNullMergeable},
+		// A read that failed at 90 s answered no null: the floor is measured between the reads.
+		{"blocked with null reads at 0 and 30 s and a fact at the floor", base(null(2, 30*time.Second)), read.Add(floor), MergeWaitsQuietly},
+		{"blocked with a first null read the bound old", base(null(1, 0)), read.Add(NullMergeableTellAfter), MergeWaitsToldNullMergeable},
+		{"blocked with a first null read just inside the bound", base(null(1, 0)), read.Add(NullMergeableTellAfter - time.Second), MergeWaitsQuietly},
 		{"blocked with mergeability not read", base(func(pr *record.PullRequest) { pr.Mergeability = "" }), read.Add(time.Hour), MergeWaitsQuietly},
-		{"blocked with an older read's null reads", base(func(pr *record.PullRequest) { null(3)(pr); older(pr) }), read.Add(time.Hour), MergeWaitsQuietly},
-		{"unknown with a first null read", base(unknownNull(1)), read.Add(time.Minute), MergeWaitsQuietly},
-		{"unknown with a second null read below the floor", base(unknownNull(2)), read.Add(30 * time.Second), MergeWaitsQuietly},
-		{"unknown with a second null read at the floor", base(unknownNull(2)), read.Add(NullMergeableFloor), MergeWaitsToldNullMergeable},
-		{"unknown with a first null read the bound old", base(unknownNull(1)), read.Add(NullMergeableTellAfter), MergeWaitsToldNullMergeable},
+		{"blocked with an older read's null reads", base(func(pr *record.PullRequest) { null(3, 2*floor)(pr); older(pr) }), read.Add(time.Hour), MergeWaitsQuietly},
+		{"unknown with a first null read", base(unknownNull(1, 0)), read.Add(time.Minute), MergeWaitsQuietly},
+		{"unknown with a second null read below the floor", base(unknownNull(2, 30*time.Second)), read.Add(30 * time.Second), MergeWaitsQuietly},
+		{"unknown with a second null read at the floor", base(unknownNull(2, floor)), read.Add(floor), MergeWaitsToldNullMergeable},
+		{"unknown with a first null read the bound old", base(unknownNull(1, 0)), read.Add(NullMergeableTellAfter), MergeWaitsToldNullMergeable},
 		{"unknown with a check of the head running and null reads", base(func(pr *record.PullRequest) {
-			unknownNull(2)(pr)
+			unknownNull(2, floor)(pr)
 			pr.HeadChecks = record.HeadChecksRunning
-		}), read, MergeWaitsQuietly},
+		}), read.Add(floor), MergeWaitsQuietly},
 		{"blocked with a review request open", base(func(pr *record.PullRequest) { pr.ReviewsRequested = &one }), read, MergeWaitsToldReviewRequested},
 		{"behind", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateBehind }), read, MergeWaitsTold},
 		{"draft", base(func(pr *record.PullRequest) { pr.MergeState = record.MergeStateDraft }), read, MergeWaitsTold},

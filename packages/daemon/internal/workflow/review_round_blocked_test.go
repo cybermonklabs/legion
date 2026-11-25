@@ -452,6 +452,39 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 		}
 	})
 
+	// A decision an earlier release marked holds the finding it told as ToldStuckState and no list
+	// (record.ReviewDecision.ToldStuck). Its finding is kept when the next one is told: `behind` told
+	// by that release, a null `mergeable` past the floor told now, and `behind` again tells nothing.
+	// A writer that appended to the empty list would forget `behind` and tell it a second time.
+	t.Run("a decision an earlier release marked keeps its finding", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateBehind)
+		github.step = classify.NullMergeableFloor
+		github.apply("approve", approve)
+		if told := reviewStuckNotices(t, pool); len(told) != 1 {
+			t.Fatalf("review-stuck notices %+v, want the one of behind", told)
+		}
+		// The mark as an earlier release wrote it: the head and the state, no list.
+		if _, err := pool.Exec(t.Context(), `update phases set decision = decision - 'toldStuck'
+			where issue = 'LEGION-208' and role = 'reviewer'`); err != nil {
+			t.Fatalf("leave the mark as an earlier release wrote it: %v", err)
+		}
+		github.read()
+		if told := reviewStuckNotices(t, pool); len(told) != 1 {
+			t.Fatalf("after behind read again the notices are %+v, want the one: the earlier release told behind", told)
+		}
+		github.state, github.mergeable, github.checks = record.MergeStateUnknown, record.MergeabilityUnknown, record.HeadChecksUnread
+		github.read()
+		github.read()
+		if told := reviewStuckNotices(t, pool); len(told) != 2 {
+			t.Fatalf("review-stuck notices %+v, want a second of the null mergeable", told)
+		}
+		github.state, github.mergeable, github.checks = record.MergeStateBehind, record.MergeabilityMergeable, record.HeadChecksConcluded
+		github.read()
+		if again := reviewStuckNotices(t, pool); len(again) != 2 {
+			t.Fatalf("after behind again the notices are %+v, want the two: the earlier release's finding must be kept", again)
+		}
+	})
+
 	// GitHub sends `review_request_removed` when a requested review is withdrawn, and no other
 	// event says so. The fact asks a read, which counts the requests again, and the read that finds
 	// none open ends the round.

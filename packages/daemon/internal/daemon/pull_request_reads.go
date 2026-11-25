@@ -136,10 +136,12 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // GitHub shows before it applies this (followHead), which makes more GitHub calls and waits on the
 // fact lock, so a clock read here would date the answer to the end of that follow and make it
 // look fresher than it is, which is the one thing the stamp exists not to do. eventID is the id
-// the fact is applied under, the caller's: the per-issue read and the ladder name the read by its
-// time (mergeabilityEventID), so the stamp recorded and the id come from one reading rather than
-// two, and an outbox row names itself and its attempt, so a row run again after its finish was
-// lost applies no answer twice. The confirming read is needed for its own sake as well: workflow's
+// the fact is applied under, the caller's: the per-issue read and the ladder name the read by the
+// moment they had the REST answer (mergeabilityEventID), which makes each read a fact of its own;
+// the stamp is that moment too unless a GraphQL answer replaced the REST one, when it is the
+// GraphQL answer's own (readWholeAnswer), so the id and the stamp then differ by the second call.
+// An outbox row names itself and its attempt, so a row run again after its finish was lost
+// applies no answer twice. The confirming read is needed for its own sake as well: workflow's
 // mergeability decides a CONFLICTING read of a head it holds conflicting every time it sees one,
 // so a conflict recorded while the issue stood in a phase that did not need the merge is merged
 // forward once the issue reaches one that does, with no change in GitHub's answer to key off.
@@ -151,7 +153,7 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // starts at most one more climb, whether it arrives during a climb or a follow (mergeStateEnds,
 // baseLadderNext) or after the ladder has ended
 // (readMergeStates); the review-stuck notice such a settlement would write is deduplicated by the
-// round's own mark (record.ReviewDecision.ToldStuckHead); and a settlement that finds the round
+// round's own mark (record.ReviewDecision.ToldStuck); and a settlement that finds the round
 // mergeable advances the issue, which is the right answer whenever it is true.
 //
 // A REST read GitHub answered `blocked` and MERGEABLE takes the whole of what the round decides

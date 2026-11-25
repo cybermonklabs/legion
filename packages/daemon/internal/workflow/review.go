@@ -1224,7 +1224,7 @@ func stuckMergeStateReason(pr record.PullRequest, outcome classify.MergeOutcome)
 // its own, and GitHub answers `blocked` while it runs. Read off an earlier head's settlement, the
 // round would end on the head before its own checks had run, or a stuck head be marked told before
 // the checks that would clear it had finished. A round told of (stuckMergeState) tells the
-// architect and the reviewer once for each head and state (record.ReviewDecision.ToldStuckHead),
+// architect and the reviewer once for each head and finding (record.ReviewDecision.ToldStuck),
 // since the checks that would have cleared it are over and nothing else is on its way to move the
 // issue.
 // The round reads no CI verdict: what a check concluded moves nothing and
@@ -1372,10 +1372,9 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the dedup is against another thing, the reviewer is told as well as the architect, and the
 // notice names no topic - so settleRound asks which cause this is once and leaves it here.
 //
-// It is deduped against the findings already told for the head (told), which outlive the answers
-// GitHub gives in between: the state is read back from GitHub every time, and `behind`,
-// `unknown`, `behind` is one finding told once, as is a review request, a null `mergeable` after
-// a push to the base, and the review request again. The mark is written with the notice, so a
+// It is deduped against the findings already told for the head (told, toldFindings), whose rule
+// record.ReviewDecision's ToldStuck states, and it appends its own finding to those, so a decision
+// an earlier release marked keeps the finding it told. The mark is written with the notice, so a
 // notice linger holds (record.TreeLingers) leaves none and the head is told when the tree runs
 // again.
 //
@@ -1400,11 +1399,9 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 		return err
 	}
 	d := row.Decision
-	if d.ToldStuckHead != r.head {
-		d.ToldStuck = nil
-	}
+	findings := toldFindings(d, r.head)
 	d.ToldStuckHead, d.ToldStuckState = r.head, r.state
-	d.ToldStuck = append(d.ToldStuck, toldFinding(r))
+	d.ToldStuck = append(findings, toldFinding(r))
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
@@ -1423,26 +1420,26 @@ func reviewerToken(issue record.Issue) (claim.Token, error) {
 }
 
 // told says whether the notice a round GitHub will not merge from would write has already gone
-// out: the reviewer's decision carries every finding told for the head it was last reported stuck
-// on (record.ReviewDecision.ToldStuck). A held head's finding is its hold rather than the state
-// beside it: GitHub answers a null `mergeable` beside `blocked` and `unknown` in turn while it
-// computes, and that is one finding. The mark keeps every finding, not the last: a head held on a
-// review request meets a null `mergeable` after each push to its base, and a mark that kept only
-// the last would tell the review request again each time - the same kind of fault as a null run
-// that a null `unknown` read set back, a stored value standing in for what was meant. A decision
-// an earlier release marked holds no list, and its ToldStuckState stands as the one finding. It
-// answers for that cause alone, which is the only caller (tellStuckMergeState); every other is
-// deduped against the round as the fact found it (stuckAs), which the record answers for them.
+// out for its finding: the findings told for the head (toldFindings) hold it. It answers for that
+// cause alone, which is the only caller (tellStuckMergeState); every other is deduped against the
+// round as the fact found it (stuckAs), which the record answers for them.
 func told(row record.PhaseRow, r round) bool {
-	d := row.Decision
-	if d == nil || d.ToldStuckHead != r.head {
-		return false
+	return slices.Contains(toldFindings(row.Decision, r.head), toldFinding(r))
+}
+
+// toldFindings is every finding d has told for head, the one rule both told and the writer in
+// tellStuckMergeState read (record.ReviewDecision's ToldStuck): none for another head or no
+// decision; for a decision an earlier release marked, which holds no list, its ToldStuckState as
+// the one finding, so the writer's next append keeps it rather than forgetting it; and the list
+// otherwise.
+func toldFindings(d *record.ReviewDecision, head string) []record.StuckTold {
+	switch {
+	case d == nil || d.ToldStuckHead != head:
+		return nil
+	case len(d.ToldStuck) == 0 && d.ToldStuckState != "":
+		return []record.StuckTold{{State: d.ToldStuckState}}
 	}
-	findings := d.ToldStuck
-	if len(findings) == 0 && d.ToldStuckState != "" {
-		findings = []record.StuckTold{{State: d.ToldStuckState}}
-	}
-	return slices.Contains(findings, toldFinding(r))
+	return d.ToldStuck
 }
 
 // toldFinding is the finding a stuck round's notice tells (record.StuckTold): its hold, when one

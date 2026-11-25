@@ -3,7 +3,11 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -358,7 +362,7 @@ func TestAStartReadThatFailsHandsTheHeadToItsBase(t *testing.T) {
 		got, _ := capturePhase(t, rig.pool)
 		return got == phase.Accepting
 	})
-	if failed := loggedLines(t, rig.logs.String(), "read an issue's pull request as the daemon starts; the reads of its base read it again"); len(failed) != 1 {
+	if failed := loggedLines(t, rig.logs.String(), "read an issue's pull request as the daemon starts; with an open pull request recorded the reads of its base read it again"); len(failed) != 1 {
 		t.Fatalf("the start read logged %v failures, want the one 502", failed)
 	}
 }
@@ -433,25 +437,63 @@ func TestABlockedRestReadTakesItsVerdictFromTheGraphQLAnswer(t *testing.T) {
 }
 
 // A start read that GitHub's rate limit refuses ends the start read, since every read after it on
-// the installation meets the same limit, but it hands the limited head to its base's reads all the
-// same: the hand-off makes no GitHub call. The base's read answers clean, and the round ends;
-// nothing injects a read.
-func TestARateLimitedStartReadHandsItsHeadToItsBase(t *testing.T) {
+// the installation meets the same limit, but it hands the limited head, and the head of every issue
+// after it, to their base's reads all the same: the hand-off makes no GitHub call. Two approved
+// issues wait; the first start read is refused; the base's reads answer both clean, and both
+// rounds end - the second issue's start read never ran. Nothing injects a read.
+func TestARateLimitedStartReadHandsEveryHeadLeftToItsBase(t *testing.T) {
 	t.Parallel()
-	rig := newReadRig(t, approvedOnMain, func(int32) pullAnswer { return cleanPull })
-	rig.refuseREST.Store(true)
+	pool := isolatedOutboxPool(t)
+	for i, key := range []string{"CAPTURE-1", "CAPTURE-2"} {
+		number := 86 + i
+		seedOnMain(t, pool, key, number, phase.Reviewing, "needs_review", string(rune('U'+i)))
+		if _, err := pool.Exec(context.Background(), `update phases set decision = jsonb_build_object('state', 'approved', 'head', $2::text)
+			where issue = $1 and role = 'reviewer'`, key, fmt.Sprintf("head-%d", number)); err != nil {
+			t.Fatalf("approve %s: %v", key, err)
+		}
+		if _, err := pool.Exec(context.Background(), `update pull_requests set merge_state = '', mergeability = '' where issue = $1`, key); err != nil {
+			t.Fatalf("leave %s unread: %v", key, err)
+		}
+	}
+	var restReads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer outbox-token" {
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/graphql" {
+			asked := readBatchRequest(t, r)
+			var nodes []map[string]any
+			for _, number := range asked {
+				nodes = append(nodes, batchNode(number, fmt.Sprintf("head-%d", number), "MERGEABLE", "CLEAN"))
+			}
+			_, _ = io.WriteString(w, batchAnswer(t, asked, nodes...))
+			return
+		}
+		restReads.Add(1)
+		w.Header().Set("X-Ratelimit-Remaining", "0")
+		http.Error(w, `{"message":"API rate limit exceeded for installation ID 171972716."}`, http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+	logs := &syncBuffer{}
+	w := readRuntime(pool, server.URL, slog.New(slog.NewJSONHandler(logs, nil)))
+	w.mergeStateRetry = readRigWait
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go rig.w.readMergeStates(ctx)
-	concludedOnCode(t, rig.pool)
-	rig.w.readIssuesAtStart(ctx)
-	testwait.Eventually(t, "the base's read to end the round after the start read was rate-limited", func() bool {
-		got, _ := capturePhase(t, rig.pool)
-		return got == phase.Accepting
-	})
-	limited := loggedLines(t, rig.logs.String(), "read an issue's pull request as the daemon starts: GitHub's rate limit")
-	if len(limited) != 1 || limited[0]["left"] != float64(1) {
-		t.Fatalf("the start read logged %v, want one rate limit with the one issue left handed to its base", limited)
+	go w.readMergeStates(ctx)
+	w.readIssuesAtStart(ctx)
+	for _, key := range []string{"CAPTURE-1", "CAPTURE-2"} {
+		testwait.Eventually(t, key+"'s round to end on its base's read after the start read was rate-limited", func() bool {
+			issue, _, err := issueRecord(context.Background(), pool, record.NewStore(), key)
+			return err == nil && issue != nil && issue.Phase == phase.Accepting
+		})
+	}
+	if got := restReads.Load(); got != 1 {
+		t.Fatalf("the start read made %d REST reads, want the one the rate limit refused", got)
+	}
+	limited := loggedLines(t, logs.String(), "read an issue's pull request as the daemon starts: GitHub's rate limit")
+	if len(limited) != 1 || limited[0]["left"] != float64(2) {
+		t.Fatalf("the start read logged %v, want one rate limit with both issues left", limited)
 	}
 }
 
@@ -488,27 +530,29 @@ func TestARateLimitedBaseQueryAsksEachRoundOnce(t *testing.T) {
 	}
 }
 
-// The GraphQL answer a REST read of a `blocked`, MERGEABLE head takes in its place is stamped with
+// The GraphQL answer a REST read of a `blocked`, MERGEABLE head takes in its place is recorded with
 // the moment it arrived, not the REST read's: the workflow drops a read older than the one it
-// holds, so a batch answer that landed between the two calls must not outdate this one.
-func TestAWholeAnswerCarriesItsOwnReadTime(t *testing.T) {
+// holds, so a batch answer that landed between the two calls must not outdate this one. The
+// GraphQL stand-in answers 300 ms after the REST one, and the record's read time is no earlier than
+// the moment the stand-in served the GraphQL answer.
+func TestAWholeAnswerIsRecordedAtItsOwnReadTime(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	captureInTesting(t, pool)
 	rest := `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"blocked","requested_reviewers":[],"requested_teams":[]}`
+	var served atomic.Int64
 	api := pullStandInWith(t, rest, func(asked []int) string {
+		time.Sleep(300 * time.Millisecond)
+		served.Store(time.Now().UnixNano())
 		return batchAnswer(t, asked, batchNode(86, "code", "MERGEABLE", "BLOCKED"))
 	})
 	w := readRuntime(pool, api.URL, quietLogger())
-	var pull githubPullRequest
-	if err := json.Unmarshal([]byte(rest), &pull); err != nil {
-		t.Fatal(err)
+	if state, _, _, err := w.readMergeState(context.Background(), "CAPTURE-1"); err != nil || state != record.MergeStateBlocked {
+		t.Fatalf("the read answered %s, %v; want blocked", state, err)
 	}
-	_, pr := capturePhase(t, pool)
-	restAt := time.Now().UTC().Add(-time.Hour)
-	whole, at := w.readWholeAnswer(context.Background(), *pr, pull, restAt)
-	if whole.batch == nil || !at.After(restAt) {
-		t.Fatalf("the whole answer is a batch answer %t read at %v, want the GraphQL answer read after the REST read at %v", whole.batch != nil, at, restAt)
+	servedAt := time.Unix(0, served.Load()).UTC().Truncate(time.Microsecond)
+	if pr := recordedPull(t, pool, "CAPTURE-1"); served.Load() == 0 || pr.StateReadAt.Before(servedAt) {
+		t.Fatalf("the record was read at %v, want no earlier than the GraphQL answer served at %v", pr.StateReadAt, servedAt)
 	}
 }
 

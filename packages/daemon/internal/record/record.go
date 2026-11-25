@@ -820,7 +820,8 @@ type PhaseEntry struct {
 // after each push to its base, then on the review request again - and the mark is the only thing
 // that survives the answers in between. A mark that kept only the last finding would tell each
 // finding again every time another came between. A decision an earlier release marked carries no
-// list, and its ToldStuckState stands as the one finding told (workflow's told). They live with
+// list, and its ToldStuckState stands as the one finding told, for the check and for the next
+// append alike (workflow's toldFindings), so the upgrade forgets no finding. They live with
 // the decision because the notice is of the approval this decision is: a review that decides the
 // round afresh replaces the decision and the mark with it, and the next head the new approval
 // sticks on is told in its turn. Empty until a notice goes out.
@@ -1041,10 +1042,12 @@ type PullRequest struct {
 	// NullMergeableReads is how many reads of this head in a row GitHub answered `mergeable` null,
 	// the answer it gives while it computes whether the head merges, whatever merge state it gave
 	// beside it (`blocked` or `unknown`), and NullMergeableSince is when the first of them was read
-	// (its StateReadAt). The round waits quietly on the first such read, which is routine after a
-	// push, and tells the architect once a second has answered the same or the first is
-	// classify.NullMergeableTellAfter old, whichever comes first (classify.MergeOutcomeOf). Only a
-	// computed answer (MERGEABLE or CONFLICTING), or another head, sets both back to zero.
+	// (its StateReadAt). The round waits quietly while the run is younger than
+	// classify.NullMergeableFloor, read to read, which is routine after a push, and tells the
+	// architect once a null read of the run comes at least that long after its first, or once the
+	// first is classify.NullMergeableTellAfter old by the clock, whichever comes first
+	// (classify.MergeOutcomeOf). Only a computed answer (MERGEABLE or CONFLICTING), or another
+	// head, sets both back to zero.
 	NullMergeableReads int
 	NullMergeableSince time.Time
 	// EvidenceReadAt is the StateReadAt of the read that wrote ReviewsRequested, HeadChecks and the

@@ -264,15 +264,16 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 		if errors.As(err, &answer) && answer.RateLimited {
 			// Every read after this one on the same installation meets the same limit, so the start
 			// reads no more issues; the hand-off below makes no GitHub call, so this issue and each
-			// one after it go to the reads of their base, which wait out the limit.
-			w.log.Error("read an issue's pull request as the daemon starts: GitHub's rate limit; the start reads no more issues, and the reads of each one's base read it",
+			// one after it with an open pull request recorded go to the reads of their base, which
+			// wait out the limit, and one handed off with none open is read at its next handoff.
+			w.log.Error("read an issue's pull request as the daemon starts: GitHub's rate limit; the start reads no more issues: each one left with an open pull request goes to the reads of its base, and one with none open is read at its next handoff",
 				"issue", issue, "left", len(issues)-i, "error", err)
 			for _, left := range issues[i:] {
 				w.startReadFailed(ctx, left)
 			}
 			return
 		}
-		w.log.Warn("read an issue's pull request as the daemon starts; the reads of its base read it again", "issue", issue, "error", err)
+		w.log.Warn("read an issue's pull request as the daemon starts; with an open pull request recorded the reads of its base read it again, and with none its next handoff does", "issue", issue, "error", err)
 		w.startReadFailed(ctx, issue)
 	}
 }

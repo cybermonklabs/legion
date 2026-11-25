@@ -1301,9 +1301,9 @@ const (
 	// `draft`, a `dirty` no second read confirmed - that only a push or a person will clear.
 	MergeWaitsTold
 	// MergeWaitsToldNullMergeable: told as MergeWaitsTold, of a `blocked` or `unknown` head whose
-	// `mergeable` GitHub has answered null on a second read in a row at least NullMergeableFloor
-	// after the first, or on any read NullMergeableTellAfter after the first: its own computation
-	// has not finished.
+	// `mergeable` GitHub has answered null on a read at least NullMergeableFloor after the first
+	// null read of the run, or whose first null read is NullMergeableTellAfter old by the clock:
+	// its own computation has not finished (nullOutlived).
 	MergeWaitsToldNullMergeable
 	// MergeWaitsToldReviewRequested: told as MergeWaitsTold, of a `blocked`, MERGEABLE head on which
 	// GitHub holds a review request open: only the person, team or code owner asked can give it.
@@ -1345,23 +1345,16 @@ func NullMergeableStanding(pr record.PullRequest) bool {
 	return EvidenceStands(pr) && pr.NullMergeableReads > 0
 }
 
-// NullMergeableFloor is how long after the first read that answered a head's `mergeable` null the
-// second may tell: a second null read sooner than this is a routine recompute, not a head stuck.
-// GitHub computes mergeability lazily, on the first read after the base moves, so every waiting
-// round's climb after a push to its base meets `unknown`/null at least once, and the climb reads
-// again 30 seconds later (mergeStateLadderWait), as can the base's own reads at the same time.
+// NullMergeableFloor is how long, read to read, a run of null `mergeable` reads of a head must
+// span before it tells: a null read sooner than this after the run's first is the routine
+// recompute, not a head stuck. GitHub computes mergeability lazily, on the first read after the
+// base moves, so every waiting round's climb after a push to its base meets a null at least once,
+// and the climb reads again 30 seconds later (mergeStateLadderWait).
 //
-// The value is measured, 2026-11-25 06:27Z to 07:56Z. After each of 6 pushes to main in three busy
-// repositories, cybermonklabs/legion and two private ones, the 25 most recently updated open pull
-// requests into main were read through GraphQL (`mergeable`) every 5 s until each answered
-// MERGEABLE or CONFLICTING. 121 of the 149 read UNKNOWN on the first
-// read after the push, and 120 answered on the very next read, 7.9 s to 14.9 s later (median
-// 8.5 s), an upper bound on GitHub's computation. The 121st, cybermonklabs/legion#5169 (956 files,
-// 1,560 commits), looked UNKNOWN for 900 s only because it fell out of the 25 and was never read
-// again; read alone after the next push to main, at 07:59:33Z, it answered CONFLICTING 13.0 s later.
-// 90 s is six times the 14.9 s maximum and three climb reads: a second null read sooner is the
-// recompute every push to the base starts, and a head GitHub has still not computed at 90 s is one
-// the architect is told of, once.
+// The value rests on a measurement (2026-11-25, 6 pushes to main in three repositories): 121 of
+// 149 open pull requests read UNKNOWN on the first read after the push, and every one read again
+// answered on the next read, 7.9 s to 14.9 s later (median 8.5 s), an upper bound on GitHub's
+// computation. 90 s is six times that maximum. Measure again before changing it.
 const NullMergeableFloor = 90 * time.Second
 
 // NullMergeableTellAfter is how long a head may stand with GitHub answering `mergeable`
@@ -1376,7 +1369,8 @@ const NullMergeableTellAfter = 30 * time.Minute
 // for an approved round, at the moment at of the fact that asks: RoundWaitsOnMergeState, which
 // the engine and the state build read, and workflow's reviewRound, which tells the waiting round
 // from the stuck one and names what holds the head from the outcome, both read it. at decides
-// nothing but the null-mergeable bound below.
+// nothing but the clock's null-mergeable bound below; the floor is measured between the record's
+// own reads.
 //
 //   - A state GitHub would merge from (record.MergeState.Mergeable) ends the round.
 //   - No state read, a first conflicting read waiting for its second (FirstConflictReadWaits),
@@ -1387,8 +1381,8 @@ const NullMergeableTellAfter = 30 * time.Minute
 //     head is still running (record.HeadChecksRunning). While GitHub has not computed whether
 //     the head merges (`mergeable` null, which it answers while a background job computes it,
 //     routinely on the first read after a push, beside `blocked` or `unknown` alike), either
-//     waits quietly until a second read in a row answers null at least NullMergeableFloor after
-//     the first, or any read does NullMergeableTellAfter after it, and is told then
+//     waits quietly until a null read of the run comes at least NullMergeableFloor after the
+//     run's first, or the first is NullMergeableTellAfter old at at, and is told then
 //     (MergeWaitsToldNullMergeable). Otherwise `unknown` waits quietly, and `blocked` waits
 //     quietly while no read has given the rollup or the count (record.HeadChecksUnread, a nil
 //     ReviewsRequested), waits and is told while GitHub holds a review request open
@@ -1430,7 +1424,7 @@ func MergeOutcomeOf(pr record.PullRequest, at time.Time) MergeOutcome {
 	switch {
 	case checks == record.HeadChecksRunning:
 		return MergeWaitsQuietly
-	case pr.Mergeability == record.MergeabilityUnknown && nullOutlived(nulls, since, at):
+	case pr.Mergeability == record.MergeabilityUnknown && nullOutlived(nulls, since, pr.StateReadAt, at):
 		return MergeWaitsToldNullMergeable
 	case pr.MergeState == record.MergeStateUnknown, pr.Mergeability != record.MergeabilityMergeable,
 		checks == record.HeadChecksUnread, reviews == nil:
@@ -1441,17 +1435,18 @@ func MergeOutcomeOf(pr record.PullRequest, at time.Time) MergeOutcome {
 	return MergeEndsRound
 }
 
-// nullOutlived says whether a run of nulls reads of a head's `mergeable`, the first at since, has
-// outlived GitHub's computation at the moment at: a second null read at least NullMergeableFloor
-// after the first, or any null read NullMergeableTellAfter after it. Neither the count nor the
-// time alone will do: a count alone tells the routine recompute after every push to the base, and
-// a long bound alone keeps a head that is truly stuck untold for half an hour.
-func nullOutlived(nulls int, since, at time.Time) bool {
+// nullOutlived says whether a run of nulls reads of a head's `mergeable`, the first read at since
+// and the latest at last, has outlived GitHub's computation: a null read of the run at least
+// NullMergeableFloor after the first, read to read, or the first NullMergeableTellAfter old at
+// the moment at. The floor is measured between reads, so a read that failed adds nothing to it;
+// the bound is measured by the clock, so reads that come far apart or fail cannot stretch it.
+// Neither alone will do: a count alone tells the routine recompute after every push to the base,
+// and a long bound alone keeps a head that is truly stuck untold for half an hour.
+func nullOutlived(nulls int, since, last, at time.Time) bool {
 	if nulls < 1 || since.IsZero() {
 		return false
 	}
-	elapsed := at.Sub(since)
-	return nulls >= 2 && elapsed >= NullMergeableFloor || elapsed >= NullMergeableTellAfter
+	return nulls >= 2 && last.Sub(since) >= NullMergeableFloor || at.Sub(since) >= NullMergeableTellAfter
 }
 
 // MergeAnswerIncomplete says whether GitHub's answer about merging a head, as a read gives it, is
