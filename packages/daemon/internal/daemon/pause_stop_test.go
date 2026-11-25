@@ -1151,10 +1151,10 @@ func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
 func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
 	t.Parallel()
 	r := newPauseRig(t)
-	r.atTheCheckersStep()
+	worker, other := r.atTheCheckersStep()
 	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
-		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
-		values ('legion', $1, 2, 18, 20, 22, 0, 'architect', $2, now())`, pauseIssue, []string{string(stepPauseChecker)}); err != nil {
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, suspended_claims, marked_at)
+		values ('legion', $1, 2, 18, 20, 22, 0, 'architect', $2, $3, now())`, pauseIssue, []string{string(stepPauseChecker)}, []string{string(worker.Token), string(other.Token)}); err != nil {
 		t.Fatalf("mark the release of %s: %v", pauseIssue, err)
 	}
 	held := r.pauseLegion()

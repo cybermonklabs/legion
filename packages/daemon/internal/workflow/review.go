@@ -554,6 +554,10 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
+	s, applies, err := e.scopeOfPullRequest(ctx, tx, *issue, *pr)
+	if err != nil || !applies {
+		return err
+	}
 	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
 	// while its claim holds its role, else the nearest one above it that does, else the tree
 	// root's. A step the architect itself holds (accepting) is that same architect's acceptance,
@@ -567,24 +571,31 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
-	steps, err := e.checksSteps(ctx, tx, *issue, *pr)
-	if err != nil {
-		return err
+	steps := OpenStepsOf(s.issue)
+	if at := record.StandsAt(s.issue); at != s.issue.Phase {
+		steps = s.issue.RunningAt(at)
 	}
-	roles := []claim.Role{}
+	wokenAgents := make([]claim.Agent, 0, len(woken))
+	for _, role := range woken {
+		if agent := s.walk.agentForRole(role); agent != "" {
+			wokenAgents = append(wokenAgents, agent)
+		}
+	}
 	merging := false
 	for _, step := range steps {
-		roles = append(roles, step.Role)
-		merging = merging || step.Phase == phase.Merging
-	}
-	if !merging {
-		roles = append(roles, claim.RoleImplementer)
-	}
-	for _, role := range roles {
-		if role == claim.RoleArchitect || slices.Contains(woken, role) {
+		if s.Planned() && step.Task != s.Task() {
 			continue
 		}
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
+		merging = merging || step.Phase == phase.Merging
+		agent := s.walk.agentForRole(step.Role)
+		if step.Role == claim.RoleArchitect || slices.Contains(woken, step.Role) || agent != "" && slices.Contains(wokenAgents, agent) {
+			continue
+		}
+		recipients = append(recipients, roleRecipient{issue: issue.Key, role: step.Role, agent: agent, row: issue.Key})
+	}
+	implementer := s.walk.agentForRole(claim.RoleImplementer)
+	if !merging && !slices.Contains(woken, claim.RoleImplementer) && (implementer == "" || !slices.Contains(wokenAgents, implementer)) {
+		recipients = append(recipients, roleRecipient{issue: issue.Key, role: claim.RoleImplementer, agent: implementer, row: issue.Key})
 	}
 	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
 	if err != nil {
@@ -597,28 +608,6 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 	}
 	return nil
-}
-
-// checksSteps is the steps whose workers tellChecks tells of a settlement of pr's checks: the steps
-// of issue that take work of each task whose branch pr is on (openStepsOfPullRequest), the steps a
-// settlement wakes. A held issue takes none of them, so for it they are its running steps at the
-// phase its hold is from (record.StandsAt, record.Issue.RunningAt) of each such task: a hold of
-// the issue keeps that phase's work where it stood, so its worker still needs the CI result. A
-// stopped task's step and a step that waits are never among them, and a held task's step only
-// where it stands at the phase its issue's own hold is from. Every step of a run with no plan rows
-// is pr's.
-func (e *Engine) checksSteps(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) ([]record.RunningStep, error) {
-	at := record.StandsAt(issue)
-	if at == issue.Phase {
-		return e.openStepsOfPullRequest(ctx, tx, issue, pr)
-	}
-	held := issue.RunningAt(at)
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
-	if err != nil || stored == nil {
-		return held, err
-	}
-	tasks := stored.TasksOfBranch(issue.Key, pr.Branch)
-	return slices.DeleteFunc(held, func(step record.RunningStep) bool { return !slices.Contains(tasks, step.Task) }), nil
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner

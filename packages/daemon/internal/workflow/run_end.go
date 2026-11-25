@@ -196,11 +196,11 @@ func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error 
 			if row.State != record.TaskRunning || row.StepWait != record.StepWaitJoin {
 				continue
 			}
-			queued, err := e.store.TaskBranchQueued(ctx, tx, key, issue.Generation, row.Task)
+			queued, err := e.store.TaskBranchRow(ctx, tx, key, issue.Generation, row.Task)
 			if err != nil {
 				return err
 			}
-			if !queued {
+			if queued == 0 {
 				unjoined = append(unjoined, row.Task)
 			}
 		}

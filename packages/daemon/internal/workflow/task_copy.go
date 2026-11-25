@@ -82,6 +82,14 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 			"joined_branch", fact.Branch, "joined_needs", fact.Needs)
 		return intake.Result{}, nil
 	}
+	row, err := e.store.TaskBranchRow(ctx, tx, issue.Key, fact.Generation, fact.Task)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if row == 0 || row != fact.Row {
+		e.logOnCommit(ctx, "workflow: the end of an earlier task join leaves the current wait standing", "issue", issue.Key, "task", fact.Task, "row", fact.Row, "current", row)
+		return intake.Result{}, nil
+	}
 	if err := e.store.SetJoinConflicts(ctx, tx, issue.Key, issue.Generation, fact.Task, fact.Conflicts); err != nil {
 		return intake.Result{}, err
 	}

@@ -221,7 +221,7 @@ type outboxTrees interface {
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	IssueReleaseCheck(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
-	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
+	ReleaseSuspendedClaim(ctx context.Context, project, issue string, token claim.Token, role claim.Role, row int64) error
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
 		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
 	DeclineIssueRelease(ctx context.Context, project, issue string, decline store.IdleReleaseDecline, resume store.ReleaseResumeRow,
@@ -3056,7 +3056,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// to tell a claim this release suspended that something resumed since from one still in
 		// the pod (store.ReleaseSuspendedClaim). The row returns its error rather than swallowing
 		// it, so a retry suspends and records together.
-		return r.trees.ReleaseSuspendedClaim(ctx, r.project, row.Issue, payload.Role, row.ID)
+		return r.trees.ReleaseSuspendedClaim(ctx, r.project, row.Issue, token, payload.Role, row.ID)
 	case "issue_close":
 		// A child's close as done: the claim is closed as a tree close closes it, retired with its
 		// session kept, since the issue is finished and its next run, should a person set it todo
@@ -3386,18 +3386,19 @@ func (r *outbox) reroleForStep(ctx context.Context, machine *supervise.Machine, 
 	return machine.Rerole(ctx, role)
 }
 
-// stepStands says whether the step a start of a phase entry (payload) is for is still the work its
-// issue asks of the role, read from the record again: the issue runs the generation and stands in
-// the phase the start serves, and the role's phases row names no later entry than the start's. They
-// are the start's own fences (supervise), which the suspension and the re-role a start asks of its
-// claim judge again under the machine's lock (supervise.Standing, reroleForStep), since a move back
-// or a later entry can commit between the fences' read and that lock.
 func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
 	stands := false
 	err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := r.records.Issue(ctx, tx, row.Issue)
-		if err != nil || issue == nil || issue.Generation != payload.Generation || issue.Phase != payload.Phase {
+		if err != nil || issue == nil || issue.Generation != payload.Generation || !issue.HoldsQueued(payload.Role, payload.Phase) {
 			return err
+		}
+		if payload.Claim != "" && payload.Role != claim.RoleArchitect {
+			_, agent, named := payload.Claim.Cut()
+			step, running := issue.StepOfAgent(agent)
+			if !named || !running || step.Held || step.Role != payload.Role || step.Phase != payload.Phase {
+				return nil
+			}
 		}
 		rows, err := r.records.Phases(ctx, tx, row.Issue)
 		if err != nil {

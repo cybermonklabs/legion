@@ -277,7 +277,10 @@ func TestACancelWhilePausedAtStepArmsTheBackstopOfTheRoleOfTheStep(t *testing.T)
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
-		return records.MoveTask(ctx, tx, rootIssue, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+		if err := records.MoveTask(ctx, tx, rootIssue, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+			return err
+		}
+		return records.SetStepWait(ctx, tx, rootIssue, 1, "a", record.StepWaitNone, nil)
 	})
 	if _, err := st.Pool().Exec(ctx, `update issues set phase = 'step' where key = $1`, rootIssue); err != nil {
 		t.Fatalf("move %s to step: %v", rootIssue, err)
@@ -355,7 +358,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 			SuspendedBy: supervise.SuspendedByReleased}); err != nil {
 			t.Fatalf("seed the released %s of %s: %v", role, otherIssue, err)
 		}
-		if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, role, otherBoundary); err != nil {
+		if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, token, role, otherBoundary); err != nil {
 			t.Fatalf("record the %s's suspension: %v", role, err)
 		}
 	}

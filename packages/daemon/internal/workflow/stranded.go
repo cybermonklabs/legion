@@ -214,7 +214,10 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// child's next first phase start. One that its own exit retired is reported nowhere, as
 		// Stranded's comment says.
 		var current phase.Phase
-		at := slices.IndexFunc(issue.Running, func(step record.RunningStep) bool { return step.Role == c.Role })
+		_, agent, named := c.Token.Cut()
+		at := slices.IndexFunc(issue.Running, func(step record.RunningStep) bool {
+			return named && step.Role == c.Role && step.Agent == agent
+		})
 		works := at >= 0
 		if !works && record.HeldFor(issue, record.HoldTaskStopped) {
 			// A stopped task's step is no running step, and its worker is the worker of the step
@@ -223,7 +226,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 			if err != nil {
 				return nil, err
 			}
-			works = ok && stopped.Role == c.Role
+			works = ok && named && stopped.Role == c.Role && stopped.Agent == agent
 		}
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):

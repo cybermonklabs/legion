@@ -20,14 +20,33 @@ func joinWaits(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, 
 	t.Helper()
 	since := stepClock
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().SetStepWait(t.Context(), tx, key, generation, task, record.StepWaitJoin, &since)
+		records := record.NewStore()
+		if err := records.SetStepWait(t.Context(), tx, key, generation, task, record.StepWaitJoin, &since); err != nil {
+			return err
+		}
+		row, err := record.NewOutboxRow(key, record.TaskBranch{Generation: generation, Task: task}, since)
+		if err != nil {
+			return err
+		}
+		return records.Enqueue(t.Context(), tx, row)
 	})
 }
 
 // joinedFact is the end of the join of task d of key at generation onto d's branch from its need
 // c, in which GitHub refused c as a conflict.
-func joinedFact(key string, generation uint64) intake.TaskJoined {
-	return intake.TaskJoined{Issue: key, Generation: generation, Task: "d", Branch: "legion/" + key + ".d", Needs: []string{"c"}, Conflicts: []string{"c"}}
+func joinedFact(t *testing.T, pool *pgxpool.Pool, key string, generation uint64) intake.TaskJoined {
+	t.Helper()
+	return intake.TaskJoined{Issue: key, Generation: generation, Task: "d", Row: joinRowOf(t, pool, key, generation, "d"), Branch: "legion/" + key + ".d", Needs: []string{"c"}, Conflicts: []string{"c"}}
+}
+
+func joinRowOf(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, task string) int64 {
+	t.Helper()
+	var row int64
+	seedRecord(t, pool, func(tx pgx.Tx) (err error) {
+		row, err = record.NewStore().TaskBranchRow(t.Context(), tx, key, generation, task)
+		return err
+	})
+	return row
 }
 
 // The end of a join is a fact that starts the step that waits for it: task d, `implementer`, needs
@@ -65,19 +84,19 @@ func TestTheEndOfAJoinStartsTheStepThatWaits(t *testing.T) {
 		assertNothingStarted(t, pool, root.Key, "d", atStep(1))
 	}
 
-	earlier := joinedFact(root.Key, root.Generation-1)
+	earlier := joinedFact(t, pool, root.Key, root.Generation-1)
 	mustSpend(t, "the end of a join of an earlier generation", apply("task-joined:earlier", earlier))
 	unchanged("the end of a join of an earlier generation")
-	otherBranch := joinedFact(root.Key, root.Generation)
+	otherBranch := joinedFact(t, pool, root.Key, root.Generation)
 	otherBranch.Branch = "legion/" + root.Key
 	mustSpend(t, "the end of a join onto another branch", apply("task-joined:other-branch", otherBranch))
 	unchanged("the end of a join onto another branch")
-	otherNeeds := joinedFact(root.Key, root.Generation)
+	otherNeeds := joinedFact(t, pool, root.Key, root.Generation)
 	otherNeeds.Needs = []string{"b", "c"}
 	mustSpend(t, "the end of a join from other needs", apply("task-joined:other-needs", otherNeeds))
 	unchanged("the end of a join from other needs")
 
-	mustSpend(t, "the end of d's join", apply("task-joined:1", joinedFact(root.Key, root.Generation)))
+	mustSpend(t, "the end of d's join", apply("task-joined:1", joinedFact(t, pool, root.Key, root.Generation)))
 
 	tasks := tasksOf(t, pool, engine, root.Key)
 	assertWaits(t, tasks, "d", atStep(1), record.StepWaitNone)
@@ -92,7 +111,7 @@ func TestTheEndOfAJoinStartsTheStepThatWaits(t *testing.T) {
 	counted := countedStarts(t, pool, root.Key, "d", atStep(1))
 
 	for _, id := range []string{"task-joined:1", "task-joined:2"} {
-		apply(id, joinedFact(root.Key, root.Generation))
+		apply(id, joinedFact(t, pool, root.Key, root.Generation))
 		if starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer); len(starts) != 1 {
 			t.Fatalf("after the end of d's join applied again as %s the implementer's starts = %+v, want d's one", id, starts)
 		}
@@ -118,7 +137,7 @@ func TestTheEndOfAJoinWhoseAgentIsBusyWaitsForTheAgent(t *testing.T) {
 	seedTaskBranch(t, pool, root.Key, "d", "legion/"+root.Key+".d")
 	joinWaits(t, pool, root.Key, root.Generation, "d")
 
-	mustSpend(t, "the end of d's join", applyFacts(t, pool, engine)("task-joined:1", joinedFact(root.Key, root.Generation)))
+	mustSpend(t, "the end of d's join", applyFacts(t, pool, engine)("task-joined:1", joinedFact(t, pool, root.Key, root.Generation)))
 
 	tasks := tasksOf(t, pool, engine, root.Key)
 	assertWaits(t, tasks, "d", atStep(1), record.StepWaitAgent)

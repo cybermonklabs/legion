@@ -1303,10 +1303,12 @@ type TaskJoined struct {
 	Issue      string
 	Generation uint64
 	Task       string
-	Branch     string
-	Needs      []string
-	Conflicts  []string
-	Unmerged   bool
+	// Row is the immutable task_branch outbox row whose join completed.
+	Row       int64
+	Branch    string
+	Needs     []string
+	Conflicts []string
+	Unmerged  bool
 }
 
 func (f TaskJoined) namedIssue() (string, bool) { return f.Issue, true }

@@ -198,6 +198,7 @@ func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow
 // task and the row, so a row that runs again applies one fact. A fact that fails fails the row,
 // which joins again on its backoff and finds each need joined.
 func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.TaskJoined) error {
+	fact.Row = row.ID
 	id := fmt.Sprintf("task-joined:%s:%d:%s:%d", fact.Issue, fact.Generation, fact.Task, row.ID)
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...); err != nil {
 		return fmt.Errorf("apply the end of the join of task %s of %s: %w", fact.Task, fact.Issue, err)

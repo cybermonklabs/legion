@@ -52,12 +52,18 @@ func markRelease(t *testing.T, store *Store, first, boundary, last, started int6
 func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, last, started int64, suspended ...claim.Role) {
 	t.Helper()
 	roles := make([]string, 0, len(suspended))
+	tokens := make([]string, 0, len(suspended))
 	for _, role := range suspended {
 		roles = append(roles, string(role))
+		token, err := claim.NewToken("legion", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens = append(tokens, string(token))
 	}
 	_, err := store.Pool().Exec(context.Background(), `insert into issue_releases
-		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
-		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, now())`, issue, first, boundary, last, started, roles)
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, suspended_claims, marked_at)
+		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, $7, now())`, issue, first, boundary, last, started, roles, tokens)
 	if err != nil {
 		t.Fatalf("mark the release of %s: %v", issue, err)
 	}
@@ -1218,18 +1224,18 @@ func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
 	openRunningTree(t, st)
 	markRelease(t, st, first, boundary, last, 0)
 
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleArchitect, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect, boundary); err != nil {
 		t.Fatalf("record the architect's suspension: %v", err)
 	}
 	// The row ran twice: one claim, one entry.
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleArchitect, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect, boundary); err != nil {
 		t.Fatalf("record the architect's suspension again: %v", err)
 	}
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleImplementer, boundary+1); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary+1); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
 	// A row of a release this mark is not records nothing.
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleTester, last+5); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-tester", claim.RoleTester, last+5); err != nil {
 		t.Fatalf("record a stale row's suspension: %v", err)
 	}
 
@@ -1302,7 +1308,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			if !tc.late && !tc.unrecorded {
 				recordRelease(t, st, at)
 			}
-			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleImplementer, boundary); err != nil {
+			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary); err != nil {
 				t.Fatalf("record the implementer's suspension: %v", err)
 			}
 			if tc.woken {
@@ -1355,7 +1361,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 	openRunningTree(t, st)
 	releasedClaim(t, st, claim.RoleImplementer)
 	first, boundary, last := releaseThroughTheStore(t, st, rootIssue)
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleImplementer, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
 

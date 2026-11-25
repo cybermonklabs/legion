@@ -3550,6 +3550,20 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 		if role == except {
 			continue
 		}
+		pending := false
+		for _, row := range rows {
+			if row.Role != role || row.StepTask == "" || row.Claim == "" {
+				continue
+			}
+			pending = true
+			if !named[row.Claim] {
+				targets = append(targets, claimTarget{role: role, token: row.Claim})
+				named[row.Claim] = true
+			}
+		}
+		if pending {
+			continue
+		}
 		worker, err := record.WorkerClaim(project, issue.Key, role, rows)
 		if err != nil {
 			return nil, fmt.Errorf("the %s of %s: %w", role, issue.Key, err)

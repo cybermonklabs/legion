@@ -56,7 +56,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	var left string
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.deployment, row.Issue, payload.Role, payload.Step, payload.Head)
+		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.deployment, record.PullRequestKey{Issue: row.Issue, Number: payload.PullRequest}, payload.Role, payload.Step, payload.Head)
 		return err
 	}); err != nil {
 		return fmt.Errorf("read the issue and the pull request of %s: %w", row.Issue, err)

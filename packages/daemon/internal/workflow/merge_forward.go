@@ -65,10 +65,10 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	recipients := []roleRecipient{{issue: issue.Key, role: asker, row: issue.Key}}
+	recipients := []roleRecipient{{issue: issue.Key, role: asker, agent: w.agentForRole(asker), row: issue.Key}}
 	for _, step := range issue.RunningAt(at) {
-		if step.Role != asker && record.MergeForwardReaches(record.MergeForwardHold, step.Role) {
-			recipients = append(recipients, roleRecipient{issue: issue.Key, role: step.Role, row: issue.Key})
+		if (!w.Stored || step.Task == w.Task) && step.Role != asker && record.MergeForwardReaches(record.MergeForwardHold, step.Role) {
+			recipients = append(recipients, roleRecipient{issue: issue.Key, role: step.Role, agent: step.Agent, row: issue.Key})
 		}
 	}
 	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
@@ -167,7 +167,7 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, s TaskScope
 	switch {
 	case record.StandsIn(issue, phase.Merging):
 		if asked != nil && asked.Head == pr.HeadSHA && asked.Phase != phase.Implementing && asked.Asked() != claim.RoleMerger {
-			return e.holdMerger(ctx, tx, issue, pr)
+			return e.holdMerger(ctx, tx, issue, w, pr)
 		}
 		return e.mergeForward(ctx, tx, issue, w, pr, record.ConflictMergeNext)
 	case asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing &&
@@ -194,12 +194,12 @@ func (w Walk) standsBefore(p, at phase.Phase) bool {
 // mergeForwardLanded sends it as the worker of merging, with the reviewer's review of the new head.
 // The hold names the claim of the merger's step, as every merge-forward message does
 // (addressRoles). The record's ask is left as it is. A tree that lingers tells nobody.
-func (e *Engine) holdMerger(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
+func (e *Engine) holdMerger(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr *record.PullRequest) error {
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
 	asked := pr.MergeForward
-	addressed, err := e.addressRoles(ctx, tx, issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleMerger, row: issue.Key}}, nil)
+	addressed, err := e.addressRoles(ctx, tx, issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleMerger, agent: w.agentForRole(claim.RoleMerger), row: issue.Key}}, nil)
 	if err != nil {
 		return err
 	}
@@ -294,12 +294,12 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 	review := w.standsBefore(phase.Reviewing, at)
 	var recipients []roleRecipient
 	for _, step := range issue.RunningAt(at) {
-		if record.MergeForwardReaches(record.MergeForwardLanded, step.Role) {
-			recipients = append(recipients, roleRecipient{issue: issue.Key, role: step.Role, row: issue.Key})
+		if (!w.Stored || step.Task == w.Task) && record.MergeForwardReaches(record.MergeForwardLanded, step.Role) {
+			recipients = append(recipients, roleRecipient{issue: issue.Key, role: step.Role, agent: step.Agent, row: issue.Key})
 		}
 	}
 	if review {
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key})
+		recipients = append(recipients, roleRecipient{issue: issue.Key, role: claim.RoleReviewer, agent: w.agentForRole(claim.RoleReviewer), row: issue.Key})
 	}
 	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
 	if err != nil {
@@ -335,10 +335,9 @@ func lostRole(role claim.Role, deployment plan.Deployment) bool {
 }
 
 // MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue
-// key is judged by: the issue, whether its tree lingers (record.TreeLingers) and the pull request
-// the message is about: the issue's pull request that holds a merge forward of head, whichever
-// task's it is, and the pull request of the issue's task that merges where none does
-// (record.Store.MergePullRequest). It returns the issue and that pull request, with why a message
+// key is judged by: the issue, whether its tree lingers (record.TreeLingers), and the exact pull
+// request the message names. Different task pull requests may stand at the same head, so a head
+// alone never selects the record. It returns the issue and that pull request with why a message
 // of step to role about the merge forward asked of head is no longer to be delivered
 // (leftMergeForwardAt), "" while it is. An issue the record does not hold is a nil issue, no pull
 // request and no reason.
@@ -351,8 +350,8 @@ func lostRole(role claim.Role, deployment plan.Deployment) bool {
 // already queued. It is exported for that executor. The pull request is its row alone
 // (record.Store.TaskPullRequestRows, MergePullRequestRow): the executor names its repository and
 // writes nothing of it.
-func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, deployment plan.Deployment, key string, role claim.Role, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
-	issue, err := store.Issue(ctx, tx, key)
+func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, deployment plan.Deployment, key record.PullRequestKey, role claim.Role, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
+	issue, err := store.Issue(ctx, tx, key.Issue)
 	if err != nil || issue == nil {
 		return nil, nil, "", err
 	}
@@ -360,17 +359,12 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, deployme
 	if err != nil {
 		return nil, nil, "", err
 	}
-	prs, err := store.TaskPullRequestRows(ctx, tx, key)
+	pr, err := store.PullRequestRowByNumber(ctx, tx, issue.GitHubRepo, key.Number)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	at := slices.IndexFunc(prs, func(pr record.PullRequest) bool { return pr.MergeForward != nil && pr.MergeForward.Head == head })
-	if at >= 0 {
-		return issue, &prs[at], leftMergeForwardAt(*issue, lingers, &prs[at], deployment, role, step, head), nil
-	}
-	pr, err := store.MergePullRequestRow(ctx, tx, key)
-	if err != nil {
-		return nil, nil, "", err
+	if pr != nil && pr.Issue != key.Issue {
+		pr = nil
 	}
 	return issue, pr, leftMergeForwardAt(*issue, lingers, pr, deployment, role, step, head), nil
 }

@@ -684,7 +684,7 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, r
 		cancelled = ReleaseCancelled{}
 		var suspended []string
 		var kind string
-		err := tx.QueryRow(ctx, `select suspended, kind from issue_releases where project = $1 and issue = $2`,
+		err := tx.QueryRow(ctx, `select suspended_claims, kind from issue_releases where project = $1 and issue = $2`,
 			project, issue).Scan(&suspended, &kind)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -886,16 +886,12 @@ type releasedRole struct {
 	serving    uint64
 }
 
-// stillReleasedClaims are the claims of the roles in suspended that are still suspended as
-// `released`, each by its token, in token order. Two claims can hold one role — a keyed agent on a
-// step of another role, beside that role's own claim from an earlier version of the plan — and
-// each is a claim of its own to resume.
 func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]releasedRole, error) {
 	if len(suspended) == 0 {
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `select token, tree, role, generation, serving_generation from claims where project = $1 and issue = $2
-		and role = any($3) and state = 'suspended' and suspended_by = 'released' order by token`,
+		and token = any($3) and state = 'suspended' and suspended_by = 'released' order by token`,
 		project, issue, suspended)
 	if err != nil {
 		return nil, err

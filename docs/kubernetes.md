@@ -2837,6 +2837,39 @@ It writes the daemon's status as that release writes it, with no read of the eve
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
 So one project can roll back while another stays on this release, and the statement names the project: a daemon left on this release keeps the check on its own set-backs.
 
+#### Task-agent phase state and release cancellation
+
+Each phase entry and handoff belongs to an issue, task, role and agent. Task agents with the
+same role keep separate rows, and clearing a generation keeps that durable identity while
+clearing the row's current step attachment. Notifications about one task's pull request use
+that task's agents; a merge-forward message selects its pull request by issue and number,
+not by a head commit another task can share. A join completion names its immutable outbox
+row, so an older join cannot end a newer start's wait on the same branch and needs.
+
+`20261125055751_task_agent_phases.up.sql` changes the phase key.
+`20261125114614_task_release_claims.up.sql` records the exact claim tokens a pod release
+suspended, separately from its role list. Cancelling a release resumes only those claims,
+not another task agent of the same role left suspended by an earlier release.
+
+Before upgrading, let in-flight pod releases finish, then stop every daemon sharing the
+database. With those daemons stopped, this query must return no row:
+
+```sql
+select project, issue from issue_releases where cardinality(suspended) > 0;
+```
+
+The release-claims migration refuses a nonempty result rather than guessing which claims a
+role-only mark suspended. If it refuses, run the earlier daemon until those releases finish,
+stop the daemons again, and repeat the query before applying the migrations.
+
+To roll back, keep every daemon sharing the database stopped and run the transactions in
+the two migration headers in reverse order: release claims, then task-agent phases. The first
+refuses unfinished suspended-claim sets. The second refuses multiple task agents of one role,
+or a task or agent that the earlier schema cannot reconstruct. Archive affected work before
+removing any row a refusal names; neither transaction silently selects a winner. Both delete
+their own version row, so a later `Migrate` reapplies them. Reverse older task-branch migrations
+after these when the target release needs that too.
+
 #### Shared design-news credit while several task agents work
 
 Several task agents can work on one issue, but approved-design news is credited to one shared holder row. An agent that was not the holder can therefore miss a version. The warning below records that risk; it does not change delivery or credit and does not claim to fix the shared row.
@@ -3665,6 +3698,8 @@ The migrations recorded above this one are these.
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
 20261124192838_deployment_roles writes the role checks of `claims`, `phases` and `issue_releases` and the checks `issues_phase_check` and `issues_held_from_check` again, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back first ([Rolling back the release whose deployment defines roles](#rolling-back-the-release-whose-deployment-defines-roles)), so that the roll-forward writes the checks again.
+20261125055751_task_agent_phases keys `phases` by issue, task, role and agent without changing any of the six columns, so the block holds over it; run its guarded header transaction before rolling back to a daemon with one phase row per issue and role ([Task-agent phase state and release cancellation](#task-agent-phase-state-and-release-cancellation)).
+20261125114614_task_release_claims adds `issue_releases.suspended_claims` and touches none of the six; its header transaction refuses unfinished exact-claim sets, drops that column and removes its version row before task-agent phases are reversed ([Task-agent phase state and release cancellation](#task-agent-phase-state-and-release-cancellation)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

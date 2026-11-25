@@ -3482,18 +3482,16 @@ func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (b
 	return queued, nil
 }
 
-// TaskBranchQueued says whether the outbox still holds a task_branch row (TaskBranch) of task of
-// issue at generation — due, running or backing off — so the join of the task's needs at that
-// generation has not ended: a row finishes when its join ends, or when it serves a generation the
-// issue has left, which it then joins nothing of.
-func (s *Postgres) TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error) {
-	var queued bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2
-		and (payload->>'generation')::bigint = $3 and payload->>'task' = $4)`,
-		issue, string(OutboxKindTaskBranch), int64(generation), task).Scan(&queued); err != nil {
-		return false, fmt.Errorf("read whether the branch row of task %s of %s at generation %d is still queued: %w", task, issue, generation, err)
+// TaskBranchRow reads the newest unfinished join's identity. A later start can queue another
+// join in the same generation, branch and needs. Only that newer row may complete its wait.
+func (s *Postgres) TaskBranchRow(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (int64, error) {
+	var row int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from outbox where issue = $1 and kind = $2
+		and (payload->>'generation')::bigint = $3 and payload->>'task' = $4`,
+		issue, string(OutboxKindTaskBranch), int64(generation), task).Scan(&row); err != nil {
+		return 0, fmt.Errorf("read the current branch row of task %s of %s at generation %d: %w", task, issue, generation, err)
 	}
-	return queued, nil
+	return row, nil
 }
 
 // StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
@@ -3943,6 +3941,7 @@ type roleRunIdentity struct {
 	issue      string
 	role       string
 	generation string
+	claim      string
 }
 
 // RoleRuns reads the queued supervise rows and the claims of keys in two bounded queries. The
@@ -3984,7 +3983,12 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		}
 		runs[key.Token] = RoleRun{}
 		tokens = append(tokens, string(key.Token))
-		candidates[roleRunIdentity{issue: key.Issue, role: string(key.Role), generation: strconv.FormatUint(key.Generation, 10)}] = key.Token
+		identity := roleRunIdentity{issue: key.Issue, role: string(key.Role), generation: strconv.FormatUint(key.Generation, 10), claim: string(key.Token)}
+		candidates[identity] = key.Token
+		if _, agent, named := key.Token.Cut(); named && agent == claim.Agent(key.Role) {
+			identity.claim = ""
+			candidates[identity] = key.Token
+		}
 		if _, seen := seenIssues[key.Issue]; !seen {
 			seenIssues[key.Issue] = struct{}{}
 			issues = append(issues, key.Issue)
@@ -4010,8 +4014,8 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		// A row that names a claim (SuperviseRequest.Claim) is that claim's alone: a keyed agent
 		// on a step of another role holds the role beside the role's own claim from an earlier
 		// version, and a start that names one is no queued run of the other.
-		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
-		if !wanted || (named != "" && named != string(token)) {
+		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation, claim: named}]
+		if !wanted {
 			continue
 		}
 		decoded, err := DecodeOutboxPayload(row)

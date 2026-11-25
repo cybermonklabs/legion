@@ -1121,7 +1121,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	recipients := make([]roleRecipient, 0, len(members)+1)
 	for _, member := range members {
 		for _, step := range OpenStepsOf(member) {
-			recipients = append(recipients, roleRecipient{issue: member.Key, role: step.Role, row: member.Key})
+			recipients = append(recipients, roleRecipient{issue: member.Key, role: step.Role, agent: step.Agent, row: member.Key})
 		}
 	}
 	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})
