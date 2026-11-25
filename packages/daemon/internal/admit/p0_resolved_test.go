@@ -6,15 +6,18 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // Admission reads the priority Dispatch resolves (C1 and C2 of dispatch://INFRA-5636 v13, J1 and J3
@@ -257,7 +260,9 @@ func TestAPresentNullReplacesAnInheritedP0(t *testing.T) {
 // whose `changed` names the resolved priority alone (J3 of dispatch://INFRA-5793), from an ancestor
 // in another project. The pass that applies it reads the new value — a member moved into a P0 chain
 // starts at that pass at a full cap, one moved out keeps its slot and counts against the cap — and
-// the update is no work of the member's own, so its movement mark stays.
+// the update is no work of the member's own, so the holder's movement mark stays where it was, read
+// with an engine whose clock stands an hour past that mark: the store moves a mark forward only
+// (record's MarkIssueMoved), so a clock behind it could not show a mark the update wrote.
 func TestAMemberMovedIntoOrOutOfAP0ChainWithNoEditOfItsOwn(t *testing.T) {
 	t.Run("into", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -266,14 +271,10 @@ func TestAMemberMovedIntoOrOutOfAP0ChainWithNoEditOfItsOwn(t *testing.T) {
 		inheritedQueued(t, pool, "LEGION-9", "C", resolvedFrom(record.P2))
 		tick(t, pool, admission, "tick")
 		assertRowHolders(t, pool, "LEGION-1")
-		moved := issue(t, pool, "LEGION-9").MovedAt
 
 		apply(t, pool, admission, "into", resolvedEvent(t, "LEGION-9", "todo", "C", 2, resolvedFrom(record.P0), "resolved_priority", "priority_from"), priorityEngine())
 
 		assertRowHolders(t, pool, "LEGION-1", "LEGION-9")
-		if got := issue(t, pool, "LEGION-9").MovedAt; !got.Equal(moved) {
-			t.Fatalf("LEGION-9's movement mark moved from %s to %s on an update of its resolved priority alone, want it kept", moved, got)
-		}
 	})
 	t.Run("out of", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -283,8 +284,14 @@ func TestAMemberMovedIntoOrOutOfAP0ChainWithNoEditOfItsOwn(t *testing.T) {
 		p0Queued(t, pool, "LEGION-9", "C", record.P2, nil)
 		tick(t, pool, admission, "tick")
 		assertRowHolders(t, pool, "LEGION-1", "LEGION-2")
+		moved := issue(t, pool, "LEGION-1").MovedAt
 
-		apply(t, pool, admission, "out", resolvedEvent(t, "LEGION-1", "in_progress", "A", 2, resolvedFrom(record.P2), "resolved_priority"), priorityEngine())
+		later := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
+			Linger: time.Hour, Clock: func() time.Time { return moved.Add(time.Hour) }}, nil)
+		apply(t, pool, admission, "out", resolvedEvent(t, "LEGION-1", "in_progress", "A", 2, resolvedFrom(record.P2), "resolved_priority"), later)
+		if got := issue(t, pool, "LEGION-1").MovedAt; !got.Equal(moved) {
+			t.Fatalf("LEGION-1's movement mark moved from %s to %s on an update of its resolved priority alone, want it kept", moved, got)
+		}
 		assertRowHolders(t, pool, "LEGION-1", "LEGION-2")
 		closeTree(t, pool, admission, "second-closed", "LEGION-2", "B")
 		assertRowHolders(t, pool, "LEGION-1")
@@ -293,24 +300,50 @@ func TestAMemberMovedIntoOrOutOfAP0ChainWithNoEditOfItsOwn(t *testing.T) {
 
 // The first boot listing after Dispatch resolves priorities replaces each recorded issue's
 // resolved priority at the issue's own sequence: Dispatch's upgrade made the inherited P0 with no
-// event of the issue, so the listing is all the daemon reads of it, and the issue starts outside the
-// cap at that boot's pass with no edit of its own.
+// event of the issue, so the listing is all the daemon reads of it. A root that never ran, which the
+// listing re-admits, starts outside the cap at that boot's pass, and a holder, whose observation the
+// listing records with nothing else of it changed, leaves the cap's count and gives its slot to the
+// line below P0; neither needs an edit of its own.
 func TestTheFirstBootListingAfterDispatchResolvesTakesAnInheritedP0AtItsOwnSequence(t *testing.T) {
-	pool := migratedPool(t)
-	admission := quiet(t, 1)
-	p0Holder(t, pool, "LEGION-1", "A", record.P1)
-	p0Queued(t, pool, "LEGION-9", "C", record.NoPriority, func(issue *record.Issue) { issue.LastDispatchSeq = 2 })
-	tick(t, pool, admission, "before")
-	assertRowHolders(t, pool, "LEGION-1")
+	t.Run("a root that never ran", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 1)
+		p0Holder(t, pool, "LEGION-1", "A", record.P1)
+		p0Queued(t, pool, "LEGION-9", "C", record.NoPriority, func(issue *record.Issue) { issue.LastDispatchSeq = 2 })
+		tick(t, pool, admission, "before")
+		assertRowHolders(t, pool, "LEGION-1")
 
-	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-9", Title: "LEGION-9", Status: "todo", Rank: "C",
-		HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets", Resolved: &dispatch.ResolvedPriority{Priority: level(record.P0), From: outside}}}, 2, 2, true)
+		reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-9", Title: "LEGION-9", Status: "todo", Rank: "C",
+			HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets", Resolved: &dispatch.ResolvedPriority{Priority: level(record.P0), From: outside}}}, 2, 2, true)
 
-	if got := issue(t, pool, "LEGION-9").Resolved; got != resolvedFrom(record.P0) {
-		t.Fatalf("LEGION-9 after the listing at its own sequence holds %+v, want %+v", got, resolvedFrom(record.P0))
-	}
-	tick(t, pool, admission, "after")
-	assertRowHolders(t, pool, "LEGION-1", "LEGION-9")
+		if got := issue(t, pool, "LEGION-9").Resolved; got != resolvedFrom(record.P0) {
+			t.Fatalf("LEGION-9 after the listing at its own sequence holds %+v, want %+v", got, resolvedFrom(record.P0))
+		}
+		tick(t, pool, admission, "after")
+		assertRowHolders(t, pool, "LEGION-1", "LEGION-9")
+	})
+	t.Run("a holder", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 1)
+		inheritedHolder(t, pool, "LEGION-1", "A", record.Resolved{})
+		holder := issue(t, pool, "LEGION-1")
+		// The record stands as the listing shows it but for the resolved priority, so the listing
+		// changes that alone: its own sequence, status and fields are the record's.
+		holder.LastDispatchSeq, holder.DispatchStatus = 2, holder.Status
+		putIssue(t, pool, holder)
+		p0Queued(t, pool, "LEGION-9", "C", record.P2, nil)
+		tick(t, pool, admission, "before")
+		assertRowHolders(t, pool, "LEGION-1")
+
+		reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-1", Title: holder.Title, Status: holder.Status, Rank: holder.Rank,
+			HandedOver: holder.HandedOver, LastSeq: 2, ResolvedRepo: "acme/widgets", Resolved: &dispatch.ResolvedPriority{Priority: level(record.P0), From: outside}}}, 2, 2, true)
+
+		if got := issue(t, pool, "LEGION-1").Resolved; got != resolvedFrom(record.P0) {
+			t.Fatalf("LEGION-1 after the listing at its own sequence holds %+v, want %+v", got, resolvedFrom(record.P0))
+		}
+		tick(t, pool, admission, "after")
+		assertRowHolders(t, pool, "LEGION-1", "LEGION-9")
+	})
 }
 
 // An event older than the newest read the record took leaves that read's resolved priority: a boot
