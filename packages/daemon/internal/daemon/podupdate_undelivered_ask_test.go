@@ -451,3 +451,44 @@ func TestPodUpdateAskDeliveredAsTheDaemonStopsIsStillMarked(t *testing.T) {
 		t.Fatal("the ask reached the implementer as the daemon stopped, and the stored claim records no mark; want it marked, so the next boot does not ask again")
 	}
 }
+
+// An ask of a round reaches a role's agent only while its claim holds no answer of that round,
+// read under the claim's own lock where the ask is published (supervise's
+// Machine.PublishUpdateAsk). The sweep reads the claims before the ask is published, so a role
+// that answers in between is told nothing, and the row ends on its own line (askAnsweredLine). A
+// role asked first and answering after is told once, and that line is not written.
+func TestPodUpdateAskReachesNoRoleThatAnsweredBeforeItsPublish(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		answerFirst bool
+		want        int
+	}{
+		{name: "the answer, then the ask", answerFirst: true, want: 0},
+		{name: "the ask, then the answer", answerFirst: false, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+			if tc.answerFirst {
+				rig.signal(claim.RoleImplementer, "a1b2c3d")
+			}
+			rig.runAsk(row)
+			if !tc.answerFirst {
+				rig.signal(claim.RoleImplementer, "a1b2c3d")
+			}
+			if n := rig.deliveredTo(claim.RoleImplementer); n != tc.want {
+				t.Fatalf("the implementer's topic was delivered %d asks of the round, want %d", n, tc.want)
+			}
+			lines := loggedLines(t, rig.logs.String(), `"msg":"`+askAnsweredLine+`"`)
+			if tc.want == 1 && len(lines) != 0 {
+				t.Fatalf("lines %q = %v, want none: the ask reached the role before it answered", askAnsweredLine, lines)
+			}
+			if tc.want == 0 && (len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) || lines[0]["round"] != podUpdateRound) {
+				t.Fatalf("lines %q = %v, want one Info line naming row %d and round %s", askAnsweredLine, lines, row.ID, podUpdateRound)
+			}
+		})
+	}
+}
