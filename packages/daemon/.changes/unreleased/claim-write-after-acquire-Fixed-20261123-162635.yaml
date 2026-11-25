@@ -10,9 +10,10 @@ body: |-
     per try of a write that holds a connection (a dial that ends just short of 5 s, then a BEGIN
     never answered), and for at most 37 s per try of a write that queues first (the queue's 30 s,
     the write's 5 s, and 2 s to settle a commit whose reply was lost). A write whose BEGIN the
-    database answered is tried at most twice (INFRA-3904's entry), so such a write holds it for up
-    to about 20 s, or 74 s, before it is owed. A write handed a pooled connection the
-    server closed while it sat idle, as after a database restart, begins on another connection.
+    database answered is tried at most twice (INFRA-3904's entry), each try under these bounds, so
+    it holds the machine for at most two of them before it is owed. A write handed a pooled
+    connection the server closed while it sat idle, as after a database restart, begins on another
+    connection.
     The boot's replay of the stored claims' ready and failed facts counts each
     of its budgets the same way, so a boot whose pool is busy with the restored claims' live
     failures no longer fails its replay for the wait.

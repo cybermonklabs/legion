@@ -7,10 +7,12 @@ body: |-
     launch waited for the next orphan sweep. A write the bound cut before the database answered its
     BEGIN (a dial, a wait in the pool's queue, the BEGIN itself) is owed at once, as before, and so
     is a second cut in a row. The cost: a database that answers BEGIN and then hangs every write
-    holds a claim's machine twice as long before the write is owed, two claim-write bounds instead
-    of one (about 10 s instead of 5 s; at worst about 20 s, or 74 s for a write that queued first,
-    by the bounds INFRA-1075's entry gives per try). The release of a claim's held names is made
-    only once, since a second try after a first that landed would answer that it freed no names.
+    holds a claim's machine for two tries of the claim-write bound before the write is owed, not
+    one: about 10 s instead of 5 s, and longer when the second try must first wait for a
+    connection, as when the pool is still closing the first try's (25 s measured with a pool of one
+    connection whose server went silent after the BEGIN, against 5 s before), with each try under
+    the bounds INFRA-1075's entry gives. The release of a claim's held names is made only once,
+    since a second try after a first that landed would answer that it freed no names.
 time: 2026-11-25T03:15:54Z
 custom:
     Issue: INFRA-3904

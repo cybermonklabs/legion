@@ -1301,9 +1301,14 @@ func (d Deps) check() error {
 // about twice this per bounded call that holds a connection, and for at most defaultClaimAcquire,
 // this and the commit's settle together (37 s) for one that queues first, the bounds
 // store.BoundAfterAcquire states. A call this bound cuts after the database was handed it (its
-// BEGIN answered) is made once more at once (write, claimWriteTries, cutByBound), so such a write
-// holds the lock for up to twice that before it is owed; a dial, a queue wait or a BEGIN the bound
-// cut is owed at once.
+// BEGIN answered) is made once more at once (write, claimWriteTries, cutByBound), and the second
+// try may first wait in the pool's queue: pgxpool frees the slot of the first try's connection
+// only once its destructor has closed it, which it gives up to 15 s on a server that answers
+// nothing (pgxpool/pool.go:328-337 at v5.13.0; puddle/v2 pool.go:695-700). So such a write holds
+// the lock for two tries' bounds before it is owed: about 10 s when the second try is handed a
+// connection at once, 25.0 s measured on a pool of one connection whose server went silent after
+// the BEGIN (5.0 s before this retry), and at most two tries of 37 s. A dial, a queue wait or a
+// BEGIN the bound cut is owed at once.
 // The write a second cut leaves is not lost: a bare context deadline is a write the server never
 // answered, which writeOwed owes, so the claim write is marked and made again at the claim's next
 // decision (owes, repair).
@@ -2168,8 +2173,10 @@ const (
 //     roleSend.noHolder). That wake would bring back the pod the release took.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
-//     repair, the publish and the mark's write: the claim-write deadline twice and notify's
-//     request timeout once, about 20 seconds, and the claim's other decisions wait that long.
+//     repair, the publish and the mark's write: each write up to two tries of the claim-write
+//     deadline (write), notify's request timeout once, about 30 seconds, and longer when a
+//     write's second try waits in the pool's queue (defaultClaimWrite); the claim's other
+//     decisions wait that long.
 //  4. The mark is set in memory and written before the section ends, and before the row can end.
 //     The write runs under context.WithoutCancel, still bounded by the claim-write deadline
 //     (write), so a daemon stop that cancels the lane during or just after a delivered publish
