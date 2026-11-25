@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  `agent-secrets` takes its machine identity from an `external_account` credential file of every
+  `credential_source` that Google's Go library `cloud.google.com/go/auth` reads, an X.509
+  certificate's among them (workload identity federation with a client certificate). The
+  credential may name its certificate configuration (`certificate_config_location`) or take the
+  default one (`use_default_certificate_config`: `GOOGLE_API_CERTIFICATE_CONFIG`, else gcloud's),
+  as `gcloud iam workload-identity-pools create-cred-config --credential-cert-path` writes it with or
+  without `--credential-cert-configuration-output-file`; the exchange presents the certificate over
+  TLS. Before, the client read the file with `golang.org/x/oauth2`, which has no X.509 source, so a
+  machine whose one Google identity was such a certificate failed with `mint an access token as
+  <account> with the external_account credential GOOGLE_APPLICATION_CREDENTIALS names: the request
+  failed`.
+
+  A trust chain, certificate configuration, certificate or private key that cannot be read is named
+  in the error with the file call's reason, never its path, and so is a subject token file that is
+  a directory. A certificate configuration that names no workload certificate and private key, an
+  enterprise certificate proxy's among them, is refused before Google's library would start the
+  signer program it names. An exchange whose answer holds no access token is refused before
+  `generateIdToken`. The exchange logs nothing, whatever `GOOGLE_SDK_GO_LOGGING_LEVEL` says: the
+  library's log of it would hold the subject token and the federated token.
+time: 2026-11-25T05:52:47Z
+custom:
+    Issue: external-account-x509

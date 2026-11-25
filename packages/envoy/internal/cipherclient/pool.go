@@ -172,8 +172,8 @@ func (p *PoolIdentity) federate(ctx context.Context, subject, subjectType string
 // generateIDToken is IAM Credentials' half of a mint: an access token that may act as
 // serviceAccount (bearer) spent on one generateIdToken for audience, with includeEmail set, at
 // iamURL, or Google's own service where it is empty. Every error names the account as named
-// says. A workload identity pool spends its federated token here, and an external_account
-// credential the access token it mints.
+// says. A workload identity pool and an external_account credential each spend their federated
+// token here.
 func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAccount, named, audience, bearer string) (string, error) {
 	origin := iamURL
 	if origin == "" {
