@@ -69,12 +69,12 @@ func TestASettlementOfAChildTellsTheArchitectThatOwnsIt(t *testing.T) {
 			}
 
 			applyRefusingNothing(t, pool, mergingEngine(), settledAt("head", 1, "unit"))
-			body := toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")
-			want := []record.RoleMessage{{Role: token(tc.owner, claim.RoleArchitect), Body: body}}
+			told := settledHead("head", "build=succeeded", "unit=failed")
+			want := []record.RoleMessage{told.to(token(tc.owner, claim.RoleArchitect))}
 			for _, role := range tc.roles {
-				want = append(want, record.RoleMessage{Role: token(child, role), Body: body})
+				want = append(want, told.to(token(child, role)))
 			}
-			assertRoleMessages(t, pool, child, want)
+			assertToldRows(t, pool, child, want)
 			assertRoleMessages(t, pool, root, nil)
 		})
 	}

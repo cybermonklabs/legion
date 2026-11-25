@@ -1,9 +1,11 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -73,11 +75,13 @@ func inCI(state intake.DispatchCheckState, ciCase string) intake.DispatchCheckSt
 const statesRepo = "sjawhar/legion"
 
 // statesRig is LEGION-208 at a phase, with its pull request #42 open at headOne and the tester's
-// claim on its row, and the engine every fact of the test applies through.
+// claim on its row, and the engine every fact of the test applies through, which logs as JSON into
+// logged (lines).
 type statesRig struct {
 	t      *testing.T
 	pool   *pgxpool.Pool
 	engine *Engine
+	logged *bytes.Buffer
 }
 
 func newStatesRig(t *testing.T, at phase.Phase) *statesRig {
@@ -88,7 +92,52 @@ func newStatesRig(t *testing.T, at phase.Phase) *statesRig {
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: statesRepo, Number: 42, Branch: "legion/LEGION-208",
 		HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
-	return &statesRig{t: t, pool: pool, engine: testEngine(config.DesignGateRootIssues, nil)}
+	logged := &bytes.Buffer{}
+	return &statesRig{t: t, pool: pool, engine: testEngine(config.DesignGateRootIssues, slog.New(slog.NewJSONHandler(logged, nil))), logged: logged}
+}
+
+// lines is each line of the engine's log whose message is msg, in the order written, with its
+// attributes as the JSON handler wrote them.
+func (r *statesRig) lines(msg string) []map[string]any {
+	r.t.Helper()
+	var lines []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(r.logged.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			r.t.Fatalf("decode the log line %q: %v", line, err)
+		}
+		if entry["msg"] == msg {
+			lines = append(lines, entry)
+		}
+	}
+	return lines
+}
+
+// lineStrings is the attribute key of line as a list of strings, nil where the line has none.
+func lineStrings(line map[string]any, key string) []string {
+	values, _ := line[key].([]any)
+	var out []string
+	for _, value := range values {
+		text, _ := value.(string)
+		out = append(out, text)
+	}
+	return out
+}
+
+// testingMoveDecided is the line the testing move writes where it writes the tester's notice of a
+// wait or of a move back, and the move to reviewing (workflow's logTestingMove).
+const testingMoveDecided = "workflow: the testing move decided"
+
+// checkIDs is the id of each check of failing, in order.
+func checkIDs(failing []record.FailingCheck) []string {
+	var ids []string
+	for _, check := range failing {
+		ids = append(ids, check.Check)
+	}
+	return ids
 }
 
 // states applies states of LEGION-208 at head from serial on (applyStates).
@@ -185,7 +234,9 @@ func roleStarts(t *testing.T, pool *pgxpool.Pool, role claim.Role) int {
 // waitsFor fails unless LEGION-208 is still in testing, with no worker started and one
 // phase-finished notice of the tester, as the architect receives it: the tester's summary, the
 // tested head head, what the move waits for (waitsFor) and the checks it waits for (checks), and
-// no failing check. It reads no reason: the notice carries the wait as fields.
+// no failing check. It reads no reason: the notice carries the wait as fields. The engine's log
+// holds exactly one line of the testing move with move waits, the same head, waits_for and
+// waiting, and no failing check, written where the notice is.
 func (r *statesRig) waitsFor(head, waitsFor string, checks ...string) {
 	r.t.Helper()
 	assertPhase(r.t, r.pool, phase.Testing)
@@ -197,6 +248,16 @@ func (r *statesRig) waitsFor(head, waitsFor string, checks ...string) {
 		notices[0].Head != head || notices[0].WaitsFor != waitsFor || !slices.Equal(notices[0].Waiting, checks) || len(notices[0].Failing) != 0 {
 		r.t.Fatalf("phase-finished notices = %+v, want one of the tester's testing, with its summary, the head %q, waits_for %q and waiting %v", notices, head, waitsFor, checks)
 	}
+	var waits []map[string]any
+	for _, line := range r.lines(testingMoveDecided) {
+		if line["move"] == "waits" {
+			waits = append(waits, line)
+		}
+	}
+	if len(waits) != 1 || waits[0]["issue"] != "LEGION-208" || waits[0]["head"] != head || waits[0]["waits_for"] != waitsFor ||
+		!slices.Equal(lineStrings(waits[0], "waiting"), checks) || len(lineStrings(waits[0], "failing")) != 0 {
+		r.t.Fatalf("the lines %q with move waits = %v, want one with the head %q, waits_for %q and waiting %v", testingMoveDecided, waits, head, waitsFor, checks)
+	}
 }
 
 // movedBackFailing fails unless LEGION-208 went back to implementing with one start of the
@@ -204,7 +265,8 @@ func (r *statesRig) waitsFor(head, waitsFor string, checks ...string) {
 // written, carries the tested head head and failing, compared whole: each check that does not
 // pass there, with its state and reason. The implementer's task must carry the reason that notice
 // gives, read from the notice and not written here, since the move writes the two from one value;
-// no word of either is compared with a literal.
+// no word of either is compared with a literal. The newest line of the testing move in the
+// engine's log has move implementing, the same head, and failing the ids of failing.
 func (r *statesRig) movedBackFailing(head string, failing ...record.FailingCheck) {
 	r.t.Helper()
 	assertPhase(r.t, r.pool, phase.Implementing)
@@ -227,5 +289,13 @@ func (r *statesRig) movedBackFailing(head string, failing ...record.FailingCheck
 	}
 	if task := startTask(r.t, r.pool, claim.RoleImplementer); last.Reason == "" || !strings.Contains(task, last.Reason) {
 		r.t.Fatalf("the implementer's task %q does not carry the reason %q the notice of the move back gives", task, last.Reason)
+	}
+	lines := r.lines(testingMoveDecided)
+	if len(lines) == 0 {
+		r.t.Fatalf("the engine's log holds no line %q of the move back", testingMoveDecided)
+	}
+	if newest := lines[len(lines)-1]; newest["issue"] != "LEGION-208" || newest["move"] != string(phase.Implementing) || newest["head"] != head ||
+		!slices.Equal(lineStrings(newest, "failing"), checkIDs(failing)) || len(lineStrings(newest, "waiting")) != 0 {
+		r.t.Fatalf("the newest line %q = %v, want move implementing, the head %q and failing %v", testingMoveDecided, newest, head, checkIDs(failing))
 	}
 }

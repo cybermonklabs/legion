@@ -15,8 +15,11 @@ import (
 // reported, one role message each, in every phase a worker holds, and starts no worker and moves
 // nothing: the tester reads no CI, the implementer learns of a failed check a CI job runs from its
 // own message (tellCIFailure), and the reviewer and the architect read CI's state as their prompts
-// say. The test reads to whom each message goes and what the outbox queued beside it, never a word
-// of a message. The wake of a released role by a settlement is TestACISettlementWakesTheReleasedPhaseWorker's.
+// say. Each row carries what CI reported as fields beside its sentence: the pull request, the head,
+// and each check with what it concluded, here unit=failed, the daemon's word, since the settlement
+// gives the run no word of GitHub's. The test reads to whom each message goes, those fields and
+// what the outbox queued beside it, never a word of a message. The wake of a released role by a
+// settlement is TestACISettlementWakesTheReleasedPhaseWorker's.
 func TestACISettlementTellsEachRoleWhatCIReportedAndStartsNothing(t *testing.T) {
 	for _, tc := range []struct {
 		from   phase.Phase
@@ -47,6 +50,11 @@ func TestACISettlementTellsEachRoleWhatCIReportedAndStartsNothing(t *testing.T) 
 			if got := roleMessageTopics(t, pool, "LEGION-208"); !slices.Equal(got, want) {
 				t.Fatalf("the settlement told %v, want one role message to each of %v", got, want)
 			}
+			told := make([]record.RoleMessage, 0, len(want))
+			for _, token := range want {
+				told = append(told, settledHead("head", "build=succeeded", "unit=failed").to(token))
+			}
+			assertToldRows(t, pool, "LEGION-208", told)
 			assertOutboxCount(t, pool, "supervise", 0)
 			if got := issuePhase(t, pool); got != tc.from {
 				t.Fatalf("after the settlement the issue is in %s, want it left in %s", got, tc.from)
