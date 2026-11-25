@@ -8,8 +8,14 @@ body: |-
   steps, plans, results and inbox, and the writes comment, message, send-to-agent and
   resolve-comment; every other command is refused before it runs, as is an option that hands it a
   file of the daemon's host (a `--<field>-file` or `--<field>-json-file` whose value is not `-`, or
-  `--image`). Each comment, message and agent's message it posts carries the loop's mark, so the
-  loop answers none of them. Each call has a gh call's time and output bounds, and an answer makes
+  `--image`). The daemon posts the answer itself where the question came from, so the tool also
+  refuses a write aimed there, which would be a second reply: a comment replying on the ask or in
+  the comment thread the loop answers in, a message or an agent's message replying to the message
+  it answers, and an agent's message to the session whose Envoy message it answers. A call asking
+  for `--help` or `--dry-run` posts nothing and is no write. Each comment, message and agent's
+  message it posts carries the loop's mark, so the loop answers none of them. Each `answers: gh`
+  and `answers: dispatch` log line says in `write` whether its call ran and wrote. Each call has a
+  gh call's time and output bounds, and an answer makes
   at most `answers.bounds.gh_calls` dispatch calls, counted apart from its gh calls, as gh's calls
   are now counted apart from its dispatch calls. Each call is recorded in `answer_tool_calls`; a
   call the daemon stopped during is told to the next run as of unknown outcome, and the daemon's

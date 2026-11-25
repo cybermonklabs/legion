@@ -1966,7 +1966,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   It reads the pause's own flag, the one the daemon's launches and task sends read.
   Each answer is posted where it was asked, and its cost counts in the day's spend and toward `daily_usd`.
   The tools read and do not write: each `gh` call and each `dispatch` call that writes is refused as the call's result, `refused: the Legion project is paused, …`, which says that the daemon makes no write in an agent's name until the resume, and the system prompt says that the project is paused.
-  A `gh` write is every call but a read, as the reply names a fault's writes (above), and a `dispatch` write is one of the tool's four writes (`comment`, `message`, `send-to-agent` and `resolve-comment`); every read and every `web_search` call runs.
+  A `gh` write is every call but a read, as the reply names a fault's writes (above), and a `dispatch` write is one of the tool's four writes (`comment`, `message`, `send-to-agent` and `resolve-comment`) that asks for neither `--help` nor `--dry-run`, which post nothing; every read and every `web_search` call runs.
   A model call that ends in the provider's fault (`provider_error`), as a call does while the model gateway refuses the project's calls, keeps its question for the resume (`answers: the model provider failed while the project is paused; the question waits for the resume`).
   The question goes back to received: nothing is appended to the conversation, nothing is posted, and nothing is passed to the controller.
   The loop makes no model call for it, or for a later question to the same agent, until the resume, which wakes the loop; the question is then answered again as one after a restart is, given the tool calls the failed run made.
@@ -1982,6 +1982,7 @@ and `costUSD`, the model calls' tokens at `prices` plus `webSearchUSD`, so the l
 The cost is added to the project's spend for the UTC day, kept in the daemon's store so a restart keeps it;
 the spend is checked before each answer, so the answer that crosses `daily_usd` finishes, and every question after it that day gets the daemon's `over_limit` reply.
 Beside it: one `answers: question` line per change of a question's state, one `answers: gh` line per `gh` call naming the App (its role and configured id) and the owner it ran as, one `answers: dispatch` line per `dispatch` call naming the question, the seq, the session it ran as, the command, its arguments and its exit (and its refusal, for a call the tool refused), one `answers: web_search` line per `web_search` call naming the question, the seq, the query, its searches and its `costUSD` (and its error, for a search that failed or that the tool refused), and `answers: question passed to the controller` once per question passed on.
+Each `answers: gh` and `answers: dispatch` line also carries `write`, true only for a call that ran and wrote: a read, a call asking for help or a dry run, and a call the tool refused are false, so a reader of the log need not judge a call's arguments.
 Boot logs the loop's tools once, `answers: tools` ([Configuration](#configuration)).
 
 ### The `gh` tool, a security decision
@@ -2086,15 +2087,25 @@ So the tool runs only what is safe there, and decides before anything runs:
 The daemon runs it as the agent's own session, with the Dispatch token it gives the agent's pane or pod, so Dispatch answers each call as it answers the running agent, with that session's access.
 
 - **What the model is told.**
-  The tool's description says what it is and who it runs as, gives one read (`{"args":["read","<issue>"]}`) and one comment whose body is the call's standard input (`{"args":["comment","--issue","<issue>","--body-file","-"],"stdin":"…"}`), lists the commands it runs, and says every other command is refused.
+  The tool's description says what it is and who it runs as, gives one worked example, a read (`{"args":["read","<issue>"]}`), and no write call ready to run, lists the commands it runs, and says every other command is refused.
+  It says that a write is only for a message that asks the agent to post something somewhere else or to resolve a comment, how a write's text is given (`--body`, or the call's standard input with `--body-file -`), that the tool refuses a write aimed where the daemon posts the reply (below), and that the agent takes no action on advice Dispatch's output carries for a running agent, such as to close an ask or to move a status.
   Its input is `args`, dispatch's arguments without `dispatch`, an array of strings no shell reads, and `stdin`, an optional string that is the call's standard input, which an option `--<field>-file -` reads.
   The system prompt names it beside `gh`, with the session it runs as and its bound.
+  The prompt also says that the daemon posts the reply where the message came from, that the agent replies as soon as it can answer, on any model call, and that it makes no tool call to try a tool, to wait or to pass a turn.
 
 - **Exactly twenty commands**, decided from the first argument before anything runs.
   The reads: `read`, `doc-read`, `search`, `related`, `issues`, `projects`, `priorities`, `open-asks`, `answers`, `whoami`, `limits`, `handoff-read`, `steps`, `plans`, `results` and `inbox`.
   The writes: `comment`, `message`, `send-to-agent` and `resolve-comment`.
   Every other command is refused, a command the CLI adds later included, since the tool keeps the list of what it runs and none of what it refuses.
   The refusal is the tool's result and says why: the agent's session holds no claim while it is stopped, so a status write, a claim, an ask or a document edit would stand as a person's move, and the daemon writes only replies in the agent's name.
+
+- **No second reply.**
+  The daemon posts the answer itself where the question came from, so the tool refuses, before dispatch starts, a write aimed there: a `comment` that replies on the ask the loop answers (`--reply-to-ask`) or to a comment of the thread or the ask's thread it answers in (`--reply-to`), a `message` or a `send-to-agent` that replies to the message it answers (`--in-reply-to`), and a `send-to-agent` to the session whose Envoy message it answers (`--session`).
+  Each option is read in every form the CLI reads: `--x v`, `--x=v`, and `--x-file -` with the value on the call's standard input; an ask is named by its id, a prefix of it or its `dispatch://` link, and a comment or a message by its id or its link.
+  The thread's comments are the ones the question names and the ones the thread holds when the answer starts, which the loop reads once; where that read fails the tool is given the question's own, the loop logs one warning, and the answer runs.
+  A comment that arrives in the thread while the answer runs is the one reply there the tool does not refuse.
+  The refusal is the call's result and tells the agent to put what it would post in its reply.
+  A write somewhere else runs: a comment on the issue, a reply in another thread, a message to another session, a resolution; and so does a call that asks for `--help` or `--dry-run`, which posts nothing.
 
 - **No file of the daemon's host.**
   For every command, an option `--<field>-file` or `--<field>-json-file` whose value is not `-` is refused, in either form (`--body-file /x`, `--body-file=/x`), and so is `--image` in either form, which would upload a picture file.
