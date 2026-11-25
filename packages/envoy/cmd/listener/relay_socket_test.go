@@ -35,6 +35,7 @@ import (
 // on that subject, and the owner's consumer acks the message. Its control is the live row's
 // (relay_socket_live_test.go): the receipt not published, and the message is still pending.
 func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_forward"
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
@@ -67,6 +68,7 @@ func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
 // client publishes nothing on the receipt family but receipts a word long. Control, in the same
 // row: the same subject with done is published, and the owner acks the message.
 func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_receipt_body"
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
@@ -103,6 +105,7 @@ func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
 // is published on it. Control: the subject check removed; the other session's frame reaches the
 // socket and the row fails naming it.
 func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session, other = "ses_edge_refused", "ses_someone_else"
 	client, _ := rig.open(t, session)
@@ -177,6 +180,7 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 // is its own control: the socket closed first, the replica holds no subscription, and the same
 // probe reads stopped.
 func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_probed"
 	client, _ := rig.open(t, session)
@@ -368,6 +372,7 @@ func TestARelaySocketUpgradeIsRefusedAsTheWireSays(t *testing.T) {
 // it. Control: the rule removed; the socket of * opens, subscribes notifications.envoy.deliver.*,
 // and another session's frame reaches it, which the row names.
 func TestARelaySocketRefusesASessionThatIsNotOneSubjectToken(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const victim = "ses_edge_victim"
 	for _, session := range []string{"*", ">", "ses_edge.dotted"} {
@@ -810,6 +815,7 @@ func TestARelaySocketPastTheListenersCapIsRefused503(t *testing.T) {
 // A binary frame closes the socket 1003 text_frames_only: the wire is text frames of JSON.
 // Control: the binary frame's branch removed; the socket stays open, and the row fails naming it.
 func TestARelaySocketClosesOnABinaryFrame(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_binary"
 	client, _ := rig.open(t, session)
@@ -906,6 +912,7 @@ func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T
 // Control: the edge's consumers at bus.SessionConsumerMaxAckPending; the restart sends hundreds
 // at once, past the socket's limits, and the socket closes 1013 slow_consumer.
 func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session, backlog = "ses_edge_backlog", 300
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
@@ -949,6 +956,7 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 // A frame over 1 MiB closes the socket 1009 (control: a frame just under the bound is read and
 // answered).
 func TestARelaySocketClosesOnAFrameOverItsReadLimit(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_oversized"
 	client, _ := rig.open(t, session)
@@ -973,6 +981,7 @@ func TestARelaySocketClosesOnAFrameOverItsReadLimit(t *testing.T) {
 // 30 s before the test binary's deadline (testwait), so a loaded machine slows the row and does not
 // fail it. Control: a well-formed sub on the same rig is taken and closes nothing.
 func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_bad_frames"
 	for _, row := range []struct {
@@ -1019,6 +1028,7 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 // client once; the socket stays open and goes on forwarding under the sid it holds. Control: the
 // first sub is taken.
 func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_many_subs"
 	client, _ := rig.open(t, session)
@@ -1049,6 +1059,7 @@ func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
 // goroutine of its own; the err arrives before the subscribe is held, the message is lost, and the
 // row fails naming it.
 func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withSocketNATSLatency(400*time.Millisecond))
 	const session = "ses_edge_in_order"
 	client, _ := rig.open(t, session)
@@ -1075,6 +1086,7 @@ func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
 // ping handler that answers at once, off the reader; the pong precedes the subscribe, the message
 // is lost, and the row fails naming it.
 func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withSocketNATSLatency(400*time.Millisecond))
 	const session = "ses_edge_flush"
 	client, _ := rig.open(t, session)
@@ -1101,6 +1113,7 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 // Envoy-Subject alone when the message carries no header of its own. Control: the headers read one
 // value per name (Header.Get); the repeated values are lost and the row fails naming them.
 func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_headers"
 	client, _ := rig.open(t, session)
@@ -1131,6 +1144,7 @@ func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
 // included, through the same /v1 a deployment mounts. Control: the same path on the edge rig is
 // upgraded.
 func TestANonEdgeListenerServesNoRelaySocket(t *testing.T) {
+	t.Parallel()
 	routes := http.NewServeMux()
 	logger := logging.NewWithWriter("not-edge", &bytes.Buffer{})
 	registerV1Routes(routes, &listenerDeps{}, "not-edge", logger)
