@@ -210,6 +210,14 @@ type stepRatingWrite struct {
 	Actor actor `json:"actor"`
 }
 
+// stepExperimentWrite is the body of a variant's write: the run's identity, the experiment and the
+// variant, and the daemon's actor.
+type stepExperimentWrite struct {
+	StepWrite
+	StepExperiment
+	Actor actor `json:"actor"`
+}
+
 // planWrite is the body of a plan's write: the plan's fields and the daemon's actor.
 type planWrite struct {
 	PlanWrite

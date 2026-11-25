@@ -178,6 +178,17 @@ func (a Answer) StreamTo(w io.Writer) (int64, error) {
 // and must keep nothing of it.
 func Holds(a Answer, test func(body []byte) bool) bool { return test(a.bytes()) }
 
+// Echoes reports whether text, words a caller read from a's bytes and hands on where no print of
+// the rule reads them (an id a route answers back as it came), holds a run of a credential a's
+// requests carried, by the rule Tokens redacts such a run by: text that echoes one, as whatever
+// answers in its server's place can. It reads the credentials of a's own requests, so a caller
+// whose transport presents a credential it never holds (a token a broker rotates) asks it of the
+// answer that carried one. It answers no text, and false for the zero Answer.
+func Echoes(a Answer, text string) bool {
+	carried := a.carried()
+	return len(carried) > 0 && Tokens(text, -1, carried...) != text
+}
+
 // ContainsFold reports whether body holds phrase, which must be lower-case ASCII, in whatever
 // case it is written, and copies nothing: Holds' test for a phrase of another party's wording.
 // Every answer a decision reads runs through it, most of them good ones of up to a client's

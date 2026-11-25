@@ -82,7 +82,7 @@ func standInPlanHarness(t *testing.T, standIn, bearer string) (*harness, string)
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
 		Handlers: []intake.Handler{facts},
-		Dispatch: standInPlanReads{statusRecorder: statuses, client: dispatch.New(standIn, bearer)},
+		Dispatch: standInPlanReads{statusRecorder: statuses, client: dispatch.New(standIn, dispatch.BearerTransport(bearer, nil))},
 	}).Handler
 	return h, newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect).grant(t)
 }

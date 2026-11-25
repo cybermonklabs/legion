@@ -858,6 +858,47 @@ func TestACacheRestartedAfterAnInterruptedFetchClearsItsLocks(t *testing.T) {
 	}
 }
 
+// The cache's clone is borrowed by no clone, since an issue pod takes a tar of it, so a clone on
+// the cache's volume that its fetch did not write is removed, logged naming why, and cloned afresh
+// from GitHub by the cache's own fetch (cache.fetch's workspace.FetchRequest.ReplaceForeign),
+// where an issue pod's feed is kept and fails its fetch (workspace's
+// TestAForeignFeedFailsTheFetchAndIsKept). Restarted on a volume whose clone holds a planted
+// info/grafts, the cache serves what its clone afresh brought. A cache fetch without the flag
+// fails on that clone, and the cache serves the clone as the volume holds it, at its old head.
+func TestARestartedCacheReplacesACloneItsFetchDidNotWrite(t *testing.T) {
+	remote := newRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	first := start(t, opts)
+	first.ready(t)
+	first.cancel()
+	if err := <-first.done; err != nil {
+		t.Fatalf("the first Serve ended with %v", err)
+	}
+	first.done <- nil
+	grafts := filepath.Join(first.dir(), "info", "grafts")
+	if err := os.WriteFile(grafts, []byte("planted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	moved := advance(t, remote, "moved")
+
+	again := start(t, opts)
+	if health := again.ready(t); health.Head != moved || health.LastFetchAt.IsZero() {
+		t.Fatalf("the restarted cache serves %+v, want what its clone afresh brought, %s", health, moved)
+	}
+	if !slices.ContainsFunc(again.log.all(), func(line string) bool {
+		return strings.Contains(line, "is not one this fetch wrote (it holds info/grafts") && strings.Contains(line, "removed")
+	}) {
+		t.Errorf("the restart did not log the clone it removed: %q", again.log.all())
+	}
+	if _, err := os.Stat(grafts); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the planted info/grafts after the restart: %v, want it gone with the clone", err)
+	}
+	if clones := slices.DeleteFunc(run.transfers(), func(transfer string) bool { return transfer != "clone --bare" }); len(clones) != 2 {
+		t.Errorf("the cache ran %q, want a clone at the first start and a clone afresh at the restart", run.transfers())
+	}
+}
+
 // GitHub renaming the repository's default branch moves the cache's HEAD with it at the next fetch.
 // The fetch's prune removes the old branch, so a HEAD left naming it would name nothing: every
 // publish would fail, and a restart would end Serve, the cache never ready again. Restarted on its

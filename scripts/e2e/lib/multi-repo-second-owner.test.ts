@@ -33,6 +33,7 @@ import {
   LEGION_BINARY,
   writeProcEntry,
 } from "./multi-repo-proc-tree";
+import { libRowBoundMs, rowWaits, untilTrue } from "./row-waits";
 
 // second-owner proves, from inside the issue's pod and as the role's own agent process, that the
 // role's GitHub credential reads T and is served the receive-pack advertisement for both O, the
@@ -47,6 +48,9 @@ import {
 // fails, so a run that reached git would show.
 
 useScratchDirectory();
+// The install-wrapper row waits for a real exec, which no fake clock drives, until 20 s before the
+// row's bound.
+const waits = rowWaits(libRowBoundMs);
 
 const makeDirectory = temporaryDirectories("multi-repo-acceptance");
 
@@ -649,22 +653,22 @@ describe("second-owner: the role's credential, resolved once, reaching another o
         stdout: "ignore",
         stderr: "ignore",
       });
-      let postExecCmdline: Buffer | undefined;
-      // Real wait: the exec is a real kernel transition on a real pid, not an in-process timer.
-      for (let i = 0; i < 500; i++) {
-        try {
-          const buf = await Bun.file(`/proc/${realProc.pid}/cmdline`).arrayBuffer();
-          if (Buffer.from(buf).equals(Buffer.from("sleep\x00999\x00"))) {
-            postExecCmdline = Buffer.from(buf);
-            break;
-          }
-        } catch {
-          /* the process may not be visible yet */
-        }
-        await Bun.sleep(20);
-      }
       try {
-        expect(postExecCmdline).toEqual(Buffer.from("sleep\x00999\x00"));
+        let postExecCmdline: Buffer | undefined;
+        // Real wait: the exec is a real kernel transition on a real pid, not an in-process timer.
+        await untilTrue(`pid ${realProc.pid} to exec into sleep 999`, waits.end(), () => {
+          let buf: Buffer;
+          try {
+            buf = readFileSync(`/proc/${realProc.pid}/cmdline`);
+          } catch {
+            return "its cmdline cannot be read yet";
+          }
+          if (!buf.equals(Buffer.from("sleep\x00999\x00"))) {
+            return `its cmdline is ${JSON.stringify(buf.toString())}`;
+          }
+          postExecCmdline = buf;
+          return true;
+        });
         const result = await scenario({
           buildTree: (environ) => {
             const root = join(dir, `proc-${nextRun()}`);

@@ -50,7 +50,7 @@ func TestPlanDocumentReadsTheBlocksOfThatVersion(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	document, err := client.PlanDocument(context.Background(), "plan-1", 3)
 	if err != nil {

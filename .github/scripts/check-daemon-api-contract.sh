@@ -1,89 +1,78 @@
 #!/usr/bin/env bash
-# `const DaemonAPIVersion` in packages/daemon/internal/api/version.go is the one number a daemon
-# and the Legion plugin in its pods must agree on: the boot gate refuses a pair whose numbers
-# differ. So two changes that declare the same number cannot both be right, and the one that lands
-# second has to take another number after its review has already run. Nothing caught that before
-# the merge, so it was found after it: one change was renumbered three times while its round ran
-# (49, then 50, then 52, landing at 53), each renumber costing a forward merge, a test round, a
-# review round and a thrown-away approval, and two changes still declared 53 at once.
+# The daemon API contract number is the one number a daemon and the Legion plugin in its pods must
+# agree on: the boot gate refuses a pair whose numbers differ, and each new number relaunches every
+# registered claim in every deployment at its first boot, onto the plugin of that number. So one
+# number must name one set of contract changes in every build of main, and no change may pick it:
+# two changes that picked one number by hand collided, and the one that landed second was
+# renumbered after its review had run (one was renumbered three times while its round ran, each
+# time paying a forward merge, a test round, a review round and a thrown-away approval).
 #
-# So a change that touches that file must declare a number above the one its base carries. The
-# base is the commit the queue built the group on, for a merge group, and the tip of the base
-# branch, for a pull request. A change that touches the file and declares no higher number is
-# refused, and the refusal names a free number — the lowest above the base's that no open pull
-# request of this repository declares, naming the pull requests holding the numbers it passed
-# over — and every file that holds the number, since they move together.
+# Since dispatch://INFRA-1569 no branch picks a number. The numbered entries of
+# packages/daemon/internal/api/version.go (each line that starts `// <n>: `) end at L, the
+# greatest number of packages/contracts/fixtures/daemon-api/released-contracts.json. Each contract
+# change after them is an entry: the file packages/daemon/internal/api/contract_<id>_<slug>.go,
+# which scripts/daemon-contract-entry.sh writes, and its fixture
+# packages/contracts/fixtures/daemon-api/contracts/<id>_<slug>.json, which
+# `go test ./internal/api -update` writes. A build's number is L plus its count of entries, each
+# entry ranked in main's merge order (scripts/daemon-contract-order.sh), so two changes add two
+# files and edit no shared line. This check refuses each change that would undo that, naming the
+# file and what to do. A change that:
 #
-# Two entries of one merge group that both picked the same next number are not refused: the
-# group's tree carries both changes at that number, which is above the base's, and that tree is
-# the pair that ships.
+# 1. adds a numbered entry to version.go, or changes, drops or reorders the number of one: the
+#    `// <n>:` headers, in order, are the base's.
+# 2. deletes or renames an entry file or an entry fixture its base holds: a number is a rank in
+#    main's merge order, so an entry that main holds stays, and a revert adds a new entry that
+#    undoes the change.
+# 3. holds, at its head, an entry with no fixture, or a fixture with no entry: the count of
+#    fixtures is the count of entries, which is how every reader outside the daemon counts them.
+#    A fixture is what those readers count, a file of the fixtures' directory named
+#    <14 digits>_<name>.json; anything else there is TestEveryEntryHasOneFixture's to refuse.
+# 4. commits the number: `legion.daemonApiVersion` in a package.json (each pack step writes it),
+#    packages/contracts/fixtures/daemon-api/version.json, a `contract` mark in state.json or a
+#    `contract.daemon` mark in another state golden of that directory
+#    (state-narrowed-repositories.json keeps its `caller`, which no entry moves).
+# 5. adds or edits a changelog fragment (a file under a `.changes` directory) that names a contract
+#    number above L: a new entry's number is unknown until main takes it, so its fragment names
+#    the entry's id.
+# 6. edits an entry fixture, or a frozen record (contract-shapes.json, request-shapes.json,
+#    answers.json, enumerated-fields.json, released-contracts.json), that its base holds, and adds
+#    no paragraph that starts `Correction:` to that entry's text: the comment of the entry file for
+#    a fixture, and version.go's numbered entry n for a record of contract n. A change of what a
+#    merged contract means is a new entry; an edit of a merged record corrects a record that was
+#    wrong, and the reviewer reads that paragraph. A record's contract is its `contract`; an
+#    answer's row and a typed setting of answers.json are their `since` (and `until`); a value of
+#    enumerated-fields.json is its `since`; a number of released-contracts.json is itself. An edit
+#    that changes no record (its bytes alone) is refused too, since it names no entry to correct.
 #
-# "Touches the file" is this checkout's copy of the contract's history and declaration differing
-# from the copy the commit this checkout was built on carries. That part runs from the file's
-# first history entry (the first line that starts `// <number>:`) to its end: the history and
-# the `const` line. A collision shows there, as a second entry at one number or in the `const`
-# line. The doc comment above the first entry holds no number, and an edit of it alone needs no
-# contract bump: a bump relaunches every registered claim in every deployment onto the new
-# plugin, and a comment is not worth that. What this gives up: an edit of that header alone is
-# no longer refused, even one that adds a surface to what the contract names. A copy with no
-# history entry is compared whole. The number the `const` line declares must also have its own
-# `// <number>:` entry, so a bump cannot move the declaration and its fixtures while the history
-# stays silent.
+# The base is the commit the change is compared with. For a merge group it is the commit the queue
+# built the group on (the payload's merge_group.base_sha). For a pull request it is the commit
+# GitHub built the merge ref this run checked out on: the tip of the base branch when the event
+# fired, the merge ref's first parent. A re-run reuses that merge ref while main moves on under
+# it, so the live tip of the branch holds entries and released fragments the merge ref never saw,
+# which would read as this change deleting them. DAEMON_API_CONTRACT_BASE=<rev>, where set, is the
+# base instead and no event is read: a test, or an author, checks a commit of a scratch
+# repository with it. The head is HEAD, read as committed, not off the disk.
 #
-# The commit this checkout was built on is not always the base: a merge group is the base with
-# the group's entries on top, so there the two are one commit, but a pull request is checked out
-# as the merge ref GitHub built when the event fired, and a re-run reuses that ref. Main moves on
-# under it, so a comparison with the tip of the base branch read a pull request that had left
-# the file alone as one that had touched it, and refused it for declaring the number its own
-# base carries. What the tree was built on is that merge ref's first parent, which a depth-1
-# checkout carries in HEAD's parent line (built_on). The number is still compared with the
-# base's, so a change that does touch the file and declares a number the base has reached since
-# is refused as before. A base, a commit this checkout was built on, or a tree this check cannot
-# read refuses the change and names the read that failed: a check that passes when it cannot
-# read proves nothing.
+# Every read is of git objects. CI's checkout is one commit deep, so where the base commit is
+# absent the check fetches it from origin, one commit deep and without blobs
+# (`git fetch --depth=1 --filter=blob:none`), which carries its trees: the diff of the two trees
+# needs no blob, and a base file's blob is fetched only where its rule reads it (version.go when
+# the change edits it, a frozen file or an entry file when the change edits a fixture or a
+# record). A read that fails refuses the change and names itself: a check that passes when it
+# cannot read proves nothing. So L is read from released-contracts.json at the head, and a head
+# without it, or whose file is not a non-empty JSON array of integers, is refused by name.
 #
-# What it does not check: whether a bump is owed. A change to a surface this contract names that
-# leaves version.go alone passes here — that file's own bump rule and the review say when a bump
-# is owed, and this check only keeps two changes from claiming one number.
+# What it does not check: whether a change owes an entry (the shape gate and the review say so),
+# and whether a row of a frozen table names an entry (`TestNoFrozenRowNamesAnEntry` refuses that).
+# .github/scripts/check-fragment-contracts.sh holds each fragment's own number to the numbers the
+# commit that added it gave its entries.
 #
-# It does check that the files that hold the number agree. Each file after version.go must hold
-# the number version.go declares, as an integer: the fixture
-# packages/contracts/fixtures/daemon-api/version.json at daemonApiVersion, the fixture
-# packages/contracts/fixtures/daemon-api/state.json at both contract.daemon and contract.caller,
-# and the manifests packages/pi-legion/package.json and packages/claude-envoy/package.json at
-# legion.daemonApiVersion. A file this check cannot read there is refused as a read that failed.
-# This rule runs before the pass for a number above the base's, because a bump is where a file
-# is left behind: INFRA-3621's bump forgot state.json, and that pass would have let it through.
-# It reads only this checkout, so its refusal reads no open pull request and names no free
-# number: the files disagree, and the number is not what is wrong.
-#
-# Every GitHub read goes through `gh api`, and the base is read over the API rather than out of
-# git: the checkout in CI is one commit deep and fetches no origin/main. The one git read is of
-# HEAD's own object, whose parent lines a shallow checkout keeps whatever `git rev-parse HEAD^1`
-# says of them, and it is made only where the declared number is not above the base's, so a
-# change that bumps the number reads git not at all. The open pull requests are read only when
-# the check is about to fail, so a passing run makes none of them: one
-# paginated GraphQL query for every open pull request with the paths it changes, drafts counted,
-# and then this file at refs/pull/<number>/head — a ref of this repository, so a fork's head too
-# — for each that changes it. A file list GitHub cut short says nothing about the paths it left
-# out, so that pull request's file is read as well rather than guessed at, and a read that fails
-# refuses the change and names itself. Each `gh api` runs through gh-read.sh's gh_wait_reset,
-# which waits out a spent API budget within the job's JOB_TIMEOUT_MINUTES and fails by name past
-# it; its own lines reach the step's log as they happen. No word gh said or answered reaches the
-# log but a closed value: whatever answers gh's call in GitHub's place holds GH_TOKEN and writes
-# both. gh's words and an answer this check cannot use are kept in a file under RUNNER_TEMP
-# (TMPDIR, else /tmp, outside Actions), which the refusal names with the HTTP status gh named; a
-# pull request's number is printed as a whole number and its head as a 40-hex commit id, and a
-# page that holds either otherwise is refused as a read that failed.
-#
-# Run from anywhere: .github/scripts/check-daemon-api-contract.sh
-# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
+# Run from anywhere: .github/scripts/check-daemon-api-contract.sh, with GITHUB_EVENT_NAME and
+# GITHUB_EVENT_PATH of a pull request or a merge group, or with DAEMON_API_CONTRACT_BASE=<rev>.
+# CI runs it in ci.yaml's lint job, and its tests (check-daemon-api-contract.test.sh) in ci.yaml's
+# test job.
 set -euo pipefail
 
-# gh-read.sh beside this script's own file, resolved before the cd: a test fixture links only
-# this script in, and the link leads back to the directory CI runs from.
-GH_READ="$(dirname "$(readlink -f "$0")")/gh-read.sh"
-export GH_READ
 cd "$(dirname "$0")/../.."
 
 python3 <<'PY'
@@ -92,51 +81,53 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
-from collections.abc import Callable
+from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
-from urllib.parse import quote
 
-DECLARATION = "packages/daemon/internal/api/version.go"
-WORKFLOW = ".github/workflows/ci.yaml"
-# Where each file after version.go holds the number, which held_in reads: dotted key paths into
-# its JSON, each an integer. state.json holds it twice, since TestStateGolden writes the number as
-# both the daemon's and the caller's. version.go's reader is number_in.
-FIELDS = {
-    "packages/contracts/fixtures/daemon-api/version.json": ("daemonApiVersion",),
-    "packages/contracts/fixtures/daemon-api/state.json": ("contract.daemon", "contract.caller"),
-    "packages/pi-legion/package.json": ("legion.daemonApiVersion",),
-    "packages/claude-envoy/package.json": ("legion.daemonApiVersion",),
-}
-# Every file that holds the number: version.go, then the files of FIELDS in their order. They move
-# together, so a refusal names all of them, and each file after version.go must hold the number
-# version.go declares.
-SITES = (DECLARATION, *FIELDS)
-DECLARED = re.compile(r"^const\s+DaemonAPIVersion\s*=\s*(\d+)\s*$", re.M)
-# version.go's history entries: each line that starts `// <number>: `, the number its group. The
-# blank after the colon keeps out an entry's own prose that wraps at a time of day (`// 22:48Z`).
-HISTORY = re.compile(r"^// (\d+):[ \t]", re.M)
-# One page of the open pull requests, each with its number, its draft mark, its head commit and
-# the paths it changes. Drafts are counted: a draft holds the number it declares as firmly as any
-# other open pull request, and one of the collisions this check exists for was a draft's.
-PULL_REQUESTS = """
-query($owner: String!, $name: String!, $cursor: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequests(states: OPEN, first: 50, after: $cursor) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        number
-        isDraft
-        headRefOid
-        files(first: 100) {
-          pageInfo { hasNextPage }
-          nodes { path }
-        }
-      }
-    }
-  }
-}
-"""
+VERSION_GO = "packages/daemon/internal/api/version.go"
+WORKFLOW = ".github/workflows/ci-job-lint.yaml"
+SCRIPT = ".github/scripts/check-daemon-api-contract.sh"
+DAEMON_API = "packages/contracts/fixtures/daemon-api/"
+RELEASED = DAEMON_API + "released-contracts.json"
+VERSION_JSON = DAEMON_API + "version.json"
+STATE = DAEMON_API + "state.json"
+# Every state golden of the fixtures' directory: state.json and each state-<name>.json.
+STATE_GOLDEN = re.compile(r"^packages/contracts/fixtures/daemon-api/state(-[^/]+)?\.json$")
+# The frozen records, each a file of DAEMON_API, which no -update writes again.
+FROZEN = (
+    "contract-shapes.json",
+    "request-shapes.json",
+    "answers.json",
+    "enumerated-fields.json",
+    "released-contracts.json",
+)
+SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+ENTRY_DIR = "packages/daemon/internal/api/"
+ENTRY = re.compile(rf"^packages/daemon/internal/api/contract_(\d{{14}})_({SLUG})\.go$")
+FIXTURE_DIR = DAEMON_API + "contracts/"
+# An entry fixture, as every reader counts one: a file of FIXTURE_DIR itself named
+# <14 digits>_<name>.json. Its entry is contract_<id>_<name>.go.
+FIXTURE = re.compile(r"^packages/contracts/fixtures/daemon-api/contracts/(\d{14})_([^/]+)\.json$")
+FRAGMENT = re.compile(r"(^|/)\.changes/")
+# version.go's numbered entries: each line that starts `// <number>: `. The blank after the colon
+# keeps out an entry's own prose that wraps at a time of day (`// 22:48Z`).
+HEADER = re.compile(r"^// (\d+):[ \t]")
+# A paragraph that starts `Correction:`: such a comment line, after a blank comment line.
+CORRECTION = re.compile(r"^//\s+Correction:")
+# A contract number a fragment names: `contract <n>`, or `contracts <n>, <n> and <n>` (a list, a
+# range), whatever the case. The one number is also named with the verbs the repository's
+# fragments use, `contract is <n>`, `contract stays <n>` and `contract moves to <n>`, and with up to
+# three words before the verb that say which number it is (`contract fixture is <n>`, `contract
+# this plugin declares is <n>`): a fragment that says its number so names it as surely.
+# check-fragment-contracts.sh reads fragments with the same pattern.
+NAMED = re.compile(
+    r"\bcontract(?:(?:\s+[a-z]+){0,3}?\s+(?:is|stays|moves\s+to))?\s+(\d+)"
+    r"|\bcontracts\s+(\d+(?:(?:\s*,\s*|\s*[-\u2013]\s*|\s+(?:and|or|to|through)\s+)\d+)*)",
+    re.I,
+)
+
+refusals: list[tuple[str, str]] = []
 
 
 def one_line(value: object) -> str:
@@ -150,159 +141,43 @@ def fatal(path: str, message: str) -> None:
     raise SystemExit(1)
 
 
-def kept(text: str) -> str:
-    """A file of its own under RUNNER_TEMP (TMPDIR, else /tmp) that holds text, gh's words or an
-    answer this check does not print, and that nothing removes: the refusal names it. In CI the
-    runner removes RUNNER_TEMP at the job's end."""
-    where = os.environ.get("RUNNER_TEMP") or os.environ.get("TMPDIR") or "/tmp"
+def refuse(path: str, message: str) -> None:
+    """A refusal of the change, kept until every rule has run, so one run names every fault."""
+    refusals.append((path, message))
+
+
+def git(args: list[str], what: str, where: str, ok: tuple[int, ...] = (0,)) -> bytes:
+    """git's output, or a refusal naming what could not be read. GIT_TERMINAL_PROMPT=0, so a fetch
+    that needs credentials fails by name rather than waiting on a prompt no one answers."""
     try:
-        handle, path = tempfile.mkstemp(prefix="check-daemon-api-contract.", dir=where)
-        with os.fdopen(handle, "w", encoding="utf-8", errors="replace") as out:
-            out.write(text)
+        done = subprocess.run(
+            ["git", *args], capture_output=True, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        )
     except OSError as error:
-        return f"no file, as it could not be kept ({type(error).__name__})"
-    return path
-
-
-def http_status(words: str) -> str:
-    """` (HTTP nnn)`, the last HTTP status gh named in its words, three digits alone."""
-    statuses = re.findall(r"\(HTTP ([0-9]{3})\)", words)
-    return f" (HTTP {statuses[-1]})" if statuses else ""
-
-
-def gh(args: list[str], what: str) -> str:
-    """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all, and
-    through gh-read.sh's gh_wait_reset: its own lines (a wait, or a budget spent past the limit)
-    go straight to this step's stderr, and the words gh printed on the call it ended on go to a
-    file. A read that fails is refused naming gh's exit, the HTTP status gh named and the file that
-    keeps gh's words and its answer, never their text."""
-    with tempfile.NamedTemporaryFile(prefix="gh-words.") as words:
-        try:
-            done = subprocess.run(
-                ["bash", "-c", 'source "$0"; gh_wait_reset --stderr "$1" gh api "${@:2}"',
-                 os.environ["GH_READ"], words.name, *args],
-                stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-            )
-        except OSError as error:
-            fatal(DECLARATION, f"could not read {what}: gh could not be run ({one_line(error)})")
-        said = Path(words.name).read_text(encoding="utf-8", errors="replace")
-    if done.returncode != 0:
-        if said or done.stdout:
-            where = kept(f"gh's words:\n{said}\ngh's answer:\n{done.stdout}")
-            told = f"gh's own words and its answer are in {where}"
-        else:
-            told = "gh said nothing"
+        fatal(where, f"could not read {what}: git could not be run ({one_line(error)})")
+    if done.returncode not in ok:
+        said = done.stderr.decode("utf-8", "replace") or done.stdout.decode("utf-8", "replace")
         fatal(
-            DECLARATION,
-            f"could not read {what}: gh api exited {done.returncode}{http_status(said)}; {told}",
+            where,
+            f"could not read {what}: git {' '.join(args[:3])} exited {done.returncode} "
+            f"({one_line(said)[:400] or 'no output'})",
         )
     return done.stdout
 
 
-def read_at(repository: str, ref: str, what: str) -> str:
-    """The declaration file as one ref of the base repository carries it."""
-    return gh(
-        [
-            "-H",
-            "Accept: application/vnd.github.raw",
-            f"repos/{repository}/contents/{DECLARATION}?ref={quote(ref, safe='')}",
-        ],
-        what,
-    )
-
-
-def built_on(what: str) -> str:
-    """The commit this checkout was built on: HEAD's first parent.
-
-    A pull request is checked out as the merge ref GitHub built when the event fired, whose first
-    parent is the commit of the base branch it was built on. That is the tree's own base: the tip
-    of the branch moves on under a ref a re-run reuses, and a change compared with the tip reads
-    as touching a file it never opened.
-
-    The checkout is one commit deep, which grafts HEAD's parents away: `git rev-parse HEAD^1` and
-    `git rev-list --parents HEAD` both answer as if the merge ref had no parent at all. The commit
-    object itself keeps them, and `git cat-file commit HEAD` prints it as it stands, header lines
-    first and the message after the blank line that ends them."""
+def text_at(rev: str, path: str, what: str) -> str:
+    data = git(["cat-file", "blob", f"{rev}:{path}"], what, path)
     try:
-        done = subprocess.run(
-            ["git", "cat-file", "commit", "HEAD"], capture_output=True, text=True, encoding="utf-8"
-        )
-    except OSError as error:
-        fatal(DECLARATION, f"could not read {what}: git could not be run ({one_line(error)})")
-    if done.returncode != 0:
-        fatal(
-            DECLARATION,
-            f"could not read {what}: git cat-file commit HEAD exited {done.returncode} "
-            f"({one_line(done.stderr) or one_line(done.stdout) or 'no output'})",
-        )
-    for line in done.stdout.split("\n"):
-        if not line:
-            break
-        if line.startswith("parent "):
-            return line.removeprefix("parent ").strip()
-    fatal(
-        DECLARATION,
-        f"could not read {what}: HEAD names no parent, so this checkout is not the merge ref "
-        f"GitHub builds a pull request's run on",
-    )
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        fatal(path, f"could not read {what}: it is not UTF-8 ({one_line(error)})")
 
 
-def number_in(text: str, what: str, advice: Callable[[], str] | None = None) -> tuple[int, int]:
-    """The contract number text declares and the line it is declared on, so the one pattern is
-    applied once wherever a number is read: the line is what a refusal names to say where to
-    edit. advice is called for what a refusal adds after its own sentence, the free number to
-    take where the caller already knows the base's; it is called only when the refusal is made,
-    since reading it costs this check its reads of the open pull requests."""
-    match = DECLARED.search(text)
-    if match is None:
-        fatal(
-            DECLARATION,
-            f"could not read {what}: it declares no `const DaemonAPIVersion = <number>` line"
-            f"{advice() if advice else ''}",
-        )
-    return int(match.group(1)), text.count("\n", 0, match.start()) + 1
-
-
-def held_in(site: str) -> dict[str, int]:
-    """The number site, a file of FIELDS, holds at each of the fields FIELDS names for it. A file
-    that is missing, is not JSON, lacks a field or holds anything but an integer there is refused
-    by name, as a read that failed: a check that passes when it cannot read proves nothing."""
-    what = f"{site} in this checkout"
+def json_at(rev: str, path: str, what: str) -> object:
     try:
-        document = json.loads(Path(site).read_bytes().decode("utf-8"))
-    except FileNotFoundError:
-        fatal(site, f"could not read {what}: it is missing")
-    except (OSError, UnicodeDecodeError) as error:
-        fatal(site, f"could not read {what}: {one_line(error)}")
+        return json.loads(text_at(rev, path, what))
     except json.JSONDecodeError as error:
-        fatal(site, f"could not read {what}: it is not JSON ({one_line(error)})")
-    held: dict[str, int] = {}
-    for field in FIELDS[site]:
-        value: object = document
-        for key in field.split("."):
-            if not isinstance(value, dict) or key not in value:
-                fatal(site, f"could not read {what}: it holds no {field}")
-            value = value[key]  # type: ignore[index]
-        # JSON's true is a Python bool, which is an int, and 8.0 equals 8: neither is a contract
-        # number, so neither is held to the declared one.
-        if isinstance(value, bool) or not isinstance(value, int):
-            fatal(
-                site,
-                f"could not read {what}: its {field} is {one_line(json.dumps(value))[:200]}, "
-                f"not an integer",
-            )
-        held[field] = value
-    return held
-
-
-def history_and_declaration(text: str) -> str:
-    """The contract's history and declaration in a copy of version.go: the text from its first
-    history entry to its end, trailing newlines normalised, since the API's body and the file on
-    disk differ only there when nothing changed the file. The doc comment above the first entry
-    holds no number, so an edit of it alone touches no contract. A copy with no history entry is
-    returned whole."""
-    entry = HISTORY.search(text)
-    return text[entry.start() if entry else 0 :].rstrip("\n")
+        fatal(path, f"could not read {what}: it is not JSON ({one_line(error)})")
 
 
 def payload_field(payload: dict, *path: str) -> str:
@@ -316,205 +191,500 @@ def payload_field(payload: dict, *path: str) -> str:
     return value
 
 
-def declared_by_open_pull_requests(repository: str) -> dict[int, list[int]]:
-    """Each contract number an open pull request declares, and which pull requests declare it.
+def merge_ref_parent() -> str:
+    """The commit GitHub built this pull request's merge ref on: HEAD's first parent.
 
-    Read only when the check is about to fail, so a passing run makes none of these reads."""
-    owner, _, name = repository.partition("/")
-    holders: dict[int, list[int]] = {}
-    cursor: str | None = None
-    while True:
-        what = "the open pull requests"
-        args = ["graphql", "-f", f"query={PULL_REQUESTS}", "-F", f"owner={owner}", "-F", f"name={name}"]
-        if cursor is not None:
-            args += ["-F", f"cursor={cursor}"]
-        answer = gh(args, what)
-        try:
-            page = json.loads(answer)
-        except json.JSONDecodeError as error:
-            fatal(DECLARATION, f"could not read {what}: the answer is not JSON ({one_line(error)})")
-        listing = page.get("data", {}) if isinstance(page, dict) else {}
-        for key in ("repository", "pullRequests"):
-            listing = listing.get(key, {}) if isinstance(listing, dict) else {}
-        if not isinstance(listing, dict) or not isinstance(listing.get("nodes"), list):
-            fatal(
-                DECLARATION,
-                f"could not read {what}: the answer carries no "
-                f"data.repository.pullRequests.nodes; it is in {kept(answer)}",
-            )
-        for node in listing["nodes"]:
-            number = node.get("number")
-            files = node.get("files") or {}
-            paths = [entry.get("path") for entry in files.get("nodes") or []]
-            # A file list GitHub cut short says nothing about the paths it left out, so the file
-            # itself is read for that pull request rather than guessed at. Measured on this
-            # repository (2026-11-07, 138 open pull requests): 12 of the first 50 carry more than
-            # 100 files, so refusing on a cut list would have made every refusal a cannot-read one
-            # and no refusal would ever have named a free number.
-            cut_short = bool((files.get("pageInfo") or {}).get("hasNextPage"))
-            if DECLARATION not in paths and not cut_short:
-                continue
-            head = node.get("headRefOid")
-            # The number and the head are printed below, so each is held to the one form GitHub
-            # gives it; a page that holds either otherwise is no answer this check can read.
-            if isinstance(number, bool) or not isinstance(number, int) or number < 1:
-                fatal(
-                    DECLARATION,
-                    f"could not read {what}: a pull request that changes {DECLARATION} answers "
-                    f"no whole number as its number; the answer is in {kept(answer)}",
-                )
-            if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
-                fatal(
-                    DECLARATION,
-                    f"could not read {what}: #{number} answers no 40-hex commit id as its head; "
-                    f"the answer is in {kept(answer)}",
-                )
-            # refs/pull/<number>/head is a ref of this repository, so it serves a fork's head too.
-            ref = f"refs/pull/{number}/head"
-            at = f"{DECLARATION} at {ref} (#{number}, head {head})"
-            holders.setdefault(number_in(read_at(repository, ref, at), at)[0], []).append(number)
-        info = listing.get("pageInfo") or {}
-        if not info.get("hasNextPage"):
-            return holders
-        cursor = info.get("endCursor")
-        if not isinstance(cursor, str) or not cursor:
-            fatal(DECLARATION, f"could not read {what}: a page says it has a next one but names no cursor")
-
-
-def take(repository: str, base_number: int) -> str:
-    """The lowest number above the base's that no open pull request declares, with the pull
-    requests holding the numbers it passed over."""
-    holders = declared_by_open_pull_requests(repository)
-    free = base_number + 1
-    while free in holders:
-        free += 1
-    passed = "; ".join(
-        f"{number} is declared by " + ", ".join(f"#{pull}" for pull in sorted(holders[number]))
-        for number in range(base_number + 1, free)
-    )
-    if passed:
-        return (
-            f"Take {free}, the lowest number above the base's that no open pull request declares "
-            f"({passed})"
-        )
-    return f"Take {free}, the lowest number above the base's that no open pull request declares"
-
-
-def renumber(repository: str, base_number: int) -> str:
-    """How every refusal ends: the number to take (take), and the files to write it in, which
-    hold the number together."""
-    return (
-        f"{take(repository, base_number)}, and write it in each of the {len(SITES)} files that "
-        f"hold the number: {', '.join(SITES)}"
-    )
-
-
-event_name = os.environ.get("GITHUB_EVENT_NAME", "")
-event_path = os.environ.get("GITHUB_EVENT_PATH", "")
-repository = os.environ.get("GITHUB_REPOSITORY", "")
-if not repository:
-    fatal(WORKFLOW, "GITHUB_REPOSITORY is unset, so this check cannot name the repository to read")
-if event_name not in ("pull_request", "merge_group"):
-    fatal(
-        WORKFLOW,
-        f"this check runs on a pull request or a merge group, which have a base to compare with, "
-        f"and GITHUB_EVENT_NAME is {one_line(event_name) or 'unset'}",
-    )
-try:
-    payload = json.loads(Path(event_path).read_bytes().decode("utf-8"))
-except OSError as error:
-    fatal(WORKFLOW, f"could not read the event payload at GITHUB_EVENT_PATH: {one_line(error)}")
-except (UnicodeDecodeError, json.JSONDecodeError) as error:
-    fatal(WORKFLOW, f"the event payload at {event_path} is not JSON: {one_line(error)}")
-if not isinstance(payload, dict):
-    fatal(WORKFLOW, f"the event payload at {event_path} is not a JSON object")
-
-if event_name == "merge_group":
-    base_ref = payload_field(payload, "merge_group", "base_sha")
-    base_is = f"the commit the queue built this group on ({base_ref})"
-else:
-    base_ref = payload_field(payload, "pull_request", "base", "ref")
-    base_is = f"the tip of {base_ref}"
-
-base_text = read_at(repository, base_ref, f"{DECLARATION} on the base, {base_is}")
-base_number, _ = number_in(base_text, f"{DECLARATION} on the base, {base_is}")
-
-# Every refusal from here on knows the base's number, so each one names a free number.
-try:
-    tree_text = Path(DECLARATION).read_bytes().decode("utf-8")
-except FileNotFoundError:
-    fatal(
-        DECLARATION,
-        f"{DECLARATION} is missing from this checkout, so what contract this change declares "
-        f"cannot be read; the base, {base_is}, carries {base_number}. "
-        f"{renumber(repository, base_number)}",
-    )
-except (OSError, UnicodeDecodeError) as error:
-    fatal(
-        DECLARATION,
-        f"could not read {DECLARATION} in this checkout: {one_line(error)}; the base, {base_is}, "
-        f"carries {base_number}. {renumber(repository, base_number)}",
-    )
-tree_number, line = number_in(
-    tree_text,
-    f"{DECLARATION} in this checkout",
-    lambda: f"; the base, {base_is}, carries {base_number}. {renumber(repository, base_number)}",
-)
-
-if str(tree_number) not in HISTORY.findall(tree_text):
-    fatal(
-        DECLARATION,
-        f"{DECLARATION}:{line}: declares daemon API contract {tree_number}, but its history has "
-        f"no `// {tree_number}:` entry. A bump changes the daemon and plugin together, so record "
-        f"the number in that history before the declaration. The base, {base_is}, carries "
-        f"{base_number}. {renumber(repository, base_number)}",
-    )
-
-# The agreement rule of the header: it runs before the pass for a number above the base's.
-for site in FIELDS:
-    held = held_in(site)
-    if any(number != tree_number for number in held.values()):
-        holds = " and ".join(f"{number} at {field}" for field, number in held.items())
+    The checkout is one commit deep, which grafts HEAD's parents away: `git rev-parse HEAD^1`
+    answers as if the merge ref had none. The commit object keeps them, and `git cat-file commit
+    HEAD` prints it as it stands, header lines first. A merge ref is a merge commit, so a HEAD
+    with fewer than two parents is no merge ref, and its first parent says nothing of a base."""
+    what = "the commit GitHub built this pull request's merge ref on"
+    parents = [
+        line.removeprefix("parent ").strip()
+        for line in git(["cat-file", "commit", "HEAD"], what, WORKFLOW)
+        .decode("utf-8", "replace")
+        .split("\n\n", 1)[0]
+        .split("\n")
+        if line.startswith("parent ")
+    ]
+    if len(parents) < 2:
         fatal(
-            site,
-            f"{site} holds daemon API contract {holds}, and {DECLARATION} declares {tree_number}. "
-            f"The {len(SITES)} files that hold the number must agree on it: {', '.join(SITES)}. "
-            f"`go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' "
-            f"-update`, run in packages/daemon, writes the fixtures, and the manifests take the "
-            f"number in legion.daemonApiVersion.",
+            WORKFLOW,
+            f"could not read {what}: HEAD names {len(parents)} parent(s), so this checkout is not "
+            f"the merge ref GitHub builds a pull request's run on",
+        )
+    return parents[0]
+
+
+def present(rev: str) -> bool:
+    try:
+        return subprocess.run(
+            ["git", "cat-file", "-e", f"{rev}^{{commit}}"], capture_output=True
+        ).returncode == 0
+    except OSError as error:
+        fatal(WORKFLOW, f"could not read the base: git could not be run ({one_line(error)})")
+
+
+def fetched(sha: str, base_is: str) -> str:
+    """The base commit, fetched from origin where this checkout lacks it: one commit deep in a
+    shallow checkout, and in any case without blobs, so it carries the base's trees."""
+    if not present(sha):
+        shallow = git(["rev-parse", "--is-shallow-repository"], "whether this checkout is shallow", WORKFLOW)
+        depth = ["--depth=1"] if shallow.strip() == b"true" else []
+        git(
+            ["fetch", "--no-tags", "--filter=blob:none", *depth, "origin", sha],
+            f"the base, {base_is}",
+            WORKFLOW,
+        )
+        if not present(sha):
+            fatal(WORKFLOW, f"could not read the base, {base_is}: origin's fetch did not bring the commit")
+    return sha
+
+
+override = os.environ.get("DAEMON_API_CONTRACT_BASE", "")
+if override:
+    base_is = f"DAEMON_API_CONTRACT_BASE ({one_line(override)})"
+    base = git(
+        ["rev-parse", "--verify", "--end-of-options", f"{override}^{{commit}}"],
+        f"the base, {base_is}",
+        SCRIPT,
+    ).decode().strip()
+else:
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+    event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+    if event_name not in ("pull_request", "merge_group"):
+        fatal(
+            WORKFLOW,
+            f"this check runs on a pull request or a merge group, which have a base to compare with, "
+            f"or with DAEMON_API_CONTRACT_BASE=<rev>, and GITHUB_EVENT_NAME is "
+            f"{one_line(event_name) or 'unset'}",
+        )
+    if event_name == "merge_group":
+        try:
+            payload = json.loads(Path(event_path).read_bytes().decode("utf-8"))
+        except OSError as error:
+            fatal(WORKFLOW, f"could not read the event payload at GITHUB_EVENT_PATH: {one_line(error)}")
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            fatal(WORKFLOW, f"the event payload at {event_path} is not JSON: {one_line(error)}")
+        if not isinstance(payload, dict):
+            fatal(WORKFLOW, f"the event payload at {event_path} is not a JSON object")
+        sha = payload_field(payload, "merge_group", "base_sha")
+        base_is = f"the commit the queue built this group on ({sha})"
+    else:
+        sha = merge_ref_parent()
+        base_is = f"the commit GitHub built this pull request's merge ref on ({sha})"
+    base = fetched(sha, base_is)
+head = git(["rev-parse", "--verify", "HEAD^{commit}"], "HEAD", SCRIPT).decode().strip()
+
+# What the change does, path by path: the two trees' diff, with no rename read (a rename is a
+# deletion and an addition, which needs no blob), and every path the head holds.
+raw = git(
+    ["diff-tree", "-r", "-z", "--no-renames", "--name-status", base, head],
+    f"the diff of HEAD with the base, {base_is}",
+    SCRIPT,
+)
+fields = raw.decode("utf-8", "surrogateescape").split("\0")
+changed: dict[str, str] = {fields[i + 1]: fields[i][:1] for i in range(0, len(fields) - 1, 2)}
+held = set(
+    git(["ls-tree", "-r", "-z", "--name-only", head], "the paths HEAD holds", SCRIPT)
+    .decode("utf-8", "surrogateescape")
+    .split("\0")
+) - {""}
+
+# L: the greatest number of released-contracts.json at the head, the last numbered entry.
+released = json_at(head, RELEASED, f"{RELEASED} at HEAD") if RELEASED in held else None
+if (
+    not isinstance(released, list)
+    or not released
+    or any(isinstance(n, bool) or not isinstance(n, int) for n in released)
+):
+    fatal(
+        RELEASED,
+        f"could not read L at HEAD: {RELEASED} "
+        f"{'is missing' if released is None else 'is not a non-empty JSON array of integers'}, and "
+        f"L, the last numbered entry, is its greatest number",
+    )
+last = max(released)
+
+
+def numbered_entries(text: str) -> tuple[list[tuple[int, int]], dict[int, list[str]]]:
+    """version.go's numbered entries: their headers in order, each as (number, line), and each
+    number's text, the comment lines from its header to the next header or the comment's end
+    (a number with two headers, as 10, 22 and 23 have, holds both texts)."""
+    headers: list[tuple[int, int]] = []
+    texts: dict[int, list[str]] = {}
+    current: int | None = None
+    for number, line in enumerate(text.split("\n"), 1):
+        header = HEADER.match(line)
+        if header:
+            current = int(header.group(1))
+            headers.append((current, number))
+            texts.setdefault(current, []).append(line)
+        elif current is not None and line.startswith("//"):
+            texts[current].append(line)
+        else:
+            current = None
+    return headers, texts
+
+
+def corrections(lines: list[str]) -> int:
+    """The paragraphs of an entry's text that start `Correction:`."""
+    return sum(1 for i in range(1, len(lines)) if CORRECTION.match(lines[i]) and lines[i - 1].strip() == "//")
+
+
+def entry_text(text: str, entry_id: str) -> list[str]:
+    """An entry file's text: its comment from the line `// <id> <slug>: ` to the comment's end."""
+    lines = text.split("\n")
+    for start, line in enumerate(lines):
+        if line.startswith(f"// {entry_id} "):
+            end = start + 1
+            while end < len(lines) and lines[end].startswith("//"):
+                end += 1
+            return lines[start:end]
+    return []
+
+
+# version.go's numbered entries at the head and on the base, each read once and only where a rule
+# needs them: the base's blob is fetched only where the change edits the file, since an unchanged
+# file holds the head's entries.
+Entries = tuple[list[tuple[int, int]], dict[int, list[str]]]
+numbered: dict[str, Entries] = {}
+
+
+def entries_at(rev: str) -> Entries:
+    if rev not in numbered:
+        status = changed.get(VERSION_GO)
+        if rev == base and status is None:
+            numbered[rev] = entries_at(head)
+        elif (rev == head and VERSION_GO not in held) or (rev == base and status == "A"):
+            numbered[rev] = ([], {})
+        else:
+            at = "at HEAD" if rev == head else f"on the base, {base_is}"
+            numbered[rev] = numbered_entries(text_at(rev, VERSION_GO, f"{VERSION_GO} {at}"))
+    return numbered[rev]
+
+
+# 1. The numbered entries' headers, in order, are the base's.
+if VERSION_GO in changed:
+    head_headers, base_headers = entries_at(head)[0], entries_at(base)[0]
+    added = Counter(n for n, _ in head_headers) - Counter(n for n, _ in base_headers)
+    dropped = Counter(n for n, _ in base_headers) - Counter(n for n, _ in head_headers)
+    steps = SequenceMatcher(
+        a=[n for n, _ in base_headers], b=[n for n, _ in head_headers], autojunk=False
+    ).get_opcodes()
+    for step, base_from, base_to, head_from, head_to in steps:
+        if step == "equal":
+            continue
+        for number, line in head_headers[head_from:head_to]:
+            if added[number] > 0:
+                added[number] -= 1
+                refuse(
+                    VERSION_GO,
+                    f"{VERSION_GO}:{line}: `// {number}:` is a numbered entry that the base, "
+                    f"{base_is}, does not hold. The numbered entries end at L = {last}, and a "
+                    f"contract change after them is an entry: `scripts/daemon-contract-entry.sh "
+                    f"<slug>` writes its file, which takes this text and its rows, and "
+                    f"`go test ./internal/api -update`, run in packages/daemon, writes its "
+                    f"fixture. Its number is L plus its rank in main's merge order, so no file "
+                    f"holds it.",
+                )
+            else:
+                refuse(
+                    VERSION_GO,
+                    f"{VERSION_GO}:{line}: the numbered entry `// {number}:` is not where the "
+                    f"base, {base_is}, has it: a numbered entry keeps its number and its place. "
+                    f"Put the numbered entries back in the base's order.",
+                )
+        for number, line in base_headers[base_from:base_to]:
+            if dropped[number] > 0:
+                dropped[number] -= 1
+                refuse(
+                    VERSION_GO,
+                    f"{VERSION_GO}: the numbered entry `// {number}:` (line {line} on the base, "
+                    f"{base_is}) is gone from this file: a numbered entry keeps its number and its "
+                    f"header, since every build of main already carries it. Put `// {number}:` "
+                    f"back as the base has it.",
+                )
+
+# 2. No entry file or entry fixture the base holds is deleted or renamed.
+for path, status in sorted(changed.items()):
+    if status != "D":
+        continue
+    if ENTRY.match(path):
+        refuse(
+            path,
+            f"{path}: this change deletes or renames an entry that the base, {base_is}, holds. An "
+            f"entry's number is its rank in main's merge order, so an entry main holds stays, file "
+            f"and fixture: put it back under this name. To undo its change, add a new entry that "
+            f"undoes it (`scripts/daemon-contract-entry.sh <slug>`).",
+        )
+    elif FIXTURE.match(path):
+        refuse(
+            path,
+            f"{path}: this change deletes or renames an entry fixture that the base, {base_is}, "
+            f"holds. An entry and its fixture stay once main holds them: put it back under this "
+            f"name. To undo the entry's change, add a new entry that undoes it "
+            f"(`scripts/daemon-contract-entry.sh <slug>`).",
         )
 
-if tree_number > base_number:
-    print(
-        f"daemon API contract {tree_number} is above the {base_number} the base carries "
-        f"({base_is}): {DECLARATION}"
+# 3. At the head, each entry has its fixture, and each fixture its entry. A fixture is what every
+# reader counts: a file of FIXTURE_DIR named <14 digits>_<name>.json. Anything else in that
+# directory is TestEveryEntryHasOneFixture's to refuse, and counts nowhere.
+entries = {(m.group(1), m.group(2)): path for path in held if (m := ENTRY.match(path))}
+fixtures = {(m.group(1), m.group(2)): path for path in held if (m := FIXTURE.match(path))}
+for key, path in sorted(entries.items()):
+    if key not in fixtures:
+        refuse(
+            path,
+            f"{path}: this entry has no fixture, {FIXTURE_DIR}{key[0]}_{key[1]}.json. "
+            f"`go test ./internal/api -update`, run in packages/daemon, writes it.",
+        )
+for key, path in sorted(fixtures.items()):
+    if key not in entries:
+        refuse(
+            path,
+            f"{path}: this fixture names no entry: HEAD holds no {ENTRY_DIR}contract_{key[0]}_"
+            f"{key[1]}.go. An entry and its fixture come together, and a build counts its "
+            f"fixtures: add the entry (`scripts/daemon-contract-entry.sh <slug>` writes one, with "
+            f"a new id), or take out a fixture this change added for no entry.",
+        )
+
+# 4. No committed file holds the number.
+listing = git(
+    ["grep", "-l", "-z", "-F", "daemonApiVersion", head, "--", ":(glob)**/package.json"],
+    "the package.json files HEAD holds",
+    SCRIPT,
+    ok=(0, 1),
+)
+for found in listing.decode("utf-8", "surrogateescape").split("\0"):
+    if not found:
+        continue
+    path = found.removeprefix(f"{head}:")
+    manifest = json_at(head, path, f"{path} at HEAD")
+    legion = manifest.get("legion") if isinstance(manifest, dict) else None
+    if isinstance(legion, dict) and "daemonApiVersion" in legion:
+        refuse(
+            path,
+            f"{path} commits legion.daemonApiVersion "
+            f"({one_line(json.dumps(legion['daemonApiVersion']))[:40]}). "
+            f"No committed manifest holds the contract number: it is the greatest number of "
+            f"{RELEASED} plus the count of entry fixtures, which `daemonContract()` reads in a "
+            f"checkout, and each pack step writes the field into the manifest it packs. Take the "
+            f"field out.",
+        )
+if VERSION_JSON in held:
+    refuse(
+        VERSION_JSON,
+        f"{VERSION_JSON}: this file holds the contract number, and it goes: the number is the "
+        f"greatest number of {RELEASED} plus the count of entry fixtures, which "
+        f"`scripts/daemon-contract.sh` prints. Delete it.",
     )
-    raise SystemExit(0)
-
-# What this tree was built on. For a merge group it is the base itself, the commit the queue
-# built the group on, which is already read; for a pull request it is the merge ref's first
-# parent, read here rather than above so a change that bumps the number costs neither read.
-if event_name == "merge_group":
-    built_is, built_text = base_is, base_text
-else:
-    parent = built_on("the commit GitHub built this pull request's merge ref on")
-    built_is = f"the commit GitHub built this pull request's merge ref on ({parent})"
-    built_text = read_at(repository, parent, f"{DECLARATION} on {built_is}")
-
-# Only the history and the declaration are compared (history_and_declaration).
-if history_and_declaration(tree_text) == history_and_declaration(built_text):
-    print(
-        f"this change leaves the history and the declaration in {DECLARATION} as {built_is} has "
-        f"them (contract {tree_number}), so it declares no daemon API contract of its own"
+for path in sorted(p for p in held if STATE_GOLDEN.match(p)):
+    golden = json_at(head, path, f"{path} at HEAD")
+    mark = golden.get("contract") if isinstance(golden, dict) else None
+    if path == STATE and isinstance(golden, dict) and "contract" in golden:
+        what = "a `contract` mark"
+    elif isinstance(mark, dict) and "daemon" in mark:
+        what = "a `contract.daemon` mark"
+    else:
+        continue
+    refuse(
+        path,
+        f"{path} holds {what}, which is the daemon's own number: TestStateGolden takes out each "
+        f"mark that equals DaemonAPIVersion() before it compares or writes, and holds the marks "
+        f"to DaemonAPIVersion() apart. `go test ./internal/api -run '^TestStateGolden$' -update`, "
+        f"run in packages/daemon, writes the golden without it.",
     )
-    raise SystemExit(0)
 
-fatal(
-    DECLARATION,
-    f"{DECLARATION}:{line}: this change touches {DECLARATION} and declares daemon "
-    f"API contract {tree_number}, which is not above the {base_number} the base carries "
-    f"({base_is}). A daemon and the plugin in its pods must agree on this number, so two changes "
-    f"cannot both declare one: the second to land is renumbered after its review has run. "
-    f"{renumber(repository, base_number)}",
+
+def named(text: str) -> list[tuple[int, int, int]]:
+    """Each contract number text names, as (number, its offset, its line)."""
+    found = []
+    for match in NAMED.finditer(text):
+        group = 1 if match.group(1) is not None else 2
+        for number in re.finditer(r"\d+", match.group(group)):
+            at = match.start(group) + number.start()
+            found.append((int(number.group()), at, text.count("\n", 0, at) + 1))
+    return found
+
+
+# 5. No fragment this change adds or edits names a number above L.
+for path, status in sorted(changed.items()):
+    if status not in ("A", "M", "T") or not FRAGMENT.search(path) or path not in held:
+        continue
+    for number, _, line in named(text_at(head, path, f"{path} at HEAD")):
+        if number > last:
+            refuse(
+                path,
+                f"{path}:{line}: names daemon API contract {number}, above L = {last}, the last "
+                f"numbered entry ({RELEASED}). A new entry's number is unknown until main takes "
+                f"it: name the entry by its id, the 14 digits of its file's name.",
+            )
+
+# 6. An entry fixture or a frozen record the base holds changes only as a correction.
+for path, status in sorted(changed.items()):
+    fixture = FIXTURE.match(path)
+    if fixture is None or status not in ("M", "T"):
+        continue
+    entry_id, slug = fixture.group(1), fixture.group(2)
+    entry = f"{ENTRY_DIR}contract_{entry_id}_{slug}.go"
+    if entry not in held:
+        continue  # rule 3 refuses a fixture with no entry, by name
+    now = corrections(entry_text(text_at(head, entry, f"{entry} at HEAD"), entry_id))
+    on_base = now  # an entry file this change leaves alone gains no paragraph
+    if changed.get(entry) == "A":
+        on_base = 0
+    elif entry in changed:
+        on_base = corrections(entry_text(text_at(base, entry, f"{entry} on the base, {base_is}"), entry_id))
+    if now <= on_base:
+        refuse(
+            path,
+            f"{path}: this change edits the fixture of entry {entry_id}, which the base, {base_is}, "
+            f"holds, and adds no paragraph that starts `Correction:` to that entry's text in "
+            f"{entry}. A change of what a merged contract means is a new entry "
+            f"(`scripts/daemon-contract-entry.sh <slug>`); an edit of a merged fixture corrects a "
+            f"record that was wrong, and says so in that paragraph, for the reviewer.",
+        )
+
+
+class Unreadable(Exception):
+    pass
+
+
+def number(value: object, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise Unreadable(f"{where} is {one_line(json.dumps(value))[:80]}, not an integer")
+    return value
+
+
+def records(name: str, document: object) -> dict[str, tuple[list[str], set[int]]]:
+    """A frozen file's records, each keyed by what names it, as (its JSON, every copy, sorted; the
+    contracts it is a record of)."""
+    found: dict[str, tuple[list[str], set[int]]] = {}
+
+    def add(key: list, value: object, contracts: set[int]) -> None:
+        copies, numbers = found.setdefault(json.dumps(key), ([], set()))
+        copies.append(json.dumps(value, sort_keys=True))
+        numbers.update(contracts)
+
+    if not isinstance(document, list):
+        raise Unreadable("it is not a JSON array")
+    for index, item in enumerate(document):
+        where = f"its element {index}"
+        if name == "released-contracts.json":
+            released_number = number(item, where)
+            add(["number", released_number], item, {released_number})
+            continue
+        if not isinstance(item, dict):
+            raise Unreadable(f"{where} is not an object")
+        if name in ("contract-shapes.json", "request-shapes.json"):
+            contract = number(item.get("contract"), f"{where}'s contract")
+            names = item.get("answer") if name == "contract-shapes.json" else item.get("route")
+            add([contract, names], item, {contract})
+        elif name == "answers.json":
+            row = {k: v for k, v in item.items() if k != "typedSettings"}
+            add(["answer", item.get("id")], row, {number(item.get("since"), f"{where}'s since")})
+            settings = item.get("typedSettings", [])
+            if not isinstance(settings, list):
+                raise Unreadable(f"{where}'s typedSettings is not an array")
+            for setting in settings:
+                if not isinstance(setting, dict):
+                    raise Unreadable(f"a typed setting of {where} is not an object")
+                contracts = {number(setting.get("since"), f"a typed setting's since in {where}")}
+                if "until" in setting:
+                    contracts.add(number(setting["until"], f"a typed setting's until in {where}"))
+                add(["setting", item.get("id"), setting.get("key")], setting, contracts)
+        else:  # enumerated-fields.json
+            values = item.get("values")
+            if not isinstance(values, list):
+                raise Unreadable(f"{where}'s values is not an array")
+            sinces: set[int] = set()
+            for value in values:
+                if not isinstance(value, dict):
+                    raise Unreadable(f"a value of {where} is not an object")
+                since = number(value.get("since"), f"a value's since in {where}")
+                sinces.add(since)
+                add(["value", item.get("answer"), item.get("keyPath"), value.get("value")], value, {since})
+            field = {k: v for k, v in item.items() if k != "values"}
+            add(["field", item.get("answer"), item.get("keyPath")], field, sinces)
+    for copies, _ in found.values():
+        copies.sort()
+    return found
+
+
+for name in FROZEN:
+    path = DAEMON_API + name
+    status = changed.get(path)
+    if status not in ("M", "T", "D"):
+        continue
+    if status == "D":
+        refuse(
+            path,
+            f"{path}: this change deletes a frozen record file the base, {base_is}, holds: it holds "
+            f"the records of the numbered entries, which every build of main already serves. Put it "
+            f"back as the base has it.",
+        )
+        continue
+    try:
+        before = records(name, json_at(base, path, f"{path} on the base, {base_is}"))
+    except Unreadable as error:
+        fatal(path, f"could not read {path} on the base, {base_is}: {error}")
+    try:
+        after = records(name, json_at(head, path, f"{path} at HEAD"))
+    except Unreadable as error:
+        refuse(
+            path,
+            f"{path} at HEAD is not the frozen records' form: {error}. Put it back as the base, "
+            f"{base_is}, has it.",
+        )
+        continue
+    contracts: set[int] = set()
+    for key in before.keys() | after.keys():
+        was, was_of = before.get(key, ([], set()))
+        now_, now_of = after.get(key, ([], set()))
+        if was != now_:
+            contracts |= was_of | now_of
+    if not contracts:
+        refuse(
+            path,
+            f"{path}: this change edits a frozen record file and changes no record in it, so it "
+            f"names no entry to correct: a frozen file keeps the base's bytes. Put it back as the "
+            f"base, {base_is}, has it.",
+        )
+        continue
+    head_texts, base_texts = entries_at(head)[1], entries_at(base)[1]
+    for contract in sorted(contracts):
+        if contract not in head_texts:
+            refuse(
+                path,
+                f"{path}: this change edits the records of contract {contract}, which no numbered "
+                f"entry of {VERSION_GO} holds: a frozen file holds the records of the numbered "
+                f"entries, and a new entry's records are its fixture "
+                f"({FIXTURE_DIR}<id>_<slug>.json), which `go test ./internal/api -update` writes.",
+            )
+        elif corrections(head_texts[contract]) <= corrections(base_texts.get(contract, [])):
+            refuse(
+                path,
+                f"{path}: this change edits the records of contract {contract}, which the base, "
+                f"{base_is}, holds, and adds no paragraph that starts `Correction:` to the text of "
+                f"the numbered entry `// {contract}:` in {VERSION_GO}. A change of what a merged "
+                f"contract means is a new entry (`scripts/daemon-contract-entry.sh <slug>`); an edit "
+                f"of a frozen record corrects a record that was wrong, and says so in that "
+                f"paragraph, for the reviewer.",
+            )
+
+if refusals:
+    for path, message in refusals:
+        print(f"::error file={path}::{one_line(message)}", file=sys.stderr)
+    print(
+        f"the daemon API contract check refuses this change ({len(refusals)} refusal(s)), "
+        f"compared with the base, {base_is}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+print(
+    f"the daemon API contract check passes, compared with the base, {base_is}: L = {last}, "
+    f"{len(entries)} entries with their fixtures, no numbered entry added or renumbered, and no "
+    f"committed number"
 )
 PY

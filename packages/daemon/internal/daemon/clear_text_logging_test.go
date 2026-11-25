@@ -522,7 +522,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				rig := newStepRecordRig(t, nil)
 				server := newSinkServer(t, map[string]sinkRoute{"/api/v1/issues/" + stepIssue + "/steps/" + stepRecordID: sinkDispatchRefusal()})
 				rig.runner.log = log.logger()
-				rig.runner.dispatch = dispatch.New(server.URL, oauth2calltest.Token)
+				rig.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport(oauth2calltest.Token, nil))
 				rig.run()
 				if left := rig.left(); left != 0 {
 					t.Fatalf("rows left after Dispatch refused the record = %d, want none", left)
@@ -557,7 +557,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				listing := newSinkServer(t, map[string]sinkRoute{"/api/v1/issues": sinkAnswer(`[{"key":"CAPTURE-2","title":"CAPTURE-2","status":"todo","labels":["legion"],"resolved_repo":"acme/widgets"}]`)})
 				repos := newRepositories("CAPTURE", ghrepo.Renames{})
 				w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, dispatchProject: "CAPTURE",
-					dispatch: dispatch.New(listing.URL, oauth2calltest.Token), installs: &installations{}, repositories: repos, log: log.logger(),
+					dispatch: dispatch.New(listing.URL, dispatch.BearerTransport(oauth2calltest.Token, nil)), installs: &installations{}, repositories: repos, log: log.logger(),
 					defaultBranches: newDefaultBranches(sinkTokens{}, repos, github.URL, defaultBranchTTL, time.Now)}
 				w.leaveForRecovery(ghrepo.MustParse("acme/widgets"))
 				w.recoverRepositories(context.Background())

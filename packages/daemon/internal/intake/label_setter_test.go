@@ -34,7 +34,7 @@ func servedLog(t *testing.T, log ...json.RawMessage) []dispatch.Event {
 		_, _ = fmt.Fprint(w, "["+strings.Join(page, ",")+"]")
 	}))
 	defer server.Close()
-	events, err := dispatch.New(server.URL, "dispatch-token").EventsAfter(context.Background(), "LEGION-755", 0)
+	events, err := dispatch.New(server.URL, dispatch.BearerTransport("dispatch-token", nil)).EventsAfter(context.Background(), "LEGION-755", 0)
 	if err != nil {
 		t.Fatalf("read the served log: %v", err)
 	}

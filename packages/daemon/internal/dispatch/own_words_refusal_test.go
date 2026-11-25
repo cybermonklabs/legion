@@ -29,7 +29,7 @@ func refusingDispatch(t *testing.T, status int, code, said string) *HTTPClient {
 		writeJSONStatus(t, w, status, map[string]string{"code": code, "error": said})
 	}))
 	t.Cleanup(server.Close)
-	return New(server.URL, dispatchToken)
+	return New(server.URL, BearerTransport(dispatchToken, nil))
 }
 
 // offRouteRefusal is the refusal the daemon's client prints (dispatchError) for Dispatch's status
