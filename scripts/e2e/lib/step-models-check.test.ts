@@ -60,8 +60,6 @@ function answer(issue: string, runs: string[]): string {
 // path, where agents.json names its own by a path relative to its directory.
 const agentsFile = (name: string) => join(dir, `agents-${name}.json`);
 const agentsJson = join(data, "agents.json");
-// agents.json's claims with the made copies of their transcripts that hold completion calls.
-const agentsCompletion = join(data, "agents-completion.json");
 const daemonLog = join(data, "daemon-log-reads.jsonl");
 // The read lines of LEGION-3552's records, D1 to D9, T1 and S1.
 const completionLog = join(data, "daemon-log-reads-completion.jsonl");
@@ -76,20 +74,16 @@ beforeAll(() => {
     one(implementer, "omp", "omp-session-fallback.jsonl", omp)
   );
   writeFileSync(
-    agentsFile("implementer-completion"),
-    one(implementer, "omp", "omp-session-fallback-completion.jsonl", omp)
+    agentsFile("implementer-set-fallback"),
+    one(implementer, "omp", "omp-session-fallback.jsonl", fallback)
   );
   writeFileSync(
-    agentsFile("implementer-completion-set-fallback"),
-    one(implementer, "omp", "omp-session-fallback-completion.jsonl", fallback)
+    agentsFile("tester-background"),
+    one(tester, "claude", "claude-stream-background-turn.jsonl", sonnet)
   );
   writeFileSync(
-    agentsFile("tester-background-completion"),
-    one(tester, "claude", "claude-stream-background-turn-completion.jsonl", sonnet)
-  );
-  writeFileSync(
-    agentsFile("tester-refusal-completion"),
-    one(tester, "claude", "claude-stream-refusal-turn-completion.jsonl", sonnet)
+    agentsFile("tester-refusal"),
+    one(tester, "claude", "claude-stream-refusal-turn.jsonl", sonnet)
   );
   writeFileSync(
     agentsFile("d-implementer"),
@@ -140,7 +134,7 @@ function check(
 
 describe("step-models-check.sh", () => {
   test("an Oh My Pi step that its agent ended equals its transcript", () => {
-    const run = check({ [A]: [A1, A0] }, agentsFile("implementer-completion"));
+    const run = check({ [A]: [A1, A0] }, agentsFile("implementer"));
     expect(run.stdout).toContain(A1Passes);
     expect(run.stdout).toContain("live-at-both-reads: UNKNOWN: took no step of harness omp");
     expect(run.stdout).not.toContain("FAIL");
@@ -150,7 +144,7 @@ describe("step-models-check.sh", () => {
   });
 
   test("a Claude Code step counts each response once by its id", () => {
-    const run = check({ [A]: [C1] }, agentsFile("tester-background-completion"));
+    const run = check({ [A]: [C1] }, agentsFile("tester-background"));
     expect(run.stdout).toContain(
       `PASS: c-real: harness claude: ${A} default 3 step attempt 1: ${sonnet}=3`
     );
@@ -159,7 +153,7 @@ describe("step-models-check.sh", () => {
   });
 
   test("a synthetic response counts for no model", () => {
-    const run = check({ [A]: [C2] }, agentsFile("tester-refusal-completion"));
+    const run = check({ [A]: [C2] }, agentsFile("tester-refusal"));
     expect(run.stdout).toContain(
       `PASS: c-real: harness claude: ${A} default 3 step attempt 2: ${sonnet}=1`
     );
@@ -168,7 +162,7 @@ describe("step-models-check.sh", () => {
   });
 
   test("both comparisons on both harnesses", () => {
-    const run = check({ [A]: [A1, A6, C1, C3, A0] }, agentsCompletion);
+    const run = check({ [A]: [A1, A6, C1, C3, A0] }, agentsJson);
     expect(run.stdout).toContain(A1Passes);
     expect(run.stdout).toContain(
       `PASS: c-real: harness claude: ${A} default 3 step attempt 1: ${sonnet}=3`
@@ -183,7 +177,7 @@ describe("step-models-check.sh", () => {
   });
 
   test("a record whose set model is not the settings' fails", () => {
-    const run = check({ [A]: [A1] }, agentsFile("implementer-completion-set-fallback"));
+    const run = check({ [A]: [A1] }, agentsFile("implementer-set-fallback"));
     expect(run.stdout).toContain(
       `FAIL: c-real: harness omp: ${A} default 2 step attempt 1: its set model is ${omp}, and the settings give its role ${fallback}`
     );
@@ -192,15 +186,12 @@ describe("step-models-check.sh", () => {
   });
 
   test("a record that counts no call fails", () => {
-    const run = check({ [D]: [D8] }, agentsFile("d-implementer"), { log: completionLog });
+    const run = check({ [A]: [A2] }, agentsFile("implementer"));
     expect(run.stdout).toContain(
-      `FAIL: c-real: harness omp: ${D} default 2 step attempt 8: its counts total 0`
+      `FAIL: c-real: harness omp: ${A} default 2 step attempt 2: its counts total 0`
     );
-    // A taken step's count holds the response of its completion call, so a record of no call
-    // also differs from its transcript.
-    expect(run.stdout).toContain(
-      `FAIL: c-real: harness omp: ${D} default 2 step attempt 8: its counts are none, and its transcript holds ${omp}=3 between the two reads`
-    );
+    // Its counts equal the transcript's none, so only the clause of at least 1 call fails it.
+    expect(run.stdout).not.toContain("between the two reads");
     expect(run.verdicts).toEqual(["c-real: FAIL", "live-at-both-reads: UNKNOWN"]);
     expect(run.code).toBe(1);
   });
@@ -226,7 +217,7 @@ describe("step-models-check.sh", () => {
   });
 
   test("an answering model that only a skipped record names fails", () => {
-    const run = check({ [A]: [A1, A4] }, agentsFile("implementer-completion"));
+    const run = check({ [A]: [A1, A4] }, agentsFile("implementer"));
     expect(run.stdout).toContain(A1Passes);
     expect(run.stdout).toContain(
       `FAIL: c-real: ${A} default 2 step attempt 4: its answering model anthropic/claude-opus-5-5 is held by no entry of the transcript of ${implementer}`
@@ -236,7 +227,7 @@ describe("step-models-check.sh", () => {
   });
 
   test("a set model the transcript does not hold fails", () => {
-    const run = check({ [A]: [A1, A7] }, agentsFile("implementer-completion"));
+    const run = check({ [A]: [A1, A7] }, agentsFile("implementer"));
     expect(run.stdout).toContain(
       `FAIL: c-real: ${A} default 2 step attempt 7: its set model anthropic/claude-opus-5-5 is held by no entry of the transcript of ${implementer}`
     );
@@ -245,7 +236,7 @@ describe("step-models-check.sh", () => {
   });
 
   test("a last model the transcript does not hold fails", () => {
-    const run = check({ [A]: [A1, A8] }, agentsFile("implementer-completion"));
+    const run = check({ [A]: [A1, A8] }, agentsFile("implementer"));
     expect(run.stdout).toContain(
       `FAIL: c-real: ${A} default 2 step attempt 8: its last model anthropic/claude-opus-4-8 is held by no entry of the transcript of ${implementer}`
     );
@@ -315,7 +306,7 @@ describe("step-models-check.sh", () => {
   });
 
   test("--lower-one fails the steps that pass", () => {
-    const run = check({ [A]: [A1, A6, C1, C3, A0] }, agentsCompletion, { args: ["--lower-one"] });
+    const run = check({ [A]: [A1, A6, C1, C3, A0] }, agentsJson, { args: ["--lower-one"] });
     expect(run.stdout).toContain(
       `FAIL: c-real: harness omp: ${A} default 2 step attempt 1: its counts are ${omp}=3,${fallback}=2, and its transcript holds ${omp}=4,${fallback}=2 between the two reads`
     );
@@ -497,7 +488,7 @@ describe("step-models-check.sh", () => {
   });
 
   test("two issues each answer their own records", () => {
-    const run = check({ [A]: [A1, A6, A0], [B]: [C1b, C3b] }, agentsCompletion);
+    const run = check({ [A]: [A1, A6, A0], [B]: [C1b, C3b] }, agentsJson);
     expect(run.stdout).toContain(A1Passes);
     expect(run.stdout).toContain(
       `PASS: c-real: harness claude: ${B} default 3 step attempt 1: ${sonnet}=2`
@@ -591,25 +582,39 @@ describe("step-models-check.sh", () => {
     expect(run.code).toBe(2);
   });
 
-  test("a step whose transcript holds no completion call is not taken", () => {
+  test("a step whose transcript holds no completion call keeps the plain 2 s rule", () => {
+    // The real cut session holds no `content`, and A1's reads are more than 2 s from any response.
     const run = check({ [A]: [A1] }, agentsFile("implementer"));
     expect(run.stdout).toContain(
-      `GAP: ${A} default 2 step attempt 1 (omp): start read 2026-11-20T00:00:30.000913551Z: no response ended before it, the next 3.044 s after it. end read 2026-11-20T00:07:30.003562114Z: the last response ended 3.563 s before it, the next 3.346 s after it. No response holds the completion call, so the end read leaves out none. Not taken: no response holds its completion call.`
+      `GAP: ${A} default 2 step attempt 1 (omp): start read 2026-11-20T00:00:30.000913551Z: no response ended before it, the next 3.044 s after it. end read 2026-11-20T00:07:30.003562114Z: the last response ended 3.563 s before it, the next 3.346 s after it. No response holds the completion call, so the end read leaves out none.`
+    );
+    expect(run.stdout).toContain(A1Passes);
+    expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: UNKNOWN"]);
+    expect(run.code).toBe(0);
+  });
+
+  test("a legion call of another op is no completion call", () => {
+    // D8's last response before its end read calls the `legion` tool with `ready_for_update`.
+    const run = check({ [D]: [D8] }, agentsFile("d-implementer"), { log: completionLog });
+    expect(run.stdout).toContain(
+      `GAP: ${D} default 2 step attempt 8 (omp): start read 2026-11-21T10:07:00.000318273Z: the last response ended 47.000 s before it, the next 3.000 s after it. end read 2026-11-21T10:07:10.000216347Z: the last response ended 0.050 s before it, the next 3.000 s after it. No response holds the completion call, so the end read leaves out none. Not taken: a response ended within 2 s of its end read.`
     );
     expect(run.stdout).toContain("c-real: UNKNOWN: took no step of harness omp");
     expect(run.verdicts).toEqual(["c-real: UNKNOWN", "live-at-both-reads: UNKNOWN"]);
     expect(run.code).toBe(2);
   });
 
-  test("a legion call of another op is no completion call", () => {
-    // D9's last response before its end read calls the `legion` tool with `ready_for_update`.
+  test("the step's completion call is the last one between its reads", () => {
+    // D9's agent called handoff_complete 5.000 s before the end read, and again 0.050 s before it.
     const run = check({ [D]: [D9] }, agentsFile("d-implementer"), { log: completionLog });
     expect(run.stdout).toContain(
-      `GAP: ${D} default 2 step attempt 9 (omp): start read 2026-11-21T10:07:00.000318273Z: the last response ended 47.000 s before it, the next 3.000 s after it. end read 2026-11-21T10:07:10.000216347Z: the last response ended 0.050 s before it, the next 3.000 s after it. No response holds the completion call, so the end read leaves out none. Not taken: a response ended within 2 s of its end read.`
+      `GAP: ${D} default 2 step attempt 9 (omp): start read 2026-11-21T10:08:00.000318273Z: the last response ended 47.000 s before it, the next 3.000 s after it. end read 2026-11-21T10:08:10.000216347Z: the last response ended 3.000 s before it, the next 3.000 s after it. The end read leaves out the response of 2026-11-21T10:08:09.950Z, which holds the completion call and ended 0.050 s before it.`
     );
-    expect(run.stdout).toContain("c-real: UNKNOWN: took no step of harness omp");
-    expect(run.verdicts).toEqual(["c-real: UNKNOWN", "live-at-both-reads: UNKNOWN"]);
-    expect(run.code).toBe(2);
+    expect(run.stdout).toContain(
+      `PASS: c-real: harness omp: ${D} default 2 step attempt 9: ${omp}=4`
+    );
+    expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: UNKNOWN"]);
+    expect(run.code).toBe(0);
   });
 
   test("an acceptance step that its architect ended with sign_off counts that response", () => {
