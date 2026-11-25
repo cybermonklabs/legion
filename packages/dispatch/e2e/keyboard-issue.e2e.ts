@@ -872,6 +872,50 @@ test.describe("keys typed straight after a key that opens a surface", () => {
     }
   });
 
+  // An Escape in the box calls the open off, and the box gives the focus back to the control the
+  // open was pressed from as it goes (`Placeholder` in `asked-surface.tsx`). The page does not
+  // scroll to that control (`preventScroll`): a reader who scrolled while the box was up stays
+  // where they scrolled to, as they do when the chunk lands (above).
+  test("a create dialog whose open the reader called off by Escape after they scrolled leaves the page where they scrolled it", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Called off after a scroll" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 400 });
+      await holdAsset(page, chunkFile("CreateIssueDialog"));
+      await openIssue(page, issue.key, "Called off after a scroll");
+      const opener = page.getByTestId("issue-header").getByRole("button", { name: "Pin issue" });
+      await opener.focus();
+
+      await page.keyboard.press("c");
+      const box = page.getByPlaceholder("Loading…");
+      await expect(box).toBeFocused();
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      // What makes a focus on the opener scroll the page: the scroll took it out of view.
+      await expect
+        .poll(() => opener.evaluate((element) => element.getBoundingClientRect().bottom), {
+          message: "the page did not scroll the opener out of view",
+        })
+        .toBeLessThan(0);
+      const from = await page.evaluate(() => window.scrollY);
+
+      await page.keyboard.press("Escape");
+      await expect(box, "Escape did not call the open off").toHaveCount(0);
+      await expect(opener, "the box gave the focus back to no opener").toBeFocused();
+      // Two frames on, so a scroll the box's focus return started is read.
+      await nextFrames(page);
+      expect(
+        await page.evaluate(() => window.scrollY),
+        "the box's focus return scrolled the page"
+      ).toBe(from);
+    } finally {
+      await context.close();
+    }
+  });
+
   // A dialog that closes gives the focus back to the control it was opened from, and the page
   // does not scroll to it (`useDialog`, `preventScroll`): a reader who scrolled while the dialog
   // was up stays where they scrolled to.
