@@ -12,9 +12,8 @@ import (
 
 // The project release's read: whether the workspace every role of the issue shares holds the
 // issue's work that no remote branch or tag holds, which the release asks before it deletes the
-// pod with its disk. Two facts cross the wire, a count and a flag; the read builds no bundle, sends
-// no commit and writes no file. What it does write is jj's own record of the working copy's
-// snapshot.
+// pod with its disk. Two facts cross the wire, a count and a flag; the read runs no git, sends no
+// commit and writes no file. What it does write is jj's own record of the working copy's snapshot.
 
 // unpushedCandidates is every commit that can be unpushed work: each visible commit that no remote
 // branch and no tag holds, less the root commit and each commit with no change and no description.

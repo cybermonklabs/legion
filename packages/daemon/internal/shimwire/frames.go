@@ -67,7 +67,7 @@ const (
 	// The project release's read of the unpushed work of the workspace every role of an issue
 	// shares: the daemon asking one role's shim how many commits of the issue's work no remote
 	// branch or tag holds, and whether its working copy holds a change. The answer carries the
-	// count and the flag, never a commit, and the shim builds no bundle for it.
+	// count and the flag, never a commit.
 	TypeReadUnpushed       = "read-unpushed"
 	TypeReadUnpushedResult = "read-unpushed-result"
 	// The workspace read: the daemon asking one role's shim whether the workspace every role of
@@ -961,15 +961,14 @@ type LauncherRestored struct {
 const MaxReadUnpushedSessions = 256
 
 // ReadUnpushed asks the shim whether the workspace it runs in holds the issue's unpushed work, for
-// a project release that is about to delete the pod with its disk. The daemon names the issue, as
-// it does for a bundle, whether the record holds the issue's pull request merged (Merged), the
-// session names the issue's claims hold (Sessions: claim_sessions' `session` and `file-id` names
-// that meet claim.SessionIDRule), and the budget, never a command or a path: the shim reads the
-// workspace with the jj it already works in, and builds no bundle and sends no commit. Until the
-// merge the shim counts a commit whose `Omp-Session` trailer names one of Sessions, or whose
-// `Dispatch` trailer names Issue, as the issue's own (internal/shim's unpushedRevset). A frame with
-// no `merged` member reads as a pull request that has not merged, which counts more commits, never
-// fewer.
+// a project release that is about to delete the pod with its disk. The daemon names the issue,
+// whether the record holds the issue's pull request merged (Merged), the session names the issue's
+// claims hold (Sessions: claim_sessions' `session` and `file-id` names that meet
+// claim.SessionIDRule), and the budget, never a command or a path: the shim reads the workspace
+// with the jj it already works in, and sends no commit and runs no git. Until the merge the shim
+// counts a commit whose `Omp-Session` trailer names one of Sessions, or whose `Dispatch` trailer
+// names Issue, as the issue's own (internal/shim's unpushedRevset). A frame with no `merged` member
+// reads as a pull request that has not merged, which counts more commits, never fewer.
 type ReadUnpushed struct {
 	ID        string   `json:"id"`
 	Issue     string   `json:"issue"`

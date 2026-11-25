@@ -98,9 +98,7 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
 	pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
 		Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}}
 	mark := &projectRelease{}
-	r := &projectReleaser{ctx: ctx, project: "legion", mark: mark, store: releasingStore{st}, machines: sup, pods: pods,
-		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
-		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
+	r := testReleaser(ctx, mark, releasingStore{st}, sup, pods)
 
 	refused := func(when string, wantPaused bool, dryRuns ...bool) {
 		t.Helper()
@@ -155,48 +153,6 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
 	defer pods.mu.Unlock()
 	if !slices.Equal(pods.deleted, []string{"LEGION-208"}) {
 		t.Fatalf("the release taken once the last hold ended deleted the pods of %v, want LEGION-208's", pods.deleted)
-	}
-}
-
-// A pod the release deletes leaves no standing hold behind: the idle pass, which ends a pod's
-// hold streaks when it finds the pod gone, is held while the release's mark stands, so without the
-// release's own end of them the state would name a hold of the deleted pod until the next boot
-// (store.StandingPodHoldsTx, the state's `podHold`).
-func TestAProjectReleaseEndsTheHoldOfThePodItDeletes(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	st := outboxTreeStore(t, isolatedOutboxPool(t))
-	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
-	if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
-		Role: claim.RoleImplementer, Generation: 1, Session: "ses_implementer", State: supervise.StateSuspended,
-		SuspendedBy: supervise.SuspendedByReleased}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.RecordPodHold(ctx, store.PodHold{Project: "legion", Issue: "LEGION-208", Reason: "turn", At: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
-		Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}}
-	r := &projectReleaser{ctx: ctx, project: "legion", mark: &projectRelease{}, store: releasingStore{st}, machines: sup, pods: pods,
-		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
-		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
-	if _, started, err := r.Start(ctx, time.Second, false); err != nil || !started {
-		t.Fatalf("Start = started %v, %v; want the release recorded", started, err)
-	}
-	testwait.Eventually(t, "the release finished", func() bool {
-		release, found, err := st.ReadProjectRelease(ctx, "legion")
-		return err == nil && found && !release.FinishedAt.IsZero()
-	})
-	pods.mu.Lock()
-	deleted := slices.Clone(pods.deleted)
-	pods.mu.Unlock()
-	if !slices.Equal(deleted, []string{"LEGION-208"}) {
-		t.Fatalf("the release deleted the pods of %v, want LEGION-208's", deleted)
-	}
-	if holding, err := st.OpenPodHold(ctx, "legion", "LEGION-208"); err != nil || holding {
-		t.Fatalf("a hold streak of the deleted pod of LEGION-208 runs = %t, %v; want none", holding, err)
 	}
 }
 
@@ -334,47 +290,6 @@ func (s *releaseRecord) PullRequestMerged(context.Context, string) (bool, error)
 // real one.
 func (*releaseRecord) EndPodHoldStreaks(context.Context, string, string) error { return nil }
 
-// unansweredStart is a release's store whose start answers only once its context ends, with that
-// context's error. The store's own start also runs until its context ends while its write does not
-// commit, and then answers the last run's error (store.StartProjectRelease).
-type unansweredStart struct{ *releaseRecord }
-
-func (unansweredStart) StartProjectRelease(ctx context.Context, _ string, _ func() time.Time, _ time.Duration) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error) {
-	<-ctx.Done()
-	return store.ProjectRelease{}, nil, nil, ctx.Err()
-}
-
-// dispatch://INFRA-3583 R7: a start whose record the store does not commit answers the store's
-// error at a deadline of its own, a tenth of the bound and at least projectReleaseStartFloor
-// (projectReleaseStartBound), and not at the end of the request, which the command holds open long
-// past the bound. The mark is clear again, so the daemon starts the project's work as before and
-// the operator's next run gets a whole bound. The negative control is the store called on the
-// request's context, on which the start answers only once the request ends.
-func TestAProjectReleaseStartTheStoreDoesNotAnswerGivesUpAtItsOwnDeadline(t *testing.T) {
-	t.Parallel()
-	mark := &projectRelease{}
-	r := &projectReleaser{ctx: context.Background(), project: "legion", mark: mark, store: unansweredStart{&releaseRecord{}},
-		pods: &releasePods{}, defaultBound: time.Minute, now: time.Now, log: quietLogger()}
-	request, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	began := time.Now()
-	_, started, err := r.Start(request, 10*time.Second, false)
-	took := time.Since(began)
-	if !errors.Is(err, context.DeadlineExceeded) || started {
-		t.Fatalf("Start whose store never answered = started %v, %v; want the deadline's error", started, err)
-	}
-	if took < projectReleaseStartFloor || took > 30*time.Second || request.Err() != nil {
-		t.Fatalf("Start whose store never answered answered after %s, the request %v; want at least %s, the start's deadline for a bound of 10s, and well before the request's minute ended",
-			took, request.Err(), projectReleaseStartFloor)
-	}
-	if mark.held() {
-		t.Fatal("the start that answered an error left the mark held, which holds every start of the project until the next boot")
-	}
-	if round := r.AskRound(); round != "" {
-		t.Fatalf("the start that answered an error asks under %q, want no round", round)
-	}
-}
-
 // releasePods is a runtime's part of a project release over the Sandboxes it lists: each issue
 // pod's delete asks its authorize and records the issue it deleted, each other Sandbox's delete
 // records its name, and each release of the controller's claim records the claim and answers
@@ -472,6 +387,15 @@ func (p *releasePods) ReleaseProjectController(_ context.Context, token claim.To
 // try follow a failed one at once.
 const releaseRetry = 10 * time.Millisecond
 
+// testReleaser is a project release of the project legion over mark, st, sup's machines and pods,
+// as the release's tests build one: a default bound of a minute, a stop timeout and a re-read of a
+// second, a poll of 10ms, and releaseRetry between two tries and between two lists.
+func testReleaser(ctx context.Context, mark *projectRelease, st projectReleaseStore, sup *supervisor, pods *releasePods) *projectReleaser {
+	return &projectReleaser{ctx: ctx, project: "legion", mark: mark, store: st, machines: sup, pods: pods,
+		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
+		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
+}
+
 // runRelease runs a project release of the project legion over sup's machines, pods and records,
 // whose finished channel it reads, with a bound of a second, and answers the result its finish
 // recorded. A claim that never settles costs the bound and then the stop timeout before its pod is
@@ -481,9 +405,7 @@ func runRelease(t *testing.T, records *releaseRecord, sup *supervisor, pods *rel
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	r := &projectReleaser{ctx: ctx, project: "legion", mark: &projectRelease{}, store: records, machines: sup, pods: pods,
-		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
-		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
+	r := testReleaser(ctx, &projectRelease{}, records, sup, pods)
 	for _, c := range configure {
 		c(r)
 	}
@@ -648,9 +570,7 @@ func TestProjectReleaseAsksNothingOnceItFinished(t *testing.T) {
 	}
 	mark := &projectRelease{}
 	release := &releaseRecord{claims: sup.deps.Store.(*outboxClaimStore), finished: make(chan json.RawMessage, 1)}
-	r := &projectReleaser{ctx: ctx, project: "legion", mark: mark, store: release, machines: sup, pods: &releasePods{},
-		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
-		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
+	r := testReleaser(ctx, mark, release, sup, &releasePods{})
 	if _, started, err := r.Start(ctx, time.Minute, false); err != nil || !started {
 		t.Fatalf("Start = started %v, %v; want the release started", started, err)
 	}

@@ -8255,7 +8255,13 @@ The release does five things, in this order:
    A record that does not commit clears the mark again, and the command prints the daemon's refusal: so does one whose transaction finds that a pause committed after the first read of the pause, which the release answers `409 PROJECT_PAUSED` as above.
    The record's start is the moment of the write that commits, and the bound counts from that start.
    The daemon tries to record the release for a tenth of the bound, and for at least 2 seconds, and waits up to 2 seconds more for a commit it has already sent.
-   A record that has not committed by then is refused as one that does not commit, above.
+   A record whose commit the daemon has not sent by then, or that the store says did not commit, is refused as one that does not commit, above.
+   A record whose commit the daemon has sent, and whose outcome the store has still not said by then, is refused too: the daemon clears the mark, and the command prints the daemon's refusal, which says `the store did not say whether the transaction committed`.
+   But that record may have committed, or may still commit, and a record that commits so has no release that runs it.
+   It refuses every pause (`409 PROJECT_RELEASING`) until a release that the operator runs again finishes, and every idle release until the daemon's next boot.
+   No backstop is armed for the claims that the idle releases it took over had stopped, so each of those claims waits for a delivery alone.
+   So run `legion project release` again: since the earlier start was refused, the daemon sets the mark again and records and runs a new release, as at a first run.
+   Once that release has finished, its record is the project's newest, and a pause is taken again; the earlier record stays unfinished until the next boot ends it.
    From the mark until the daemon's process ends, the daemon starts nothing of the project: it creates no Sandbox, pod, repository cache or image probe, starts no role process, and hands no claim a task.
    The operator's spawn, retry, resume and deliver, and a fresh session and a compaction, are refused `409 PROJECT_RELEASED` (`… refused: the project release holds every start until the daemon's next boot`).
    A pause is refused `409 PROJECT_RELEASING` until the release has finished, and taken once it has ([Pausing a project](#pausing-a-project)), so a project is paused under the mark only once the release has finished.
@@ -8273,7 +8279,7 @@ The release does five things, in this order:
    A described commit with no trailer that no working copy and no bookmark reaches is not counted.
    A commit pushed with no description that no remote branch holds now, a commit of the issue that a rewrite of `legion/<KEY>` replaced, and, after a merge, the first pull request's commits once a second one opens, are counted, and each makes the release ask the pod's roles.
    The pod update round and the idle release read a narrower set, the commits under a working copy or a local bookmark ([The disk dies with its pod](#the-disk-dies-with-its-pod), [Idle release](#idle-release)): the round replaces the pod and only names what goes with it, and the idle release keeps a pod whose workspace holds such work, where the project release asks that pod's roles to push and then deletes the pod.
-   It builds no bundle and sends no commit.
+   It runs no git and sends no commit.
    A pod in which no role process runs has no shim to read, and the release deletes it with no read.
    A pod that holds a claim an operator suspended is left with its disk, and the release reads and asks nothing there.
 

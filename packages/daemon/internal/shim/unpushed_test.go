@@ -22,9 +22,8 @@ import (
 // only when the pod's workspace holds the issue's unpushed work. Each case is a real workspace with
 // a remote, read by the real shim as the release reads it, and the answer is held to the read's two
 // facts: the line the shim wrote is the frame's own members and nothing else, so no commit, file or
-// description of the workspace rides along. The read builds no bundle: every git the shim starts is
-// recorded (recordingGit), a bundle is only ever written by `git bundle create`, and the read's
-// record stays empty.
+// description of the workspace rides along. The read runs no git and sends no commit: every git
+// the shim starts is recorded (recordingGit), and the read's record stays empty.
 //
 // The first cases are in the layout a pod's provisioning makes (podWorkspace). The first is what
 // every pod reads when its roles have pushed everything: the pod's shared clone holds a workspace
@@ -296,7 +295,7 @@ func requireUnpushed(t *testing.T, home, ws string, env []string, request shimwi
 		t.Fatalf("shim.ReadUnpushed = %#v, %v; want %#v", direct, err, want)
 	}
 	if calls := gitRecord(t, record); calls != "" {
-		t.Fatalf("the read ran git, which is what a bundle is written with:\n%s", calls)
+		t.Fatalf("the read ran git, which it must not:\n%s", calls)
 	}
 }
 

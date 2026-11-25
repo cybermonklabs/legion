@@ -10,7 +10,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,21 +141,16 @@ func (f *CommitFault) Refuse(refused bool) {
 // PassAgainAfter passes new connections again, as Refuse(false) does, two seconds after fired
 // closes, or thirty seconds after the call if fired never closes. Fired is the channel of a fault
 // that refuses (CutAfterCommitRefusing): for two seconds the caller it refused fails to read its
-// commit's outcome, and it still waits inside its bound when the store answers again. The flag it
-// answers is set as fired closes, so once the store answers again it says whether the fault met
-// its COMMIT at all.
-func (f *CommitFault) PassAgainAfter(fired <-chan struct{}) *atomic.Bool {
-	met := &atomic.Bool{}
+// commit's outcome, and it still waits inside its bound when the store answers again.
+func (f *CommitFault) PassAgainAfter(fired <-chan struct{}) {
 	go func() {
 		select {
 		case <-fired:
-			met.Store(true)
 			time.Sleep(2 * time.Second)
 		case <-time.After(30 * time.Second):
 		}
 		f.Refuse(false)
 	}()
-	return met
 }
 
 // Met waits for fired, the channel of an armed fault, for at most testwait.Bounded(t,
