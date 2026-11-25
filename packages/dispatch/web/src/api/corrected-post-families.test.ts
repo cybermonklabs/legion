@@ -256,9 +256,9 @@ function bindingsOf(name: string, path: string, at: number): readonly Binding[] 
 }
 
 /** What a computed key resolves to: the families it can name, or a key another site keys a query
- *  under (`someQuery(…).queryKey`), which the test counts there, or a type, where the colon
- *  annotates a parameter or a field and keys nothing. */
-type Resolved = readonly string[] | "named elsewhere" | "a type";
+ *  under (`someQuery(…).queryKey`), which the test counts there. A colon that annotates a
+ *  parameter or a field never reaches here: `keyPositions` reads object-literal properties alone. */
+type Resolved = readonly string[] | "named elsewhere";
 
 /** The families `expression`, a key as written at `at` in `path`, names; undefined where no rule
  *  here reads it. */
@@ -305,7 +305,6 @@ function keyFamilies(
       ? called[1]
       : undefined);
   if (bound === undefined) return undefined;
-  if (name !== undefined && /^[A-Z]/u.test(name)) return "a type";
   const bindings = bindingsOf(bound, path, at);
   if (bindings.length === 0) return undefined;
   const families: string[] = [];
@@ -336,6 +335,8 @@ interface KeySite {
  *  literal, written with its colon at once after it (`queryKey:`), as TypeScript parses the source,
  *  so a `queryKey:` inside a string, a template or a type is no key. */
 function keyPositions({ path, text }: Source): number[] {
+  // Most files key no query, and a file whose text holds no `queryKey:` yields no position.
+  if (!text.includes("queryKey:")) return [];
   const file = ts.createSourceFile(path, text, {
     jsDocParsingMode: ts.JSDocParsingMode.ParseNone,
     languageVersion: ts.ScriptTarget.Latest,
