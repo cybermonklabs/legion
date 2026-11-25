@@ -902,7 +902,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 	const title = "Archive search drops rows past offset fifty"
 	existing := createSuggestionIssue(t, handler, map[string]any{"project": "FORCE", "title": title})
 
-	served.suggestionTimeout = time.Nanosecond
+	served.suggestionTimeout = spentRelatedAllowance
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "FORCE", "title": title, "force": true,
 	}, "alice")

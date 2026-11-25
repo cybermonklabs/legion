@@ -162,8 +162,8 @@ func TestGatedStepsContractIsTheContractThatAddedTheField(t *testing.T) {
 		t.Fatalf("gatedStepsContract = %d, want %d, the contract whose entry in version.go added the issues' gated steps",
 			gatedStepsContract, addedGatedSteps)
 	}
-	if gatedStepsContract > DaemonAPIVersion {
+	if gatedStepsContract > DaemonAPIVersion() {
 		t.Fatalf("gatedStepsContract = %d, above DaemonAPIVersion %d: no caller could be served the field",
-			gatedStepsContract, DaemonAPIVersion)
+			gatedStepsContract, DaemonAPIVersion())
 	}
 }

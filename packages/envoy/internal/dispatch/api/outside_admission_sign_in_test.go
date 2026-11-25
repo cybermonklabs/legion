@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -175,7 +176,7 @@ func TestAnIAPKeySetSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testin
 	t.Parallel()
 	limiter := admission.New(admission.DefaultLimits())
 	database := storetest.Open(t)
-	signed := newIAPSocketKeys(t, database)
+	signed := newIAPSocketKeys(t, database, clock.Real())
 	var fetches atomic.Int32
 	release := make(chan struct{})
 	answer := sync.OnceFunc(func() { close(release) })
@@ -315,7 +316,7 @@ func TestAnIAPKeySetAlreadyReadKeepsThePlaceOfTheShareThroughTheVerification(t *
 	t.Parallel()
 	limiter := admission.New(admission.DefaultLimits())
 	database := storetest.Open(t)
-	signed := newIAPSocketKeys(t, database)
+	signed := newIAPSocketKeys(t, database, clock.Real())
 	person := &heldLogins{
 		Identity: signed.identity, outside: limiter.Outside(),
 		entered: make(chan struct{}, 1), proceed: make(chan struct{}), stop: make(chan struct{}),

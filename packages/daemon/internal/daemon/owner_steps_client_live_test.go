@@ -31,7 +31,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -121,7 +120,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	l := newOwnerStepsClientLive(t)
 	planned, returnRefused, stopped, older := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key
 	l.note("Dispatch %s, project %s, issues %s, %s, %s and %s; daemon at %s (contract %d); client of %s",
-		l.dispatch.base, l.cfg.Project, planned, returnRefused, stopped, older, l.d.base, api.DaemonAPIVersion, l.root)
+		l.dispatch.base, l.cfg.Project, planned, returnRefused, stopped, older, l.d.base, api.DaemonAPIVersion(), l.root)
 	l.check("older-client-tree", l.olderClient)
 
 	// register_plan with the architect's grant, and its control: the same call naming a version
@@ -274,7 +273,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 		// now launched nothing for it (each boot gets a fresh fake runtime).
 		registered := l.client(l.oldTree, tester, "register", map[string]any{"bootToken": tester.bootToken, "sessionId": tester.session,
 			"ompSessionFile": "/sessions/" + tester.session + ".jsonl", "agentId": tester.session, "pluginContract": l.oldContract}, nil)
-		if want := fmt.Sprintf("speaks daemon API contract %d; this daemon requires %d", l.oldContract, api.DaemonAPIVersion); registered.OK ||
+		if want := fmt.Sprintf("speaks daemon API contract %d; this daemon requires %d", l.oldContract, api.DaemonAPIVersion()); registered.OK ||
 			registered.Error != "LegionDaemonApiError" || registered.Status != http.StatusConflict || !strings.Contains(registered.Message, want) {
 			t.Fatalf("the contract %d client's own registration %s, want LegionDaemonApiError 409 saying it %s", l.oldContract, registered, want)
 		}
@@ -336,8 +335,10 @@ func newOwnerStepsClientLive(t *testing.T) *ownerStepsClientLive {
 	return &ownerStepsClientLive{ownerStepsRig: rig, root: root}
 }
 
-// versionFile is the file whose DaemonAPIVersion line names a tree's daemon API contract.
-const versionFile = "packages/daemon/internal/api/version.go"
+// contractScript prints a commit's daemon API contract: the `const DaemonAPIVersion` of version.go
+// at a commit before the entries, the frozen list's greatest number plus the count of entry
+// fixtures at one after them.
+const contractScript = "scripts/daemon-contract.sh"
 
 // olderClient builds the plugin of the release before: the commit releaseBefore names, taken with
 // `git archive` into a directory of the run's own and given node_modules of its own with
@@ -353,66 +354,40 @@ func (l *ownerStepsClientLive) olderClient() {
 	l.run(tree, "bun", "install", "--frozen-lockfile")
 	l.oldTree, l.oldContract = tree, contract
 	l.note("the plugin of the release before: %s (%s), at contract %d, the newest commit below contract %d on the first-parent line of %s; its tree in %s with its own bun install",
-		commit, l.run(l.root, "git", "log", "-1", "--format=%cs %s", commit), contract, api.DaemonAPIVersion, ref, tree)
+		commit, l.run(l.root, "git", "log", "-1", "--format=%cs %s", commit), contract, api.DaemonAPIVersion(), ref, tree)
 }
 
-// releaseBefore answers the newest commit of main's first-parent line whose DaemonAPIVersion is
+// releaseBefore answers the newest commit of main's first-parent line whose daemon API contract is
 // below this daemon's, its contract, and the ref the walk read main from. That is the release before
 // this checkout's contract: in a run of a pull request that changes the contract, the main it merges
 // into; in a run of one that keeps main's contract, and on main, the commit before the last change of
-// the contract. main is origin/main in a clone that holds its history;
-// a shallow clone (CI's checkout) fetches main from origin, deeper each time the walk reaches the
-// end of what it fetched, and the whole of main's history once 4096 commits hold no such commit:
-// how far back the last change of the contract is depends on how long main has kept it, which no
-// depth written here bounds.
+// the contract. main is refs/remotes/origin/main, whose whole history
+// scripts/e2e/owner-steps-client.sh fetched without blobs, with HEAD's, before it took this
+// driver's merge order: a shallow clone, as CI's checkout is, holds neither, and how far back the
+// last change of the contract is depends on how long main has kept it, which no depth bounds.
 func (l *ownerStepsClientLive) releaseBefore() (string, int, string) {
 	t := l.t
 	t.Helper()
-	if l.run(l.root, "git", "rev-parse", "--is-shallow-repository") != "true" {
-		ref := "refs/remotes/origin/main"
-		if commit, contract, ok := l.firstBelow(ref); ok {
+	const ref = "refs/remotes/origin/main"
+	if err := exec.Command("git", "-C", l.root, "rev-parse", "--verify", "--quiet", ref).Run(); err != nil {
+		t.Fatalf("this checkout holds no %s: scripts/e2e/owner-steps-client.sh fetches it before it builds this driver (%v)", ref, err)
+	}
+	for commit := range strings.FieldsSeq(l.run(l.root, "git", "rev-list", "--first-parent", ref)) {
+		if contract := l.contractAt(commit); contract < api.DaemonAPIVersion() {
 			return commit, contract, ref
 		}
-		t.Fatalf("no commit of %s's first-parent line declares a daemon API contract below %d", ref, api.DaemonAPIVersion)
 	}
-	const deepest = 4096
-	for depth := 64; depth <= deepest; depth *= 4 {
-		l.run(l.root, "git", "fetch", "--quiet", "--no-tags", "--depth="+strconv.Itoa(depth), "origin", "main")
-		if commit, contract, ok := l.firstBelow("FETCH_HEAD"); ok {
-			return commit, contract, "main fetched from origin " + strconv.Itoa(depth) + " commits deep"
-		}
-	}
-	if l.run(l.root, "git", "rev-parse", "--is-shallow-repository") == "true" {
-		l.run(l.root, "git", "fetch", "--quiet", "--no-tags", "--unshallow", "origin", "main")
-		if commit, contract, ok := l.firstBelow("FETCH_HEAD"); ok {
-			return commit, contract, "main's whole history fetched from origin"
-		}
-	}
-	t.Fatalf("no commit of main's first-parent line, fetched whole from origin, declares a daemon API contract below %d", api.DaemonAPIVersion)
+	t.Fatalf("no commit of %s's first-parent line declares a daemon API contract below %d", ref, api.DaemonAPIVersion())
 	return "", 0, ""
 }
 
-// firstBelow answers the newest commit of ref's first-parent line whose DaemonAPIVersion is below
-// this daemon's, and its contract.
-func (l *ownerStepsClientLive) firstBelow(ref string) (string, int, bool) {
-	for commit := range strings.FieldsSeq(l.run(l.root, "git", "rev-list", "--first-parent", ref)) {
-		if contract := declaredContract(l.t, commit, l.run(l.root, "git", "show", commit+":"+versionFile)); contract < api.DaemonAPIVersion {
-			return commit, contract, true
-		}
-	}
-	return "", 0, false
-}
-
-// declaredContract is the DaemonAPIVersion that source, the version file of what, declares.
-func declaredContract(t *testing.T, what, source string) int {
-	t.Helper()
-	match := regexp.MustCompile(`(?m)^const DaemonAPIVersion = (\d+)$`).FindStringSubmatch(source)
-	if match == nil {
-		t.Fatalf("%s's %s declares no DaemonAPIVersion", what, versionFile)
-	}
-	contract, err := strconv.Atoi(match[1])
+// contractAt is the daemon API contract of commit, as contractScript prints it.
+func (l *ownerStepsClientLive) contractAt(commit string) int {
+	l.t.Helper()
+	printed := l.run(l.root, "bash", contractScript, commit)
+	contract, err := strconv.Atoi(printed)
 	if err != nil {
-		t.Fatal(err)
+		l.t.Fatalf("%s %s printed %q, not one integer", contractScript, commit, printed)
 	}
 	return contract
 }

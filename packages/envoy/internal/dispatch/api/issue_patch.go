@@ -337,7 +337,13 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
 	// asks to is known now.
 	closes := input.Status != nil && status == "done"
-	if closes {
+	// A close is checked once here too, on the pool and with no lock held, for who may close an
+	// issue Legion runs (judgeSpecWriter), so that a close the check refuses does not settle the
+	// issue's documents first. It only spares that settlement: the check under the owner locks
+	// below decides, after the write's other refusals, and answers the refusal. A step skips it:
+	// the status change's plan ran the check on each of its steps under its locks
+	// (planStatusChangeUnderLocks), and R25's fix closes no issue.
+	if closes && (call.step != nil || !s.spareSettlementOfARefusedClose(ctx, call.writer, key)) {
 		// Before the transaction, which settlement's own would queue behind on the issue's owner
 		// lock.
 		s.settleIssueBeforeClose(call.outliving, key)
@@ -370,8 +376,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// openWrite locks the rows the write names, reads the issue under them, and refuses what only
 	// those rows can decide: a stale expected_sequence or fence, an invalid parent, a closed
 	// issue, a write the parent status rule refuses, an acceptance write over an open child of
-	// another project (refuseOpenForeignChildren), an advances write the revision rule refuses,
-	// and documents other than the ones gated. The caller rolls tx back on every refusal.
+	// another project (refuseOpenForeignChildren), a write of an issue Legion runs that the check of
+	// who writes it refuses (refuseSpecWriterOfIssueWrite), an advances write the revision rule
+	// refuses, and documents other than the ones gated. The caller rolls tx back on every refusal.
 	openWrite := func(ctx context.Context, tx pgx.Tx, gated []string) (issueWriteOpened, error) {
 		// A write that asks for the open-child check of an acceptance is a dependency write too:
 		// the check and the status it guards run under the deployment dependency lock that every
@@ -507,6 +514,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 		statusChanged := input.Status != nil && before.Status != status
 		parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
+		var statusAfter *string
+		if input.Status != nil {
+			statusAfter = &status
+		}
+		var labelsAfter *[]string
+		if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
+			labelsAfter = &labels
+		}
+		plan := issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter)
 		// R24 (parent_status_rule.go) judges a write that changes the status or the parent, here,
 		// after the refusals above and under the owner locks the write holds: the issue's, its
 		// current parent's and its proposed parent's. Every writer of a pair holds the parent's
@@ -514,15 +530,6 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// the status the issue already has changes no pair and is not judged. With the rule off
 		// the plan is unjudged, so the check reads no conflict that the write would not refuse.
 		if statusChanged || parentChanged {
-			var statusAfter *string
-			if input.Status != nil {
-				statusAfter = &status
-			}
-			var labelsAfter *[]string
-			if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
-				labelsAfter = &labels
-			}
-			plan := issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter)
 			plan.unjudged = !s.deps.ParentStatusRule.On()
 			conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
 			if err != nil {
@@ -538,6 +545,14 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			if err := refuseOpenForeignChildren(ctx, tx, key, before.Project); err != nil {
 				return issueWriteOpened{}, err
 			}
+		}
+		// The check of who writes an issue Legion runs (spec_writer.go): a move under a parent, a
+		// close, a reopen, and a write of the labels or the parent that takes the issue out of
+		// Legion. It runs here, under the owner locks and after the write's other refusals, and
+		// before the close's and the reopen's document work and the row update, so a refused write
+		// writes none of its fields.
+		if err := refuseSpecWriterOfIssueWrite(ctx, tx, call.writer.specWriter(), plan.steps[0]); err != nil {
+			return issueWriteOpened{}, err
 		}
 		// The `advances` revision rule is decided here, beside the other refusals of this handler
 		// and before the first row is written: a refused write leaves the issue exactly as it was.

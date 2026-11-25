@@ -750,7 +750,9 @@ func (p *Pool) Horizon() (*RawPool, error) {
 // backgroundPoolSize bounds the pool for work no request waits on: background loops such as the
 // embedding queue and its coverage pass, the suggestion sweep, the delivery reconcile and intakes,
 // the architecture importer's ticker, the documents' resumption query, task progress,
-// reference-excerpt and block-index reconciliation, the edit-notice sweep, the repair of closed and
+// reference-excerpt and block-index reconciliation (its object pass writes the nodes of the rows
+// another build wrote with none and states gone the orphaned document nodes, each batch in a
+// transaction of its own), the edit-notice sweep, the repair of closed and
 // reopened issues' asks, the boot's check that every project has an owner and its grants
 // (EnsureProjectOwners), the Legion sampler's reads of its settings and records of each daemon's
 // state (legion.RunSampler), the server process registry's prune and the fleet build announcer, and

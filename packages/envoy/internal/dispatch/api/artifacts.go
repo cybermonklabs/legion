@@ -289,7 +289,16 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		}
 	}
 	input.contentType = storedType
-	s.storeArtifact(w, r, input, actor, kind, target)
+	// Whether the credential is a person's, for the check of who writes an issue's spec or
+	// Verification document (refuseSpecWriter), read before storeArtifact opens its transaction.
+	// Every upload to an issue reads it, a file's too: a file named verification.md takes the slug
+	// that reads as the issue's Verification document (documentPlays). An upload to a project or to
+	// a session reads nothing for it.
+	writer := specWriter{actor: actor}
+	if target.IssueKey != nil {
+		writer = s.specWriterOf(r, actor)
+	}
+	s.storeArtifact(w, r, input, writer, kind, target)
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
@@ -587,6 +596,23 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, r *http.Request,
 // (documentRole), read once by the caller, which refuses a blank create that takes one: the row
 // the insert leaves carries it, so the reads this transaction makes of the artifact it just
 // created see it as every later reader will.
+//
+// The create's one time is read here, in the read phase, under the owner lock the caller holds: its
+// row's created_at and its node's statements are both dated with it (graphstore.StatementTime),
+// past every statement about the address, so a read as of a time reads them in the order the
+// store appends them. Which row the node's live statement names is read from its cause, this
+// upload's artifact.created (graphcensus's ownLiveStatement), not from this time.
+//
+// The node is written in the project of the issue or the project that owns the document, or
+// between the parties of the conversation that does. A ref_key past the store's address bound is
+// no node of it (graphstore.AddressFits), as every writer of the store leaves such an address out,
+// and the write is then the zero Uncaused. No row stands at the address, since the slug is free
+// under the owner lock this transaction holds, so a node there that is not gone stands behind no
+// row: a document a build before this one removed, stating nothing, live or at a state a later
+// release marked it with (graphstore.Node's Restates). The write states it gone and then live,
+// both under this upload's event, so the new document's node carries no statement of the removed
+// one's as its own; it states the two itself, so the node write states no state of its own
+// beside them.
 func (s *server) queueNewArtifact(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -596,20 +622,48 @@ func (s *server) queueNewArtifact(
 	slug, name, kind string,
 	role *string,
 	actor model.Actor,
-) (model.Artifact, error) {
+) (model.Artifact, graphstore.Uncaused, error) {
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, graphstore.Uncaused{}, err
 	}
 	artifact := model.Artifact{
 		IssueKey: target.IssueKey, Project: deref(project), SessionID: session,
 		RefKey: target.refPrefix() + "/" + slug, Slug: slug, Name: name, Kind: kind, Role: deref(role),
 	}
 	if err := json.Unmarshal(actorJSON, &artifact.CreatedBy); err != nil {
-		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
+		return model.Artifact{}, graphstore.Uncaused{}, fmt.Errorf("decode artifact author: %w", err)
 	}
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&artifact.ID, &artifact.CreatedAt); err != nil {
-		return model.Artifact{}, err
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&artifact.ID); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	if artifact.CreatedAt, err = graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	var documentNode graphstore.Uncaused
+	if graphstore.AddressFits(artifact.RefKey) {
+		node := graphstore.ArtifactNode(artifact.RefKey, deref(project), deref(session), actor, artifact.CreatedAt)
+		held, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindArtifact, artifact.RefKey)
+		if err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
+		var stated []graphstore.Tuple
+		if found && held.State != graphstore.StateGone {
+			for _, state := range []string{graphstore.StateGone, graphstore.StateLive} {
+				stated = append(stated, graphstore.Tuple{
+					FromKind: graphstore.KindArtifact, FromID: artifact.RefKey,
+					Kind: graphstore.AttributeState, ToKind: graphstore.KindValue, ToID: state,
+					At: artifact.CreatedAt, Who: actor, Asserted: true,
+				})
+			}
+		}
+		documentNode = graphstore.PlanUncaused([]graphstore.Node{node}, stated)
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, documentNode)
+			return nil
+		}); err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
 	}
 	// The document work that follows runs before the insert below, so the address that insert
 	// gives the row - its key, the issue holding it, none for a project's or a session's
@@ -620,8 +674,9 @@ func (s *server) queueNewArtifact(
 	// address names no pending parent (refs.DocumentAddress).
 	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
 		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Ref: artifactReference(artifact),
+		Project: deref(project), Session: deref(session),
 	})
-	return artifact, queueExec(ledger, `
+	return artifact, documentNode, queueExec(ledger, `
 		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10)
 	`, artifact.ID, target.IssueKey, project, session, slug, name, kind, role, actorJSON, artifact.CreatedAt)
@@ -731,14 +786,16 @@ func (s *server) uploadDocuments(ctx context.Context, target artifactTarget, nam
 
 // artifactStore is an upload's open transaction, joined to the document ledger its writes are
 // queued on, its owner locked, and the artifact it writes, found or created (its insert queued);
-// issueStatus is the issue's lifecycle status for an issue's artifact.
+// issueStatus is the issue's lifecycle status for an issue's artifact, and documentNode the node of
+// a document the upload creates, which waits for the upload's event (graphstore.QueueCaused).
 type artifactStore struct {
-	tx          pgx.Tx
-	documentCtx context.Context
-	ledger      *docs.Ledger
-	issueStatus *string
-	artifact    model.Artifact
-	created     bool
+	tx           pgx.Tx
+	documentCtx  context.Context
+	ledger       *docs.Ledger
+	issueStatus  *string
+	artifact     model.Artifact
+	created      bool
+	documentNode graphstore.Uncaused
 }
 
 // beginArtifactStore opens an upload's transaction, joins it to the document ledger, locks its
@@ -752,14 +809,14 @@ type artifactStore struct {
 // version, the event - is queued on the ledger at the point it is made, for Commit to run back to
 // back.
 func (s *server) beginArtifactStore(
-	ctx context.Context, input artifactUploadInput, actor model.Actor, kind string, target artifactTarget, gated []string,
+	ctx context.Context, input artifactUploadInput, writer specWriter, kind string, target artifactTarget, gated []string,
 ) (artifactStore, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return artifactStore{}, err
 	}
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
-	opened, err := s.lockArtifactStore(ctx, tx, ledger, input, actor, kind, target)
+	opened, err := s.lockArtifactStore(ctx, tx, ledger, input, writer, kind, target)
 	if err == nil {
 		var named []string
 		if !opened.created && kind == "doc" {
@@ -781,8 +838,9 @@ func (s *server) beginArtifactStore(
 // lockArtifactStore locks an upload's owner inside tx and finds the artifact named input.name,
 // or queues its creation on ledger.
 func (s *server) lockArtifactStore(
-	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, input artifactUploadInput, actor model.Actor, kind string, target artifactTarget,
+	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, input artifactUploadInput, writer specWriter, kind string, target artifactTarget,
 ) (artifactStore, error) {
+	actor := writer.actor
 	var issueStatus *string
 	var project, session *string
 	var err error
@@ -812,6 +870,12 @@ func (s *server) lockArtifactStore(
 	}
 	var artifact model.Artifact
 	var created bool
+	// The node of a document this upload creates: written before its row, in the project of the
+	// issue or the project that owns it, or between the parties of the conversation that does,
+	// and stated under the event the upload appends, or at the sentinel where its owner records
+	// none (artifactTarget.ownsEvents). A ref_key past the store's address bound is no node
+	// of it (graphstore.AddressFits), as every writer of the store leaves such an address out.
+	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(ctx, tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
@@ -832,7 +896,7 @@ func (s *server) lockArtifactStore(
 		if input.blank && role != nil {
 			return artifactStore{}, createRoleNameRefusal(input.name, slug, *role)
 		}
-		artifact, err = s.queueNewArtifact(ctx, tx, ledger, target, project, session, slug, input.name, kind, role, actor)
+		artifact, documentNode, err = s.queueNewArtifact(ctx, tx, ledger, target, project, session, slug, input.name, kind, role, actor)
 		if err != nil {
 			return artifactStore{}, err
 		}
@@ -862,6 +926,18 @@ func (s *server) lockArtifactStore(
 			artifact.Role = *role
 		}
 	}
+	// The check of who writes an issue's spec or Verification document, on the row as this upload
+	// leaves it - a new one with the role its slug gave it, an older one with its role repaired -
+	// before the first document call, so an upload that would change nothing is refused too. It
+	// judges a file as well as a document: a file row whose slug is verification-md, which takes no
+	// role, is the issue's Verification document by that slug (specWriterDocumentName). Where a
+	// file store holds files, the same check answered a file first, before its object was written
+	// (refuseUploadBeforeItsObject); this one decides, under the owner's lock.
+	if target.IssueKey != nil {
+		if err := refuseSpecWriterOfDocument(ctx, tx, writer, artifact); err != nil {
+			return artifactStore{}, err
+		}
+	}
 	// A project artifact's owner is the artifact itself, and until here this transaction has not
 	// taken its lock: the issue branch above locks its issue, but this one only read its project.
 	// For a document the document service takes that lock itself, before the room, when the write
@@ -875,22 +951,24 @@ func (s *server) lockArtifactStore(
 			return artifactStore{}, err
 		}
 	}
-	return artifactStore{issueStatus: issueStatus, artifact: artifact, created: created}, nil
+	return artifactStore{issueStatus: issueStatus, artifact: artifact, created: created, documentNode: documentNode}, nil
 }
 
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
 	input artifactUploadInput,
-	actor model.Actor,
+	writer specWriter,
 	kind string,
 	target artifactTarget,
 ) {
+	actor := writer.actor
 	checksum := sha256.Sum256(input.content)
 	sha := hex.EncodeToString(checksum[:])
 	// A file's object is written before the transaction opens, once the refusals the transaction
-	// would make have been made (putUploadedFile, artifact_files.go).
-	if !s.putUploadedFile(w, r, kind, sha, input, target) {
+	// would make, the check of who writes the issue's Verification document among them, have been
+	// made (putUploadedFile, artifact_files.go).
+	if !s.putUploadedFile(w, r, writer, kind, sha, input, target) {
 		return
 	}
 	// An upload to an existing document replaces its live text, so it queues for the document's
@@ -901,7 +979,7 @@ func (s *server) storeArtifact(
 			return s.uploadDocuments(ctx, target, input.name, kind)
 		},
 		func(ctx context.Context, gated []string) (artifactStore, error) {
-			return s.beginArtifactStore(ctx, input, actor, kind, target, gated)
+			return s.beginArtifactStore(ctx, input, writer, kind, target, gated)
 		})
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -911,7 +989,7 @@ func (s *server) storeArtifact(
 	defer release()
 	r = r.WithContext(gatedCtx)
 	tx, documentCtx, ledger := opened.tx, opened.documentCtx, opened.ledger
-	issueStatus, artifact, created := opened.issueStatus, opened.artifact, opened.created
+	issueStatus, artifact, created, documentNode := opened.issueStatus, opened.artifact, opened.created, opened.documentNode
 	defer tx.Rollback(r.Context())
 	defer ledger.Discard()
 
@@ -1061,6 +1139,13 @@ func (s *server) storeArtifact(
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, documentNode, blockCause)
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, r, err)
@@ -1617,6 +1702,8 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	// Read before the transaction opens (specWriterOf), for the check below.
+	writer := s.specWriterOf(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -1635,6 +1722,12 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	if artifact.Kind != "doc" {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		return
+	}
+	// The check of who writes an issue's spec or Verification document, under the owner's lock and
+	// before the document call, so a named version that would change nothing is refused too.
+	if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
@@ -1794,6 +1887,14 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
+	// Read before the writer gate and the transaction (specWriterOf), for the check below, and only
+	// for a document the check holds: the check passes every other document without reading the
+	// writer. Resolving the credential may wait on another server (callerHoldsScope), so it is
+	// read here, holding neither the document's writer gate nor a connection.
+	writer := specWriter{actor: actor}
+	if _, held := specWriterDocumentName(artifact); held {
+		writer = s.specWriterOf(r, actor)
+	}
 	// A conditional edit joins the document's queue across every process serving the database
 	// before anything else (AcquireConditionalEdit): the writer gate below bounds this process's
 	// writers of one document, and that queue bounds the processes' together, so it is taken
@@ -1837,6 +1938,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	eventOwner := ownerForArtifact(artifact)
 	status, err := s.requireOpenOwnerStatus(r.Context(), tx, eventOwner)
 	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	// The check of who writes an issue's spec or Verification document, under the owner's lock and
+	// before ApplyOps, so an edit that would change nothing is refused too.
+	if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}

@@ -902,13 +902,14 @@ func (p *settlementPass) commitFailed(advanced bool, err error) settleOutcome {
 // (committed). An ask event that names thread_logins has its insert read them
 // (settlementEventLogins), after the ask writes queued before it.
 //
-// caused holds, by an event's place in events, a write of the node and tuple store that event is
-// the cause of (graphstore.Uncaused): the version's block index, or the follow of an ask the
-// pass opened. Its append is queued right after the event's and its stamp, naming the event's id
-// as the id sequence left it (graphstore.LatestEvent), so nothing between the two appends another
-// event. A held write is read when the step runs, in the write phase, so one an earlier step
-// fills then (createAskBlock) is read as that step left it.
-func (p *settlementPass) appendEvents(ctx context.Context, events []model.Event, caused map[int]*graphstore.Uncaused) error {
+// caused holds, by an event's place in events, the writes of the node and tuple store that event
+// is the cause of (graphstore.Uncaused), in the order they are stated: the version's block index,
+// or the node of an ask the pass opened and its author's follow. Their appends are queued right
+// after the event's and its stamp, naming the event's id as the id sequence left it
+// (graphstore.LatestEvent), so nothing between the two appends another event. A held write is
+// read when the step runs, in the write phase, so one an earlier step fills then (createAskBlock)
+// is read as that step left it.
+func (p *settlementPass) appendEvents(ctx context.Context, events []model.Event, caused map[int][]*graphstore.Uncaused) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -921,7 +922,7 @@ func (p *settlementPass) appendEvents(ctx context.Context, events []model.Event,
 			if sourceKind, sourceID, ok := referenceSource(planned, p.room); ok {
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
-			if stated := caused[index]; stated != nil {
+			for _, stated := range caused[index] {
 				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
 			}
 		}
@@ -930,8 +931,9 @@ func (p *settlementPass) appendEvents(ctx context.Context, events []model.Event,
 }
 
 // appendReconciliationEvents appends the events this pass's reconciliation decided on
-// (appendEvents), each with what it is the cause of: the follow of an ask the pass opened waits
-// for that ask's ask.opened event and is stated right after it (followsByEvent).
+// (appendEvents), each with what it is the cause of: the node of an ask the pass opened and its
+// author's follow wait for that ask's ask.opened event and are stated right after it
+// (followsByEvent).
 func (p *settlementPass) appendReconciliationEvents(ctx context.Context) error {
 	follows, err := p.reconciliation.followsByEvent(p.reconciliation.events)
 	if err != nil {
@@ -1455,12 +1457,12 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 		// What this settlement's block index stated waits for that event: its id is the cause
 		// every node and tuple of the pass carries, and it exists only once the event's insert has
 		// run, so it is stated right after it (appendEvents).
-		if err := p.appendEvents(ctx, []model.Event{versionEvent}, map[int]*graphstore.Uncaused{0: &result.blocks}); err != nil {
+		if err := p.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
 			return settleDone, p.abandon(err)
 		}
 	}
-	// The reconciliation's events, the follows of the asks this pass opened each stated right
-	// after its own ask.opened (appendReconciliationEvents).
+	// The reconciliation's events, the nodes and the follows of the asks this pass opened each
+	// stated right after its own ask.opened (appendReconciliationEvents).
 	if err := p.appendReconciliationEvents(ctx); err != nil {
 		return settleDone, p.abandon(err)
 	}

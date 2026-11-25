@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -180,8 +182,16 @@ const inboxReadMarkAgentReplies = `
 // issue message on those owners waits behind a statement that hangs, so one that cannot finish
 // is better killed, which rolls the transaction back and frees them. It is longer than a lock's
 // bounded wait (store.LockRowsWithinBound, ten seconds), because it is the bound of a statement that
-// hangs: a statement waiting on a row another transaction holds is the lock bound's to end.
-const inboxReadStatementTimeout = "15s"
+// hangs: a statement waiting on a row another transaction holds is the lock bound's to end. The
+// dismissal's transaction (dismissInboxThreads) holds the same locks and takes the same bound.
+const inboxReadStatementTimeout = 15 * time.Second
+
+// boundInboxStatements is the statement the mark-all's and the dismissal's transactions open with:
+// every statement after it is bounded by inboxReadStatementTimeout, unless a test set a bound of
+// its own (server.inboxStatementBound).
+func (s *server) boundInboxStatements() string {
+	return fmt.Sprintf("set local statement_timeout = '%dms'", cmp.Or(s.inboxStatementBound, inboxReadStatementTimeout).Milliseconds())
+}
 
 // inboxStatementEnded is err, the failure of a mark-all's or a dismissal's transaction, named
 // store.ErrPoolBusy when it is a statement Postgres ended at inboxReadStatementTimeout (SQLSTATE
@@ -543,7 +553,7 @@ func (s *server) markInboxReadThreads(
 		return 0, nil, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
+	if _, err := tx.Exec(ctx, s.boundInboxStatements()); err != nil {
 		return 0, nil, fmt.Errorf("bound the mark-all's statements: %w", err)
 	}
 	read, err := readInboxReadThreads(ctx, tx, actor, login,

@@ -525,12 +525,12 @@ The daemon refuses to serve unless its OMP exposes `pi.agents` and actually load
 The image build's final step runs `legion version`, requiring the commit the workflow built, and the plugin's `dispatch` shim (`/opt/legion/pi-envoy/bin/dispatch --help`, which needs its bundled `dist/dispatch.js` and the image's Bun), then `legion probe-image`:
 the same two probes, run by the daemon's own code, plus two only the image runs
 — the session-storage probe, which prints `session-storage=probed` on the OK line ([The image guard](#the-image-guard)), and the Claude lane, on `--claude-root /opt/legion/claude-envoy` and `--claude-code-pin /opt/legion/claude-code` (the image's own paths, which the flags default to, so the daemon's probe Sandbox below checks them too):
-that root's built channel server (`dist/envoy-channel.js`) and generated Legion plugin (`legion/.claude-plugin/plugin.json`), each a regular file, and the root's own declared `legion.daemonApiVersion`;
+that root's built channel server (`dist/envoy-channel.js`) and generated Legion plugin (`legion/.claude-plugin/plugin.json`), each a regular file, and the daemon API contract the root's own manifest declares, which the image's build of it wrote;
 and Claude Code's pin, which must name one exact version and lock that release and its `linux-x64` package, the one whose binary a pod's install runs, at that version with the `sha512` integrity `npm ci` holds each tarball to.
 The lane reads the pin and fetches nothing:
 installing from it would make the publish and every boot probe depend on the npm registry and could not promise a pod's later fetch anyway, so the image proves it is self-consistent and the fetch is proved where it happens, by each Claude launch's start script and by `scripts/e2e/claude-backend-sandbox.sh` (`verifyClaude`, `packages/daemon/internal/daemon/bootgate.go`).
 Each of the lane's refusals names a build of the image from this daemon's commit.
-The two probes the daemon shares hold the Legion plugin to the daemon API contract (`legion.daemonApiVersion`), the Envoy plugin's interface to the one the Legion plugin speaks, and resolve every task agent and skill Legion's prompts name (`task(agent="…")`, `skill://…`) by name through the same launch (the agents and skills each plugin ships are listed below), so a build whose OMP or plugins are broken fails instead of publishing.
+The two probes the daemon shares hold the Legion plugin to the daemon's own contract number ([Contract discipline](#contract-discipline)), the Envoy plugin's interface to the one the Legion plugin speaks, and resolve every task agent and skill Legion's prompts name (`task(agent="…")`, `skill://…`) by name through the same launch (the agents and skills each plugin ships are listed below), so a build whose OMP or plugins are broken fails instead of publishing.
 
 The Legion plugin ships these in `agents/`:
 
@@ -1939,7 +1939,7 @@ No migration turns a per-claim Sandbox or locator into an issue pod's, and nothi
 
    - `runtime.kubernetes.image` pinned to a worker image built from it, since the image probe refuses a worker image whose `pi-legion` declares another daemon API contract (`ProbeImage` in `internal/runtime/sandbox/probe.go`); and
 
-   - for an operator-launched controller, every operator's `legion` and `pi-legion` at this release's daemon API contract (`DaemonAPIVersion` in `internal/api/version.go`).
+   - for an operator-launched controller, every operator's `legion` and `pi-legion` at this release's daemon API contract, the number on the first line of `legion version --contracts` of this release's `legion`.
      `legion controller start` refuses a `pi-legion` speaking another contract (`probeAndMint` in `cmd/legion/controller.go`), and the daemon refuses a `legion` or `pi-legion` of another contract with 409 (`internal/api/controller.go`).
      That `pi-legion` release must be published before the rollout.
      Contract 20 adds the controller's credential route (`POST /legion/v1/controller/github-credential`) and the controller pod's `GH_*` environment variables (LEGION-668).
@@ -2074,7 +2074,7 @@ the controller's working root and the caches' clones, which hold no issue's work
 #### Rolling back below the release that guards an issue pod's memory
 
 The release that added the memory guard in an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3557`.
-Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+Its daemon API contract is 144.
 A rollback below it has one step of its own, and one effect on the pods that still run.
 
 **`runtime.kubernetes.memory_guard` must come out of `legion.yaml` first.**
@@ -2095,7 +2095,7 @@ The note a kill sends is a `role_message` outbox row (`record.RoleMessage`), a k
 #### Rolling back below the release that guards the controller's pod's memory
 
 The release that added the memory guard in the controller's pod ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3531`.
-Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+Its daemon API contract is 217.
 A rollback below it has two steps of its own, and one effect on the controller's pod while that pod still runs.
 A rollback below the release that guards an issue pod's memory also takes the steps of that release's own section above.
 
@@ -2457,7 +2457,7 @@ delete from outbox where kind = 'phase_ended';
 #### Rolling back the release that gives up on intake messages
 
 The release that gives up on an intake message whose handling keeps failing is the one whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-1575`.
-Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+Its daemon API contract is 228.
 That release keeps each failing message whole in the daemon's database, tells the controller of each message it gives up (the controller notice kind `intake-gave-up`), and lets the operator (`legion intake replay` and `legion intake discard`) or the controller (`replay_give_up` and `discard_give_up`) replay or discard it ([A message the intake gave up](https://cybermonklabs.github.io/legion/legion/troubleshooting/#a-message-the-intake-gave-up)).
 Its migration `20261120144241_intake_failures` adds three tables, and it drops nothing:
 
@@ -3077,7 +3077,7 @@ Upgrade, and roll back, every daemon of one database in the same change.
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
-Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-2009`, and its number moved more than once while it was open, each time `main`'s own number or another open pull request's reached the one it held.
+It is daemon API contract 160, the release whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-2009`.
 So the release before it is whichever release of `main` precedes that entry, and the rule below applies to a rollback to it.
 A daemon of any release without that entry knows neither, and it decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so a `volume-near-full` row still queued when that image is pinned can never be decoded.
 
@@ -3179,7 +3179,7 @@ An eviction ends every role of the pod, and the roles are checked one after anot
 A role recorded in that pod and checked after the replacement finds no pod of its uid, and reads the eviction from those two annotations instead, as its pod end and in its detail (`withEndedPod`, `internal/runtime/sandbox/observe.go`), so its claim keeps the eviction as the end it died of, as a role whose check read the pod itself does.
 The record is keyed by the pod's uid, so it says nothing of a role recorded in a later pod, and it lives on the Sandbox, so a restarted daemon reads it too; a Sandbox a migrating launch deletes and creates again does not carry it over.
 
-A route change the plugin calls is a contract bump by `version.go`'s rule, and since LEGION-164 a contract bump is brought in place at the daemon's first boot on it, with no issue pod replaced and no runbook step:
+A route change the plugin calls adds a contract entry (`CONTRIBUTING.md`), so the release that carries it speaks a new contract number, and since LEGION-164 a new contract number is brought in place at the daemon's first boot on it, with no issue pod replaced and no runbook step:
 the boot pass ("Contract discipline" below) brings every registered claim whose recorded contract differs from the daemon's onto the current plugin, and the relaunched role loads the release's published plugins installed in its pod:
 every such claim is asked nothing and is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim, and the relaunch keeps an issue pod and its disk, so a worker loses only the turn it was in.
 What the text above keeps is the release that changes what the pod's own `legion` binary speaks (the launcher, the shim, `workspace-init`):
@@ -3339,7 +3339,7 @@ The safety copy's `pg_dump`, run as a login that cannot read the session tables,
 
 **Handoff records on the Dispatch issue (daemon API contract 45).**
 A release at contract 45 takes a file-backed phase's completion (planning, implementing, testing, reviewing) only when it names the handoff record its worker wrote on the Dispatch issue with `dispatch handoff-write`, and reads that record back from Dispatch (`GET /api/v1/handoffs/{id}`) before it records anything;
-its workers' plugins report the record, so the daemon and the plugins move together, as every contract bump does.
+its workers' plugins report the record, so the daemon and the plugins move together, as they do at every new contract number.
 Store migration 20261101144900_handoff_records adds two columns to `phases`, `handoff_record` and `handoff_version`:
 the record a role's completion of its current phase named, and its version.
 
@@ -3607,7 +3607,7 @@ What that second fill costs is the numbering:
 every role the earlier release had handed work is at entry 1 again, whatever entry it stood at before the rollback, and `entry_raised_at` reads the moment of the roll-forward.
 What a role is owed is the difference between its own two numbers, both written by that one run, so that difference reads no entry from before the rollback.
 One reader does compare an entry across it: the reviewer's review names the entry of its round in its Legion footer, so a review from before the rollback that names entry 1 and is applied after the roll-forward, such as one whose webhook was lost and that the daemon's read of the pull request's reviews takes up, can match the reviewer's row at entry 1 again.
-Such a match moves the reviewed commit only for a review of the reviewer's own session that names the pull request's current head, so the commit it records is one that this session read, and the renumbering costs no more than that and the history it does not keep.
+Such a match moves the reviewed commit only for a review of the reviewer's own session that names the pull request's current head, so the commit it records is one that this session read, and the fresh numbering costs no more than that and the history it does not keep.
 Zeroing the six columns and leaving the row standing would cost more than that:
 the migration would never run again, and a role whose task the earlier release lost while it ran would read 0 against 0, owed nothing and swept nothing, holding its slot with nobody at work on it until a person noticed.
 The re-arm needs nothing of the other rows:
@@ -3708,9 +3708,12 @@ Every answer a project's other experiments drew is in that table alone, so the r
 
 ### Contract discipline
 
-`DaemonAPIVersion` (`packages/daemon/internal/api/version.go`) is the Go daemon's own contract number;
-each claim records the contract its process registered with as `pluginContract`.
-A role's `pi-legion` declares the contract it was built against (`legion.daemonApiVersion`, `packages/pi-legion/AGENTS.md`), and the daemon's boot pass (`refreshStalePlugins` in `packages/daemon/internal/daemon/daemon.go`) and its registration path (`internal/supervise/plugin.go`) agree on one rule:
+The Go daemon's own contract number is 275 (the greatest number `packages/daemon/internal/api/version.go` gives a numbered entry) plus the count of contract entries its build carries (`internal/api/contract_<id>_<slug>.go`, each named for the UTC second its author made it).
+An entry's number is 275 plus its place in the order in which `main` merged the entries, an order the release and worker-image builds write into `legion`, and a `legion` whose written order does not name exactly its own entries refuses to start, naming the difference.
+`legion version --contracts` prints the numbers of the build it runs from: `contract <n>` first, then `order stamped` for a release's or a worker image's build or `order id` for any other build, whose entries are numbered in the order of their ids, then one line `<id> <number> <slug>` for each entry.
+A section of this guide about a release that adds a contract entry names the entry by its id, never by a number, and the operator reads that entry's number in the build they run with `legion version --contracts`.
+Each claim records the contract its process registered with as `pluginContract`.
+A role's `pi-legion` declares the contract it was built against in the manifest its pack step writes (`packages/pi-legion/AGENTS.md`), and the daemon's boot pass (`refreshStalePlugins` in `packages/daemon/internal/daemon/daemon.go`) and its registration path (`internal/supervise/plugin.go`) agree on one rule:
 a registered claim whose recorded contract differs from the daemon's own, or is unrecorded
 — every claim is unrecorded the first time a daemon boots on a release that records contracts at all
 — runs on this daemon's plugin before it does anything else, and it gets there by being relaunched onto it, asked nothing first.
@@ -3740,7 +3743,7 @@ Each relaunch is made once, uncharged, through the moved-address relaunch path (
 the task of a turn in flight goes back to waiting and is delivered again, while a turn that was waited out has already retired its own finished task;
 a claim whose suspension is held for its turn is suspended instead of relaunched, and its next resume launches on the current plugin;
 a claim still launching is left to its registration, which decides it the moment it arrives).
-Each relaunch logs one line, exactly `supervise: the process speaks another plugin contract; relaunching it onto the current plugin`, naming `claim`, `incarnation`, `pluginContract` (0 when the claim recorded none), `daemonApiVersion` and `trigger` (`boot`, `registration`, or `sweep`:
+Each relaunch logs one line, exactly `supervise: the process speaks another plugin contract; relaunching it onto the current plugin`, naming `claim`, `incarnation`, `pluginContract` (0 when the claim recorded none), `daemonApiVersion` (the daemon's own number, the first line of its `legion version --contracts`) and `trigger` (`boot`, `registration`, or `sweep`:
 a relaunch the tree lifecycle or the store refuses leaves the claim live and stale, so the orphan sweep
 — the one periodic pass that already reads every claim — posts it again until one attempt starts).
 
@@ -3748,7 +3751,7 @@ Under Kubernetes that relaunch keeps an issue pod
 — even one built from another image — rather than replacing it, and it keeps the controller's pod unless that pod was built on another image or runs as another ServiceAccount (below):
 the role's shim runs the start wrapper, `/bin/sh -c '<start script>' legion-start <n> <setup command…> <omp argv…>` (`startArgv`, `internal/runtime/sandbox/plugins.go`;
 `<n>` is the setup command's word count, 0 with none), whose install step runs `bun add --backend=copyfile --exact @sjawhar/pi-legion@<version> @sjawhar/pi-envoy@<version>` (a tarball path or URL source is handed to `bun add` as written;
-`--backend=copyfile` because the issue's bun install cache and the generation directory now share the issue's volume, where bun would otherwise hardlink the installed files out of that cache and an in-place edit of either would corrupt the other for the life of the volume) into a fresh generation directory, `$XDG_STATE_HOME/legion-plugins/g<generation>/` (`/legion/scratch/state/<role>/legion-plugins/g<N>/`), checks with a `node -e` snippet that the installed `pi-legion`'s `legion.daemonApiVersion` equals the daemon's own (exiting 1 before `exec`, printing `legion plugins: @sjawhar/pi-legion@<v> declares daemon API contract <got>; this daemon requires <want>` when it does not), and then `exec "$@"`s into Oh My Pi, which starts with `--extension <gen dir>/node_modules/@sjawhar/pi-envoy --extension <gen dir>/node_modules/@sjawhar/pi-legion` in place of `/opt/legion/pi-envoy` and `/opt/legion/pi-legion`.
+`--backend=copyfile` because the issue's bun install cache and the generation directory now share the issue's volume, where bun would otherwise hardlink the installed files out of that cache and an in-place edit of either would corrupt the other for the life of the volume) into a fresh generation directory, `$XDG_STATE_HOME/legion-plugins/g<generation>/` (`/legion/scratch/state/<role>/legion-plugins/g<N>/`), checks with a `node -e` snippet that the installed `pi-legion`'s packed manifest declares the daemon's own contract (exiting 1 before `exec`, printing `legion plugins: @sjawhar/pi-legion@<v> declares daemon API contract <got>; this daemon requires <want>` when it does not), and then `exec "$@"`s into Oh My Pi, which starts with `--extension <gen dir>/node_modules/@sjawhar/pi-envoy --extension <gen dir>/node_modules/@sjawhar/pi-legion` in place of `/opt/legion/pi-envoy` and `/opt/legion/pi-legion`.
 A pod the same relaunch replaces
 — a suspended Sandbox, a lost launcher binding, a failed init container, a moved address, a pod no round covers running as another ServiceAccount, a controller pod built on another image
 — installs nothing: it comes up on the configured image, whose copies the boot gate already holds to the daemon's contract.
@@ -3819,7 +3822,7 @@ It is that sweep's own word, written whole when the sweep decided it, and it is 
 an operator served no line cannot tell a daemon that held no issue back from a binary too old to know the limits.
 A `legion` of this release against a daemon of an earlier one, which serves no such record, prints `pod update rounds: this daemon does not report them; it is older than this binary` rather than the line of a daemon that has not swept.
 
-What a contract bump never refreshes is the pod's own `legion` binary:
+What a new contract number never refreshes is the pod's own `legion` binary:
 the launcher, the shim and `workspace-init` keep running the generation they were started with, so a release that changes the launcher's or the shim's own wire to the daemon is a pod replacement, which the update round makes ("Pinning a release that drops what a running pod still uses" above), never something the contract relaunch fixes in place.
 
 A release that changes what a producer writes **into an envelope** is rolled in one order, which the contract number above does not cover:
@@ -4669,7 +4672,7 @@ Where a microVM pod's launcher connects to such a daemon before that round repla
 The launcher then drops each report of a process the pod's kernel stopped, with a line, and tells no role; the `ended` line stays in the container's log ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 A daemon of a release before `microvm.keep_volume` refuses that key at load, and it replaces the Sandbox of each kept volume at the issue's next launch, which deletes the volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 The release that runs the controller's pod in the project's sandbox is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-4567`.
-Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+Its daemon API contract is 217.
 A daemon below it builds the controller's pod in gVisor whatever `type` says, and one of contract 151 or later reads the same `sandbox` block.
 It re-adopts a running microVM controller pod at its boot, and its answer to that pod's launcher carries no `kernelKills`.
 The launcher then drops each report of a process the pod's kernel stopped, with a line, and the controller is told nothing; the `ended` line stays in the `controller` container's log.
@@ -9508,9 +9511,9 @@ each issue's pod (every role of it alike) and the image probe's.
   token`, or `agent-secrets: the token login failed; retrying` with the class the failure was sorted into, the schedule that class takes and the cause), and `GET /legion/v1/state`'s `agentSecretsLogin` reads its `state`:
   `none` before the first login finishes, `issued` while a credential that has not expired is held (a renewal that failed beside it included), or `failed` (daemon API contract 22).
   Pod enrollment fails closed and retries until a login succeeds.
-  After a login given no HTTP answer, or a 5xx answer from the broker or its front door (the broker is down, out of reach, or cannot reach its database), the daemon waits 2 s before the next, doubling each time to at most 10 s, so after an outage it logs in again within about 10 s of the broker serving.
+  After a login given no HTTP answer, or a 408, a 429 or a 5xx from the broker or its front door, the daemon waits 2 s before the next, doubling each time to at most 10 s, so it logs in again within about 10 s of the broker serving; after a 429, at least its `Retry-After`, at most 5 minutes.
   Every other transport failure — a refused or reset connection, a timeout, an unreachable network, a resolver that failed for any other reason — is the broker out of reach too, and takes that same short wait.
-  After a login the broker refused (a 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
+  After a login the broker refused (any other 4xx), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
   On both schedules it waits whether or not it still holds a credential, and a successful login resets both waits.
   One line is logged per failed login: its class (`broker-unavailable`, `daemon-side-fault`, `broker-refusal` or `login-not-made`), the schedule that class takes (`short` or `long`), the wait before the next login, and the cause.
   Running the daemon off the cluster (the Stage 4a live proof), `token_file` holds a token the operator mints, at most an hour long, for a ServiceAccount of the proof's own that `BROKER_SERVICE_LOGINS` lists for `legion-daemon` and no running daemon uses, with `kubectl create token <account> -n <namespace> --audience <the broker's audience> --duration 1h`:

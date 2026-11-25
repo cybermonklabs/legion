@@ -89,7 +89,7 @@ func TestADeferredVersionThePreviousReleaseIndexesAfterThisBuildsTickReadItReach
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 	var tick BlockIndexTick
-	if _, err := service.readEventsAfterCursor(ctx, testBackgroundPool(t, service), &tick); err != nil {
+	if _, _, err := service.readEventsAfterCursor(ctx, testBackgroundPool(t, service), &tick); err != nil {
 		t.Fatalf("read the events after this build's cursor: %v", err)
 	}
 	t.Logf("the read of the events after this build's cursor read %d event(s), marked %d document(s), another build %t",

@@ -306,17 +306,17 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 // its call past the bound it was given is ended by the client's window instead, whatever the
 // machine's speed, and the error says which ended it: the fetch's own context (listRouteRoster)
 // takes its deadline before the call begins and the window starts with the call, so the call's
-// context is the sooner of the two, net/http sets no deadline of its own and its error says
-// "context deadline exceeded"; a call the window ended says "Client.Timeout exceeded" (net/http's
-// setRequestCancel). That error is the fetch's own, which no read is served (a stored silence is
-// read as errListenerSilence), so the row makes the fetch's read itself, before any read starts the
-// loop. How long a read takes says nothing here, the fetch ending at its half-second bound; that a
-// read waits on no fetch is decided by order where the listener holds every call past any run
-// (TestReadsPastTheBoundAnswerAtOnceWhileTheListenerIsHeld). Whether a later read asked again is
-// read off the stored answer, not off the listener's count of calls: a fetch asked for again would
-// have stored a silence of its own, sent later, while a call a loaded machine sends past the
-// half-second bound reaches the listener late or not at all, so a count read after the read
-// returns can miss it.
+// context is the sooner of the two. Either end says "context deadline exceeded"; a call the window
+// ended also names envoy.ErrCallWindow, which the client adds only when its caller's context had
+// not ended (the fetch's error carries its cause as text). That error is the fetch's own, which no
+// read is served (a stored silence is read as errListenerSilence), so the row makes the fetch's
+// read itself, before any read starts the loop. How long a read takes says nothing here, the fetch
+// ending at its half-second bound; that a read waits on no fetch is decided by order where the
+// listener holds every call past any run (TestReadsPastTheBoundAnswerAtOnceWhileTheListenerIsHeld).
+// Whether a later read asked again is read off the stored answer, not off the listener's count of
+// calls: a fetch asked for again would have stored a silence of its own, sent later, while a call a
+// loaded machine sends past the half-second bound reaches the listener late or not at all, so a
+// count read after the read returns can miss it.
 func TestAListenerThatDoesNotAnswerHoldsTheFetchOnlyForItsBound(t *testing.T) {
 	t.Parallel()
 	const bound = 500 * time.Millisecond
@@ -325,9 +325,9 @@ func TestAListenerThatDoesNotAnswerHoldsTheFetchOnlyForItsBound(t *testing.T) {
 	served.rosters.ttl, served.rosters.timeout, served.rosters.silenceTTL = time.Minute, bound, time.Minute
 
 	if own := served.listRouteRoster(context.Background()); own.answered || own.err == nil ||
-		!strings.Contains(own.err.Error(), context.DeadlineExceeded.Error()) || strings.Contains(own.err.Error(), "Client.Timeout exceeded") {
-		t.Fatalf("a fetch of a listener that does not answer ended with answered=%t err=%v, want its own %s bound's %v, not the listener client's window",
-			own.answered, own.err, bound, context.DeadlineExceeded)
+		!strings.Contains(own.err.Error(), context.DeadlineExceeded.Error()) || strings.Contains(own.err.Error(), envoy.ErrCallWindow.Error()) {
+		t.Fatalf("a fetch of a listener that does not answer ended with answered=%t err=%v, want its own %s bound's %v, not the listener client's window (%v)",
+			own.answered, own.err, bound, context.DeadlineExceeded, envoy.ErrCallWindow)
 	}
 	if roster := readRoster(t, served, context.Background()); roster.answered {
 		t.Fatal("a read answered a roster though the listener never answered")

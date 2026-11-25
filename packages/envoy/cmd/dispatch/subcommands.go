@@ -259,7 +259,9 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 
 // backfillGraphStore runs `envoy-dispatch backfill-graph-store`: it writes the nodes and
 // tuples of every comment, document block and block reference written before the node and
-// tuple store existed, in batches, one transaction each (graphcensus.Backfill). It appends no
+// tuple store existed, the node of every issue, document, ask and message written before its
+// kind's writer wrote one, and the project of every comment and block node written before a node
+// named its project, in batches, one transaction each (graphcensus.Backfill). It appends no
 // event of its own: a fact whose row's own event cannot be found carries the store's sentinel
 // as its cause. It is safe to run again: a row that already names its node is left alone, so a
 // run interrupted anywhere carries on from where it stopped.

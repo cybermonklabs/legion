@@ -67,7 +67,7 @@ func TestATickLocksNoOwnerOfACommentThatNamesANode(t *testing.T) {
 	answered := make(chan answer, 1)
 	go func() {
 		var tick BlockIndexTick
-		_, err := service.readEventsAfterCursor(ctx, background, &tick)
+		_, _, err := service.readEventsAfterCursor(ctx, background, &tick)
 		answered <- answer{tick, err}
 	}()
 	deadline := time.Now().Add(time.Minute)

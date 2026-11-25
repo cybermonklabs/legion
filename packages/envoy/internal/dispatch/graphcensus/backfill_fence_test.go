@@ -202,10 +202,11 @@ func TestTheBackfillWritesNoNodeForABlockAVersionDeletedWhileItWaited(t *testing
 	}
 
 	// The report counts what the run wrote: one row, one node, its in_document tuple and the
-	// two base attributes its insert stated, and one document owed a block index.
-	if blocks := blockKind(t, report); blocks.Rows != 1 || blocks.Nodes != 1 || blocks.Tuples != 3 ||
+	// three base attributes its insert stated - visibility, state and the document's project -
+	// and one document owed a block index.
+	if blocks := blockKind(t, report); blocks.Rows != 1 || blocks.Nodes != 1 || blocks.Tuples != 4 ||
 		blocks.Owed != 1 || !blocks.Complete {
-		t.Errorf("the backfill reports %#v for blocks, want 1 row, 1 node, 3 tuples, 1 document owed and the cutover complete", blocks)
+		t.Errorf("the backfill reports %#v for blocks, want 1 row, 1 node, 4 tuples, 1 document owed and the cutover complete", blocks)
 	}
 
 	// The lock it waited at is the owner lock, the first of the two R23 names, which is the one

@@ -128,14 +128,17 @@ func (s *server) relatedAllowance() time.Duration {
 }
 
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
-// bounded by relatedAllowance, ending with errRelatedAllowanceEnded as its cause so that a check
-// whose context is done can tell its own deadline from the request that ran it going away
-// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a decision block's
-// per-check context inherits the edit's allowance with that same cause. The caller cancels, and
-// names the allowance in what it answers.
+// bounded by relatedAllowance on the server's clock (clock.Clock's WithTimeoutCause), ending with
+// context.DeadlineExceeded and errRelatedAllowanceEnded as its cause so that a check whose context
+// is done can tell its own deadline from the request that ran it going away (runRelatedCheck's
+// callerGone), on the real clock and a test's fake alike. Every site that bounds a check uses it,
+// so a decision block's per-check context inherits the edit's allowance with that same cause. The
+// caller cancels, and names the allowance in what it answers. An allowance already spent ends the
+// context before this returns, on either clock, which is what a case setting suggestionTimeout
+// relies on.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
-	bounded, cancel := context.WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
+	bounded, cancel := s.clock().WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
 	return bounded, cancel, allowance
 }
 
