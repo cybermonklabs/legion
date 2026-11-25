@@ -550,9 +550,9 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 		{
 			"reviewer.md",
 			append(slices.Clone(planRead),
-				"After your approval, a later step of your task can send the work back, and the new head then comes to your review again",
-				"A merge forward of the base that lands once your step ran makes a new head too, and the daemon asks you to approve it.",
-				"Retro commits nothing. After your approval, only those two or a push by a later step of your task move the head. Nothing in Legion holds the head that merges to the one you approved"),
+				"After your `approve`, a later step of your task can send the work back, and the new head then comes to your review again",
+				"A merge forward of the base that lands once your step ran makes a new head too, and the daemon asks your verdict on it.",
+				"Retro commits nothing. After your `approve`, only those two or a push by a later step of your task move the head. Nothing in Legion holds the head that merges to the one you sent `approve` on"),
 			append(slices.Clone(planRetired),
 				"After approval, no implementation or further review change may happen",
 				"the head changes only when a later step of your task sends the work back",
@@ -782,7 +782,7 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 		{
 			"go/reviewer.md", func(t *testing.T) string { return goPart(t, "reviewer.md") },
 			[]string{
-				"Before you approve, you wait only for what the rules above name, a required check still `queued` or `in_progress` and a `ci_check` run still going; the daemon does the rest of the waiting",
+				"Before you send `approve`, you wait only for what the rules above name, a required check still `queued` or `in_progress` and a `ci_check` run still going; the daemon does the rest of the waiting",
 				"So once your read finds the head's required checks and its `ci_check` runs concluded, there is nothing more of CI to wait for or decide.",
 			},
 			[]string{"You wait for none of them", "So once you have read the head's checks there is nothing of CI to wait for or decide."},
@@ -1116,7 +1116,7 @@ func TestTheSentencesTrueOnlyInTheDefaultStepsHoldForEveryOrder(t *testing.T) {
 		},
 		{
 			"roles/reviewer.md", func(t *testing.T) string { return rolePart(t, "reviewer.md") },
-			[]string{"After your approval, only those two or a push by a later step of your task move the head."},
+			[]string{"After your `approve`, only those two or a push by a later step of your task move the head."},
 			[]string{"no step of Legion's moves the head after your approval but those two"},
 		},
 		{

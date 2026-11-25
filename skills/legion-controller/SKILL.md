@@ -88,7 +88,7 @@ Post it on your first turn of each UTC day: `skill://legion-controller/reference
 
 ## Side reviews
 
-On a pull request no Legion tree opened, where the verdict entry takes side reviews, `pull_request_reviewer` names at its head a running reviewer on that repository whose tree did not write it. Relay with `pull_request_verdict` only a verdict sent on Envoy by the session you named for that pull request and head.
+On a pull request no Legion tree opened, if the verdict entry takes side reviews, `pull_request_reviewer` names at its head a running reviewer on that repository whose tree did not write it. Relay with `pull_request_verdict` only a verdict whose Envoy sender is the session you named for that pull request and head.
 
 ## Deployment instructions
 
