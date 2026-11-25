@@ -2308,3 +2308,96 @@ test("a press on a Spec statement's words after a reference puts the caret in th
     ).toBe(pressed);
   });
 });
+
+// The tester's finding at 8b8986a7: a press on a statement's words after inline HTML puts the
+// caret in the word pressed. The Spec view draws a statement's inline HTML, such as a placeholder
+// `<name>`, as its characters, while the statement's editor holds it as an inline `html` node that
+// the caret cannot enter, so a count of the drawn characters before the press is not the editor's
+// count. At 8b8986a7 the press counts it as drawn, and a press after it lands that many characters
+// on: on a large issue's copy, a statement that writes "Kept by <name>" twice put the caret in
+// "before" for a press on "merged", and in "that" for one on "make".
+// SLOW(>=2s): a seeded issue of sixty statements, a load of the Spec view, a turn of the wheel and
+// a press, each read once the page has stopped moving.
+test("a press on a Spec statement's words after inline HTML puts the caret in the word pressed", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = async () => {
+    const seeded = await seedTallSpec();
+    await editArtifact(seeded.specArtifactId, {
+      ops: [
+        {
+          after: `block:${requirementBlockId(3)}`,
+          markdown: statementBlock(
+            LONG_BLOCK_ID,
+            `It draws "Kept by <name>" and "Replaced by <name>". ${longWords("long", 120)}`
+          ),
+          op: "insert",
+        },
+      ],
+    });
+    return seeded;
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const body = issuePage(page).locator("[data-spec-body]");
+    const traffic = watchApiRequests(page);
+    await openPreset(page, seeded.key, "spec");
+    await expectLoadSettled(traffic);
+    const long = body.locator(
+      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
+    );
+    await expect(long, "the Spec view draws no statement that holds inline HTML").toHaveCount(1);
+    await expect(
+      long.locator('[data-node-words] [data-type="html"]'),
+      "the statement draws no inline HTML for the placeholders it holds"
+    ).toHaveCount(2);
+    /** The middle of the drawn word `word` of the statement's words, in the viewport. */
+    const wordBox = (word: string): Promise<{ x: number; y: number } | null> =>
+      long.evaluate((row, wanted) => {
+        const words = row.querySelector("[data-node-words]");
+        if (words === null) return null;
+        const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+        for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+          const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
+          if (found < 0) continue;
+          const range = document.createRange();
+          range.setStart(text, found + 1);
+          range.setEnd(text, found + 2);
+          const box = range.getBoundingClientRect();
+          return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
+        }
+        return null;
+      }, word);
+    // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
+    const pressed = "long60";
+    const far = await wordBox(pressed);
+    expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
+    const wheelAt = await scrollAtRest(page);
+    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
+    await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
+    await expect
+      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
+      .not.toBe(wheelAt);
+    // The poll above waited until the page stopped moving after the wheel, so one read of the
+    // word's box is where it stands when it is pressed.
+    const at = await wordBox(pressed);
+    expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
+    const point = at ?? { x: 0, y: 0 };
+    expect(
+      await wordAtCaret(page, point),
+      `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
+    ).toBe(pressed);
+    await page.mouse.click(point.x, point.y);
+    await expect
+      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
+        message:
+          "a press on the statement's words after its inline HTML does not put the caret in them",
+      })
+      .toBe(true);
+    expect(
+      await wordAtCaret(page, "selection"),
+      `a press on the word "${pressed}", after the statement's inline HTML, puts the caret in another word`
+    ).toBe(pressed);
+  });
+});
