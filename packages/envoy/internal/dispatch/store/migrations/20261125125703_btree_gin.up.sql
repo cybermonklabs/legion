@@ -1,4 +1,4 @@
--- 20261124002258_btree_gin.up.sql
+-- 20261125125703_btree_gin.up.sql
 --
 -- Creates the extension btree_gin, which gives GIN the operator classes of the btree types, such
 -- as timestamptz. A later migration builds a GIN index that holds a btree column beside an array,

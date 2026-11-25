@@ -13,7 +13,7 @@ import (
 
 // btreeGinVersion creates the extension btree_gin, whose operator classes a GIN index needs to hold
 // a btree column beside an array, and holds no other statement.
-const btreeGinVersion = 20261124002258
+const btreeGinVersion = 20261125125703
 
 // btreeGinExtversion answers the version pg_extension records for btree_gin in store's database,
 // and "" where the database has no btree_gin.
