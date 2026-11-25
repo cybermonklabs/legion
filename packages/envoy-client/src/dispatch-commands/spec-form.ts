@@ -81,7 +81,7 @@ function scopeLine(form: SpecFormRead): string {
 }
 
 /**
- * How many texts hold one of `findings`, which the read route answers whole. The findings of one
+ * How many texts hold one of `findings`, the findings the read route lists. The findings of one
  * text name its node, its kind, its place and its excerpt, as in the head of the server's refusal
  * (`textsOf` in packages/envoy/internal/dispatch/specform/message.go).
  */
@@ -104,14 +104,23 @@ function findingSaid({ detail, ways }: SpecFormFinding): string {
  * The form of one document as Dispatch read it. A document an approval request is judged on
  * (`in_scope`) gets the line that says Dispatch refuses its approval and each finding, or the
  * line of what Dispatch read. One out of scope first says why Dispatch refuses nothing for it,
- * and still lists its findings, which are then for the reader alone. Each approved document under
- * the root that Dispatch could not read has a line after them.
+ * and still lists its findings, which are then for the reader alone. The read route lists at most
+ * 500 findings and counts them all (`findings_total`): when it lists fewer than that count, the
+ * texts it lists are some of those that break the form, and a line after the findings says how
+ * many it lists. Each approved document under the root that Dispatch could not read has a line
+ * after them.
  */
 function documentLines(form: SpecFormRead): string[] {
   const findings = form.findings ?? [];
   const listed = findings.map(
     (finding) => `- ${finding.kind} ${finding.node}: ${findingSaid(finding)}.`
   );
+  const partial = form.findings_total > findings.length;
+  if (partial) {
+    listed.push(
+      `Dispatch lists the first ${findings.length} of the ${form.findings_total} findings.`
+    );
+  }
   const read = readLine(form.texts, (form.terms ?? []).length, form.name, form.version);
   const unread = unreadLines(form.unread);
   if (!form.in_scope) {
@@ -121,7 +130,8 @@ function documentLines(form: SpecFormRead): string[] {
   }
   if (findings.length === 0) return [read, ...unread];
   const texts = textsBreaking(findings);
-  const breaks = texts === 1 ? "1 text breaks" : `${texts} texts break`;
+  const more = partial ? " or more" : "";
+  const breaks = texts === 1 ? `1 text${more} breaks` : `${texts} texts${more} break`;
   return [
     `Dispatch refuses an approval request of ${form.name} version ${form.version}, because ${breaks} the form of The Spec.`,
     ...listed,

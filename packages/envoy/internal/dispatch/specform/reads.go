@@ -59,7 +59,7 @@ const maxWayBytes = 1 << 20
 // documentNote is what the detail of a finding says whose way out would read past the budget of
 // its document (maxWayBytes), so the writer knows that Dispatch offers no way out of it, not that
 // none exists.
-var documentNote = fmt.Sprintf("Dispatch reads at most %d MiB of a document's text for the ways out of its findings, and the findings before this one read that, so it offers none for this one, though one can exist",
+var documentNote = fmt.Sprintf("Dispatch reads at most %d MiB of a document for ways out, so it offers none for this one, though one can exist",
 	maxWayBytes>>20)
 
 // refusedNote is what the detail of a finding says whose way out read a sentence that texts

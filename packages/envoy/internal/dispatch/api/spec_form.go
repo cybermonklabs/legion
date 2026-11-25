@@ -183,8 +183,8 @@ type specFormSummary struct {
 }
 
 // specFormRead is the body of GET /api/v1/artifacts/{id}/spec-form: one version of a document,
-// where it stands for the form, the texts it holds and every finding, whether the gate refuses its
-// approval or not.
+// where it stands for the form, the texts it holds and its findings, at most specFormFindingsHeld
+// of them and the count of all of them, whether the gate refuses its approval or not.
 type specFormRead struct {
 	ArtifactID string `json:"artifact_id"`
 	Name       string `json:"name"`
@@ -262,9 +262,13 @@ func (r specFormResult) refusal(act specform.Act) *specFormRefusal {
 	for _, unread := range r.unread() {
 		refusal.notes = append(refusal.notes, unread.Line)
 	}
+	lists := "lists them all."
+	if len(findings) > specFormFindingsHeld {
+		lists = fmt.Sprintf("lists the first %d of them.", specFormFindingsHeld)
+	}
 	for _, document := range r.documents {
 		if document.artifact.ID == findings[0].ArtifactID && document.artifact.IssueKey != nil {
-			refusal.more = fmt.Sprintf("dispatch spec-form --issue %s --artifact %s lists them all.", *document.artifact.IssueKey, document.artifact.Name)
+			refusal.more = fmt.Sprintf("dispatch spec-form --issue %s --artifact %s %s", *document.artifact.IssueKey, document.artifact.Name, lists)
 			break
 		}
 	}
@@ -298,7 +302,8 @@ func (r specFormResult) summary(artifactID string) *specFormSummary {
 type specFormRefusal struct {
 	act      specform.Act
 	findings []specFormFinding
-	// more is the command that lists every finding, which the refusal names after the first 20.
+	// more is the command that lists the findings, all of them or the first specFormFindingsHeld,
+	// which the refusal names after the first 20.
 	more string
 	// notes is the line of each approved document under the root that the judgment could not read.
 	notes []string

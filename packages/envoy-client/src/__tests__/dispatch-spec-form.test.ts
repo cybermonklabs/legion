@@ -482,6 +482,43 @@ describe("dispatch spec-form", () => {
     ]);
   });
 
+  test("a read that lists fewer findings than it counts says how many it lists, and that more texts can break the form", async () => {
+    // The read route lists at most 500 findings and counts them all in findings_total.
+    const listed = [
+      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
+      finding("ACME-2-spec", "spec.md", 2, "one-write", "statement", LONG_SENTENCE),
+    ];
+    forms["ACME-2-spec"] = {
+      ...formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 3 }, listed),
+      findings_total: 3,
+    };
+    forms["ACME-3-notes"] = {
+      ...formRead("ACME-3-notes", "notes.md", 2, "not_spec", { statement: 3 }, listed),
+      findings_total: 3,
+    };
+
+    const covered = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+    const outside = await run(["spec-form", "ACME-3", "--artifact", "notes.md"]);
+
+    expect(covered.code).toBe(0);
+    expect(covered.stdout.split("\n")).toEqual([
+      "Dispatch refuses an approval request of spec.md version 2, because 2 texts or more break the form of The Spec.",
+      `- statement ship-at-head: ${THREE_SENTENCES}.`,
+      `- statement one-write: ${LONG_SENTENCE}.`,
+      "Dispatch lists the first 2 of the 3 findings.",
+      "",
+    ]);
+    expect(outside.code).toBe(0);
+    expect(outside.stdout.split("\n")).toEqual([
+      "notes.md is not the spec or the Verification document of its issue, so Dispatch refuses no approval request of it for its form.",
+      "The findings below are for you to read.",
+      `- statement ship-at-head: ${THREE_SENTENCES}.`,
+      `- statement one-write: ${LONG_SENTENCE}.`,
+      "Dispatch lists the first 2 of the 3 findings.",
+      "",
+    ]);
+  });
+
   test.each([
     [
       "no_root",
