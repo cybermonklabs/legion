@@ -18,6 +18,7 @@ import (
 // as the caret, so at main `t !x^a] u` beside `[^a]: ` became `t !`, a reference and ` u`, and
 // lost the `x`.
 func TestFootnoteReferencesResolveToAnEqualLabelFirstAndThenToOneEqualUpToCase(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, markdown string
 		// resolved is each reference goldmark's tree holds, in document order: the label of the

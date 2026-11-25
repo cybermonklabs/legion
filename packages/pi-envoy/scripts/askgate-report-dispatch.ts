@@ -382,8 +382,8 @@ export function dispatchReportLines(report: DispatchReport, json: boolean): stri
 }
 
 /** The session's own Dispatch, as a standing session holding a token and nothing else resolves it. */
-export function sessionDispatch(): DispatchClient {
-  const { dispatch, warnings } = sessionDispatchSettings(
+export async function sessionDispatch(): Promise<DispatchClient> {
+  const { dispatch, warnings } = await sessionDispatchSettings(
     sessionConfigFile("command", process.env),
     process.env,
     { cwd: process.cwd() }

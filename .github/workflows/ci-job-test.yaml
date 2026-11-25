@@ -540,29 +540,32 @@ jobs:
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
       # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
-      # step has a filter of its own, guide_layout, naming the five guides the test reads and
+      # step has a filter of its own, guide_layout, naming the six guides the test reads and
       # the checker it spawns: no other step of this job reads one of them, so a run that
       # changed none of them skips this step.
       - name: Check the guides' semantic line breaks
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"guide_layout"')
         run: bun test scripts/semantic-line-breaks.guides.test.ts
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the Dispatch census script
-        run: bunx biome check --error-on-warnings scripts/dispatch
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/dispatch
 
       # scripts/dispatch is no workspace; the root package pins its TypeScript and Bun types.
       - name: Typecheck the Dispatch census script
         run: bunx tsc --noEmit -p scripts/dispatch
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the GitHub App registration script
-        run: bunx biome check --error-on-warnings scripts/github-apps
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/github-apps
 
       # scripts/github-apps is no workspace either; the root package pins its TypeScript and Bun types.
       - name: Typecheck the GitHub App registration script
         run: bunx tsc --noEmit -p scripts/github-apps
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the session message-wait script
-        run: bunx biome check --error-on-warnings scripts/sessions
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/sessions
 
       # scripts/sessions is no workspace either; the root package pins its TypeScript and Bun types.
       # The suite itself is .github/workflows/ci-job-sessions-script.yaml's: it creates a
@@ -570,8 +573,9 @@ jobs:
       - name: Typecheck the session message-wait script
         run: bunx tsc --noEmit -p scripts/sessions
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the approval-eval statistics
-        run: bunx biome check --error-on-warnings scripts/approval-eval
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/approval-eval
 
       # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
       - name: Typecheck the approval-eval statistics
