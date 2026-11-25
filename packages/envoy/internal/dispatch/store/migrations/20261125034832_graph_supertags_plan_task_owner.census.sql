@@ -1,0 +1,8 @@
+-- This migration inserts plan_task/owner and its tuples, and sets the five block type supertag
+-- nodes to their version-11 attributes with the version moved to 12. Only migrations write type
+-- nodes (cmd/dispatch's requireNoRouteOrCommandWritesAType). The previous type migration,
+-- 20261125012814_graph_supertags_plan_task_merges, left those exact attributes, and no migration
+-- between it and this one changes a type node. No plan_task/owner node exists.
+-- The primary-key updates change only the schema version, not stored document or event data;
+-- the inserts read no table. The number of existing content rows refused or rewritten is 0.
+select 0
