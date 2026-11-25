@@ -15,8 +15,7 @@
     "scripts/**",
     "skills/**",
     "src/**",
-    "README.md",
-    "AGENTS.md"
+    "README.md"
   ],
   "legion": {
     "daemonApiVersion": 256

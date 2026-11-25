@@ -67,9 +67,8 @@ export function blockedByRefusal(
  *
  * A refused list is refused for a reason the reader can mend - "CORE-9 not found", "CORE-1
  * cannot be blocked by itself" - so the write says what Dispatch refused and leaves the editor
- * open with the typed list in it; there is no Retry, because sending the same refused list again
- * would be refused again
- * (`packages/dispatch/AGENTS.md`: a field's refusal belongs at its control).
+ * open with the typed list in it, since a field's refusal belongs at its control; there is no
+ * Retry, because sending the same refused list again would be refused again.
  *
  * A save the reader stopped is no refusal: it may have been saved. The editor stays open over it
  * too, and says so in the words every surface says such a write in (`stoppedWriteNote`), with the

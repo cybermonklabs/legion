@@ -635,6 +635,12 @@ export interface ZodNumberProperty extends ZodProperty {
   readonly int: () => ZodProperty;
 }
 
+/**
+ * The host's own Zod, which Oh My Pi injects as `pi.zod`. Build every field of a tool's
+ * `parameters` through it: the host's schema converter reads internals only its own Zod produces,
+ * and one field built with another Zod (a plugin's own `zod` import) fails the whole extension
+ * load.
+ */
 export interface PiZod {
   readonly object: (shape: Readonly<Record<string, unknown>>) => unknown;
   readonly string: () => ZodProperty;

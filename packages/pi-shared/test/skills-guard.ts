@@ -3,9 +3,10 @@
 // and how much of each reaches the model is decided by Oh My Pi: a tool result over 51,200 bytes
 // (`tools.artifactSpillThreshold`, 50 KiB) spills to an artifact that keeps only 20 KB at each end,
 // so a longer skill arrives with its middle cut out. A `skill://` read is otherwise whole (no line
-// limit, no line-length cap), so the file's own byte count is the measure. Reads by filesystem path
-// stop at 300 lines, which is why every reference is linked as `skill://<name>/<path>`, and why each
-// such link must resolve (the daemon's boot gate checks only the name before the first `/`).
+// limit, no line-length cap), so the file's own byte count is the measure. A read by filesystem path
+// is held to the read tool's own limits (`read.defaultLimit`, 300 lines), which is why every
+// reference is linked as `skill://<name>/<path>`, and why each such link must resolve (the daemon's
+// boot gate checks only the name before the first `/`).
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";

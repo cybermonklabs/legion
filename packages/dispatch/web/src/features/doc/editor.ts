@@ -20,6 +20,13 @@ export type {
   StoredMark,
 } from "@legion/proof-editor";
 
+/**
+ * The page's hold on one document editor. Nothing of the page writes into the editor's DOM below
+ * `view.dom` - a class, an attribute, a node: ProseMirror reads such a change back as an edit of
+ * the block it sits in. The page draws on the document through the handle's own methods
+ * (`setBlockMarks`, `setChangeDecorations`, `setReferences`); a drawing they cannot make is a new
+ * method of `@legion/proof-editor`, not a write from here.
+ */
 export type EditorHandle = ProofEditorHandle;
 export type EditorOptions = CreateProofEditorOptions & {
   /** Which block hosts a thread, and who to tell when its slot comes and goes, for the

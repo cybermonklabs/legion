@@ -710,9 +710,10 @@ test("the guides say only a review that requests changes counts a round", () => 
   ]).toEqual([]);
 });
 
-// skills/AGENTS.md bounds a skill's SKILL.md and each of its references at 150 lines and 8 KB,
-// counted here as 8,000 bytes. Every file of the Legion role skills is held to it, so a file that
-// grows past it moves its detail one level down before it ships.
+// `writing-agent-skills`, which skills/AGENTS.md sends a skill's author to, bounds a skill's
+// SKILL.md and each of its references at 8,000 bytes, the whole file counted. Every file of the
+// Legion role skills is held to it, so a file that grows past it moves its detail one level down
+// before it ships.
 test("every file of the Legion role skills fits the skill budget", () => {
   const budgeted = files(staged).filter((file) =>
     /^legion-[a-z-]+\/(SKILL|references\/[^/]+)\.md$/.test(path.relative(staged, file))

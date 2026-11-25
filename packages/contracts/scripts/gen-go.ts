@@ -14,10 +14,12 @@ import {
   DISPATCH_SIGN_IN_REQUIRED,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
+  DOCUMENT_BLOCK_NESTING_MAX,
   DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
   DOCUMENT_NEWER_CONTENT_CLOSE_REASON,
   DOCUMENT_SCHEMA_CLOSE_CODE,
   DOCUMENT_SCHEMA_CLOSE_REASON,
+  DOCUMENT_TYPED_BLOCK_NESTING_MAX,
   ID_AMBIGUOUS,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -385,6 +387,16 @@ const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
 // batches are one number.
 const ReferenceTargetsMax = ${REFERENCE_TARGETS_MAX}
+
+// DocumentBlockNestingMax is how many blocks a document may open inside one another. Generated
+// from DOCUMENT_BLOCK_NESTING_MAX in packages/contracts so the document service's refusal and the
+// editor's parser stop at one depth.
+const DocumentBlockNestingMax = ${DOCUMENT_BLOCK_NESTING_MAX}
+
+// DocumentTypedBlockNestingMax is how many typed blocks a document may open inside one another.
+// Generated from DOCUMENT_TYPED_BLOCK_NESTING_MAX in packages/contracts so the document service's
+// refusal and the editor's parser stop at one depth.
+const DocumentTypedBlockNestingMax = ${DOCUMENT_TYPED_BLOCK_NESTING_MAX}
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the \`dispatch search\`

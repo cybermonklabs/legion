@@ -543,7 +543,7 @@ export function AgentConversationPage({
                   {agent.host}
                 </span>
                 {/* The flex item the ellipsis applies to is the span inside, not this one
-                    (`packages/dispatch/AGENTS.md`): a flex container never draws one on its own
+                    (`TruncatedText`'s doc comment): a flex container never draws one on its own
                     text. `min-w-24` keeps a shortened directory readable, so the row scrolls at a
                     phone width rather than cutting it to nothing. */}
                 <span

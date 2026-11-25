@@ -20,7 +20,8 @@ import {
  * `state-controller-claim.json`) and parsed here by `legion-api.test.ts` — no generator runs in
  * either direction, so a Go field added without its line below fails that test.
  *
- * Reached as `@legion/contracts/legion-api`, never from the barrel.
+ * Reached as `@legion/contracts/legion-api`, never from the barrel, so a bundle that does not
+ * speak to the daemon does not carry it.
  */
 
 /** The controller's two claim recoveries keep their own module, and every importer reads them

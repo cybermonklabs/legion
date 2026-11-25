@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The worker skill no longer reads `SESSION_READER_DSN_FILE`: a worker reads a shared database only through the read-only route its deployment names, inside one read-only transaction, and when that route is missing it stops and reports it rather than fall back to a login that can write.'
+time: 2026-11-21T08:14:00.151187335Z
+custom:
+    Issue: pr5591

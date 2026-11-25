@@ -91,7 +91,7 @@ test.describe("agents page", () => {
         shownAgentRows(page).nth(0).getByRole("button", { name: "Unpin Planner" })
       ).toBeVisible();
 
-      // `?` lists the new scope: a scope missing from `SCOPE_ORDER` is dropped silently.
+      // `?` lists the new scope under its heading.
       await page.locator("body").focus();
       await page.keyboard.press("?");
       const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
