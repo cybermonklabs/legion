@@ -80,9 +80,7 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 		return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
 	}
 	// A reading the fences refuse whole writes no row, so it changes nothing a pass reads.
-	if tag.RowsAffected() > 0 {
-		noteRecordWrite(ctx)
-	}
+	noteRowsWritten(ctx, tag)
 	return s.PutDispatchClaim(ctx, tx, reading.Key, reading.ClaimedBy, reading.ClaimSeq)
 }
 
@@ -112,6 +110,9 @@ func (s *Postgres) TakeDispatchRefill(ctx context.Context, tx pgx.Tx, project st
 	if err != nil {
 		return nil, false, fmt.Errorf("empty the Dispatch copy of %s: %w", project, err)
 	}
+	if len(removed) > 0 {
+		noteRecordWrite(ctx)
+	}
 	return removed, true, nil
 }
 
@@ -126,9 +127,7 @@ func (s *Postgres) PutDispatchClaim(ctx context.Context, tx pgx.Tx, key, holder 
 	if err != nil {
 		return fmt.Errorf("put the Dispatch claim of %s: %w", key, err)
 	}
-	if tag.RowsAffected() > 0 {
-		noteRecordWrite(ctx)
-	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 

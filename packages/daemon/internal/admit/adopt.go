@@ -27,8 +27,8 @@ type adoption struct {
 // adoptChildren applies an architect's release of children recorded outside its tree: each root
 // that queued in admission before a person made it a child of fact.Tree joins that tree with every
 // record of its own (workflow's Engine.Adopt), under the Dispatch parent the release read, and the
-// line is promoted as after any other fact that writes a record (promoteWritten); it reports the
-// slots that promotion's roots returned.
+// line is promoted by the pass rule (Apply), as after any other fact; it reports the slots that
+// promotion's roots returned.
 // A child already recorded in fact.Tree needs nothing, and a member of another child's queued tree
 // joins with that child.
 //

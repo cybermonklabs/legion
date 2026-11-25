@@ -467,9 +467,7 @@ func (s *Postgres) DeletePlan(ctx context.Context, tx pgx.Tx, issue string, gene
 	if err != nil {
 		return fmt.Errorf("delete the plan of %s at generation %d: %w", issue, generation, err)
 	}
-	if tag.RowsAffected() > 0 {
-		noteRecordWrite(ctx)
-	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 

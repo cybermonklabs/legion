@@ -5,15 +5,19 @@ body: |-
   branch no issue records, or a check of a head no pull request records, held every consumer's
   facts behind a pass that decided nothing new; a busy repository's pushes and workflow runs left
   a deployment's GitHub consumer thousands of messages behind. Now a fact runs the pass only where
-  its transaction wrote a record of the project that admission reads: an issue (its record, pull
-  request or hand-over fence), the copy of what Dispatch says of an issue or of its claim, a
-  root's ask, a design gate or a plan; or where it moved the Dispatch consumer's position that a
-  hold waits on. The controller tick, a hold's release, the boot, the end of a root's boot
-  catch-up, a project's resume and a role's confirmation of its task still run it whatever they
-  wrote. The reads of a session's claims in one tree, which every pass makes for each root
-  waiting on a person, now use an index on `claims (tree)` (migration
-  `20261125212800_claims_tree`) instead of a scan of the whole table; a rollback leaves the index
-  in place and needs no SQL for it.
+  its transaction changed a record of the project that admission reads: any of an issue's own rows
+  (its record in any column, its phase rows, its slot, its pull request, its hand-over fence, or
+  what a clear of its generation empties), the copy of what Dispatch says of an issue or of its
+  claim, a root's asks, a design gate or a plan. Three rules run it beside that. The Dispatch
+  consumer's position runs it whatever it wrote, whether or not it releases a hold. The release
+  of a root's boot catch-up hold owes one pass, which the next fact runs whatever it wrote; a pass
+  a paused project skips leaves it owed. The controller tick, the boot, the end of a root's boot
+  catch-up, a project's resume and a role's confirmation of its task run it whatever they wrote.
+  Where a resume's own pass fails, the line is promoted by the next pass these rules run, the
+  tick's at the latest; a fact that writes nothing runs none. The reads of a session's claims in
+  one tree, which every pass makes for each root waiting on a person, now use an index on
+  `claims (tree)` (migration `20261125212800_claims_tree`) instead of a scan of the whole table; a
+  rollback leaves the index in place and needs no SQL for it.
 time: 2026-11-25T21:28:00Z
 custom:
     Issue: no-pass-without-write

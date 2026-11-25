@@ -8,19 +8,19 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // issueWritesKey is the context key of the issues one transaction's writes touched.
 type issueWritesKey struct{}
 
 // issueWrites is each issue one transaction's writes touched, in the order of the first write of
-// each, and whether a write changed a record of the project beside an issue's own (RecordsWritten).
+// each, and whether a write changed a record admission reads (RecordsWritten).
 type issueWrites struct {
 	order []string
 	seen  map[string]bool
-	// records is whether a write changed a row the admission pass reads beside an issue's record,
-	// pull request and hand-over fence: the copy of Dispatch's issue or of its claim, a root's ask,
-	// a design gate or an issue's plan.
+	// records is whether a write changed a record admission reads that IssuesWritten does not
+	// name (RecordsWritten).
 	records bool
 }
 
@@ -47,24 +47,35 @@ func IssuesWritten(ctx context.Context) []string {
 	return slices.Clone(writes.order)
 }
 
-// RecordsWritten says whether a write in ctx changed a record of the project, which is what a
-// fact runs the admission pass for (admit's Admission.Apply): an issue's record, pull request or
-// hand-over fence (IssuesWritten), or a row the pass reads beside them — the copy of what
-// Dispatch says of an issue and of its claim (PutDispatchIssue, PutDispatchClaim), a root's ask
-// (PutRootAsk), a design gate (PutGate, and a clear that deletes one) and an issue's plan, whose
-// first step the pass starts (PutPlan, CarryPlan, DeletePlan, DeleteTasks, MoveTask, StopTask,
-// PutReturnCounts). A write the row's own fence refuses changes nothing and is not kept. False
-// for a ctx that keeps no writes (WithIssueWrites).
+// RecordsWritten says whether a write in ctx changed a record of the project that admission
+// reads, which is what a fact runs the admission pass for (admit's Admission.Apply). That record
+// is an issue's own rows — its issues row in any column, its phase rows, its slot, its pull
+// request, its hand-over fence, and what a clear of its generation empties — the copy of what
+// Dispatch says of an issue and of its claim, a root's asks, a design gate, and a plan's rows.
+// Every writer of those rows in this package keeps the mark when its statement changes a row
+// (noteRowsWritten), whatever else it keeps: a write that changes none, one a row's own fence
+// refuses among them, keeps nothing. The writers of an issue's repository columns that run
+// outside any fact (the one-time backfill and rename passes) keep nothing either. Only the writes
+// of an issue's record, pull request and hand-over fence name the issue among IssuesWritten,
+// which the end of a step's run reads. False for a ctx that keeps no writes (WithIssueWrites).
 func RecordsWritten(ctx context.Context) bool {
 	writes, ok := ctx.Value(issueWritesKey{}).(*issueWrites)
 	return ok && (len(writes.order) > 0 || writes.records)
 }
 
-// noteRecordWrite keeps that a write in ctx changed a record of the project beside an issue's own
-// (RecordsWritten). A ctx that keeps no writes keeps nothing.
+// noteRecordWrite keeps that a write in ctx changed a record admission reads (RecordsWritten). A
+// ctx that keeps no writes keeps nothing.
 func noteRecordWrite(ctx context.Context) {
 	if writes, ok := ctx.Value(issueWritesKey{}).(*issueWrites); ok {
 		writes.records = true
+	}
+}
+
+// noteRowsWritten is noteRecordWrite for a statement that changed rows, and nothing for one that
+// changed none.
+func noteRowsWritten(ctx context.Context, tag pgconn.CommandTag) {
+	if tag.RowsAffected() > 0 {
+		noteRecordWrite(ctx)
 	}
 }
 
