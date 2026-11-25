@@ -67,7 +67,11 @@ export interface ReferenceRow {
   /** What the row draws of the citing item's words, where it is a comment, a message or a
    *  question of the focused node's own issue and the page holds its words (`issueItemWords`):
    *  every one of them, with no cut, and each reference they write named (`namedWords`); `""`
-   *  for every other node, which the component names by its word. Never the read's own text. */
+   *  for every other node, which the component names by its word. Never the read's own text.
+   *  The component draws the whole string as text the page did not author. One part of it can
+   *  be the page's own word all the same: the word for the kind of a reference the read has
+   *  not named (`unnamedWords`). That word is one of `NODE_REFERENCES_WORDS.kinds`, a table
+   *  the page declares, so it needs no mark of its own to be a declared word. */
   readonly words: string;
 }
 

@@ -227,6 +227,8 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
           retrying={query.isFetching}
         />
       ) : null}
+      {/* The line is the steps model's own (`stepVariant`), as today's Steps tab draws it:
+          words of another surface and the record's two names, so text the page did not author. */}
       {variant === null ? null : (
         <p
           className={`min-w-0 text-xs leading-[18px] break-words ${pageMutedText}`}
