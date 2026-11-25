@@ -1,5 +1,5 @@
 kind: Changed
-body: The plugin declares daemon API contract 279, under which the daemon tells every workflow role's pane and pod `LEGION_ROLE_IDENTITIES`, the git identity of each of the issue's roles, which the push step of `legion jj` reads to set a pushed commit's author from its first `Legion-Role` trailer, where the step's rules let it.
+body: The plugin speaks the daemon API contract that carries entry `20261125161436` (`role-identities`), under which the daemon tells every workflow role's pane and pod `LEGION_ROLE_IDENTITIES`, the git identity of each of the issue's roles, which the push step of `legion jj` reads to set a pushed commit's author from its first `Legion-Role` trailer, where the step's rules let it.
 time: 2026-11-20T05:55:25.141356407Z
 custom:
     Issue: pr4580

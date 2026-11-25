@@ -1208,7 +1208,7 @@ It prints one line for each commit it rewrote: `legion jj: <role>: <old commit i
 A commit with no `Legion-Role` trailer keeps the author that jj gave it.
 So do a commit whose role has no identity in the table, a commit that a remote bookmark holds, and an immutable commit.
 So does a commit that only a git tag or another ref of git's other than `HEAD` and a local branch names, and every commit of a push where the step prints that it could not read what the push sends or could not set the author, but one with an empty author that the step filled first (`docs/deployment.md`).
-A role process with no table runs no step, such as a pane of a release before daemon API contract 279.
+A role process with no table runs no step, such as a pane of a release without daemon API contract entry `20261125161436`.
 In a pod the image's jj wrapper hands each push to the step.
 Under tmux the `jj` in the state directory's `bin/` does, or the image's wrapper where that is the first jj on the daemon's `PATH` (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
