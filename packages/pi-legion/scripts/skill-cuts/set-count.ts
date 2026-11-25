@@ -16,21 +16,29 @@
  *             each hour of a split day, one count.sql query's psql output each, its count rows and
  *             its summary row; and each store's `<store>/roots.txt`, which readCount refuses a
  *             store's rows without: `count-sql --config <file> --store <store> --query roots`, run
- *             through the store's psqlCommand, its output saved there.
+ *             through the store's psqlCommand, its output saved there. With the configuration's
+ *             `transcriptStore`, readCount reads the transcript store too, as attribute does:
+ *             each configured store's `<store>/hashes.txt` (`count-sql --query hashes`, saved the
+ *             same way), `transcripts/coverage.txt` (`count-sql --query transcript-coverage
+ *             --run`) and `transcripts/<YYYY-MM-DD>.txt`, or its 24 `<YYYY-MM-DDTHH>.txt`, for each
+ *             UTC day of call time (`count-sql --query transcript --day <day> --run`); its rows
+ *             are each host's, store `transcripts@<host>`.
  *   --spans   Each store's earliest record, in the form `attribute --spans` takes.
  *   --dotfiles-commit  The commit of `dotfilesRepo` whose pins it reads (sets.ts), 40 hex digits;
  *             without it, the default branch's commit when it runs.
  *   --rows-label  Words that name the rows (an artifact and its version), written as given.
  *   --not-read  `<name>=<reason>`, for each source of sessions the rows cannot hold (the Claude
- *             Code transcripts), named as not read with its reason.
+ *             Code transcripts, without the transcript store), named as not read with its reason.
  *
  * Refusals (exit 2), before any GitHub read: the arguments; a configuration without sets; a
  * `--not-read` that is not `<name>=<reason>`; rows or a spans file it cannot read, rows an earlier
- * count.sql made (a count row with no `calls` or `unpaired_calls`: `readCount`); and rows in
- * which a configured store that has rows lacks a summary row for a day from the window's start to
- * its end (`windowGaps`): no output of that day, not all 24 of its hours, a file that is not one
- * whole count.sql result, or a summary row whose mtime range is not its query's. Each gap is
- * named. A store with no rows at all is named as not read.
+ * count.sql made (a count row with no `calls` or `unpaired_calls`: `readCount`), and with the
+ * transcript store a missing `hashes.txt` or `coverage.txt` (readCount's own words); and rows in
+ * which a configured store that has rows, or the transcript store, lacks a query of a day from the
+ * window's start to its end (`windowGaps`): no output of that day, not all 24 of its hours, a file
+ * that is not one whole result of its query, or a summary row whose range is not its query's. Each
+ * gap is named. A store with no rows at all is named as not read. A host whose sessions miss part
+ * of the window is no gap: the stores say so.
  *
  * The rule. A count row counts as the skill S of a set when S is one of the set's
  * skills at its pin (sets.ts: the `skills/<name>/SKILL.md` of its repository at the pinned commit)
@@ -47,29 +55,38 @@
  * calls. A read that two files of a store hold (one key of count.sql's `calls`: a forked session
  * copies its parent's lines) counts in the file whose hash sorts first, over every query of the
  * store, as attribute.ts counts it (`countOnce`, count.sql's rule applied across queries); a file
- * stays in a row when one of its keys there counts in it. Each session counts once for S, in the
- * first of `own`, `upstream_url`, `other_copy`, `no_copy` that one of its `read` rows of S
- * reaches. `reference_own` counts the sessions with a `reference` row of S at the own copy, apart
- * from those four. Each column is also counted per store. Every skill of each set at its pin is
- * listed, one with no read at 0.
+ * stays in a row when one of its keys there counts in it. The transcript store's rows count by
+ * the same rule, its hosts' files as one store's, after readCount's ownership: a file whose hash a
+ * store's hashes.txt holds counts in that store alone, and a file several hosts hold for the first
+ * host label in byte order. Each session counts once for S, in the first of `own`,
+ * `upstream_url`, `other_copy`, `no_copy` that one of its `read` rows of S reaches.
+ * `reference_own` counts the sessions with a `reference` row of S at the own copy, apart from those
+ * four. Each column is also counted per store, each host of the transcript store a store. Every
+ * skill of each set at its pin is listed, one with no read at 0.
  *
  * Outputs under --out.
  *   exemplar-count.md   The window; the rows read (the label, and the digest of their files); each
- *                       store with its earliest record (the spans file's); each store not read
- *                       and why; the dotfiles commit and each pin with the commit it resolves to;
- *                       the pin changes in the window; the rule; the sessions per skill, and per
- *                       skill and store; the skills with at least AT_LEAST own-copy sessions; the
- *                       count-sql command of each query the rows hold and of each store's
- *                       roots.txt, and this command.
+ *                       store with its earliest record (the spans file's), and each host and
+ *                       format of the transcript store as attribute's Stores section gives it
+ *                       (`transcriptStoreLines`); each store not read and why; the dotfiles
+ *                       commit and each pin with the commit it resolves to; the pin changes in
+ *                       the window; the rule; the sessions per skill, and per skill and store;
+ *                       the skills with at least AT_LEAST own-copy sessions; the count-sql
+ *                       command of each file of the rows (each query, each store's roots.txt
+ *                       and, with the transcript store, each store's hashes.txt and its
+ *                       coverage.txt), and this command.
  *   exemplar-count.tsv  TSV_COLUMNS, then each column again per configured store
- *                       (`<column>:<store>`), one row per skill of each set, in the sets' order,
- *                       most own-copy sessions first, a tie by name.
+ *                       (`<column>:<store>`), and with the transcript store once more for its
+ *                       hosts summed (`<column>:transcripts`), one row per skill of each set, in
+ *                       the sets' order, most own-copy sessions first, a tie by name.
  *   sessions/<set>/<skill>.jsonl
- *                       Each own-copy session of the skill, one line `{"store", "hash"}`, sorted
- *                       by store then hash (an empty file for none): attribute.ts's form.
- *   summary.json        The numbers, the rows' files with their sha256, the stores, the stores
- *                       not read, the pins, the pin changes, the skills at AT_LEAST or more, and
- *                       the commands.
+ *                       Each own-copy session of the skill, one line `{"store", "hash"}` (a
+ *                       transcript session's store its host's label), sorted by store then hash
+ *                       (an empty file for none): attribute.ts's form.
+ *   summary.json        The numbers, the rows' files with their sha256, the stores (each host
+ *                       and format of the transcript store as the md's rows), the stores not
+ *                       read, the pins, the pin changes, the skills at AT_LEAST or more, and the
+ *                       commands.
  *
  * Exit status: 0 the count is written; 1 failed (a GitHub read, a set the dotfiles commit does not
  * pin once, a pin that does not resolve, a set whose skills are not at `skills/`); 2 refused.
@@ -90,8 +107,13 @@ import {
   type QueryOutput,
   readCount,
   type Span,
+  type SummaryRow,
   sessionKey,
   sessionLines,
+  type TranscriptStoreRow,
+  transcriptCoverage,
+  transcriptStoreLines,
+  transcriptStoreRows,
   twoDigits,
 } from "./attribute";
 import {
@@ -105,7 +127,7 @@ import {
   started,
   writeWhole,
 } from "./common";
-import type { SkillCutsConfig } from "./config";
+import { type SkillCutsConfig, TRANSCRIPT_SOURCE } from "./config";
 import { type Gh, tsv } from "./copies";
 import { mtimeRange } from "./countsql";
 import {
@@ -246,48 +268,92 @@ export function countSets(
   });
 }
 
-/** Each gap of the rows: for each configured store that has rows, each query file that is not one
- *  whole result or whose summary row is not of its query's range, and each day from the window's
- *  start to its end with no summary row of the day or of each of its 24 hours. */
-function windowGaps(config: SkillCutsConfig, count: CountRead): string[] {
-  const gaps: string[] = [];
-  const days = daysFrom(Date.parse(config.windowStart), Date.parse(config.windowEnd) - 1);
-  for (const { name: store } of config.stores) {
-    const outputs = count.outputs.filter((output) => output.store === store);
-    const unreadable = count.unreadable.filter((item) => item.store === store);
-    if (outputs.length === 0 && unreadable.length === 0) continue;
-    for (const item of unreadable) {
-      gaps.push(`${store} ${item.name}: not one whole count.sql result: ${item.why}`);
+/** How the gaps of a store's queries are named (`queryGaps`): what one whole result of its query
+ *  is, a day with no query of the day or of its hours, and a day with some of its hours. */
+interface GapWords {
+  readonly result: string;
+  readonly none: string;
+  readonly some: string;
+}
+const COUNT_SQL_GAPS: GapWords = {
+  result: "count.sql result",
+  none: "no summary row (no output of that day or of its hours)",
+  some: "summary rows",
+};
+const TRANSCRIPT_GAPS: GapWords = {
+  result: "transcript query result",
+  none: "no output of that day or of its hours",
+  some: "outputs",
+};
+
+/** Each gap of the store `store`'s queries over the days `days`: each query file that is not one
+ *  whole result (`unreadable`), each query of `queries` (its name and the summary rows of its
+ *  result) with a summary row that is not of its query's range, and each day with no such query
+ *  of the day or of each of its 24 hours. */
+function queryGaps(
+  store: string,
+  queries: readonly { readonly name: string; readonly summaries: readonly SummaryRow[] }[],
+  unreadable: readonly { readonly name: string; readonly why: string }[],
+  days: readonly string[],
+  words: GapWords
+): string[] {
+  const gaps = unreadable.map(
+    (item) => `${store} ${item.name}: not one whole ${words.result}: ${item.why}`
+  );
+  const covered = new Set<string>();
+  for (const { name, summaries } of queries) {
+    const [day = "", hour] = name.split("T");
+    let range: { from: number; to: number };
+    try {
+      range = mtimeRange(day, hour === undefined ? undefined : Number(hour));
+    } catch (error) {
+      gaps.push(`${store} ${name}: ${messageFor(error)}`);
+      continue;
     }
-    const covered = new Set<string>();
-    for (const output of outputs) {
-      const { mtime_from: from, mtime_to: to } = output.summary;
-      const [day = "", hour] = output.name.split("T");
-      let range: { from: number; to: number };
-      try {
-        range = mtimeRange(day, hour === undefined ? undefined : Number(hour));
-      } catch (error) {
-        gaps.push(`${store} ${output.name}: ${messageFor(error)}`);
-        continue;
-      }
-      if (from === range.from && to === range.to) covered.add(output.name);
-      else {
-        gaps.push(
-          `${store} ${output.name}: its summary row covers [${iso(from)}, ${iso(to)}), not that query's [${iso(range.from)}, ${iso(range.to)})`
-        );
-      }
-    }
-    for (const day of days) {
-      if (covered.has(day)) continue;
-      const hours = HOURS.filter((hour) => covered.has(`${day}T${twoDigits(hour)}`));
-      if (hours.length === HOURS.length) continue;
-      const missing = HOURS.filter((hour) => !hours.includes(hour));
+    let whole = true;
+    for (const { store: of, mtime_from: from, mtime_to: to } of summaries) {
+      if (from === range.from && to === range.to) continue;
+      whole = false;
       gaps.push(
-        hours.length === 0
-          ? `${store} ${day}: no summary row (no output of that day or of its hours)`
-          : `${store} ${day}: summary rows of ${hours.length} of its 24 hours; hours ${missing.join(", ")} have none`
+        `${store} ${name}: ${of === store ? "its summary row" : `the summary row of ${of}`} covers [${iso(from)}, ${iso(to)}), not that query's [${iso(range.from)}, ${iso(range.to)})`
       );
     }
+    if (whole) covered.add(name);
+  }
+  for (const day of days) {
+    if (covered.has(day)) continue;
+    const hours = HOURS.filter((hour) => covered.has(`${day}T${twoDigits(hour)}`));
+    if (hours.length === HOURS.length) continue;
+    const missing = HOURS.filter((hour) => !hours.includes(hour));
+    gaps.push(
+      hours.length === 0
+        ? `${store} ${day}: ${words.none}`
+        : `${store} ${day}: ${words.some} of ${hours.length} of its 24 hours; hours ${missing.join(", ")} have none`
+    );
+  }
+  return gaps;
+}
+
+/** Each gap of the rows (`queryGaps`) over the days from the window's start to its end: of each
+ *  configured store that has rows, and of the transcript store when the configuration has it,
+ *  whose query of a day (or hour) of call time holds a summary row for each host with a call then,
+ *  and none when no host had one. */
+function windowGaps(config: SkillCutsConfig, count: CountRead): string[] {
+  const days = daysFrom(Date.parse(config.windowStart), Date.parse(config.windowEnd) - 1);
+  const gaps = config.stores.flatMap(({ name: store }) => {
+    const outputs = count.outputs.filter((output) => output.store === store);
+    const unreadable = count.unreadable.filter((item) => item.store === store);
+    if (outputs.length === 0 && unreadable.length === 0) return [];
+    const queries = outputs.map(({ name, summary }) => ({ name, summaries: [summary] }));
+    return queryGaps(store, queries, unreadable, days, COUNT_SQL_GAPS);
+  });
+  if (count.transcript !== undefined) {
+    const { outputs, unreadable } = count.transcript.queries;
+    const queries = outputs.map((query) => ({
+      name: query.name,
+      summaries: query.outputs.map((output) => output.summary),
+    }));
+    gaps.push(...queryGaps(TRANSCRIPT_SOURCE, queries, unreadable, days, TRANSCRIPT_GAPS));
   }
   return gaps;
 }
@@ -297,9 +363,15 @@ function shellWord(arg: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
 }
 
+/** count-sql's words for the query `name` of a day, `YYYY-MM-DD` or `YYYY-MM-DDTHH` for an hour. */
+function dayQuery(name: string): string[] {
+  const [day = "", hour] = name.split("T");
+  return ["--day", day, ...(hour === undefined ? [] : ["--hour", String(Number(hour))])];
+}
+
 /** The count-sql command line that makes the rows file `<store>/<file>.txt`: count-sql with the
- *  configuration `config`, the store and `query` (its day and hour, or `--query roots`), run
- *  through the configuration's psql command `psql` with the store's name. */
+ *  configuration `config`, the store and `query` (its day and hour, `--query roots` or `--query
+ *  hashes`), run through the configuration's psql command `psql` with the store's name. */
 function countSqlLine(
   config: string,
   psql: string,
@@ -309,6 +381,14 @@ function countSqlLine(
 ): string {
   const words = [CLI, "count-sql --config", shellWord(config), "--store", store, ...query];
   return [...words, "|", shellWord(psql), store, ">", `${store}/${file}.txt`].join(" ");
+}
+
+/** The count-sql command line that makes the transcript store's file `transcripts/<file>.txt`:
+ *  count-sql with the configuration `config` and `query`, which `--run` runs through the
+ *  configuration's transcriptStore command (a private path, so it is not written here). */
+function transcriptLine(config: string, query: readonly string[], file: string): string {
+  const words = [CLI, "count-sql --config", shellWord(config), ...query, "--run"];
+  return [...words, ">", `${TRANSCRIPT_SOURCE}/${file}.txt`].join(" ");
 }
 
 /** One skill's numbers, in total and per store, and its own-copy sessions. */
@@ -345,6 +425,16 @@ interface Report {
   readonly skills: readonly SkillRow[];
   readonly atLeast: readonly SkillRow[];
   readonly commands: { readonly countSql: readonly string[]; readonly setCount: string };
+  /** With the configuration's transcriptStore: its hosts' store labels, its lines of the Stores
+   *  section, and its rows there (attribute.ts's `transcriptStoreLines` and
+   *  `transcriptStoreRows`). */
+  readonly transcript:
+    | {
+        readonly hosts: readonly string[];
+        readonly lines: readonly string[];
+        readonly rows: readonly TranscriptStoreRow[];
+      }
+    | undefined;
 }
 
 /** Each count of `counts` as a row: its totals and per-store numbers; in the sets' order of
@@ -407,7 +497,7 @@ function markdown(report: Report): string {
     "",
     report.rowsLabel ?? "No --rows-label was given.",
     "",
-    `${report.files.length} files of count.sql's output, one query of one store and one UTC day (or hour) of file mtime each. Their digest is sha256 \`${report.digest}\`: the sha256 of one line \`<sha256>  <store>/<file>\` per file, sorted by path, each line ending in a newline (\`sha256sum <files> | LC_ALL=C sort -k 2 | sha256sum\` in the rows directory). summary.json gives each file's sha256.`,
+    `${report.files.length} files ${report.transcript === undefined ? "of count.sql's output, one query of one store and one UTC day (or hour) of file mtime each" : "read: count.sql's output, one query of one store and one UTC day (or hour) of file mtime each; each store's hashes.txt; and the transcript store's coverage.txt and its output of each UTC day (or hour) of call time"}. Their digest is sha256 \`${report.digest}\`: the sha256 of one line \`<sha256>  <store>/<file>\` per file, sorted by path, each line ending in a newline (\`sha256sum <files> | LC_ALL=C sort -k 2 | sha256sum\` in the rows directory). summary.json gives each file's sha256.`,
     "",
     "## Stores",
     "",
@@ -433,13 +523,8 @@ function markdown(report: Report): string {
       )
     );
   }
-  say(
-    "",
-    "The earliest record and the files in the store are the spans file's.",
-    "",
-    "## Not read",
-    ""
-  );
+  say("", "The earliest record and the files in the store are the spans file's.");
+  say(...(report.transcript?.lines ?? []), "", "## Not read", "");
   if (report.notRead.length === 0 && report.otherDirs.length === 0) {
     say("Each configured store has rows, and no --not-read was given.");
   }
@@ -510,6 +595,12 @@ function markdown(report: Report): string {
     "## The rule",
     "",
     "A count row counts as a skill of a set when the skill is in the set's list at its pin and its copy starts with `<set>:` (a Claude Code Skill call), holds the pin's install directory (`/node_modules/<package>/` or `/vendor/<dir>/`), or holds `/plugins/cache/` and after it a path part that is the set's name (Claude Code's plugin cache): that is its own copy. A copy that is a URL is no install directory: one that names the set's repository or an upstream of it is a read of the upstream by URL, any other another copy. A row with no path and no prefix names no copy; any other path or prefix is another copy. A read that two files of a store hold (a forked session copies its parent's lines) counts in the file whose hash sorts first, whichever queries hold the two, as the attribute command counts it. A session counts once for a skill, in the first of these columns that one of its reads reaches: own copy, upstream by URL, only another copy, no copy named. Reference reads at the own copy are a column of their own.",
+    ...(report.transcript === undefined
+      ? []
+      : [
+          "",
+          "A row of the transcript store (its store `transcripts@<host>`) counts by the same rule. A file whose hash a store's hashes.txt holds counts in that store alone, never in the transcript store; a file that several hosts hold counts for the first host label in byte order alone; and a read that two of its files hold counts in the file whose hash sorts first, whichever hosts and queries hold the two.",
+        ]),
     "",
     "## Sessions per skill",
     "",
@@ -541,7 +632,9 @@ function markdown(report: Report): string {
     "",
     "## Commands",
     "",
-    "The count-sql command of each query the rows hold, and of each store's roots.txt; its output, run through the configuration's psqlCommand with the store's name, is that file under the rows directory:",
+    report.transcript === undefined
+      ? "The count-sql command of each query the rows hold, and of each store's roots.txt; its output, run through the configuration's psqlCommand with the store's name, is that file under the rows directory:"
+      : "The count-sql command of each query the rows hold, of each store's roots.txt and hashes.txt, and of the transcript store's coverage.txt; each makes that file under the rows directory. A store's output is run through the configuration's psqlCommand with the store's name; a transcript-store command's `--run` runs its query through the configuration's transcriptStore command, whose output is the file:",
     "",
     "```",
     ...report.commands.countSql,
@@ -557,12 +650,17 @@ function markdown(report: Report): string {
   return lines.join("\n");
 }
 
-/** exemplar-count.tsv's text. */
+/** exemplar-count.tsv's text: with the transcript store, one more group of COLUMNS
+ *  (`<column>:transcripts`), its hosts' numbers summed (a file is one host's alone). */
 function table(report: Report): string {
   const stores = report.config.stores.map((store) => store.name);
+  const hosts = report.transcript?.hosts;
   const columns = [
     ...TSV_COLUMNS,
     ...stores.flatMap((store) => COLUMNS.map((column) => `${column}_sessions:${store}`)),
+    ...(hosts === undefined
+      ? []
+      : COLUMNS.map((column) => `${column}_sessions:${TRANSCRIPT_SOURCE}`)),
   ];
   return tsv(
     columns,
@@ -571,6 +669,11 @@ function table(report: Report): string {
       row.skill,
       ...COLUMNS.map((column) => row.totals[column]),
       ...stores.flatMap((store) => COLUMNS.map((column) => row.byStore[store]?.[column] ?? 0)),
+      ...(hosts === undefined
+        ? []
+        : COLUMNS.map((column) =>
+            hosts.reduce((sum, host) => sum + (row.byStore[host]?.[column] ?? 0), 0)
+          )),
     ])
   );
 }
@@ -580,7 +683,7 @@ function summary(report: Report): unknown {
   return {
     window: { start: report.config.windowStart, end: report.config.windowEnd },
     rows: { label: report.rowsLabel ?? null, digest: report.digest, files: report.files },
-    stores: report.stores,
+    stores: [...report.stores, ...(report.transcript?.rows ?? [])],
     notRead: report.notRead,
     dotfiles: {
       repo: report.dotfilesRepo,
@@ -670,7 +773,8 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
     let count: CountRead;
     let spans: Span[];
     try {
-      count = readCount(given.rows, storeNames);
+      // With the configuration's transcriptStore, the transcript store too, as attribute reads it.
+      count = readCount(given.rows, storeNames, config);
       spans = parseSpans(readFileSync(given.spans, "utf8"), given.spans);
     } catch (error) {
       throw new Refused(messageFor(error));
@@ -690,21 +794,33 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
     );
     const pins = await pinsRead;
     const changes = await changesRead;
-    // A read that a fork and its parent both hold counts in one session, as attribute counts it.
+    // A read that a fork and its parent both hold counts in one session, as attribute counts it;
+    // so does a read that two of the transcript store's files hold, whichever hosts hold them.
     const once = countOnce(count.outputs).outputs;
     const counts = countSets(setRules(pins.sets), once);
+    const transcript = count.transcript;
+    let transcriptRead: Report["transcript"];
+    if (transcript !== undefined) {
+      const coverage = transcriptCoverage(transcript, once);
+      transcriptRead = {
+        hosts: [...new Set(transcript.coverage.map(({ store }) => store))],
+        lines: transcriptStoreLines(config, transcript, coverage),
+        rows: transcriptStoreRows(config, transcript, coverage),
+      };
+    }
 
-    const outputs = [...count.outputs].sort((a, b) => {
-      const [x, y] = [`${a.store}/${a.name}`, `${b.store}/${b.name}`];
-      return x < y ? -1 : x > y ? 1 : 0;
-    });
-    // Each file's digest is of the bytes readCount parsed, so of the rows counted.
-    const files = outputs.map((output) => {
-      const file = `${output.store}/${output.name}.txt`;
-      const digest = count.digests.get(file);
-      if (digest === undefined) throw new Error(`the rows file ${file} has no digest`);
-      return { file, sha256: digest };
-    });
+    // The stores' outputs; the transcript store's are its hosts', one of each per query.
+    const outputs = count.outputs
+      .filter((output) => storeNames.includes(output.store))
+      .sort((a, b) => {
+        const [x, y] = [`${a.store}/${a.name}`, `${b.store}/${b.name}`];
+        return x < y ? -1 : x > y ? 1 : 0;
+      });
+    // Each file's digest is of the bytes readCount parsed, so of the rows counted: each query's
+    // output, and with the transcript store also its coverage.txt and each store's hashes.txt.
+    const files = [...count.digests]
+      .map(([file, digest]) => ({ file, sha256: digest }))
+      .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
     const stores = config.stores
       .filter(({ name }) => count.outputs.some((output) => output.store === name))
       .map(({ name, context }): StoreRead => {
@@ -734,8 +850,34 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
     const skills = skillRows(
       counts,
       sets.map((set) => set.id),
-      storeNames
+      [...storeNames, ...(transcriptRead?.hosts ?? [])]
     );
+    const rowStores = [...new Set(outputs.map((output) => output.store))];
+    /** The count-sql command line of the store's file `<store>/<file>.txt` (`countSqlLine`). */
+    const storeLine = (store: string, query: readonly string[], file: string) =>
+      countSqlLine(given.config, config.psqlCommand, store, query, file);
+    // Each store's day and hour queries, then its hashes query (with the transcript store, whose
+    // reader requires each configured store's hashes.txt, rows or none), then its roots query
+    // (with rows): the files the rows hold, in the order of their paths; then the transcript
+    // store's day and hour queries and its coverage query, in that order too.
+    const countSql = (
+      transcript === undefined
+        ? rowStores
+        : [...new Set([...rowStores, ...storeNames])].sort((a, b) => (`${a}/` < `${b}/` ? -1 : 1))
+    ).flatMap((store) => [
+      ...outputs
+        .filter((output) => output.store === store)
+        .map((output) => storeLine(store, dayQuery(output.name), output.name)),
+      ...(transcript === undefined ? [] : [storeLine(store, ["--query", "hashes"], "hashes")]),
+      ...(rowStores.includes(store) ? [storeLine(store, ["--query", "roots"], "roots")] : []),
+    ]);
+    if (transcript !== undefined) {
+      for (const query of transcript.queries.outputs) {
+        const words = ["--query", "transcript", ...dayQuery(query.name)];
+        countSql.push(transcriptLine(given.config, words, query.name));
+      }
+      countSql.push(transcriptLine(given.config, ["--query", "transcript-coverage"], "coverage"));
+    }
     const ownCommand = [
       CLI,
       "set-count",
@@ -762,25 +904,8 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
       atLeast: skills
         .filter((row) => row.totals.own >= AT_LEAST)
         .sort((a, b) => b.totals.own - a.totals.own),
-      commands: {
-        // Each store's day and hour queries, then its roots query: the files the rows hold, in
-        // the order of their paths.
-        countSql: [...new Set(outputs.map((output) => output.store))].flatMap((store) => [
-          ...outputs
-            .filter((output) => output.store === store)
-            .map((output) => {
-              const [day = "", hour] = output.name.split("T");
-              const query = [
-                "--day",
-                day,
-                ...(hour === undefined ? [] : ["--hour", String(Number(hour))]),
-              ];
-              return countSqlLine(given.config, config.psqlCommand, store, query, output.name);
-            }),
-          countSqlLine(given.config, config.psqlCommand, store, ["--query", "roots"], "roots"),
-        ]),
-        setCount: ownCommand.join(" "),
-      },
+      commands: { countSql, setCount: ownCommand.join(" ") },
+      transcript: transcriptRead,
     };
 
     const written: string[] = [];
@@ -795,7 +920,7 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
     }
     write("summary.json", json(summary(report)));
     io.out(
-      `set-count: ${outputs.length} queries of ${stores.length} stores; ${skills.length} skills of ${pins.sets.length} sets at ${dotfilesRepo} ${pins.commit}; ${report.atLeast.length} with at least ${AT_LEAST} own-copy sessions; ${changes.length} pin changes in the window\n` +
+      `set-count: ${outputs.length} queries of ${stores.length} stores${transcript === undefined ? "" : ` and ${transcript.queries.outputs.length} of the transcript store`}; ${skills.length} skills of ${pins.sets.length} sets at ${dotfilesRepo} ${pins.commit}; ${report.atLeast.length} with at least ${AT_LEAST} own-copy sessions; ${changes.length} pin changes in the window\n` +
         written
           .filter((file) => !file.includes(`${path.sep}sessions${path.sep}`))
           .map((file) => `${file}\n`)

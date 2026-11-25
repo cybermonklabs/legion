@@ -1568,12 +1568,20 @@ Inputs:
   Each store with rows also needs its `<store>/roots.txt`, which that reader refuses the store's
   rows without: run `count-sql --config <skill-cuts.json> --store <store> --query roots` through
   the store's `psqlCommand` and save its output there (`count-sql`, above).
+  When the configuration has a `transcriptStore` block, `set-count` reads the transcript store
+  too, as `attribute` does (the same reader): the rows then also need each configured store's
+  `<store>/hashes.txt` (`count-sql --query hashes` through its `psqlCommand`),
+  `transcripts/coverage.txt` (`count-sql --query transcript-coverage --run`) and
+  `transcripts/<day>.txt`, or its 24 `transcripts/<day>T<hour>.txt`, for each UTC day of the
+  window (`count-sql --query transcript --day <day> --run`), as "To include the ClickHouse
+  transcript store" above lists them. A missing `hashes.txt` or `coverage.txt` is refused in the
+  reader's own words.
 - `--spans`: each store's earliest record, in the form `attribute --spans` takes.
 - `--dotfiles-commit`: the commit of `dotfilesRepo` whose pins are read, 40 hex digits; without
   it, the default branch's commit when the command runs.
 - `--rows-label`: words that name the rows (an artifact and its version), written as given.
 - `--not-read`: a source of sessions the rows cannot hold, with its reason (the Claude Code
-  transcripts), once for each.
+  transcripts, when the configuration has no `transcriptStore`), once for each.
 
 The pins. A set is pinned by a dependency `"<package>": "github:<owner>/<repo>#<ref>"` of
 `omp/plugins/package.json` (its owner and repository the set's, in any case, whatever the package
@@ -1606,35 +1614,50 @@ that two files of a store hold (a forked session copies its parent's lines) coun
 the file whose path hash sorts first, whichever queries hold the two, as `attribute` counts it
 (`attribute.ts`'s `countOnce`): a file stays a session of S in a row when one of its reads there
 counts in it. Rows made by an earlier `count.sql`, with no `calls` and `unpaired_calls`, are
-refused.
+refused. A row of the transcript store (`transcripts@<host>`) counts by the same rule, after
+`attribute`'s ownership: a file whose hash a store's `hashes.txt` holds counts in that store
+alone, a file that several hosts hold counts for the first host label in byte order, and a read
+that two of its files hold counts once, whichever hosts hold them. A host is a store of its own
+in the numbers per store.
 
 Before it reads GitHub it refuses (exit 2), naming each gap, rows in which a configured store that
 has rows lacks a summary row for a day from the window's start to its end: no output of that day
 or of all 24 of its hours, a file that is not one whole count.sql result, or a summary row whose
-mtime range is not its query's. A configured store with no rows is named as not read.
+mtime range is not its query's. With the transcript store, each UTC day of the window needs its
+`transcripts/<day>.txt` (or its 24 hour files) in the same way; a host whose sessions miss part
+of the window is no gap, and the stores name it. A configured store with no rows is named as not
+read.
 
 Outputs under `--out`:
 
 - `exemplar-count.md`: the window; the rows read (the label as given, and one sha256 over the
   files: of one line `<sha256>  <store>/<file>` per file, sorted by path, each file's sha256 of the
-  bytes it counted, read once); each store with its
-  earliest record from the spans file; each store not read and each `--not-read` with its reason;
+  bytes it counted, read once; with the transcript store, its files and each store's `hashes.txt`
+  among them); each store with its earliest record from the spans file, and each transcript host
+  and format as `attribute`'s Stores section gives it (first and last record clipped to the
+  window, what its sessions miss of the window, sessions in the window, added sessions, and added
+  sessions with a skill read); each store not read and each `--not-read` with its reason;
   the dotfiles commit and each pin with the commit it resolves to; the pin changes in the window;
   the rule; the sessions per skill in each column, and per skill and store; the skills with at
   least 20 own-copy sessions; the `count-sql` command line of each store and day the rows hold,
-  and of each store's `roots.txt` (with its psqlCommand, as it made the file), and the command's
-  own line, with the `--dotfiles-commit` it read added when none was given, so it reads the same
-  pins again.
+  and of each store's `roots.txt` (with its psqlCommand, as it made the file), with the transcript
+  store also of each store's `hashes.txt` and of the transcript store's `coverage.txt` and each
+  day (`--run`, which runs the configuration's own transcriptStore command, not written out), and
+  the command's own line, with the `--dotfiles-commit` it read added when none was given, so it
+  reads the same pins again.
 - `exemplar-count.tsv`: one row per skill of each set at its pin (a skill with no read at 0), in
   the sets' order, most own-copy sessions first: `set`, `skill`, `own_sessions`,
   `upstream_url_sessions`, `other_copy_sessions`, `no_copy_sessions`, `reference_own_sessions`,
-  then each again per configured store (`<column>:<store>`).
-- `sessions/<set>/<skill>.jsonl`: each own-copy session, one line `{"store", "hash"}`, sorted by
-  store then hash; an empty file for a skill with none.
-- `summary.json`: the numbers of each skill in total and per store, the rows' files with their
-  sha256, the stores (each with its queries and its sessions with a read, a read two files hold
-  counted once as above), those not read, the pins, the pin changes, the skills at 20 or more
-  (`atLeast20`) and the commands.
+  then each again per configured store (`<column>:<store>`), and with the transcript store once
+  more for its hosts summed (`<column>:transcripts`).
+- `sessions/<set>/<skill>.jsonl`: each own-copy session, one line `{"store", "hash"}` (a transcript
+  session's store is its `transcripts@<host>`), sorted by store then hash; an empty file for a
+  skill with none.
+- `summary.json`: the numbers of each skill in total and per store (each transcript host a
+  store), the rows' files with their sha256, the stores (each with its queries and its sessions
+  with a read, a read two files hold counted once as above; each transcript host and format as
+  the md's row), those not read, the pins, the pin changes, the skills at 20 or more (`atLeast20`)
+  and the commands.
 
 It exits 0 when the count is written, 1 when a GitHub read fails or a pin cannot be read as
 above, and 2 when it refuses its arguments, a configuration without sets, a `--not-read` that is

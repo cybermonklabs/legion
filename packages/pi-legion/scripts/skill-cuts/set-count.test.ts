@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { countOnce, readCount, sessionKey } from "./attribute";
@@ -27,6 +27,17 @@ import { readPins, SetReads } from "./sets";
 //     skill://no-such-skill; (g) alpha-skill-three in Claude Code's plugin cache under alpha-set/;
 //     (h) alpha-skill-two at skill://alpha-skill-two; (k) beta-skill-two at the upstream's raw
 //     GitHub URL. beta-skill-three has no read.
+//
+// The transcript store's rows (describe "the transcript store") are made up, read from no system,
+// in the shapes count-sql's transcript queries print, as attribute.test.ts's are: the hosts host-a
+// (devbox) and host-b (legion:ACME) beside F14's rows, each file one session with one read:
+// on 2026-11-21, host-a's CLAUDE (alpha-skill-one by the Skill call alpha-set:alpha-skill-one, in
+// the format claude), VENDOR (beta-skill-one under vendor/beta-set/), SHARED (beta-skill-two under
+// vendor/beta-set/) and F14's (c) again (alpha-skill-two by alpha-set:alpha-skill-two), whose hash
+// store_a's hashes.txt holds; host-b's SHARED again (one file both hosts hold, so the same read)
+// and FORK (alpha-skill-three in Claude Code's plugin cache under alpha-set/); and on 2026-11-20,
+// host-a's PARENT, FORK's read by the same call key (a fork copies its parent's lines), its hash
+// sorting after FORK's.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const fixture = (name: string) => readFileSync(path.join(TESTDATA, name), "utf8");
@@ -634,4 +645,333 @@ test("a read two files of two queries hold counts in one session, the file whose
   );
   const table = parseTsv(readFileSync(path.join(out, "exemplar-count.tsv"), "utf8"));
   expect(table.find((row) => row.skill === "alpha-skill-two")?.own_sessions).toBe("2");
+});
+
+// Catches: a change for the transcript store that alters what set-count writes for a
+// configuration without a transcriptStore block. Each digest is the sha256 of what set-count wrote
+// before it read the transcript store, the scratch directory's path written `<scratch>`: a change
+// meant to alter that output gives its new digests here.
+test("without a transcriptStore block, it writes byte for byte what it wrote before it read the transcript store", async () => {
+  const out = at("golden-out");
+  const why = "the transcript store holds no Claude Code session until they are moved into it";
+  const ran = await setCount(
+    argsOf(
+      plantedConfig,
+      plantedRows,
+      out,
+      "--rows-label",
+      "the planted rows",
+      "--not-read",
+      `Claude Code transcripts=${why}`
+    )
+  );
+  expect(ran.err).toBe("");
+  expect(ran.code).toBe(0);
+  const digestOf = (text: string) => sha256(text.replaceAll(scratch, "<scratch>"));
+  const written: Record<string, string> = { stdout: digestOf(ran.out) };
+  for (const file of readdirSync(out, { recursive: true, encoding: "utf8" })) {
+    const full = path.join(out, file);
+    if (statSync(full).isFile()) written[file] = digestOf(readFileSync(full, "utf8"));
+  }
+  const empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  expect(written).toEqual({
+    stdout: "bccef28026b0df8a767007ede82180efcf2ac873f840ad3f6dcd8dce288ae375",
+    "exemplar-count.md": "8bca29151a875c39e054bc32c10c3247daf5a3b6083a8e045d06c8aed2ec21f6",
+    "exemplar-count.tsv": "268d46561a5260f0645f12538d02b5ed6add3abdac3a1ad42be0532f168dcc38",
+    "summary.json": "5767b5793e829faed2d0d6d1dedbf4bf0b72ead9e7efdf937478d8e74907a836",
+    "sessions/alpha-set/alpha-skill-one.jsonl":
+      "236a5c0aacdb065422b3f7bbb6d46374cb88a5de10a654019f8b512f28863a4e",
+    "sessions/alpha-set/alpha-skill-three.jsonl":
+      "590e950be5a6085a16fe7e494b974bfbf2cd858980ed4d96ee69e97848527eaf",
+    "sessions/alpha-set/alpha-skill-two.jsonl":
+      "c335c5162400c66952a6219f706792f675f9e7a677fad06f60151784d26518f0",
+    "sessions/beta-set/beta-skill-one.jsonl":
+      "5ace7cf089fae4cb3d0fd69ba058f4dc80c4e438938375eae8cb61a7b58140fd",
+    "sessions/beta-set/beta-skill-three.jsonl": empty,
+    "sessions/beta-set/beta-skill-two.jsonl": empty,
+  });
+});
+
+describe("the transcript store", () => {
+  const T = {
+    claude: "f16a000000000001",
+    vendor: "f16a000000000002",
+    shared: "f16a000000000003",
+    fork: "f16a000000000004",
+    parent: "f16a000000000005",
+  };
+  const COMMAND = "/opt/acme/bin/query-transcripts";
+  const vendored = (skill: string) =>
+    `/srv/acme/.dotfiles/vendor/beta-set/skills/${skill}/SKILL.md`;
+  const CACHED =
+    "/srv/acme/.claude/plugins/cache/acme-plugins/alpha-set/5.0.7/skills/alpha-skill-three/SKILL.md";
+  const NOV_21 = NOV_20 + DAY_MS;
+  const store = (host: string) => `transcripts@${host}`;
+
+  /** A transcript query's output, as `count-sql --query transcript` or `transcript-coverage`
+   *  with `--run` prints it: `rows`, one JSON line each, then the end row. */
+  const result = (rows: readonly object[]) =>
+    [...rows, { row: "end", store: "transcripts" }]
+      .map((row) => `${JSON.stringify(row)}\n`)
+      .join("");
+  /** A count row of `host`: the read of `skill` at `copy` on `day` by the file `hash`, by the call
+   *  key `key`, else by one of the file's own (its hash with `c` for its first digit). */
+  function read(
+    host: string,
+    day: string,
+    skill: string,
+    copy: string,
+    hash: string,
+    key = `c${hash.slice(1)}`
+  ) {
+    return {
+      ...{ row: "count", store: store(host), day, skill, copy, kind: "read", files: 1 },
+      ...{ hashes: [hash], calls: { [hash]: [key] } },
+      ...{ unpaired: 0, unpaired_hashes: [], unpaired_calls: {} },
+    };
+  }
+  /** The tool row of `host`: its `calls` calls of `name` in the format `format`. */
+  const tool = (host: string, format: string, name: string, calls: number) => ({
+    row: "tool",
+    store: store(host),
+    format,
+    tool: name,
+    calls,
+  });
+  /** The summary row of `host` in the query of the UTC day from `from`, of `files` files. */
+  const summary = (host: string, from: number, files: number) => ({
+    ...{ row: "summary", store: store(host), mtime_from: from, mtime_to: from + DAY_MS, files },
+    ...{ parts: 0, bytes: 0, lines_parsed: 0, bad_lines: 0, shared_call_ids: 0 },
+  });
+  /** The coverage row of `host` and `format`: its sessions `hashes`, which touched the UTC days
+   *  `days`, from the start of the first to the end of the last. */
+  const coverage = (host: string, format: string, days: readonly string[], hashes: string[]) => ({
+    ...{ row: "coverage", store: store(host), format },
+    profile: format === "omp" ? "default" : "unknown",
+    first: Date.parse(`${days[0]}T00:00:00Z`),
+    last: Date.parse(`${days.at(-1)}T23:59:59.999Z`),
+    ...{ days, hashes },
+  });
+  const [DAY_20, DAY_21] = ["2026-11-20", "2026-11-21"];
+  const ROWS: Readonly<Record<string, string>> = {
+    ...PLANTED_ROWS,
+    // hashes.sql's table of the files store_a holds: F14's (c) among them.
+    "store_a/hashes.txt": [" file_hash", "-".repeat(30), ` {"hash":"${H.c}"}`, "(1 row)", ""].join(
+      "\n"
+    ),
+    "transcripts/coverage.txt": result([
+      coverage("host-a", "claude", [DAY_21], [T.claude]),
+      coverage("host-a", "omp", [DAY_20, DAY_21], [T.vendor, T.shared, T.parent, H.c]),
+      coverage("host-b", "omp", [DAY_21], [T.shared, T.fork]),
+    ]),
+    "transcripts/2026-11-20.txt": result([
+      // PARENT's read, by the key FORK's copy of it holds.
+      read("host-a", DAY_20, "alpha-skill-three", CACHED, T.parent, `c${T.fork.slice(1)}`),
+      tool("host-a", "omp", "read", 1),
+      summary("host-a", NOV_20, 1),
+    ]),
+    "transcripts/2026-11-21.txt": result([
+      read("host-a", DAY_21, "alpha-skill-one", "alpha-set:alpha-skill-one", T.claude),
+      read("host-a", DAY_21, "alpha-skill-two", "alpha-set:alpha-skill-two", H.c),
+      read("host-a", DAY_21, "beta-skill-one", vendored("beta-skill-one"), T.vendor),
+      read("host-a", DAY_21, "beta-skill-two", vendored("beta-skill-two"), T.shared),
+      read("host-b", DAY_21, "alpha-skill-three", CACHED, T.fork),
+      read("host-b", DAY_21, "beta-skill-two", vendored("beta-skill-two"), T.shared),
+      tool("host-a", "claude", "Skill", 1),
+      tool("host-a", "omp", "read", 3),
+      tool("host-b", "omp", "read", 2),
+      summary("host-a", NOV_21, 4),
+      summary("host-b", NOV_21, 2),
+    ]),
+  };
+  /** ROWS but the file `name`. */
+  const without = (name: string) =>
+    Object.fromEntries(Object.entries(ROWS).filter(([file]) => file !== name));
+
+  let config = "";
+  let out = "";
+  let markdown = "";
+  let table: Record<string, string>[] = [];
+  beforeAll(async () => {
+    config = configFile("transcript.json", {
+      transcriptStore: {
+        command: COMMAND,
+        hosts: [
+          { host: "host-a", context: "devbox" },
+          { host: "host-b", context: "legion:ACME" },
+        ],
+      },
+    });
+    out = at("transcript-out");
+    const ran = await setCount(argsOf(config, tree(at("transcript-rows"), ROWS), out));
+    expect(ran.err).toBe("");
+    expect(ran.code).toBe(0);
+    markdown = readFileSync(path.join(out, "exemplar-count.md"), "utf8");
+    table = parseTsv(readFileSync(path.join(out, "exemplar-count.tsv"), "utf8"));
+  });
+  /** The own-copy sessions of `skill` of `set`, as its sessions file gives them. */
+  const own = (set: string, skill: string) =>
+    readFileSync(path.join(out, "sessions", set, `${skill}.jsonl`), "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line));
+  const row = (skill: string) => table.find((each) => each.skill === skill);
+
+  // Catches: the transcript store not read when the configuration has its block; a transcript row
+  // at the install directory, or by the set's Skill prefix, not counted as the set's own copy; a
+  // file that store_a's hashes.txt holds counted again from the transcript store.
+  test("a transcript row at the install directory counts as own, and a file a store's hashes.txt holds counts there alone", () => {
+    expect(own("beta-set", "beta-skill-one")).toContainEqual({
+      store: store("host-a"),
+      hash: T.vendor,
+    });
+    expect(row("beta-skill-one")).toMatchObject({
+      own_sessions: "3",
+      "own_sessions:store_a": "2",
+      "own_sessions:transcripts": "1",
+    });
+    expect(own("alpha-set", "alpha-skill-one")).toContainEqual({
+      store: store("host-a"),
+      hash: T.claude,
+    });
+    expect(own("alpha-set", "alpha-skill-two")).toEqual([{ store: "store_a", hash: H.c }]);
+    expect(row("alpha-skill-two")).toMatchObject({
+      own_sessions: "1",
+      "own_sessions:transcripts": "0",
+    });
+  });
+
+  // Catches: a file two hosts hold counted for each of them, or for the host whose label sorts
+  // later.
+  test("a file two hosts hold counts once, for the first host label in byte order", () => {
+    expect(own("beta-set", "beta-skill-two")).toEqual([{ store: store("host-a"), hash: T.shared }]);
+    expect(row("beta-skill-two")).toMatchObject({
+      own_sessions: "1",
+      "own_sessions:transcripts": "1",
+    });
+  });
+
+  // Catches: a read whose call key two transcript files hold (here of two hosts and two queries)
+  // counted in both, or in the file of the earlier query rather than in the one whose hash sorts
+  // first.
+  test("a read two transcript files hold counts once, in the file whose hash sorts first", () => {
+    expect(own("alpha-set", "alpha-skill-three")).toEqual([
+      { store: "store_a", hash: H.g },
+      { store: store("host-b"), hash: T.fork },
+    ]);
+    expect(row("alpha-skill-three")).toMatchObject({
+      own_sessions: "2",
+      "own_sessions:transcripts": "1",
+    });
+  });
+
+  // Catches: the hosts' coverage left out of the stores, or not as attribute's Stores section gives
+  // it; a coverage short of the window refused; a TSV group per host, or none for the transcript
+  // store; a host's sessions left out of the sessions per skill and store.
+  test("names each host's coverage among the stores, and the TSV gives the transcript store one group", () => {
+    const [first20, first21] = ["2026-11-20T00:00:00Z", "2026-11-21T00:00:00Z"];
+    const late = "starts after the window's start";
+    const rows = [
+      ["host-a", "devbox", "all", first20, "no gap", 5, 4, 3],
+      ["host-a", "devbox", "claude", first21, late, 1, 1, 1],
+      ["host-a", "devbox", "omp", first20, "no gap", 4, 3, 2],
+      ["host-b", "legion:ACME", "omp", first21, late, 2, 1, 1],
+    ] as const;
+    const last = "2026-11-21T23:59:59.999Z";
+    expect(markdown).toContain(
+      rows
+        .map(
+          ([host, context, format, first, words, sessions, added, reads]) =>
+            `| ${store(host)} | ${context} | ${format} | ${first} | ${last} | ${words} | ${sessions} | ${added} | ${reads} |`
+        )
+        .join("\n")
+    );
+    expect(markdown).toContain("Transcript-store count: 2 queries with output.");
+    const written = readJson(path.join(out, "summary.json")) as { stores: unknown[] };
+    expect(written.stores.slice(1)).toEqual(
+      rows.map(([host, context, format, first, words, sessions, added, reads]) => ({
+        ...{ store: store(host), context, format, firstRecord: first, lastRecord: last },
+        ...{ coverage: words, sessionsInWindow: sessions, addedSessions: added },
+        addedSessionsWithRead: reads,
+      }))
+    );
+    expect(markdown).toContain(
+      "| alpha-set | alpha-skill-three | transcripts@host-b | 1 | 0 | 0 | 0 | 0 |"
+    );
+    const columns = (of: string) =>
+      ["own", "upstream_url", "other_copy", "no_copy", "reference_own"].map(
+        (column) => `${column}_sessions:${of}`
+      );
+    const header = readFileSync(path.join(out, "exemplar-count.tsv"), "utf8").split("\n")[0];
+    expect(header?.split("\t").slice(7)).toEqual([
+      ...columns("store_a"),
+      ...columns("transcripts"),
+    ]);
+    expect(table.map((each) => [each.skill, each["own_sessions:transcripts"]])).toEqual([
+      ["alpha-skill-one", "1"],
+      ["alpha-skill-three", "1"],
+      ["alpha-skill-two", "0"],
+      ["beta-skill-one", "1"],
+      ["beta-skill-two", "1"],
+      ["beta-skill-three", "0"],
+    ]);
+  });
+
+  // Catches: the transcript store's files or a store's hashes.txt left out of the rows' files and
+  // their digest, or with no command that makes them; the transcriptStore command, a private path,
+  // written out; the Claude Code transcripts said not read when no --not-read names them.
+  test("lists the transcript store's files and each store's hashes.txt with their sha256, and the command of each", () => {
+    const written = readJson(path.join(out, "summary.json")) as {
+      rows: { files: { file: string; sha256: string }[]; digest: string };
+      commands: { countSql: string[] };
+    };
+    const files = [
+      ...["store_a/2026-11-20.txt", "store_a/2026-11-21.txt", "store_a/2026-11-22.txt"],
+      ...["store_a/hashes.txt", "transcripts/2026-11-20.txt", "transcripts/2026-11-21.txt"],
+      "transcripts/coverage.txt",
+    ].map((file) => ({ file, sha256: sha256(ROWS[file] ?? "") }));
+    expect(written.rows.files).toEqual(files);
+    expect(written.rows.digest).toBe(
+      sha256(files.map((each) => `${each.sha256}  ${each.file}\n`).join(""))
+    );
+    const prefix = `bun scripts/skill-cuts/cli.ts count-sql --config ${config}`;
+    const psql = (query: string, file: string) =>
+      `${prefix} --store store_a ${query} | /usr/bin/psql store_a > store_a/${file}.txt`;
+    expect(written.commands.countSql).toEqual([
+      psql("--day 2026-11-20", "2026-11-20"),
+      psql("--day 2026-11-21", "2026-11-21"),
+      psql("--day 2026-11-22", "2026-11-22"),
+      psql("--query hashes", "hashes"),
+      psql("--query roots", "roots"),
+      `${prefix} --query transcript --day 2026-11-20 --run > transcripts/2026-11-20.txt`,
+      `${prefix} --query transcript --day 2026-11-21 --run > transcripts/2026-11-21.txt`,
+      `${prefix} --query transcript-coverage --run > transcripts/coverage.txt`,
+    ]);
+    for (const line of written.commands.countSql) expect(markdown).toContain(line);
+    expect(markdown).not.toContain(COMMAND);
+    expect(markdown).toContain("Each configured store has rows, and no --not-read was given.");
+    expect(markdown).not.toContain("Claude Code transcripts");
+  });
+
+  // Catches: a transcript day missing from the rows counted as a day with no read, or refused only
+  // after GitHub is read; a store's missing hashes.txt passed over rather than refused with the
+  // reader's own words.
+  test("refuses rows that lack a transcript day of the window, naming it, or a store's hashes.txt", async () => {
+    const calls: string[] = [];
+    const lacking = tree(at("transcript-gap-rows"), without("transcripts/2026-11-20.txt"));
+    const ran = await setCount(argsOf(config, lacking, at("transcript-gap-out")), f10Gh(calls));
+    expect(ran.code).toBe(2);
+    expect(ran.err).toContain("transcripts 2026-11-20: no output of that day or of its hours");
+    expect(ran.err).not.toContain("transcripts 2026-11-21");
+    const unowned = tree(at("transcript-hashes-rows"), without("store_a/hashes.txt"));
+    const refused = await setCount(
+      argsOf(config, unowned, at("transcript-hashes-out")),
+      f10Gh(calls)
+    );
+    expect(refused.code).toBe(2);
+    expect(refused.err).toBe(
+      `set-count: ${path.join(unowned, "store_a", "hashes.txt")} is missing: run count-sql --query hashes for store_a`
+    );
+    expect(calls).toEqual([]);
+  });
 });
