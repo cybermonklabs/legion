@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  `refusalFetch` and `requestCredentials` read a request sent with an empty-string method as a
+  `GET`, as net/http sends it and Go's half of the rule reads it. Before, no route matched such a
+  request, so the TypeScript half took a value public on that `GET` route, such as a page number, as
+  a credential and redacted it, where Go printed it.
+time: 2026-11-24T09:56:22Z
+custom:
+    Issue: pr4368

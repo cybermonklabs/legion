@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The redaction mutation gate (`cmd/redact-gate`) no longer passes what it did not check. A row
+  whose test, or any subtest of it, skipped (a test that needs a database, run without
+  `DISPATCH_TEST_DATABASE_URL`) is `UNKNOWN` in stages 4 and 5, where stage 4 counted it as passed
+  and stage 5 counted its mutant as survived: stage 4 stops, naming the row, each skipped test and
+  the line its skip printed, stage 5 names the mutant unproven, and the gate exits 3. The call
+  census reads a file the change moved (its diffs run with `--no-renames`), where git's rename
+  detection hid every line of it; the reflection census lists a read through `reflect.Value.Fields`;
+  and the field census lists its findings sorted by function, so two runs over one tree print the
+  same lines in the same order.
+time: 2026-11-24T09:57:39Z
+custom:
+    Issue: pr4368

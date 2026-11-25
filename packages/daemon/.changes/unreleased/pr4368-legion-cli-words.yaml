@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  `legion state`'s first line names the daemon it read by the URL rule: its scheme, host, port and
+  path, with no user information. That line is on standard output, which the URL rule does not pass,
+  and it printed `LEGION_DAEMON_URL` as it was set, a password in its user information included.
+
+  `legion`'s refusal of a daemon answer that does not decode names the failure in the fixed text the
+  answer reader uses (`oauth2call.DecodeError`: the type, the member of it that did not decode and
+  the JSON kind it held, never a value or a member name the answer wrote). An answer that decodes
+  once members the type does not have are allowed is still refused as one from another release of
+  the daemon.
+
+  `legion claims retry --failed`, and each line that names a claim token of the daemon's answer,
+  take a token as the daemon's only in the two shapes the daemon makes, `legion-<project>-<issue
+  project>-<number>-<role>` and `legion-<project>-controller` (`claim.Token.Shaped`). A token
+  `legion-<project>-<role>`, which names no issue and which the CLI took before, is now named as a
+  claim whose token has no claim token's shape, and is not retried.
+
+  `legion git-credential`'s read of a fork, when curl fails after the request was sent or exits for
+  a reason of its own, names what curl said on one line, with every run of the read's token
+  redacted, as the rule reads it (`leakguard.CurlResponse.Said`, the rule the leak guard's own curl
+  quotes use). Before, it printed curl's standard error as it came, which whatever answered in
+  GitHub's place could make hold the token the read carried.
+time: 2026-11-25T01:09:54Z
+custom:
+    Issue: pr4368

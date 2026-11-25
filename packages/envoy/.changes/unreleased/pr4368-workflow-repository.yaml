@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The broker refuses a `BROKER_EXCHANGE_WORKFLOWS` entry whose repository is `<owner>/.` or
+  `<owner>/..`, which names no repository. The entry's repository is held to the rule every other
+  reader of an `<owner>/<name>` entry uses (`githubname.ValidEntry`), and every refusal the entry
+  gave before stands.
+time: 2026-11-24T22:38:50Z
+custom:
+    Issue: pr4368

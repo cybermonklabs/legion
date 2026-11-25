@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A 2xx answer Dispatch relays to its web page no longer holds a run of the token its call carried.
+  The agent-secrets client relayed the broker's 2xx body as it came, sent with Dispatch's own
+  account token as its bearer, and the GitHub proxy (`githubapi.ProxyREST`) relayed GitHub's 2xx
+  body, and each workflow run's event and name, as they came, sent with an installation token. So
+  whatever answered 200 in the broker's or GitHub's place with that token in its body put it on the
+  page. Every run of that one token is now redacted from both. A 2xx keeps the call's other words,
+  which the broker's data names back as its own (the approver, the states a list asks for), and a
+  refusal is still relayed with every credential the call carried redacted.
+time: 2026-11-24T23:36:21Z
+custom:
+    Issue: pr4368
