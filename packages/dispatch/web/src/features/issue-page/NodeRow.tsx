@@ -622,6 +622,9 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     case "reading":
       return "agent";
     case "criterion":
+      // A criterion's bullet is in the statements' colour wherever it stands (R1): it carries no
+      // `statement` mark, which only the spec's own requirement does (`isStatement`).
+      return "statement";
     case "requirement":
       // Only the spec's own requirement is a statement (`isStatement`); one of any other
       // document is a block and nothing more, in a block's colour (decision 246).

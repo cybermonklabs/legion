@@ -1,13 +1,16 @@
 import { expect, mock, test } from "bun:test";
 import { DISPATCH_WRITING_HINT_QUIET } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { http } from "msw";
 import { createElement, type ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { answerRequests } from "../../../__tests__/network";
 import { whoAmIQuery } from "../../../api/queries";
+import { pageKindBullet } from "../../../theme/classes";
 import type { TreeNode } from "../issue-tree";
+import { NodeRow } from "../NodeRow";
 import {
   criterionItemOf,
   criterionTakenBy,
@@ -28,7 +31,7 @@ import type { RoomFacts } from "./room-target";
  * artifact, the line's text and answer as the write goes, and the box's aim, which no other
  * target ends while the write is out. Each request is answered at `fetch` (`answerRequests`), so
  * the write goes the whole way the page's does: the keyed write, the client, and the refusal the
- * client makes of Dispatch's answer.
+ * client makes of Dispatch's answer. Last, the colour a criterion's row draws its bullet in.
  */
 
 const KEY = "CORE-1";
@@ -489,5 +492,43 @@ test("a blank text sends nothing", () => {
     expect(line.result.current.blank).toBe(false);
   } finally {
     line.unmount();
+  }
+});
+
+// R1: a criterion's row draws its bullet in the statements' colour, wherever it stands. A
+// criterion carries no `statement` mark, which only the spec's own requirement does (decision
+// 246), so a colour read from that mark drew it in a block's colour.
+test("a criterion's row draws its bullet in the statements' colour", () => {
+  const view = render(
+    createElement(
+      QueryClientProvider,
+      { client: signedInClient() },
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(NodeRow, {
+          author: { kind: "person", name: "alice", reader: false },
+          body: false,
+          context: false,
+          focused: false,
+          isClosed: false,
+          level: 2,
+          node: treeNode({ id: "tree-md#b-c1", text: TEXT, type: "criterion" }),
+          onFocus: () => {},
+          onPin: () => {},
+          onToggle: () => {},
+          ownAnswer: false,
+          pinned: false,
+          rowKey: "tree-md#b-c1",
+          tabStop: false,
+        })
+      )
+    )
+  );
+  try {
+    const dot = view.container.querySelector("[data-node-bullet] i");
+    expect(dot?.classList.contains(pageKindBullet.statement)).toBe(true);
+  } finally {
+    view.unmount();
   }
 });

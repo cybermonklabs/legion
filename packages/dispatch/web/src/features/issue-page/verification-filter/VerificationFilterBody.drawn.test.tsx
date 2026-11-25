@@ -950,6 +950,61 @@ test("Enter on a statement and a press on a check's words edit each in its docum
   }
 });
 
+// The check's editor is drawn onto the row's stage through a portal (`document-stage.tsx`), so it
+// stands inside the row on the page and outside it in React's tree. The check's facts are drawn
+// while the caret is in that editor, as while the focus is anywhere else in the row, and shut once
+// the focus leaves the row from the editor, for another row of the view or for a control out of
+// it. The row and its Facts control say each time whether they are drawn.
+test("a check's facts are drawn while the caret is in its editor, and shut once the focus leaves it for another row or out of the view", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const one = passing("c-one");
+  const view = drawBody([statementNode("r1", "The page draws it.", [checkNode(one)])], [one], {
+    editing: page,
+  });
+  // A control out of the view.
+  const control = document.createElement("button");
+  document.body.append(control);
+  try {
+    const statement = view.container.querySelector<HTMLElement>("[data-verification-card]");
+    const row = view.container.querySelector<HTMLElement>("[data-verification-check]");
+    const facts = row?.querySelector("[data-verification-facts]");
+    /** Whether the check's facts are drawn, as its row says, as its control says, and drawn. */
+    const drawn = () => [
+      row?.getAttribute("aria-expanded"),
+      facts?.getAttribute("aria-expanded"),
+      (row?.querySelectorAll("[data-node-body]").length ?? 0) > 0,
+    ];
+    /** Puts the caret in the check's editor: a press on its words asks for it, and the focus goes
+     *  into the stand-in for it drawn on the row's stage in place of the words. */
+    const caretInCheck = async () => {
+      await user.click(row?.querySelector("[data-verification-check-words]") as Element);
+      const editor =
+        row?.querySelector<HTMLElement>("[data-node-words] [data-editor-stand]") ?? null;
+      expect(editor, "the press drew no editor in the check's row").not.toBeNull();
+      act(() => editor?.focus());
+      expect(document.activeElement).toBe(editor);
+    };
+    for (const [away, where] of [
+      [statement, "on another row"],
+      [control, "out of the view"],
+    ] as const) {
+      await caretInCheck();
+      expect(drawn(), "the caret in the check's editor drew no facts").toEqual([
+        "true",
+        "true",
+        true,
+      ]);
+      act(() => away?.focus());
+      expect(drawn(), `the focus ${where} left the facts drawn`).toEqual(["false", "false", false]);
+    }
+    expect(askedDocuments(page)).toEqual(["artifact-verification", "artifact-verification"]);
+  } finally {
+    view.unmount();
+    control.remove();
+  }
+});
+
 // A check's facts are kept drawn or shut by two acts alone: its own Facts control, which opens
 // them where they are shut and shuts them where they are open, and `o`, which keeps them drawn
 // once the focus leaves and lets them go the second time. The row and the control say the same.
@@ -1155,8 +1210,9 @@ test("a press on the words of a row an address named asks for its editor where i
 // drawn diagram's summary, which opens its source (`mermaid-diagrams.ts`'s `drawBlock` draws the
 // figure into the words once the diagram is drawn), a label, and an element that plays a button,
 // in a statement's words and in a check's. A press on a check's words themselves still asks for
-// the check's editor: they are a tab stop of their own, and the element that heard a press is
-// never the control that owns it.
+// the check's editor, though they are a tab stop of their own, and so does a press on an element
+// of a statement's words that scrolls - a wide code block's `pre` - which `RowText` gives a tab
+// index of its own (`useOutOfTabOrder`): such an element acts on no press.
 test("a press on a diagram's summary, a label or a button inside a row's words is that control's own and asks for no editor", async () => {
   const user = userEvent.setup();
   const page = editingPage();
@@ -1197,6 +1253,15 @@ test("a press on a diagram's summary, a label or a button inside a row's words i
 
     await user.click(check?.querySelector("[data-verification-check-words]") as Element);
     expect(askedDocuments(page)).toEqual(["artifact-verification"]);
+
+    // A wide code block of the statement's words, which `RowText` gives a tab index of its own as
+    // it scrolls: a press on it is the words' own, and asks for the statement's editor.
+    const code = document.createElement("pre");
+    code.setAttribute("tabindex", "-1");
+    code.append("bun run test:web");
+    statement?.querySelector("[data-node-words]")?.append(code);
+    await user.click(code);
+    expect(askedDocuments(page)).toEqual(["artifact-verification", "artifact-spec"]);
   } finally {
     view.unmount();
   }

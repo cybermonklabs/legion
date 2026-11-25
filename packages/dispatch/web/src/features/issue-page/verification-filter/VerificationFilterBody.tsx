@@ -1310,6 +1310,12 @@ function Statement({
  * every fact of a check and of its results by the keyboard alone, and the table stays the table
  * the picture draws.
  *
+ * The row hears where the focus is by the browser's own focus events on its element (`focusin`,
+ * `focusout`), not by React's: the editor is drawn into the words through a portal, and React
+ * sends a portal's focus events up the portal's own parents, not up the elements it stands in, so
+ * a React handler on the row never hears the focus leave the editor, for another row or for
+ * anything out of the view.
+ *
  * It is a row of the tree, across its words and its latest result: a row of the group under
  * its statement, or, for a check that serves no statement, a row of the table of its own
  * (`loose`). From 761 px up such a row stands in the statement grid with its first cell empty,
@@ -1365,6 +1371,31 @@ function Check({
   // Whether the facts were drawn when the pointer went down: the focus its press puts in the row
   // draws them before the click, and the click must shut only what was drawn before it.
   const drawnAtPress = useRef<boolean | undefined>(undefined);
+  // The row's element, whose focus events say whether the focus is inside it, and the press and
+  // its setter as last drawn, which its listener reads as the focus leaves.
+  const rowElement = useRef<HTMLDivElement>(null);
+  const pressedNow = useRef(pressed);
+  pressedNow.current = pressed;
+  const onPressNow = useRef(onPress);
+  onPressNow.current = onPress;
+  useLayoutEffect(() => {
+    const element = rowElement.current;
+    if (element === null) return;
+    const entered = () => setFocusInside(true);
+    const left = (event: FocusEvent) => {
+      const to = event.relatedTarget;
+      if (to instanceof Node && element.contains(to)) return;
+      setFocusInside(false);
+      // A shut the reader pressed lasts while the focus stays; the next visit opens again.
+      if (pressedNow.current === false) onPressNow.current(row, undefined);
+    };
+    element.addEventListener("focusin", entered);
+    element.addEventListener("focusout", left);
+    return () => {
+      element.removeEventListener("focusin", entered);
+      element.removeEventListener("focusout", left);
+    };
+  }, [row]);
   const node = check.node;
   const surface = node.facts.find((fact) => fact.name === "surface")?.value ?? "";
   const opened = pressed ?? focusInside;
@@ -1521,14 +1552,7 @@ function Check({
       data-verification-check=""
       data-verification-loose={loose ? "" : undefined}
       data-verification-row={row}
-      onBlur={(event) => {
-        const to = event.relatedTarget;
-        if (to instanceof Node && event.currentTarget.contains(to)) return;
-        setFocusInside(false);
-        // A shut the reader pressed lasts while the focus stays; the next visit opens again.
-        if (pressed === false) onPress(row, undefined);
-      }}
-      onFocus={() => setFocusInside(true)}
+      ref={rowElement}
       role="treeitem"
       tabIndex={tabIndex}
     >
