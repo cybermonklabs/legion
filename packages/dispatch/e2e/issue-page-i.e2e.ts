@@ -2552,23 +2552,29 @@ test("a view replaces the outline, and the outline comes back", async ({ browser
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
 
-    // Each view's control draws that view in the outline's place, and Conversation's draws the
-    // outline back. The outline is read by its own rows rather than by a tree: every view draws
-    // a tree of its own, and no view's row carries the outline's mark. The views are the filter
-    // row's four filters, in its order: every control of it but Conversation.
+    // Graph uses the outline's own rows, but adds the plan tasks the Conversation read leaves
+    // out. The other views draw their own trees, with none of the outline's row marks.
+    const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
+    const graphTask = blockNodeId(planSlug, seeded.planTasks.at(-1) ?? "");
+    const graphRow = outlineRows(page).and(nodeRow(page, graphTask));
     for (const view of PRESET_ORDER.filter((one) => one !== "conversation")) {
       await presetToggle(page, view).click();
       await expect(page).toHaveURL(new RegExp(`${presetPath(seeded.key, view)}$`));
-      await expect(
-        outlineRows(page),
-        `the ${PRESET_NAMES[view]} view draws the outline`
-      ).toHaveCount(0);
+      if (view === "graph") {
+        await expect(graphRow, "Graph draws no outline row for the plan task").toHaveCount(1);
+      } else {
+        await expect(
+          outlineRows(page),
+          `the ${PRESET_NAMES[view]} view draws the outline`
+        ).toHaveCount(0);
+      }
       await presetToggle(page, "conversation").click();
       await expect
         .poll(() => outlineRows(page).count(), {
           message: `${PRESET_NAMES.conversation} does not draw the outline again after ${PRESET_NAMES[view]}`,
         })
         .toBeGreaterThan(0);
+      await expect(graphRow, "Conversation draws the plan task").toHaveCount(0);
     }
 
     // The chords: `t s` turns Spec on, and `t c` turns every view off and leaves the focus on a
@@ -3125,12 +3131,23 @@ test("a row draws its face whatever the focus, and nothing opens on hover", asyn
       [...new Set(states.values())].length,
       `two states are drawn the same way: ${JSON.stringify([...states])}`
     ).toBe(states.size);
-    // Each typed kind's tag carries its shape, which is the first shape its row draws; a turn
-    // of the conversation draws no tag, and its author's shape says whose words it is.
+    // Each typed kind's tag carries its shape, which is the first shape its tag draws in the row's
+    // margin: a row's face draws its author's shape in its words, before the margin in the
+    // document, so the first shape of the row is no longer the tag's. A turn of the conversation
+    // draws no tag, and its author's shape says whose words it is.
+    const tagShapes = await nodeRows(page).evaluateAll((rows) =>
+      rows.map((row) => ({
+        shape:
+          row
+            .querySelector("[data-node-margin] [data-node-tag] [data-glyph]")
+            ?.getAttribute("data-glyph") ?? "",
+        type: row.getAttribute("data-node-type") ?? "",
+      }))
+    );
     const types = new Map(
-      drawn
-        .filter((row) => !UNTYPED_KINDS.includes(row.type ?? ""))
-        .map((row) => [row.type ?? "", row.glyphs[0]?.token ?? ""])
+      tagShapes
+        .filter(({ type }) => !UNTYPED_KINDS.includes(type))
+        .map(({ shape, type }): [string, string] => [type, shape])
     );
     expect(
       [...new Set(types.values())].length,
@@ -3348,21 +3365,22 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
   const { context, page, seeded } = await openTree(browser);
   try {
     const order = await visibleIds(page);
+    expect(order.length, "the tree needs two visible rows to test a move").toBeGreaterThan(1);
 
     // One stop in: Tab reaches the tree, and the next Tab leaves it rather than stepping through
     // its rows, as the WAI-ARIA tree pattern requires.
     await page.keyboard.press("Tab");
     expect(await focusInside(tree(page)), "Tab did not enter the tree").toBe(true);
     await expectTreeDrawn(page);
+    // Tab enters on the open question. It can be the last row in the tree read's order, so
+    // start the forward move from Home rather than assuming there is a row after it.
+    const opened = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
+    expect(await focusedRow(page), "Tab did not reach the open question").toBe(opened);
+    await page.keyboard.press("Home");
+    expect(await focusedRow(page), "Home did not reach the first visible row").toBe(order[0]);
     await page.keyboard.press("j");
     const inside = await focusedRow(page);
-    // Tab entered on the row the page opened on, its open question, so j moves to the row after
-    // it in the tree read's order.
-    const opened = order.indexOf(
-      blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID)
-    );
-    expect(opened, "the open question is no visible row").toBeGreaterThanOrEqual(0);
-    expect(inside, "j moved to no row inside the tree").toBe(order[opened + 1]);
+    expect(inside, "j did not reach the second visible row").toBe(order[1]);
     await page.keyboard.press("Tab");
     expect(
       await focusInside(tree(page)),
