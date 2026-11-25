@@ -77,11 +77,16 @@ head_root=$PWD
 # changes job's timeout-minutes in ci.yaml adds up the job's steps.
 LIMIT=${CI_FILTERS_LIMIT:-300}
 
+# filter_names: every filter name the changes job hands on, one per line.
+filter_names() {
+  grep -o 'steps\.filter\.outputs\.[A-Za-z0-9_-]*' .github/workflows/ci.yaml | sed 's/.*\.//' | grep -vx changes | sort -u
+}
+
 # every_filter <first line>: a filters file whose every filter is `'**'`, under that first line,
 # with the step's output every_filter=true, which hands every step gated on the list `all`.
 every_filter() {
   local names
-  names=$(grep -o 'steps\.filter\.outputs\.[A-Za-z0-9_-]*' .github/workflows/ci.yaml | sed 's/.*\.//' | grep -vx changes | sort -u)
+  names=$(filter_names)
   [ -n "$names" ] || return 1
   echo "$1"
   while IFS= read -r name; do
@@ -99,8 +104,12 @@ echo "the filter generation took $(($(date +%s) - started)) s and exited $status
 if [ "$status" -ne 0 ] || [ ! -s "$computed" ]; then
   why="check-ci-filters.sh generate exited $status"
   [ "$status" -eq 124 ] && why="check-ci-filters.sh generate ran past ${LIMIT} s"
-  if ! every_filter "# FAIL-OPEN: the filters could not be computed ($why), so every filter matches every path and every job runs." >"$out"; then
+  if [ -z "$(filter_names)" ]; then
     echo "::error file=.github/workflows/ci.yaml::the filters could not be computed ($why), and no output of ci.yaml reads steps.filter.outputs.<name>, so no file that selects every job can be written either" >&2
+    exit 1
+  fi
+  if ! every_filter "# FAIL-OPEN: the filters could not be computed ($why), so every filter matches every path and every job runs." >"$out"; then
+    echo "::error file=.github/scripts/ci-filters-generate.sh::the filters could not be computed ($why), and $out cannot be written, so no file that selects every job can be written either" >&2
     exit 1
   fi
   cp "$out" "$computed" || exit 1

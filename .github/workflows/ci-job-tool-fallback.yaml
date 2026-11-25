@@ -28,7 +28,7 @@ jobs:
       - name: Check out the merge base the negative control installs from
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
+          ref: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_sha || github.sha }}
           path: base
           persist-credentials: false
 

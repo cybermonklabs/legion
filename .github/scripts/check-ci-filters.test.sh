@@ -537,6 +537,15 @@ print(sum(PathsFilter(p, "some-with-excludes").covers("docs/readme.md") for p in
 check "so a change to any file selects every job" "$(is "$covers" "3 3")"
 run_generate "$root"
 check "with go back, the same tree computes its filters" "$(is "$(filter_of app | head -1)" 'go.work')"
+# A fall-open that cannot write its file says that, and not that no output of ci.yaml reads the
+# filters, which every output here does.
+set +e
+out=$(env PATH="$root/bin:$PATH" "$root/.github/scripts/ci-filters-generate.sh" "$root.no-such-dir/ci-filters.yaml" 2>&1)
+status=$?
+set -e
+check "a fall-open whose file cannot be written exits 1" "$(is "$status" 1)"
+check "  naming the file it cannot write" "$(contains "$out" "and $root.no-such-dir/ci-filters.yaml cannot be written")"
+check "  and not saying no output of ci.yaml reads the filters" "$(is "$(contains "$out" 'no output of ci.yaml reads')" false)"
 
 # A change to a file the filters are computed with - here the read table, whose helper the app gate
 # takes a read from - can narrow a filter while no filter selects it. Measured against a base

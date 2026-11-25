@@ -118,6 +118,15 @@ The merge base, for the negative control the seven `base-*` steps run: a second 
 whose seven installs that control drives with nowhere left to go.
 .github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
 says what keeps this checkout here.
+On a pull request it is the base branch as it is when the job runs (`pull_request.base.ref`), not
+the event's `pull_request.base.sha`, which GitHub leaves where it was as the base branch moves. On
+2026-11-25, 13 open pull requests had a `base.sha` older than install-elan (46c4162b, 2026-11-08),
+#2219's from 2026-10-26, and two of those older than install-crane and install-changie too. At such
+a base, `uses: ./base/.github/actions/install-elan` names an action the tree does not have, and the
+step fails before it installs anything. The control accepts any failure that comes in its own time,
+so it would pass that install without having driven it.
+The base branch always holds the seven, and any tree of it shows the property the control names.
+A merge group's base is the commit the queue built it on.
 
 ## Why the package's blob is read for every mirrored row
 

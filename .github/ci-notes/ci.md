@@ -92,9 +92,11 @@ branch moves: #3771's still named 9bab47ae, the main commit of 2026-11-24T07:20Z
 later. Measured against it, main's own commits since were the change: 33 files the filters are
 computed with, and 9bab47ae's check-ci-filters.sh, older than the generate mode, refused
 `generate`, so every filter was `'**'` and every job ran on a docs-only change. Measured against
-e546d760 the same change touches none of those files, and it matches 5 of 99 filters. Of 25 open
-pull requests with a test merge counted on 2026-11-25, 19 had a `base.sha` that was not their
-merge's first parent, up to 63 commits behind it.
+e546d760 the same change touches none of those files, and it matches 5 of 99 filters. Of the 30
+most recently updated open pull requests into main, read at 2026-11-25T06:22Z, 29 had a test
+merge, and 25 of those had a `base.sha` behind the merge's first parent: 1 to 92 commits, one 883. Of
+the 311 open pull requests that were not drafts at 03:28Z, 152 had a `base.sha` older than the
+generate mode.
 
 That loud half is the cheap one. A stale base that can compute its filters lets a filter main
 widened after it, and the pull request narrows again, compare as unchanged: it is not `'**'`, and
