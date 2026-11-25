@@ -324,6 +324,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions": {succeeds: true, body: map[string]any{"summary": "The project document, named by its slug."}},
 
 	"POST /api/v1/issues/{key}/claim":            noObject,
+	"POST /api/v1/issues/{key}/status-change":    noObject,
 	"POST /api/v1/issues/{key}/results":          noObject,
 	"POST /api/v1/issues/{key}/results/dry-run":  noObject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}": noObject,
