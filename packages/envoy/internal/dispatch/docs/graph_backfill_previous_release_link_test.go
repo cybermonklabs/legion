@@ -323,9 +323,12 @@ func writeVersionThroughThisBuild(t *testing.T, link previousReleaseLink, writer
 		t.Fatalf("append version %d's event: %v", want, err)
 	}
 	// The version write queues its writes on the ledger, its node's among them, so what it stated
-	// is caused in the same write phase, after them, as a route queues it.
+	// is caused in the same write phase, after them, and the head write of the nodes it stated
+	// follows, which writes their node_search rows, as the route queues both
+	// (commitArtifactVersionEvent).
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, written.Blocks, event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(written.Blocks))
 		return nil
 	}); err != nil {
 		t.Fatalf("queue what version %d's write stated: %v", want, err)

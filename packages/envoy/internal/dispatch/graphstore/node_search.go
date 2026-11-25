@@ -63,9 +63,15 @@ func queueNodeSearch(b *store.WriteBatch, nodes []NodeKey) {
 // vector, unless its row holds that seq already, so a write that names a node whose text did not
 // move computes no vector; one whose row holds a higher seq, which a writer that read the store
 // after this statement's snapshot committed, keeps it (the conflict arm's where). Every other
-// node's row is deleted - a node gone, a node whose newest text tuple retracts - where it holds a
-// seq no higher than the tuple this statement read, so a row a later write committed stands. A
-// node with no text tuple and a node the store holds no row of have no row, and none is read.
+// node's row is deleted: a node gone, a node whose newest text tuple retracts, a node with no text
+// tuple and a node the store holds no row of. Where the statement read a text tuple, the delete
+// takes a row holding a seq no higher than that tuple's, so a row a later write committed stands.
+// Where it read none, no seq bounds the delete, and none is needed: a row is written in the
+// transaction that states its text tuple, after it, and no writer deletes a node or a tuple, so a
+// row the statement's snapshot holds over no node or no text tuple stands over facts the store no
+// longer holds, as in a store rewound to a build before it, which the backfill's node_search pass
+// reaches (graphcensus' backfillNodeSearch). In any other store that arm meets no row. A node with
+// neither a row nor a text tuple reads its two probes and nothing more.
 //
 // The rows are written in ascending node id, the order the delete's probe of the primary key takes
 // them in too: a writer takes the node rows of what it writes first, in ascending (kind, id)
@@ -77,18 +83,18 @@ var nodeSearchWriteStatement = `
 	said as (
 		select named.id, node.state, newest.seq, newest.asserted, newest.to_id as text
 		from named
-		cross join lateral (
+		left join lateral (
 			select n.state from graph_nodes n
 			where n.kind = '` + blockKind + `' and n.id = named.id
 			limit 1
-		) node
-		cross join lateral (
+		) node on true
+		left join lateral (
 			select t.seq, t.asserted, t.to_id from graph_tuples t
 			where t.from_kind = '` + blockKind + `' and t.from_id = named.id
 			  and t.kind = '` + AttributeText + `' and t.to_kind = '` + KindValue + `'
 			order by t.seq desc
 			limit 1
-		) newest
+		) newest on true
 	),
 	held as (
 		select said.id, said.seq, said.text from said
@@ -98,8 +104,8 @@ var nodeSearchWriteStatement = `
 		delete from node_search s
 		using said
 		where s.node_kind = '` + blockKind + `' and s.node_address = said.id
-		  and not (said.state <> '` + StateGone + `' and said.asserted)
-		  and s.text_seq <= said.seq
+		  and not coalesce(said.state <> '` + StateGone + `' and said.asserted, false)
+		  and (said.seq is null or s.text_seq <= said.seq)
 	)
 	insert into node_search (node_kind, node_address, text, text_seq, search)
 	select '` + blockKind + `', held.id, held.text, held.seq, search_vector('', search_document_text(held.text))
