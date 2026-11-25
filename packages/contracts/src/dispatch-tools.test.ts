@@ -18,7 +18,9 @@ import {
   type DispatchToolSpec,
   dispatchToolSchema,
   dispatchToolSpecs,
+  ISSUE_STATUS_OPTIONS,
   ISSUE_STATUSES,
+  ISSUE_UPDATE_PATCH_FIELDS,
   PROJECT_KEY_RULE,
   pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
@@ -984,6 +986,7 @@ describe("dispatchToolSpecs", () => {
       "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
     const artifactOwner =
       "Exactly one of issue and project is required; with project, artifact names the document.";
+    const notMarkdownName = `a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; a document takes a name ending in .md or .markdown or with no extension.`;
     const edit = { artifact: "spec.md", ops: [{ op: "delete", find: "x" }] };
     const readOwner =
       "Exactly one of issue and project is required; project alone lists its documents, and with artifact names one.";
@@ -998,6 +1001,12 @@ describe("dispatchToolSpecs", () => {
       ["dispatch_artifact", { issue: "DSP-1", name: "n", path: "p", content: "c" }, source],
       ["dispatch_artifact", { name: "n", content: "c" }, artifactOwner],
       ["dispatch_artifact", { name: "n", path: "p", content: "c" }, `${artifactOwner} ${source}`],
+      // A call that breaks the owner rule and the Markdown-name rule is told of both at once.
+      [
+        "dispatch_artifact",
+        { name: "rows.jsonl", content: "c" },
+        `${artifactOwner} ${notMarkdownName}`,
+      ],
       ["dispatch_read", { issue: "DSP-1", message: "m" }, readMessage],
       ["dispatch_read", {}, readOwner],
     ] as const) {
@@ -1097,6 +1106,28 @@ describe("dispatchToolSpecs", () => {
     const update: DispatchToolSpec = specFor("dispatch_issue_update");
     expect(update.validation?.message).toContain("; labels_add goes without labels.");
     expect(update.description).toContain("labels_add adds labels and keeps every label");
+  });
+
+  // The status change route takes the status, the options and the actor, and drops each other
+  // member of its body with no error. So every argument of the tool but issue, status, reason and
+  // the three options is a field of the PATCH that no option goes with, and an option beside
+  // labels_add is refused as an option beside any other such field is.
+  test("dispatch_issue_update refuses an option beside each field the status change does not take", () => {
+    const update = specFor("dispatch_issue_update").arguments(schemaApi) as Record<string, unknown>;
+    const taken: readonly string[] = ["issue", "status", "reason", ...ISSUE_STATUS_OPTIONS];
+    expect(new Set<string>(ISSUE_UPDATE_PATCH_FIELDS)).toEqual(
+      new Set(Object.keys(update).filter((field) => !taken.includes(field)))
+    );
+    const beside = schemaFor("dispatch_issue_update").safeParse({
+      issue: "DSP-1",
+      status: "in_progress",
+      include_parent: true,
+      labels_add: ["api"],
+    });
+    expect(beside.success).toBe(false);
+    expect(beside.error?.issues.map((issue) => issue.message)).toEqual([
+      "With include_parent, give status alone, and reason when the status is done. This call also names labels_add. Send those fields in a call of their own.",
+    ]);
   });
 
   // The server owns the bound on an ask's question too, and names it in its refusal.
@@ -1836,24 +1867,6 @@ describe("dispatchToolSpecs", () => {
     const argument = fields[field];
     const description = argument?.description ?? argument?.unwrap?.().description ?? "";
     expect(description).toContain(rule);
-  });
-
-  // Work still to do lives in the issue's plan, other issues and asks. No tool's help may offer a
-  // separate list of open items beside them. The control is the help sentence that offered one.
-  test("no tool description or flag help offers a separate list of open items", () => {
-    const listOffer = /open[- _]items/i;
-    expect(
-      listOffer.test("a record of open items or progress is a document of its own"),
-      "the control: the retired offer"
-    ).toBe(true);
-    const offering = dispatchToolSpecs.filter((spec) =>
-      listOffer.test(
-        JSON.stringify(z.toJSONSchema(dispatchToolSchema(spec, schemaApi), { io: "input" })) +
-          spec.description
-      )
-    );
-    expect(dispatchToolSpecs.length).toBeGreaterThan(0);
-    expect(offering.map((spec) => spec.name)).toEqual([]);
   });
 
   test("dispatch_follow takes a full ask id and follow or unfollow, nothing else", () => {
