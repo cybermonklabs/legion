@@ -791,7 +791,7 @@ async function main(argv: readonly string[]): Promise<number> {
     console.log(`usage: ${USAGE}`);
     return 0;
   }
-  const prelude = readCommandLine(argv, parseCommandLine, "config" satisfies Category);
+  const prelude = await readCommandLine(argv, parseCommandLine, "config" satisfies Category);
   if (!prelude.ready) return prelude.code;
   const { options, config } = prelude;
   const root = resolve(import.meta.dir, "../../..");
