@@ -246,6 +246,14 @@ export interface CreateProofEditorOptions {
    * build at a batch of its choosing, and no batch is placed until what it answers settles.
    */
   betweenBatches?: (batchesDone: number) => Promise<void>;
+  /** Whether the editor writes Proof's marks of its own. Defaults to true. Turned off, it
+   *  offers no mark action - neither the selection bar's Comment, Suggest and Ask, nor the mark
+   *  popover's actions, nor the " ->" comment shortcut, nor the popover hook - and records no
+   *  authorship (`proofAuthored`) on what a person types, so no selection is offered one, no
+   *  mark is written from one, `commentOnSelection` answers false and `getMarkdown` carries no
+   *  mark the editor wrote: for a host whose text takes no comment, suggestion or ask - a field
+   *  it saves as markdown. */
+  proofMarks?: boolean;
 }
 
 /**
@@ -303,8 +311,9 @@ export interface ProofEditorHandle extends TypedBlockCommands {
     placement: RecordMarkPlacement | null
   ): RemarkOutcome;
   /** Starts a comment on the current selection exactly as the selection bar's Comment button
-   *  does, `onMarkAction` included, and answers whether it did: false for an empty selection and
-   *  while the document is read-only and takes no comments, where the bar offers no Comment. */
+   *  does, `onMarkAction` included, and answers whether it did: false for an empty selection,
+   *  while the document is read-only and takes no comments, where the bar offers no Comment, and
+   *  in an editor built with `proofMarks: false`, which has no bar. */
   commentOnSelection(): boolean;
   /** Scrolls a mark's anchor into view and pulses it. Works for both the
    *  unified marks system and dispatchAsk marks: both render `data-id`. */
@@ -557,6 +566,7 @@ async function theConstruction(
   setCurrentActor(`human:${opts.user.name}`);
   let alive = true;
   const heatMapMode: HeatMapMode = opts.heatMapMode ?? 'background';
+  const proofMarks = opts.proofMarks ?? true;
 
   const builder = Editor.make()
     .config((ctx) => {
@@ -605,7 +615,7 @@ async function theConstruction(
     .use(heatmapCtx)
     .use(agentCursorCtx)
     // Register plugins
-    .use(authoredTrackerPlugin)
+    .use(proofMarks ? authoredTrackerPlugin : [])
     .use(heatmapPlugin)
     .use(agentCursorPlugin)
     .use(suggestionsPlugins);
@@ -613,15 +623,15 @@ async function theConstruction(
   const marginMode = Boolean(opts.onMarkClick || opts.onMarkHover);
   if (marginMode) {
     builder.use(dispatchMarkEventsPlugin({ onMarkClick: opts.onMarkClick, onMarkHover: opts.onMarkHover }));
-  } else {
+  } else if (proofMarks) {
     builder.use(markPopoverPlugin).use(arrowCommentPlugin);
   }
+  // This library's own Comment/Suggest/Ask bar replaces upstream's
+  // markSelectionBarPlugin, which has no extension point for Ask or a hook
+  // for Comment/Suggest.
+  if (proofMarks) builder.use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction }));
 
   const editor = await builder
-    // This library's own Comment/Suggest/Ask bar replaces upstream's
-    // markSelectionBarPlugin, which has no extension point for Ask or a hook
-    // for Comment/Suggest.
-    .use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction }))
     .use(findHighlightsPlugin)
     .use(taskCheckboxesPlugin)
     .use(mermaidCodeBlockPlugin(opts.drawMermaid))
@@ -689,7 +699,7 @@ async function theConstruction(
   collabService.mergeOptions({
     yCursorOpts: { cursorBuilder: collabCursorBuilder, selectionBuilder: collabSelectionBuilder },
   });
-  const unregisterPopoverHook = marginMode
+  const unregisterPopoverHook = marginMode || !proofMarks
     ? () => {}
     : registerPopoverHookInstance(view, opts.onMarkAction);
 

@@ -60,16 +60,25 @@ export function advanceText(advance: IssueAdvance): string {
 }
 
 /** The Advances line of an issue read: each priority the issue serves, marked own where the
- *  issue states it and inherited where an issue above it does. A Dispatch server from before
+ *  issue states it and inherited where an issue above it does, then the revision of the issue's
+ *  own set. An update that changes two or more priorities sends that revision as
+ *  `advances_revision` (`--advances-revision` on the command line). A Dispatch server from before
  *  priorities sends no `advances`, and its answer is unknown, never none: none means the issue
- *  advances no priority. */
-function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | null }): string {
+ *  advances no priority. Such a server sends no revision either. A read that carries `advances`
+ *  and no `advances_revision` prints the priorities with no revision, never a number the issue
+ *  does not hold. */
+function advancesLine(issue: {
+  readonly advances?: readonly IssueAdvance[] | null;
+  readonly advances_revision?: number;
+}): string {
   if (issue.advances === undefined) {
     return "Advances: unknown (this Dispatch server predates priorities; upgrade it)";
   }
   const advances = issue.advances ?? [];
-  if (advances.length === 0) return "Advances: no priority";
-  return `Advances: ${advances.map(advanceText).join(", ")}`;
+  const set = advances.length === 0 ? "no priority" : advances.map(advanceText).join(", ");
+  const revision =
+    issue.advances_revision === undefined ? "" : `; revision ${issue.advances_revision}`;
+  return `Advances: ${set}${revision}`;
 }
 
 /**

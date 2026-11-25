@@ -751,8 +751,8 @@ test("issue header keeps every control in a shared row on a phone and the whose-
     // Close shares the state row; creator, labels, subscribers, and the GitHub link share the
     // details line with the indicator — nothing but the title sits on a row of its own.
     const stateRow = await top(page.getByLabel("Status"));
-    // `Priority of <KEY>` is the issue's own grade; the control that adds a priority the issue
-    // advances is on the rail below and names that word too.
+    // `Priority of <KEY>` is the issue's own grade; the control beside it that adds a priority
+    // the issue advances ("Edit priorities") names that word too.
     expect(await top(page.getByLabel(/^Priority of /))).toBe(stateRow);
     expect(await top(page.getByRole("button", { name: "Close issue" }))).toBe(stateRow);
     const rail = page.getByTestId("issue-metadata-rail");

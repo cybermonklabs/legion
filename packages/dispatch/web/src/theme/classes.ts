@@ -664,6 +664,14 @@ export const secondaryButtonHoverBorder =
   "not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400";
 /** A secondary button that cannot be pressed, `disabled` or refused (`refused:`, `styles.css`). */
 export const secondaryButtonDisabledText = "refused:text-slate-400 dark:refused:text-slate-600";
+/** `secondaryButtonHoverBorder` and `secondaryButtonDisabledText` for a box a button draws inside
+ *  itself, as the priorities' trigger draws its "+" square inside its hit area: keyed to the
+ *  button, which carries `group`, since `refused:` tests the element it is on and the box is
+ *  never `disabled` or refused itself. */
+export const secondaryButtonGroupHoverBorder =
+  "group-not-refused:group-hover:border-sky-500 dark:group-not-refused:group-hover:border-sky-400";
+export const secondaryButtonGroupDisabledText =
+  "group-refused:text-slate-400 dark:group-refused:text-slate-600";
 
 /** An input/select/textarea's resting border and background, plus its focus border. Pass
  * `recessed: true` when the control sits inside a `SURFACE` card (its dark background needs to
@@ -687,6 +695,13 @@ export const secondaryButtonCompact = `min-h-11 shrink-0 rounded-lg border px-3 
  *  minimum for, and a lighter label, `font-medium` to that button's `font-semibold`.
  *  `secondaryButtonCompact` is the smaller one a dense strip wears. */
 export const secondaryButton = `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
+
+/** The one height of every control a table's toolbar draws - its search box, its selects, its
+ *  buttons and its flag chips - from 1280 px up: the search box's own, a `text-sm` line inside
+ *  its padding and border (34 px). Below 1280 px `styles.css` gives each control a 44 px floor,
+ *  so a phone keeps its targets; `xl:min-h-0` lifts a host's own 44 px minimum, as a chip's,
+ *  where that floor no longer stands. */
+export const toolbarControlHeight = "xl:h-8.5 xl:min-h-0";
 
 // ---------------------------------------------------------------------------------------------
 // The navigation rail: a deliberately constant-dark surface (unlike everything else in this

@@ -1351,13 +1351,13 @@ export const dispatchToolSpecs = [
       advances: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_ADVANCES })
         .describe(
-          "Replacement list of priority ids this issue advances, which dispatch priorities lists; [] clears the issue's own, leaving every priority it inherits from the issues above it. A set that moves two or more relations is a whole-set write and carries advances_revision; the call reads the issue and sends the revision that read answered, so pass advances_revision only to answer a 409 ADVANCES_REVISION."
+          "Replacement list of priority ids this issue advances, which dispatch priorities lists; [] clears the issue's own, leaving every priority it inherits from the issues above it. Without advances_revision, Dispatch takes a list that adds or removes one priority, and refuses a list that changes two or more with 409 ADVANCES_REVISION, which names the issue's revision."
         )
         .optional(),
       advances_revision: z
         .number()
         .describe(
-          "The advances_revision the read this set answers returned, sent with advances and alone changing nothing. Omit it and the call sends the revision of its own read; pass the revision a 409 ADVANCES_REVISION named to write the set you mean against it."
+          "The issue's advances revision, which the Advances line of dispatch read --issue <KEY> prints and a 409 ADVANCES_REVISION names. To change two or more priorities, read the issue, then send this revision with the whole list you mean. Alone it changes nothing."
         )
         .optional(),
       components: componentsArgument(z).optional(),

@@ -1,4 +1,5 @@
 import {
+  type Column,
   type ColumnDef,
   type ColumnFiltersState,
   type ExpandedState,
@@ -223,8 +224,10 @@ export function useDataTable<Row>({
   // rows; the ones that stay say how many of their rows this page shows. A collapsed group
   // keeps its heading whatever the page holds — it is the only way back to its rows.
   const onThisPage = new Map<string, number>();
+  const leafIds: string[] = [];
   for (const row of pageRows)
     if (!row.getIsGrouped()) {
+      leafIds.push(row.id);
       const group = row.getParentRow()?.id;
       if (group !== undefined) onThisPage.set(group, (onThisPage.get(group) ?? 0) + 1);
     }
@@ -240,7 +243,15 @@ export function useDataTable<Row>({
     }),
   ];
   // The box measures itself: `useTableLayout` observes its size and the section around it, so
-  // neither the rows this page holds nor a notice above the table is measured from here.
+  // neither the rows this page holds nor a notice above the table is measured from here. What it
+  // is told is which rows the page holds - its leaves, gathered in the walk above - whose cells
+  // count toward the widths of the columns that fit what they hold (`LayoutColumns.fits`)
+  // whether the box has drawn them or not.
+  const pageRowIds = leafIds.join("\n");
+  const { setPageRows } = layout;
+  useLayoutEffect(() => {
+    setPageRows(pageRowIds === "" ? [] : pageRowIds.split("\n"));
+  }, [pageRowIds, setPageRows]);
   const virtualizer = useVirtualizer({
     count: displayRows.length,
     getScrollElement: () => layout.scrollRef.current,
@@ -279,6 +290,21 @@ export interface LineProps {
   readonly measure: (element: Element | null) => void;
 }
 
+/** Whether a cell of `column` draws the divider at the pinned columns' right edge: it is the
+ *  last pinned column, and something the box scrolls under it follows it - another column, or
+ *  the cell each row draws after its columns (`trailing`). Pinned columns that nothing follows
+ *  end where the table does, which on a phone's box is the box's own right border (the
+ *  priorities table's place and title), and a divider there would draw that line twice. The
+ *  header row and each row's cells ask it alike, so the line runs the table's height or not at
+ *  all. */
+export function drawsPinnedDivider<Row>(column: Column<Row, unknown>, trailing: boolean): boolean {
+  return (
+    column.getIsPinned() === "left" &&
+    column.getIsLastColumn("left") &&
+    (trailing || !column.getIsLastColumn())
+  );
+}
+
 /** What one row of a table is called, singular and plural. Both are spelled out because no
  *  rule turns one into the other: "priority" is "priorities", never "prioritys". */
 export interface RowNoun {
@@ -304,8 +330,9 @@ export interface DataTableProps<Row> {
    *  than a count. Kept apart from the column definitions: a new definition is a new component
    *  to React, so a change there would draw every cell anew. */
   readonly filterUnloaded?: ReadonlyMap<string, readonly string[]>;
-  /** Draws one row: a `<tr>` carrying `data-issue-row`, which the keys and the box's height
-   *  read, `data-index` and `ref={measure}`. */
+  /** Draws one row: a `<tr>` carrying `data-issue-row`, the row's id, which the keys, the box's
+   *  height and the columns that fit what they hold read (`LayoutColumns.fits`), with one cell
+   *  under each header in the headers' order, `data-index` and `ref={measure}`. */
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
   /** Draws one group's heading, with `data-index` and `ref={measure}`. */
   readonly renderGroup: (props: LineProps & { readonly entry: DisplayRow<Row> }) => ReactNode;
@@ -316,6 +343,20 @@ export interface DataTableProps<Row> {
   readonly noun: RowNoun;
   /** The width of a last, unheaded column that each row draws itself. */
   readonly trailingWidth?: number;
+  /** Whether the box ends with its last row rather than standing empty down to the window's
+   *  foot: it takes its own rows' height, with the height the window leaves it as its most
+   *  (`useTableLayout`'s `boxHeight`), so the rows scroll inside it only once they are more
+   *  than the window holds. Unset, the box is always that height. */
+  readonly fitRows?: boolean;
+  /** The column whose header stands its filter under its words, centred, in a phone's box
+   *  (`useTableLayout`'s `compact`): the issues table's title, which a phone draws narrow beside
+   *  the key. Every other header stands on one line there. */
+  readonly stackedHeader?: string;
+  /** The column whose header offers its sort and no filter in a phone's box: the priorities
+   *  table's `#`, which a phone draws beside the one cell that holds the rest of the row, too
+   *  narrow for a filter's 44 px target beside its sort's without covering the next header's. A
+   *  desktop's box draws its filter. */
+  readonly sortOnlyOnPhone?: string;
 }
 
 /**
@@ -327,6 +368,7 @@ export function DataTable<Row>({
   noun,
   filterCounts,
   filterUnloaded,
+  fitRows = false,
   label,
   model,
   onOpenFilterChange,
@@ -334,6 +376,8 @@ export function DataTable<Row>({
   renderGroup,
   renderRow,
   scrollTestId,
+  sortOnlyOnPhone,
+  stackedHeader,
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
   const { displayRows, layout, table, virtualizer } = model;
@@ -353,7 +397,8 @@ export function DataTable<Row>({
         data-testid={scrollTestId}
         style={{
           overflowAnchor: "none",
-          height: layout.boxHeight,
+          height: fitRows ? undefined : layout.boxHeight,
+          maxHeight: fitRows ? layout.boxHeight : undefined,
           scrollPaddingTop: 64,
         }}
       >
@@ -374,8 +419,9 @@ export function DataTable<Row>({
                 <tr key={group.id}>
                   {group.headers.map((header) => (
                     <TableHeaderCell
-                      compact={layout.boxWidth < 640}
+                      compact={layout.responsive.compact}
                       counts={header.column.id === openFilter ? filterCounts : EMPTY_COUNTS}
+                      divider={drawsPinnedDivider(header.column, trailingWidth > 0)}
                       dragColumn={dragColumn}
                       header={header}
                       noun={noun}
@@ -385,6 +431,8 @@ export function DataTable<Row>({
                       setDragColumn={setDragColumn}
                       setOpenFilter={onOpenFilterChange}
                       setOrder={layout.setOrder}
+                      sortOnly={layout.responsive.compact && header.column.id === sortOnlyOnPhone}
+                      stacked={layout.responsive.compact && header.column.id === stackedHeader}
                       unloaded={filterUnloaded?.get(header.column.id) ?? NONE_UNLOADED}
                     />
                   ))}
@@ -433,6 +481,7 @@ function TableHeaderCell<TData>({
   compact,
   counts,
   dragColumn,
+  divider,
   header,
   noun,
   openFilter,
@@ -440,12 +489,17 @@ function TableHeaderCell<TData>({
   setDragColumn,
   setOpenFilter,
   setOrder,
+  sortOnly,
+  stacked,
   unloaded,
 }: {
-  /** A phone, where the title's header stacks its controls. */
+  /** A phone's box (`useTableLayout`'s `compact`), where every header stands on one line at its
+   *  column's left edge but the stacked one. */
   compact: boolean;
   counts: ReadonlyMap<string, number>;
   dragColumn: string | undefined;
+  /** Whether it draws the pinned columns' divider at its right (`drawsPinnedDivider`). */
+  divider: boolean;
   header: Header<TData, unknown>;
   /** What one row of this table is, which this cell's filter menu counts in. */
   noun: RowNoun;
@@ -455,21 +509,32 @@ function TableHeaderCell<TData>({
   setDragColumn: (id: string | undefined) => void;
   setOpenFilter: (id: string | undefined) => void;
   setOrder: (next: string[]) => void;
+  /** Whether this header offers its sort and no filter (`DataTableProps.sortOnlyOnPhone`). */
+  sortOnly: boolean;
+  /** Whether this header stands its filter under its words (`DataTableProps.stackedHeader`). */
+  stacked: boolean;
   /** This column's filter values whose rows are not loaded yet. */
   unloaded: readonly string[];
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
+  // On a desktop a column of counts is as narrow as its numbers: its words stand at its right
+  // edge, over the numbers, after the sort arrow. Its words, and those of a header that wraps
+  // (`wrap`), take a second line rather than be cut, and such a header draws no sort arrow's
+  // place while it is not sorted: in a column that narrow its gap is width the longest word
+  // needs. A phone's box draws each of them on one line at its column's left edge, as it draws
+  // every other header: the column scrolls inside the box, as wide as its header needs there.
+  const { numeric = false, wrap = numeric } = (compact ? undefined : column.columnDef.meta) ?? {};
+  const sorted = column.getIsSorted();
+  const mark =
+    wrap && sorted === false ? null : (
+      <span className={textMutedOnCanvas}>{{ asc: "▲", desc: "▼" }[sorted as string] ?? ""}</span>
+    );
   return (
     <th
-      aria-sort={
-        column.getIsSorted() === "asc"
-          ? "ascending"
-          : column.getIsSorted() === "desc"
-            ? "descending"
-            : undefined
-      }
-      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
+      aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
+      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${divider ? "border-r" : ""}`}
+      data-column={column.id}
       onDragOver={(event) => {
         if (dragColumn !== undefined && !pinned) event.preventDefault();
       }}
@@ -484,11 +549,11 @@ function TableHeaderCell<TData>({
       }}
     >
       <span
-        className={`flex justify-between ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
+        className={`flex ${numeric ? "justify-end" : "justify-between"} ${stacked ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
       >
         {column.getCanSort() ? (
           <button
-            className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
+            className={`flex min-w-0 items-center gap-1 ${numeric ? "text-right" : wrap ? "text-left" : "truncate whitespace-nowrap"}`}
             draggable={!pinned}
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
@@ -500,15 +565,14 @@ function TableHeaderCell<TData>({
             }
             type="button"
           >
+            {numeric ? mark : null}
             {flexRender(column.columnDef.header, header.getContext())}
-            <span className={textMutedOnCanvas}>
-              {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? ""}
-            </span>
+            {numeric ? null : mark}
           </button>
         ) : (
           flexRender(column.columnDef.header, header.getContext())
         )}
-        {column.getCanFilter() ? (
+        {column.getCanFilter() && !sortOnly ? (
           <ColumnFilter
             column={column}
             counts={counts}

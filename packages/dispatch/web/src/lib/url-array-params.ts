@@ -3,18 +3,23 @@ import { useSearchParams } from "react-router-dom";
 
 /** One `update` callback that merges a mutation into the live search params and writes it with
  *  `replace: true`, so repeated filter changes never pile up history entries. Shared by every
- *  URL-backed filter state (`useIssueFilters`, the delivery page's `useDeliveryUrlState`). */
-export function useSearchParamsUpdate(): (mutate: (params: URLSearchParams) => void) => void {
+ *  URL-backed filter state (`useIssueFilters`, the delivery page's `useDeliveryUrlState`) and by
+ *  the Priorities page's `?tab=`, whose tab click is a place the reader went and so asks for an
+ *  entry of its own (`replace: false`), as a tab of the project page or the issue page adds one. */
+export function useSearchParamsUpdate(): (
+  mutate: (params: URLSearchParams) => void,
+  options?: { readonly replace?: boolean }
+) => void {
   const [, setSearchParams] = useSearchParams();
   return useCallback(
-    (mutate: (params: URLSearchParams) => void) => {
+    (mutate: (params: URLSearchParams) => void, { replace = true } = {}) => {
       setSearchParams(
         (current) => {
           const next = new URLSearchParams(current.toString());
           mutate(next);
           return next;
         },
-        { replace: true }
+        { replace }
       );
     },
     [setSearchParams]

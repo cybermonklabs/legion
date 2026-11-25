@@ -127,13 +127,6 @@ export function aliceWrite(
   return pressed;
 }
 
-/** The names of the writes this tab keeps across a reload. */
-export function keptWrites(): string[] {
-  return Array.from({ length: window.sessionStorage.length }, (_, index) =>
-    window.sessionStorage.key(index)
-  ).filter((name): name is string => name?.startsWith("dispatch.write:") === true);
-}
-
 /** Another tab of this browser on the sign-in channel, as a test drives it. */
 export interface OtherTab {
   readonly close: () => void;

@@ -6,11 +6,19 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { settle } from "../../__tests__/fake-clock";
-import { pressAsInputMethod } from "../../__tests__/input-method-keys";
+import {
+  COMPOSING,
+  KEY_CODE_229,
+  pressAsInputMethod,
+  pressInputMethodKey,
+} from "../../__tests__/input-method-keys";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { IssueDetails, UserIssueState, UserState } from "../../api/types";
+import { patchAnswer } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
@@ -304,5 +312,54 @@ test("an input method's Escape in the title's, the route's or the parent's box k
     }
   } finally {
     view.unmount();
+  }
+});
+
+// The Enter that ends an input method's composition - of Japanese, Chinese or Korean - takes the
+// word being composed, and the Escape that cancels one drops it: each is the input method's key
+// and no key of the reader's, so the title's editor stays open with its draft and writes nothing.
+// Chromium and Firefox mark such a key `isComposing`; Safari sends it after the composition's end,
+// unmarked, with keyCode 229 (`inputMethodKey`). A plain key after it still ends the edit: Escape
+// puts the issue's title back and writes nothing, and Enter writes the title, once.
+test.each([
+  ["Enter", "isComposing"],
+  ["Enter", "keyCode 229"],
+  ["Escape", "isComposing"],
+  ["Escape", "keyCode 229"],
+] as const)("an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit", async (key, mark) => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
+    patchAnswer(issue, input)
+  );
+  const view = renderHeader(client, <Header state={unpinnedState} />);
+  try {
+    await view.user.click(view.q.getByRole("heading", { level: 1, name: issue.title }));
+    const title = view.q.getByRole("textbox", { name: "Issue title" });
+    await view.user.clear(title);
+    await view.user.paste("Pin it from the header");
+    pressInputMethodKey(title, key, mark === "isComposing" ? COMPOSING : KEY_CODE_229);
+    expect(title).toBeInTheDocument();
+    expect(title).toHaveValue("Pin it from the header");
+    expect(title).toHaveFocus();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await view.user.keyboard(`{${key}}`);
+    expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
+    if (key === "Escape") {
+      expect(view.q.getByRole("heading", { level: 1, name: issue.title })).toBeInTheDocument();
+      expect(patchIssue).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      expect(patchIssue).toHaveBeenCalledWith(
+        "CORE-1",
+        { title: "Pin it from the header" },
+        keyedAttempt
+      );
+    }
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
   }
 });

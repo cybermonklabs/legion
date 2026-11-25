@@ -706,6 +706,14 @@ html:has([data-issue-page]) {
   max-width: none;
 }
 
+/* A priority's description is drawn in the documents' editor (`PriorityDescription.tsx`), but it
+   is a short field of the priority and not a whole document, so it does not take a document's
+   24rem. The editor library's own `min-height` is unlayered, so a utility class on the
+   description cannot lower it; this rule (0,4,0) outranks the one above (0,3,0). */
+.dispatch-doc.dispatch-description .milkdown .editor {
+  min-height: 6rem;
+}
+
 /* A document of 400,000 characters is a thousand top-level blocks, and a phone pays style,
    layout and paint for every one of them before it draws the first. `content-visibility: auto`
    leaves the browser to skip the blocks off the screen and do that work as the reader reaches

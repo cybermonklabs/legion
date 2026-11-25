@@ -50,7 +50,11 @@ import { conversationItemId, eventItemId, pinnedItemMarker, stateForIssue } from
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
-import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import {
+  addPriorityControlName,
+  IssuePriorityLine,
+  priorityTriggerName,
+} from "../priorities/IssuePriorityLine";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -93,6 +97,7 @@ import {
   CONTROL_LABELS,
   issueStatusWord,
   NODE_TYPE_NAMES,
+  STATE_LINES,
 } from "./page-words";
 import { architecture, offPageColours } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
@@ -3706,15 +3711,13 @@ test("removing the last label draws Add, whose Labels the row's control now answ
   }
 });
 
-// Add is drawn again when a control it reaches comes back in a commit of the component that
-// draws it. On an issue with a value for every property but the priorities it advances, Add
-// lists Advances alone. Picking it presses "Add a priority to CORE-1", whose form replaces that
-// control in the same commit, so Add, finding no control, went; Cancel drew the control again in
-// a commit of the priority line alone, which Add never read, so Add stayed gone beside the
-// control it reaches.
-test("Add is drawn again after the Advances form it opened is cancelled", async () => {
+// On an issue with a value for every property but the priorities it advances, Add lists Advances
+// alone. Picking it presses "Add a priority to CORE-1", which opens the priorities' picker with
+// the focus in its search box; Escape closes the picker, gives the focus back to that control and
+// writes nothing.
+test("Advances opens the priorities' picker with the focus in its search box, and Escape gives the focus back and writes nothing", async () => {
   const user = userEvent.setup();
-  const { getIssue, restore } = stubIssueApi();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue({
     ...issue,
@@ -3739,18 +3742,16 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
     await screen.findByRole("link", { name: "CORE-3" });
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
     await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.advances }));
-    const cancel = await screen.findByRole("button", { name: CONTROL_LABELS.cancel });
-    await user.click(cancel);
+    expect(
+      await screen.findByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }),
+      "the menu's Advances opened no priorities' picker"
+    ).toHaveFocus();
+    await user.keyboard("{Escape}");
     expect(
       await screen.findByRole("button", { name: addPriorityControlName("CORE-1") }),
-      "the priority's add control is not back"
-    ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: CONTROL_LABELS.add }),
-        "Advances has no value and its control is drawn, but Details draws no Add"
-      ).toBeInTheDocument()
-    );
+      "the priority's add control did not take the focus back as the picker closed"
+    ).toHaveFocus();
+    expect(patchIssue, "a picker closed with nothing ticked wrote").not.toHaveBeenCalled();
   } finally {
     view.unmount();
     priorities.mockRestore();
@@ -3758,8 +3759,38 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
   }
 });
 
-/** Add's own control, found whether or not it is drawn on the screen, and never the priority
- *  form's own Add button: only Add's control opens a menu. */
+/** "Evals collecting data now" in the priorities' picker, once the picker is open and the read of
+ *  the priorities has answered. The picker's list is portalled to the page's body, and is found
+ *  there by its name, which no other control carries. */
+async function evalsOption(): Promise<HTMLElement> {
+  const listbox = await screen.findByRole("listbox", { name: "Priorities options" });
+  return within(listbox).findByRole("option", { name: /Evals collecting data now$/ });
+}
+
+/**
+ * Ticks or unticks "Evals collecting data now" in the priorities' picker whose trigger is
+ * `trigger`, by the keyboard: Enter on the trigger opens the picker with the focus in its search
+ * box, Enter there toggles its first row, the one priority the case offers, once the read of the
+ * priorities has answered, and Escape closes it, which gives the focus back to the trigger and
+ * sends the line's one write of the set it holds then (`IssuePriorityLine`).
+ */
+async function toggleEvals(user: UserEvent, trigger: HTMLElement): Promise<void> {
+  act(() => trigger.focus());
+  await user.keyboard("{Enter}");
+  await evalsOption();
+  await user.keyboard("{Enter}{Escape}");
+}
+
+/** The Advances row's picker trigger, "Edit priorities" (`priorityTriggerName`); throws while
+ *  Details draws no such row, so `waitFor` waits for it. */
+function advancesRowTrigger(): HTMLElement {
+  return within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", {
+    name: priorityTriggerName("CORE-1", false),
+  });
+}
+
+/** Add's own control, found whether or not it is drawn on the screen, and never another button
+ *  named Add: only Add's control opens a menu. */
 function addMenuControl(): Element | null {
   return document.querySelector(
     `[aria-haspopup="menu"][aria-label="${CSS.escape(CONTROL_LABELS.add)}"]`
@@ -3768,9 +3799,9 @@ function addMenuControl(): Element | null {
 
 // A press on an entry of Add opens that property's control. While the priorities' save is out,
 // "Add a priority to CORE-1" takes no press, so a press on Add's Advances opened nothing: with
-// the save held out, Add listed Advances, and pressing it left the menu closed, the form shut and
-// the focus on the body. Add lists an entry only while its control can be pressed, and lists it
-// again once a refused save gives that control back.
+// the save held out, Add listed Advances, and pressing it left the menu closed, the picker shut
+// and the focus on the body. Add lists an entry only while its control can be pressed, and lists
+// it again once a refused save gives that control back.
 test("Add lists no entry whose control is disabled, and lists it again once it is enabled", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -3800,9 +3831,11 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     await screen.findByRole("link", { name: "CORE-3" });
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
     await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.advances }));
-    const form = await screen.findByTestId("issue-advances");
-    await user.selectOptions(await within(form).findByRole("combobox"), "evals-now");
-    await user.click(within(form).getByRole("button", { name: CONTROL_LABELS.add }));
+    // The menu's Advances opened the picker: the priority ticked, and the picker closed, which
+    // sends the write the case holds out.
+    await user.click(await evalsOption());
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     // Refused while its write is out, by the rule Add reads (`usableControl`): `disabled`, or
     // `aria-disabled` where the shared control stays focusable while it is busy.
@@ -3980,12 +4013,13 @@ test.each(
 
 // Details draws the priority's line in one of two places: beside Add while the issue advances
 // none, and in the Advances row once it advances one. The first priority added moves it, and the
-// focus its add control held as the add landed went with the place the line left, to the page's
-// body. It goes on in the Advances row: to the line's add control, named as the control it was on,
-// whose next press adds another; or, where the read after the add also draws the issue closed, as
-// another session closed it while the add was out, which disables that control, to the link of the
-// priority the reader added. Each row is the issue read back after the add, whether that read
-// disables the add control, and the element the focus goes to in the Advances row.
+// focus its add control held as the add landed - the picker gives it back to its trigger as it
+// closes - went with the place the line left, to the page's body. It goes on in the Advances row:
+// to the line's picker trigger there, "Edit priorities", whose next press adds another or takes
+// one off; or, where the read after the add also draws the issue closed, as another session
+// closed it while the add was out, which disables that trigger, to the link of the priority the
+// reader added. Each row is the issue read back after the add, whether that read disables the
+// trigger, and the element the focus goes to in the Advances row.
 const FIRST_ADDED: readonly (readonly [
   string,
   IssueDetails,
@@ -3993,10 +4027,10 @@ const FIRST_ADDED: readonly (readonly [
   (row: HTMLElement) => HTMLElement,
 ])[] = [
   [
-    "the Advances row's add control",
+    "the Advances row's picker trigger",
     { ...advancesOnly, advances: [{ id: "evals-now", inherited: false }] },
     false,
-    (row) => within(row).getByRole("button", { name: addPriorityControlName("CORE-1") }),
+    (row) => within(row).getByRole("button", { name: priorityTriggerName("CORE-1", false) }),
   ],
   [
     "the link of the priority added, on an issue closed meanwhile",
@@ -4021,24 +4055,11 @@ test.each(
   const view = renderDetails();
   try {
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
-    act(() => control.focus());
-    await user.keyboard("{Enter}");
-    const picker = await screen.findByRole("combobox", {
-      name: CONTROL_LABELS.priority_to_advance,
-    });
-    await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
-    await user.selectOptions(picker, "evals-now");
-    const form = picker.closest("form");
-    if (form === null) throw new Error("the picker is in no form");
-    // The issue's read after the write is held, so the write lands, and the line gives the focus
-    // back to its add control beside Add, before the line moves.
+    // The issue's read after the write is held, so the write lands, and the picker has given the
+    // focus back to its trigger beside Add, before the line moves.
     const reread = Promise.withResolvers<IssueDetails>();
     getIssue.mockImplementation(() => reread.promise);
-    await user.tab();
-    expect(document.activeElement, "Tab from the picker did not reach the form's Add").toBe(
-      within(form).getByRole("button", { name: CONTROL_LABELS.add })
-    );
-    await user.keyboard("{Enter}");
+    await toggleEvals(user, control);
     await waitFor(() =>
       expect(
         document.activeElement,
@@ -4048,10 +4069,10 @@ test.each(
     await act(async () => reread.resolve(readBack));
     const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
     expect(
-      within(row).getByRole("button", { name: addPriorityControlName("CORE-1") }),
+      within(row).getByRole("button", { name: priorityTriggerName("CORE-1", false) }),
       disabled
-        ? "the Advances row's add control is not disabled on a closed issue"
-        : "the Advances row's add control is disabled on an open issue"
+        ? "the Advances row's picker trigger is not disabled on a closed issue"
+        : "the Advances row's picker trigger is disabled on an open issue"
     ).toHaveProperty("disabled", disabled);
     expect(
       document.activeElement,
@@ -4065,14 +4086,14 @@ test.each(
   }
 });
 
-// The last priority removed moves the line back beside Add, and the focus its Remove held went
-// with the Advances row to the page's body. It goes on to the add control beside Add, the one
-// control the line draws there; or, where the read after the removal also draws the issue closed,
-// as another session closed it while the removal was out, which disables that control, to
-// Development's heading, the button that opens and closes the section. Remove holds the focus
-// until the line moves: while its write is out it is `aria-disabled`, never `disabled`. Each row
-// is the issue read back after the removal, whether that read disables the add control, and the
-// element the focus goes to.
+// The last priority removed moves the line back beside Add, and the focus its picker's trigger
+// held went with the Advances row to the page's body. It goes on to the add control beside Add,
+// the one control the line draws there; or, where the read after the removal also draws the issue
+// closed, as another session closed it while the removal was out, which disables that control, to
+// Development's heading, the button that opens and closes the section. The trigger holds the focus
+// until the line moves: the picker gives it back as it closes, and while its write is out the
+// trigger is `aria-disabled`, never `disabled`. Each row is the issue read back after the
+// removal, whether that read disables the add control, and the element the focus goes to.
 const LAST_REMOVED: readonly (readonly [string, IssueDetails, boolean, () => HTMLElement])[] = [
   [
     "the add control beside Add",
@@ -4090,7 +4111,7 @@ const LAST_REMOVED: readonly (readonly [string, IssueDetails, boolean, () => HTM
 
 test.each(
   LAST_REMOVED
-)("removing the last priority hands the focus from its Remove to %s", async (name, readBack, disabled, focused) => {
+)("removing the last priority hands the focus from its picker's trigger to %s", async (name, readBack, disabled, focused) => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
@@ -4100,27 +4121,26 @@ test.each(
   });
   const view = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
+    const trigger = await waitFor(advancesRowTrigger);
     // The issue's read after the write is held, so the removal lands before the line moves.
     const reread = Promise.withResolvers<IssueDetails>();
     getIssue.mockImplementation(() => reread.promise);
     const reads = getIssue.mock.calls.length;
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    await toggleEvals(user, trigger);
     await waitFor(() =>
       expect(
         getIssue.mock.calls.length,
         "the removal landed, and the issue was not read again"
       ).toBeGreaterThan(reads)
     );
-    // The shared Remove stays refused, and keeps the focus, until the new read is drawn.
-    expect(remove, "Remove took a press again before the new read was drawn").toHaveAttribute(
+    // The shared trigger stays refused, and keeps the focus, until the new read is drawn.
+    expect(trigger, "the trigger took a press again before the new read was drawn").toHaveAttribute(
       "aria-disabled",
       "true"
     );
-    expect(document.activeElement, "Remove lost the focus before the line moved").toBe(remove);
+    expect(document.activeElement, "the trigger lost the focus before the line moved").toBe(
+      trigger
+    );
     await act(async () => reread.resolve(readBack));
     await waitFor(() =>
       expect(
@@ -4161,10 +4181,11 @@ function advancingEvals(revision: number): IssueDetails {
 
 // The reader's removal of the last priority, and the read of the issue it sets off as it settles,
 // can both end while Details still draws the issue before it, so the Advances row leaves only
-// later, with Remove no longer `aria-disabled`. The move is still the reader's own: the issue now
-// drawn holds the set their write sent, at the revision Dispatch answered that write with, so the
-// focus Remove held goes on to the add control beside Add rather than to the page's body.
-test("the last priority removed hands the focus from its Remove to the add control beside Add when the row leaves after the write settled", async () => {
+// later, with the picker's trigger no longer `aria-disabled`. The move is still the reader's own:
+// the issue now drawn holds the set their write sent, at the revision Dispatch answered that write
+// with, so the focus the trigger held goes on to the add control beside Add rather than to the
+// page's body.
+test("the last priority removed hands the focus from its picker's trigger to the add control beside Add when the row leaves after the write settled", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
@@ -4175,18 +4196,16 @@ test("the last priority removed hands the focus from its Remove to the add contr
   patchIssue.mockImplementationOnce(async (_key, input) => patchAnswer(removed, input));
   const { queryClient, unmount } = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    const trigger = await waitFor(advancesRowTrigger);
+    await toggleEvals(user, trigger);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(remove, "Remove still refuses a press after its write settled").not.toHaveAttribute(
-        "aria-disabled"
-      )
+      expect(
+        trigger,
+        "the trigger still refuses a press after its write settled"
+      ).not.toHaveAttribute("aria-disabled")
     );
-    expect(document.activeElement, "Remove lost the focus before the row left").toBe(remove);
+    expect(document.activeElement, "the trigger lost the focus before the row left").toBe(trigger);
 
     drawIssue(getIssue, queryClient, removed);
     await waitFor(() =>
@@ -4214,9 +4233,9 @@ test("the last priority removed hands the focus from its Remove to the add contr
 // `KEY_COMMITTED`), and the write and the read of the issue it sets off as it settles both end
 // while Details still draws the issue before it, so the Advances row leaves only later. With no
 // answer there is no revision to match, so the set the write sent, which the issue now drawn
-// holds, tells the move is the reader's own: the focus Remove held goes on to the add control
-// beside Add rather than to the page's body.
-test("the last priority removed with no answer hands the focus from its Remove to the add control beside Add when the row leaves after the write settled", async () => {
+// holds, tells the move is the reader's own: the focus the picker's trigger held goes on to the
+// add control beside Add rather than to the page's body.
+test("the last priority removed with no answer hands the focus from its picker's trigger to the add control beside Add when the row leaves after the write settled", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
@@ -4226,21 +4245,19 @@ test("the last priority removed with no answer hands the focus from its Remove t
   );
   const { queryClient, unmount } = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    const trigger = await waitFor(advancesRowTrigger);
+    await toggleEvals(user, trigger);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(remove, "Remove still refuses a press after its write settled").not.toHaveAttribute(
-        "aria-disabled"
-      )
+      expect(
+        trigger,
+        "the trigger still refuses a press after its write settled"
+      ).not.toHaveAttribute("aria-disabled")
     );
     const write = queryClient.getMutationCache().getAll().at(-1)?.state;
     expect(write?.status, "the removal answered KEY_COMMITTED did not land").toBe("success");
     expect(write?.data, "the removal answered KEY_COMMITTED landed with an answer").toBeNull();
-    expect(document.activeElement, "Remove lost the focus before the row left").toBe(remove);
+    expect(document.activeElement, "the trigger lost the focus before the row left").toBe(trigger);
 
     drawIssue(getIssue, queryClient, { ...advancesOnly, advances_revision: 5 });
     await waitFor(() =>
@@ -4265,9 +4282,9 @@ test("the last priority removed with no answer hands the focus from its Remove t
 });
 
 // After the reader's removal of the last priority has landed, other sessions add a priority and
-// take it away again, with the focus on its Remove: the row leaves, and the issue holds the set the
-// reader's write sent, but at a newer revision than Dispatch answered that write with. That move is
-// another session's, so the focus stays on the page's body.
+// take it away again, with the focus on the Advances row's picker trigger: the row leaves, and the
+// issue holds the set the reader's write sent, but at a newer revision than Dispatch answered that
+// write with. That move is another session's, so the focus stays on the page's body.
 test("the last priority taken away elsewhere after the reader's own removal landed leaves the focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -4277,12 +4294,9 @@ test("the last priority taken away elsewhere after the reader's own removal land
   patchIssue.mockImplementationOnce(async (_key, input) => patchAnswer(removed, input));
   const { queryClient, unmount } = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
+    const trigger = await waitFor(advancesRowTrigger);
     getIssue.mockResolvedValue(removed);
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    await toggleEvals(user, trigger);
     await waitFor(() =>
       expect(
         document.activeElement,
@@ -4291,9 +4305,7 @@ test("the last priority taken away elsewhere after the reader's own removal land
     );
 
     drawIssue(getIssue, queryClient, advancingEvals(6));
-    const again = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
+    const again = await waitFor(advancesRowTrigger);
     act(() => again.focus());
     drawIssue(getIssue, queryClient, { ...advancesOnly, advances_revision: 7 });
     await waitFor(() =>
@@ -4321,7 +4333,7 @@ test("the last priority taken away elsewhere after the reader's own removal land
 // focus on its add control. An issue above this one then gains a priority, which the issue draws as
 // inherited, with its own set and that set's revision as the reader's write left them: the line
 // moves into the Advances row. No press of the reader's moved it, so the focus stays on the page's
-// body rather than going to the row's add control.
+// body rather than going to the row's picker trigger.
 test("the line moved into the Advances row by a priority an issue above gains after the reader's own removal landed leaves the focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -4331,12 +4343,9 @@ test("the line moved into the Advances row by a priority an issue above gains af
   patchIssue.mockImplementationOnce(async (_key, input) => patchAnswer(removed, input));
   const { queryClient, unmount } = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
+    const trigger = await waitFor(advancesRowTrigger);
     getIssue.mockResolvedValue(removed);
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    await toggleEvals(user, trigger);
     const control = await waitFor(() => {
       const beside = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
       expect(
@@ -4384,7 +4393,8 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
     patchAnswer({ ...advancingEvals(5), key: "CORE-9" }, input)
   );
   const queryClient = detailsQueryClient();
-  // The other issue's page, whose priority line is the one the page draws.
+  // The other issue's page, whose priority line is the one the page draws: a line in no row of
+  // Details, so its picker's trigger is "Edit priorities" (`priorityTriggerName`).
   const otherPage = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -4396,13 +4406,10 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
   );
   let unmount = otherPage.unmount;
   try {
-    await user.click(await screen.findByRole("button", { name: addPriorityControlName("CORE-9") }));
-    const picker = await screen.findByRole("combobox", {
-      name: CONTROL_LABELS.priority_to_advance,
-    });
-    await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
-    await user.selectOptions(picker, "evals-now");
-    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    await toggleEvals(
+      user,
+      await screen.findByRole("button", { name: priorityTriggerName("CORE-9", false) })
+    );
     await waitFor(() =>
       expect(
         queryClient.getMutationCache().getAll().at(-1)?.state.status,
@@ -4429,20 +4436,14 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
   }
 });
 
-/** Adds the priority "Evals collecting data now" from the add control beside Add, by keyboard,
- *  and returns once the form's Add is pressed: the line gives the focus back to its add control
- *  beside Add while the write is out. */
+/** Adds the priority "Evals collecting data now" from the add control beside Add, by keyboard
+ *  (`toggleEvals`), and returns once the picker has closed, which sends the write and gives the
+ *  focus back to the add control beside Add while the write is out. */
 async function addFirstPriority(user: UserEvent): Promise<void> {
-  const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
-  act(() => control.focus());
-  await user.keyboard("{Enter}");
-  const picker = await screen.findByRole("combobox", {
-    name: CONTROL_LABELS.priority_to_advance,
-  });
-  await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
-  await user.selectOptions(picker, "evals-now");
-  await user.tab();
-  await user.keyboard("{Enter}");
+  await toggleEvals(
+    user,
+    await screen.findByRole("button", { name: addPriorityControlName("CORE-1") })
+  );
 }
 
 // The reader's first priority is refused (409 ADVANCES_REVISION, another session having moved the
@@ -4609,11 +4610,15 @@ test("on a closed issue, the last priority taken away elsewhere leaves the focus
   }
 });
 
-// Another session's write moves the priority's line into an Advances row at the cap, which draws
-// no add control, with the focus on the add control beside Add. The reader pressed nothing, so the
-// focus stays on the page's body rather than going to the row's first priority.
+// Another session's write moves the priority's line into an Advances row at the cap, with the
+// focus on the add control beside Add. The reader pressed nothing, so the focus stays on the
+// page's body rather than going to the row's picker trigger. That trigger is drawn at the cap
+// too, since it takes a priority off as well as adding one; what the cap changes is the picker,
+// which refuses one priority more: it ticks none past the cap, says why, and closing it writes
+// nothing.
 test("the line moved by a write elsewhere into an Advances row at the cap leaves the focus of the add control beside Add on the page's body", async () => {
-  const { getIssue, restore } = stubIssueApi();
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
   getIssue.mockResolvedValue(advancesOnly);
   const { queryClient, unmount } = renderDetails();
@@ -4631,15 +4636,27 @@ test("the line moved by a write elsewhere into an Advances row at the cap leaves
       })
     );
     const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
-    expect(
-      within(row).queryByRole("button", { name: addPriorityControlName("CORE-1") }),
-      "the Advances row at the cap draws an add control"
-    ).toBeNull();
     await settleFocus();
     expect(
       document.activeElement,
       "the line moved into the Advances row at the cap, and the focus left the page's body though the reader pressed nothing"
     ).toBe(document.body);
+
+    await user.click(
+      within(row).getByRole("button", { name: priorityTriggerName("CORE-1", false) })
+    );
+    const evals = await evalsOption();
+    await user.click(evals);
+    expect(evals, "the picker at the cap ticked one priority more").toHaveAttribute(
+      "aria-selected",
+      "false"
+    );
+    expect(
+      screen.getByText(STATE_LINES.advances_at_cap),
+      "the picker at the cap refused one priority more and said nothing of why"
+    ).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(patchIssue, "the picker at the cap wrote").not.toHaveBeenCalled();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -7692,13 +7709,13 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "the last priority's Remove, that priority taken away in another session",
+    "the Advances row's picker trigger, the last priority taken away in another session",
     {
       after: { issue },
       before: { issue: advancingOne },
       focused: async () =>
         within(await screen.findByTestId("issue-advances")).findByRole("button", {
-          name: /^Remove /,
+          name: priorityTriggerName("CORE-1", false),
         }),
     },
   ],
