@@ -1064,6 +1064,9 @@ function issueClient(): QueryClient {
   queryClient.setQueryData(["issue", issue.key], issue);
   queryClient.setQueryData(["inbox"], []);
   queryClient.setQueryData(["asks", issue.key], []);
+  // In Details' drawer the margin reads the outline's asks read, with each question's thread
+  // (`useAnsweredAsks`, `issueAskThreadsQuery`).
+  queryClient.setQueryData(["asks", issue.key, "thread"], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   return queryClient;
