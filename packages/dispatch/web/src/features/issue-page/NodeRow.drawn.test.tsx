@@ -1527,7 +1527,7 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
   });
   // The reads the page's writer makes (`outline-writer.tsx`), answered before it mounts.
   for (const key of [
-    ["asks", KEY],
+    ["asks", KEY, "thread"],
     ["comments", KEY],
     ["issue-messages", KEY],
   ]) {
@@ -2110,7 +2110,7 @@ test("a press on an option of a closed row picks it and opens the row in one", a
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   for (const key of [
-    ["asks", "CORE-1"],
+    ["asks", "CORE-1", "thread"],
     ["comments", "CORE-1"],
     ["issue-messages", "CORE-1"],
     ["agents"],
@@ -2200,7 +2200,7 @@ function focusedControls(
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   for (const key of [
-    ["asks", "CORE-1"],
+    ["asks", "CORE-1", "thread"],
     ["comments", "CORE-1"],
     ["issue-messages", "CORE-1"],
     ["agents"],
@@ -2336,7 +2336,7 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
     },
   });
   for (const key of [
-    ["asks", "CORE-1"],
+    ["asks", "CORE-1", "thread"],
     ["comments", "CORE-1"],
     ["issue-messages", "CORE-1"],
     ["agents"],

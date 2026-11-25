@@ -111,6 +111,7 @@ export function IssueTree({
   reveal,
   root,
   rootRow,
+  zoomAt,
 }: {
   /** The reader's acts since they followed the address (`addressKey`): a controller the page
    *  starts as each following is drawn and the reader's first act since aborts
@@ -189,6 +190,10 @@ export function IssueTree({
    *  read one node at a time below 1024 px and which the page opens on what waits on the
    *  reader. A filter's rows are drawn whole at every width. */
   rootRow: boolean;
+  /** The node an address roots the tree at, as a zoom the reader made, by its id: Graph's
+   *  address `/graph/<node id>` (R10). The tree is zoomed to it as it is drawn and as the address
+   *  names another; the reader's zooms after that are theirs. Absent on every other address. */
+  zoomAt?: string;
 }): ReactNode {
   const [opened, setOpened] = useState<OpenedBranches>(NOTHING_OPENED);
   // The row whose body the focus opened: the row that holds the focus, or the one a press on
@@ -207,7 +212,13 @@ export function IssueTree({
   // so it moves no focus: the reader is taken nowhere, and the opening stays inside the branch.
   const [focusBranch] = useFocusBranch();
   const branchAtMount = useRef(focusBranch ? request?.id : undefined);
-  const [zoom, setZoom] = useState<string | undefined>(branchAtMount.current);
+  const [zoom, setZoom] = useState<string | undefined>(branchAtMount.current ?? zoomAt);
+  // The node the address last zoomed the tree to, so an address that names another zooms to it.
+  const [zoomedAt, setZoomedAt] = useState(zoomAt);
+  if (zoomAt !== zoomedAt) {
+    setZoomedAt(zoomAt);
+    if (zoomAt !== undefined) setZoom(zoomAt);
+  }
   // How much of the whole tree the cycle key draws: its first lines, their bodies down to the
   // second level, then everything.
   const [cycle, setCycle] = useState(0);

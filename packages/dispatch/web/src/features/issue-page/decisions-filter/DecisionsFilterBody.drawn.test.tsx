@@ -308,7 +308,7 @@ function renderBody(
   const answered = answeredAgo === undefined ? undefined : { updatedAt: Date.now() - answeredAgo };
   // The reads the page's tree is built from, under the keys it reads them by.
   if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made), answered);
-  if (asks !== null) client.setQueryData(["asks", KEY], asks, answered);
+  if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, answered);
   client.setQueryData(["comments", KEY], comments, answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
@@ -726,7 +726,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // The asks read is refused the same way: its line in place of the questions it would give,
   // no line that the issue holds nothing, and the tree's focus, which `t d` gives it from
   // outside the view, on its Retry where no row is drawn.
-  const refusedAsks = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+  const refusedAsks = spyOn(api, "listIssueAskThreads").mockRejectedValue(new Error("refused"));
   try {
     const failed = renderBody({ asks: null, children: [statement("s1")] }, {}, { stage: true });
     await waitFor(() => expect(failedLine(failed, "asks")).not.toBeNull());
@@ -780,7 +780,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // read's answer brings the question with it, drawn in the one render, the focus goes from the
   // busy Retry to the question's row, and the foot's control takes it at no point on the way.
   const asksOut = Promise.withResolvers<never>();
-  const asksRead = spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
+  const asksRead = spyOn(api, "listIssueAskThreads").mockReturnValue(asksOut.promise);
   try {
     const early = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
     expect(footControlOf(early)).not.toBeNull();
@@ -802,7 +802,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     asksRead.mockResolvedValue([]);
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY])).toEqual([])
+      expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY, "thread"])).toEqual([])
     );
     await waitFor(() => expect(document.activeElement).toBe(footControlOf(opened)));
     opened.again({ children: [openAsk("q-open"), decisionNode("minor")] });
@@ -832,7 +832,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
         answered.again({ children: [openAsk("q-open"), decisionNode("minor")] });
         answer.resolve([]);
         // The read's run (`Query.promise`): the query takes its answer as the run ends, first.
-        await answered.client.getQueryCache().find({ queryKey: ["asks", KEY] })?.promise;
+        await answered.client.getQueryCache().find({ queryKey: ["asks", KEY, "thread"] })?.promise;
       });
     } finally {
       document.removeEventListener("focusin", recordFocus);
@@ -858,7 +858,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // to the next refused read's Retry, and from the last one to the tree, never to the page's
   // body.
   const decisionsRefused = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("refused"));
-  const asksRefused = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+  const asksRefused = spyOn(api, "listIssueAskThreads").mockRejectedValue(new Error("refused"));
   try {
     const both = renderBody(
       { asks: null, children: [statement("s1")], made: null },
@@ -906,7 +906,7 @@ test("a read refused after the tree took the focus gives that focus to its Retry
     const spy =
       read === "issue-decisions"
         ? spyOn(api, "getIssueDecisions").mockReturnValue(answer.promise)
-        : spyOn(api, "listIssueAsks").mockReturnValue(answer.promise);
+        : spyOn(api, "listIssueAskThreads").mockReturnValue(answer.promise);
     try {
       const view =
         read === "issue-decisions"
@@ -951,7 +951,7 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
     const spy =
       read === "issue-decisions"
         ? spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("refused"))
-        : spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+        : spyOn(api, "listIssueAskThreads").mockRejectedValue(new Error("refused"));
     try {
       const view =
         read === "issue-decisions"
@@ -1284,7 +1284,7 @@ test("an entry that moves to another part by no act of the reader keeps the focu
 test("the view opened after the app's staleTime asks no read again, its rows' Keep and Change included", async () => {
   const names = [
     "getIssueDecisions",
-    "listIssueAsks",
+    "listIssueAskThreads",
     "listComments",
     "getArtifactBlocks",
   ] as const;
@@ -1299,7 +1299,12 @@ test("the view opened after the app's staleTime asks no read again, its rows' Ke
     await act(() => nextFrame());
     expect(
       Object.fromEntries(names.map((read, index) => [read, reads[index]?.mock.calls.length]))
-    ).toEqual({ getArtifactBlocks: 0, getIssueDecisions: 0, listComments: 0, listIssueAsks: 0 });
+    ).toEqual({
+      getArtifactBlocks: 0,
+      getIssueDecisions: 0,
+      listComments: 0,
+      listIssueAskThreads: 0,
+    });
     view.unmount();
   } finally {
     for (const read of reads) read.mockRestore();

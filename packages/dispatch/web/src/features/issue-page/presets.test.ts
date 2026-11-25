@@ -5,7 +5,7 @@ import { actorLabelText } from "../refs/AgentName";
 import { deletedLineText } from "../refs/post-marks";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
-import { filterSignals, presetView } from "./presets";
+import { filterSignals, isFilter, presetView } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
@@ -114,14 +114,53 @@ function issue(): TreeNode {
   ]);
 }
 
+// R9, R10: with no filter on - Conversation, and Graph, which is no filter - the view is the whole
+// tree the outline read answers, folded to the frontier. Graph draws every node; Conversation draws
+// Conversation's read, which holds no result and no plan task, so a result or a plan task the tree
+// holds - every one, before the read takes `?kind=` - is no row of it.
 test("with no filter on the view is the whole tree, folded to the frontier", () => {
   const root = issue();
-  const view = presetView(root, "conversation", "");
-  expect(view.filtering).toBe(false);
-  expect(view.rootRow).toBe(true);
+  for (const preset of ["conversation", "graph"] as const) {
+    const view = presetView(root, preset, "");
+    expect(view.filtering).toBe(false);
+    expect(view.rootRow).toBe(true);
+    expect(parentLines(view.root)).toEqual({});
+  }
   // Exactly the fold the page draws with nothing narrowing it.
-  expect(drawn(root, "conversation")).toEqual(idsOf(treeRows(root)));
-  expect(parentLines(view.root)).toEqual({});
+  expect(drawn(root, "graph")).toEqual(idsOf(treeRows(root)));
+  const conversation = presetView(root, "conversation", "").root;
+  expect([...new Set(nodesUnder(conversation).map((one) => one.type))].sort()).toEqual([
+    "ask",
+    "check",
+    "comment",
+    "decision",
+    "issue",
+    "requirement",
+  ]);
+});
+
+/** Every node under `root`, `root` first, each before its children. */
+function nodesUnder(root: TreeNode): TreeNode[] {
+  return [root, ...root.children.flatMap(nodesUnder)];
+}
+
+// R10, R12: Graph is a view and no filter: it draws the whole tree as the page with no filter on
+// does, the issue its first row, every branch as the fold leaves it and every node of every kind,
+// and it has no count of its own among the filters' signals.
+test("Graph is no filter", () => {
+  const root = issue();
+  expect(isFilter("graph")).toBe(false);
+  expect(isFilter("conversation")).toBe(false);
+  expect((["spec", "verification", "plan", "decisions"] as const).every(isFilter)).toBe(true);
+  const view = presetView(root, "graph", "");
+  expect(view).toMatchObject({ filtering: false, lines: new Map(), rootRow: true });
+  expect(nodesUnder(view.root).map((one) => one.id)).toEqual(nodesUnder(root).map((one) => one.id));
+  expect(Object.keys(filterSignals(root, "")).sort()).toEqual([
+    "decisions",
+    "plan",
+    "spec",
+    "verification",
+  ]);
 });
 
 // R8, c-tree: the spec's summary callout is the head's three sentences and no row of the
@@ -137,12 +176,15 @@ test("with no filter on the spec's memo callout is no row, unless the address na
   ]);
 });
 
+// Graph, which draws every node, finds a plan task by its words with the chain above it as
+// context; Conversation, which draws no plan task, finds none.
 test("a filter by words with no filter on opens the path down to what it matched", () => {
   const root = issue();
-  const view = presetView(root, "conversation", "b-t2");
+  const view = presetView(root, "graph", "b-t2");
   expect(view.filtering).toBe(true);
   expect([...view.context]).toEqual(["comment-1", "CORE-1"]);
-  expect(drawn(root, "conversation", "b-t2")).toEqual(["CORE-1", "comment-1", "plan#b-t2"]);
+  expect(drawn(root, "graph", "b-t2")).toEqual(["CORE-1", "comment-1", "plan#b-t2"]);
+  expect(drawn(root, "conversation", "b-t2")).toEqual(["CORE-1"]);
 });
 
 test("Spec draws the requirements as rows, the issue as none, and the ask above one as its line", () => {

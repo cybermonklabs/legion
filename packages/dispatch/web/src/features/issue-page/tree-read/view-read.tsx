@@ -5,10 +5,19 @@ import { TREE_FILTERS, type TreeFilter } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
 import { focusOnDocument } from "../../shell/roving";
+import { useMediaQuery } from "../../shell/useDialog";
+import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { bringOnScreen } from "../identity-block";
 import { ANSWER_LINES, CONTROL_LABELS, type Preset } from "../page-words";
+import { isFilter } from "../presets";
 import { TAB_STOP_ROW } from "../tree-focus";
-import { resetViews, subscribeTreeFreshness, useTreeRead, viewQuery } from "./tree-read";
+import {
+  resetViews,
+  subscribeTreeFreshness,
+  useStartOutlineRead,
+  useTreeRead,
+  viewQuery,
+} from "./tree-read";
 
 /**
  * The filters' view reads of one load of the issue, around the stage. Each of Spec, Verification
@@ -22,6 +31,18 @@ import { resetViews, subscribeTreeFreshness, useTreeRead, viewQuery } from "./tr
  * goes, the views are collected as any query nothing observes is.
  * `useIssueTree` watches the three reads without ever sending one, and sets what they hold on the
  * tree's root (`TreeNode.views`), which is what each filter draws from.
+ *
+ * A filter whose own nodes Conversation's read does not hold has its view read sent with a load
+ * of Conversation or of a filter, and held as the others are, for its count and, for Plan, for
+ * "How it gets done" (R4, R13): Plan always, since Conversation's read holds no plan task, and
+ * Spec and Verification where the issue has children, whose design blocks and checks Spec and
+ * Verification draw (`sentWithLoad`). That filter, turned on, sends no second read. Graph sends
+ * none for a count: each is read off Graph's read.
+ *
+ * On Spec it also sends Conversation's read from 1024 px up, where the Contents pane beside the
+ * view reads it (R13): Spec's own readers watch that read and send nothing (`useTreeRead`), since
+ * Spec's view read holds the memo and the statements the view draws, and below 1024 px the Outline
+ * sheet sends it as it opens (`useStartOutlineRead`). Once sent it is held for the load.
  *
  * The page mounts the stage once for each issue it opens (`IssueOutlinePage`'s `key`), so a mount
  * here is a load: it drops whatever view a past load of the issue held, so no load draws a view
@@ -50,15 +71,33 @@ export function ViewReadProvider({
     setDropped(true);
   }, [key, queryClient]);
   useEffect(() => subscribeTreeFreshness(queryClient, key), [key, queryClient]);
+  const paned = useMediaQuery(CONTENTS_PANE_QUERY);
+  const startOutline = useStartOutlineRead(key);
+  useEffect(() => {
+    if (preset === "spec" && paned) startOutline();
+  }, [paned, preset, startOutline]);
   return (
     <>
       {dropped &&
         TREE_FILTERS.map((filter) => (
-          <ViewRead filter={filter} issueKey={key} key={filter} on={preset === filter} />
+          <ViewRead
+            filter={filter}
+            issueKey={key}
+            key={filter}
+            on={preset === filter || sentWithLoad(filter, preset, issue)}
+          />
         ))}
       {children}
     </>
   );
+}
+
+/** Whether a load of `preset` sends `filter`'s view read with it (`ViewReadProvider`): a load of
+ *  Conversation or of a filter, for Plan always and for Spec and Verification where the issue has
+ *  children. */
+function sentWithLoad(filter: TreeFilter, preset: Preset, issue: IssueDetails): boolean {
+  if (preset !== "conversation" && !isFilter(preset)) return false;
+  return filter === "plan" || (issue.children ?? []).length > 0;
 }
 
 /**

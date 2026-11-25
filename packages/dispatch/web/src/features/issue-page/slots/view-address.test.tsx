@@ -21,7 +21,6 @@ import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import { FAILED_READ_RETRY } from "./failed-read-line";
 import {
-  answerTree,
   commentGone,
   commentNodes,
   drawAtBrowserEntry,
@@ -35,6 +34,7 @@ import {
   retryTakesFocus,
   rowTakesFocus,
   stubReads,
+  treeOf,
 } from "./stage-fixtures";
 
 /**
@@ -94,9 +94,30 @@ function verifiedTree(checks: readonly TreeAnswerNode[] = [], threads = true): T
 /** The tuples of `verifiedTree`: the task and the check each serve the statement. */
 const SERVES = [treeTuple("serves", PLAN_TASK, STATEMENT), treeTuple("serves", CHECK, STATEMENT)];
 
-/** Answers the tree read with `verifiedTree`'s nodes and tuples (`answerTree`). */
+/** Answers the tree read with `verifiedTree`'s nodes and tuples (`treeOf`), and each view read
+ *  with the view's own nodes of them, as its query took them, and the statement they serve as the
+ *  Verification view's context, as the route answers a view. */
 function answerVerifiedTree(checks: readonly TreeAnswerNode[] = [], threads = true): void {
-  answerTree(verifiedTree(checks, threads), SERVES);
+  const nodes = verifiedTree(checks, threads);
+  const own: Readonly<Record<string, string>> = {
+    plan: "plan_task",
+    spec: "requirement",
+    verification: "check",
+  };
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const { view } = query;
+    if (view === undefined) return treeOf(nodes, SERVES);
+    return treeOf(
+      nodes.flatMap((node): TreeAnswerNode[] => {
+        if (node.supertag === own[view]) return [{ ...node, role: "query" }];
+        if (view === "verification" && node.supertag === "requirement") {
+          return [{ ...node, role: "context" }];
+        }
+        return [];
+      }),
+      SERVES
+    );
+  });
 }
 
 /** Answers the reads the tree and the Verification view are drawn from for `verifiedIssue`: the

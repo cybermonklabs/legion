@@ -14,6 +14,7 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
+import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { isDecisionEntry } from "../../issue/decision-entries";
 import { type PostDeletion, postDeletion } from "../../refs/post-marks";
 import {
@@ -105,6 +106,10 @@ export interface PostMarks {
  *  outline's builders read it (`blockNodeId`, `nodeIdOf`), so a row and its node meet by one
  *  address. */
 export interface KeptReads {
+  /** The comments the comments read anchors to text (`Comment.anchor`, which names the text's
+   *  block and quote), by their own ids: the tree read answers no anchor on a comment node, and
+   *  hangs such a comment under the node whose text it is on (`onNodeText`). */
+  readonly anchored: ReadonlySet<string>;
   /** Each ask of the issue read's open asks and of the asks read, the asks read's where both
    *  hold it. */
   readonly asks: ReadonlyMap<string, TreeAsk>;
@@ -464,8 +469,21 @@ function draftRequirement(
           );
     draft.gaps = requirementGaps(coverage.gaps ?? [], origin, shapers);
   }
+  // Where the answer counts the checks that serve it (`checks`, which every read of the route
+  // answers on a requirement), a statement lacks a check by that count, whatever the coverage
+  // read says (R9).
+  const { checks: served } = node as CountedRequirement;
+  if (draft.statement === true && typeof served === "number") {
+    const others = draft.gaps.filter((gap) => gap !== "no_check");
+    draft.gaps = served === 0 ? [...others, "no_check"] : others;
+  }
   return draft;
 }
+
+/** A requirement node as every read of the route answers it once the model serves the count:
+ *  with `checks`, the number of checks that serve it at the read's cut, of the issue and of each
+ *  issue under it, which the generated contract does not name yet. */
+type CountedRequirement = TreeAnswerNode & { readonly checks?: unknown };
 
 /** Whether `node` is a decision, by the rule the decisions read's entries are read by
  *  (`isDecisionEntry`): a decision node is an agent's decision, and an ask is a person's where a
@@ -700,13 +718,18 @@ function draftAsk(
  *  (`deletedPostLine`) and no reading, so no line, body, filter or citation read from the node
  *  reads any part of its body. It carries no `editedAt`: the deleted line already says what
  *  became of the text. The marks are the comments read's and the messages read's, by the post's
- *  id (`KeptReads.posts`): the tree read holds neither. */
+ *  id (`KeptReads.posts`): the tree read holds neither.
+ *
+ * A comment on a node's text is no row of either outline (R9, R10): it stays in the answer, and
+ * the margin beside that node draws it (root R41). A post on the issue, a comment tied to no
+ * text, is a row, with its replies under it. */
 function draftTurn(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
+  if (onNodeText(node, context)) return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
   const marks = context.kept.posts.get(node.id);
@@ -723,6 +746,34 @@ function draftTurn(
   }
   draft.source = stableSourceOf(draft.tree ?? node, node.supertag, node.id);
   return draft;
+}
+
+/**
+ * Whether `node` is a comment on a node's text, or a reply in such a comment's thread (R9, R10:
+ * no row of either outline, since the margin beside that node draws it, root R41). The tree read
+ * answers no anchor on a comment node: the comments read does (`Comment.anchor`, the text's block
+ * and its quote, `KeptReads.anchored`), and the read hangs a comment anchored inside a typed
+ * block under that block's node. So a comment is on a node's text where the comments read anchors
+ * it and the read hangs it under a node other than the issue's own. The second half is why the
+ * rule reads the read's placement too: a comment the read hangs under the issue - anchored in a
+ * document whose block the answer holds no node for, as a `decisions.md` section's Change is -
+ * has no node for the margin to draw it beside, and is drawn as a post. A reply the read hangs
+ * under such a comment is in its thread, which the margin draws whole. Until every answer of the
+ * read carries the comments on each node's text, a comment on the text of a node an answer lacks
+ * is a post of that answer. A chain of parents that runs in a circle ends where it comes round.
+ */
+function onNodeText(
+  node: TreeAnswerNode,
+  context: TreeDraftContext,
+  passed: Set<string> = new Set()
+): boolean {
+  const { parent } = node;
+  if (node.supertag !== "comment" || parent === null || passed.has(node.id)) return false;
+  passed.add(node.id);
+  if (context.kept.anchored.has(node.id)) return parent.supertag !== "issue";
+  if (parent.supertag !== "comment") return false;
+  const above = context.nodeOf(parent.id);
+  return above !== undefined && onNodeText(above, context, passed);
 }
 
 /** A callout or an image: a typed block with its words and nothing more. */
@@ -1057,6 +1108,9 @@ function keptReads(
     }
   }
   return {
+    anchored: new Set(
+      (reads.comments ?? []).flatMap((comment) => (comment.anchor == null ? [] : [comment.id]))
+    ),
     asks: indexBy([...asksOf(reads).values()], (ask) => askNodeId(ask, context.slugOf)),
     checks,
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
@@ -1330,4 +1384,140 @@ export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): T
 export function nextTreeCursor(page: TreeAnswer): string | undefined {
   const { cursor } = page;
   return typeof cursor === "string" && cursor !== "" ? cursor : undefined;
+}
+
+/**
+ * Where the next older comment page of an outline read's answer starts (`comments_before`,
+ * `<made_at>,<id>` of the oldest comment the answer holds), which `?comments_before=` reads the
+ * 200 comments older than; undefined where no older comment remains: null, left out, or empty, as
+ * a view's answer, which answers none, leaves it.
+ */
+export function olderCommentsBefore(answer: TreeAnswer): string | undefined {
+  const before = answer.comments_before;
+  return typeof before === "string" && before !== "" ? before : undefined;
+}
+
+/**
+ * How two comment positions (`<made_at>,<id>`, `comments_before`) stand in the read's order of
+ * comments, by `made_at` and then by id: below 0 where `left` is the older, above 0 where it is the
+ * newer, 0 where they are one.
+ */
+export function compareCommentPositions(left: string, right: string): number {
+  const [leftAt, leftId] = splitPosition(left);
+  const [rightAt, rightId] = splitPosition(right);
+  return compareTimes(leftAt, rightAt) || compareIds(leftId, rightId);
+}
+
+/** A comment position's `made_at` and id: the text before its first comma, and the rest. */
+function splitPosition(position: string): readonly [string, string] {
+  const comma = position.indexOf(",");
+  return comma < 0 ? [position, ""] : [position.slice(0, comma), position.slice(comma + 1)];
+}
+
+/** How two times the read writes stand, by the instants they name (`compareTimestamps`, which
+ *  keeps the microseconds the read writes), and by their text where either is no timestamp. */
+function compareTimes(left: string, right: string): number {
+  return isTimestamp(left) && isTimestamp(right)
+    ? compareTimestamps(left, right)
+    : compareIds(left, right);
+}
+
+/** Two ids in byte order, as the read orders ties. */
+function compareIds(left: string, right: string): number {
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+/**
+ * `answer`, an outline read's answer, with `page` merged into it: the older comment page
+ * `?comments_before=` answered for it, which holds the 200 comments older than the answer's
+ * oldest, each with the nodes under it and their tuples, and its own `comments_before`. The
+ * page's nodes stand where the read's order puts them (R15), as `mergeTreePages` keeps the
+ * walk's order across pages: each comment of the page with the nodes under it, under the node its
+ * `parent` names where the answer holds that node - an ask, a comment of another page - and else
+ * under the issue, as the page places it; among that node's children before the first the read
+ * orders after it (ranked siblings by `rank`, ties by id, then the rest by `made_at`, ties by
+ * id), else after the last of them and every node under it. A node the answer holds already is
+ * not added again. The answer then has the page's `comments_before`, so the next older page is
+ * read from there, and none once the page says no older comment remains.
+ */
+export function mergeCommentPage(answer: TreeAnswer, page: TreeAnswer): TreeAnswer {
+  const nodes = [...(answer.nodes ?? [])];
+  const held = new Set(nodes.map((node) => node.id));
+  for (const run of commentRuns((page.nodes ?? []).filter((node) => !held.has(node.id)))) {
+    nodes.splice(placeOfRun(nodes, run[0], answer.issue), 0, ...run);
+  }
+  return {
+    ...answer,
+    comments_before: page.comments_before ?? null,
+    nodes,
+    tuples: [...(answer.tuples ?? []), ...(page.tuples ?? [])],
+  };
+}
+
+/** A comment page's nodes in runs, in the page's order: each node whose parent is no node of the
+ *  page starts one, and each other node is in its parent's, after it. */
+function commentRuns(nodes: readonly TreeAnswerNode[]): [TreeAnswerNode, ...TreeAnswerNode[]][] {
+  const runs: [TreeAnswerNode, ...TreeAnswerNode[]][] = [];
+  const runOf = new Map<string, TreeAnswerNode[]>();
+  for (const node of nodes) {
+    const run = node.parent === null ? undefined : runOf.get(node.parent.id);
+    if (run === undefined) {
+      const started: [TreeAnswerNode, ...TreeAnswerNode[]] = [node];
+      runs.push(started);
+      runOf.set(node.id, started);
+    } else {
+      run.push(node);
+      runOf.set(node.id, run);
+    }
+  }
+  return runs;
+}
+
+/**
+ * Where in `nodes` the run of a comment page that `head` starts goes (`mergeCommentPage`): under
+ * the node its `parent` names where `nodes` holds it, else under the issue's own node (`issue`),
+ * before the first of that node's children the read orders after `head` (`sortsAfter`), else
+ * where that node's branch ends. A parent's branch is every node after it whose chain of parents
+ * reaches it, which the read's walk keeps together, each node after its parent.
+ */
+function placeOfRun(nodes: readonly TreeAnswerNode[], head: TreeAnswerNode, issue: string): number {
+  const at = new Map(nodes.map((node, place) => [node.id, place]));
+  const named = head.parent === null ? undefined : at.get(head.parent.id);
+  const parentAt =
+    named ??
+    nodes.findIndex(
+      (node) => node.supertag === "issue" && (node.id === issue || node.parent === null)
+    );
+  const parent = nodes[parentAt];
+  if (parent === undefined) return nodes.length;
+  const reaches = (node: TreeAnswerNode): boolean => {
+    let above = node.parent;
+    for (let steps = 0; above !== null && steps < nodes.length; steps += 1) {
+      if (above.id === parent.id) return true;
+      const place = at.get(above.id);
+      above = place === undefined ? null : (nodes[place]?.parent ?? null);
+    }
+    return false;
+  };
+  for (let place = parentAt + 1; place < nodes.length; place += 1) {
+    const node = nodes[place];
+    if (node === undefined || !reaches(node)) return place;
+    if (node.parent?.id === parent.id && sortsAfter(node, head)) return place;
+  }
+  return nodes.length;
+}
+
+/** Whether the read orders `sibling` after `node` under one parent: ranked siblings first, by
+ *  `rank` in byte order, ties by id; then the rest by `made_at`, ties by id. */
+function sortsAfter(sibling: TreeAnswerNode, node: TreeAnswerNode): boolean {
+  if (node.rank !== null) {
+    if (sibling.rank === null) return true;
+    return (compareIds(sibling.rank, node.rank) || compareIds(sibling.id, node.id)) > 0;
+  }
+  if (sibling.rank !== null) return false;
+  const at =
+    sibling.made_at === null || node.made_at === null
+      ? 0
+      : compareTimes(sibling.made_at, node.made_at);
+  return (at || compareIds(sibling.id, node.id)) > 0;
 }

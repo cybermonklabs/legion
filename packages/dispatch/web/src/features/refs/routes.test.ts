@@ -688,6 +688,24 @@ test("the plan tab owns its path, its reference and its short form", () => {
   ).toEqual(route);
 });
 
+// Graph, the new issue page's view of the whole tree read, owns its path and Graph zoomed to one
+// node its own: each is the issue's route with Graph on, and its reference is the issue's.
+test("the graph view owns its path, zoomed to a node too, and its reference is the issue's", () => {
+  const route = { key: "CORE-1", kind: "graph" as const };
+  const zoomed = { key: "CORE-1", kind: "graph" as const, node: "spec#b-r1" };
+
+  expect(parseIssuePath("/issues/CORE-1/graph")).toEqual(route);
+  expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/graph"));
+  expect(parseIssuePath("/issues/CORE-1/graph/spec%23b-r1")).toEqual(zoomed);
+  expect(buildIssuePath(zoomed)).toBe(browserPath("issues/CORE-1/graph/spec%23b-r1"));
+  expect(parseIssuePath("/issues/CORE-1/graph/%E0%A4%A")).toBeUndefined();
+  expect(buildDispatchReference(zoomed)).toBe("dispatch://CORE-1");
+  expect(shortForm(route)).toBe("CORE-1");
+  expect(
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/graph", "https://dispatch.test")
+  ).toEqual(route);
+});
+
 // The Decisions tab reads the issue's decision nodes: its page is the tab's own route, and the
 // reference it names, `dispatch://CORE-1/decisions`, is the issue's Decisions page, whatever its
 // fragment. No reader names a decisions document.

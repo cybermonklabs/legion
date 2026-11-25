@@ -14,6 +14,7 @@ import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
 import { useFollowing } from "./following";
 import { ViewDecisionsSlot } from "./view-decisions";
+import { ViewGraphSlot } from "./view-graph";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
 import { ViewVerificationSlot } from "./view-verification";
@@ -144,6 +145,8 @@ export type ViewSlots = Readonly<Record<Preset, ((props: ViewSlotProps) => React
 export const VIEW_SLOTS: ViewSlots = {
   conversation: undefined,
   decisions: ViewDecisionsSlot,
+  // Graph draws Graph's read whole as one outline, through the outline's own rows (R10).
+  graph: ViewGraphSlot,
   plan: ViewPlanSlot,
   spec: ViewSpecSlot,
   verification: ViewVerificationSlot,
@@ -162,6 +165,8 @@ export type SlotsFilled = Readonly<Record<Preset, boolean>>;
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
   decisions: true,
+  // Graph draws its tree here too (`view-graph.tsx`), so it is filled.
+  graph: true,
   plan: true,
   spec: true,
   verification: true,
