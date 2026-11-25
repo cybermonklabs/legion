@@ -19,6 +19,16 @@ import { runRelaySession } from "../test/relay-session-report";
 const tempDir = temporaryDirectories("pi-envoy-relay-socket");
 const SESSION = "ses_relay_socket";
 
+// Each row's own limit, 360_000, is a hang guard, not a bound on work: what can hang is the
+// session process, which loads the real extension and opens its relay socket. Over 20 runs of
+// this file at the 96 rung (the Jobs infra-1580-r30rsa-x2kvw and infra-1580-r30rsb-pcb74 of the
+// cluster's `builds` namespace, two CPUs and 8 GiB, 125 and 79 busy loops for the 96 rung, row A
+// 33.6 s and 31.2 s, at 110e29db with this change), the slowest row of a run took 58 304 ms. Six
+// times that is 349 824 ms, rounded up to 360_000, inside the 395 s the pi-envoy job leaves one
+// hang (`ci-job-pi-envoy.yaml:26-31`). The process is killed 30 s later, at 390_000, so the row's
+// limit decides a slow run. The kills these rows had before, 30 s and 45 s, ended 7 of the 10
+// rows' processes in 5 runs at that rung, each exiting 143 (infra-1580-r30rs-6ngvd, at 110e29db).
+
 test("a relay socket session takes its relay subject on the socket and no agent stream", async () => {
   const server = startRelaySocketStandIn();
   try {
@@ -40,7 +50,7 @@ test("a relay socket session takes its relay subject on the socket and no agent 
         AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
         AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
       },
-      timeoutMs: 30_000,
+      timeoutMs: 390_000,
     });
     const opened = server.upgrades.filter((upgrade) => upgrade.status === 101);
     if (opened.length === 0) {
@@ -68,7 +78,7 @@ test("a relay socket session takes its relay subject on the socket and no agent 
   } finally {
     server.stop();
   }
-}, 60_000);
+}, 360_000);
 
 // The wire lets the listener answer any `sub` `subject_not_granted`. #4658 answers so only a
 // subject other than the session's own, and closes the socket 1013 when NATS refuses a subscribe;
@@ -97,7 +107,7 @@ test("a relay subject the listener refuses is told naming why", async () => {
         AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
         AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
       },
-      timeoutMs: 45_000,
+      timeoutMs: 390_000,
       waitFor: "receives nothing",
     });
     expect(server.refusedSubs[0]).toEqual({
@@ -113,4 +123,4 @@ test("a relay subject the listener refuses is told naming why", async () => {
   } finally {
     server.stop();
   }
-}, 60_000);
+}, 360_000);

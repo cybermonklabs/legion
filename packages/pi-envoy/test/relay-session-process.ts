@@ -11,8 +11,10 @@
  * listener's HTTP routes in `globalThis.fetch` (`standInListenerFetch`: every registration
  * accepted, no role held) and hands the broker's token exchange to the real fetch; then it opens
  * the session `<session id>` and lets its first pass settle, and, given `<wait for>`, waits until
- * a notice or a line holds that text, for 20 s at most. The relay socket itself is Bun's own
- * WebSocket, to the stand-in. What it prints is its `RelaySessionReport`.
+ * a notice or a line holds that text. That wait has no bound of its own: the row's limit names a
+ * run that never sees the text, and the kill `runRelaySession` gives the process ends it. The
+ * relay socket itself is Bun's own WebSocket, to the stand-in. What it prints is its
+ * `RelaySessionReport`.
  */
 import type { PiApi } from "@legion/pi-shared/pi-types";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -55,11 +57,9 @@ const start: EventHandler | undefined = handlers.get("session_start");
 if (start === undefined) throw new Error("the extension registered no session_start handler");
 await start({}, context);
 
-if (waitFor !== undefined) {
-  const ends = Date.now() + 20_000;
-  while (![...notices, ...lines].some((text) => text.includes(waitFor)) && Date.now() < ends) {
-    await Bun.sleep(25);
-  }
+// Polled, not raced: the text arrives as a notice or a log line, which nothing here can await.
+while (waitFor !== undefined && ![...notices, ...lines].some((text) => text.includes(waitFor))) {
+  await Bun.sleep(25);
 }
 
 const report: RelaySessionReport = { notices, lines };
