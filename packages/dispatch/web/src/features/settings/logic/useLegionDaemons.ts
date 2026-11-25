@@ -5,8 +5,8 @@
 // alone. A project with no daemon answers `null` and is simply not among the daemons.
 import { useQueries, useQuery } from "@tanstack/react-query";
 
-import { legionDaemonQuery, projectsQuery } from "../../api/queries";
-import type { LegionSetting, Project } from "../../api/types";
+import { legionDaemonQuery, projectsQuery } from "../../../api/queries";
+import type { LegionSetting, Project } from "../../../api/types";
 
 /** The daemons of every project, and the state of the reads behind them. `daemons` and
  *  `projects` are set once every read has answered, `daemons` by project key, as a list of

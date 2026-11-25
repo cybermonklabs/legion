@@ -43,8 +43,8 @@ import {
   settingsTableRow,
   settingsTableWrapper,
 } from "./classes";
+import { useLegionDaemons } from "./logic/useLegionDaemons";
 import { ProjectSelect } from "./ProjectSelect";
-import { useLegionDaemons } from "./useLegionDaemons";
 
 /** A daemon a person named: the project it serves and the base URL its state is read from. */
 interface DaemonInput {
