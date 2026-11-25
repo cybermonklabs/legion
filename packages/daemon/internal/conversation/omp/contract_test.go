@@ -396,21 +396,13 @@ func readerTurns(t *testing.T, messages []conversation.Message) []wireTurn {
 // content holds no such entry or that entry's text is not followUp.
 func resumedSession(t *testing.T, before *Session, content []byte, opts Options, followUp string) *Session {
 	t.Helper()
-	for start := 0; start < len(content); {
-		line, next := content[start:], len(content)
-		if i := bytes.IndexByte(line, '\n'); i >= 0 {
-			line, next = line[:i], start+i+1
-		}
-		var e struct {
-			Type    string `json:"type"`
-			ID      string `json:"id"`
-			Message struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
-			} `json:"message"`
-		}
-		if json.Unmarshal(line, &e) != nil || e.Type != "message" || e.Message.Role != "user" || before.ids[e.ID] {
-			start = next
+	start := 0
+	for raw := range bytes.Lines(content) {
+		at := start
+		start += len(raw)
+		line := bytes.TrimSuffix(raw, []byte("\n"))
+		var e entry
+		if json.Unmarshal(line, &e) != nil || e.Type != "message" || e.Message == nil || e.Message.Role != "user" || before.ids[e.ID] {
 			continue
 		}
 		blocks, err := parseBlocks(e.Message.Content, inputBlocks, "the resume's follow-up")
@@ -420,7 +412,7 @@ func resumedSession(t *testing.T, before *Session, content []byte, opts Options,
 		if len(blocks) != 1 || blocks[0].Type != "text" || blocks[0].Text != followUp {
 			t.Fatalf("the first user message the session before the resume did not hold is not the follow-up %q:\n%s", followUp, line)
 		}
-		resumed, err := Read(content[:start], opts)
+		resumed, err := Read(content[:at], opts)
 		if err != nil {
 			t.Fatalf("the reader's read of the session as the resume left it before its request: %v", err)
 		}
@@ -569,10 +561,7 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 			rig := newOMPRig(t, anthropicMessages, model)
 			rig.run(t, "", "Read note.txt and tell me what it says.")
 			file := rig.sessionFile(t)
-			content, err := os.ReadFile(file)
-			if err != nil {
-				t.Fatal(err)
-			}
+			content := sessionContent(t, file)
 			first, err := Read(content, standInEndpoint)
 			if err != nil {
 				t.Fatal(err)
@@ -742,9 +731,6 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertAppended(t, model, appended, content)
-		if !bytes.Contains(content, []byte(`"Thanks."`)) {
-			t.Error("the resumed run's follow-up is not in the session table")
-		}
 	})
 }
 

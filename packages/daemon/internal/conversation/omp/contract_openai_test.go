@@ -139,13 +139,7 @@ func readerInput(t *testing.T, messages []conversation.Message) []map[string]any
 }
 
 // assertResponsesResumeMatches checks the Responses request the pinned Oh My Pi sent on resuming
-// a session as assertResumeMatches checks an Anthropic one: the request is the reader's
-// conversation of the session as the resume left it before its request, cut from content, the
-// session after the resume, then the follow-up. That session is the one from before the resume
-// plus any record Oh My Pi writes at the resume, such as a tool_result_prune of a read a newer
-// read of the same path superseded (session-maintenance.ts #pruneWithheldIfDue, pruning.ts). So
-// the conversation from before the resume is its own but for the tool results such a record
-// blanked (assertBlankedOnly).
+// a session as assertResumeMatches checks an Anthropic one, and returns the request's input items.
 func assertResponsesResumeMatches(t *testing.T, before *Session, content, body []byte, followUp string) []map[string]any {
 	t.Helper()
 	resumed := resumedSession(t, before, content, Options{}, followUp)

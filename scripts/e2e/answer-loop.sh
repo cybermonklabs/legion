@@ -958,15 +958,19 @@ start_listener() {
 # pass (ReapRoleClaims and releaseReadExpiredRoleClaim, packages/envoy/internal/store). It reads
 # only this start's lines and judges each by the second the listener logged it in, in UTC
 # (service_env's TZ=UTC): a line counts from the second after listener_opened + LIVE, which is past
-# the window's end, since listener_opened is no earlier than the second the registry opened in. It
-# waits up to three periods past that end, and returns at once when such a pass is logged already;
-# a wait that gives up is noted (soft_wait), and the caller goes on.
+# the window's end, since listener_opened is no earlier than the second the registry opened in. No
+# line logged before that end can count, so it sleeps through the rest of the grace, then waits up
+# to three periods; when the grace has ended already it does not sleep, and returns at once when
+# such a pass is logged already. A wait that gives up is noted (soft_wait), and the caller goes on.
 await_reaper_pass() {
   local live=$1 period=$2 grace left
   grace=$(date -u -d "@$((listener_opened + live))" +%FT%T)
   left=$((listener_opened + live - $(date +%s)))
-  ((left > 0)) || left=0
-  soft_wait "$((left + 3 * period))" "the listener's restart grace to end at ${grace}Z and its role claim reaper to pass after it" \
+  if ((left > 0)); then
+    note "waiting ${left}s for the listener's restart grace to end at ${grace}Z"
+    sleep "$left"
+  fi
+  soft_wait "$((3 * period))" "the listener's role claim reaper to pass after its restart grace ended at ${grace}Z" \
     sh -c "tail -c +$((listener_log_from + 1)) '$evidence/logs/listener.log' | grep -F '\"msg\":\"role claim reaper cycle\"' | jq -se 'any(.[]; .time[:19] > \"$grace\")'" ||
     true
 }
