@@ -33,9 +33,9 @@ whole suite is the CI job that runs it.
    never `ci-ok`, which passes when jobs it did not select were skipped
    (`.github/scripts/ci-ok.sh`).
 2. Name it as GitHub writes it: `<caller> / <job>` for a job of a called workflow (`test / test`).
-3. A held-back job runs only in a run whose event carries its label (`full-ci` or `lane:<output>`),
-   so the label goes on before the push and stays on while a check names it
-   (`skill://legion-worker/references/ci-checks.md`); without it the check reads `absent` or `skipped`.
+3. On a pull request, a held-back job runs only in a run whose event carries its label (`full-ci` or
+   `lane:<output>`), and the implementer gets that run as `skill://legion-worker/references/ci-checks.md`
+   says; without it the check reads `absent` or `skipped`.
 4. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
 

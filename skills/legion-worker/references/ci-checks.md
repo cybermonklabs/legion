@@ -43,14 +43,14 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 
-- A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites) does not run without it.
+- A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites, under `full-ci` or the job's own `lane:<output>`) does not run in a pull-request run whose event carried none of its labels, even where its paths select it.
   A job that holds its own steps then has a run concluded `skipped`; a job that calls a workflow, as each such job on cybermonklabs/legion does, has only its own run, under its bare name (`test`), concluded `skipped`, and no job of the called file starts, so the run a check names (`test / test`) is `absent`.
   The implementer puts the label, `full-ci` or that job's own `lane:<output>`, on before the push whose run must carry it, because a run reads the labels its own event carries and adding a label starts no run.
   At a head that must not move, closing the pull request and reopening it a minute later, or marking it a draft and then ready, starts a run whose event carries the label, with no commit.
   The label comes off only after that run has started, and stays on while a `ci_check` of the issue names such a job.
-  A green `ci-ok` passes over such a job and lists it in its log as `not run at this head:`: a body or message that says CI passed names each job that list holds (`skill://legion-worker/references/pr-body.md`).
-  No job runs on a pull request in part: on cybermonklabs/legion test, pi-legion and envoy-infra-go are held back, while tooling-checks, pi-legion-build and envoy-infra-build, their builds and checks, run on every pull request, each job's check named `<job> / <job>` (`test / test`, `tooling-checks / tooling-checks`); the browser suite's pull-request lane is dispatch-browser-pr, whose checks are named `dispatch-browser-pr / <job>`, and its full lane, dispatch-browser, is held back (`lane:dispatch_browser`).
-  On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite, and a check naming it for those steps passes under its label with none of them run.
+  A green `ci-ok` passes over such a job, and lists each one its paths selected as `not run at this head:` in its log: a body or message that says CI passed names each job that list holds (`skill://legion-worker/references/pr-body.md`).
+  No job runs on a pull request in part: on cybermonklabs/legion test, pi-legion and envoy-infra-go are held back, while tooling-checks, pi-legion-build and envoy-infra-build, their builds and checks, run on a pull request without a label wherever their paths select them, each job's check named `<job> / <job>` (`test / test`, `tooling-checks / tooling-checks`); the browser suite's pull-request lane is dispatch-browser-pr, whose checks are named `dispatch-browser-pr / <job>`, and its full lane, dispatch-browser, is held back (`lane:dispatch_browser`).
+  On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which a pull request runs without a label; envoy-go-checks is envoy's script tests, a held-back slow suite, and a check naming it for those steps passes under its label with none of them run.
 
 ## A name that no run answers
 

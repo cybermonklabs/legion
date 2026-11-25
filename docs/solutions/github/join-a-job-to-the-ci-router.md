@@ -457,7 +457,7 @@ find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
 carries. The slow suites go the
 other way: the queue is where their result normally comes from, and a pull request runs them only
 in a run whose event carries the label `full-ci`, or `lane:<filter>` for one of them
-(`CONTRIBUTING.md` says when to put it on and take it off). The
+(`CONTRIBUTING.md` says how to get such a run, and what to read before saying CI is green). The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's
 site on a push trigger of its own.
 

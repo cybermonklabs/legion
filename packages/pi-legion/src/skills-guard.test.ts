@@ -616,7 +616,7 @@ test("a job held back without its label is a check with no pass, not wrong words
     "The check's words are right: the implementer puts the label on and starts a run that carries it, as the label lines above say, and each other role sends the issue back to the implementer for it"
   );
   expect(collapsed(path.join(staged, "legion-architect", "SKILL.md"))).toContain(
-    "a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until a run whose event carries the label passes it"
+    "a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until its job passes at the head"
   );
 });
 
@@ -626,7 +626,7 @@ test("a job held back without its label is a check with no pass, not wrong words
 // the worker's reference names the job that runs them.
 test("a check of envoy's Go build and checks names envoy-go-build, not the held-back script tests", () => {
   expect(collapsed(path.join(staged, "legion-worker", "references", "ci-checks.md"))).toContain(
-    "a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite"
+    "a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which a pull request runs without a label; envoy-go-checks is envoy's script tests, a held-back slow suite"
   );
 });
 
