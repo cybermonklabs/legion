@@ -15,7 +15,9 @@ import (
 // provisioning, which a relaunch reads a pod still coming up by (awaitRoleLauncher). They are one
 // judgement seen from either side, so a pod cannot be dead to the one and starting to the other.
 // localInitFailure lives here too. It reads failedInit's failure again, for a kept volume
-// (keptVolume): whether the failure is the volume's own fault, which a new volume cures.
+// (keptVolume): whether the failure is the volume's own fault, which a new volume cures. And so
+// does beforeLaunchers, the widest of these readings: a pod whose launchers cannot have started,
+// which a stop reads as having nothing to stop (Suspend).
 // neverStarted lives here too, though it reads a pod's conditions rather than its init containers,
 // and judges every pod the runtime launches, the project controller's as well as an issue's: a pod
 // scheduled onto a node that never made it ready to start, which a relaunch replaces rather than
@@ -135,6 +137,26 @@ func provisioning(pod *corev1.Pod) bool {
 	}
 	return slices.ContainsFunc(pod.Status.InitContainerStatuses, func(status corev1.ContainerStatus) bool {
 		return status.State.Running != nil || (initEnd(status) != nil && startingAgain(pod, status))
+	})
+}
+
+// beforeLaunchers is whether pod is in, or failed in, one of its init containers: Pending, with an
+// init container its spec names that has no status yet, or one that has not ended 0 — waiting,
+// running, or ended non-zero, restarting or not. The kubelet starts the container a pod's role
+// launchers run in only once every init container has ended 0, holds the pod Pending until then,
+// and runs them all again before it starts that container again after the pod's sandbox is made
+// anew, so no launcher of such a pod has run since its init containers last began, and no role's
+// process runs in it. It is wider than failedInit and provisioning together: a pod still pulling
+// its images, and a workspace-fetch the grace restarts, are in it too, since neither has started a
+// launcher either. A pod past Pending is never this, whatever its statuses list, and neither is the
+// controller's pod, which runs no init container.
+func beforeLaunchers(pod *corev1.Pod) bool {
+	if pod == nil || phaseOf(pod) != corev1.PodPending {
+		return false
+	}
+	return slices.ContainsFunc(pod.Spec.InitContainers, func(c corev1.Container) bool {
+		status := initContainerStatus(pod, c.Name)
+		return status == nil || status.State.Terminated == nil || status.State.Terminated.ExitCode != 0
 	})
 }
 

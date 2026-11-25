@@ -704,6 +704,13 @@ func (s *server) storeArtifact(
 	}
 	var artifact model.Artifact
 	var created bool
+	// The node of a document this upload creates, which docs.QueueNewArtifact writes before its
+	// row, in the project of the issue or the project that owns it, or between the parties of the
+	// conversation that does, and which this route states under the event it appends, or at the
+	// sentinel where its owner records none (artifactTarget.ownsEvents). A ref_key past the
+	// store's address bound is no node of it (graphstore.AddressFits), as every writer of the
+	// store leaves such an address out.
+	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
@@ -728,7 +735,7 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
 			return
 		}
-		artifact, err = docs.QueueNewArtifact(r.Context(), ledger, docs.NewArtifact{
+		artifact, documentNode, err = docs.QueueNewArtifact(r.Context(), ledger, docs.NewArtifact{
 			IssueKey: target.IssueKey, Project: project, Session: session, RefPrefix: target.refPrefix(),
 			Slug: slug, Name: input.name, Kind: kind, Role: role, CreatedBy: actor,
 		})
@@ -903,6 +910,13 @@ func (s *server) storeArtifact(
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, documentNode, blockCause)
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)

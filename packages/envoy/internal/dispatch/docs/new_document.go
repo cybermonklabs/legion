@@ -85,44 +85,92 @@ func LockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 }
 
 // QueueNewArtifact queues, on ledger, the insert of row, an artifact the transaction creates, and
-// returns the row as the insert will leave it. Its id, which the document's own writes name before
-// the row is written, is taken here (gen_random_uuid, which assigns no transaction id), in the
-// statement that reads its created_at, the column's default, the transaction's now(), which the
-// insert writes explicitly; its ref_key is the one the 0071 trigger fills in, the owner's
-// RefPrefix and the slug. The caller has taken the slug (no other artifact of the owner holds it)
-// under the lock that serialises the owner's new artifacts, and row.Role is the part the new
-// document plays, which its slug decided: the row the insert leaves carries it, so the reads this
-// transaction makes of the artifact it just created see it as every later reader will.
-func QueueNewArtifact(ctx context.Context, ledger *Ledger, row NewArtifact) (model.Artifact, error) {
+// returns the row as the insert will leave it and the node the store holds at its address, which
+// the caller states under the event that records the creation (graphstore.QueueCaused). Its id,
+// which the document's own writes name before the row is written, is taken here
+// (gen_random_uuid, which assigns no transaction id), in the statement that reads its
+// created_at; its ref_key is the one the 0071 trigger fills in, the owner's RefPrefix and the
+// slug. The caller has taken the slug (no other artifact of the owner holds it) under the lock
+// that serialises the owner's new artifacts, and row.Role is the part the new document plays,
+// which its slug decided: the row the insert leaves carries it, so the reads this transaction
+// makes of the artifact it just created see it as every later reader will.
+//
+// The create's one time is read here, in the read phase, under the owner lock the caller holds: its
+// row's created_at and its node's statements are both dated with it (graphstore.StatementTime),
+// past every statement about the address, so a read as of a time reads them in the order the
+// store appends them. Which row the node's live statement names is read from its cause, the
+// artifact.created the caller appends (graphcensus's ownLiveStatement), not from this time.
+//
+// The node is written in the project of the issue or the project that owns the document, or
+// between the parties of the conversation that does, before the row that names it. A ref_key past
+// the store's address bound is no node of it (graphstore.AddressFits), as every writer of the
+// store leaves such an address out, and the node returned is then the zero Uncaused. No row
+// stands at the address, since the slug is free under the owner lock the caller holds, so a node
+// there that is not gone stands behind no row: a document a build before this one removed,
+// stating nothing, live or at a state a later release marked it with (graphstore.Node's
+// Restates). The write states it gone and then live, both under the caller's event, so the new
+// document's node carries no statement of the removed one's as its own; it states the two
+// itself, so the node write states no state of its own beside them. A caller whose owner records
+// no event (an agent's conversation) leaves the node at the sentinel (graphstore.NoEvent).
+func QueueNewArtifact(ctx context.Context, ledger *Ledger, row NewArtifact) (model.Artifact, graphstore.Uncaused, error) {
 	if ledger == nil || ledger.tx == nil {
-		return model.Artifact{}, errUnjoined
+		return model.Artifact{}, graphstore.Uncaused{}, errUnjoined
 	}
 	createdBy, err := json.Marshal(row.CreatedBy)
 	if err != nil {
-		return model.Artifact{}, fmt.Errorf("encode JSON: %w", err)
+		return model.Artifact{}, graphstore.Uncaused{}, fmt.Errorf("encode JSON: %w", err)
 	}
 	artifact := model.Artifact{
 		IssueKey: row.IssueKey, Project: stringOf(row.Project), SessionID: row.Session,
 		RefKey: row.RefPrefix + "/" + row.Slug, Slug: row.Slug, Name: row.Name, Kind: row.Kind, Role: stringOf(row.Role),
 	}
 	if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
-		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
+		return model.Artifact{}, graphstore.Uncaused{}, fmt.Errorf("decode artifact author: %w", err)
 	}
-	if err := ledger.tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&artifact.ID, &artifact.CreatedAt); err != nil {
-		return model.Artifact{}, err
+	if err := ledger.tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&artifact.ID); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	if artifact.CreatedAt, err = graphstore.StatementTime(ctx, ledger.tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	var documentNode graphstore.Uncaused
+	if graphstore.AddressFits(artifact.RefKey) {
+		node := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, stringOf(row.Session), row.CreatedBy, artifact.CreatedAt)
+		held, found, err := graphstore.ReadNode(ctx, ledger.tx, graphstore.KindArtifact, artifact.RefKey)
+		if err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
+		var stated []graphstore.Tuple
+		if found && held.State != graphstore.StateGone {
+			for _, state := range []string{graphstore.StateGone, graphstore.StateLive} {
+				stated = append(stated, graphstore.Tuple{
+					FromKind: graphstore.KindArtifact, FromID: artifact.RefKey,
+					Kind: graphstore.AttributeState, ToKind: graphstore.KindValue, ToID: state,
+					At: artifact.CreatedAt, Who: row.CreatedBy, Asserted: true,
+				})
+			}
+		}
+		documentNode = graphstore.PlanUncaused([]graphstore.Node{node}, stated)
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, documentNode)
+			return nil
+		}); err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
 	}
 	// The document work that follows runs before the insert below, so the address that insert
 	// gives the row - its key, the issue holding it, none for a project's or a session's
-	// document, and its own dispatch:// address - is recorded for the reads of this
-	// transaction that need it: a block pointer of a new document is held to the document's key
-	// and its issue (addressOfDocument), and text this transaction indexes that cites the new
-	// document resolves to that row (refs.Pending). The issue already has its row, so the
-	// address names no pending parent (refs.DocumentAddress).
+	// document, its project or session, and its own dispatch:// address - is recorded for the
+	// reads of this transaction that need it: a block pointer of a new document is held to the
+	// document's key and its issue (addressOfDocument), the nodes of its blocks carry its project
+	// or its session's party, and text this transaction indexes that cites the new document
+	// resolves to that row (refs.Pending). The issue already has its row, so the address names no
+	// pending parent (refs.DocumentAddress).
 	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
-		RefKey: artifact.RefKey, IssueKey: stringOf(row.IssueKey),
-		Ref: refs.ArtifactRef(artifact.IssueKey, artifact.Project, artifact.SessionID, artifact.Slug, artifact.Kind, artifact.Primary),
+		RefKey: artifact.RefKey, IssueKey: stringOf(row.IssueKey), Ref: refs.ArtifactRef(artifact.IssueKey, artifact.Project, artifact.SessionID, artifact.Slug, artifact.Kind, artifact.Primary),
+		Project: artifact.Project, Session: stringOf(row.Session),
 	})
-	return artifact, ledger.Queue(func(b *store.WriteBatch) error {
+	return artifact, documentNode, ledger.Queue(func(b *store.WriteBatch) error {
 		b.Queue("", `
 			insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at)
 			values ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10)
@@ -147,6 +195,10 @@ func stringOf(value *string) string {
 // the caller appends Blocks under that event, in the same transaction (graphstore.QueueCaused),
 // as every other writer of a version does (VersionResult.Blocks).
 //
+// Node is what CreateDocument's QueueNewArtifact wrote of the new document's node, which its
+// caller appends under the same event as Blocks (graphstore.QueueCaused): the document's
+// creation. WriteDocumentText leaves it zero, since the document it writes has its node already.
+//
 // OwesSettlement is whether the write left the document owing a settlement, which its caller
 // schedules once the transaction has committed (Service.ScheduleSettlement). Every write does but
 // the seed of a document CreateDocument creates whose tree a settlement has nothing to write into
@@ -157,6 +209,7 @@ type WrittenText struct {
 	ReadBack       *pmdoc.Node
 	Changes        model.ReferenceChanges
 	Blocks         graphstore.Uncaused
+	Node           graphstore.Uncaused
 	OwesSettlement bool
 }
 
@@ -219,8 +272,10 @@ func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown 
 // (whose Kind it sets to doc) and writes markdown as the document's first version, as an upload
 // of a new document does (QueueNewArtifact, then WriteDocumentText). ctx is the context Join
 // returned, and the caller queues the document's `artifact.created` event
-// (ArtifactCreatedEventPayload) after them, commits through the ledger and then schedules the
-// document's settlement where the answer says the document owes one (WrittenText.OwesSettlement).
+// (ArtifactCreatedEventPayload) after them, appends under it what the document's node write and
+// its block index stated (WrittenText.Node and Blocks, graphstore.QueueCaused), commits through
+// the ledger and then schedules the document's settlement where the answer says the document
+// owes one (WrittenText.OwesSettlement).
 //
 // The document's seed owes a settlement only where its tree needs one (withVersionedSeed,
 // seedOwesSettlement). Its first version is the one written here, at the head the seed leaves, so
@@ -236,7 +291,7 @@ func CreateDocument(ctx context.Context, documents API, row NewArtifact, markdow
 		return model.Artifact{}, WrittenText{}, errUnjoined
 	}
 	row.Kind = "doc"
-	artifact, err := QueueNewArtifact(ctx, ledger, row)
+	artifact, node, err := QueueNewArtifact(ctx, ledger, row)
 	if err != nil {
 		return model.Artifact{}, WrittenText{}, err
 	}
@@ -245,6 +300,7 @@ func CreateDocument(ctx context.Context, documents API, row NewArtifact, markdow
 		return model.Artifact{}, WrittenText{}, err
 	}
 	artifact.Versions = []model.Version{written.Version}
+	written.Node = node
 	return artifact, written, nil
 }
 
