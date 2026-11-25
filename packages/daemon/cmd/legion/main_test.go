@@ -1463,6 +1463,57 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	}
 }
 
+// `legion config check` (`legion start --check-config` before the CLI moved onto cobra, which this
+// test's name, cited by dispatch://INFRA-4425's check K1, keeps) takes dispatch_token_broker from
+// the file alone (dispatch://INFRA-4425 R1): with none of the identity variables the daemon's own
+// trade reads set (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY,
+// AGENT_SECRETS_MACHINE_TOKEN_FILE), a file with the setting and no dispatch_token_file prints
+// Config OK and exits 0. The check reads a dispatch_token_transition_file as it reads
+// dispatch_token_file: one it can read passes, and one it cannot is refused naming the key. The
+// control is the same file with dispatch_token_file added, refused naming both keys.
+func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
+	legionState(t)
+	fixtureenv.Unset(t, "AGENT_SECRETS_URL", "AGENT_SECRETS_MACHINE_IDENTITY", "AGENT_SECRETS_MACHINE_TOKEN_FILE")
+	const exchange = "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token, exchange_audience: legion-broker-exchange}\n"
+	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	const broker = "dispatch_token_broker: true\n"
+	const transition = broker + "dispatch_token_transition_file: ./transition-token\n"
+	passes := func(string) (int, string, string) { return 0, demoCheckConfigOK + defaultCacheLine + pluginsGap, "" }
+	for _, tc := range []struct {
+		name, credential string
+		token            bool // whether ./transition-token exists
+		want             func(dir string) (code int, stdout, stderr string)
+	}{
+		{"the setting alone", broker, false, passes},
+		{"the setting with a transition file the check reads", transition, true, passes},
+		{"the setting with a transition file the check cannot read", transition, false, func(dir string) (int, string, string) {
+			return 1, "", "legion config check: dispatch_token_transition_file names " + filepath.Join(dir, "transition-token") + ", which could not be read: "
+		}},
+		{"the setting beside dispatch_token_file", "dispatch_token_file: ./dispatch-token\n" + broker, false, func(string) (int, string, string) {
+			return 1, "", "legion config check: dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both\n"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, exchange)
+			dir := filepath.Dir(config)
+			rewrite(t, config, "dispatch_token_file: ./dispatch-token\n", tc.credential)
+			if tc.token {
+				if err := os.WriteFile(filepath.Join(dir, "transition-token"), []byte("dispatch-shared\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			wantCode, wantOut, wantErr := tc.want(dir)
+			if code != wantCode || out.String() != wantOut || !strings.HasPrefix(errb.String(), wantErr) || (wantErr == "") != (errb.Len() == 0) {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want %d, stdout %q and stderr starting %q", code, out.String(), errb.String(), wantCode, wantOut, wantErr)
+			}
+		})
+	}
+}
+
 // `legion config check` refuses a cpu or memory request above its limit and a request that is no
 // quantity, naming the key, with exit 1 and no Config OK.
 func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {

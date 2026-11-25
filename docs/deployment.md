@@ -525,7 +525,7 @@ after the step's snapshot stays in the working copy for the next jj command.
 Those ids stay valid unless another jj command, such as a `jj st` in the same workspace, rewrites
 those commits between the step's read and the real push.
 The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
-role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 257).
+role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 279).
 The step reads what the push sends from a dry run of the same push, and reads the author and the
 first `Legion-Role` trailer of each of those commits.
 jj keeps each of `--config` and `--config-file` only from the deepest of the three places of the

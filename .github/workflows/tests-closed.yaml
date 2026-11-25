@@ -4,7 +4,7 @@ name: CI (closed pull request)
 # included: the worker-image build its worker-image job calls, too. This workflow joins ci.yaml's
 # concurrency group, ci-<pull request number>, with cancel-in-progress, so that CI run ends
 # `cancelled`. What that cancelled run leaves on the head is a verdict, not a skipped pass:
-# ci.yaml's `ci-ok` job is gated on `always()`, which runs a job in a cancelled run too (a
+# `.github/workflows/ci.yaml#ci-ok` job is gated on `always()`, which runs a job in a cancelled run too (a
 # force-cancel is the one that does not, as
 # .github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top says),
 # so the verdict job takes a runner there and judges the jobs it needs, and a cancelled job is no
