@@ -61,13 +61,13 @@ test("the turn is ended with the host's own abort(), called on the context it ca
 
 test("a host with no abort(), and a session with no context, throw so the ladder goes on", async () => {
   const hostless = createStallAborter({ context: () => hostContext(), sendMessage: () => {} });
-  expect(hostless.abortTurn()).rejects.toThrow("this host has no ctx.abort()");
+  await expect(hostless.abortTurn()).rejects.toThrow("this host has no ctx.abort()");
 
   const contextless = createStallAborter({ context: () => undefined, sendMessage: () => {} });
-  expect(contextless.abortTurn()).rejects.toThrow("this session has no handler context");
+  await expect(contextless.abortTurn()).rejects.toThrow("this session has no handler context");
 });
 
-test("the message the worker sends itself is steered, starts a turn and is no user message", () => {
+test("the message the worker sends itself is steered, starts a turn and is no user message", async () => {
   const sent: SentMessage[] = [];
   const aborter = createStallAborter({
     context: () => hostContext(),
@@ -89,7 +89,7 @@ test("the message the worker sends itself is steered, starts a turn and is no us
     },
     { rule: { kind: "bound", boundMs: 20 * MINUTE }, openMs: 21 * MINUTE, pastMs: MINUTE }
   );
-  aborter.sendMessage(text);
+  await aborter.sendMessage(text);
 
   expect(sent).toEqual([
     {
