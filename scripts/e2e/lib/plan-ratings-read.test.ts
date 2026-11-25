@@ -289,7 +289,7 @@ describe("plan-ratings-read.sh", () => {
 
   test("an issue drawn into an experiment's group passes, exit 0, naming its variant, and the issues of no group still read", () => {
     expect(grouped.find((line) => line.startsWith(`${key} `))).toEndWith(
-      " failed steps 1 variant planning/b"
+      " failed steps 1 on set model 7 off 1 unknown 2 variant planning/b"
     );
     const judged = read(printed(grouped));
     expect(judged.stdout).toContain(

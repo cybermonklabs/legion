@@ -110,7 +110,9 @@ awk -v project="$project" -v issue="$issue" '
     if (reasonless) faults[++count] = issue " lists a rating with no reason: " line
     if (spent == "-") spent = "unknown"
     said = "plan " plan ", ratings " ratings ", time " spent ", failed steps " failed
-    if (parts[7] != "") said = said ", variant " parts[7]
+    # The tail is `time <t> failed steps <n> on set model <on> off <off> unknown <unknown>`, then
+    # ` variant <experiment>/<variant>` where the line names one: its 14th and 15th words.
+    if (parts[14] == "variant") said = said ", variant " parts[15]
   }
   END {
     if (status) exit status

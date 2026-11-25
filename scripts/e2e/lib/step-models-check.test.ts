@@ -365,6 +365,8 @@ describe("step-models-check.sh", () => {
       report: null,
       rating: null,
       rating_reason: null,
+      experiment: null,
+      variant: null,
       ...fields,
     });
     const implementation = (
