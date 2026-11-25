@@ -59,6 +59,14 @@ type connectOpts struct {
 	inboxPrefix                 string
 	streamMessageReads          bool
 	keeperStepGuard             time.Duration
+	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
+	// reports, and startCheck WithStartCheck's check.
+	credentialWait     time.Duration
+	credentialRefused  func(error)
+	credentialAdmitted func()
+	startCheck         func(*Client) error
+	closedHook         func()
+	closeSettleBound   time.Duration
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -285,6 +293,65 @@ func WithStreamMessageReads() ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamMessageReads = true })
 }
 
+// WithCredentialWait has the constructor's start (Connect's or ConnectOwningStream's) wait out a
+// refusal of the client's NATS credential for up to bound, counted from its first try, rather than
+// fail at it: the server refusing the connect (authorizationRefusal), or refusing a request of the
+// start check (WithStartCheck) under the credential's grant (ErrPublishDenied). Each try dials
+// once, and an owning client's ensures the stream, and the check runs, on a client of its own, so a
+// failed try leaves nothing running. An owning client's ensure of the stream that the grant
+// refuses (ErrPublishDenied) is no refusal of the credential: the connect got in, so the start ends
+// at once with that refusal, and the caller's own start tries again by its rule (cmd/listener's
+// connectListener keeps the pod up and names the grant at each try, as its README's start rule
+// has it for every refusal only the grant can lift). An ensure or a start check that fails for any
+// other reason ends the start at once, with its own error, as it ends a start without the option.
+// After a refusal the start waits a second before its next try and doubles each wait up to ten
+// seconds, the last cut to end at bound; a try in progress at the bound may finish, and its
+// success counts, and no try begins after the bound on a refusal (startTryLateness says what a
+// late wake from the last wait may still begin). A dial that fails for any other reason counts
+// toward the ten tries in a row, each followed by a wait of a second, the tenth too, that a start
+// without the option makes, whatever the bound, so no start ends on such dials sooner than one
+// without the option would; a refusal ends such a row. The start ends with an error at the first
+// of the two limits, naming the last refusal when it met one, and with the failed step's own error
+// when it met none (waitOutCredentialRefusals, credentialWaitEnded, withLastRefusal).
+//
+// refused, when not nil, is handed each refusal as it comes, on the constructor's goroutine, so the
+// caller can report that its start is waiting (cmd/listener's /healthz answers 503 naming it).
+// admitted, when not nil, is called once the constructor's start has got in: connected, and, for
+// an owning client, ensured the stream, and run its start check, each a step that can refuse the
+// credential. It runs before the constructor returns, so a caller whose own step after the
+// constructor fails (a subscribe, a flush, a check of the server's version) knows its credential
+// was admitted and is not what failed. Each refusal is also logged at WARN with the wait that
+// follows it. A bound of zero or less is no wait: the start of a client without the option, whose
+// connect tries ten times whatever the error and whose ensure fails at the server's first refusal;
+// admitted is still called when it gets in. A start in the background (WithConnectInBackground)
+// never fails, so it ignores the option.
+//
+// cmd/listener alone passes it, through its start (natsStart.option): to the main client, the role
+// lane (ConnectRoleLane) and the session-consumer connection (ConnectSessionConsumers), each a
+// connect of the listener's start, so a listener started before the hub's servers have reloaded
+// its new nkey connects once they have, where it would exit and be restarted.
+func WithCredentialWait(bound time.Duration, refused func(error), admitted func()) ConnectOption {
+	return clientOption(func(o *connectOpts) {
+		o.credentialWait, o.credentialRefused, o.credentialAdmitted = bound, refused, admitted
+	})
+}
+
+// WithStartCheck has the constructor's start in the foreground (Connect's or ConnectOwningStream's)
+// run check on the client each of its tries made, once that client has connected (and an owning
+// client has ensured the stream), before the constructor returns it. An error from check closes the
+// client, which stops everything it runs, and fails the try: with WithCredentialWait, an error that
+// is a refusal of the credential (credentialRefusal: an authorization refusal, or a request the
+// grant refuses, ErrPublishDenied) is waited out as a refusal of the connect is, and any other ends
+// the start at once (endsStart); without it, the constructor returns the error. A start in the
+// background (WithConnectInBackground) returns before it has connected, so it runs no check.
+//
+// cmd/listener's edge listener passes it, with its read of the stream (edgeStreamPresent): its grant
+// may only read the stream, so that read is its start's step on the stream, as the ensure is an
+// owning client's.
+func WithStartCheck(check func(*Client) error) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.startCheck = check })
+}
+
 type subscriptionTransport uint8
 
 const (
@@ -404,7 +471,26 @@ type Client struct {
 	// of the request's timeout and its flush it settles first, so the order of the two is the
 	// test's and not the scheduler's.
 	requestExpiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
-	mu            sync.Mutex
+	// closedHook, when not nil, runs at the start of onClosed, before the recovery a close starts.
+	// It is nil outside tests: a test sets it (WithClosedHook, export_test.go) to hold the work a
+	// close sets off, so a caller that returned before that work ran is caught reading too early.
+	// closeSettleBound, when above zero, replaces failedStartCloseBound in closeSettled; it is zero
+	// outside tests (WithCloseSettleBound, export_test.go), so a test that holds a close can hold it
+	// longer than the production bound without the bound ending the wait first.
+	closedHook       func()
+	closeSettleBound time.Duration
+	mu               sync.Mutex
+
+	// eventWork counts the goroutines the client's connection events start, each recovery
+	// (recover, from onClosed and onReconnect) and the goroutine that works through the queued
+	// reconnects (workThroughReconnects, from queueReconnect), so the close of a failed start can
+	// wait for them and for every line they log (closeSettled).
+	eventWork sync.WaitGroup
+	// lastClosed is the last connection whose close onClosed has handled, and closeWatch the close
+	// closeSettled waits for, both under mu (closeHandled). lastClosed keeps that one closed
+	// connection from the collector until the next close replaces it.
+	lastClosed *nats.Conn
+	closeWatch *closeWatch
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -653,10 +739,11 @@ func Connect(urls []string, options ...ConnectOption) (*Client, error) {
 // count and byte limit (WithReplicas, WithStreamMaxBytes; ensureStreamWithConfig), or creates it
 // when the server has none. It ensures the stream when it connects, and again after every
 // reconnect and every connection it dials to replace a closed one, so a stream lost while the
-// process runs is created again. A failed ensure at connect fails the connect (with
-// WithConnectInBackground there is none: the first connection's ensure is a reconnect hook); a
-// failed ensure later is retried by the client's recovery, as a failed reconnect hook is
-// (AddReconnectHook).
+// process runs is created again. A failed ensure at connect fails the connect, at the server's
+// first refusal when its grant refuses a request of the ensure (with WithConnectInBackground there
+// is none: the first connection's ensure is a reconnect hook); with WithCredentialWait the start
+// waits out such a refusal, and one of the connect, for up to the wait's bound. A failed ensure
+// later is retried by the client's recovery, as a failed reconnect hook is (AddReconnectHook).
 //
 // The client then keeps the stream until it stops: every 30 seconds its keeper puts back the
 // copies, the byte limit, the stream's id, the age, the duplicate window and discard that a
@@ -670,11 +757,21 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 	return newClient(urls, true, parseConnectOptions(options))
 }
 
-// newClient makes the client Connect and ConnectOwningStream return. An owning client ensures the
-// stream (ensureStreamWithConfig) and then starts its keeper (startKeeper): in the constructor
-// once install has returned, or, connecting in the background (WithConnectInBackground), in the
-// first connection's reconnect hook once its ensure has succeeded (startKeeperOnce), so its
-// keeper runs no pass before that ensure.
+// newClient makes the client Connect and ConnectOwningStream return, from what every try of its
+// start shares: the servers it may reach (refuseRemoteNATS), and the credential and the proxy the
+// environment names, each refused before any dial. A start in the foreground (credentialStart)
+// with WithCredentialWait waits out a refusal of the credential (waitOutCredentialRefusals), each
+// of its tries a client of its own whose start dials once (startClient) and whose check then runs
+// (WithStartCheck, checkedStart), and logs each refusal at WARN with the wait that follows it. A
+// try whose dial failed otherwise counts toward the ten tries in a row of a start without the
+// wait, whatever the bound; a try whose install (an owning client's ensure of the stream among it)
+// or start check failed otherwise ends the start at once (endsStart), as such a failure ends a
+// start without the wait: no wait repairs a stream the server will not take, and the ensure's
+// hang guard has already waited out its whole bound. So does an ensure the grant refuses
+// (startRefusal): its connect got in. Every other start in the foreground is one
+// startClient that dials up to connectTries times, connectRetryWait after each dial that fails, and
+// whose check then runs. A start in the foreground that got in reports it to WithCredentialWait's
+// admitted before newClient returns.
 func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error) {
 	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
 		return nil, err
@@ -687,10 +784,101 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	if err != nil {
 		return nil, err
 	}
+	settings := opts.connectionSettings(credential)
+	if opts.background {
+		client, _, err := startClient(urls, ownsStream, opts, settings, dialer, connectTries, connectRetryWait)
+		return client, err
+	}
+	client, err := credentialStart(urls, ownsStream, opts, settings, dialer)
+	if err == nil && opts.credentialAdmitted != nil {
+		opts.credentialAdmitted()
+	}
+	return client, err
+}
+
+// credentialStart is newClient's start in the foreground: one checkedStart of up to connectTries
+// dials without WithCredentialWait's bound, and the start that waits out refusals of the
+// credential with it.
+func credentialStart(urls []string, ownsStream bool, opts connectOpts, settings nats.Option, dialer *socks5Dialer) (*Client, error) {
+	if opts.credentialWait <= 0 {
+		client, _, err := checkedStart(urls, ownsStream, opts, settings, dialer, connectTries, connectRetryWait)
+		return client, err
+	}
+	refused := func(err error, next time.Duration) {
+		if next > 0 {
+			slog.Warn("envoy nats credential refused at start; trying again",
+				slog.String("name", opts.name),
+				slog.String("servers", serverList(urls)),
+				slog.String("error", err.Error()),
+				slog.Duration("wait", next))
+		}
+		if opts.credentialRefused != nil {
+			opts.credentialRefused(err)
+		}
+	}
+	return waitOutCredentialRefusals(opts.credentialWait, refused, wallStartClock, func() (*Client, error) {
+		client, failedAt, err := checkedStart(urls, ownsStream, opts, settings, dialer, 1, 0)
+		if err != nil && failedAt != stepDial && !startRefusal(failedAt, err) {
+			return nil, endsStart{err}
+		}
+		return client, err
+	})
+}
+
+// startRefusal reports whether err, the error of a try's install or start check (failedAt), is a
+// refusal of the credential the start waits out: the server refusing it (authorizationRefusal) at
+// either step, and a request the credential's grant refuses (ErrPublishDenied) at the start check
+// alone, the one an edge listener's read of the stream makes in place of an ensure. A refusal of
+// an owning client's ensure under the grant is the grant's, which only a change of the grant lifts:
+// the connect got in, and the caller tries again by its own rule (cmd/listener's connectListener).
+func startRefusal(failedAt startStep, err error) bool {
+	if failedAt == stepInstall {
+		return authorizationRefusal(err)
+	}
+	return credentialRefusal(err)
+}
+
+// startStep is the step of a start's try that failed (startClient, checkedStart): its dial, its
+// install of the connection, which ensures an owning client's stream, or its start check.
+type startStep uint8
+
+const (
+	stepDial startStep = iota
+	stepInstall
+	stepCheck
+)
+
+// checkedStart is startClient in the foreground followed by the start check (WithStartCheck), when
+// the start made a client and the options name a check. It answers the client, or the error of the
+// start or of the check and the step that failed; a client whose check failed is closed first, and
+// checkedStart returns once its close's callbacks and recovery have run, or, when one hangs, once
+// closeSettled's bound has passed and it has logged a WARN (closeFailedStart).
+func checkedStart(urls []string, ownsStream bool, opts connectOpts, settings nats.Option, dialer *socks5Dialer, tries int, wait time.Duration) (*Client, startStep, error) {
+	client, failedAt, err := startClient(urls, ownsStream, opts, settings, dialer, tries, wait)
+	if err != nil || opts.startCheck == nil {
+		return client, failedAt, err
+	}
+	if err := opts.startCheck(client); err != nil {
+		client.closeFailedStart()
+		return nil, stepCheck, err
+	}
+	return client, stepCheck, nil
+}
+
+// startClient is one start of the client newClient returns, over the connection settings and the
+// proxy newClient read, answering the step that failed beside its error. An owning client ensures
+// the stream (ensureStreamWithConfig) and then starts its keeper (startKeeper): once install has
+// returned, or, connecting in the background (WithConnectInBackground), in the first connection's
+// reconnect hook once its ensure has succeeded (startKeeperOnce), so its keeper runs no pass
+// before that ensure. A start in the foreground dials up to tries times, waiting wait after each
+// dial that fails (connectTrying), and one that fails stops the client it made before it closes the
+// connection, so nothing of a failed try runs on: the next try of a start that waits out refusals
+// makes a client afresh.
+func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats.Option, dialer *socks5Dialer, tries int, wait time.Duration) (*Client, startStep, error) {
 	c := &Client{
 		urls:                        urls,
 		name:                        connectionName(opts.name),
-		connectionSettings:          opts.connectionSettings(credential),
+		connectionSettings:          settings,
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
 		reconnectErrClock:           opts.reconnectErrClock,
@@ -702,6 +890,8 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		streamMessageReads:          opts.streamMessageReads,
 		keeperStepGuard:             opts.keeperStepGuard,
 		requestExpiry:               opts.requestExpiry,
+		closedHook:                  opts.closedHook,
+		closeSettleBound:            opts.closeSettleBound,
 		stopCh:                      make(chan struct{}),
 		keptBuckets:                 opts.keptBuckets,
 	}
@@ -710,7 +900,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		c.streamConfig = &stream
 	}
 	dial := func(first nats.Option) (*nats.Conn, error) {
-		return connect(c.name, urls, allOf(c.connectionSettings, first), dialer, c.callbacks(), c.reconnectErrClock)
+		return connectTrying(context.Background(), tries, wait, c.name, urls, allOf(c.connectionSettings, first), dialer, c.callbacks(), c.reconnectErrClock)
 	}
 	if opts.background {
 		c.awaitingConnection = true
@@ -739,23 +929,27 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 			return nil
 		}
 		if _, err := connectFirstInBackground(c.name, urls, c.reconnectErrClock, dial, c.onConnect, install); err != nil {
-			return nil, err
+			return nil, stepInstall, err
 		}
 		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
-		return c, nil
+		return c, stepInstall, nil
 	}
 	nc, err := dial(nil)
 	if err != nil {
-		return nil, err
+		return nil, stepDial, err
 	}
 	if err := c.install(nc, ownsStream, true); err != nil {
 		// The constructor returns no client, so no caller can Close it: the client is stopped
 		// before nc closes, so the recovery nc's close begins (onClosed) finds it stopped and dials
 		// nothing. Running, that recovery would dial and install a connection held by no one, which
-		// with MaxReconnect -1 reconnects for the rest of the process once its server is gone.
+		// with MaxReconnect -1 reconnects for the rest of the process once its server is gone. The
+		// constructor returns once that recovery, and nats.go's callbacks for the close, have run
+		// (closeSettled), so none of their lines follows what its caller writes next, unless one of
+		// them hangs past closeSettled's bound (connectTimeout), when it logs a WARN and returns, and
+		// a line of that close can then follow.
 		c.stop()
-		nc.Close()
-		return nil, err
+		c.closeSettled(nc, nc.Close)
+		return nil, stepInstall, err
 	}
 	readable := true
 	if ownsStream {
@@ -769,7 +963,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	if readable {
 		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
 	}
-	return c, nil
+	return c, stepInstall, nil
 }
 
 // install makes nc the client's connection, with the JetStream context taken from it, once it has
@@ -2354,18 +2548,27 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 	}
 }
 
-// UsesCoreTransport reports whether topic travels over core NATS rather than JetStream, as the
-// client last read the deployed stream's subjects: any notification topic the deployed stream does
-// not capture (DeployedStreamCaptures), every role lane and its exception lane among them, which
-// the stream must never retain (TestStreamConfigExcludesRoleLanes) and which take core NATS even
-// from a stream that still captures them. The rest of the core topics are ad-hoc topics such as
-// notifications.lxspec.probe.all and the exception lane of one, and the exception lanes of the
-// github, dispatch, slack, legion, ghostwispr and whatsapp topics: the stream captures the
-// exception lanes of agent and team topics alone (streamSubjects). JetStream answers a publish to a
-// subject no stream captures only with "no responders", and not at all while a core subscriber
-// holds the subject, since that subscriber is handed the acknowledgement request: the publish
-// would wait out its whole deadline for an acknowledgement that never comes, after the subscribers
-// had already received the message. A subject outside NotificationTopicPrefix keeps JetStream.
+// UsesCoreTransport reports whether topic travels over core NATS rather than JetStream
+// (publishPathOf), as the client last read the deployed stream's subjects: a role lane or its
+// exception lane, which the stream must never retain (TestStreamConfigExcludesRoleLanes) and which
+// take core NATS even from a stream that still captures them, and a notification topic that
+// neither the deployed stream (DeployedStreamCaptures) nor this build (StreamCaptures) captures:
+// an ad-hoc topic such as notifications.lxspec.probe.all and the exception lane of one, and the
+// exception lanes of the github, dispatch, slack, legion, ghostwispr and whatsapp topics, since
+// the stream captures the exception lanes of agent and team topics alone (streamSubjects).
+// JetStream answers a publish to a subject no stream captures only with "no responders", and not
+// at all while a core subscriber holds the subject, since that subscriber is handed the
+// acknowledgement request: the publish would wait out its whole deadline for an acknowledgement
+// that never comes, after the subscribers had already received the message. A subject outside
+// NotificationTopicPrefix keeps JetStream.
+//
+// A topic this build stores never takes core NATS, whatever the deployed stream captures: while
+// the deployed stream does not capture it, its publish is refused before anything is sent, once a
+// read of the subjects that started after the publish asked agrees (ErrSubjectNotDeployed,
+// undeployedOnFreshRead), and UsesCoreTransport answers false for it. Core NATS stores nothing,
+// so sending such a topic there, as a narrowed stream once made this client do, hands it only to
+// whoever is subscribed at that instant and answers its sender as if it were stored.
+//
 // A publish judges a topic this answers core for again before it sends it over core NATS, a role
 // lane excepted (PublishTakesJetStream), so a topic only a newer build's subject captures, added
 // since the client last read them, takes JetStream once that read captures it: the stream stores
@@ -2375,12 +2578,126 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 // once a read of the subjects that started after the request asked leaves it uncaptured
 // (SubjectsAsk.Uncaptured), since no session's consumer would hold it.
 func (c *Client) UsesCoreTransport(topic string) bool {
-	return strings.HasPrefix(topic, NotificationTopicPrefix) && !c.DeployedStreamCaptures(topic)
+	return c.publishPathOf(topic) == overCoreNATS
 }
 
-// DeployedStreamCaptures reports whether the deployed stream retains a publish to topic for a
-// session's consumer to deliver: some subject of the stream matches it, and it is no role lane or
-// exception lane of one, which no consumer filters on even where a stream still captures them.
+// publishPath is the way a publish of one topic goes (publishPathOf).
+type publishPath uint8
+
+const (
+	// overJetStream is a publish the stream stores: through JetStream, under its message id.
+	overJetStream publishPath = iota
+	// overCoreNATS is a publish no stream stores: over core NATS, to the subscribers connected now.
+	overCoreNATS
+	// refusedUndeployed is a publish of a topic this build stores that the deployed stream does not
+	// capture: nothing is sent (ErrSubjectNotDeployed).
+	refusedUndeployed
+)
+
+func (p publishPath) String() string {
+	switch p {
+	case overJetStream:
+		return "JetStream"
+	case overCoreNATS:
+		return "core NATS"
+	case refusedUndeployed:
+		return "refused, not deployed"
+	}
+	return fmt.Sprintf("publishPath(%d)", uint8(p))
+}
+
+// ErrSubjectNotDeployed is wrapped by the error of a publish that sent nothing because its topic is
+// one this build stores and the deployed stream does not capture it, as a read of the stream's
+// subjects that started after the publish asked confirms (undeployedOnFreshRead). It is none of
+// ErrRefused, ErrUnacknowledged, ErrUnavailable, ErrStreamFull and ErrPublishDenied: the same
+// publish is stored once the stream captures the topic again, so a caller retries it as any other
+// failure. The listener's send and publish routes answer it 503 with Retry-After under a prefix of
+// its own that says the message was not sent and may be sent again later (cmd/listener's
+// writeBusUnavailable, contracts.MessageNotSentPrefix), not as a bus that did not answer, since the
+// bus was never asked, and its webhooks answer 503, which Dispatch's redelivery sweep has GitHub
+// send again.
+var ErrSubjectNotDeployed = errors.New("nothing was sent: the deployed stream does not capture a topic this build stores")
+
+// subjectNotDeployed is the refusal of a publish of topic that undeployedOnFreshRead refused: it
+// wraps ErrSubjectNotDeployed and names the stream and the topic.
+func subjectNotDeployed(topic string) error {
+	return fmt.Errorf("%w (stream %s, topic %s)", ErrSubjectNotDeployed, Stream, topic)
+}
+
+// UndeployedRefusal is the refusal a publish of topic meets before anything is sent, as
+// PublishAckWithin answers it (ErrSubjectNotDeployed, from the same judgement,
+// undeployedOnFreshRead), or nil for a topic the client would send. Like the publish's, it refuses
+// only once a read of the deployed stream's subjects that started after this call agrees with the
+// subjects the client holds, and waits within ctx for that read. A caller that does work on a
+// publish's behalf before the publish asks it first, so a publish the bus refuses raises nothing:
+// cmd/listener's send route answers this refusal before it reports a stopped target's wake, which
+// would otherwise go out once per send a sender repeats at Retry-After: 1 for as long as a
+// narrowing lasts.
+func (c *Client) UndeployedRefusal(ctx context.Context, topic string) error {
+	if c.undeployedOnFreshRead(ctx, c.AskDeployedSubjects(), topic) {
+		return subjectNotDeployed(topic)
+	}
+	return nil
+}
+
+// undeployedOnFreshRead reports whether a publish of topic is refused as one the deployed stream
+// does not capture (ErrSubjectNotDeployed): the subjects the client holds refuse it
+// (publishPathOf's refusedUndeployed), and a read of the deployed subjects that started after ask
+// leaves it uncaptured too (subjectsReadSince), which waits out the rest of
+// streamSubjectsRereadGap after the last such read and shares a read with every judgement asked
+// before it started. The subjects the client holds can be streamSubjectsRefresh old, and during a
+// roll a newer build's start gives the stream back a subject a narrowing took, so a refusal on
+// them alone would reject a message the stream stores. Where no such read can be had - the client
+// holds no connection, ctx ends first, the read fails, or its NATS user may not read the stream
+// (subjectsRefused) - nothing is refused, and the publish goes through JetStream, which stores it
+// when the stream captures the topic and answers no responders when it does not: a topic this
+// build stores never takes core NATS. A topic the held subjects send some other way reads nothing.
+func (c *Client) undeployedOnFreshRead(ctx context.Context, ask SubjectsAsk, topic string) bool {
+	if c == nil || c.publishPathOf(topic) != refusedUndeployed {
+		return false
+	}
+	read := c.subjectsReadSince(ctx, ask.seq)
+	return read != nil && !subjectsCapture(read.subjects, topic)
+}
+
+// publishPathOf is the one verdict on the path a publish of topic takes, which UsesCoreTransport,
+// ReachesNoSession and every publish function (PublishAckWithin) read. Its answers, in order:
+//
+//  1. A subject outside NotificationTopicPrefix takes JetStream.
+//  2. A role lane or its exception lane (RoleLane) takes core NATS.
+//  3. A topic the deployed stream captures (DeployedStreamCaptures) takes JetStream, also one only
+//     a newer build's subject captures: two builds on one stream both store it. A client that has
+//     not read the deployed subjects judges by the subjects this build compiles.
+//  4. A topic this build stores (StreamCaptures) that the deployed stream does not capture is
+//     refused (refusedUndeployed): nothing is sent, neither over JetStream, where no stream would
+//     answer, nor over core NATS, where nothing stores it. That is the verdict of the subjects the
+//     client holds, and a publish is refused only once a read that started after it asked agrees
+//     (undeployedOnFreshRead); else it takes JetStream.
+//  5. Any other topic takes core NATS: an ad-hoc topic no stream stores.
+//
+// The verdict reads the client's last read of the deployed subjects, which it makes every
+// streamSubjectsRefresh and at each judgement that reads them again, and keeps when a read fails.
+// So after a narrowing, until the client's next read, a publish takes JetStream and no stream
+// answers it ("no responders"); and after the stream captures the topic again, a publish's own
+// read finds that, and the publish is stored.
+func (c *Client) publishPathOf(topic string) publishPath {
+	switch {
+	case !strings.HasPrefix(topic, NotificationTopicPrefix):
+		return overJetStream
+	case RoleLane(topic):
+		return overCoreNATS
+	case c.DeployedStreamCaptures(topic):
+		return overJetStream
+	case StreamCaptures(topic):
+		return refusedUndeployed
+	default:
+		return overCoreNATS
+	}
+}
+
+// DeployedStreamCaptures reports whether the deployed stream retains a publish to topic: some
+// subject of the stream matches it, and it is no role lane or exception lane of one, which the
+// stream must never retain even where it still captures them.
 //
 // The capture is judged on the subjects of the deployed stream as the client last read them - read
 // at each ensure of an owning client, at connect for any other, every streamSubjectsRefresh, and at
@@ -2392,12 +2709,20 @@ func (c *Client) UsesCoreTransport(topic string) bool {
 // deployed stream holds the subjects of both: a topic under a subject only the newer build adds is
 // published through JetStream, with its MsgId, by the older build too once its transport has read
 // the subjects again (PublishTakesJetStream), and the older build's listener refuses a publish of
-// it only on a read made after the publish asked (SubjectsAsk.Uncaptured). That listener's
-// registration stores, and its session consumer filter carries, a followed topic whatever this
-// answers (cmd/listener's subscribeHandler and sessionConsumerFilter), so neither takes a no from
-// subjects read before the newer build added its own.
+// it only on a read made after the publish asked (SubjectsAsk.Uncaptured, undeployedOnFreshRead).
+// That listener's registration stores, and its session consumer filter carries, a followed topic
+// whatever this answers (cmd/listener's subscribeHandler and sessionConsumerFilter), so neither
+// takes a no from subjects read before the newer build added its own.
+//
+// It decides the transport only together with StreamCaptures (publishPathOf): a topic this build
+// stores that the deployed stream does not capture is refused, once a read made after the publish
+// asked agrees, and never sent over core NATS. Nor does a session's consumer filter read it: the
+// listener's filter holds every topic of the session's interest row whatever the deployed stream
+// captures (cmd/listener's sessionConsumerFilter), so a narrowing takes no topic out of it. The
+// listener reads it of a message already stored, to judge whether the session's own consumer
+// relays that message (cmd/listener's delivery.go).
 func (c *Client) DeployedStreamCaptures(topic string) bool {
-	if subjectsCapture(roleLaneSubjects, topic) {
+	if RoleLane(topic) {
 		return false
 	}
 	if c != nil {
@@ -2556,20 +2881,24 @@ func (c *Client) SubjectsRereadEnded() time.Time {
 }
 
 // ReachesNoSession reports whether a topic a caller names would deliver to no session at all: a
-// notification topic the deployed stream does not capture (UsesCoreTransport) that is not a role
-// lane. A session receives what its own consumer delivers, which is what the stream stored, so a
-// publish to such a topic reaches nobody, now or later. POST /v1/messages/publish refuses such a
-// publish by name, since its sender is there to read the answer, and POST /v1/interests/subscribe
-// names such a topic in a warning (cmd/listener/api.go). Each takes that no from
-// SubjectsAsk.Uncaptured. A role lane is the exception the name's "no session" turns on: it
-// travels over core NATS to the listener, which forwards the message to its holder's agent
-// subject, where the stream stores it for the holder's own consumer.
+// notification topic that neither the deployed stream nor this build captures, which takes core
+// NATS (UsesCoreTransport), and that is not a role lane. A session receives what its own consumer
+// delivers, which is what the stream stored, so a publish to such a topic reaches nobody, now or
+// later. POST /v1/messages/publish refuses such a publish by name, since its sender is there to
+// read the answer, and POST /v1/interests/subscribe names such a topic in a warning
+// (cmd/listener/api.go). Each takes that no from SubjectsAsk.Uncaptured. A role lane is the
+// exception the name's "no session" turns on: it travels over core NATS to the listener, which
+// forwards the message to its holder's agent subject, where the stream stores it for the holder's
+// own consumer.
 //
 // It is a method for the same reason UsesCoreTransport is: the question is what the DEPLOYED
-// stream captures, not what this binary compiles. While two builds serve one NATS, the stream
-// holds the subjects of both, so a topic only the newer build adds reaches a session's consumer
-// and the older build must not refuse a publish of it on the subjects this client last read
-// (deployedSubjects).
+// stream captures as well as what this binary compiles. While two builds serve one NATS, the
+// stream holds the subjects of both, so a topic only the newer build adds reaches a session's
+// consumer and the older build must not refuse a publish of it on the subjects this client last
+// read (deployedSubjects). A topic this build stores is never one of these, even while the
+// deployed stream does not capture it: its publish is refused as a bus fault the sender retries
+// (ErrSubjectNotDeployed), not as a topic that reaches nobody, and its interest is kept, since the
+// stream stores it again once a narrowing ends.
 func (c *Client) ReachesNoSession(topic string) bool {
 	return c.UsesCoreTransport(topic) && !strings.HasPrefix(topic, contracts.RoleTopicPrefix)
 }
@@ -2720,13 +3049,17 @@ func (c *Client) refused(err error, size int) error {
 // be answered inside, and that is what the Within forms below exist for.
 const publishBound = 5 * time.Second
 
-// Publish routes role lanes, their delivery-exception lanes and every topic the stream does not
-// capture through core NATS (UsesCoreTransport, a topic other than a role lane judged again on a
-// read of the deployed stream's subjects first where PublishTakesJetStream makes one); every
-// notification the stream captures, as the client judges it, retains JetStream durability. Its
-// signature is an interface method in cistore, outbox and webhook, so a caller that wants
-// JetStream's duplicate verdict calls PublishReportingDuplicate instead, and one that has a
-// deadline of its own calls PublishWithin.
+// Publish routes role lanes, their delivery-exception lanes and every notification topic that
+// neither the deployed stream nor this build captures through core NATS (UsesCoreTransport, a
+// topic other than a role lane judged again on a read of the deployed stream's subjects first
+// where PublishTakesJetStream makes one); every notification the deployed stream captures, as the
+// client judges it, retains JetStream durability. A topic this build stores never takes core NATS:
+// while the deployed stream does not capture it, as a read of its subjects that started after the
+// publish asked confirms, Publish sends nothing and returns ErrSubjectNotDeployed, so its caller
+// reports the failure rather than a message nothing stored (undeployedOnFreshRead). Its signature
+// is an interface method in cistore, outbox and webhook, so a caller that wants JetStream's
+// duplicate verdict calls PublishReportingDuplicate instead, and one that has a deadline of its
+// own calls PublishWithin.
 func (c *Client) Publish(item contracts.Envelope) error {
 	_, err := c.PublishReportingDuplicate(item)
 	return err
@@ -2771,8 +3104,9 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 // acknowledgement, so a store the stream refuses (ErrStreamFull) goes unreported. A read that
 // fails, or one ctx ends before, leaves the topic on core NATS as the subjects the client held
 // judge it too: a direct publish in the roll window inside the gap or during an unanswered read
-// goes over core NATS, stored, with no MsgId and no acknowledgement. The verdict is
-// PublishAckWithin's Duplicate, a resend's included.
+// goes over core NATS, stored, with no MsgId and no acknowledgement. A topic this build stores
+// that the deployed stream does not capture is refused as PublishAckWithin refuses it
+// (ErrSubjectNotDeployed). The verdict is PublishAckWithin's Duplicate, a resend's included.
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	ack, err := c.PublishAckWithin(ctx, item)
 	return ack.Duplicate, err

@@ -39,6 +39,126 @@ func capped(cpus, mib int64) testcontainers.CustomizeRequestOption {
 }
 
 func TestSmoke(t *testing.T) {
+	_, baseURL := startSmokeStack(t)
+
+	t.Run("healthz", func(t *testing.T) {
+		resp, err := http.Get(baseURL + "/healthz")
+		if err != nil {
+			t.Fatalf("GET /healthz: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /healthz: got %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+
+		var body map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode /healthz: %v", err)
+		}
+
+		status, ok := body["status"].(string)
+		if !ok {
+			t.Fatal("/healthz missing 'status' field")
+		}
+		if status != "healthy" {
+			t.Errorf("/healthz status=%q, want 'healthy'", status)
+		}
+	})
+
+	t.Run("metrics", func(t *testing.T) {
+		resp, err := http.Get(baseURL + "/metrics")
+		if err != nil {
+			t.Fatalf("GET /metrics: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /metrics: got %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read /metrics: %v", err)
+		}
+		body := string(bodyBytes)
+
+		for _, metric := range []string{
+			"envoy_messages_received_total",
+			"envoy_active_sessions",
+			"envoy_active_interests",
+		} {
+			if !strings.Contains(body, metric) {
+				t.Errorf("/metrics missing %q", metric)
+			}
+		}
+	})
+
+	t.Run("sessions_require_bearer", func(t *testing.T) {
+		resp, err := http.Get(baseURL + "/v1/sessions")
+		if err != nil {
+			t.Fatalf("GET /v1/sessions: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("GET /v1/sessions without a bearer: got %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("sessions", func(t *testing.T) {
+		resp, err := apiRequest(http.MethodGet, baseURL+"/v1/sessions", "")
+		if err != nil {
+			t.Fatalf("GET /v1/sessions: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /v1/sessions: got %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+	})
+
+	t.Run("subscribe_and_verify", func(t *testing.T) {
+		// No port: this listener delivers nothing to a session's port and refuses a registration
+		// that names one (subscribeHandler). A session is registered only with a consumer of its
+		// own, which the delivery field asks for, and a notifications.team.<name> topic is one
+		// the stream stores: the route stores a notifications. topic that neither this build nor
+		// the deployed stream captures too, with a warning that nothing is delivered on it until a
+		// stream subject captures it.
+		subBody := `{"session_id":"ses_smoke_test","topics":["notifications.team.smoke"],"port":0,"self_subscribed":true,"delivery":{"consumer":true,"epoch":"smoke"}}`
+		resp, err := apiRequest(http.MethodPost, baseURL+"/v1/interests/subscribe", subBody)
+		if err != nil {
+			t.Fatalf("POST /v1/interests/subscribe: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("POST /v1/interests/subscribe: got %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+
+		sessResp, err := apiRequest(http.MethodGet, baseURL+"/v1/sessions", "")
+		if err != nil {
+			t.Fatalf("GET /v1/sessions: %v", err)
+		}
+		defer sessResp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(sessResp.Body)
+		if err != nil {
+			t.Fatalf("read /v1/sessions: %v", err)
+		}
+
+		if !strings.Contains(string(bodyBytes), "ses_smoke_test") {
+			t.Error("registered session not visible in /v1/sessions")
+		}
+	})
+}
+
+// startSmokeStack starts a NATS container on the server the hub runs and the listener image
+// ENVOY_SMOKE_IMAGE names beside it, on a Docker network of their own, and returns the NATS
+// container and the listener's base URL once its /healthz says healthy. An unset
+// ENVOY_SMOKE_IMAGE fails the test with the build command: this test never builds the image.
+func startSmokeStack(t *testing.T) (*tcnats.NATSContainer, string) {
+	t.Helper()
 	image := os.Getenv("ENVOY_SMOKE_IMAGE")
 	if image == "" {
 		t.Fatal("ENVOY_SMOKE_IMAGE is unset, and this test never builds the image itself.\n" +
@@ -124,117 +244,7 @@ func TestSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get mapped port: %v", err)
 	}
-	baseURL := fmt.Sprintf("http://%s:%s", host, port.Port())
-
-	t.Run("healthz", func(t *testing.T) {
-		resp, err := http.Get(baseURL + "/healthz")
-		if err != nil {
-			t.Fatalf("GET /healthz: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("GET /healthz: got %d, want %d", resp.StatusCode, http.StatusOK)
-		}
-
-		var body map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-			t.Fatalf("decode /healthz: %v", err)
-		}
-
-		status, ok := body["status"].(string)
-		if !ok {
-			t.Fatal("/healthz missing 'status' field")
-		}
-		if status != "healthy" {
-			t.Errorf("/healthz status=%q, want 'healthy'", status)
-		}
-	})
-
-	t.Run("metrics", func(t *testing.T) {
-		resp, err := http.Get(baseURL + "/metrics")
-		if err != nil {
-			t.Fatalf("GET /metrics: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("GET /metrics: got %d, want %d", resp.StatusCode, http.StatusOK)
-		}
-
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("read /metrics: %v", err)
-		}
-		body := string(bodyBytes)
-
-		for _, metric := range []string{
-			"envoy_messages_received_total",
-			"envoy_active_sessions",
-			"envoy_active_interests",
-		} {
-			if !strings.Contains(body, metric) {
-				t.Errorf("/metrics missing %q", metric)
-			}
-		}
-	})
-
-	t.Run("sessions_require_bearer", func(t *testing.T) {
-		resp, err := http.Get(baseURL + "/v1/sessions")
-		if err != nil {
-			t.Fatalf("GET /v1/sessions: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("GET /v1/sessions without a bearer: got %d, want %d", resp.StatusCode, http.StatusUnauthorized)
-		}
-	})
-
-	t.Run("sessions", func(t *testing.T) {
-		resp, err := apiRequest(http.MethodGet, baseURL+"/v1/sessions", "")
-		if err != nil {
-			t.Fatalf("GET /v1/sessions: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("GET /v1/sessions: got %d, want %d", resp.StatusCode, http.StatusOK)
-		}
-	})
-
-	t.Run("subscribe_and_verify", func(t *testing.T) {
-		// No port: this listener delivers nothing to a session's port and refuses a registration
-		// that names one (subscribeHandler). A session is registered only with a consumer of its
-		// own, which the delivery field asks for, and a notifications.team.<name> topic is one
-		// the stream stores: the route stores a notifications. topic no stream subject captures
-		// too, with a warning that nothing is delivered on it until a stream subject captures it.
-		subBody := `{"session_id":"ses_smoke_test","topics":["notifications.team.smoke"],"port":0,"self_subscribed":true,"delivery":{"consumer":true,"epoch":"smoke"}}`
-		resp, err := apiRequest(http.MethodPost, baseURL+"/v1/interests/subscribe", subBody)
-		if err != nil {
-			t.Fatalf("POST /v1/interests/subscribe: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("POST /v1/interests/subscribe: got %d, want %d", resp.StatusCode, http.StatusOK)
-		}
-
-		sessResp, err := apiRequest(http.MethodGet, baseURL+"/v1/sessions", "")
-		if err != nil {
-			t.Fatalf("GET /v1/sessions: %v", err)
-		}
-		defer sessResp.Body.Close()
-
-		bodyBytes, err := io.ReadAll(sessResp.Body)
-		if err != nil {
-			t.Fatalf("read /v1/sessions: %v", err)
-		}
-
-		if !strings.Contains(string(bodyBytes), "ses_smoke_test") {
-			t.Error("registered session not visible in /v1/sessions")
-		}
-	})
+	return natsC, fmt.Sprintf("http://%s:%s", host, port.Port())
 }
 
 const smokeAPIToken = "smoke-api-token"

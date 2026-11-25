@@ -287,6 +287,16 @@ const storedCopyUnreadablePrefix = "envoy: the stream already knows this message
 // listenerwire.CodeMaybeStored and the sender reads it as a send that may have landed.
 const earlierAttemptInProcessPrefix = "envoy: an earlier attempt of this message is still being stored"
 
+// notSentPrefix opens the body of the 503 a send or publish gets when the bus refused its message
+// before it sent anything, because the deployed stream, as this listener's client last read its
+// subjects, does not capture a topic this build stores (bus.ErrSubjectNotDeployed): a hub move's
+// quiesce, or an operator's edit of the subjects. It is deliberately not busUnansweredPrefix: the
+// bus was never asked, so "the message bus did not answer" would send an operator looking for an
+// outage, and a sender could not tell it from a 5xx after which the message may have arrived. It
+// is contracts.MessageNotSentPrefix, which envoy-client's transport reads as a message nothing
+// stored, so its sender may send it again once the stream captures the topic.
+const notSentPrefix = contracts.MessageNotSentPrefix
+
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
 // is older than the live window, while the role claim copy's last whole read is past its repair
@@ -329,7 +339,9 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
-// has room, so the caller's retry is right.
+// has room, so the caller's retry is right. So is a message the bus refused before it sent
+// anything (notSent), under notSentPrefix: the bus was never asked, and the same message is
+// stored once the stream captures its topic again.
 //
 // A message the stream already held whose stored copy could not be read (errStoredCopyUnread) is
 // answered first of all, a 503 with Retry-After under storedCopyUnreadablePrefix, whatever the
@@ -366,6 +378,8 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 		prefix = streamFullPrefix
 	case inProcess:
 		prefix = earlierAttemptInProcessPrefix
+	case notSent(err):
+		prefix = notSentPrefix
 	}
 	if !stored && !full && !inProcess {
 		if !errors.Is(err, bus.ErrRefused) {
@@ -390,6 +404,14 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 // refusal (publishPastInProcess) read.
 func mayHaveStored(err error) bool {
 	return errors.Is(err, bus.ErrUnacknowledged)
+}
+
+// notSent reports whether a send or publish that failed with err sent nothing: the bus refused its
+// message before anything went out (bus.ErrSubjectNotDeployed) and no earlier send of it went out
+// unanswered (mayHaveStored). It is the one rule the answer's prefix (writeBusUnavailable) and the
+// request record's outcome (requestRecord.refuseBusUnavailable) read.
+func notSent(err error) bool {
+	return errors.Is(err, bus.ErrSubjectNotDeployed) && !mayHaveStored(err)
 }
 
 // writeGrantGuardRefusal answers a soft claim the grant guard refused (roleGrantGuarded) as the
@@ -892,15 +914,32 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		hasEntry := err == nil
 		var known session.KnownSession
 		if errors.Is(err, nats.ErrKeyNotFound) {
+			var recorded bool
+			known, recorded = d.known.Get(targetSession)
+			// A send to a stopped session the bus would refuse before sending anything, because
+			// the deployed stream does not capture the target's agent subject, is answered that
+			// refusal here, before the wake: a sender sends it again at Retry-After: 1 for as long
+			// as a narrowing lasts, and a wake for each of those sends would cost it nothing
+			// (senderCharge.published) and wake a pod for a message nothing took. The bus refuses it
+			// only once a read of the stream's subjects made for this request agrees
+			// (bus.Client.UndeployedRefusal). A target neither store knows is answered 404 below
+			// whatever the stream captures, its wake charged.
+			if recorded {
+				if refusal := d.client.UndeployedRefusal(ctx, item.Topic); refusal != nil {
+					record.refuseBusUnavailable(w, refusal)
+					return
+				}
+			}
 			// A session of a released Legion issue pod is gone from the bucket with its pod, and
 			// this answer is the only sight of the message meant for it: the wake is reported so
 			// the pod comes back, whether its record lets the message be stored for it below or
 			// the 404 here leaves the sender's next attempt to reach it.
 			reportAgentWake(d.wakes, logger, targetSession)
-			// The wake is what this message costs its sender, whatever is answered below.
+			// The wake is what this message costs its sender, whatever is answered below, but for
+			// a publish the bus refused because a narrowing began after the check above, which
+			// sent nothing and costs nothing (senderCharge.published).
 			charge.woke()
-			var recorded bool
-			if known, recorded = d.known.Get(targetSession); !recorded {
+			if !recorded {
 				record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, noLiveSession(ctx, d.sessions, targetSession, target, recipientState))
 				return
 			}
@@ -2847,7 +2886,11 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 // on this answer: a subject a later build adds captures such a topic from then on, and a topic out
 // of the filter when it does would lose what the stream stores on it before the next registration
 // took it in, since the consumer moves past a message its filter does not match as soon as it
-// looks for its next one. So a judgement that is wrong costs a warning and loses nothing.
+// looks for its next one. So a judgement that is wrong costs a warning and loses nothing. A topic
+// this build stores is no such topic while the deployed stream does not capture it, as during a
+// hub move's quiesce: the stream stores it again once the narrowing ends, and the session's
+// consumer then delivers it. What the row and the filter do leave out is a topic the session's
+// consumer filter cannot follow as the row spells it (planWithoutLeftOut).
 // It is asked once per topic, here, and the answer carries to the warning each such topic earns
 // (listenerwire.UncapturedTopicWarning) — the warning a topic in this set earns only when the
 // private rule has nothing to say about it, since a wildcard such as notifications.> is both, and
@@ -2876,6 +2919,33 @@ func (m *sessionDelivery) uncapturedTopics(ctx context.Context, requested []stri
 		}
 	}
 	return uncaptured
+}
+
+// planWithoutLeftOut takes out of plan's topics each one the session's consumer filter leaves out
+// by its fourth or fifth kind (sessionFilter): a topic that does not begin with the literal
+// notifications., and a wildcard topic that fed a merge of the filter's reduction reaching another
+// session's private subjects. It lists them in plan.LeftOut, which the planned write takes out of
+// the row too (store.InterestPlan.LeftOut), and returns them with what made each go, which the
+// handler names in its answer and in a WARN line of its own (subscribeHandler). So the row holds
+// what the filter carries, no publish counts the session as a recipient for a topic its consumer
+// never delivers, and the session is told.
+//
+// It weighs the plan's whole merge, the row it read and the topics requested together: the fifth
+// kind is a property of the set, and a topic an earlier build's row holds is left out and named
+// as surely as one the body names. Every requested topic is planned whatever the deployed stream
+// captures (uncapturedTopics only warns), so a requested pair of wildcard topics that would merge
+// so is left out here as surely as a row an earlier build stored.
+func planWithoutLeftOut(sessionID string, plan store.InterestPlan) (store.InterestPlan, []filterLeftOut) {
+	_, leftOut := sessionFilter(sessionID, plan.Topics)
+	if len(leftOut) == 0 {
+		return plan, nil
+	}
+	plan.LeftOut = make([]string, 0, len(leftOut))
+	for _, left := range leftOut {
+		plan.LeftOut = append(plan.LeftOut, left.topic)
+	}
+	plan.Topics = slices.DeleteFunc(slices.Clone(plan.Topics), func(topic string) bool { return slices.Contains(plan.LeftOut, topic) })
+	return plan, leftOut
 }
 
 // registrationPlanAttempts bounds the plans one registration makes. Each conflict or no-op write
@@ -2913,6 +2983,10 @@ type registeredSession struct {
 	// cache with no bucket call, whatever the delivery mode (listenerDeps.registerPass), and is
 	// false on every heartbeat of a session that was live already.
 	returning bool
+	// leftOut is each topic the answering pass's plan kept out of the row and the consumer's
+	// filter (planWithoutLeftOut), with what made it go, which the handler names in a warning and
+	// a WARN line each.
+	leftOut []filterLeftOut
 }
 
 // sessionEntryWriteError is the session entry's write failing (listenerDeps.registerPass). That
@@ -3059,6 +3133,10 @@ func (d *listenerDeps) registerSession(
 		if err != nil {
 			return registeredSession{}, nil, err
 		}
+		// The topics the session's consumer filter leaves out as no topic it can follow are kept
+		// out of the row this pass filters on and writes, an earlier build's row's own included.
+		var leftOut []filterLeftOut
+		plan, leftOut = planWithoutLeftOut(body.SessionID, plan)
 		registered, answeredPass, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan, projects)
 		registered.dropped = dropped
 		if refusal != nil {
@@ -3080,6 +3158,7 @@ func (d *listenerDeps) registerSession(
 			if registered.delivery.answer != nil {
 				registered.delivery.answer.Gap = &gap
 			}
+			registered.leftOut = leftOut
 			answered = true
 			return registered, nil, nil
 		}
@@ -3344,9 +3423,11 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// heartbeat, and one that fails refuses the registration as the write it precedes would.
 		requested := append(slices.Clone(body.Topics), contracts.LegacyAgentSubject(body.SessionID))
 		// Every requested topic is planned: the merge drops a private-subject topic from the plan
-		// (store.MergedTopics), and nothing else is left out, a topic no stream subject captures
-		// included (uncapturedTopics, below, which names such a topic in a warning once the
-		// registration is stored).
+		// (store.MergedTopics), each pass keeps out of its plan the topics the session's consumer
+		// filter leaves out as no topic it can follow (planWithoutLeftOut), which the answer names
+		// below, and nothing else is left out, a topic no stream subject captures included
+		// (uncapturedTopics, below, which names such a topic in a warning once the registration is
+		// stored).
 		registered, refusal, err := d.registerSession(ctx, r.Context(), machineID, body, requested, registeringProjects(r), hold, logger)
 		if refusal != nil {
 			logger.Warn("listener refused a registration it can give no session consumer",
@@ -3418,6 +3499,14 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// caller to follow a notifications.team.<name> topic, which is no answer to a wildcard
 		// over every session's inbox.
 		//
+		// A topic the session's consumer filter leaves out as no topic it can follow, one that
+		// does not begin with the literal notifications. and a wildcard that fed a merge of the
+		// filter reaching another session's private subjects, is out of the plan and the row
+		// (planWithoutLeftOut), the row's own included, so no publish counts the session as a
+		// recipient for it. Each is named once, in a warning that says why, after the loop below,
+		// which leaves it to that warning, and in a WARN line of its own (filterLeftOutLine): a
+		// topic that leaves the filter is never left silently.
+		//
 		// The roles are the last plan's, which decided the row that was stored. A topic of the
 		// stored row that the edge's hold dropped from that plan (edgeTopicHold.holdPlan) is named
 		// last: it is gone from the row and from the consumer's filter.
@@ -3427,6 +3516,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			if bus.ReachesPrivateStreamSubject(body.SessionID, topic, plan.Roles) {
 				warnings = append(warnings, fmt.Sprintf("%s was not registered: it reaches a private stream subject (another session's inbox, a failed-delivery lane, or a Legion controller notice lane), and of those a session registers only its own agent subject, %s, and the notice lane of a project whose controller role it holds",
 					topic, contracts.LegacyAgentSubject(body.SessionID)))
+				continue
+			}
+			if slices.Contains(plan.LeftOut, topic) {
 				continue
 			}
 			if _, named := uncaptured[topic]; named {
@@ -3440,6 +3532,12 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			logger.Warn("listener subscribe warned about private or uncaptured topics of the registration",
 				slog.String("session_id", body.SessionID), slog.Any("warnings", warnings))
 		}
+		for _, left := range registered.leftOut {
+			warnings = append(warnings, left.warning(body.SessionID))
+		}
+		// The line is logged once per session and topic an hour (registrationLeftOutLogs): a
+		// followed topic comes back on every heartbeat, and the answer names it each time.
+		logFilterLeftOutLimited(logger, &registrationLeftOutLogs, body.SessionID, registered.leftOut, leftOutByRegistration)
 		// A topic the registration stored in the old form of its name, an issue's without its
 		// project or a role's or an agent's without one, is stored as the caller wrote it and
 		// every reader takes both forms; the answer names its new form, and the registry counts
@@ -3448,7 +3546,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// A topic no stream subject captures yet is stored like any other, so it is weighed too.
 		var stored []string
 		for _, topic := range body.Topics {
-			if !bus.ReachesPrivateStreamSubject(body.SessionID, topic, plan.Roles) {
+			if !bus.ReachesPrivateStreamSubject(body.SessionID, topic, plan.Roles) && !slices.Contains(plan.LeftOut, topic) {
 				stored = append(stored, topic)
 			}
 		}

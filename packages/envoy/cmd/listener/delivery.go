@@ -848,7 +848,13 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	deliveryTimer := metrics.NewTimer()
 	// The durable path's message carries the stream sequence that says whether the session's
 	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0). The
-	// capture is the deployed stream's: a session's consumer holds only what that stream stores.
+	// capture is the deployed stream's as the listener's client last read it: a topic the stream
+	// stored is in the session's consumer, whose filter holds every topic of the session's row
+	// whatever the deployed stream captures (sessionConsumerFilter). A read of a narrowing that
+	// falls between this message's publish and this judgement judges the stored copy uncaptured,
+	// so this path reports a failure (listener agent delivery failed, a delivery_failed exception
+	// where the stream captures its lane) and NAKs the copy, while the session's consumer still
+	// hands the session the message once.
 	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr,
 		gone, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 	if result.Relayed {
@@ -933,7 +939,10 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 // topics. A recipient whose own consumer relays the message is asked nothing at all: a record
 // written here would have the relay's own copy of the next event under that key skipped as one
 // the session already has. The message is retried after the longest wait any recipient asks for:
-// durableRetryDelay for a failure, or until another pod's attempt can be taken over.
+// durableRetryDelay for a failure, or until another pod's attempt can be taken over. A session
+// whose row matches the topic only through a topic its consumer filter leaves out, an earlier
+// build's row, is no recipient and is skipped with its WARN line (skipLeftOutInterest), where it
+// would otherwise be read as a session whose own consumer relays the message.
 func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	items := cfg.registry.Match(cfg.machineID, item.Topic)
 	if len(items) == 0 {
@@ -949,6 +958,9 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 	var retryIn time.Duration
 	var deadDeliveries int
 	for _, interest := range items {
+		if skipLeftOutInterest(cfg.logger, interest, item.Topic) {
+			continue
+		}
 		verdict, target, _ := judgeFollowedTopic(cfg.sessions, interest.SessionID, item, mode, modeErr)
 		if verdict == followedTopicEcho {
 			// The echo is disposed of before the ledger is asked, as the role lane disposes of
@@ -985,13 +997,15 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		// judgement above returned for every verdict, its refusals among them, and makes no call
 		// of its own. The capture is the deployed stream's as this pod last read its subjects
 		// (DeployedStreamCaptures, no read of its own), where the session's consumer filter carries
-		// every followed topic a consumer can filter on, whatever those subjects say
+		// every topic of the session's row a consumer can filter on, whatever those subjects say
 		// (sessionConsumerFilter). So during a roll, until this pod reads the subjects again
 		// (bus.streamSubjectsRefresh, a minute, or a read a judgement or a publish makes), a topic
 		// only a newer build's subjects capture can be judged here as one no consumer relays while
-		// the session's consumer does relay it: that resolution fails, the delivery is logged
-		// failed and, for a session whose entry was read, NAKed for a later try, so nothing is lost
-		// or delivered twice.
+		// the session's consumer does relay it, and so can a stored copy when a read of a narrowing
+		// falls between the message's publish and this resolution: that resolution fails, the
+		// delivery is logged failed and, for a session whose entry was read, NAKed for a later
+		// try, while the session's consumer still hands the session the message once, so nothing
+		// is lost or delivered twice.
 		err := session.Resolve(item, interest.SessionID, target, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 		relayed := err == nil
 		// A recipient whose own consumer relays this message is asked nothing: it is handed

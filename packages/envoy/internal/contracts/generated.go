@@ -86,6 +86,15 @@ func ControllerRoleToken(project string) string {
 	return "legion-" + project + "-controller"
 }
 
+// MessageNotSentPrefix opens the error of the 503 POST /v1/messages/send and POST
+// /v1/messages/publish answer for a message the bus refused before it sent anything, because the
+// deployed stream does not capture a topic this build stores (bus.ErrSubjectNotDeployed): nothing
+// was stored, and the same message may be sent again once the stream captures the topic. Generated
+// from MESSAGE_NOT_SENT_PREFIX in packages/contracts, which envoy-client's transport reads to tell
+// this answer from a 5xx after which the message may have been stored, so the listener and the
+// client cannot word it apart.
+const MessageNotSentPrefix = "envoy: the message was not sent, and may be sent again later"
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
 // notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise

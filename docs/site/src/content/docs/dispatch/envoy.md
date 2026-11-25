@@ -827,7 +827,7 @@ message twice.
 | `200` `healthy`, `role` `active` | Everything answers, and this listener delivers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
 | `200` `healthy`, `role` `standby` | Everything answers, and another listener of the machine delivers; `active_instance` names it. A standby is ready: send it traffic. Its body carries `role_claim_repair` too. |
 | `200` `degraded` | A passing key-value failure the listener is retrying, a role claim view that answers no read, or a pod that is its machine's deliverer and does not receive the durable yet: it holds the delivery lease, runs without one, has read no holder at all, or the lease record still names it while its renewals have lapsed. Nothing of the durable reaches a session until it receives, so no such answer is healthy; it stays `200`, so a readiness probe keeps the pod in service. The role claim view answers no read until its watcher's first scan has delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has; it repairs itself, so that answer stays `200` too. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, on an active pod's answer and a standby's alike, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the pod has not rebuilt its key-value watches for a minute after a NATS reconnect, active or standby: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out a pod still serving those caches and replace it with one that rebuilds into the same failure with empty caches. A pod that has more than one of these names each in `error`, in the order it reads them: its own failure first, then the role claim view or its late repair, then the stalled rebuild. |
-| `503` `unhealthy` | NATS is unreachable, the role lane's own connection is down or holds no valid subscription (`role lane subscription inactive`, since no role message is forwarded then), a cache watcher stopped, or, on the active listener, its subscription stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. A pod this answers for is refused however long its KV watch rebuild has stalled, and whatever its role claim view answers: both are the last things `/healthz` reads. While a pod's role lane is inactive, the pod's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the pod for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. |
+| `503` `unhealthy` | NATS is unreachable, the role lane's own connection is down or holds no valid subscription (`role lane subscription inactive`, since no role message is forwarded then), a cache watcher stopped, or, on the active listener, its subscription stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. A pod this answers for is refused however long its KV watch rebuild has stalled, and whatever its role claim view answers: both are the last things `/healthz` reads. While a pod's role lane is inactive, the pod's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the pod for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. Also `nats credential refused: …`, naming the refusal, while the listener's start waits for NATS to admit its credential (below). |
 
 `role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
 every role claim from NATS again one minute after each full read completes, and each such read
@@ -861,8 +861,33 @@ should restart only a listener that does not answer at all, not one that answers
 
 `GET /livez` needs no credential either. It answers `204` and reads nothing: no flush to NATS, no
 cache ping and no read of the durable consumer. A liveness or startup probe reads it, so a bus
-outage or a warming cache restarts no listener. Readiness stays on `/healthz`, whose status tells
-a starting listener from a serving one.
+outage, a warming cache or a start that waits for its credential restarts no listener. Readiness
+stays on `/healthz`, whose status tells a starting listener from a serving one.
+
+A NATS server that refuses the listener's credential as it starts does not end the start at once:
+a hub refuses a new nkey until each of its servers has reloaded the configuration that names it,
+about a minute later. The listener tries again after 1 second, doubling each wait up to 10
+seconds, for up to 180 seconds from its first try. The same wait, under the same 180 seconds,
+covers the start's later connects, the session consumers', an edge listener's relay sockets' and
+the role lane's, each on a connection of its own: one can meet a server that has not reloaded
+after another got in through one that has. Meanwhile `/healthz` answers `503` `unhealthy`, naming
+the last refusal, and `/livez` answers `204`. Once a server admits it, the start goes on as usual,
+and `/healthz` stops naming the refusal as soon as that connect gets in. A try in progress at 180
+seconds may still succeed, and no try begins after it on a refusal: when the last try begun by
+then is refused, the listener exits `1`, its last line naming its credential (an nkey user by its
+public key) and the last refusal. A connect made after the 180 seconds tries ten times, a second
+apart, before it counts as refused.
+
+Every other failure of those connects keeps the listener up and not ready, as the rest of its
+start does: a NATS that does not answer is tried again every 2 seconds, and a grant that refuses
+the `ENVOY_NOTIFICATIONS` stream's reconcile after the connect got in, an answer from the NATS
+cluster's state (such as `ENVOY_NATS_REPLICAS` above `1` on a single server), a nats-server release
+below the listener's floor, a refused role lane subscription and a server that refuses a later
+connection itself are each named at `ERROR` and tried again after 1 second, doubling up to 30
+seconds. An edge listener (`ENVOY_EDGE_PROJECTS`) only reads the stream, in place of the reconcile:
+its start waits out a refused credential at the connect, and a refusal of that read, the same way
+and then ends, and a stream the server does not hold, a read that times out, or any other failure
+of the read ends its start at once.
 
 `GET /readyz` needs no credential either. It answers whether /v1 can serve, and a load balancer's
 health check reads it: `503 {"status":"starting"}` until the /v1 gate opens; after that

@@ -1282,7 +1282,7 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 	if m.delivery.afterStoredRowRead != nil {
 		m.delivery.afterStoredRowRead()
 	}
-	filtered, err := storedRowFilter(ctx, m.registry, sessionID, topics)
+	filtered, err := m.delivery.storedRowFilter(ctx, m.registry, sessionID, topics)
 	if err != nil {
 		m.logger.Warn("session relay could not filter the session's stored interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 		return nil, 0, false

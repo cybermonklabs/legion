@@ -4,6 +4,7 @@ import {
   type Envelope,
   EnvelopeSchema,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  MESSAGE_NOT_SENT_PREFIX,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
@@ -2020,6 +2021,112 @@ describe("EnvoyClient", () => {
       "The send to ses_target is not confirmed delivered: the listener answered 503 " +
         "(envoy: the message bus did not answer: context deadline exceeded) on the last of 2 " +
         "attempts. It may or may not have arrived. Sending it again with idempotency_key "
+    );
+  });
+
+  // The listener's 503 for a message the bus refused before it sent anything: the deployed stream
+  // does not capture the topic, as during a hub move's quiesce (`bus.ErrSubjectNotDeployed`,
+  // `writeBusUnavailable` in packages/envoy/cmd/listener/api.go). Its error opens with
+  // `MESSAGE_NOT_SENT_PREFIX` and goes on to the bus's own reason.
+  const NOT_SENT_ERROR =
+    `${MESSAGE_NOT_SENT_PREFIX}: nothing was sent: the deployed stream does not capture a topic ` +
+    "this build stores (stream ENVOY_NOTIFICATIONS, topic notifications.agent.ses_target)";
+  const notSent = () =>
+    Response.json({ error: NOT_SENT_ERROR }, { status: 503, headers: { "Retry-After": "1" } });
+
+  // Nothing was stored on either attempt, so the send is the listener's answer, which says the
+  // message was not sent and may be sent again later, never "may or may not have arrived" with a
+  // resend to make under the key. The client still makes its second attempt, under the same key.
+  test("a send the listener did not send on any attempt is that answer: nothing was stored", async () => {
+    const recorded = recordFetch([notSent(), notSent()]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    // Both attempts carry the same body, so the same idempotency key.
+    const first: unknown = await recorded.requests[0]?.json();
+    expect(first).toMatchObject({ idempotency_key: expect.any(String) });
+    expect(await recorded.requests[1]?.json()).toEqual(first);
+    expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).toMatchObject({ notSent: true, details: { status: 503 } });
+    expect((error as Error).message).toBe(NOT_SENT_ERROR);
+  });
+
+  // The control: an attempt that got no answer may have stored the message, so a later attempt
+  // the listener did not send says nothing of it, and the send stays unconfirmed.
+  test("a send not sent after an unanswered attempt stays unconfirmed: that attempt may have stored it", async () => {
+    let calls = 0;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: async () => {
+        calls += 1;
+        if (calls === 1) throw new DOMException("The operation timed out.", "TimeoutError");
+        return notSent();
+      },
+    });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(calls).toBe(2);
+    expect(error).toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect((error as Error).message).toContain("It may or may not have arrived.");
+  });
+
+  test("a publish the listener did not send on any attempt is that answer: nothing was stored", async () => {
+    const recorded = recordFetch([notSent(), notSent()]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .publish({ sourceSessionID: "ses_sender", topic: "notifications.team.x", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).toMatchObject({ notSent: true, details: { status: 503 } });
+    expect((error as Error).message).toBe(NOT_SENT_ERROR);
+  });
+
+  // A publish has no error of its own for a message that may have been stored, so its last answer
+  // is what it throws: one that says the message was not sent must not stand alone when an earlier
+  // attempt got a 5xx or no answer, after which the stream may hold the message.
+  test("a publish not sent after a 5xx does not say nothing was stored", async () => {
+    const recorded = recordFetch([
+      Response.json(
+        { error: "envoy: the message bus did not answer: context deadline exceeded" },
+        { status: 503 }
+      ),
+      notSent(),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .publish({ sourceSessionID: "ses_sender", topic: "notifications.team.x", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).toMatchObject({ notSent: false, details: { status: 503 } });
+    expect((error as Error).message).toBe(
+      `${NOT_SENT_ERROR} An earlier attempt got no answer or a 5xx, so that attempt may have ` +
+        "stored the message."
     );
   });
 

@@ -55,7 +55,7 @@ func (c *Client) queueReconnect(nc *nats.Conn) {
 	if running {
 		return
 	}
-	go c.workThroughReconnects()
+	c.runEventWork(c.workThroughReconnects)
 }
 
 // countConnectionEvent records a connection event of nc that the client's own state must take in
@@ -113,12 +113,18 @@ func (c *Client) workThroughReconnects() {
 	}
 }
 
-// onClosed is wired as the ClosedCB callback. It reports the connection event (ConnectionChanged)
-// and launches recovery in a background goroutine so the NATS library callback returns
-// immediately.
-func (c *Client) onClosed() {
+// onClosed is wired as the ClosedCB callback, for nc, the connection that closed. It reports the
+// connection event (ConnectionChanged) and launches recovery in a background goroutine so the NATS
+// library callback returns immediately, one eventWork counts (runEventWork), and then records the
+// close as handled (closeHandled), so the close of a failed start waits for that recovery too
+// (closeSettled).
+func (c *Client) onClosed(nc *nats.Conn) {
+	if c.closedHook != nil {
+		c.closedHook()
+	}
 	c.connectionChanged()
-	go c.recover()
+	c.runEventWork(c.recover)
+	c.closeHandled(nc)
 }
 
 // onConnect is the ConnectedCB of a client that connects in the background
@@ -195,7 +201,7 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 	// (whileConnected): a bind it cancelled would race the server's release of a push-bound durable,
 	// which refuses the next bind with "consumer is already bound to a subscription".
 	if pending || restoreErr != nil || hookErr != nil {
-		go c.recover()
+		c.runEventWork(c.recover)
 	}
 }
 

@@ -29,23 +29,47 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// connectListenerBus opens the listener's main client as instance (connectListener tries it by the
-// start rule). Every listener but an edge one (edge nil) owns the stream (bus.ConnectOwningStream,
-// listenerStreamOptions): it creates it when the server has none and keeps its configuration. An
-// edge listener's grant holds no create or update of the stream, so its client owns none
-// (bus.Connect) and names its inboxes under its machine's prefix, and connectListener reads the
-// stream once it is connected and ends the start, naming it, when the server has none
-// (edgeStreamPresent). Its grant creates and raises no bucket's stream either, so each bucket is
-// found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds at fewer copies
-// than ENVOY_NATS_REPLICAS, is refused naming the create or raise the server refused, and the open
-// tried again by the start rule; no keeper raises a bucket after.
-func connectListenerBus(cfg config.Service, edge *edgeGrant, instance string) (*bus.Client, error) {
+// connectListenerBus opens the listener's main client as instance, one try of the start that
+// connectListener makes by the start rule. Its connect, every listener's, an edge one's included,
+// waits out a refusal of its credential for up to start's wait (natsStart.option,
+// bus.WithCredentialWait), handing each refusal to start, which /healthz answers 503 naming while
+// it lasts and which forgets it once the connect has got in (natsStart.admitted). Every listener
+// but an edge one (edge nil) owns the stream (bus.ConnectOwningStream, listenerStreamOptions): it
+// creates it when the server has none and keeps its configuration; a reconcile the grant refuses
+// (bus.ErrPublishDenied) ends the try at once, since the connect got in, and connectListener tries
+// again, naming the grant. An edge listener's grant holds no create or update of the stream, so
+// its client owns none (bus.Connect), names its inboxes under its machine's prefix, and its start
+// reads the stream in place of the reconcile (edgeStreamPresent), on each try's client, inside the
+// same wait (bus.WithStartCheck). A refusal of the connect, and a permissions or authorization
+// refusal of that read (bus.ErrPublishDenied, an authorization error), are waited out; a stream
+// the server does not hold, a read that timed out, or any other error of the read ends the start
+// at once, naming the stream (edgeStreamReadFailed). A try that failed closed its client, which
+// stops everything it ran. Its grant creates and raises no bucket's stream either, so each bucket
+// is found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds at fewer
+// copies than ENVOY_NATS_REPLICAS, is refused naming the create or raise the server refused, and
+// the open tried again by the start rule; no keeper raises a bucket after.
+func connectListenerBus(cfg config.Service, edge *edgeGrant, instance string, start *natsStart) (*bus.Client, error) {
 	name := bus.WithName("envoy-listener " + instance)
 	if edge == nil {
-		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), name)...)
+		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), name, start.option())...)
 	}
-	return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection(), name)...)
+	readStream := bus.WithStartCheck(func(client *bus.Client) error {
+		if err := edgeStreamPresent(client, edgeStreamRead); err != nil {
+			return edgeStreamReadFailed{err}
+		}
+		return nil
+	})
+	return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection(), name, readStream, start.option())...)
 }
+
+// edgeStreamReadFailed is the error of an edge listener's read of the stream at its start
+// (edgeStreamPresent) that failed, whether at once or once the credential wait ran out: it ends
+// the start (connectListener), since the edge's grant may not create the stream, where a connect
+// that failed is tried again by the start rule. It reads as the error it carries.
+type edgeStreamReadFailed struct{ err error }
+
+func (e edgeStreamReadFailed) Error() string { return e.err.Error() }
+func (e edgeStreamReadFailed) Unwrap() error { return e.err }
 
 // edgeStreamRead bounds an edge listener's read of the stream at its start.
 const edgeStreamRead = 10 * time.Second
@@ -55,7 +79,11 @@ const edgeStreamRead = 10 * time.Second
 // (natsgrant.Edge), and a shared listener or Dispatch, whose grants may, creates it. A read that
 // failed otherwise is refused naming the stream and the connection's last error, which is the
 // server's refusal when the grant did not let the listener read the answer: a subscription to its
-// own inboxes refused names the inbox prefix there.
+// own inboxes refused names the inbox prefix there. Both errors are wrapped, so the start's wait
+// (bus.WithStartCheck) finds a refusal of the credential in either: the read's own refusal
+// (bus.ErrPublishDenied), or an authorization violation the connection met while the read waited,
+// as when the server took the edge's user away, which reaches the read only as the connection's
+// last error beside a closed connection or a timeout.
 func edgeStreamPresent(client *bus.Client, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -67,7 +95,7 @@ func edgeStreamPresent(client *bus.Client, timeout time.Duration) error {
 		return fmt.Errorf("edge mode: the server holds no %s stream, and an edge listener may not create it: a shared listener or Dispatch creates it", bus.Stream)
 	}
 	if last := client.Connection().LastError(); last != nil {
-		return fmt.Errorf("edge mode: read the %s stream: %w (the connection's last error: %v)", bus.Stream, err, last)
+		return fmt.Errorf("edge mode: read the %s stream: %w (the connection's last error: %w)", bus.Stream, err, last)
 	}
 	return fmt.Errorf("edge mode: read the %s stream: %w", bus.Stream, err)
 }

@@ -18,7 +18,10 @@ import (
 // client holds wherever that read is not made: inside streamSubjectsRereadGap of the last such
 // read's end, while a read of them is in flight and started within firstStreamSubjectsRead, on a
 // client with no connection or whose NATS user may not read the stream, and when the read fails or
-// ctx ends first. A role lane and its exception lane read nothing and keep core NATS.
+// ctx ends first. A role lane and its exception lane read nothing and keep core NATS. A topic this
+// build stores takes JetStream whatever the subjects the client holds say, with no read here: it
+// never takes core NATS, and PublishAckOn refuses it only on a read of its own (publishPathOf,
+// undeployedOnFreshRead).
 //
 // It is not a refusal: a core publish of a topic the stream captures is stored too, under no
 // MsgId and with no acknowledgement, so it waits out neither the gap nor a read in flight that
@@ -100,6 +103,13 @@ func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope,
 // charges nothing for a copy the stream already held, and one for a copy this call may have
 // stored (cmd/listener's senderCharge.published). It is the transport's judgement
 // (PublishTakesJetStream) followed by the publish on the transport it chose (PublishAckOn).
+//
+// The path is publishPathOf's, the one the other four publish functions take through this one. A
+// topic this build stores goes through JetStream while the deployed stream captures it and is
+// never sent over core NATS: while the deployed stream does not capture it, as a read of its
+// subjects that started after this call confirms, this returns the zero StoredAck and an error
+// wrapping ErrSubjectNotDeployed before anything is sent, so no core subscriber is handed a copy
+// the stream does not hold and no sender is answered as if it were stored (PublishAckOn).
 func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	return c.PublishAckOn(ctx, item, c.PublishTakesJetStream(ctx, item.Topic))
 }
@@ -107,12 +117,22 @@ func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) 
 // PublishAckOn publishes item on its own topic as PublishAckWithin does, within ctx's bound, on
 // the transport its caller decided rather than one it judges itself: JetStream when jetStream,
 // answering the stream's whole acknowledgement, and core NATS otherwise (PublishCoreContext),
-// answering the zero StoredAck. It reads no subjects. It is for a caller that decides something
-// else of the publish by the same judgement (PublishTakesJetStream), so the two cannot read the
-// deployed subjects apart: the listener's publish route counts the message's recipients by the
-// answer it publishes on (cmd/listener's recipientCounts), and charges the sender as the send
-// route does.
+// answering the zero StoredAck. It is for a caller that decides something else of the publish by
+// the same judgement (PublishTakesJetStream), so the two cannot read the deployed subjects apart:
+// the listener's publish route counts the message's recipients by the answer it publishes on
+// (cmd/listener's recipientCounts), and charges the sender as the send route does.
+//
+// It reads the subjects for one case alone, before it sends anything: a topic this build stores
+// that the subjects the client holds leave uncaptured, which PublishTakesJetStream answers
+// JetStream for. That publish is refused with ErrSubjectNotDeployed once a read of the subjects
+// that started after this call leaves the topic uncaptured too, and goes through JetStream
+// otherwise, the read that captures it and the read that could not be made alike
+// (undeployedOnFreshRead): the subjects the client holds can be a minute old, and a refusal on
+// them alone would reject, during a roll, a message the newer build's stream stores.
 func (c *Client) PublishAckOn(ctx context.Context, item contracts.Envelope, jetStream bool) (StoredAck, error) {
+	if c.undeployedOnFreshRead(ctx, c.AskDeployedSubjects(), item.Topic) {
+		return StoredAck{}, subjectNotDeployed(item.Topic)
+	}
 	if !jetStream {
 		return StoredAck{}, c.PublishCoreContext(ctx, item.Topic, item)
 	}

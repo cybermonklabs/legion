@@ -78,6 +78,12 @@ const (
 	// outcomeBusUnavailable, nor a role send's outcomeDeliveryFailed: the bus answered, that the
 	// earlier attempt is in process, and the stream may store it yet.
 	outcomeEarlierAttemptInProcess requestOutcome = "earlier_attempt_in_process"
+	// outcomeSubjectNotDeployed is a send or publish whose message the bus refused before it sent
+	// anything, because the deployed stream does not capture a topic this build stores
+	// (bus.ErrSubjectNotDeployed, notSent), answered 503 under notSentPrefix. It is not
+	// outcomeBusUnavailable: the bus was never asked, so an operator reading the record looks at the
+	// stream's subjects, a hub move's quiesce or an edit of them, not for an outage.
+	outcomeSubjectNotDeployed requestOutcome = "subject_not_deployed"
 )
 
 // requestRecord is this listener's record of one inbound send or publish, and the only way either
@@ -155,10 +161,11 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 // status it wrote implies: 413 is the caller's own oversized message, 400 the subject or key NATS
 // will not take however often it is sent, 403 the publish this listener's own grant denies, and
 // anything else the bus not answering. The status is read back from the write rather than
-// classified a second time here, so the pair cannot drift, with three exceptions that share their
+// classified a second time here, so the pair cannot drift, with four exceptions that share their
 // 503 with the bus not answering, so the error tells them apart: a full stream (bus.ErrStreamFull),
-// a stored copy that could not be read back (errStoredCopyUnread), and a request that ended while
-// an earlier publish under its message id was still in process (earlierAttemptInProcess).
+// a stored copy that could not be read back (errStoredCopyUnread), a request that ended while an
+// earlier publish under its message id was still in process (earlierAttemptInProcess), and a
+// message the bus refused before it sent anything (notSent).
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
@@ -175,6 +182,8 @@ func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error)
 		outcome = outcomePublishDenied
 	case earlierAttemptInProcess(err):
 		outcome = outcomeEarlierAttemptInProcess
+	case notSent(err):
+		outcome = outcomeSubjectNotDeployed
 	}
 	rec.write(status, outcome)
 }

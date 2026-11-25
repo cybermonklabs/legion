@@ -705,6 +705,12 @@ type healthAnswer struct {
 // Every answer, starting, healthy, degraded and unhealthy alike, also carries the fields issuers
 // sets (issuerHealthFields: the identity token issuers' "oidc" and "google"); nil sets neither,
 // which leaves both null. Those fields never decide the status (writeHealth).
+//
+// The route serves this handler behind the start's own answer (registerProbeRoutes): while the
+// listener's start waits out a refusal of its NATS credential, /healthz answers 503 naming the
+// refusal before this handler is asked (natsStart.healthz). Before the start's first refusal and
+// once the connect that met it has got in (natsStart.admitted), this handler answers, 503
+// "starting" until the pod can serve (listenerHealth).
 func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func(*listenerwire.Health)) http.HandlerFunc {
 	// The latch of the interest copy's first read (interestCopyRead): main builds this handler once,
 	// so it lasts as long as the process.
@@ -1238,43 +1244,50 @@ func natsConnectionError(err error) bool {
 // which the stream's ensure returns as the server's refusal arrives) after waitOutGrantRefusal,
 // each try logging streamRefusedLine at ERROR with the refused subject and the server's text; and
 // a NATS that cannot be reached (natsConnectionError) every startRetry for as long as it takes, so
-// a listener started before its NATS waits for it rather than exiting. Any other failure ends the
-// process after one ERROR naming it.
+// a listener started before its NATS waits for it rather than exiting.
+//
+// A credential the server refuses is the listener's own configuration, and a restarted pod reads
+// its credential again, so it ends the start, but only once each try's connect has waited it out
+// under start's bound (connectListenerBus, natsStart.option, bus.WithCredentialWait): a hub that
+// reloads a new nkey refuses it until its servers have reloaded. /healthz answers 503 naming the
+// refusal meanwhile (natsStart.healthz), and a refusal that outlasts the bound ends the process,
+// its last line naming the credential (startFailureLine). The grant's refusal of the stream's
+// reconcile is no refusal of the credential: the connect got in (natsStart.admitted), and the
+// grant alone can lift it. Any other failure ends the process with that line too.
 //
 // An edge listener (edge) owns no stream (connectListenerBus): its connect follows the same rule,
-// and once it is connected its start reads the stream, and ends naming it when the server holds
-// none or the read fails (edgeStreamPresent), since its grant may not create one and every reply
-// it asks for comes under its own inbox prefix.
-func connectListener(cfg config.Service, edge *edgeGrant, instance string, logger *logging.Logger) *bus.Client {
+// and its start reads the stream in place of the reconcile, inside the same credential wait, and
+// ends naming it when the server holds none or the read fails otherwise (edgeStreamPresent,
+// edgeStreamReadFailed), since its grant may not create one and every reply it asks for comes
+// under its own inbox prefix.
+func connectListener(cfg config.Service, edge *edgeGrant, instance string, logger *logging.Logger, start *natsStart) *bus.Client {
 	clusterWait, refusedWait := clusterStateWait{next: durableBindPoll}, durableBindPoll
 	for {
-		client, err := connectListenerBus(cfg, edge, instance)
+		client, err := connectListenerBus(cfg, edge, instance, start)
 		if err == nil {
-			if edge != nil {
-				if err := edgeStreamPresent(client, edgeStreamRead); err != nil {
-					client.Close()
-					// Named, because a reader of a log that holds only "context deadline exceeded"
-					// cannot tell which step of the start timed out.
-					log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
-				}
-			}
 			return client
+		}
+		var edgeRead edgeStreamReadFailed
+		if errors.As(err, &edgeRead) {
+			// Named, because a reader of a log that holds only "context deadline exceeded"
+			// cannot tell which step of the start timed out.
+			log.Fatal(startFailureLine(err, start, os.LookupEnv))
 		}
 		if code, ok := bus.ClusterStateAnswer(err); ok {
 			waitOutClusterState(logger, &clusterWait, slog.String("stream", bus.Stream), cfg.NATSReplicas, code, err)
 			continue
 		}
 		if errors.Is(err, bus.ErrPublishDenied) {
+			start.admitted()
 			waitOutGrantRefusal(logger, &refusedWait, streamRefusedLine, err, slog.String("stream", bus.Stream), slog.String("grant", grantName(edge)))
 			continue
 		}
 		if !natsConnectionError(err) {
-			// A credential the server refuses (nats.ErrAuthorization) ends the start here too, and
-			// is not waited out as a refused grant is: it is the listener's own configuration, and a
-			// restarted pod reads its credential again, so a crash loop that carries this line is
-			// the signal that gets it fixed.
-			logger.Error("NATS connect failed", slog.String("error", err.Error()))
-			os.Exit(1)
+			// The line keeps the words it had before it named the credential, which a reader
+			// matches (the natslive edge test reads "connect to NATS and reconcile the ... stream:
+			// "), and names the credential the hub refused, an nkey user by its public key, which
+			// is what an operator looks for in the hub's authorization; err names the step.
+			log.Fatal(startFailureLine(err, start, os.LookupEnv))
 		}
 		logger.Warn("NATS connect failed; retrying", slog.String("retry_in", startRetry.String()), slog.String("error", err.Error()))
 		time.Sleep(startRetry)
@@ -1514,19 +1527,25 @@ const natsReleaseRefusedLine = "nats-server release below the listener's floor; 
 // are open (the session consumers' with its relay's reply subscription, an edge listener's relay
 // sockets', the role lane's), until it succeeds, by the start rule (cmd/listener/README.md,
 // "Start"). Each such connection reads the settings the start's own connect (connectListener) has
-// already taken - its servers, its credential, its proxy and the remote-NATS rule - so no failure
-// here is one the listener's configuration alone decides, and none ends the process:
+// already taken - its servers, its credential, its proxy and the remote-NATS rule - and each
+// connect waits out a refusal of the credential under start's bound (natsStart.option, which open
+// passes), so only the credential ends the process here:
 //   - a refusal under the NATS grant (nats.ErrPermissionViolation) is tried again after
 //     waitOutGrantRefusal, which logs refusedLine;
 //   - a server whose release the listener refuses (natsversion.RefusedRelease) after the same
 //     wait, logging natsReleaseRefusedLine at ERROR with the server's release and the floor;
 //   - a failure for want of NATS (natsConnectionError), among them a connection's ten dials
 //     (bus.Connect) that no server answered, every startRetry, logging failedLine at WARN;
+//   - a credential the server still refuses once the connect has waited it out
+//     (bus.AuthorizationRefused) ends the start: endedLine at ERROR names the refusal and the
+//     credential (natsStart.stepFailed), and the process exits 1, as connectListener ends it;
 //   - any other failure, a server that refuses the connection itself (an account at its
-//     connection limit) among them, after the same wait as a refusal, logging failedLine at ERROR.
+//     connection limit) among them, after the same wait as a grant's refusal, logging failedLine
+//     at ERROR.
 //
-// /healthz answers 503 "starting", /livez 204, and /v1 stays closed meanwhile.
-func openStartConnection[T any](logger *logging.Logger, failedLine, refusedLine string, open func() (T, error)) T {
+// /healthz answers 503 "starting", /livez 204, and /v1 stays closed meanwhile; /healthz names the
+// refusal instead while a connect waits one out (natsStart.healthz).
+func openStartConnection[T any](logger *logging.Logger, start *natsStart, failedLine, endedLine, refusedLine string, open func() (T, error)) T {
 	wait := durableBindPoll
 	for {
 		opened, err := open()
@@ -1549,6 +1568,12 @@ func openStartConnection[T any](logger *logging.Logger, failedLine, refusedLine 
 		case natsConnectionError(err):
 			logger.Warn(failedLine, slog.String("retry_in", startRetry.String()), slog.String("error", err.Error()))
 			time.Sleep(startRetry)
+		case bus.AuthorizationRefused(err):
+			// A connect begun once the start's bound had passed waits nothing, and names no
+			// refusal to the start on its own: the line names the credential all the same.
+			start.refused(err)
+			start.stepFailed(logger, endedLine, err, os.LookupEnv)
+			os.Exit(1)
 		default:
 			logger.Error(failedLine, slog.String("error", err.Error()), slog.String("retry_in", wait.String()))
 			time.Sleep(wait)
@@ -1753,7 +1778,15 @@ func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweep
 // across two readings 72 hours apart, and a listener outside a cluster has no pod to show it).
 var processStart = time.Now()
 
-func main() {
+// main runs the listener with its production credential wait, listenerCredentialWait.
+func main() { runListener(listenerCredentialWait) }
+
+// runListener is the listener, main's whole run, whose start on NATS waits out a refusal of its
+// credential for up to credentialWait (newNATSStart, Phase 5). main passes listenerCredentialWait,
+// and only a test passes another value, running its own binary again as the listener
+// (TestTheListenerStartEndsAtTheCredentialBound). Every end of the run ends the process, as main's
+// did.
+func runListener(credentialWait time.Duration) {
 	instance, err := listenerInstance()
 	if err != nil {
 		log.Fatal(err)
@@ -1952,19 +1985,14 @@ func main() {
 	// /metrics is always reachable — NOT gated by readiness.
 	mux.Handle("/metrics", met.Handler())
 
-	// /healthz is always reachable, before NATS setup as well as after it, and answers 503
-	// "starting" until the listener is ready and its interest copy has completed its first read.
-	// Every answer carries the identity token issuers' fields (issuerHealthFields), which never
-	// decide its status.
-	mux.HandleFunc("/healthz", healthzHandler(&deps, func(health *listenerwire.Health) { issuerHealthFields(apiAuthConfig, health) }))
-
-	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
-	// durable consumer. It says only that the process answers, for the startup and liveness
-	// probes, which must not wait on or fail with NATS: a listener whose bus is down repairs
-	// itself, and a restart would only drop its warm caches. /healthz stays the readiness route,
-	// the one that reads the bus, because its HTTP status is what tells a starting pod from a
-	// serving one.
-	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	// /healthz and /livez are always reachable, before NATS setup as well as after it. start is the
+	// listener's start on NATS (Phase 5): /healthz answers 503 naming the last refusal of the
+	// credential while the start waits it out, and otherwise 503 "starting" until the listener is
+	// ready and its interest copy has completed its first read; /livez answers 204 throughout. Every
+	// /healthz answer carries the identity token issuers' fields (issuerHealthFields), which never
+	// decide its status (registerProbeRoutes).
+	start := newNATSStart(credentialWait)
+	registerProbeRoutes(mux, &deps, start, func(health *listenerwire.Health) { issuerHealthFields(apiAuthConfig, health) })
 
 	// GaugeFunc for consumer pending — queries NATS at scrape time
 
@@ -2010,11 +2038,15 @@ func main() {
 	// server both own ENVOY_NOTIFICATIONS: this client ensures the stream on this connect and after
 	// every reconnect, at the deployment's replica count and byte limit (listenerStreamOptions), and
 	// leaves as it is a stream that a newer build stamped with a higher generation
-	// (bus.ConnectOwningStream). An edge listener owns no stream: it reads it, and its start ends
-	// here when the server has none (connectListener, edgeStreamPresent). From here until /v1
-	// serves, each failure of the start ends it, waits out the cluster's state or waits for NATS by
-	// the start rule (cmd/listener/README.md, "Start").
-	client := connectListener(cfg, edge, instance, logger)
+	// (bus.ConnectOwningStream). The start waits out a refusal of its credential at the connect for
+	// up to credentialWait (start), as a hub that has yet to reload a new nkey refuses it: /livez
+	// answers 204 meanwhile and /healthz 503 naming the refusal. An edge listener owns no stream:
+	// its start reads it in place of the reconcile, waits out a refusal of the connect or of that
+	// read alike, and ends here when the server has none or the read fails otherwise
+	// (connectListener, edgeStreamPresent). From here until /v1 serves, each failure of the start
+	// ends it, waits out the cluster's state, the grant or the credential, or waits for NATS by the
+	// start rule (cmd/listener/README.md, "Start").
+	client := connectListener(cfg, edge, instance, logger, start)
 	// starting is the context the bucket opens below run under, and it is context.Background() on
 	// purpose: do not replace it with a context a signal ends. Each open waits on the cluster until
 	// it answers (a bucket's create, a raise's copies, a member applying a create, a stream's
@@ -2418,23 +2450,27 @@ func main() {
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
 	// Each try opens a connection of its own and subscribes its relay's replies on it, and a try
 	// that fails closes it: the connection holds one reply subscription, so a later try's relay,
-	// whose inbox is new, needs a new connection.
+	// whose inbox is new, needs a new connection. Each try's connect waits out a refusal of the
+	// credential under the start's bound (startSessionDelivery, natsStart.option), and a refusal
+	// that outlasts it ends the start (openStartConnection).
 	var delivery *sessionDelivery
 	// The relay hears registrations from the moment /v1 opens, and relays once this task serves
 	// its machine's receive term (below). An edge listener's relay takes its receipts under its
 	// machine's receipt family (natsgrant.EdgeRelayReplyPrefix), on which the replica serving the
 	// session's relay socket publishes them.
-	relays := openStartConnection(logger, "session consumer connection failed; retrying", relayRepliesRefusedLine, func() (*sessionRelays, error) {
-		var err error
-		if delivery, err = connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger, edge.connectOptions()...); err != nil {
-			return nil, err
-		}
-		relays, err := startSessionRelays(delivery, deliveryConfig)
-		if err != nil {
-			delivery.close()
-		}
-		return relays, err
-	})
+	relays := openStartConnection(logger, start, "session consumer connection failed; retrying",
+		"session consumer connection failed: every session is delivered through a consumer of its own", relayRepliesRefusedLine,
+		func() (*sessionRelays, error) {
+			var err error
+			if delivery, err = startSessionDelivery(cfg, inactiveThreshold, client, logger, edge, start); err != nil {
+				return nil, err
+			}
+			relays, err := startSessionRelays(delivery, deliveryConfig)
+			if err != nil {
+				delivery.close()
+			}
+			return relays, err
+		})
 	// A relay of this pod restarts a session's consumer at its ack floor only once a former holder
 	// that released the lease has had its settle bound (lease.FormerSettleWait): until then that pod
 	// may still be acking a frame the session answered, which this one would otherwise publish
@@ -2451,8 +2487,8 @@ func main() {
 	// (openStartConnection) as the session consumers' is; every other listener serves none.
 	var sockets *relaySockets
 	if edge != nil {
-		socketsClient := openStartConnection(logger, "relay socket connection failed; retrying", relaySocketsRefusedLine, func() (*bus.Client, error) {
-			return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())...)
+		socketsClient := openStartConnection(logger, start, "relay socket connection failed; retrying", "relay socket connection failed", relaySocketsRefusedLine, func() (*bus.Client, error) {
+			return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection(), start.option())...)
 		})
 		sockets = newRelaySockets(socketsClient, brokerTokenAuth, logger)
 	}
@@ -2474,9 +2510,9 @@ func main() {
 		repositories.refresh(context.Background())
 	}
 
-	// The role lane (startRoleLane), whose connection opens by the start rule too; an edge
-	// listener opens none.
-	lane := startRoleLane(cfg, edge, coreNATSDeliveryHandler(deliveryConfig), roleForwards, met, logger)
+	// The role lane (startRoleLane), whose connection opens by the start rule too, its connect
+	// waiting out a refusal of the credential under the start's bound; an edge listener opens none.
+	lane := startRoleLane(cfg, edge, coreNATSDeliveryHandler(deliveryConfig), roleForwards, met, logger, start)
 	met.NewGaugeFunc("envoy_role_forwards_outstanding", "Role forwards queued behind their holder or waiting for their outcome", func() int64 {
 		return int64(roleForwards.outstanding())
 	})
