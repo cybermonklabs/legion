@@ -148,17 +148,24 @@ func natscredGoroutines() natscredDump {
 	dump := natscredDump{stuck: true}
 	for _, trace := range goroutinetest.Traces() {
 		state := traceState(trace)
-		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.") {
-			dump.all++
-			dump.stuck = dump.stuck && parked(state)
-		}
-		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.(*serviceCredential).Keep(") {
-			dump.keepers++
-		}
 		// The runtime prints the package path's last element with its dots escaped,
 		// github.com/nats-io/nats%2ego, so the match is on the method alone.
-		if strings.Contains(trace, ".(*asyncCallbacksHandler).asyncCBDispatcher(") {
+		dispatcher := strings.Contains(trace, ".(*asyncCallbacksHandler).asyncCBDispatcher(")
+		if dispatcher {
 			dump.dispatchers++
+		}
+		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.") {
+			// A goroutine running natscred's code is judged by that rule alone, even on a
+			// dispatcher: a keeper started there without its go waits in its own select, and the
+			// dispatcher's rule would keep it from ever being stuck.
+			dump.all++
+			dump.stuck = dump.stuck && parked(state)
+			if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.(*serviceCredential).Keep(") {
+				dump.keepers++
+			}
+			continue
+		}
+		if dispatcher {
 			dump.stuck = dump.stuck && state == "sync.Cond.Wait"
 		}
 	}
@@ -236,11 +243,14 @@ func TestADiscardedReplacementConnectionLeavesNoKeeperRunning(t *testing.T) {
 	_, url := testnats.Start(t)
 	nc, err := bus.Dial("keeper-count", []string{url}, lookup)
 	require.NoError(t, err)
-	// The control of the stuck rule: with the connection live, the dump must show its keeper and its
-	// callback dispatcher, or a rule that cannot see a dispatcher would judge any keeper stuck.
-	testwait.WithinPolling(t, 5*time.Second, 50*time.Millisecond, "the live connection's keeper and callback dispatcher", func() bool {
+	// The control of the stuck rule: with the connection live, its keeper and the keeper's watcher
+	// wait for the token's renewal and the connection's close, and its callback dispatcher waits for a
+	// callback, which is the stuck state the row fails on once the connection has closed. So the dump
+	// must show the keeper, a dispatcher and stuck, or the rule cannot fire with this nats.go and this
+	// runtime (a dispatcher name or a wait state it does not know), and every row it judges would pass.
+	testwait.WithinPolling(t, 5*time.Second, 50*time.Millisecond, "the live connection's keeper, its callback dispatcher and the stuck state", func() bool {
 		dump := natscredGoroutines()
-		return dump.keepers == 1 && dump.dispatchers >= 1
+		return dump.keepers == 1 && dump.dispatchers >= 1 && dump.stuck
 	})
 	nc.Close()
 	requireNoNatscredGoroutine(t, "after that connection closed")
