@@ -113,8 +113,9 @@ export function StageSlot({
   const outline = beside && (!filled[preset] || swapped);
   const View = outline ? undefined : views[preset];
   // Graph's slot draws the outline (`view-graph.tsx`), whose own landing puts the focus on the
-  // node an address beside it names: the view stage is told so (`LandsItself`), and leaves the
-  // first focus to that landing (`ViewStage`).
+  // node an address beside it names: the view stage is told so (`LandsItself`), and waits on that
+  // landing for the first focus, which it takes itself once the address has lost the node
+  // (`ViewStage`).
   const landsItself = beside && preset === "graph";
   return (
     <ViewReadProvider issue={props.issue} preset={preset}>
@@ -223,9 +224,15 @@ const SLOT_TREE = '[role="tree"]';
  *
  * A view whose tree lands on the node the address names itself - Graph's, which draws the
  * outline (`view-graph.tsx`), on an address naming a node - is drawn under `LandsItself` set so
- * by `StageSlot`, and the stage takes no focus for it: that landing puts the focus on the node's
- * row in the frame after it draws the row, and reads a focus the stage gave the tab stop before
- * then as somebody else's, which it leaves there, so the address landed on the tree's first row.
+ * by `StageSlot`, and the stage waits on that landing rather than take the focus: the landing
+ * puts the focus on the node's row in the frame after it draws the row, and reads a focus the
+ * stage gave the tab stop before then as somebody else's, which it leaves there, so the address
+ * would land on the tree's first row. The take is done once something holds the focus - the
+ * node's row, or a control the reader pressed. Where the address loses its node first - the body
+ * replaces an address whose node no read holds with the address without it (`addressView`) - the
+ * stage's next look, at the tree the body draws in the replaced address's place, takes the focus
+ * as for any address naming no node, so the address opens with the focus where that address
+ * puts it.
  */
 export function ViewStage({
   box: given,
@@ -273,11 +280,13 @@ export function ViewStage({
     // placed no longer does), as the outline's opening waits a frame for its first row; a focus
     // the reader or a script put elsewhere in that frame stays.
     const take = (): boolean => {
-      // True at once for a view whose tree lands on the address's node itself (`LandsItself`).
-      if (landsItself.current) return true;
       const active = document.activeElement;
       const onTree = active?.matches(SLOT_TREE) === true && stage.contains(active);
       if (!focusIsLoose(stage) && !onTree) return true;
+      // A view whose tree lands on the address's node itself (`LandsItself`) is waited on: the
+      // take is done once something holds the focus (above), and goes on below to take it once
+      // the address has lost its node.
+      if (landsItself.current) return false;
       const to =
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
         stage.querySelector<HTMLElement>(FAILED_READ_RETRY);
@@ -300,6 +309,13 @@ export function ViewStage({
       if (!take()) drawn.observe(stage, { childList: true, subtree: true });
     };
     watch();
+    // While the view lands on the address's node itself, a focus anything takes - the landing's on
+    // the node's row, or a control the reader pressed - ends the take as a look would, so a focus
+    // dropped after that is not taken for the view once the address has lost its node.
+    const focusTaken = () => {
+      if (landsItself.current && take()) drawn.disconnect();
+    };
+    document.addEventListener("focusin", focusTaken);
     // A focus on the tree itself, where it draws no tab-stop row, starts the take again,
     // whatever held the focus before outside the view: the chord's, or the stage's own once a
     // line left. A focus that moves onto the tree from inside the view - from its Retry, or a
@@ -318,6 +334,7 @@ export function ViewStage({
     return () => {
       drawn.disconnect();
       stage.removeEventListener("focusin", treeFocused);
+      document.removeEventListener("focusin", focusTaken);
       for (const frame of ending) cancelAnimationFrame(frame);
     };
   }, [box]);

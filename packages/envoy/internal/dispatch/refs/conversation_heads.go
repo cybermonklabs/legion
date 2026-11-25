@@ -204,7 +204,9 @@ func headItemProject(owners map[[2]string]headItemOwner, issueKey, artifactID *s
 	return project, slug
 }
 
-// headCommentNode is the comment id as loadCommentNodes resolves it, from its head row.
+// headCommentNode is the comment id as loadCommentNodes resolves it, from its head row: its parent
+// the comment it answers, else its thread's head, else its ask (commentReplyParent), and a comment
+// that answers none of them the document it is written on, else its issue.
 func headCommentNode(id string, head *HeadRow, owners map[[2]string]headItemOwner) (resolvedNode, error) {
 	item := head.Item
 	project, slug := headItemProject(owners, item.IssueKey, item.ArtifactID)
@@ -229,13 +231,9 @@ func headCommentNode(id string, head *HeadRow, owners map[[2]string]headItemOwne
 			}
 		}
 	}
-	switch parent := document.parent(); {
-	case item.RepliesToBlock != nil:
-		node.Parent = itemBlockParent(item.IssueKey, project, slug, *item.RepliesToBlock)
-	case item.ReplyTo != nil:
-		node.Parent = itemParent(string(ItemComment), item.IssueKey, project, slug, *item.ReplyTo)
-	case item.AskID != nil:
-		node.Parent = itemParent(string(ItemAsk), item.IssueKey, project, slug, *item.AskID)
+	switch reply, parent := commentReplyParent(item.IssueKey, project, slug, item.Answers, item.ReplyTo, item.AskID), document.parent(); {
+	case reply != nil:
+		node.Parent = reply
 	case parent != nil:
 		node.Parent, node.ParentVersion = parent, item.Version
 	default:

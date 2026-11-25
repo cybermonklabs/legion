@@ -209,6 +209,11 @@ type bootConfig struct {
 	// first move; only DISPATCH_TEST_HOLD_DECISIONS_STEP=1, under the test hooks, sets it.
 	// kept for one release: decisions-step
 	HoldDecisionsStep bool
+	// HoldIssueRoomStep keeps the server from starting the issue room step
+	// (docs.IssueRoomStep), at boot or on its tick, so a test driver's own command
+	// (`envoy-dispatch convert-issues`), and not the boot, makes the first move; only
+	// DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP=1, under the test hooks, sets it.
+	HoldIssueRoomStep bool
 	// HoldBlockIndex keeps the server from starting the block-index reconciliation
 	// (docs.Service.RunBlockIndexReconciliation), its tick and its pass, and holds back nothing
 	// else, so a test driver can let a build of an earlier rule of the block index reach a document
@@ -591,6 +596,10 @@ func main() {
 	// restore of the answered asks that left their specs and the conversion of the decisions
 	// documents, on the step's tick below.
 	decisionStep.UseDocuments(documentService)
+	// R2's daemon-thread step (docs.DaemonThreadStep): it re-places under its issue each node a
+	// release before left under a message of a thread the Legion daemon's session began, once
+	// after this process listens and then on each tick of the block index below.
+	daemonThreadStep := docs.NewDaemonThreadStep(documentService, nil)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
 	// interval below. It appends events and takes no copy lock, so it runs after
@@ -1112,7 +1121,7 @@ func main() {
 	// a build indexed without the block grammar. DISPATCH_TEST_HOLD_BLOCK_INDEX, under the test
 	// hooks, holds it, its tick and its pass, and nothing else.
 	if !boot.HoldBlockIndex {
-		go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+		go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases, daemonThreadStep.Tick)
 	}
 	// The decisions step's tick, for as long as the process runs: the backfill while a row the
 	// release before wrote stands unmarked, the catch-up of what a process of another build
@@ -1417,6 +1426,13 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
+	// The issue room step (docs.IssueRoomStep), once the registry has admitted this process, so it
+	// never runs in a process whose registration was refused: it converts the issues in flight into
+	// their rooms while every live process announces the issue room, on a tick of its own for as
+	// long as the process runs.
+	if !boot.HoldIssueRoomStep {
+		go docs.NewIssueRoomStep(documentService, database, nil).Run(ctx)
+	}
 	// The registry admitted this process, so it serves: the keyword fill starts (above).
 	close(serving)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
@@ -1429,7 +1445,7 @@ func main() {
 		waitFill()
 	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, daemonThreadStep.AfterListen); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}
@@ -1670,6 +1686,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		// kept for one release: decisions-step
 		{"DISPATCH_TEST_HOLD_DECISIONS_STEP", &boot.HoldDecisionsStep},
+		{"DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP", &boot.HoldIssueRoomStep},
 		{"DISPATCH_TEST_HOLD_BLOCK_INDEX", &boot.HoldBlockIndex},
 		{"DISPATCH_TEST_HOLD_BOOT_BACKFILL", &boot.HoldBootBackfill},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},

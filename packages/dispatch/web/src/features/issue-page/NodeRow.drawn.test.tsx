@@ -823,6 +823,34 @@ test("a reading row draws its own word and shape, in an agent's grey", () => {
   expect(shapes, "another shape the page draws is a reading's").not.toContain(reading.shape);
 });
 
+// R21: a kind is told by its word and a shape of its own, never by colour alone, so every type
+// token draws a shape no other token draws, and none draws the dash a token with no shape falls
+// back to. `NodeGlyph.tsx` has no test file of its own, so its shapes are read here, drawn.
+test("every type token has its own glyph path and none falls back", () => {
+  const shapeOf = (token: string) => {
+    const view = render(<NodeGlyph token={token} />);
+    try {
+      return view.container.querySelector("path")?.getAttribute("d") ?? null;
+    } finally {
+      view.unmount();
+    }
+  };
+  const fallback = shapeOf("a token with no shape");
+  const types: readonly string[] = Object.values(GLYPH_TOKENS.types);
+  expect(types).toContain(GLYPH_TOKENS.types.prose);
+  const shapes = new Map(Object.keys(GLYPH_NAMES).map((token) => [token, shapeOf(token)]));
+  expect(
+    types.filter((token) => shapes.get(token) === fallback),
+    "a type token drew the fallback"
+  ).toEqual([]);
+  expect(
+    types.filter((token) =>
+      [...shapes].some(([other, shape]) => other !== token && shape === shapes.get(token))
+    ),
+    "a type token drew a shape another token draws"
+  ).toEqual([]);
+});
+
 // R11: a node the reader folded is the one place a row draws one line of its node: the first
 // line, cut at its first sentence end, and how many nodes it holds, whatever the focus - the
 // focus changes no row's text.

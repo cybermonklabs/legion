@@ -473,6 +473,69 @@ test("a node address no read holds opens the outline's own address without it, w
   }
 });
 
+/** An open question of the issue whose turn is the reader's, alice's, as the asks' read answers
+ *  it: the tree draws it under the issue, after the issue's two threads, and the outline's
+ *  opening lands on it where the stage has not taken the focus first. */
+const WAITING_QUESTION = {
+  anchor: null,
+  answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  author: { id: "planner", kind: "session" },
+  block_id: null,
+  created_at: "2026-11-05T00:00:00Z",
+  edited_at: null,
+  id: "ask-waiting",
+  issue_key: KEY,
+  kind: "question",
+  multiple: false,
+  options: [],
+  question: "Which flag?",
+  state: "open",
+  urgency: "med",
+  waiting_on: "human",
+  waiting_on_person: "alice",
+} as const;
+
+// R9: an id no read holds opens the address without it, the focus included, as that address
+// draws it. Graph's own address takes the stage's first focus on the tree's first row, not on
+// the open question the outline would open on; Graph's address with an id no read holds is
+// replaced by Graph's own, and the stage, which waited on Graph's landing while the address named
+// the id, takes the focus there as on Graph's own address.
+test("Graph's address with an id no read holds opens with the focus where Graph's own address puts it", async () => {
+  spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+  spyOn(api, "listIssueAskThreads").mockResolvedValue([WAITING_QUESTION] as never);
+  answerTree([
+    ...commentNodes(TWO_THREADS),
+    treeNode(WAITING_QUESTION.id, "ask", KEY, { text: WAITING_QUESTION.question }),
+  ]);
+  const graph = presetPath(KEY, "graph");
+  const firstRow = '[data-issue-body] [data-node-row][data-node-id="head-a"]';
+  for (const from of [graph, `${graph}?node=nobody`]) {
+    const view = render(
+      <MemoryRouter initialEntries={[from]}>
+        <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <SeenStage issue={issueDetails()} />
+        </AppProviders>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(seen.address, `${from} opened at another address`).toBe(graph));
+    await waitFor(() =>
+      expect(
+        view.container.querySelector(`[data-node-row][data-node-id="${WAITING_QUESTION.id}"]`),
+        `${from} drew no row of the open question`
+      ).not.toBeNull()
+    );
+    await rowTakesFocus(view, firstRow, `${from}, the first row`);
+    // No later frame moves it to the open question.
+    await waitInAct(50);
+    expect(focusedRow(), `${from} moved the first focus off the first row`).toBe("head-a");
+    cleanup();
+  }
+});
+
 // Every entry the browser makes has the key "default". Under the Verification view a check keeps
 // the view. A plan task under the statement, changed to with the fragment alone under the same
 // key, is no row of the view, which draws a statement's checks alone: the stage draws the outline

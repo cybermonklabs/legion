@@ -13,6 +13,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // API is the live document operation surface used by Dispatch's HTTP handlers.
@@ -57,6 +59,8 @@ type API interface {
 	JoinWrite(ctx context.Context, artifactID string) error
 	NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error)
 	DrainOwedQueries(ctx context.Context, issueKey string) []model.Event
+	MoveBlockText(ctx context.Context, artifactID string, move pmdoc.NodeTextMove, actor model.Actor) (bool, error)
+	HoldStoredBlock(ctx context.Context, address string, block refs.StoredBlock) error
 	Evict(ctx context.Context, artifactID string) error
 	Quiesce(ctx context.Context) error
 }

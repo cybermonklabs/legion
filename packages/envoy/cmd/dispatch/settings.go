@@ -218,6 +218,8 @@ var settings = []setting{
 	// kept for one release: decisions-step
 	{Name: "DISPATCH_TEST_HOLD_DECISIONS_STEP", Required: "no",
 		Description: "Set to `1` so a test process runs no phase of the decisions step - the backfill of the asks and ask followers the release before wrote, and the catch-up of what a process of another build writes - at boot or on its tick, so a test driver's own command (`envoy-dispatch backfill-graph-store`) makes the first move. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP", Required: "no",
+		Description: "Set to `1` so a test process never starts the issue room step - the conversion of each issue in flight into its issue room once every live process announces the issue room - at boot or on its tick, so a test driver's own command (`envoy-dispatch convert-issues`) makes the first move. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HOLD_BLOCK_INDEX", Required: "no",
 		Description: "Set to `1` so a test process never starts the block-index reconciliation - its tick, which marks the documents the event log names, and its pass over the documents owed a block index - while it serves every request as before, so a test driver can let a build of an earlier rule of the block index reach a document this build's backfill marked first. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HOLD_BOOT_BACKFILL", Required: "no",

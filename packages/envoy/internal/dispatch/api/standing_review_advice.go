@@ -34,10 +34,8 @@ type standingReview struct {
 	// own carry sentence rather than anything the person wrote.
 	Reason string `json:"reason,omitempty"`
 	// CarriedFromVersion is set exactly when the review is one Dispatch carried forward to this
-	// version rather than one the person gave on it, and is the version the carry's reason
-	// names: the version the person reviewed, or, where a carry followed a carry, the version
-	// the carry before it named. It is omitted from every other review, which is what says the
-	// person reviewed this version himself.
+	// version rather than one the person gave on it. It is the source the review read answers,
+	// including for a carry of a carry. It is omitted from every other review.
 	CarriedFromVersion int `json:"carried_from_version,omitempty"`
 }
 
@@ -164,12 +162,10 @@ func (read standingSpecRead) asWritten(ledger *docs.Ledger) *standingReview {
 	// A carried review's stored reason is Dispatch's own carry sentence rather than anything
 	// the person wrote, so the carry is reported and the sentence is not: a reader that printed
 	// it would quote Dispatch back to the sender as the reviewer's words.
-	if review.Reason != nil {
-		if from, carried := docs.CarriedFromVersion(*review.Reason); carried {
-			standing.CarriedFromVersion = from
-		} else {
-			standing.Reason = firstCharacters(*review.Reason, standingReviewReasonLimit)
-		}
+	if review.CarriedFromVersion != nil {
+		standing.CarriedFromVersion = *review.CarriedFromVersion
+	} else if review.Reason != nil {
+		standing.Reason = firstCharacters(*review.Reason, standingReviewReasonLimit)
 	}
 	return standing
 }

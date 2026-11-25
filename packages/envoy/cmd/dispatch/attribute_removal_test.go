@@ -30,7 +30,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -175,13 +174,13 @@ func textHash(markdown string) string {
 }
 
 // versionHashOf is the digest the store takes now of the bytes the version number of document holds
-// (artifact_version_text_sha256), and the hash its newest review there holds (docs.ReviewOrder).
+// (artifact_version_text_sha256), and the hash its newest review there holds (model.ReviewOrder).
 func versionHashOf(t *testing.T, ctx context.Context, database *pgx.Conn, document string, number int) (stored, reviewed string) {
 	t.Helper()
 	if err := database.QueryRow(ctx, `
 		select coalesce(artifact_version_text_sha256($1::uuid, $2), ''),
 		       coalesce((select content_sha256 from artifact_reviews where artifact_id = $1::uuid and version = $2
-		                 order by `+docs.ReviewOrder+` limit 1), '')
+		                 order by `+model.ReviewOrder+` limit 1), '')
 	`, document, number).Scan(&stored, &reviewed); err != nil {
 		t.Fatalf("read the hashes of version %d of %s: %v", number, document, err)
 	}

@@ -30,8 +30,8 @@ export function ViewGraphSlot({ onAddressDrawn, ...props }: ViewSlotProps): Reac
 
 /** Whether the view the stage draws lands on the node the address names itself, as the outline
  *  does (`IssueTree`'s landing): the stage says so of Graph's slot, which draws the outline, while
- *  the address names a node beside Graph's own address, and takes no first focus for it
- *  (`stage.tsx`' `ViewStage`). */
+ *  the address names a node beside Graph's own address, and waits on that landing for the first
+ *  focus, which it takes itself once the address has lost the node (`stage.tsx`' `ViewStage`). */
 export const LandsItself = createContext(false);
 
 /** Whether the view the stage draws lands on the address's node itself (`LandsItself`). */

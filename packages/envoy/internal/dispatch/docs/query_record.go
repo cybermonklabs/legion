@@ -166,18 +166,21 @@ type IssueTree struct {
 // children. A node's children are the nodes whose part_of names it at the cut and, for the issue's
 // own node, each ask, comment and message of the issue that the conversation test passes at the
 // cut (refs.ConversationNodes) whose loader names no parent that passes it too. An item whose loader
-// names such a parent hangs under it: a reply under its head, a comment in an ask's thread under
-// the ask, a reply to a block under that block. A comment written on a document whose anchor lies
-// inside a typed block hangs under that block's node - the anchor's own block where it is typed,
-// else its nearest typed ancestor - read through the comment's anchored_in at the cut and, where
-// that address is no node of the walk, through the moved_to tuples that carry it to one (the
-// node in a converted issue's room); every other item hangs under the issue. Under a conversation
-// item, its own blocks come first, in their position order. Then, under every node, the ranked
-// children by increasing rank and the unranked ones - an ask, a comment, a message, a lens, a risk,
-// a result - by when each was made, an item whose row has no node yet by its row's created_at,
-// each tie by the lower address. A rank and an address compare byte for byte. The walk does not
-// enter an issue under the issue, nor a node of another issue, so a parent's record holds no node
-// of a child.
+// names such a parent hangs under it, under what it answers (this issue's spec R8): a comment under
+// coalesce(answers, reply_to, ask_id), so a reply to a reply under the comment it answers, a reply
+// to the head under the head, and a reply that names a block of a comment or a part of an ask under
+// that comment or that ask; a message under coalesce(in_reply_to, replies_to_block), so a reply that
+// names a block of a message under that message. A comment that answers nothing, written on a
+// document whose anchor lies inside a typed block, hangs under that block's node - the anchor's own
+// block where it is typed, else its nearest typed ancestor - read through the comment's anchored_in
+// at the cut and, where that address is no node of the walk, through the moved_to tuples that carry
+// it to one (the node in a converted issue's room); every other item hangs under the issue. Under a
+// conversation item, its own blocks come first, in their position order. Then, under every node,
+// the ranked children by increasing rank and the unranked ones - an ask, a comment, a message, a
+// lens, a risk, a result - by when each was made, an item whose row has no node yet by its row's
+// created_at, each tie by the lower address. A rank and an address compare byte for byte. The walk
+// does not enter an issue under the issue, nor a node of another issue, so a parent's record holds
+// no node of a child.
 //
 // The second part takes each node of the issue whose parent is a node of an issue above
 // (refs.IssueAncestors, refs.TreePlacedAbove), by the parent's address, then rank, then its own

@@ -51,6 +51,9 @@ var subcommands = []subcommand{
 	{"convert-decisions", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return runDecisionsStep(ctx, "convert-decisions", true, args, env, stdout, stderr)
 	}},
+	{"convert-issues", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return convertIssues(ctx, args, env, stdout, stderr)
+	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
 	}},
