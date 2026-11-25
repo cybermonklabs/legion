@@ -31,8 +31,13 @@ bookmark. Make only path-scoped logical commits with
 repository's own test suite as its own commit, and the fail result you record on its check names
 the test and the command that shows it failing. Push your red tests before you complete, as the
 daemon part below says; your handoff is never a commit. While a fix of your task runs, push
-nothing: commit each red test in your working copy, and name its commit id in the fail result
-you record on its check, so the fix takes it.
+nothing to the task's branch: push your red tests before you complete to the branch of your own
+that your task or the fix's message names, with the command it gives, and name that branch and
+each test's commit in your report and in the fail result you record on its check, so the fix
+takes them. If GitHub refuses that push, push nothing else, and name each commit by its id, with
+GitHub's answer. Record each result, and name your `test` record's `head`, at the pull request's
+head that you read before you tested, never at a commit of your own branch, where a result counts
+for nothing and a completion that names it holds the testing step.
 
 ## GitHub attribution
 
