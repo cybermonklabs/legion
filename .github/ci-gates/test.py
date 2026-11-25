@@ -3,14 +3,18 @@
 # tooling-checks.py file beside this one): the script harnesses - each behind a gate of its own
 # (the test.<filter>.py files beside this one), whose reads this job's filter carries too, since
 # the job must be selected for the step to run in it (ci_filter_coverage.gate_read_sets adds
-# them) - and the Bun suites of scripts/. Two go commands are left, the builds Bun tests start:
-# the listener's, and the natsfloor command the pin scanner asks the NATS floor through.
+# them) - and the Bun suites of scripts/, all but three harnesses queued through the harness pool.
+# One go command is left, the build a Bun test starts: the listener's. The natsfloor build
+# nats-image.test.ts starts is lint's, which runs that file on every run; this job's bun test of
+# scripts/e2e/lib leaves it out (E2E_LIB_TESTS).
 GATE = gate("test", "test", runs=[
     script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
-               at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
-    script_run("scripts/e2e/lib/nats-image.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {',
-               at("test", "bun test scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
+               at("test", E2E_LIB_TESTS), ENVOY, ["./cmd/listener"], mode="build"),
 ], reads=reads(
+    # Every harness step but three queues its harness through the pool, and the wait step is the
+    # verdict on them, so a change to the pool must start this job whatever gate it hits.
+    (".github/scripts/harness-pool.sh",
+     f"{at('test', HARNESS_POOL_WAIT_STEP)}, and each harness step above it but three queues its harness through it"),
     ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
     ("packages/dispatch/web/src/fonts/inter/**",
      "`scripts/third-party-notices.test.ts#lists the typeface the Dispatch web app ships, with the SIL Open Font License's text` "
@@ -20,12 +24,12 @@ GATE = gate("test", "test", runs=[
     ("scripts/semantic-line-breaks.ts", "`scripts/semantic-line-breaks.test.ts#Bun.spawnSync` spawns it as `scripts/semantic-line-breaks.test.ts#SCRIPT`"),
     ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
     ("scripts/priorities-seed.ts", "`scripts/priorities-seed.test.ts#seedPriorities` imports it"),
-    ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (`scripts/e2e/lib/script-functions.test.ts#readers` scans scripts/e2e/*.sh and lib/*); "
+    ("scripts/e2e/**", f"{at('test', E2E_LIB_TESTS)} (`scripts/e2e/lib/script-functions.test.ts#readers` scans scripts/e2e/*.sh and lib/*); "
                        f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
     (CONTRACTS_SRC, "`scripts/e2e/lib/envoy-bridge.ts#EnvelopeSchema` and `scripts/e2e/lib/envoy-bridge.ts#githubSubject`, "
                     "`scripts/e2e/lib/session-settings-services.ts#agentStreamControlSubject`; `scripts/dispatch/ask-census.ts#ArtifactReviewEventPayload`, "
                     f"which {at('test', 'Test the Dispatch census script')} loads; `scripts/priorities-seed.ts#ArtifactVersionText`"),
-    (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
+    (TEST_FIXTURES_SRC, f"{at('test', E2E_LIB_TESTS)} and the other bun test steps import @legion/test-fixtures"),
     # The envoy-client sources, and cipher-client's with them, are the shared read below:
     # `scripts/e2e/lib/nats-stream.ts#natsAuthOptions`, `scripts/e2e/lib/operator-dispatch.ts#sessionDispatchSettings`,
     # `scripts/e2e/lib/envoy-bridge.ts#natsAuthOptions` and `scripts/dispatch/ask-census.ts#DispatchClient` import
