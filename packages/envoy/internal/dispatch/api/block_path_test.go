@@ -15,6 +15,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -363,7 +364,7 @@ func readingServer(t *testing.T, database *store.Store, persist docs.VersionedSt
 	t.Helper()
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Persistence: persist, Events: broker})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	var service docs.API = documents
 	if wrap != nil {
 		service = wrap(documents)

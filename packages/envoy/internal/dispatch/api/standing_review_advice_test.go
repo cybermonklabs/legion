@@ -56,7 +56,7 @@ func askAnchoredStandingReview(t *testing.T, handler http.Handler, issueKey stri
 
 // approveThenEditLive writes restoreSpec into a new issue's spec, has alice approve version 1 and
 // then changes the spec's paragraph in the live document, storing no version: the documents
-// settle nothing for an hour, and the change goes into the live document as an upload's does
+// settle nothing for a day, and the change goes into the live document as an upload's does
 // (replaceDocumentText), so version 1 stays the newest the table holds until a write snapshots
 // the document. It answers the handler, the issue's key, its spec's id and a writer that puts
 // markdown into the live document the same way.

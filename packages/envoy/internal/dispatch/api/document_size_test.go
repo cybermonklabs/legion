@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -87,7 +88,7 @@ func TestArtifactListsGiveANearCapDocumentsStoredSizeWithoutRenderingIt(t *testi
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
 		service := docs.New(docs.Deps{Store: database, Persistence: broken, Settle: time.Hour})
-		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 		watch.API = service
 		return watch
 	})

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -168,7 +169,7 @@ func TestNoLargeStoreWritePassesAnArgumentTheReleaseCannotCount(t *testing.T) {
 	options.envoyURL = listener.URL
 	handler, database, _, srv := newRegisteredTestServer(t, options)
 	editor := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: time.Hour})
-	t.Cleanup(func() { _ = editor.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), editor) })
 	issue := createInteractionIssue(t, handler, "LARGE", "Large writes", "A spec.")
 	rig := largeWriteRig{
 		handler: handler, database: database, issueKey: issue.Key, specID: issue.PrimaryArtifactID, editor: editor,
