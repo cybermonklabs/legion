@@ -66,6 +66,14 @@ generated.
   that ends it, and the set of holds a client keeps. Not a response shape: they are the cache's
   rule about when a held read may be asked again, and `WriteEvent` is a test of a `DispatchEvent`
   (below), not a body.
+- **`corrected-post.ts`'s `CorrectedPost`, `PostMark`, `KeptCorrection`, `FamilyWrite`,
+  `RefusalWrite`, `RenamedVersion` and `PostEvent`, and `queries.ts`'s `ReferenceTargetsAnswer`**
+  (main's #3512) — how the cache writes a comment's or a message's correction into every answer
+  that holds a copy of it. Not a response shape: `CorrectedPost`, `PostMark` and `KeptCorrection`
+  are the cache's record of a correction and what it was kept for, `FamilyWrite` and
+  `RefusalWrite` are functions, `RenamedVersion` and `PostEvent` are read out of the generated
+  event payloads, and `ReferenceTargetsAnswer` is the names read's cached answer, the generated
+  `ReferenceTarget`s of every batch the query sends joined into one list.
 - **An imported or re-exported name is a hit of the grep and not a declaration of its own.**
   `IdempotencyLandedCode`, `InboxThreadKind`, `DispatchServiceErrorShape` and `Sleep` in
   `client.ts` are `@legion/contracts`', and the `paths.ts` names it imports are that file's; `Query`,
@@ -75,9 +83,10 @@ generated.
   `FakeLiveSockets` in `live-socket.test.ts` are `web/src/__tests__/live-socket-harness.ts`'s,
   the stand-in socket that test drives its subject with and the set of them a test installs. Not a
   response shape: each is read here under the name of the package or module that declares it.
-- **A test file's own type is not a wire shape either**: `query-refresh.test.ts`'s `ServedQuery`
-  and `argument-refusal.test.ts`'s `Refusal`. Not a response shape: each is the stand-in or the
-  table a test drives its subject with.
+- **A test file's own type is not a wire shape either**: `query-refresh.test.ts`'s `ServedQuery`,
+  `argument-refusal.test.ts`'s `Refusal` and `corrected-post-families.test.ts`'s `Binding`,
+  `CopyMarks`, `KeySite`, `Source`, `WriteRow` and `Resolved`. Not a response shape: each is the
+  stand-in or the table a test drives its subject with.
 
 ## `e2e`
 
