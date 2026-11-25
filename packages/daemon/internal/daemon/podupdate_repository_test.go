@@ -88,6 +88,7 @@ func (r *podUpdateRig) podRepository(repo string) {
 // what the pod replacing it will be built from. Nothing else of the pod has drifted, so the
 // reason the correction adds is the whole of the round's reasons.
 func TestRepositoryCorrectionOpensAnUpdateRoundNamingBothRepositories(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
 
@@ -131,6 +132,7 @@ func TestRepositoryCorrectionOpensAnUpdateRoundNamingBothRepositories(t *testing
 // correction into the new pod: the clone it provisions, the branch it checks out, and the owner
 // whose gh directories and token the pod holds all come from that one repository.
 func TestRepositoryCorrectionReplacesThePodAndRelaunchesEveryRoleOnItsSession(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	sessions := map[claim.Role]string{}
@@ -190,6 +192,7 @@ func TestRepositoryCorrectionReplacesThePodAndRelaunchesEveryRoleOnItsSession(t 
 // that pod. Read per claim, a group of three would ask the runtime and the record three times for
 // one answer.
 func TestRepositoryCorrectionOpensOneRoundForTheWholeGroup(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester), readyWorker(claim.RoleReviewer))
 	rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
@@ -216,6 +219,7 @@ func TestRepositoryCorrectionOpensOneRoundForTheWholeGroup(t *testing.T) {
 // something drifted: a pod that answers no repository and a runtime that cannot be asked each add
 // nothing, and no round opens over either.
 func TestRepositoryCorrectionAddsNoReasonWhereNothingDisagrees(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		pod      string
 		recorded string
@@ -279,6 +283,7 @@ func TestRepositoryCorrectionAddsNoReasonWhereNothingDisagrees(t *testing.T) {
 // built from the `from` reads as on the record's repository (repositories.left), so no round
 // opens and no pod is replaced.
 func TestTheRenamePassAndTheEventAfterItNamingTheOldNameCorrectNothingAndReplaceNoPod(t *testing.T) {
+	t.Parallel()
 	const renamedTo = "zeta/widgets"
 	renames := ghrepo.MustRenames(ghrepo.MustRename(podUpdateRepo, renamedTo))
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -330,6 +335,7 @@ func TestTheRenamePassAndTheEventAfterItNamingTheOldNameCorrectNothingAndReplace
 // read through another, would disagree whenever the two answers differ. The two claims here
 // answer two repositories so that a read through the wrong one shows.
 func TestThePodsRepositoryIsReadThroughTheSameClaimInAnyOrder(t *testing.T) {
+	t.Parallel()
 	rt := fake.NewRuntime()
 	architect := claim.Token(podUpdateIssue + "-architect")
 	implementer := claim.Token(podUpdateIssue + "-implementer")
@@ -360,6 +366,7 @@ func TestThePodsRepositoryIsReadThroughTheSameClaimInAnyOrder(t *testing.T) {
 // message still names the old repository's workspace and its issue branch, beside the repository
 // the record holds.
 func TestAPodGoneOnARepositoryRoundReadsThePodsRepositoryOffTheRound(t *testing.T) {
+	t.Parallel()
 	roles := []podUpdateRole{readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester)}
 	for i := range roles {
 		roles[i].round, roles[i].reasons, roles[i].repository = podUpdateRound, podUpdateDrift, podUpdateRepo
@@ -394,6 +401,7 @@ func TestAPodGoneOnARepositoryRoundReadsThePodsRepositoryOffTheRound(t *testing.
 // the repository the gone pod was, so the message is the one of an issue that never moved, but
 // for its reasons.
 func TestAPodGoneAfterASecondCorrectionNamesThePodsRepositoryAndTheRecordsNow(t *testing.T) {
+	t.Parallel()
 	const third = "zeta/gadgets"
 	for _, tc := range []struct {
 		name string
@@ -436,6 +444,7 @@ func TestAPodGoneAfterASecondCorrectionNamesThePodsRepositoryAndTheRecordsNow(t 
 // of podUpdateRepo, and on a kept volume its workspace, and names podUpdateCorrectedRepo as the
 // new pod's origin. Its reasons name the image alone: a round's terms are fixed at its open.
 func TestACorrectionWhileAnImageRoundRunsNamesThePodsRepositoryWhenThePodGoes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// created is when the issue's kept Sandbox was made, zero for an ephemeral volume.
@@ -482,6 +491,7 @@ func TestACorrectionWhileAnImageRoundRunsNamesThePodsRepositoryWhenThePodGoes(t 
 // its issue branch at the new pod's origin, which is the other repository. The next tick reads the
 // repository and opens the round with it recorded.
 func TestARoundOpensOnlyOnATickThatReadThePodsRepository(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -520,6 +530,7 @@ func TestARoundOpensOnlyOnATickThatReadThePodsRepository(t *testing.T) {
 // (roundMove). The control is the same round of an issue that never moved, whose message is the
 // text of every other such replacement, word for word.
 func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved(t *testing.T) {
+	t.Parallel()
 	madeBefore := podUpdateStart.Add(-time.Hour)
 	const (
 		// atOrigin and ofThePods are the words the message names the work that no branch holds
@@ -633,6 +644,7 @@ const (
 // could not read the record. Control: with the failed read taken as no move, the message sends
 // each role to its issue branch at origin.
 func TestAPodGoneWhileTheRecordCannotBeReadNamesThePodsRepository(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// created is when the issue's kept Sandbox was made, zero for an ephemeral volume.
@@ -676,6 +688,7 @@ func TestAPodGoneWhileTheRecordCannotBeReadNamesThePodsRepository(t *testing.T) 
 // sentence is the one of a gone pod whose record could not be read. Control: with the failed read
 // taken as no move, the message names that work at origin.
 func TestAReplacementWhileTheRecordCannotBeReadNamesThePodsRepository(t *testing.T) {
+	t.Parallel()
 	const held = "no branch or tag of the repository `" + podUpdateRepo + "` holds"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon))
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})

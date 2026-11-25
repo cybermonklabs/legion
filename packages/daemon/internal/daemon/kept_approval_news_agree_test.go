@@ -23,6 +23,7 @@ import (
 // kept approval is named and the news's ask of the predicate stands too, but the news drops the
 // item, since a gate that is gone holds no approval to tell an audience of.
 func TestAKeptApprovalAndANewsItemAgreeOnThePersonsWord(t *testing.T) {
+	t.Parallel()
 	const (
 		tree     = "LEGION-208"
 		document = "artifact-208"

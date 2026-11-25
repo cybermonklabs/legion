@@ -51,6 +51,7 @@ func (r *idleRig) corrects(t *testing.T, repo, branch string) {
 // naming both repositories), and the round asks every worker to push its work before the pod goes.
 // The hold is what leaves the pod standing for it.
 func TestRepositoryCorrectionHoldsTheIdlePodUntilTheRoundReplacesIt(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.podBuiltFrom(rig.issue.Repo)
@@ -88,6 +89,7 @@ func TestRepositoryCorrectionHoldsTheIdlePodUntilTheRoundReplacesIt(t *testing.T
 // that has drifted and nothing else, and a deployment where no issue has moved releases every
 // idle pod of it.
 func TestRepositoryCorrectionHoldsNoPodThatAgreesWithItsRecord(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.podBuiltFrom(rig.issue.Repo)

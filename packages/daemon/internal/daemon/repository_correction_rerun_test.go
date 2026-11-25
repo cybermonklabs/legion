@@ -66,6 +66,7 @@ func (r *correctionRig) childStatusWrite(seq int64, status, resolved string) {
 // the workflow's own launch read (workflowRuntime.issueLaunchRepository) on the same database, as
 // newLeftPullRequestRig builds it, so nothing between the record and the task is faked.
 func TestRepositoryCorrectionFollowsRerunChildIntoTheFirstLaunch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newCorrectionRig(t)
 	// The api harness's tree: the project admits two issues, the root holds one slot and its spec

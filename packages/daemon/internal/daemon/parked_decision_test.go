@@ -186,6 +186,7 @@ func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
 // person's word. The control is a changes request Dispatch recorded after that approval, which is
 // the person's word and is relayed.
 func TestAChangesRequestAnApprovalWithNoSequenceFollowedIsNotRelayed(t *testing.T) {
+	t.Parallel()
 	approvedAt := time.Date(2026, 11, 13, 9, 5, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name    string

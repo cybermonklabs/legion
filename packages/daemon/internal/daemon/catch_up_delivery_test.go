@@ -83,6 +83,7 @@ func (d *catchUpDelivery) deliver(t *testing.T) (record.Notice, []record.Notice)
 // registration it was delivered after: the document and its version, whether the step had a
 // registration when the row was queued or none.
 func TestACatchUpQueuedBeforeAGateRegistrationReportsTheRegistrationItIsDeliveredAfter(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		before func(*testing.T, *catchUpDelivery)
@@ -119,6 +120,7 @@ func TestACatchUpQueuedBeforeAGateRegistrationReportsTheRegistrationItIsDelivere
 // architect reads: the delivery lists the tree as it stands then, and its reason names the new
 // issue when it waits in accepting for the architect's acceptance.
 func TestACatchUpListsAnIssueItsTreeGainedBeforeItsDelivery(t *testing.T) {
+	t.Parallel()
 	d := newCatchUpDelivery(t)
 	keptCatchUp(t, d.pool, d.records, "LEGION-1", 1, d.now)
 	root := "LEGION-1"
@@ -150,6 +152,7 @@ func TestACatchUpListsAnIssueItsTreeGainedBeforeItsDelivery(t *testing.T) {
 // Relaunch), and the publish carries it, so a re-held copy, which carries only what the publish
 // carried, keeps it for its own delivery.
 func TestACatchUpKeepsTheRelaunchSentenceItWasQueuedWithWhenItIsDelivered(t *testing.T) {
+	t.Parallel()
 	const sentence = "Your previous process ended because the process died: gone. The subagent that you started stopped with that process."
 	d := newCatchUpDelivery(t)
 	d.write(t, "queue the relaunched architect's catch-up", func(ctx context.Context, tx pgx.Tx) error {
@@ -188,6 +191,7 @@ func TestACatchUpKeepsTheRelaunchSentenceItWasQueuedWithWhenItIsDelivered(t *tes
 // of them in the record (handed_over_roots, which workflow.TreeCatchUp reads) between the queueing
 // and the delivery, at the root's own generation, so that nothing supersedes the row.
 func TestACatchUpStatesTheHandOverItsRootRecordsWhenItIsDelivered(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name              string
 		before, after     *record.HandedOverRoot
@@ -239,6 +243,7 @@ func TestACatchUpStatesTheHandOverItsRootRecordsWhenItIsDelivered(t *testing.T) 
 // again, so the recomposition, which states the root's generation now, cannot hide the advance.
 // Nothing is published.
 func TestACatchUpWhoseRootAdvancedAGenerationBeforeItsDeliveryIsStillSuperseded(t *testing.T) {
+	t.Parallel()
 	d := newCatchUpDelivery(t)
 	keptCatchUp(t, d.pool, d.records, "LEGION-1", 1, d.now)
 	d.write(t, "re-admit the root at generation 2", func(ctx context.Context, tx pgx.Tx) error {
@@ -266,6 +271,7 @@ func TestACatchUpWhoseRootAdvancedAGenerationBeforeItsDeliveryIsStillSuperseded(
 // any of them. A decision kept after the queueing is no part of this telling: the catch-up does
 // not name it, and it stays kept, unclaimed, for the architect's next start or catch-up to name.
 func TestACatchUpPublishesAndSettlesTheKeptDecisionsItNamedWhenItWasQueued(t *testing.T) {
+	t.Parallel()
 	d := newCatchUpDelivery(t)
 	named, later := "dispatch://LEGION-1/ask/ask-named", "dispatch://LEGION-1/ask/ask-later"
 	keepDecision(t, d.pool, d.records, "LEGION-1", named, time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC))
@@ -302,6 +308,7 @@ func TestACatchUpPublishesAndSettlesTheKeptDecisionsItNamedWhenItWasQueued(t *te
 // row's and the publish forgets that row as it would have. The control is the same row delivered
 // with no approval, which names the request.
 func TestACatchUpDeliveredAfterAnApprovalNamesNoChangesRequestTheApprovalFollowed(t *testing.T) {
+	t.Parallel()
 	for _, approve := range []bool{true, false} {
 		t.Run(fmt.Sprintf("approved before the delivery: %v", approve), func(t *testing.T) {
 			d := newCatchUpDelivery(t)

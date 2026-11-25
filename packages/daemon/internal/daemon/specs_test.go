@@ -330,6 +330,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 // launch that cannot read its repository always did, and no launch can be told it left the
 // repository it works.
 func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

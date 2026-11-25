@@ -147,6 +147,7 @@ func answeredByChanges(r *mainPathRig) int64 {
 // changes request the approval followed is not named (classify.ReviewSuperseded): it names the
 // approval, and asks for no revision and no registration of version 13.
 func TestAResumeAnsweredByAChangesRequestAnApprovalSupersededNamesTheApproval(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	id := answeredByChanges(r)
 	r.review(intake.DispatchArtifactVersion, 19, "")
@@ -164,6 +165,7 @@ func TestAResumeAnsweredByAChangesRequestAnApprovalSupersededNamesTheApproval(t 
 // The control of the replay: with no approval after it, the changes request is the person's
 // newest review, and the resume task written at its send names it and asks for the revision.
 func TestAResumeAnsweredByAChangesRequestStillStandingNamesIt(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	id := answeredByChanges(r)
 	r.runStart(id)
@@ -177,6 +179,7 @@ func TestAResumeAnsweredByAChangesRequestStillStandingNamesIt(t *testing.T) {
 // a person's answer of another question queued while the gate was closed is written at its send,
 // and names neither the request the approval answered nor an unapproved version.
 func TestAResumeAfterTheSecondOfTwoRequestsOfOneVersionIsApprovedNamesNeitherStaleRequestNorUnapprovedVersion(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.waitOn(record.Awaiting{Ask: mainPathAsk, Since: record.EventMark{Seq: 10}})
 	r.putSpecGate(record.DesignGate{LatestVersion: 13})
@@ -204,6 +207,7 @@ func TestAResumeAfterTheSecondOfTwoRequestsOfOneVersionIsApprovedNamesNeitherSta
 // 13 and both delivered after the person wrote version 19 and approved it, state the same version:
 // each is composed where it is delivered.
 func TestAResumeAndTheCatchUpOfItsLaunchStateOneGateVersion(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	id := answeredByChanges(r)
 	now := time.Now()
@@ -252,6 +256,7 @@ func TestAResumeAndTheCatchUpOfItsLaunchStateOneGateVersion(t *testing.T) {
 // person's other decision and without it. With the gate as the re-admission left it, the sentence
 // is sent.
 func TestAKeptApprovalALaterApprovalSupersededIsDroppedFromTheHeldTask(t *testing.T) {
+	t.Parallel()
 	const sentence = "request approval of version 3"
 	for _, approved := range []bool{true, false} {
 		t.Run(fmt.Sprintf("approved since %t", approved), func(t *testing.T) {
@@ -286,6 +291,7 @@ func TestAKeptApprovalALaterApprovalSupersededIsDroppedFromTheHeldTask(t *testin
 // A held task a daemon of an earlier release queued carries no resume mark
 // (supervise.Delivery.Resume): it is sent as the text it holds, whatever the gate says now.
 func TestAHeldTaskWithNoResumeMarkIsSentAsItsText(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	root := r.waitingRoot()
 	root.Status = "in_progress"

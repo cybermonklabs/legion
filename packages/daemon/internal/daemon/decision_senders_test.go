@@ -194,6 +194,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // any of them ask the predicate first.
 // So this test stands until one can; delete it then.
 func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
+	t.Parallel()
 	walk := readDecisionWalk(t)
 	kinds := walk.specDecisionKinds(t)
 	for _, kind := range kinds {

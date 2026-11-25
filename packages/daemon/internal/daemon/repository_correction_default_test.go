@@ -147,6 +147,7 @@ func (r *defaultChangeRig) issue(key string) record.Issue {
 // each is the engine's own read at that issue's correction, which is what a single-issue
 // correction does; nothing here is a batch with one moment for the group.
 func TestRepositoryCorrectionFollowsAChangeOfTheProjectsDefaultRepositoryForEveryIssueThatInheritsIt(t *testing.T) {
+	t.Parallel()
 	r := newDefaultChangeRig(t)
 
 	// Dispatch's default for the project is acme/tools now, so every issue that names no
@@ -207,6 +208,7 @@ const (
 // its own pod, its own round, its own two repositories in the reasons. No batch path opens a
 // round over two issues, and no issue's round names another issue's pod.
 func TestRepositoryCorrectionOpensAnOrdinaryRoundForEachIssueADefaultChangeMoved(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	second := rig.secondIssue(defaultChangeSecondIssue, defaultChangeSecondPod)
 

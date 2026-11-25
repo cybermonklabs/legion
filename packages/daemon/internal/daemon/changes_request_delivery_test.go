@@ -38,6 +38,7 @@ import (
 // for another, which the person approved at the version reviewed: each is published, since only
 // an approval of the document reviewed can answer the review.
 func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
+	t.Parallel()
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactChangesRequested, Version: 3,
 		Reason: "name the rollback path", Actor: alice, Mark: record.EventMark{Seq: 8, At: reviewed}}
@@ -240,6 +241,7 @@ func soleNoticeRow(t *testing.T, pool *store.Pool, kind record.NoticeKind) queue
 // gate before the relay asked, so it is no longer the person's word, and the one predicate answers
 // a relayed approval as it answers every approval.
 func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T) {
+	t.Parallel()
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactChangesRequested, Version: 3,
 		Reason: "name the rollback path", Actor: alice, Mark: record.EventMark{Seq: 8, At: reviewed}}
@@ -395,6 +397,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 // it asks the gates in. The controls are requests no approval followed, which the clear leaves
 // and their holder is told.
 func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
+	t.Parallel()
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1",
 		Kind: intake.DispatchArtifactChangesRequested, Version: 3, Reason: "name the rollback path",
@@ -585,6 +588,7 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 // step alone, which the approval of artifact-2 answers: the clear forgets it while the relay
 // stands.
 func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(t *testing.T) {
+	t.Parallel()
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1",
 		Kind: intake.DispatchArtifactChangesRequested, Version: 3, Reason: "name the rollback path",
