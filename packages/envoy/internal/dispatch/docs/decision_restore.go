@@ -54,8 +54,10 @@ type DecisionIssue struct {
 	Restored []RestoredAsk
 	// Declined is each answered ask the restore neither returned nor moved because a person
 	// removed its block: from the spec, for an ask of the main shape, the version that left it out
-	// being theirs (removalOf); or from the decisions document since the finder read it, for an
-	// ask the restore would move, as its node's removed_by holds that removal (nodeRemoval).
+	// being theirs (removalOf); or from the decisions document, for an ask the restore would move.
+	// That removal is the one its node's removed_by holds (nodeRemoval), or one the document's room
+	// holds that no settlement has versioned yet, which the version of that document the pass
+	// writes states (holdDecisionsRoomRemovals, writeDecisionsDocument).
 	Declined []DeclinedAsk
 	// Decisions, Readings, Dropped, Removed and Left count the sections of the issue's decisions
 	// document by what became of each: a decision block, a reading under an ask, a section R9's
@@ -103,9 +105,12 @@ const (
 )
 
 // DeclinedAsk is one answered ask the restore declined to write into its spec: its id, the person
-// who removed its block, and the version that left the block out, which is that person's: a
-// version of the spec for an ask of the main shape, and of the decisions document for one the
-// restore would move, 0 where the event that recorded the removal names no version.
+// who removed its block, and a version. For an ask of the main shape it is the person's version of
+// the spec that left the block out. For an ask the restore would move it is the person's version
+// of the decisions document that left the block out, 0 where the event that recorded the removal
+// names no version. For a deletion in the decisions document's room that no settlement had
+// versioned, it is the version of that document the pass wrote, which states the removal
+// (writeDecisionsDocument).
 //
 // kept for one release: decisions-step
 type DeclinedAsk struct {
@@ -309,9 +314,15 @@ type issueRestore struct {
 	restores  []*restoredBlock
 	// declined is each answered ask the pass neither returns nor moves, a person having removed its
 	// block (removalOf, nodeRemoval), and removed every ask of the issue a person removed: one whose
-	// node holds an asserted removed_by, or one the pass declines.
+	// node holds an asserted removed_by, one the pass declines, or one of roomRemovals.
 	declined []*declinedAsk
 	removed  map[string]bool
+	// roomRemovals is each answered ask whose block a person's browser deleted from the decisions
+	// document's room before a settlement versioned the deletion, with that person, by ask id
+	// (holdDecisionsRoomRemovals). The transaction's ledger holds each of these removals, and the
+	// version of the document the pass writes states it (writeDecisionsDocument, removalsOf), so
+	// none of them is in declined.
+	roomRemovals map[string]string
 	// present is the shaped pointers and the readings this pass writes into an answered ask block
 	// a document of the issue holds already, by the document's id.
 	present  map[string]*presentEdits
@@ -373,9 +384,12 @@ func (r *issueRestore) presentIn(document string) *presentEdits {
 // at once (joinAtOnce), so each read below sees every write made before it: the restore of work,
 // the answered asks and the decisions document's ask blocks the finder read for it, and, where
 // convert, the conversion of its decisions document and that document's retirement once it holds
-// no section and no ask block. It writes nothing that it does not report, and its caller commits
-// or rolls back: a pass that would take a section out of the decisions document without writing
-// the reading it became fails (refuseUnwrittenReadings).
+// no section and no ask block. Before it plans the restore, it holds each removal of an answered
+// ask that a person's browser made in the decisions document's room and that no settlement has
+// versioned yet (holdDecisionsRoomRemovals): the pass moves no such ask, and reports it declined.
+// It writes nothing that it does not report, and its caller commits or rolls back: a pass that
+// would take a section out of the decisions document without writing the reading it became fails
+// (refuseUnwrittenReadings).
 //
 // kept for one release: decisions-step
 func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue string, work []graphcensus.RestoreWork, convert bool) (DecisionIssue, error) {
@@ -410,12 +424,19 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 		r.decisions = &decisions
 	}
 	// The issue's owner lock first, as every writer of its documents takes it (lockArtifactOwner),
-	// then the rows of its asks, then each document's live write.
+	// then the rows of its asks, then each document's live write: the decisions document's first,
+	// which the read of its room's removals opens (holdDecisionsRoomRemovals), then the spec's and
+	// each other document's.
 	if _, _, err := lockArtifactOwner(ctx, tx, spec.id); err != nil {
 		return result, err
 	}
 	if err := r.readState(ctx); err != nil {
 		return result, err
+	}
+	if r.decisions != nil {
+		if err := r.holdDecisionsRoomRemovals(ctx); err != nil {
+			return result, err
+		}
 	}
 	if err := r.planRestores(ctx, work); err != nil {
 		return result, err
@@ -583,6 +604,55 @@ func (r *issueRestore) readState(ctx context.Context) error {
 	return blocks.Err()
 }
 
+// holdDecisionsRoomRemovals holds the removals of answered asks that a person's browser made in
+// the decisions document's room and that no settlement has versioned yet, before the pass plans
+// what it moves (planRestores). The room's settlement waits a settle delay after the last edit.
+// Until it runs, no version records such a deletion, the ask's node holds no removed_by, and the
+// block index still holds the block, so the finder reads the ask as work of the second shape. The
+// read is an operation of the pass's own live write of the document that changes nothing
+// (applyLive): it reads the room as that write's version reads it (liveWrite.readTree,
+// roomReadTree), and it opens the decisions document's live write before the spec's, in the
+// issue's lock order. With the room's pending authors (pendingRoomAuthors), it holds each such
+// removal on the transaction's ledger as the person those authors name, as every writer that
+// versions a room in a settlement's place holds it (holdRoomRemovals). Each held ask whose node
+// holds no removal yet goes in roomRemovals and in removed: the pass moves no block of it
+// (planRestores, planDocumentMoves), its row keeps naming the decisions document, and the
+// conversion reads it as removed (planSection). The version of the document the pass writes
+// states the removal on the ask's node (writeDecisionsDocument, removalsOf). Authors that name no
+// person hold nothing, so an agent's drop still moves. An ask whose node holds a removal already
+// is declined with that removal (nodeRemoval).
+//
+// kept for one release: decisions-step
+func (r *issueRestore) holdDecisionsRoomRemovals(ctx context.Context) error {
+	var live *pmdoc.Node
+	err := r.service.applyLive(ctx, r.decisions.id, DecisionStepActor, func(_ *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+		live = current.Node()
+		return nil
+	})
+	if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
+		return err
+	}
+	authors, err := pendingRoomAuthors(ctx, r.tx, r.decisions.id, joinedLiveWrite(ctx, r.decisions.id))
+	if err != nil {
+		return err
+	}
+	if err := holdRoomRemovals(ctx, r.tx, r.decisions.id, live, authors); err != nil {
+		return err
+	}
+	r.roomRemovals = map[string]string{}
+	ledger := ledgerFrom(ctx)
+	if ledger == nil {
+		return nil
+	}
+	for ask, removal := range ledger.removals[r.decisions.id] {
+		if !r.removed[ask] {
+			r.roomRemovals[ask] = removal.person
+			r.removed[ask] = true
+		}
+	}
+	return nil
+}
+
 // planRestores turns the finder's work into the blocks the restore writes, each item read again
 // under the issue's lock, since the finder read the whole pass's work before it took any: each
 // ask still as the finder read it once its row is locked - its block where the finder saw it, and,
@@ -598,9 +668,12 @@ func (r *issueRestore) readState(ctx context.Context) error {
 // removed_by since the finder read it is passed over: a returning ask a person took out of the
 // spec, and an ask a person deleted from the decisions document while the step ran, which is
 // declined with the removal its node holds (nodeRemoval), its row left naming the block it left.
-// A returning ask the version that left its block out shows a person removed is declined too
-// (removalOf). writeFacts records each decline on its node, and the result reports it. An ask the
-// restore moves out of the decisions document moves from the address the finder read
+// So is an ask whose block a person's browser deleted from the decisions document's room before a
+// settlement versioned the deletion (roomRemovals): its row keeps naming the block it left, and
+// writeDecisionsDocument declines it once the version it writes states the removal. A returning
+// ask the version that left its block out shows a person removed is declined too (removalOf).
+// writeFacts records each other decline on its node, and the result reports every decline. An
+// ask the restore moves out of the decisions document moves from the address the finder read
 // (RestoreWork.Address), which its moved_to and its node's relations name whether or not the
 // document still holds the block (writeFacts). The read of who wrote the version that left a
 // block out (removalOf) is the main shape's alone: a block the decisions document holds moves
@@ -644,6 +717,9 @@ func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.Rest
 				continue
 			}
 			if r.removed[item.Ask] {
+				if _, held := r.roomRemovals[item.Ask]; held {
+					continue
+				}
 				declined, err := r.nodeRemoval(ctx, item.Ask)
 				if err != nil {
 					return err
@@ -685,7 +761,10 @@ func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.Rest
 // collision rule). A block no row names whose id the spec holds as an ask block - a copy of the
 // spec's ask, which has no ask of its own - joins that block instead: no block is written, since
 // under a fresh id the spec's next settlement would open it as a new ask beside the one it copies,
-// and its address takes its one moved_to to the spec's block, which answers the live ask.
+// and its address takes its one moved_to to the spec's block, which answers the live ask. A block
+// whose row names an ask a person removed (removed) does not move: its ask is never written into
+// the spec (planRestores), and a deletion of its block in the room that no settlement has
+// versioned is among those (holdDecisionsRoomRemovals).
 //
 // kept for one release: decisions-step
 func (r *issueRestore) planDocumentMoves(ctx context.Context) error {
@@ -693,10 +772,14 @@ func (r *issueRestore) planDocumentMoves(ctx context.Context) error {
 		if r.movesBlock(id) {
 			continue
 		}
+		row, named := r.decisionsRow(id)
+		if named && r.removed[row.ID] {
+			continue
+		}
 		restore := &restoredBlock{id: id, work: graphcensus.RestoreWork{
 			Shape: graphcensus.RestoreMoves, Issue: r.issue, BlockID: id, Spec: r.spec.refKey,
 		}}
-		if row, named := r.decisionsRow(id); named {
+		if named {
 			restore.row, restore.work.Ask = row, row.ID
 			restore.from = refs.BlockAddress(r.decisions.refKey, id)
 			restore.work.Address = restore.from
@@ -1062,8 +1145,12 @@ func (r *issueRestore) askBlockOf(ask string) (issueDocument, string, bool) {
 // store off each ask block the document keeps that has no ask row and is no copy of an ask
 // (withoutAsklessAskAttributes), so its version holds none of the eight there (R10). It records
 // whether the document still holds an ask block once those are taken out (decisionsHoldAsks),
-// which keeps it from its retirement. It answers the event of that version, NoEvent where it
-// wrote none.
+// which keeps it from its retirement. Where the pass holds a person's removal from the document's
+// room (roomRemovals), it writes the version even where it takes no block out. That version states
+// each such removal on the ask's node (removalsOf), so a conversion that then retires the document
+// never retires it with the deletion unstated. It reports each such ask declined, to the person and
+// at that version. A pass that holds such a removal and writes no version fails, so no pass
+// commits the removal unstated. It answers the event of that version, NoEvent where it wrote none.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error) {
@@ -1116,12 +1203,23 @@ func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error
 		return err
 	})
 	if errors.Is(err, websocket.ErrNoChanges) || err == nil && len(drop) == 0 {
-		return graphstore.NoEvent, nil
-	}
-	if err != nil {
+		if len(r.roomRemovals) == 0 {
+			return graphstore.NoEvent, nil
+		}
+	} else if err != nil {
 		return graphstore.NoEvent, err
 	}
-	return r.writeVersion(ctx, *r.decisions, &r.result.DecisionsVersion)
+	event, err := r.writeVersion(ctx, *r.decisions, &r.result.DecisionsVersion)
+	if err != nil || len(r.roomRemovals) == 0 {
+		return event, err
+	}
+	if event == graphstore.NoEvent {
+		return graphstore.NoEvent, fmt.Errorf("the decisions step holds a person's removal of an answered ask from the decisions document of %s, and wrote no version of that document to state it", r.issue)
+	}
+	for _, ask := range slices.Sorted(maps.Keys(r.roomRemovals)) {
+		r.result.Declined = append(r.result.Declined, DeclinedAsk{Ask: ask, Person: r.roomRemovals[ask], Version: r.result.DecisionsVersion})
+	}
+	return event, nil
 }
 
 // ownedByDecisions reports whether an ask names a block of the decisions document under id as its
@@ -2601,7 +2699,8 @@ func (r *issueRestore) stepCasesFor(document string) decisionStepCases {
 // ask's node to the person who removed its block, with that person's node, under the event that
 // recorded the person's version and at its time, so the finder leaves a returning ask out from
 // then on; for a move it declined, that is the removal its node holds, which the append restates
-// under its own event and so leaves as it stands.
+// under its own event and so leaves as it stands. It appends nothing for an ask of roomRemovals:
+// the version of the decisions document that the pass wrote states it (writeDecisionsDocument).
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
