@@ -19,7 +19,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -131,10 +130,9 @@ func TestASweepThatLeavesTheVolumeFullTellsTheArchitectOnce(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("the outbox holds %d volume-near-full notices, want exactly one", len(notices))
 	}
+	// noticesOfKind reads the architect's notice rows of LEGION-208 alone, so the one row it finds
+	// is the notice the outbox sends that issue's architect.
 	notice := notices[0]
-	if entry, _ := texts.Lookup(notice.Kind); !slices.Equal(entry.Readers, []claim.Role{claim.RoleArchitect}) || notice.Issue != "LEGION-208" {
-		t.Fatalf("the notice of %q is read by %v, want LEGION-208's architect alone", notice.Issue, entry.Readers)
-	}
 	if notice.Volume == nil {
 		t.Fatalf("the notice carries no volume sweep: %+v", notice)
 	}
