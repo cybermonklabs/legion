@@ -1412,24 +1412,24 @@ suite (dispatch://INFRA-1413, A4).
 
 ## Why the step-models chain is a job of its own
 
-The chain that drives both real harnesses behind the real shim and the real daemon, in a job of
-its own: it is the one job of ci.yaml that runs the daemon's `e2e` build tag, and the two tests
-it runs install Oh My Pi and Claude Code, a Postgres service and a NATS image that no other
-daemon lane needs together. It is a slow suite
-(.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request): the merge queue runs it
-on the tree the change lands as. Its steps are in .github/workflows/ci-job-plugin-pack.yaml,
-which it shares with plugin-pack: ci.yaml may call no more reusable workflows, and that is the
-nearest file, since both jobs run named tests of internal/daemon on the real Oh My Pi off the
-go-daemon cache family (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
+The chain drives both real harnesses behind the real shim and the real daemon, in a job of its
+own. It is the one job of ci.yaml that runs the daemon's `e2e` build tag. Its two tests need Oh My
+Pi, Claude Code, a Postgres service and a NATS image, which no other daemon lane needs together.
+It is a slow suite (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request): the
+merge queue runs it on the tree the change lands as. Its steps are in
+.github/workflows/ci-job-plugin-pack.yaml, which it shares with plugin-pack. ci.yaml may call no
+more reusable workflows, and that file is the nearest one. Both jobs run named tests of
+internal/daemon on the real Oh My Pi, off the go-daemon cache family
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 
-Its step joins `-tags e2e` with `-run`, so it runs those two tests and none of
-internal/daemon's untagged tests. Its untagged companion is `daemon-go-race`, whose step "Test
-the concurrent packages under the race detector" is the one run of that package untagged, and
-ci_job_reads.py's `TAG_RUNS` holds `daemon_go_tests` to every file this job's step reads. That
-entry selects no job: what turns each output on is ci.yaml's own label terms. So a pull request
-that needs this job's result at its head carries `lane:step_models_chain` and
-`lane:daemon_go_tests` together, or `full-ci`. `lane:step_models_chain` alone runs the tagged
-job while its companion stays off, and such a run is not the paired result
+Its step joins `-tags e2e` with `-run`, so it runs those two tests and none of internal/daemon's
+untagged tests. Its untagged companion is `daemon-go-race`. That job's step "Test the concurrent
+packages under the race detector" is the one run of the package untagged. ci_job_reads.py's
+`TAG_RUNS` holds `daemon_go_tests` to every file this job's step reads. That entry selects no
+job: ci.yaml's own label terms turn each output on. So a pull request that needs this job's
+result at its head carries `lane:step_models_chain` and `lane:daemon_go_tests` together, or
+`full-ci`. `lane:step_models_chain` alone runs the tagged job while its companion stays off. Such
+a run is not the paired result
 (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
 
 ## Why the private-name port harness has an output of its own

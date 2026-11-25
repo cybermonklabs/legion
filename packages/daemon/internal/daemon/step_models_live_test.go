@@ -191,8 +191,8 @@ type stepModelsStandin struct {
 	answered time.Time
 }
 
-// newStepModelsStandin serves one pane's endpoint under the provider name, which is also the
-// provider half of the model an Oh My Pi overlay names (standinModel).
+// newStepModelsStandin serves one pane's endpoint under name. For an Oh My Pi implementer, name is
+// also the provider half of its model (standinModel). For a Claude Code pane it is a label alone.
 func newStepModelsStandin(t *testing.T, name, harness, served, asked, marker string, token claim.Token, steps []stepModelsStep,
 	events chan<- stepModelsEvent, stopped <-chan struct{},
 ) *stepModelsStandin {
@@ -329,7 +329,7 @@ type stepModelsAnswer func(w http.ResponseWriter) string
 
 // text is one answer of one text block that ends the turn.
 func (s *stepModelsStandin) text(text string) stepModelsAnswer {
-	return s.blocks("end_turn", stepModelsText(text))
+	return s.blocks("end_turn", anthropicText(text))
 }
 
 // blocks is one answer of blocks, which stops for stop, under the model the stand-in serves.
@@ -346,7 +346,7 @@ func (s *stepModelsStandin) answerAt(offered []string, script stepModelsStep, pl
 		// One response of two content blocks under one id: what the turn is about to do, and the
 		// shell call it makes. A reader that counts blocks rather than responses counts this twice.
 		return s.blocks("tool_use",
-			stepModelsText("I will run the scratch check of this step."),
+			anthropicText("I will run the scratch check of this step."),
 			stepModelsToolUse(s.name+"-shell", s.toolName(offered, 0), s.input(map[string]any{"command": "true"}))), false, false
 	case place == 2:
 		return s.blocks("tool_use",
@@ -357,10 +357,8 @@ func (s *stepModelsStandin) answerAt(offered []string, script stepModelsStep, pl
 			completion["verdict"] = script.verdict
 		}
 		return s.blocks("tool_use", stepModelsToolUse(s.name+"-legion", s.toolName(offered, 2), s.input(completion))), true, false
-	case place == 3:
-		return s.text(stepModelsWaiting), false, true
 	default:
-		return s.text(stepModelsWaiting), false, false
+		return s.text(stepModelsWaiting), false, place == 3
 	}
 }
 
@@ -524,22 +522,10 @@ func stepModelsShape(request messagesRequest, blocks []requestBlock, text string
 	return fmt.Sprintf("%d messages %v after the last answer, blocks %v, text %q", len(roles), roles, types, text)
 }
 
-// stepModelsText is one text block of a stand-in's answer.
-func stepModelsText(text string) anthropicBlock {
-	return anthropicBlock{
-		open:  `{"type":"text","text":""}`,
-		delta: fmt.Sprintf(`{"type":"text_delta","text":%q}`, text),
-	}
-}
-
-// stepModelsToolUse is one tool_use block: the block opens with an empty input and the one delta
-// carries the whole of it, as the plugins' own pane harness writes one.
+// stepModelsToolUse is one tool_use block (anthropicToolUse). Its id carries a number of its own,
+// so each call of a pane's steps has an id no other call has, as a model's ids are.
 func stepModelsToolUse(id, name string, input map[string]any) anthropicBlock {
-	arguments, _ := json.Marshal(input)
-	open, _ := json.Marshal(map[string]any{"type": "tool_use", "id": "toolu_" + id + "_" + strconv.FormatUint(stepModelsToolCalls.Add(1), 10),
-		"name": name, "input": map[string]any{}})
-	delta, _ := json.Marshal(map[string]string{"type": "input_json_delta", "partial_json": string(arguments)})
-	return anthropicBlock{open: string(open), delta: string(delta)}
+	return anthropicToolUse("toolu_"+id+"_"+strconv.FormatUint(stepModelsToolCalls.Add(1), 10), name, input)
 }
 
 // stepModelsToolCalls numbers each tool call a chain's stand-in makes, so each call's id is its
@@ -640,11 +626,8 @@ func TestTheStandInGivesEachResponseItsOwnID(t *testing.T) {
 	t.Run("one response of two blocks carries one id", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		streamAnthropicBlocks(recorder, standinModel("omp"), "tool_use",
-			anthropicBlock{open: `{"type":"text","text":""}`, delta: `{"type":"text_delta","text":"what I am about to do"}`},
-			anthropicBlock{
-				open:  `{"type":"tool_use","id":"toolu_standin","name":"bash","input":{}}`,
-				delta: `{"type":"input_json_delta","partial_json":"{\"command\":\"true\"}"}`,
-			})
+			anthropicText("what I am about to do"),
+			anthropicToolUse("toolu_standin", "bash", map[string]any{"command": "true"}))
 
 		response := readStandinResponse(t, recorder.Body.String())
 		if got := response.blocks; !slices.Equal(got, []int{0, 1}) {
@@ -752,10 +735,10 @@ type stepModelsLive struct {
 	liveAgentProof
 	// top is the test itself, whose cleanups outlive every check: what the run holds until it ends
 	// is made under it, the architects' connections among them.
-	top      *testing.T
-	dispatch *handoffDispatch
-	tokens   *workflowTokenRecorder
-	github   *stepModelsGitHub
+	top       *testing.T
+	dispatch  *handoffDispatch
+	tokens    *workflowTokenRecorder
+	githubAPI string
 	// root is the checkout this driver was built from; work the run's own temporary directory;
 	// home and profile the Oh My Pi home and profile every pane runs under; cliHome the home of
 	// the person's `dispatch`.
@@ -816,7 +799,8 @@ func TestStepModelsLive(t *testing.T) {
 	r.run("control-wrong-settings", r.controlWrongSettings)
 	r.run("claude-capture", r.claudeCapture)
 	r.run("set-model-held", r.setModelHeld)
-	if !t.Failed() && !t.Skipped() {
+	// A skip ends the test inside newStepModelsLive, so a run that skipped never reaches this line.
+	if !t.Failed() {
 		r.writeEvidence("passed.txt", []byte("TestStepModelsLive passed every check at "+time.Now().UTC().Format(time.RFC3339)+"\n"))
 	}
 }
@@ -1177,7 +1161,7 @@ func (r *stepModelsLive) writeOmpProfile() {
 // operator's own, which every pane names first and which turns `retry.enabled` off so the host
 // walks no fallback chain of its own, then one naming the single model the claim's stand-in
 // serves. Only the Oh My Pi claims take one: a Claude Code role reads no PI_CONFIG_FILES, and its
-// model is its pane's ANTHROPIC_MODEL (claudePaneEnvironment).
+// model is its pane's ANTHROPIC_MODEL (claudeStandinEnvironment).
 func (r *stepModelsLive) writeOverlays() {
 	t := r.t
 	t.Helper()
@@ -1208,15 +1192,14 @@ const (
 	stepModelsStandinKey = "a-literal-value-no-endpoint-checks"
 )
 
-// claudePaneEnvironment is what a Claude pane carries beyond what a pane is told: its own
-// stand-in's endpoint, a stand-in key, the one model it asks for, and the switches that keep it
-// from reaching anything outside the run (stepModelsClaudeQuiet). A Claude Code role reads no Oh
-// My Pi overlay, so this is where its set model is decided, and its stand-in serves that same
-// model, as every endpoint of the chain serves the model it was asked for. Each tester has a
-// stand-in of its own, so each record's counts are held to its own claim's answers.
-func (r *stepModelsLive) claudePaneEnvironment(pane *stepModelsStandin) []string {
+// claudeStandinEnvironment is what a Claude Code process of the run carries to reach the stand-in
+// at url: the endpoint, a stand-in key, the one model it asks for, and stepModelsClaudeQuiet. A
+// Claude Code role reads no Oh My Pi overlay, so this is where its set model is decided. Its
+// stand-in serves that same model, as every endpoint of the chain serves the model asked for. Each
+// tester has a stand-in of its own, so each record's counts are held to its own claim's answers.
+func claudeStandinEnvironment(url string) []string {
 	return append([]string{
-		"ANTHROPIC_BASE_URL=" + pane.url,
+		"ANTHROPIC_BASE_URL=" + url,
 		claudeKeyVariable + "=" + stepModelsStandinKey,
 		"ANTHROPIC_MODEL=" + stepModelsClaudeModel,
 	}, stepModelsClaudeQuiet...)
@@ -1242,7 +1225,7 @@ func (r *stepModelsLive) startRuntime() {
 	}
 	r.rt.claimEnvironment = func(token claim.Token) []string {
 		if pane, driven := r.panes[token]; driven && pane.harness == "claude" {
-			return r.claudePaneEnvironment(pane)
+			return claudeStandinEnvironment(pane.url)
 		}
 		return nil
 	}
@@ -1296,7 +1279,6 @@ func (r *stepModelsLive) workspaceJJ(issue *stepModelsIssue, args ...string) str
 // 404, so nothing reaches github.com. It is stepRecordsGitHub with a head of each pull request's
 // own, since each issue's workspace pushed a commit of its own.
 type stepModelsGitHub struct {
-	url   string
 	pulls []stepModelsPull
 }
 
@@ -1319,8 +1301,7 @@ func (r *stepModelsLive) serveGitHub() {
 	for _, issue := range r.issues {
 		g.pulls = append(g.pulls, stepModelsPull{number: issue.number, branch: "legion/" + issue.key, head: issue.head})
 	}
-	g.url = githubtest.Server(r.t, githubtest.Spec{Handle: g.ServeHTTP})
-	r.github = g
+	r.githubAPI = githubtest.Server(r.t, githubtest.Spec{Handle: g.ServeHTTP})
 }
 
 func (g *stepModelsGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -1423,7 +1404,7 @@ func (r *stepModelsLive) overrides() overrides {
 		},
 		listen:         heldListen,
 		workflowTokens: r.tokens,
-		githubAPI:      r.github.url,
+		githubAPI:      r.githubAPI,
 		environ: append(os.Environ(),
 			toolEnv("claude")+"="+r.claude, toolEnv("bun")+"="+r.bun, claudePluginDirEnv+"="+r.pluginDir),
 	}
@@ -1912,11 +1893,8 @@ type stepModelsRead struct {
 	Place      int       `json:"place"`
 	StartedAt  time.Time `json:"startedAt"`
 	Side       string    `json:"side"`
-	Claim      string    `json:"claim"`
 	Generation uint64    `json:"generation"`
 	Read       int64     `json:"read"`
-	Final      bool      `json:"final"`
-	SetModel   string    `json:"setModel"`
 	ReadAt     time.Time `json:"readAt"`
 	EndedBy    string    `json:"endedBy"`
 }
@@ -2053,10 +2031,12 @@ func (r *stepModelsLive) comparison() stepModelsCompared {
 
 // liveAtBothReadsVerdict is check 6: the comparison beside c-real prints `live-at-both-reads:
 // PASS`, with a PASS line for each step the architect stopped, A's implementer's third and B's
-// tester's second.
+// tester's second. A PASS line names the comparison, the harness and the step as the comparator
+// writes them (scripts/e2e/lib/step-models-check.ts, stepName).
 func (r *stepModelsLive) liveAtBothReadsVerdict() {
 	compared := r.comparison()
-	if !slices.Contains(stepModelsOutputLines(compared.out), "live-at-both-reads: PASS") {
+	lines := stepModelsOutputLines(compared.out)
+	if !slices.Contains(lines, "live-at-both-reads: PASS") {
 		r.fails("the verdict", "the comparator did not print `live-at-both-reads: PASS`:\n%s", compared.out)
 	}
 	for _, stopped := range []struct {
@@ -2065,12 +2045,17 @@ func (r *stepModelsLive) liveAtBothReadsVerdict() {
 		attempt int
 	}{{"A", claim.RoleImplementer, 3}, {"B", claim.RoleTester, 2}} {
 		issue := r.issueNamed(stopped.issue)
+		token := issue.implementer
+		if stopped.role == claim.RoleTester {
+			token = issue.tester
+		}
 		line, found := stepModelsLineOf(issue.lines, stopped.role, stopped.attempt)
 		if !found {
 			r.fails("the stopped step", "`dispatch steps --issue %s` holds no record of the %s's attempt %d", issue.key, stopped.role, stopped.attempt)
 		}
-		prefix := fmt.Sprintf("PASS: live-at-both-reads: %s %d %s attempt %d: ", line.task, line.step, line.kind, line.attempt)
-		if !slices.ContainsFunc(stepModelsOutputLines(compared.out), func(out string) bool { return strings.HasPrefix(out, prefix) }) {
+		prefix := fmt.Sprintf("PASS: live-at-both-reads: harness %s: %s %s %d %s attempt %d: ",
+			r.panes[token].harness, issue.key, line.task, line.step, line.kind, line.attempt)
+		if !slices.ContainsFunc(lines, func(out string) bool { return strings.HasPrefix(out, prefix) }) {
 			r.fails("the PASS line", "the comparator printed no line starting %q, the step of %s's %s attempt %d", prefix, issue.key, stopped.role, stopped.attempt)
 		}
 		r.note("the comparator passed %s's stopped %s step: %q", issue.key, stopped.role, prefix)
@@ -2212,8 +2197,7 @@ func (r *stepModelsLive) captureClaude(name, served string) *stepModelsCapture {
 		"--permission-mode", "bypassPermissions", "--session-id", claudelaunch.NewSessionID())
 	cmd.Dir = cwd
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}, claudelaunch.Environment(configDir)...)
-	cmd.Env = append(cmd.Env, "ANTHROPIC_BASE_URL="+standin.url, claudeKeyVariable+"="+stepModelsStandinKey, "ANTHROPIC_MODEL="+stepModelsClaudeModel)
-	cmd.Env = append(cmd.Env, stepModelsClaudeQuiet...)
+	cmd.Env = append(cmd.Env, claudeStandinEnvironment(standin.url)...)
 	cmd.Stdin = strings.NewReader(`{"type":"user","message":{"role":"user","content":"` + stepModelsCaptureMarker + `"}}` + "\n")
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = stdout, &stderr
@@ -2282,7 +2266,7 @@ func (r *stepModelsLive) keepProjects(from, to string) int {
 
 // stepModelsLastLines is at most the last n lines of text.
 func stepModelsLastLines(text string, n int) []string {
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	lines := stepModelsOutputLines(text)
 	return lines[max(0, len(lines)-n):]
 }
 

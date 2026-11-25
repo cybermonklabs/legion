@@ -498,8 +498,7 @@ func anthropicRefusal(message string) string {
 // events the plugins' own pane harness scripts (packages/pi-shared/test/omp-harness.ts:383-448,
 // `messageStream`).
 func streamAnthropicText(w http.ResponseWriter, provider, text string) {
-	streamAnthropicBlock(w, provider, "end_turn", `{"type":"text","text":""}`,
-		fmt.Sprintf(`{"type":"text_delta","text":%q}`, text))
+	streamAnthropicBlocks(w, provider+standinModelID, "end_turn", anthropicText(text))
 }
 
 // anthropicBlock is one content block of a stand-in's answer: the JSON the block opens as, and
@@ -507,6 +506,22 @@ func streamAnthropicText(w http.ResponseWriter, provider, text string) {
 // block.
 type anthropicBlock struct {
 	open, delta string
+}
+
+// anthropicText is one text block.
+func anthropicText(text string) anthropicBlock {
+	return anthropicBlock{open: `{"type":"text","text":""}`, delta: fmt.Sprintf(`{"type":"text_delta","text":%q}`, text)}
+}
+
+// anthropicToolUse is one call of the tool name, whose id is id and whose input is input, as the
+// plugins' own pane harness scripts one (packages/pi-shared/test/omp-harness.ts, messageStream's
+// tool_use arm): the block opens with an empty input, and one input_json_delta carries the whole
+// input.
+func anthropicToolUse(id, name string, input map[string]any) anthropicBlock {
+	arguments, _ := json.Marshal(input)
+	open, _ := json.Marshal(map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}})
+	delta, _ := json.Marshal(map[string]string{"type": "input_json_delta", "partial_json": string(arguments)})
+	return anthropicBlock{open: string(open), delta: string(delta)}
 }
 
 // standinResponses is the counter standinResponseID raises, one for the whole process: the live
@@ -530,8 +545,8 @@ func standinResponseID() string {
 //
 // It answers the id it wrote, which a stand-in that keeps a list of the responses it served
 // needs: a reader of a transcript counts one call for each id, so that list and the transcript
-// are joined by it. A caller with no such list, streamAnthropicBlock below among them, calls this
-// as a statement and drops the id.
+// are joined by it. A caller with no such list, streamAnthropicText and streamAnthropicToolUse
+// among them, calls this as a statement and drops the id.
 func streamAnthropicBlocks(w http.ResponseWriter, served, stop string, blocks ...anthropicBlock) string {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
@@ -556,22 +571,10 @@ func streamAnthropicBlocks(w http.ResponseWriter, served, stop string, blocks ..
 	return id
 }
 
-// streamAnthropicBlock answers one Anthropic Messages request with one content block, which opens
-// as block and is written whole by the one delta after it, and a message that stops for stop,
-// served by the one model this provider's stand-in serves.
-func streamAnthropicBlock(w http.ResponseWriter, provider, stop, block, delta string) {
-	streamAnthropicBlocks(w, provider+standinModelID, stop, anthropicBlock{open: block, delta: delta})
-}
-
 // streamAnthropicToolUse answers one Anthropic Messages request with a single call of the tool
-// name, whose id is id and whose input is input, as the plugins' own pane harness scripts one
-// (packages/pi-shared/test/omp-harness.ts, messageStream's tool_use arm): the block opens with an
-// empty input, one input_json_delta carries the whole input, and the message stops for tool_use.
+// name (anthropicToolUse), and a message that stops for tool_use.
 func streamAnthropicToolUse(w http.ResponseWriter, provider, id, name string, input map[string]any) {
-	arguments, _ := json.Marshal(input)
-	block, _ := json.Marshal(map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}})
-	delta, _ := json.Marshal(map[string]string{"type": "input_json_delta", "partial_json": string(arguments)})
-	streamAnthropicBlock(w, provider, "tool_use", string(block), string(delta))
+	streamAnthropicBlocks(w, provider+standinModelID, "tool_use", anthropicToolUse(id, name, input))
 }
 
 // ---- the overlays a pane is told through PI_CONFIG_FILES -------------------------------------------
