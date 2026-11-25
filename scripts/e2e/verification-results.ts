@@ -662,7 +662,10 @@ for (const [key, name, defaultRepo] of [
       state = error instanceof Error ? error.message : String(error);
     }
     if (Date.now() >= deadline) {
-      setupFailed("the delivery intake's bind", `delivery-events is ${state} after ${intakeBindWaitMs} ms`);
+      setupFailed(
+        "the delivery intake's bind",
+        `delivery-events is ${state} after ${intakeBindWaitMs} ms`
+      );
     }
     await Bun.sleep(pollMs);
   }
