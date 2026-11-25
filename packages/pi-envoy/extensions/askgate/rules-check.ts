@@ -132,7 +132,7 @@ export interface RulesCheckDeps {
     directory: string,
     signal: AbortSignal,
     deadlineMs?: number
-  ) => DispatchSession | undefined;
+  ) => Promise<DispatchSession | undefined>;
   /** The charter call's own walk: the role's chain under the call's deadline, dumped and raced by the core. */
   walk: (prompt: { system: string; user: () => string; label: string }) => Promise<Walked>;
 }
@@ -489,7 +489,7 @@ async function readDocument(
     const directory = await call.directory();
     if (directory === undefined) return "failed";
     const left = call.deadlineAt === undefined ? undefined : call.deadlineAt - deps.now();
-    const session = deps.dispatchClient(
+    const session = await deps.dispatchClient(
       directory,
       call.signal,
       left === undefined ? undefined : Math.max(1, left)
