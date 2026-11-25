@@ -283,3 +283,31 @@ func TestTakeWhoseTurnEndedIsStoppedAtOnceByEveryOtherStop(t *testing.T) {
 		})
 	}
 }
+
+// The held stop's order beside a held suspension (rule two of T3; settleThenAfterTurn, afterTurn):
+// a take's turn ended with its report still to come, the operator's suspension is held for that
+// report, and the operator's stop is then held with it, the stop route answering 202. The report
+// finishes the task once, and the stop runs first: the claim retired, its process released and
+// never suspended, nothing charged. The stop ends the claim for good, and its let-go drops the
+// suspension with the process.
+//
+// The negative control is settleThenAfterTurn with its !m.heldStop removed (M-79): the
+// suspension's stop runs at the report, its let-go drops the stop the route answered 202 for, and
+// the claim ends suspended rather than retired.
+func TestTakeWhoseTurnEndedRunsTheHeldStopBeforeTheSuspensionHeldWithIt(t *testing.T) {
+	h, number := overATakesEndedTurn(t, queuedClaim())
+	kept := h.locator()
+	stops := len(h.calls("Suspend"))
+
+	if err := h.handle(operatorSuspension(h)); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the operator's suspension of a claim whose report is to come answered %v, want it held for the report", err)
+	}
+	h.wantStopHeld(h.handle(operatorStop(h.token)), number, kept, "the report wait's bound")
+
+	h.mustReport(nil)
+
+	h.wantStoppedFrom(kept)
+	h.wantCalls("Suspend", stops)
+	h.wantFinishedOnce(finishedByReport)
+	h.wantRunOnce(number)
+}

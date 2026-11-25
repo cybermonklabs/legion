@@ -1270,12 +1270,9 @@ func (w *workflowRuntime) mergeForwardOwed(ctx context.Context, key string) (cla
 	return role, owed, nil
 }
 
-// mergeForwardEnded answers the engine's Config.MergeForwardEnded: once the workflow has recorded
-// the merge forward of issue landed, withdrawn or cleared, every claim of the issue is told, as a
-// turn's end tells the issue's other claims (supervisor.wakeIssueClaims), so a take the owed merge
-// held is offered again at once. A fact committed before the outbox's supervisor is attached tells
-// nobody, and the supervision sweep's offer of a take refused at its latest revision is the end
-// then.
+// mergeForwardEnded answers the engine's Config.MergeForwardEnded; supervisor.wakeIssueClaims says
+// what it tells and why. A fact committed before the outbox's supervisor is attached tells nobody,
+// and the supervision sweep's offer of a take refused at its latest revision is the end then.
 func (w *workflowRuntime) mergeForwardEnded(issue string) {
 	if r := w.outboxWake.Load(); r != nil && r.supervisor != nil {
 		r.supervisor.wakeIssueClaims(issue)

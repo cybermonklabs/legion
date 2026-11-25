@@ -72,9 +72,10 @@ func promptRetryDelay(attempt int) time.Duration {
 // make (providerErrorTurnEnded): one more turn in the run, one warning, and the controller's
 // notice at the run's providerErrorRunTold-th turn, whose words say the daemon keeps the task and
 // writes it again. A status that cannot clear fails the claim at once, the take taken back first
-// (takeBack), and the turn-outcome answer says this report failed it (Machine.turnOutcomeFailed);
-// any other puts the task on the ladder (ladderStep). The status is the report's
-// (RequestTurnOutcome.status): its ProviderError's, or its HTTPStatus where that names none.
+// (takeBackAndFail), and the turn-outcome answer says this report failed it
+// (Machine.turnOutcomeFailed); any other puts the task on the ladder (ladderStep). The status is
+// the report's (RequestTurnOutcome.status): its ProviderError's, or its HTTPStatus where that
+// names none.
 func (m *Machine) providerErrored(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	if p == nil || r.ProviderError == nil {
@@ -85,11 +86,8 @@ func (m *Machine) providerErrored(ctx context.Context, r RequestTurnOutcome) err
 		status: r.status(), model: pe.Model,
 		line:  "supervise: the turn of this task ended in a provider error; the task is kept and given again",
 		attrs: []any{"task", p.Number, "retryable", pe.Retryable, "provider", pe.Provider},
-		turn:  "this claim's turn",
 		next:  fmt.Sprintf("the daemon keeps the task and writes it again every %s at most", promptRetryMax),
-		// The take's turn ran and is over, so the take goes back before the claim fails, as
-		// takeToLadder takes it back for a status that holds the issue.
-		beforeFail: func(ctx context.Context) error { return m.takeBack(ctx, takenBackProviderError) },
+		fail:  m.takeBackAndFail,
 	})
 	if err != nil || failed {
 		return err
@@ -120,9 +118,11 @@ func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome)
 		status: r.status(), model: model,
 		line:  "supervise: a turn that ran none of the daemon's tasks ended in a provider error",
 		attrs: []any{"generation", r.Generation, "sequence", r.Sequence, "task", r.Task},
-		turn:  "a turn of this claim's agent that ran none of the daemon's tasks",
 		next: "the last of them ran none of the daemon's tasks (a phase reminder, an Envoy message or a " +
 			"background job's result), so the daemon writes no task again for it",
+		fail: func(ctx context.Context, cause string) error {
+			return m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended a turn of this claim's agent that ran none of the daemon's tasks: "+cause)
+		},
 	})
 	if err != nil || failed {
 		return err
@@ -132,28 +132,25 @@ func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome)
 
 // providerErrorTurn is one turn that ended in a provider error, as providerErrorTurnEnded counts
 // it: the status and the model the error named (each zero where it named none), the warning
-// line's message and its own attributes, the failure sentence's words for the turn, the notice's
-// words for what the daemon does now, and what runs before a failure, if anything.
+// line's message and its own attributes, the notice's words for what the daemon does now, and how
+// a status that cannot clear fails the claim, given the cause.
 type providerErrorTurn struct {
-	status     int
-	model      string
-	line       string
-	attrs      []any
-	turn       string
-	next       string
-	beforeFail func(context.Context) error
+	status int
+	model  string
+	line   string
+	attrs  []any
+	next   string
+	fail   func(ctx context.Context, cause string) error
 }
 
 // providerErrorTurnEnded is what every turn that ended in a provider error does, whatever ran it
 // (providerErrored, unpromptedTurnEnded), so that both kinds make the claim's one run: the cause
 // built from the status alone (providerErrorCause), one more turn in the run, the warning line,
 // the controller's notice at providerErrorRunTold, and, for a status that cannot clear
-// (holdsTheIssue), t.beforeFail and then the claim's failure under CauseProviderError, which holds
-// the issue for its architect. The failure is made whether or not beforeFail's write landed: what
-// it did stands in memory, its write owed, and a claim the provider refused for good is not left
-// running for a refused write. It answers the cause, and whether it failed the claim, which it
-// marks for the turn-outcome answer (Machine.turnOutcomeFailed); what a turn whose error can clear
-// does next is its caller's.
+// (holdsTheIssue), t.fail, the claim's failure under CauseProviderError, which holds the issue for
+// its architect. It answers the cause, and whether it failed the claim, which it marks for the
+// turn-outcome answer (Machine.turnOutcomeFailed); what a turn whose error can clear does next is
+// its caller's.
 func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTurn) (string, bool, error) {
 	cause := providerErrorCause(t.status)
 	m.claim.ProviderErrorRun++
@@ -163,11 +160,19 @@ func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTur
 		return cause, false, nil
 	}
 	m.turnOutcomeFailed = true
-	var before error
-	if t.beforeFail != nil {
-		before = t.beforeFail(ctx)
-	}
-	return cause, true, errors.Join(before, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended "+t.turn+": "+cause))
+	return cause, true, t.fail(ctx, cause)
+}
+
+// takeBackAndFail is the step a provider error whose status holds the issue (holdsTheIssue) makes
+// over the take whose turn it ended, from the report's own decision (providerErrored, through
+// providerErrorTurnEnded) and from a daemon start that restored that report's take-back unwritten
+// (takeToLadder): the take goes back first, since its turn ran and is over, and then the claim
+// fails under CauseProviderError, which holds the issue for its architect. The failure is made
+// whether or not the take-back's write landed: the take-back stands in memory, its write owed, and
+// a claim the provider refused for good is not left running for a refused write.
+func (m *Machine) takeBackAndFail(ctx context.Context, cause string) error {
+	err := m.takeBack(ctx, takenBackProviderError)
+	return errors.Join(err, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause))
 }
 
 // providerErrorRunOver puts the claim's run of provider-error turns back to zero for a turn that
@@ -184,10 +189,11 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 
 // takeToLadder is what a provider error's turn does to the task whose take it ran on, once the
 // claim's run of such turns counts it, for a claim a daemon start restored over a provider
-// error's report whose take-back the store never took (settle, Machine.ladderOwed): the take goes
-// back, and the status either holds the issue, failing the claim, or puts the task on the ladder
-// (ladderStep). The report's own decision makes the same two steps (providerErrored), the failure
-// through providerErrorTurnEnded, which counted the turn and told the controller there.
+// error's report whose take-back the store never took (settle, Machine.ladderOwed): the status
+// either holds the issue, taking the take back and failing the claim (takeBackAndFail), or puts
+// the task on the ladder, which takes the take back with its step (ladderStep). The report's own
+// decision makes the same two steps (providerErrored), through providerErrorTurnEnded, which
+// counted the turn and told the controller there.
 //
 // A take whose report's finish the store refused (takePhase, waitFinish) goes to no ladder: the
 // report that came first decides, so a later report naming its number with a provider error
@@ -197,8 +203,7 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 func (m *Machine) takeToLadder(ctx context.Context, status int) error {
 	cause := providerErrorCause(status)
 	if holdsTheIssue(status) {
-		err := m.takeBack(ctx, takenBackProviderError)
-		return errors.Join(err, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause))
+		return m.takeBackAndFail(ctx, cause)
 	}
 	return m.ladderStep(ctx, cause)
 }

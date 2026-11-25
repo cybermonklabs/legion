@@ -63,10 +63,10 @@ worker_wake_burst: 1                   # how many wakes may leave at once before
 # worker_silence_minutes: 30           # how long a phase worker that is up, between turns and holding
 #                                      # no task it will still work (a task whose turn has already run
 #                                      # counts as none) may go with no recorded step before the daemon
-#                                      # sends it its phase's task again; 30 by default, and a value
-#                                      # under 16 is refused, since a healthy worker that says it is
-#                                      # waiting stays quiet for 15 minutes before its own reminder
-#                                      # comes again
+#                                      # writes its phase's task again for the worker to take; 30 by
+#                                      # default, and a value under 16 is refused, since a healthy
+#                                      # worker that says it is waiting stays quiet for 15 minutes
+#                                      # before its own reminder comes again
 # worker_background_hours: 4           # how long the background work a phase worker's own session
 #                                      # reports may stand before the daemon names that worker to its
 #                                      # architect, once and with nothing sent: nothing can tell a job

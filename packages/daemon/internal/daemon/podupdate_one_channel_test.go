@@ -243,8 +243,8 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 
 // A daemon with no outbox (no workflow, so supervision's enqueue is nil) publishes no ask and
 // marks no claim, and its round still runs: the claims record it, an answer is taken, and the pod
-// is replaced once every role the round asks has answered and no turn or claim's activity report
-// holds the round (roundEnd.holding).
+// is replaced once every role the round asks has answered and no turn, no report owed of a take
+// whose turn ended and no claim's activity report holds the round (roundEnd.holding).
 func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))

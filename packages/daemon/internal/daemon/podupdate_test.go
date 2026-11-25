@@ -2,12 +2,12 @@ package daemon
 
 // The update-round sweep: a running issue pod whose configuration has drifted is replaced once
 // every worker the round asks has done the steps of its update message (supervise.UpdateTask)
-// and answered, no turn runs and no claim's activity report holds the round (roundEnd.holding),
-// or at the round's bound whatever they said (podupdate_bound_test.go holds the bound). These
-// tests drive the real supervision — real machines over a real Postgres, with the runtime faked —
-// one sweep at a time, as the orphan sweep's tick calls it, and read what the store, the runtime
-// and the outbox then hold. The rig's clock is held, so every test here that moves no clock
-// decides before the round's bound.
+// and answered, no turn runs, no take whose turn ended still owes its report and no claim's
+// activity report holds the round (roundEnd.holding), or at the round's bound whatever they said
+// (podupdate_bound_test.go holds the bound). These tests drive the real supervision — real
+// machines over a real Postgres, with the runtime faked — one sweep at a time, as the orphan
+// sweep's tick calls it, and read what the store, the runtime and the outbox then hold. The rig's
+// clock is held, so every test here that moves no clock decides before the round's bound.
 //
 // Each rig seeds one issue's claims in Postgres, restores them as a boot does, and ticks by hand:
 // the sweep reads the claims the store holds, so a tick sees exactly what the previous tick's
@@ -812,7 +812,8 @@ func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 }
 
 // The round's early end: before its bound, the pod is replaced only once every claim that blocks
-// the round has answered, no turn runs and no claim's activity report holds it (roundEnd.holding).
+// the round has answered, no turn runs, no take whose turn ended still owes its report and no
+// claim's activity report holds it (roundEnd.holding).
 // A claim with no session — a role nothing has ever launched — blocks nothing.
 func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing.T) {
 	t.Parallel()
@@ -1070,8 +1071,9 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 }
 
 // A failed claim runs no process and no turn on the pod, and the round asks it nothing, so the
-// round does not wait for it: once every other claim has answered and no turn and no claim's
-// activity report holds the round (roundEnd.holding), the pod is replaced and the round is over.
+// round does not wait for it: once every other claim has answered and no turn, no report owed of
+// a take whose turn ended and no claim's activity report holds the round (roundEnd.holding), the
+// pod is replaced and the round is over.
 // This is the first contract-46 roll's shape: a planner failed at contract 41, which records no
 // round, beside three workers at contract 45 that each answered. Held for the planner, the round
 // would never end, and every answered worker's next task would wait behind it.

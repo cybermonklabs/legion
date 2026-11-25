@@ -838,12 +838,13 @@ func terminal(p *corev1.Pod) bool {
 // another release of the daemon, and its agents call this daemon as that release — for a route it
 // no longer serves, a variable it no longer sets — until the pod is replaced. A launch into an
 // issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
-// once every role in it has answered the update message, no turn runs and no claim's activity
-// report holds it (internal/daemon's roundEnd.holding), or at the round's bound (PodDrift,
-// ReplacePod). The controller's pod, which no round covers, is replaced by the next launch into it,
-// an installing one included (roundCovers, podImageDrift), and the repository cache's own pod,
-// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each one
-// it finds. A nil pod holds no drift: it is replaced for being absent.
+// once every role in it has answered the update message, no turn runs, no take whose turn ended
+// still owes its report and no claim's activity report holds it (internal/daemon's
+// roundEnd.holding), or at the round's bound (PodDrift, ReplacePod). The controller's pod, which
+// no round covers, is replaced by the next launch into it, an installing one included
+// (roundCovers, podImageDrift), and the repository cache's own pod, which holds no worker, by its
+// next sweep (reconcileCachePod). ReconcileOrphans warns of each one it finds. A nil pod holds no
+// drift: it is replaced for being absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false

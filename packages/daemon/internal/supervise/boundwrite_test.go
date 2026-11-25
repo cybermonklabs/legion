@@ -70,10 +70,11 @@ func (v *boundSeeingValues) Delete(ctx context.Context, token claim.Token) error
 // counts the write from its connection, so a wave of claim writes on a pool of a few connections no
 // longer cuts the last of them for the queue ahead (defaultClaimWrite). With no BoundWrite the
 // machine bounds the whole write by the claim-write bound, as it always did. Here a spawn writes
-// the claim launching. Every other bounded call of a decision goes through the same helper
-// (Machine.bounded), the one place either bound is read. A write of the task bucket is no call of
+// the claim launching. Every other bounded store call of a decision goes through the same helper
+// (Machine.bounded), the one place both bounds are read. A write of the task bucket is no call of
 // the store: it waits for no connection of the pool, so it takes the claim-write bound alone,
-// whatever BoundWrite is (Machine.writeBucket); here the queue of a task writes its value.
+// whatever BoundWrite is (Machine.writeBucket, the one other place that bound is read); here the
+// queue of a task writes its value.
 func TestADecisionsClaimWriteTakesItsBoundFromDepsBoundWrite(t *testing.T) {
 	const acquire, write = defaultClaimAcquire, 3 * time.Second
 	spawned := func(t *testing.T, bound func(context.Context, time.Duration, time.Duration) (context.Context, context.CancelFunc)) *boundSeeingStore {

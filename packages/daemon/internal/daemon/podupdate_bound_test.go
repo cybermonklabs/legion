@@ -1,12 +1,12 @@
 package daemon
 
 // The round's bound (dispatch://INFRA-2981 R2, R3, R5, R6, R8): a round ends as soon as every
-// claim it asks has answered, no turn runs and no claim's activity report holds it
-// (roundEnd.holding, dispatch://INFRA-4203 R1), and at its bound — pod_update_grace_minutes after
-// it opened — whatever its roles said. An operator's suspension is the one wait the bound does not
-// step over, and the controller is told only of a round something holds past its bound, once, at
-// the bound. Each test moves the rig's held clock to the moment it decides at, and names that
-// moment in what it asserts.
+// claim it asks has answered, no turn runs, no take whose turn ended still owes its report and no
+// claim's activity report holds it (roundEnd.holding, dispatch://INFRA-4203 R1), and at its bound
+// — pod_update_grace_minutes after it opened — whatever its roles said. An operator's suspension is
+// the one wait the bound does not step over, and the controller is told only of a round something
+// holds past its bound, once, at the bound. Each test moves the rig's held clock to the moment it
+// decides at, and names that moment in what it asserts.
 
 import (
 	"context"

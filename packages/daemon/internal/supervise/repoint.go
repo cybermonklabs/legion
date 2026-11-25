@@ -58,11 +58,9 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 	}
 	held := !observation.DaemonAPIMoved
 	if held && m.boundedReportHolds() {
-		// A replacement held already keeps what it holds (holdReplacement), so none is built.
-		if m.heldReplacement == nil {
-			m.holdReplacement("repoint", m.replacing(repointInterruption, ordinaryEnd, endRepointed),
-				"incarnation", incarnation, "detail", observation.Detail)
-		}
+		// A replacement held already keeps what it holds (holdReplacement).
+		m.holdReplacement("repoint", m.replacing(repointInterruption, ordinaryEnd, endRepointed),
+			"incarnation", incarnation, "detail", observation.Detail)
 		return nil
 	}
 	m.log.Warn("supervise: the process is alive at a stale address; replacing it with one at the current address",
@@ -151,9 +149,12 @@ const (
 // store refuses, and a replacement that let nothing go — its lifecycle recheck refused
 // (EndNotMade) — keep the replacement held and the process, and the deadline is tried again at the
 // probe interval, as the deadline's other refusals are. The operator's stop held for the report
-// takes the same deadline the same way (stopAtDeadline).
+// takes the same deadline the same way (stopAtDeadline). With no replacement held it does nothing.
 func (m *Machine) replacementAtDeadline(ctx context.Context) error {
 	held := m.heldReplacement
+	if held == nil {
+		return nil
+	}
 	if err := m.reportMissedAtDeadline(ctx); err != nil {
 		return err
 	}

@@ -375,10 +375,10 @@ Dispatch read them, delete the files, then install every App from
   raised from 20Gi with the shared scratch) comes from `storage_class`, which is required. That
   disk is the pod's own: Kubernetes creates its claim with the pod, names it `<pod>-issue`, and
   deletes it when the pod goes, so an issue's clone, workspace and caches live as long as its pod
-  and no longer. What outlives a pod is what was pushed to the issue's branch, each agent's
-  conversation, which the session database holds, and, when the daemon released an idle pod, the
-  workspace's unpushed work, which the release saves as a git bundle in the daemon's database and
-  the next pod restores. The daemon-launched controller's pod has a
+  and no longer. What outlives a pod is what was pushed to the issue's branch and each agent's
+  conversation, which the session database holds. An idle release saves nothing of the workspace:
+  it reads the workspace first, and keeps a pod whose workspace holds work that origin lacks.
+  The daemon-launched controller's pod has a
   volume of its own, which its Sandbox owns and which does outlive its pods. A microVM issue pod
   under `runtime.kubernetes.sandbox.microvm.keep_volume: true` is the exception: its volume is a
   claim that the issue's Sandbox owns, so it outlives the pod, and it goes when the issue leaves

@@ -330,10 +330,7 @@ func MergeForwardOwed(ctx context.Context, store record.Store, tx pgx.Tx, key st
 // to no role any more (Config.MergeForwardEnded): the merge forward landed (mergeForwardLanded),
 // was withdrawn or cleared (clearMergeForward), which putPullRequest finds by the open ask its
 // write takes from the record, or a move left the open ask owed to nobody where the issue now
-// stands (mergeForwardOnEntry). Each is an end of the take hold the owed merge put on every take of
-// the issue that would adopt the working copy (MergeForwardOwed), so a take that hold refused is
-// offered again at once; the supervision sweep's offer of a take refused at its latest revision
-// stays the backstop. The end carries no fact: each take asks the record again.
+// stands (mergeForwardOnEntry). What that end does is internal/daemon's supervisor.wakeIssueClaims.
 func (e *Engine) mergeForwardEnds(ctx context.Context, issue string) {
 	if e.cfg.MergeForwardEnded == nil {
 		return

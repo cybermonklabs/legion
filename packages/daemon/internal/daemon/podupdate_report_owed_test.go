@@ -194,3 +194,21 @@ func TestPodUpdateRoundWaitsForTheReportOfATaskNumberWhoseTurnEnded(t *testing.T
 		})
 	}
 }
+
+// A claim stored working can carry a report owed too: a compaction with no turn under it runs over
+// a take whose turn ended with its report still to come. The round's end names such a claim among
+// the turns that run (workingClaims) and not among the reports owed (reportingClaims), so it is
+// named once, and the wait for its work is what holds the round for it.
+func TestPodUpdateRoundNamesAWorkingClaimWithItsReportOwedAmongTheTurnsAlone(t *testing.T) {
+	t.Parallel()
+	opened := podUpdateStart
+	c := supervise.Claim{Token: mustClaimToken(t, podUpdateIssue, claim.RoleImplementer), Project: podUpdateProject,
+		Tree: podUpdateIssue, Issue: podUpdateIssue, Role: claim.RoleImplementer, State: supervise.StateWorking,
+		Session: "ses-implementer", ReportOwed: true,
+		UpdateRound: podUpdateRound, UpdateReasons: podUpdateDrift, UpdateOpenedAt: &opened}
+	clock := roundClock{now: opened.Add(time.Minute), grace: podUpdateGrace}
+	_, working, reporting, _ := readRoundEnd([]supervise.Claim{c}, podUpdateRound, clock).holding()
+	if !slices.Equal(working, []string{string(claim.RoleImplementer)}) || len(reporting) != 0 {
+		t.Fatalf("the round's end holds the replacement for the turns of %v and the reports of %v, want the implementer's turn alone", working, reporting)
+	}
+}

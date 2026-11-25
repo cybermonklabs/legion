@@ -300,13 +300,14 @@ type PodUpdateOpen struct {
 //
 // An answer from every role brings the round's end forward only while no role reports background
 // work: before endsAt the round ends once every role it asks has answered, no role is in a turn,
-// and no role with a process in the round's pod has an activity report that names a subagent or a
-// background job that runs, or no report since its last turn started. internal/daemon's
-// roundEnd.holding is the one statement of that rule. No answer, no turn and no background work
-// holds the pod past endsAt, so the text names that moment and what goes with the pod then: the
-// turn in progress, each subagent, each background job and each named service that still runs,
-// each commit and each file the role did not push, the pod's test database and its caches. A
-// named service is in no activity report, so it holds nothing and goes with the pod.
+// no take whose turn ended still owes its report, and no role with a process in the round's pod
+// has an activity report that names a subagent or a background job that runs, or no report since
+// its last turn started. internal/daemon's roundEnd.holding is the one statement of that rule. No
+// answer, no turn and no background work holds the pod past endsAt, so the text names that moment
+// and what goes with the pod then: the turn in progress, each subagent, each background job and
+// each named service that still runs, each commit and each file the role did not push, the pod's
+// test database and its caches. A named service is in no activity report, so it holds nothing and
+// goes with the pod.
 //
 // So the text gives five steps, in this order (dispatch://INFRA-4203 R2): push, let each subagent
 // and each background job the role started finish or stop it and push what it made, put a scratch
@@ -3214,10 +3215,10 @@ func (m *Machine) clearUpdate() {
 // process holding this claim may now be replaced — and the head it reported, which nothing
 // verifies. It changes no state: the round's own sweep is what reads the signal and replaces the
 // process, at the round's bound, or before it once every claim the round asks has answered, no
-// turn runs and no claim with a process in the round's pod reports background work that runs or
-// has sent no report since its last turn started (internal/daemon's roundEnd.holding, the one
-// statement of that rule). So an answer brings the round's end forward only while no role reports
-// background work.
+// turn runs, no take whose turn ended still owes its report and no claim with a process in the
+// round's pod reports background work that runs or has sent no report since its last turn started
+// (internal/daemon's roundEnd.holding, the one statement of that rule). So an answer brings the
+// round's end forward only while no role reports background work.
 //
 // A second answer for the same round records again, the newer head in place of the first: the
 // ask tells a role whose subagent or background job finishes after its answer to push what that

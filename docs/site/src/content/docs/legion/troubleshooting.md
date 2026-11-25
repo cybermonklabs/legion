@@ -623,10 +623,10 @@ logs `supervise: this provider error can clear; the task goes to the same sessio
 wait`, with the attempt and the wait, and its end `supervise: the wait after a provider error is
 over; the task is given again`. Such a turn is no launch failure: the worker reports it refused
 with the error beside it, its `supervise: a turn ended` line reads `refused=false` and
-`providerError=true`. Every other refused turn counts toward the run of refused turns that fails a
-claim at `launch_failure_limit`: one that carries no provider error, and one that carries one but
-whose report names no task, or a number no take of the claim holds — a reminder's, a card's or a
-background result's turn — which reaches no wait. The text of the next accepted
+`providerError=true`. A run of refused turns fails no claim, however long: the line's `refusedRun`
+counts it, and the daemon answers each report with that count, for the worker's own log. A turn
+with a provider error whose report names no task, or a number no take of the claim holds — a
+reminder's, a card's or a background result's turn — reaches no wait. The text of the next accepted
 take tells the agent the turn stopped, names the HTTP status the provider answered when it
 answered one, and carries none of the provider's own words. A content filter is given again
 because the session has already stepped down to the next model of its fallback chain, so the next
@@ -898,7 +898,8 @@ which is the dead role a project's controller has no other way back from, with n
 over it, so it is what starts a claim the compaction could not reach, and a new session loses
 everything the old one held. It suspends the claim where the request arrives, a live agent and
 the claim no process stands behind alike, and that last claim comes back with the task its dead
-turn held: the suspension takes that task back, and the start sends it again. It
+turn held: the suspension takes that task back, and the start writes the task's value again for
+the new session to take. It
 forgets that session before it starts the phase, because the start runs the moment the restart
 commits and would otherwise resume the very session you are dropping. A retry the daemon then
 refuses has forgotten the session all the same: the claim keeps its state and its task, the
@@ -1524,7 +1525,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 - **`supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's`**, **`supervise: a turn's report names a task that no take of this claim holds; it finishes nothing`** and **`supervise: a turn's report repeats one already applied; it changes nothing more`** at Info are the daemon reading a worker's turn-outcome report (`POST /legion/v1/claims/turn-outcome`).
   The first is a report that came before the start of its turn: the turn is counted as the take's, and the start that follows names that task and starts no second turn.
   After a hello that does not say its backlog is whole, while the daemon does not know the count of the worker's turns, it waits for no such start, which may be among the frames dropped: a start that does come names no task, or is given to a take that awaits its turn.
-  The second names a number no take of the claim holds, such as a late report of a task already finished or one from a process the claim has left: it finishes nothing, and a refused turn it reports counts toward `launch_failure_limit`.
+  The second names a number no take of the claim holds, such as a late report of a task already finished or one from a process the claim has left: it finishes nothing, and a refused turn it reports counts in the claim's run of refused turns, which fails no claim.
   The third is a report the worker sent again after the daemon had applied it, as it does until it reads an answer.
   Nothing to do.
 - **`supervise: a turn's report names no task of the take whose turn it was given; the take awaits its turn again`** at Info, with the `task` and `by=`, is the daemon putting an accepted take back to wait for its own turn: the turn it gave the take, the first to start after the take, was a run of the worker's own.
@@ -1566,7 +1567,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   The same bound runs with nothing held, for a take whose turn ended and whose report naming its task never came: the worker's host dropped the task's text (Claude Code never took it, or Oh My Pi refused it), and the turn the daemon counted as the take's reported no task.
   A take that a daemon start restored is bounded with nothing held only where the daemon sees every turn start since its turn: the daemon before the restart recorded no end of that turn, and the worker's first hello after the restart says its backlog dropped no frame and its agent answers on that connection.
   **`supervise: the report of the take's turn did not come by its bound; the task is taken back with the note of a cut turn, and what waited for the report runs or its value is written again`** at Warn is that wait reaching its bound, or a held suspension's own deadline (an operator's suspension has one at the stop timeout), whichever comes first (`by=`, with `held=` saying whether work waited): the task is taken back as a turn the stop cut off, and the held work runs; with nothing held, the task's value is written again under its number, nothing is charged, and the worker takes it again.
-- **`supervise: the take awaits its turn again; what is held for it waits for that turn to start, or for the second bound`** at Info, with the `task` and whether a held `suspension` or a stale-plugin `relaunch` waits, is held work over a take whose given run the worker reported as no task's.
+- **`supervise: the take awaits its turn again; what is held for it waits for that turn to start, or for the second bound`** at Info, with the `task` and whether a held `suspension`, a stale-plugin `relaunch`, a held `replacement` or the operator's held `stop` waits, is held work over a take whose given run the worker reported as no task's.
   The same line, with what is `held` as for the line above, is work that begins to wait on such a take later: a suspension or a relaunch that arrives while the take awaits its turn behind work already held, or a wake spent into the held suspension.
   The worker may already have started the take's own turn, so the held work waits for that turn and then for its report, or, if no turn starts, for the second bound (`worker_turn_start_timeout_seconds`), which charges the worker, takes the task back, and runs the held work.
   The project's pause does not hold that bound: a pause's stop held behind the take lands at it.
@@ -1628,6 +1629,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   ([Observe](/legion/legion/running-legion/#observe)); look at the listener's log.
 - **`supervise: the shim never reconnected after the daemon started; retired its process`** and **`supervise: the shim never reconnected after its connection closed; retired its process`** at Warn mean a live process whose shim never said hello within the reconnect deadline, the registration deadline's bound: after a daemon start, for a claim the daemon restored ready, idle or working, or after its connection closed while its claim held a task, a whole bound from that close at the earliest.
   The daemon takes its task back under its number, a take still awaiting its turn as a cut turn, and relaunches it, charging a launch failure; a claim whose launches run out fails with the cause word `never_reconnected`.
+  Where the operator's stop or a replacement of the process waits for the report of the take's turn, the deadline writes neither line: the task goes back as a cut turn, and the stop or the replacement runs, charging nothing.
   A close while the claim holds no task ends that deadline, so a claim with no task is not retired for a shim that reconnects late.
 - **`supervise: the shim reconnected over a pending task; the daemon asks its agent whether it is in a turn, and the bounds on the worker wait for that answer or a turn frame`** at Info is the hello of a worker whose connection closed, or which a daemon start restored, while its claim holds a task.
   The take, turn-start and report waits judge the worker by the frames its connection carries, and a frame lost in the socket when the connection broke is not replayed, so none of them runs until the agent answers or a turn starts or ends on the new connection.

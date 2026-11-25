@@ -3024,7 +3024,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `deaths-with-work`
 
-  tree 4, admitted once tree 3 has left: its planner, killed once mid-turn, is sent its task again, told the turn was interrupted, and finishes planning;
+  tree 4, admitted once tree 3 has left: its planner, killed once mid-turn, takes the task value the daemon writes again, is told the turn was interrupted, and finishes planning;
   its implementer, killed after each ready with its task outstanding, is failed after 3 deaths in a row (`budgets.deaths` 3, `supervise: claim failed` because "deaths with work outstanding ran out"), tree 4 is held and nothing relaunches it;
   `legion issue status … backlog` then takes tree 4 out.
   A kill of either that lands after its task's turn has ended is given a new task and repeated, as in `controller`, and restarts the implementer's run of deaths

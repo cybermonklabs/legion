@@ -159,11 +159,13 @@ func (s *supervisor) wakeIssue(token claim.Token) {
 
 // wakeIssueClaims tells every claim of issue that a hold over the working copy its roles share may
 // have ended (supervise's IssueTurnEnded, which carries no fact): the workflow's record of the
-// issue's merge forward landed, withdrawn or cleared, which ends the take hold the owed merge put
-// on every take of the issue that would adopt that working copy (workflow.Config.MergeForwardEnded,
-// supervise's Deps.MergeForwardOwed). No claim is left out, the asked role's own included, since
+// issue's merge forward landed, was withdrawn or cleared, or a move left its ask owed to nobody
+// (workflow's mergeForwardEnds, through workflowRuntime.mergeForwardEnded), which ends the take
+// hold the owed merge put on every take of the issue that would adopt that working copy
+// (supervise's Deps.MergeForwardOwed). No claim is left out, the asked role's own included, since
 // the hold held its takes too. Each take that hold refused asks the record again and is offered
 // once nothing holds it (supervise's offerPending); a claim refused for anything else stays held.
+// The supervision sweep's offer of a take refused at its latest revision stays the backstop.
 func (s *supervisor) wakeIssueClaims(issue string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -837,8 +837,9 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // runtime enrolled, so it carries neither. Such a role is started without them and runs without
 // the broker until the update round replaces its pod (INFRA-484, keptPod) — once every worker of
 // the pod has done the steps of its update message (supervise.UpdateTask) and answered, no turn
-// runs and no claim's activity report holds it (internal/daemon's roundEnd.holding), or at the
-// round's bound — and a process that refused to start would push nothing and answer nothing.
+// runs, no take whose turn ended still owes its report and no claim's activity report holds it
+// (internal/daemon's roundEnd.holding), or at the round's bound — and a process that refused to
+// start would push nothing and answer nothing.
 // The environment that start carries says the same thing: the AGENT_SECRETS_URL and
 // AGENT_SECRETS_KEY_DIR an agent reads to decide it holds a broker are set from this one decision
 // too (mainEnvironment, enrollsIn), so such a role reports a resource it cannot reach rather than

@@ -122,7 +122,10 @@ type Config struct {
 	// says no hello by then, after a daemon start or after its connection closed while its claim
 	// held a task, is retired and counted as a launch failure (never_reconnected), and one whose
 	// agent does not say by then whether it is in a turn, after its shim's reconnect hello, is
-	// relaunched, charged nothing.
+	// relaunched, charged nothing. Where the operator's stop or a replacement of the process waits
+	// for the report of a take's turn that ended, the same deadline ends that wait instead
+	// (supervise's stopAtDeadline, replacementAtDeadline): the task is taken back as a cut turn,
+	// and the stop or the replacement runs, charged nothing.
 	WorkerBootRegistrationDeadlineIntervals int
 	WorkerRPCTimeout                        time.Duration
 	WorkerStopTimeout                       time.Duration
@@ -221,10 +224,10 @@ type Config struct {
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
 	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role the round
-	// asks ends the round before it once no turn runs and no claim's activity report holds it
-	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
-	// past it. It is a decimal number of minutes, as `worker_silence_minutes` is, so a live proof
-	// can drive the bound inside one run.
+	// asks ends the round before it once no turn runs, no take whose turn ended still owes its
+	// report and no claim's activity report holds it (internal/daemon's roundEnd.holding), and no
+	// answer, turn or background work holds the round past it. It is a decimal number of minutes,
+	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
@@ -245,11 +248,12 @@ type Config struct {
 	// rather than hours, so a tree still quiet after six has stopped rather than paused.
 	StalledTreeNotice time.Duration
 	// WorkerSilence is how long a phase worker's last recorded step may be in the past before the
-	// daemon reads that worker as one nothing will prompt and sends it its phase's task again
-	// (`worker_silence_minutes`, thirty minutes by default): workflow.SilentPhaseWorker takes it as
-	// the bound it judges a worker that is up, between turns and holding no task by. The key is a
-	// number of minutes rather than of hours because the bound is tens of minutes (readMinutes),
-	// and no deployment may set it under its floor (minWorkerSilence, checkWorkerSilence).
+	// daemon reads that worker as one nothing will prompt and writes its phase's task again for it
+	// to take (`worker_silence_minutes`, thirty minutes by default): workflow.SilentPhaseWorker
+	// takes it as the bound it judges a worker that is up, between turns and holding no task by.
+	// The key is a number of minutes rather than of hours because the bound is tens of minutes
+	// (readMinutes), and no deployment may set it under its floor (minWorkerSilence,
+	// checkWorkerSilence).
 	WorkerSilence time.Duration
 	// WorkerBackground is how long the background work a phase worker's own session reports may
 	// stand before the daemon tells that worker's architect of it (`worker_background_hours`,

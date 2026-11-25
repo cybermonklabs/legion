@@ -3842,14 +3842,15 @@ func unwaitedOnThePod(group []supervise.Claim, round string, earlierWork bool) [
 // read off the view by roundGroup; the store never holds it). It is the take's waitReport alone:
 // in waitFinish and below supervise.TaskTakeContract the daemon's end-frame bound makes the
 // finish, in waitTake no turn of the task's text ran, and a take in waitTurn is a claim stored
-// working, which workingClaims names. It is a reading of its own rather than a part of
-// workingClaims because a role whose turn is over changes no file of the working copy, so it does
-// not stop the round's read of its workspace (roundEnd.settled), and the lines that name the turns
-// still running do not name it.
+// working, which workingClaims names. A claim stored working whose report is owed too — during a
+// compaction with no turn under it, for one — is named by workingClaims alone, whose wait covers
+// it. It is a reading of its own rather than a part of workingClaims because a role whose turn is
+// over changes no file of the working copy, so it does not stop the round's read of its workspace
+// (roundEnd.settled), and the lines that name the turns still running do not name it.
 func reportingClaims(group []supervise.Claim) []string {
 	var reporting []string
 	for _, c := range group {
-		if c.ReportOwed {
+		if c.ReportOwed && c.State != supervise.StateWorking {
 			reporting = append(reporting, string(c.Role))
 		}
 	}

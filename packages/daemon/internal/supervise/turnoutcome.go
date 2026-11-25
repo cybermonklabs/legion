@@ -619,9 +619,9 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 // It decides the wait for the take's report again rather than end it (reportwait.go): no report
 // of the run given the take is owed any more, but the take's own turn's is, and that turn may
 // already have started, its start frame on its way behind the report. So work held for the
-// report — a held suspension, a stale-plugin relaunch — goes on waiting, for that turn's start
-// or for R5's second bound, which this decision arms from here (secondWaitNow), and the wait's
-// own bound goes (armReportWait).
+// report — a held suspension, a stale-plugin relaunch, a held replacement, the operator's held
+// stop — goes on waiting, for that turn's start or for R5's second bound, which this decision arms
+// from here (secondWaitNow), and the wait's own bound goes (armReportWait).
 //
 // It puts back no take whose report naming its number came and whose finish the store refused
 // (takePhase, waitFinish), whichever of its three callers asks: that report decides, the take
@@ -636,7 +636,8 @@ func (m *Machine) putBack(ctx context.Context, by string) error {
 	m.log.Info(notTheTakesTurnLine, "task", p.Number, "by", by)
 	p.TurnStarted, m.turns.take = false, 0
 	if m.workHeld() {
-		m.log.Info(putBackWaitsLine, "task", p.Number, "suspension", m.held != nil, "relaunch", m.staleRelaunch != nil)
+		m.log.Info(putBackWaitsLine, "task", p.Number, "suspension", m.held != nil, "relaunch", m.staleRelaunch != nil,
+			"replacement", m.heldReplacement != nil, "stop", m.heldStop)
 	}
 	return m.putPending(ctx)
 }

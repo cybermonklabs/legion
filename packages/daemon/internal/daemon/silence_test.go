@@ -1041,9 +1041,9 @@ func TestWorkerBackgroundOfARoleWhoseCompletionWasAcceptedTellsNobody(t *testing
 // this rig reports nothing, and it gets no other task. The report the dead process left is then
 // the claim's only activity record, and it describes a job the pod replacement killed. The
 // worker is the one this issue is about — up, between turns, holding no task, quiet past the
-// bound — so the sweep sends it its phase's task again, well inside the background bound: a
-// rule that read the stale report as work still running would leave it for the four hours of
-// worker_background_hours and then only tell its architect, which is the incident of
+// bound — so the sweep writes its phase's task again for it to take, well inside the background
+// bound: a rule that read the stale report as work still running would leave it for the four
+// hours of worker_background_hours and then only tell its architect, which is the incident of
 // dispatch://INFRA-3163 with a longer fuse.
 func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(t *testing.T) {
 	t.Parallel()

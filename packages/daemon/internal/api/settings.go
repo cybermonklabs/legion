@@ -87,9 +87,10 @@ type Settings struct {
 	ProductionCheckHours float64 `json:"production_check_hours"`
 	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
 	// a pod's update round waits for its roles after it opens. An answer from every role the round
-	// asks ends the round before it once no turn runs and no claim's activity report holds it
-	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
-	// past it. It is a decimal so a live proof can drive the bound inside one run.
+	// asks ends the round before it once no turn runs, no take whose turn ended still owes its
+	// report and no claim's activity report holds it (internal/daemon's roundEnd.holding), and no
+	// answer, turn or background work holds the round past it. It is a decimal so a live proof can
+	// drive the bound inside one run.
 	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
 	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
 	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
@@ -100,9 +101,9 @@ type Settings struct {
 	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`
 	// WorkerSilenceMinutes is `worker_silence_minutes`, a decimal number of minutes: how long a
 	// phase worker's last recorded step may be in the past before the daemon reads that worker as
-	// one nothing will prompt and sends it its phase's task again. It is in minutes, where the
-	// three hour keys above are in hours, because the bound is tens of minutes and the file takes
-	// it that way (config's readMinutes).
+	// one nothing will prompt and writes its phase's task again for it to take. It is in minutes,
+	// where the three hour keys above are in hours, because the bound is tens of minutes and the
+	// file takes it that way (config's readMinutes).
 	WorkerSilenceMinutes float64 `json:"worker_silence_minutes"`
 	// WorkerBackgroundHours is `worker_background_hours`, a decimal number of hours: how long
 	// the background work a phase worker's own session reports may stand before the daemon names

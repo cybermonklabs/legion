@@ -504,7 +504,8 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 
 // ReleaseRecord is one release of an issue pod as a reader of the records sees it: the run it
 // released, the roles whose claims it suspended, when it completed, and how many bytes of
-// unpushed work it saved as a bundle (zero when the workspace held none).
+// unpushed work it saved as a bundle. No release saves one now, so only a record an earlier
+// release wrote carries a size, and every other carries zero (store.PodRelease.BundleBytes).
 type ReleaseRecord struct {
 	ID          int64    `json:"id"`
 	Issue       string   `json:"issue"`

@@ -138,13 +138,14 @@ import (
 // report's finish or its provider error's take-back (reportedTask), the owed finish
 // (finishAtTurnsEnd), the wait's bound (reportBoundOver), R5's second bound over a take put back
 // (turnStartBoundOver). Each settles the take through one helper (settleThenAfterTurn), which runs
-// the held suspension's stop where that suspension waited, and the held relaunch and the offer
-// otherwise (afterTurn). It reads whether the held suspension waited (heldWaits) before the
-// settle, since the settled take says nothing of it any more: a suspension held for a turn that
-// was no take's, whose stop the runtime refused at that turn's end, is retried at the probe
-// interval (suspendHeld), not at a report. And it runs what waited only over a claim ready or idle
-// with no compaction running: the end of a turn or a compaction runs it otherwise, and a settle
-// that let the process go left nothing of it to run.
+// the operator's held stop where one is held, the held suspension's stop where that suspension
+// waited and no stop is held, and the held replacement, the held relaunch and the offer otherwise
+// (afterTurn). It reads whether the held suspension waited (heldWaits) before the settle, since
+// the settled take says nothing of it any more: a suspension held for a turn that was no take's,
+// whose stop the runtime refused at that turn's end, is retried at the probe interval
+// (suspendHeld), not at a report. And it runs what waited only over a claim ready or idle with no
+// compaction running: the end of a turn or a compaction runs it otherwise, and a settle that let
+// the process go left nothing of it to run.
 
 // reportWaitsLine is the line of work that begins to wait for the report of the take's turn
 // (waitReport, waitsLine), at Info, with the task's number and what waits: "suspension", with the
@@ -156,10 +157,11 @@ import (
 const reportWaitsLine = "supervise: the report of the take's turn is still to come; what is held for that turn waits for it"
 
 // putBackWaitsLine is the line of a put-back that leaves work waiting for the take (putBack), at
-// Info, with the task's number and whether a held suspension and a held stale-plugin relaunch
-// wait ("suspension", "relaunch"): the work waits for the take's own turn to start, or for R5's
-// second bound. It is also the line of work that begins to wait on a take awaiting its turn again
-// (waitTake, waitsLine), with what waits as reportWaitsLine names it.
+// Info, with the task's number and whether a held suspension, a held stale-plugin relaunch, a held
+// replacement and the operator's held stop wait ("suspension", "relaunch", "replacement", "stop"):
+// the work waits for the take's own turn to start, or for R5's second bound. It is also the line
+// of work that begins to wait on a take awaiting its turn again (waitTake, waitsLine), with what
+// waits as reportWaitsLine names it.
 const putBackWaitsLine = "supervise: the take awaits its turn again; what is held for it waits for that turn to start, or for the second bound"
 
 // finishWaitsLine is the line of work that begins to wait on a take whose report came and whose
@@ -427,14 +429,14 @@ func (m *Machine) armReportWait() {
 // reportBoundOver is the wait's own bound passing (TimerReport): the report of the take's turn did
 // not come within R5's second bound of the decision that left the take waiting for it. The task is
 // taken back with the note of a cut turn (reportMissed), and what waited runs as the claim stands
-// (settleThenAfterTurn, afterTurn): the held suspension's stop, or the stale-plugin relaunch,
-// which then takes nothing back; with nothing held, the offer of the task (offerPending) writes
-// its value again under its number, as the retake it is, and the worker takes it again. Nothing is
-// charged: a worker whose text was dropped did nothing wrong. A bound that finds a turn running,
-// the report come or the take out of its reach does nothing (reportBounded), so it never takes
-// back a take whose own turn is running; that turn's end arms it again. A claim being compacted
-// runs the work at the compaction's end (compactEnded). A take-back the store refused is tried
-// again at the probe interval.
+// (settleThenAfterTurn, afterTurn): the operator's held stop, the held suspension's stop, the held
+// replacement, or the stale-plugin relaunch, which then take nothing back; with nothing held, the
+// offer of the task (offerPending) writes its value again under its number, as the retake it is,
+// and the worker takes it again. Nothing is charged: a worker whose text was dropped did nothing
+// wrong. A bound that finds a turn running, the report come or the take out of its reach does
+// nothing (reportBounded), so it never takes back a take whose own turn is running; that turn's
+// end arms it again. A claim being compacted runs the work at the compaction's end
+// (compactEnded). A take-back the store refused is tried again at the probe interval.
 func reportBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	p, waiting := m.reportBounded()
 	if !waiting {

@@ -125,10 +125,10 @@ type Runtime interface {
 	// which has no issue workspace and nothing to push. The daemon opens an update round on a
 	// non-empty answer: the round asks each role of that place to do the steps of its update
 	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
-	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
-	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
-	// suspension excepted.
+	// place (ReplacePod) once every asked role has answered, no turn runs, no take whose turn ended
+	// still owes its report and no claim's activity report holds it (internal/daemon's
+	// roundEnd.holding), or at the round's bound (pod_update_grace_minutes) whatever the roles
+	// answered and whatever runs, an operator's suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:

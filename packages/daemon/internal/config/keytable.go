@@ -324,7 +324,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_silence_minutes", Default: "`30`", RequiredBy: "no",
-			Description: "How many minutes a phase worker that is up, between turns and holding no task it will still work — a task whose turn has already run counts as none — may go with no recorded step before the daemon sends it its phase's task again; decimals allowed, and a value under 16 is refused, since a healthy worker that says it is waiting stays quiet for 15 minutes before its own reminder comes again.",
+			Description: "How many minutes a phase worker that is up, between turns and holding no task it will still work — a task whose turn has already run counts as none — may go with no recorded step before the daemon writes its phase's task again for the worker to take; decimals allowed, and a value under 16 is refused, since a healthy worker that says it is waiting stays quiet for 15 minutes before its own reminder comes again.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.WorkerSilence = v }),
 		},
 		{
@@ -344,7 +344,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_grace_minutes", Default: "`30`", RequiredBy: "no",
-			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered and whatever still runs, and an answer from every role the round asks ends it sooner once no turn runs and each role's report since its last turn names no running background work; decimals allowed.",
+			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered and whatever still runs, and an answer from every role the round asks ends it sooner once no turn runs, no take whose turn ended still owes its report, and each role's report since its last turn names no running background work; decimals allowed.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.PodUpdateGrace = v }),
 		},
 		{
@@ -404,7 +404,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_boot_registration_deadline_intervals", RequiredBy: "no",
-			Description: "How many `worker_boot_timeout_seconds` the registration deadline is: an agent whose process is alive but which has not registered, or not said it is ready, within the product is retired and counted as a launch failure. The same product is the reconnect deadline: a ready agent's live process whose shim says no hello within it, after a daemon start or after its connection closed while its claim held a task, is retired and counted as a launch failure (`never_reconnected`), and one whose agent does not say whether it is in a turn within it after its shim's reconnect hello is relaunched, charged nothing.",
+			Description: "How many `worker_boot_timeout_seconds` the registration deadline is: an agent whose process is alive but which has not registered, or not said it is ready, within the product is retired and counted as a launch failure. The same product is the reconnect deadline: a ready agent's live process whose shim says no hello within it, after a daemon start or after its connection closed while its claim held a task, is retired and counted as a launch failure (`never_reconnected`), and one whose agent does not say whether it is in a turn within it after its shim's reconnect hello is relaunched, charged nothing. Where the operator's stop or a replacement of the process waits for the report of a take's turn that ended, the same deadline ends that wait instead: the task is taken back as a cut turn, and the stop or the replacement runs, charged nothing.",
 			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.WorkerBootRegistrationDeadlineIntervals }},
 		},
 		{

@@ -521,8 +521,8 @@ func (l launch) leakChecker(r *Runtime) string {
 // it cannot reach rather than a secrets grant it never had, and its generation is recorded as
 // carrying no broker URL, so moving the broker's URL never reads as StaleAddress and never
 // repoints that role mid-turn: the update round replaces its pod once every worker has answered,
-// no turn runs and no claim's activity report holds it (internal/daemon's roundEnd.holding), or
-// at the round's bound.
+// no turn runs, no take whose turn ended still owes its report and no claim's activity report
+// holds it (internal/daemon's roundEnd.holding), or at the round's bound.
 //
 // The launch reads the pod from the Sandbox's stored template, the pod's own build (keptBy), and
 // an observation from the live pod; neither a kubelet nor an admission webhook takes a volume off
