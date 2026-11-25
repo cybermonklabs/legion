@@ -1,5 +1,5 @@
 kind: Added
-body: 'A production or graph check counts only the results of the current deploy of the program it reads.'
+body: 'Declare program deploys, their writer and their known or unknown workflow attempt.'
 time: 2026-11-24T18:15:48Z
 custom:
     Issue: pr5416
