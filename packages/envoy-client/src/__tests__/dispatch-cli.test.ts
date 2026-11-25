@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import {
+  DISPATCH_AS_OF_ABSENT_HEADER,
+  DISPATCH_AS_OF_HEADER,
   DISPATCH_BLOCK_UNITS,
   DISPATCH_READ_ONLY_TOKEN,
   IDEMPOTENCY_KEY_HEADER,
@@ -1748,21 +1750,29 @@ describe("dispatch api", () => {
     readonly authorization: string;
   }
   const asked: Asked[] = [];
+  const issueAnswer = {
+    key: "DSP-1",
+    claim: { actor: { kind: "session", id: "ses-architect" }, at: "2026-11-18T05:00:00Z" },
+  };
   const dispatch = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch(request) {
-      const { pathname, search } = new URL(request.url);
+      const { pathname, search, searchParams } = new URL(request.url);
       asked.push({
         method: request.method,
         path: `${pathname}${search}`,
         authorization: request.headers.get("Authorization") ?? "",
       });
       if (pathname === "/api/v1/issues/DSP-1") {
-        return Response.json({
-          key: "DSP-1",
-          claim: { actor: { kind: "session", id: "ses-architect" }, at: "2026-11-18T05:00:00Z" },
-        });
+        const answer = Response.json(issueAnswer);
+        // A read at a cut names the cut and each field it left out, as Dispatch's read of an
+        // issue at a cut does.
+        if (searchParams.has("as_of")) {
+          answer.headers.set(DISPATCH_AS_OF_HEADER, "2026-11-10T00:00:00.000000Z");
+          answer.headers.set(DISPATCH_AS_OF_ABSENT_HEADER, "/route_status,/design_gates");
+        }
+        return answer;
       }
       // Dispatch's own answer to a path no build of it serves (the router's `staticHandler`): it
       // names the route and where every route is listed.
@@ -1821,6 +1831,28 @@ describe("dispatch api", () => {
     expect(asked).toEqual([
       { method: "GET", path: "/api/v1/issues/DSP-1?events=0", authorization: `Bearer ${TOKEN}` },
     ]);
+  });
+
+  // An answer at a cut leaves fields out, and the JSON alone does not tell a field left out from
+  // a field that does not exist. The command writes the Left out line that every read at a cut
+  // prints to stderr, so stdout stays the JSON that jq reads.
+  test("at a cut, prints the JSON alone and the Left out line on stderr", async () => {
+    const { code, stdout, stderr } = await run(
+      ["api", "--path", "/api/v1/issues/DSP-1?as_of=2026-11-10T00:00:00Z"],
+      session
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual(issueAnswer);
+    expect(stderr).toBe(
+      "Left out at 2026-11-10T00:00:00.000000Z: the route's state now, the design gates\n"
+    );
+  });
+
+  test("an answer that names no cut adds no Left out line", async () => {
+    const { code, stdout, stderr } = await run(["api", "--path", "/api/v1/issues/DSP-1"], session);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual(issueAnswer);
+    expect(stderr).not.toContain("Left out at");
   });
 
   test("under DISPATCH_TOKEN_BROKER=1, reads a route with a broker token traded for this session", async () => {

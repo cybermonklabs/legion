@@ -13,11 +13,12 @@ import (
 // Under a cut, the database itself holds each statement of the pool to reading. Bind refuses a
 // statement that is not a read, by its first word. But a read can call a function that writes,
 // such as nextval, and Bind cannot see that. So every statement under a cut runs in a read-only
-// transaction, and PostgreSQL refuses each write in it (SQLSTATE 25006). A transaction that Begin
-// or BeginTx opens under a cut is read-only (Pool.begin). A statement of Query, QueryRow or Exec
-// under a cut runs in a read-only transaction of its own, on one pooled connection, and so does
-// a batch. The pool ends that transaction with a rollback when the statement or the batch is
-// done (endRead).
+// transaction, and PostgreSQL refuses each write in it (SQLSTATE 25006). An advisory lock, such
+// as pg_advisory_xact_lock, writes nothing, so it runs in a read-only transaction too. A
+// transaction that Begin or BeginTx opens under a cut is read-only (Pool.begin). A statement of
+// Query, QueryRow or Exec under a cut runs in a read-only transaction of its own, on one pooled
+// connection, and so does a batch. The pool ends that transaction with a rollback when the
+// statement or the batch is done (endRead).
 //
 // A statement that Bind changes holds its cut in its text, so each new cut makes each of its
 // statements a new text. The pool sends such a statement with pgx.QueryExecModeCacheDescribe

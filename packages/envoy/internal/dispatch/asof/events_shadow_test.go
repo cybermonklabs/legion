@@ -284,7 +284,9 @@ const readOnlySQLTransaction = "25006"
 // that writes passes it. The database refuses it: every statement at a cut runs in a read-only
 // transaction. That holds for a cursor, a row and a statement of the pool, a batch of the pool,
 // and a statement and a batch of a transaction opened at the cut, even one whose options ask to
-// write. The test makes the sequence with no cut, and no refused statement draws from it.
+// write. A statement that would make a transaction at the cut read-write, or end it, is Bind's
+// refusal, so the pool sends nothing of it, and the write after it in that transaction is refused
+// still. The test makes the sequence with no cut, and no refused statement draws from it.
 func TestAWriteThatBindPassesIsRefusedAtTheCutByTheDatabase(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -339,6 +341,25 @@ func TestAWriteThatBindPassesIsRefusedAtTheCutByTheDatabase(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	refused(t, "a batch of a transaction at the cut", tx.SendBatch(ctx, batch).Close())
+
+	tx, err = database.Pool.BeginTx(atCut, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin at the cut: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	for _, statement := range []string{
+		"set transaction read write",
+		"set session characteristics as transaction read write",
+		"set local transaction_read_only = off",
+		"rollback",
+	} {
+		_, err := tx.Exec(ctx, statement)
+		var bindRefused *asof.RefusedError
+		if !errors.As(err, &bindRefused) {
+			t.Errorf("%q in a transaction at the cut: %v, want an *asof.RefusedError", statement, err)
+		}
+	}
+	refused(t, "a statement of a transaction at the cut after its refused statements", tx.QueryRow(ctx, write).Scan(&value))
 
 	var drawn bool
 	if err := database.Pool.QueryRow(ctx, "select is_called from asof_written").Scan(&drawn); err != nil {

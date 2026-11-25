@@ -1534,10 +1534,24 @@ export class DispatchClient {
    *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
    *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
    *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
-   *  so Dispatch's own refusal, which names the route, is printed as it came. */
-  async readRoute(path: string): Promise<unknown> {
+   *  so Dispatch's own refusal, which names the route, is printed as it came.
+   *
+   *  An answer at a cut, under a token that carries one or with `as_of` in `path`, names the cut
+   *  in `Dispatch-As-Of` and each field it left out in `Dispatch-As-Of-Absent`. The body alone
+   *  does not tell a field left out from a field that does not exist, so `atCut` is told the cut
+   *  and those fields' JSON Pointers. An answer that names no cut does not call it. */
+  async readRoute(
+    path: string,
+    atCut?: (cut: string, absent: readonly string[]) => void
+  ): Promise<unknown> {
     const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
-    return this.#response("GET", url, await this.#send("GET", url));
+    const response = await this.#send("GET", url);
+    const answer = await this.#response<unknown>("GET", url, response);
+    const cut = response.headers.get(DISPATCH_AS_OF_HEADER);
+    if (cut !== null) {
+      atCut?.(cut, parseAsOfAbsent(response.headers.get(DISPATCH_AS_OF_ABSENT_HEADER)));
+    }
+    return answer;
   }
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's

@@ -229,6 +229,11 @@ func TestBindPassesStatementsThatReadNoTable(t *testing.T) {
 		"savepoint sp_1",
 		"release savepoint sp_1",
 		"rollback to savepoint sp_1",
+		"rollback to savepoint x",
+		"rollback transaction to x",
+		"ROLLBACK WORK TO SAVEPOINT sp_1",
+		"set local statement_timeout = default",
+		"set local hnsw.iterative_scan = relaxed_order",
 	} {
 		t.Run(sql, func(t *testing.T) {
 			bound, err := asof.Bind(sql, cut)
@@ -237,6 +242,64 @@ func TestBindPassesStatementsThatReadNoTable(t *testing.T) {
 			}
 			if bound != sql {
 				t.Errorf("Bind(%q) = %q, want the statement unchanged", sql, bound)
+			}
+		})
+	}
+}
+
+// The store runs each read at a cut in a read-only transaction, and PostgreSQL refuses each write
+// in it. A statement that Bind passes unchanged must not take a read out of that transaction. Set
+// transaction read write, as a transaction's first statement, makes it read-write, and so does
+// set transaction_read_only = off. A rollback that does not roll back to a savepoint ends the
+// transaction, and the statements after it run outside it. Bind refuses each of these, and the
+// refusal says why.
+func TestBindRefusesAStatementThatLeavesTheReadOnlyTransaction(t *testing.T) {
+	cut := mustCut(t, "2026-11-10T00:00:00Z")
+	const (
+		modes     = "it sets the modes of a transaction, and read write can make a read at a cut read-write"
+		readOnly  = "it sets transaction_read_only, and off can make a read at a cut read-write"
+		byDefault = "it sets default_transaction_read_only, and off can make a read at a cut read-write"
+		rollsBack = "it ends the transaction rather than roll back to a savepoint, and the statements after it run outside the read-only transaction of the cut"
+		notARead  = "it begins with abort, not with select, values, table or ("
+	)
+	for _, row := range []struct {
+		sql    string
+		reason string
+	}{
+		{sql: "set transaction read write", reason: modes},
+		{sql: "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ WRITE", reason: modes},
+		{sql: "set local transaction read write", reason: modes},
+		{sql: "set session transaction read write", reason: modes},
+		{sql: "set session characteristics as transaction read write", reason: modes},
+		{sql: "set local session characteristics as transaction read write", reason: modes},
+		{sql: "set transaction_read_only = off", reason: readOnly},
+		{sql: "set transaction_read_only to off", reason: readOnly},
+		{sql: "set local transaction_read_only = off", reason: readOnly},
+		{sql: "set session transaction_read_only to off", reason: readOnly},
+		{sql: "SET Transaction_Read_Only = OFF", reason: readOnly},
+		{sql: `set "transaction_read_only" = off`, reason: readOnly},
+		{sql: `set local "TRANSACTION_READ_ONLY" to off`, reason: readOnly},
+		{sql: "set default_transaction_read_only = off", reason: byDefault},
+		{sql: "set session default_transaction_read_only to off", reason: byDefault},
+		{sql: `set "Default_Transaction_Read_Only" = off`, reason: byDefault},
+		{sql: "rollback", reason: rollsBack},
+		{sql: "ROLLBACK WORK", reason: rollsBack},
+		{sql: "rollback transaction", reason: rollsBack},
+		{sql: "rollback and chain", reason: rollsBack},
+		{sql: "rollback;", reason: rollsBack},
+		{sql: "abort", reason: notARead},
+	} {
+		t.Run(row.sql, func(t *testing.T) {
+			bound, err := asof.Bind(row.sql, cut)
+			var refused *asof.RefusedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("Bind(%q) = %q, %v; want an *asof.RefusedError", row.sql, bound, err)
+			}
+			if refused.Statement != row.sql {
+				t.Errorf("Bind(%q) refusal names %q, want the statement", row.sql, refused.Statement)
+			}
+			if refused.Reason != row.reason {
+				t.Errorf("Bind(%q) refusal says %q, want %q", row.sql, refused.Reason, row.reason)
 			}
 		})
 	}

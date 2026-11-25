@@ -36,13 +36,30 @@ func (e *RefusedError) Error() string {
 //   - A statement with its own leading WITH or WITH RECURSIVE list gets the shadows as the first
 //     members of that list, and RECURSIVE stays. Its own members can then read the shadows.
 //   - A statement whose first word is set, show, savepoint, release or rollback reads and sets no
-//     table. Bind returns it unchanged: a WITH list in front of it is a syntax error.
+//     table. Bind returns it unchanged: a WITH list in front of it is a syntax error. Bind refuses
+//     those of them that can take a read out of its read-only transaction (below).
 //
 // Bind refuses, with a *RefusedError, a statement whose first word after its WITH list is not
 // select, values, table or "(", a statement whose own WITH list holds an insert, update, delete
 // or merge, a string that holds more than one statement, whether or not it names a shadowed
 // table, and a statement that holds a U&"..." identifier, whose escapes can spell the name of any
-// table. Keywords are case-insensitive. Bind reads sql with a tokenizer that reads a string
+// table. The store runs each read at a cut in a read-only transaction. A statement that Bind
+// passes unchanged can take a read out of that transaction, so Bind refuses these too:
+//
+//   - A set statement whose next word, after any session or local, is transaction or
+//     characteristics. As a transaction's first statement, set transaction read write makes the
+//     transaction read-write, and so does set session characteristics as transaction read write
+//     for the session's next transactions. Bind refuses each of these forms, whatever modes it
+//     names: a list of modes can hold read write after other modes.
+//   - A set statement that names the parameter transaction_read_only or
+//     default_transaction_read_only. PostgreSQL matches a parameter's name in any case, so Bind
+//     matches a word or a quoted identifier in any case.
+//   - A rollback that does not roll back to a savepoint. It ends the transaction, and the
+//     statements after it run outside it. Only rollback [work | transaction] to [savepoint] name
+//     passes.
+//
+// Other settings pass, such as set local statement_timeout = '15s', and so do savepoint and
+// release. Keywords are case-insensitive. Bind reads sql with a tokenizer that reads a string
 // literal, a quoted identifier and a dollar-quoted body each as one token and skips comments, so
 // a word inside a literal, a body or a comment is not SQL to it and names no table. It reads them
 // as PostgreSQL's lexer does where a table's name depends on it: a literal goes on after
@@ -64,6 +81,10 @@ func Bind(sql string, cut Cut) (string, error) {
 		return "", refuse(sql, first, `it holds a U&"..." identifier, whose escapes can spell the name of any table`)
 	}
 	if !head.with && head.main.kind == tokenWord && passes(sql[head.main.start:head.main.end]) {
+		rest := scanner{sql: sql, pos: head.main.end}
+		if reason := rest.leavesReadOnly(head.main); reason != "" {
+			return "", refuse(sql, first, reason)
+		}
 		return sql, nil
 	}
 	if head.write != "" {
@@ -91,6 +112,39 @@ func passes(word string) bool {
 		}
 	}
 	return false
+}
+
+// leavesReadOnly says how a statement that passes Bind unchanged (passes) can take a read at a
+// cut out of its read-only transaction, or "" when it cannot. first is the statement's first
+// word, and the scanner reads the tokens after it.
+func (s *scanner) leavesReadOnly(first token) string {
+	switch {
+	case s.isWord(first, "set"):
+		// set [ session | local ] { transaction mode, ... | session characteristics as
+		// transaction mode, ... | parameter { to | = } value }
+		t := s.next()
+		for s.isWord(t, "session") || s.isWord(t, "local") {
+			t = s.next()
+		}
+		if s.isWord(t, "transaction") || s.isWord(t, "characteristics") {
+			return "it sets the modes of a transaction, and read write can make a read at a cut read-write"
+		}
+		for _, parameter := range [...]string{"transaction_read_only", "default_transaction_read_only"} {
+			if s.isWord(t, parameter) || s.isQuoted(t, parameter) {
+				return "it sets " + parameter + ", and off can make a read at a cut read-write"
+			}
+		}
+	case s.isWord(first, "rollback"):
+		// rollback [ work | transaction ] to [ savepoint ] name
+		t := s.next()
+		if s.isWord(t, "work") || s.isWord(t, "transaction") {
+			t = s.next()
+		}
+		if !s.isWord(t, "to") {
+			return "it ends the transaction rather than roll back to a savepoint, and the statements after it run outside the read-only transaction of the cut"
+		}
+	}
+	return ""
 }
 
 // refuse is the refusal of sql for reason, naming the statement from its first token.
@@ -270,6 +324,13 @@ func (s *scanner) single() string {
 
 func (s *scanner) isWord(t token, keyword string) bool {
 	return t.kind == tokenWord && strings.EqualFold(s.sql[t.start:t.end], keyword)
+}
+
+// isQuoted reports whether t is a quoted identifier that holds name in any case, as PostgreSQL
+// matches the name of a parameter.
+func (s *scanner) isQuoted(t token, name string) bool {
+	return t.kind == tokenQuoted && t.end-t.start == len(name)+2 && s.sql[t.end-1] == '"' &&
+		strings.EqualFold(s.sql[t.start+1:t.end-1], name)
 }
 
 type tokenKind uint8

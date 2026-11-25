@@ -1,3 +1,4 @@
+import { ReadCut } from "./as-of";
 import { type DispatchToolResult, type SessionContext, stringArg } from "./context";
 
 /**
@@ -8,12 +9,24 @@ import { type DispatchToolResult, type SessionContext, stringArg } from "./conte
  * leave `/api/v1` before this runs. A refusal is Dispatch's own error, thrown as the client throws
  * it, which the command prints and exits 1 on. It names no owner, so it runs on the session's
  * context alone, and it writes nothing: a write goes through the command named for it.
+ *
+ * An answer at a cut leaves fields out, and its body alone does not tell a field left out from a
+ * field that does not exist. So the command adds the `Left out at <cut>:` line that every read at
+ * a cut prints (`ReadCut.line`) to the result's warnings, which the CLI writes to stderr: stdout
+ * stays the JSON alone. An answer that names no cut adds no warning.
  */
 export async function apiCommand(context: SessionContext): Promise<DispatchToolResult> {
   const path = stringArg(context.args, "path");
-  const answer = await context.newClient().readRoute(path);
+  const warnings: string[] = [];
+  const answer = await context.newClient().readRoute(path, (cut, absent) => {
+    const read = new ReadCut(cut);
+    read.answeredAt(cut);
+    read.absent(absent);
+    warnings.push(read.line());
+  });
   return {
     text: typeof answer === "string" ? answer : JSON.stringify(answer, null, 2),
     details: { path },
+    ...(warnings.length === 0 ? {} : { warnings }),
   };
 }

@@ -1586,7 +1586,10 @@ Dispatch's code.
 `dispatch api --path <route>` sends one GET of a route under `/api/v1` that no other command
 reads (`apiCommand`, `src/dispatch-commands/api.ts`, through `DispatchClient.readRoute`), with the
 session's own credential as every command presents it, and prints Dispatch's JSON answer for
-`jq`. It takes no method and no body: a write goes through the command named for it. The spec
+`jq`. When Dispatch answers as of a past time, under a token that carries one or with `as_of` in
+the path, the command writes to standard error the `Left out at <time>:` line that every read at
+a past time prints, naming each field the answer left out, so standard output stays the JSON
+alone. It takes no method and no body: a write goes through the command named for it. The spec
 refuses, before anything is sent, a path that does not begin `/api/v1`, one that holds a space, a
 backslash, a `#` or a character outside printable ASCII, and one with a `.` or `..` segment,
 plain or percent-encoded, since a URL parser would resolve any of those out of `/api/v1`. A
