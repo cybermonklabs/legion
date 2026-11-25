@@ -54,6 +54,7 @@ func githubEventEnvelope(t *testing.T, id string, fields map[string]any) []byte 
 // counts the table, not decode.go, so a fact type decode.go returns later is added to the table,
 // and to the count, by hand.
 func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	recordPullRequest(t, pool, "LEGION-208", 42)
 	dispatch, github, wake := dispatchConsumerName("CAPTURE"), githubConsumerName("CAPTURE"), wakeConsumerName("CAPTURE")

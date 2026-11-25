@@ -186,6 +186,7 @@ on:
       - 'packages/envoy/internal/cipherclient/*'
       - 'packages/envoy/internal/ciphertoken/*'
       - 'packages/envoy/internal/cistore/**'
+      - 'packages/envoy/internal/clock/*'
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/ctxlock/**'
       - 'packages/envoy/internal/dispatch/access/**'

@@ -2,10 +2,10 @@
 //
 // How this package sends a request `openid-client` asks for and words its failure: the request
 // itself (`requestInit`), sent with a DPoP proof that carries the nonce the server last sent
-// (`sendWithProof`), the HTTP status behind a failure (`statusOf`), and the one wording of a failed
-// request to the broker (`brokerRefusal`). The broker's exchange (`token-client.ts`), a device
-// login's requests (`device-login.ts`) and the person's identity source (`person-identity.ts`)
-// send through them.
+// (`sendWithProof`), the HTTP answer and status behind a failure (`responseOf`, `statusOf`), and
+// the one wording of a failed request to the broker (`brokerRefusal`). The broker's exchange
+// (`token-client.ts`), a device login's requests (`device-login.ts`) and the person's identity
+// source (`person-identity.ts`) send through them.
 
 import { errorClass, urlForText } from "@legion/contracts/log-text";
 import {
@@ -24,23 +24,32 @@ import { HEADER_DPOP_HOLDER } from "./wire";
 export const BROKER_URL_SETTING = "the broker URL";
 
 /**
- * The HTTP status behind `error`, or 0 where it carries none: an OAuth error answer and a
- * `WWW-Authenticate` challenge carry the status of the answer they were read from (their `cause`
- * is the body and the challenge), and a status `openid-client` reports as an unconforming answer
- * is left in the response it hangs off the error's `cause` chain. The person's identity source
- * reads its issuer's errors with it too (`person-identity.ts`).
+ * The HTTP answer behind `error`, or undefined where it carries none: an OAuth error answer and a
+ * `WWW-Authenticate` challenge hold the answer they were read from (their `cause` is the body and
+ * the challenge), and an answer `openid-client` reports as unconforming is left in the response
+ * it hangs off the error's `cause` chain. {@link statusOf} reads its status, and a device login's
+ * poll its `Retry-After` (`device-login.ts`).
  */
-export function statusOf(error: unknown): number {
+export function responseOf(error: unknown): Response | undefined {
   let cause: unknown = error;
   for (let depth = 0; depth < 4; depth += 1) {
-    if (cause instanceof Response) return cause.status;
+    if (cause instanceof Response) return cause;
     if (cause instanceof ResponseBodyError || cause instanceof WWWAuthenticateChallengeError) {
-      return cause.status;
+      return cause.response;
     }
-    if (typeof cause !== "object" || cause === null || !("cause" in cause)) return 0;
+    if (typeof cause !== "object" || cause === null || !("cause" in cause)) return undefined;
     cause = cause.cause;
   }
-  return 0;
+  return undefined;
+}
+
+/**
+ * The HTTP status behind `error`, the status of the answer {@link responseOf} reaches, or 0 where
+ * it carries none. The person's identity source reads its issuer's errors with it too
+ * (`person-identity.ts`).
+ */
+export function statusOf(error: unknown): number {
+  return responseOf(error)?.status ?? 0;
 }
 
 /**

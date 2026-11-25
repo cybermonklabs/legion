@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -121,7 +122,9 @@ func newGoingGrantRig(t *testing.T) goingGrantRig {
 	rig.brokered = newBrokerTokenRigOn(t, testServerOptions{store: database, identity: cookies, oidc: rig.issuer.verifier(t)})
 	rig.cookies = rig.brokered.served
 	rig.header = directServer(Deps{Store: database, Identity: headerIdentity(database)})
-	rig.iapKeys = newIAPSocketKeys(t, database)
+	// The grant's IAP budget is judged against time.Now (rig.caller), so the assertion's verifier
+	// runs on the real clock too.
+	rig.iapKeys = newIAPSocketKeys(t, database, clock.Real())
 	rig.iap = directServer(Deps{Store: database, Identity: rig.iapKeys.identity})
 	return rig
 }
