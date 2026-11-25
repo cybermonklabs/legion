@@ -745,7 +745,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 				// below when a takeover's copy landed first, as that copy is on the role's kept
 				// lane; 503 maybe_stored when no mark could be published.
 				if stored := d.delivery.now(); roles.ForwardStoredTooLate(resolvedAt, stored, sendRequestBudget) {
-					withdrawn, err := withdrawLateForward(ctx, *d.delivery, send.role, forwarded, ack.Sequence)
+					withdrawn, err := withdrawLateForward(ctx, *d.delivery, send.role, send.holder, forwarded, ack.Sequence)
 					switch {
 					case err != nil:
 						send.withdrawalUnknown(stored.Sub(resolvedAt), err)

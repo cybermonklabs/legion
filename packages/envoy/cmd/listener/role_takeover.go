@@ -675,10 +675,23 @@ func withdrawnFrame(forwarded contracts.Envelope, key string, seq uint64) contra
 	return mark
 }
 
-// isWithdrawnFrame reports whether item, read from a role's kept lane, is a withdrawal mark
-// (withdrawnFrame).
-func isWithdrawnFrame(item contracts.Envelope) bool {
-	return strings.HasPrefix(item.DedupeKey, withdrawnFrameKeyPrefix)
+// isWithdrawnFrame reports whether item, stored on role's kept lane under msgID, is a withdrawal
+// mark (withdrawnFrame). A sender chooses its own dedupe key, so the key's prefix alone proves
+// nothing. The mark is told by its message id, which only the listener sets: the id of a takeover
+// copy of a frame (takenFrameMsgID), whose key and frame sequence the mark's dedupe key must name
+// exactly. A keep stores a sender's copy under bus.KeptMsgID of its key, which ends with the kept
+// lane's subject and never with a frame sequence, so no key a sender chooses lands in that space.
+func isWithdrawnFrame(item contracts.Envelope, msgID, role string) bool {
+	if !strings.HasPrefix(item.DedupeKey, withdrawnFrameKeyPrefix) {
+		return false
+	}
+	suffix := ":" + bus.KeptRoleSubject(role) + keptFrameMark
+	at := strings.LastIndex(msgID, suffix)
+	if at <= 0 {
+		return false
+	}
+	seq, err := strconv.ParseUint(msgID[at+len(suffix):], 10, 64)
+	return err == nil && item.DedupeKey == withdrawnFrameKeyPrefix+takenFrameDedupeKey(msgID[:at], seq)
 }
 
 // withdrawLateForward withdraws forwarded, the role message stored late at seq on its holder's
@@ -711,7 +724,7 @@ func isWithdrawnFrame(item contracts.Envelope) bool {
 // Nothing is deleted. The forward stays on its holder's subject, and the mark stays on the kept
 // lane, where the walk ends it with a line of its own (judgeKeptRoleCopy), so a later reader sees
 // both.
-func withdrawLateForward(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, forwarded contracts.Envelope, seq uint64) (bool, error) {
+func withdrawLateForward(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, holder string, forwarded contracts.Envelope, seq uint64) (bool, error) {
 	key := strings.TrimPrefix(forwarded.DedupeKey, contracts.RoleForwardDedupePrefix)
 	mark := withdrawnFrame(forwarded, key, seq)
 	subject := bus.KeptRoleSubject(role)
@@ -719,6 +732,20 @@ func withdrawLateForward(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 	faults := cfg.takeoverFaults.faults()
 	if faults.beforeWithdraw != nil {
 		faults.beforeWithdraw(role, seq)
+	}
+	// A holder that still holds the role reads the forward from its own subject, and should it
+	// lose the role later, a takeover copies the forward, since no mark stands. Withdrawing it
+	// would strand it: a takeover's copy would meet the mark, and nothing else reads the frame.
+	// So the forward is withdrawn only once the role's claim, read from the leader, names another
+	// session or none. A claim that cannot be read is no withdrawal and no answer of delivered.
+	readCtx, cancelRead := context.WithTimeout(context.WithoutCancel(ctx), roleForwardTimeout)
+	current, err := readRoleClaimHolder(readCtx, cfg, role)
+	cancelRead()
+	if err != nil {
+		return false, fmt.Errorf("read role %s's claim before withdrawing its late forward: %w", role, err)
+	}
+	if current == holder {
+		return false, nil
 	}
 	var failed error
 	for attempt := range 2 {
@@ -738,7 +765,7 @@ func withdrawLateForward(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 		}
 		withdrawn := !ack.Duplicate
 		if ack.Duplicate && (ack.Resent || attempt > 0) {
-			withdrawn = keptMarkAt(publishCtx, cfg, subject, ack.Sequence)
+			withdrawn = keptMarkAt(publishCtx, cfg, subject, role, ack.Sequence)
 		}
 		cancel()
 		cfg.logger.Info("listener role send's forward was stored past its fence",
@@ -759,13 +786,13 @@ func withdrawLateForward(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 
 // keptMarkAt reports whether the message stored at seq on subject, a role's kept lane, is a
 // withdrawal mark (isWithdrawnFrame), and true for one it cannot read (withdrawLateForward).
-func keptMarkAt(ctx context.Context, cfg listenerDeliveryHandlerConfig, subject string, seq uint64) bool {
+func keptMarkAt(ctx context.Context, cfg listenerDeliveryHandlerConfig, subject, role string, seq uint64) bool {
 	stored, err := cfg.client.NextStoredMessage(ctx, subject, seq)
 	if err != nil || stored.Sequence != seq {
 		return true
 	}
 	frame, err := readRoleFrame(stored.Data)
-	return err != nil || isWithdrawnFrame(frame.envelope())
+	return err != nil || isWithdrawnFrame(frame.envelope(), stored.MsgID, role)
 }
 
 // takeOverFrame judges a frame of session sessionID's consumer before the relay sends it, and

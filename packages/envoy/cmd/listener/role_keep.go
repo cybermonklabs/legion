@@ -1575,7 +1575,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 	}
 	item := frame.envelope()
 	at := now()
-	if isWithdrawnFrame(item) {
+	if isWithdrawnFrame(item, stored.MsgID, role) {
 		return keptCopyVerdict{step: keptCopyEnd, item: item, report: func() {
 			cfg.logger.Info("listener kept role lane holds a withdrawn forward; nothing is forwarded for it",
 				slog.String("role", role),
