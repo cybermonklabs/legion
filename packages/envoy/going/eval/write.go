@@ -630,7 +630,8 @@ func (w *seedWriter) writeComments(ctx context.Context) error {
 // The comment is a node of the node and tuple store as a comment the server writes is, and as
 // cmd/dispatch-seed's writeComments writes one: before its row, since the row's (node_kind,
 // node_address) key is checked inside the statement that writes it, the comment's node, the
-// document that owns it where one does (graphstore.CommentFacts, by the document's ref_key), and
+// document that owns it where one does (graphstore.CommentFacts, by the document's ref_key), in
+// the project of its document or its issue, as the comment route and dispatch-seed state it, and
 // who wrote it (graphstore.AuthorFacts: the author's node and the comment's authored_by tuple).
 // The seed appends the comment's event after the row, so all of it takes the sentinel, the cause
 // of a write no event recorded, as the seed's do. Every comment of an author writes the author's
@@ -648,13 +649,18 @@ func (w *seedWriter) writeComment(ctx context.Context, comment Comment) error {
 	if !named {
 		return fmt.Errorf("its author %q names nobody the store can name", comment.Author)
 	}
-	ownerAddress := ""
+	ownerAddress, project := "", ""
 	if where.artifact != nil {
-		if err := w.tx.QueryRow(ctx, `select ref_key from artifacts where id = $1`, *where.artifact).Scan(&ownerAddress); err != nil {
+		if err := w.tx.QueryRow(ctx, `select ref_key, coalesce(project_key, '') from artifacts where id = $1`, *where.artifact).Scan(&ownerAddress, &project); err != nil {
 			return fmt.Errorf("read the address of its document: %w", err)
 		}
 	}
-	node, tuples := graphstore.CommentFacts(nil, id, actor, comment.CreatedAt, graphstore.NoEvent, "", ownerAddress)
+	if project == "" && where.issue != nil {
+		if err := w.tx.QueryRow(ctx, `select project_key from issues where key = $1`, *where.issue).Scan(&project); err != nil {
+			return fmt.Errorf("read the project of its issue: %w", err)
+		}
+	}
+	node, tuples := graphstore.CommentFacts(nil, id, actor, comment.CreatedAt, graphstore.NoEvent, "", ownerAddress, project, nil)
 	for index := range authorNodes {
 		authorNodes[index].Restates = true
 	}

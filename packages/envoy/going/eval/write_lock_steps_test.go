@@ -79,7 +79,7 @@ func TestTheSeedsStoreWritesTakeTheStoreLockOrder(t *testing.T) {
 		comment := Comment{ID: "lock-comment", Owner: lockSeedIssue, Author: "alice", Body: "A remark on the issue.", CreatedAt: lockSeedAt}
 		id := ItemID("comment", comment.ID)
 		author := model.Actor{Kind: "user", ID: comment.Author}
-		node, _ := graphstore.CommentFacts(nil, id, author, comment.CreatedAt, graphstore.NoEvent, "", "")
+		node, _ := graphstore.CommentFacts(nil, id, author, comment.CreatedAt, graphstore.NoEvent, "", "", lockSeedProject, nil)
 		authors, _, named := graphstore.AuthorFacts(graphstore.KindComment, id, author, comment.CreatedAt, graphstore.NoEvent)
 		if !named || len(authors) != 1 {
 			t.Fatalf("the seed's author %s names %d nodes of the store, want one person", comment.Author, len(authors))
