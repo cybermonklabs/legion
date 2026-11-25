@@ -152,11 +152,12 @@ func turnPastBound(m *Machine, ctx context.Context, ev Event) error {
 // endTurnPastBound is the controller keeper's end of a controller turn open longer than its bound
 // (TurnPastBound, dispatch://INFRA-2045 R2). It acts only on the turn the keeper read: one still
 // open, begun at the moment the keeper read, and still past the bound now, since a turn that ended
-// and one that began since are the controller working. What is a turn is the machine's own answer,
-// as the stall backstop asks it (backstopStalledTurn): the claim reads working at a let-go
-// (endState), which a claim working for a compaction with no turn under it does not, and the turn
-// began no earlier than the last turn's end. A claim that already holds a wake is left to that
-// wake, as the stall backstop leaves one: its turn replaces the process.
+// and one that began since are the controller working. What is a turn is the machine's own answer:
+// the claim reads working at a let-go (endState), which a claim working for a compaction with no
+// turn under it does not, and the turn began no earlier than the last turn's end, which a claim
+// restored working with the start of a turn that had ended did not. No wake can be waiting to
+// replace the process first: the controller's launch is never parked, since the wake gate, the
+// project pause and the pod-start gate each pass it (gatePaces, pauseHolding, the pod-start gate).
 //
 // Otherwise it ends the launch as the stall backstop ends a stalled turn, whether or not steps still
 // arrive in the turn (replaceProcess): the task the turn served goes back to waiting and is sent to
@@ -171,11 +172,6 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 			"turnStartedAt", start, "read", ev.TurnStart, "bound", ev.Bound)
 		return nil
 	}
-	if m.wake != nil {
-		m.log.Info("supervise: the controller turn open past its bound is left to the launch already queued for this claim",
-			"kind", m.wake.kind, "due", m.wake.at, "bound", ev.Bound)
-		return nil
-	}
 	m.log.Warn("supervise: the controller's turn stayed open past its bound; the daemon ends the launch, and the task it was serving stays owed",
 		"turnStartedAt", start, "bound", ev.Bound, "open", now.Sub(start).Round(time.Second))
 	// The end is counted before the replacement, because the launch the replacement makes is the
@@ -188,12 +184,10 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 	reached := m.countEnd(fmt.Sprintf("its turn stayed open longer than %s, from %s", ev.Bound, start.UTC().Format(time.RFC3339)))
 	// The session and its endings as this end leaves them, for the Error line written once the end
 	// stands: the relaunch the end makes may start a fresh session, which clears both.
-	session, endings := m.claim.Session, slices.Clone(m.claim.SessionRun.Endings)
+	session, endings := m.claim.Session, m.claim.SessionRun.Endings
 	// The end closes the turn (Claim.LastTurnEnd), as a death's does (chargeDeath): a death of the
 	// relaunched agent is then judged on the turn it finds rather than charged against this one
-	// (turnOpen), and over a relaunch the pacing parked, which leaves the claim working as this end
-	// found it (endReached), a later TurnPastBound of the same turn reads it closed above and counts
-	// it no second time.
+	// (turnOpen).
 	m.claim.LastTurnEnd = now
 	end, err := m.replaceProcess(ctx, "the daemon ended a controller turn that stayed open past its bound", ordinaryEnd, endTurnPastBound(ev.Bound))
 	switch {

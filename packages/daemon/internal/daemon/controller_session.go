@@ -27,11 +27,12 @@ func (k *controllerKeeper) mind(ctx context.Context, m *supervise.Machine) error
 	now := k.now()
 	switch {
 	case c.State == supervise.StateWorking:
-		// A working claim is never between turns, so it never reaches replaceOld. Whether it is in
-		// a turn, and that turn the one read here, is the machine's to say (supervise's
-		// endTurnPastBound): a claim working for a compaction with no turn under it keeps the start of
-		// a turn that finished, and the machine leaves it alone, as it leaves a turn that ended or a
-		// new one.
+		// A working claim never reaches replaceOld: the age rule interrupts neither a turn nor a
+		// compaction, and a claim working for a compaction with no turn under it is between turns
+		// but compacting (replaceOld's NeverHold suspension is refused for a working claim too).
+		// Whether it is in a turn, and that turn the one read here, is the machine's to say
+		// (supervise's endTurnPastBound): it leaves alone a compaction with no turn under it, a
+		// turn that ended and a new one.
 		if k.turnBound <= 0 || c.LastTurnStart.IsZero() || !c.LastTurnStart.Add(k.turnBound).Before(now) {
 			return nil
 		}

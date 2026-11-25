@@ -348,11 +348,15 @@ type Claim struct {
 	// one, each zero until that event happens. A turn's start is when the daemon first learned of
 	// it: its agent_start (beginTurn); the busy answer that said the agent is in a turn whose
 	// start the daemon never read (recordBusyTurn), which that turn's own agent_start, read later,
-	// moves to its own moment; or the agent's answer that it is streaming, which puts a ready or
-	// idle claim a restart restored in working (sendPending's askFirst branch,
-	// answerAskFirstAfterDrop). They are persisted, so a restart keeps them: they are what a reader
-	// has to tell a worker still making progress from one wedged in a turn or idle since
-	// yesterday, and a claim rebuilt without them would look as if it had never worked.
+	// moves to its own moment (busyTurnBegun); the agent's answer that it is streaming, which puts
+	// a ready or idle claim a restart restored in working (sendPending's askFirst branch,
+	// answerAskFirstAfterDrop); or the agent_start of a turn Oh My Pi began under a compaction
+	// (turnStartedWhileBusy). Each is dated where its start line is written (startTurn,
+	// busyTurnBegun), so no path that starts a turn leaves it timed from the turn before. They are
+	// persisted, so a restart keeps them: each path that dates a turn writes the claim with it.
+	// They are what a reader has to tell a worker still making progress from one wedged in a turn
+	// or idle since yesterday, and a claim rebuilt without them would look as if it had never
+	// worked.
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
@@ -2812,7 +2816,12 @@ func (m *Machine) logTurn(line, delivery string) {
 // retires nothing and the task stays confirmed in the worker's hands — and a turn of the agent's
 // own starting in that window is no task's, so its start line names no delivery while a claim
 // read at its end would name that task and a reader would count the task's turn twice.
+//
+// It dates the turn too (Claim.LastTurnStart), at the moment its line is written, which is the
+// daemon's first word of the turn on every path above: dated here, no path that starts a turn can
+// leave it timed from the turn before (dispatch://INFRA-2045 R2).
 func (m *Machine) startTurn(delivery string) {
+	m.claim.LastTurnStart = m.deps.Clock.Now()
 	m.turnsDelivery = delivery
 	m.logTurn(turnStartedLine, delivery)
 }

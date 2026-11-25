@@ -1969,11 +1969,12 @@ func agentBusy(reason string) bool {
 // idle past that bound would otherwise be relaunched at the sweep before its turn starts.
 //
 // For the same reason the record dates the turn's start (Claim.LastTurnStart) at the busy answer,
-// the daemon's first word that the turn exists, rather than leaving the start of the turn before
-// it standing: a let-go of the process in this turn reads an activity report older than that
-// start as no report of the turn (recordEnd), where the turn before's start would have counted a
-// report made before this turn began as one of it. The turn's own agent_start, read later, dates
-// it again at its own moment (beginTurn).
+// the daemon's first word that the turn exists, where it writes the turn's start line
+// (startTurn), rather than leaving the start of the turn before it standing: a let-go of the
+// process in this turn reads an activity report older than that start as no report of the turn
+// (recordEnd), where the turn before's start would have counted a report made before this turn
+// began as one of it. The turn's own agent_start, read later, dates it again at its own moment
+// (busyTurnBegun).
 //
 // The mark it sets (busyTurn) is what ends the record when no frame of the turn is ever read: the
 // runtime's sweep asks the agent whether the turn is over and ends it through turnEnded once the
@@ -1984,7 +1985,7 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 	if state := m.claim.State; state != StateReady && state != StateIdle {
 		return nil
 	}
-	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
+	m.claim.State = StateWorking
 	m.busyTurn = true
 	m.log.Info("supervise: the agent's busy answer records the claim working; its task waits for the end of the turn the agent is in",
 		"delivery", pendingID(m.claim.Pending), "outstanding", m.outstanding)
@@ -2046,7 +2047,6 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 // the durable write, and the turn's step. logStart writes the start's line, naming the delivery
 // the start confirms and "" for a start that confirms none.
 func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart func(delivery string)) error {
-	m.claim.LastTurnStart = m.deps.Clock.Now()
 	p := m.claim.Pending
 	news, inFlight := m.turnAnswers()
 	own := p != nil && p.ConfirmedAt.IsZero() && (start.DeliveryID == p.ID || (start.DeliveryID == "" && inFlight))
@@ -2156,11 +2156,12 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // (compactEnded). That turn's start line is written here (startTurn), because its end writes the
 // end line (turnEnded): an operator reads an end with no start as a turn the daemon never saw
 // begin, and the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn
-// and its line names no delivery. The turn is dated here too (Claim.LastTurnStart), as beginTurn
-// dates every other: the start of the turn before it would leave this one timed from that turn,
-// so the controller keeper would read a turn that never ends as no turn at all, and one it read
-// before a displacement as this one (dispatch://INFRA-2045 R2). Both ends of the compaction write
-// the claim (compactEnded), and this date with it.
+// and its line names no delivery. startTurn dates it (Claim.LastTurnStart), as it dates every
+// turn: the start of the turn before it would leave this one timed from that turn, so the
+// controller keeper would read a turn that never ends as no turn at all, and one it read before a
+// displacement as this one (dispatch://INFRA-2045 R2). The claim is written at once, as
+// compactStart writes it: the compaction's own record is memory only, so a daemon restarted while
+// this turn runs reads the turn's date from the store alone.
 //
 // The two never meet: a compaction is taken only from a ready or idle claim (compactStart), and a
 // busy answer records only a ready or idle one.
@@ -2173,19 +2174,20 @@ func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.startTurn("")
-	m.claim.LastTurnStart = m.deps.Clock.Now()
 	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
 		"generation", m.claim.Generation)
 	m.compacting.inTurn, m.compacting.back = true, StateIdle
-	return nil
+	return m.persist(ctx)
 }
 
 // busyTurnBegun is the line of the agent_start of a turn a busy answer recorded
 // (turnStartedWhileBusy), in place of the pinned start line recordBusyTurn already wrote for it.
 // It names the delivery the start confirms, if any, and that delivery becomes the one the turn's
 // end line names (Machine.turnsDelivery): the turn is now known to be that task's, which the
-// start line written at the record could not yet say.
+// start line written at the record could not yet say. It dates the turn again at this, its own
+// moment (Claim.LastTurnStart), as startTurn dates every other start.
 func (m *Machine) busyTurnBegun(delivery string) {
+	m.claim.LastTurnStart = m.deps.Clock.Now()
 	if delivery != "" {
 		m.turnsDelivery = delivery
 	}

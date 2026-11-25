@@ -1,12 +1,14 @@
 package supervise
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 // turnBound is the bound these tests end a controller turn past (controller_turn_bound_minutes'
@@ -171,7 +173,7 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		h.wantEnds(1)
 	})
 
-	t.Run("the R1 Error line of an end a take-back undid is written once, when the end stands, naming the session and both endings", func(t *testing.T) {
+	t.Run("the R1 Error line of an end a take-back undid is written once, when the end stands, naming the session and both endings though the relaunch lost the session", func(t *testing.T) {
 		// A controller whose session has never finished a turn, with one end counted.
 		h := newHarnessOf(t, controllerClaim())
 		h.reach(StateReady)
@@ -191,10 +193,17 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 			t.Fatalf("the refused take-back wrote %d lines that say a fresh session also failed, want none", len(lines))
 		}
 
+		// The relaunch the standing end makes finds the session gone, so it forgets the session
+		// and its run and spawns a fresh agent (startFresh): the line still names what ended.
 		h.store.fail("PutDelivery", nil)
+		h.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: no OMP session anywhere", h.token, runtime.ErrSessionFileMissing)})
 		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
-		h.wantResumedSince(resumes, spawns, session)
-		h.wantEnds(2)
+		if got, gotSpawns := h.startsSoFar(); got != resumes+1 || gotSpawns != spawns+1 {
+			t.Fatalf("the relaunch made %d resumes and %d spawns, want the one resume the runtime refused and one fresh spawn", got-resumes, gotSpawns-spawns)
+		}
+		if c := h.claim(); c.Session != "" || c.SessionRun.Ends != 0 {
+			t.Fatalf("after the lost session's relaunch the claim records session %q with the run %+v, want both cleared", c.Session, c.SessionRun)
+		}
 		lines := h.records.of(sessionNotReplacedLine)
 		if len(lines) != 1 || lines[0].level != slog.LevelError {
 			t.Fatalf("the lines that say a fresh session also failed are %+v, want one at Error", lines)
@@ -208,6 +217,54 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 				t.Errorf("the Error line names the endings %q, want one that says %q", endings, want)
 			}
 		}
+	})
+
+	t.Run("a turn begun under a compaction is ended past the bound after a daemon restart", func(t *testing.T) {
+		h := controllerUp(t)
+		release, compacted := h.compactHeld()
+		h.advance(time.Minute)
+		h.must(StreamTurnStart{Claim: h.token})
+		began := h.claim().LastTurnStart
+		// The daemon restarts with the compaction and the turn under it running: the compaction's
+		// record is memory only, so the new machine reads the turn from the store alone.
+		h.restart()
+		if c := h.claim(); c.State != StateWorking || !c.LastTurnStart.Equal(began) {
+			t.Fatalf("the restarted machine reads the claim %s with its turn started %s, want working in the turn begun at %s", c.State, c.LastTurnStart, began)
+		}
+		h.advance(turnBound + time.Minute)
+		resumes, spawns := h.startsSoFar()
+		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: h.claim().LastTurnStart})
+
+		h.wantResumedSince(resumes, spawns, session)
+		h.wantEnds(1)
+		release()
+		<-compacted
+	})
+
+	t.Run("a compaction with no turn under it is left alone after a daemon restart", func(t *testing.T) {
+		h := controllerUp(t)
+		// A turn that runs a minute and ends, so its start is before its end.
+		h.must(StreamTurnStart{Claim: h.token})
+		h.advance(time.Minute)
+		h.must(StreamTurnEnd{Claim: h.token})
+		h.wantState(StateIdle)
+		release, compacted := h.compactHeld()
+		h.restart()
+		// The restarted machine knows no compaction: it reads a working claim whose start is that
+		// of the turn which had ended before the compaction.
+		if c := h.claim(); c.State != StateWorking || !c.LastTurnStart.Before(c.LastTurnEnd) {
+			t.Fatalf("the restarted machine reads the claim %s, its turn started %s and the last ended %s; want working with a start before the end",
+				c.State, c.LastTurnStart, c.LastTurnEnd)
+		}
+		h.advance(turnBound + time.Minute)
+		resumes, spawns := h.startsSoFar()
+		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: h.claim().LastTurnStart})
+
+		h.wantState(StateWorking)
+		h.wantNoStartSince(resumes, spawns)
+		h.wantEnds(0)
+		release()
+		<-compacted
 	})
 
 	t.Run("an operator's compaction past the bound is left alone and counts nothing", func(t *testing.T) {

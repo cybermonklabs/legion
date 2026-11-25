@@ -999,11 +999,12 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	if askAgent {
 		if streaming, _ := m.streaming(ctx, conn); streaming {
 			// The agent's answer is the daemon's first word of the turn, so the turn is dated
-			// from it (Claim.LastTurnStart), as recordBusyTurn dates a turn from a busy answer,
-			// and the confirmation's write carries the date: a let-go in this turn reads a report
-			// older than it as no report of the turn (recordEnd), where the start of the turn
-			// before it would count the report that turn's end left as one of this turn.
-			m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
+			// from it (Claim.LastTurnStart, which startTurn writes below), as recordBusyTurn
+			// dates a turn from a busy answer, and the confirmation's write carries the date: a
+			// let-go in this turn reads a report older than it as no report of the turn
+			// (recordEnd), where the start of the turn before it would count the report that
+			// turn's end left as one of this turn.
+			m.claim.State = StateWorking
 			// The turn this claim is put in is logged before the write that records it, as
 			// turnStarted logs its own: a line written after the write would say nothing of the
 			// turn whose write failed.
@@ -1284,9 +1285,9 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 		return nil
 	}
 	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped")
-	// The turn is dated from the agent's answer, the daemon's first word of it, as the askFirst
-	// branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
-	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
+	// The turn is dated from the agent's answer, the daemon's first word of it (startTurn), as the
+	// askFirst branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
+	m.claim.State = StateWorking
 	// The guard above has already established that the claim holds no delivery, so this turn is
 	// no task's and the line names none. It goes before the write, as the others do.
 	m.startTurn("")
