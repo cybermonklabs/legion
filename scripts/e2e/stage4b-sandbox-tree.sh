@@ -582,7 +582,7 @@ limit_pending() {
 # "never scheduled" (an earlier version of this function) misses it, and "any pod ever starved"
 # would wrongly BLOCK an unrelated later timeout on an old failure. Ties a match to the current
 # check instead: reads the daemon log for a claim that failed with launch failures ran out at or
-# after check_started, whose token (claim_token, lib/workflow.sh:133) names an issue inside
+# after check_started, whose token (claim_token, lib/workflow.sh) names an issue inside
 # SELECTOR; from the pod watch, keeps that issue's pod if it was Unschedulable at or before the
 # failure with no PodScheduled=True before it (placement after the failure still counts) and was
 # never deleted at or before the failure (a pod of an earlier, already-abandoned incarnation of
@@ -3213,7 +3213,7 @@ start_interests_sampler() {
 }
 # run_pull_request_numbers prints, as a JSON array, the number of every pull request (open or
 # closed) on the smoke repository whose branch is one of this run's issue branches
-# (legion/$project-*, run_pull_requests' own prefix, lib/workflow.sh:599-601, but --state all so a
+# (legion/$project-*, run_pull_requests' own prefix, lib/workflow.sh, but --state all so a
 # pull request this run closed during the run still counts as its own): the only pull requests
 # interests_outside accepts a GitHub subject for, since two lanes share one smoke repository and
 # GitHub subjects end in the pull request number (notifications.github.<owner>.<repo>.pr.<n>,
