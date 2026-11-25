@@ -407,8 +407,8 @@ async function refuseRemovingOpenDecisionBlocks(
  * A `409 PRECONDITION_FAILED` naming the blocks an edit would remove that its block guard leaves
  * out (`unguarded_blocks`), each at the token it carries now, with a line under Dispatch's own
  * words that names each with that token and says how a guard names a block, and at which token.
- * That token is one to compare with the token the caller's own read listed, never one to send,
- * and Dispatch's refusal says how to answer it (`unguardedReason` in
+ * The token the refusal gives is one to compare with the token the caller's own read listed,
+ * never one to send, and Dispatch's refusal says how to answer it (`unguardedReason` in
  * packages/envoy/internal/dispatch/docs/edits.go). Every other error is returned as it is, so a
  * refusal naming no such block, an older server's among them, reads as it always did.
  */

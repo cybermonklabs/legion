@@ -8,8 +8,9 @@ body: |-
   PRECONDITION_FAILED` that names the blocks the edit would remove that the guard leaves out, each
   at the token it carries now, adds a line under Dispatch's words: `Block guard: this edit would
   remove a block the guard did not name: <id> (token <token>). A guard names a block as {id,
-  token} in precondition.blocks (--precondition-json).` Dispatch's words say how to answer the
-  refusal, and the error says it once: compare that token with the one your own read listed for
+  token} in precondition.blocks (--precondition-json), at the token your own read listed.`
+  Dispatch's words say how to answer the refusal, and the error gives that advice once, the line
+  adding only which token a guard names: compare that token with the one your own read listed for
   the block; if they match, name it in the guard at the token you read and send the edit again;
   if they differ, or your read listed no token for it, another writer changed or added it since
   your read, so read the document again before you remove it. The error carries those blocks as

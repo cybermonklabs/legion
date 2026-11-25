@@ -11149,11 +11149,10 @@ describe("executeDispatchTool", () => {
   // an item a marker delete selects - is refused 409 PRECONDITION_FAILED, and the refusal carries
   // them in unguarded_blocks, each at the token it carries now. The command keeps Dispatch's words
   // and every field of the refusal, and adds a line naming each block with that token and saying
-  // how a guard names a block. Dispatch's words say how to answer the refusal, and the message says
-  // it once: compare each token with the one the caller's own read listed; where they match, the
-  // block goes in the guard at the token read and the edit is sent again; where they differ, or
-  // that read listed no token for the block, the caller reads the document again. A refusal
-  // naming no such block reads as Dispatch wrote it.
+  // how a guard names a block and at which token: the one the caller's own read listed. Dispatch's
+  // words say how to answer the refusal (unguardedReason in packages/envoy/internal/dispatch/
+  // docs/edits.go), and the message gives that advice once: the line adds only which token a guard
+  // names. A refusal naming no such block reads as Dispatch wrote it.
   test("prints a Block guard line naming each block a refused guarded edit would remove with its token, the advice once in Dispatch's words", async () => {
     const refusal = (body: Record<string, unknown>) => async (url: RequestInfo | URL) => {
       const path = new URL(String(url)).pathname;
