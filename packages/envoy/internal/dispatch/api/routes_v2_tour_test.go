@@ -482,6 +482,41 @@ func refusalBody(name string, value any) func(*testing.T, *routeTour, tourReques
 	}
 }
 
+// brokerRefuses makes the tour's secrets broker refuse method and path with code at status, as the
+// broker writes a refusal: {code, error}, and the answer_id its answer middleware adds to a 4xx
+// one (internal/cipher/answer). brokerAnswers says where and for how long.
+func brokerRefuses(method, path, code string, status int) func(*testing.T, *routeTour, tourRequest) tourRequest {
+	body := map[string]string{"code": code, "error": "the secrets broker's refusal"}
+	if status < http.StatusInternalServerError {
+		body["answer_id"] = "tour-broker-answer"
+	}
+	return brokerAnswers(method, path, status, body)
+}
+
+// brokerAnswers makes the tour's secrets broker answer method and path, its {id} the request's own
+// id, with status and body, for the length of the subtest: what it answered there before is put
+// back after, as withoutDeliverySettings puts the delivery settings back.
+func brokerAnswers(method, path string, status int, body map[string]string) func(*testing.T, *routeTour, tourRequest) tourRequest {
+	return func(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+		called := strings.ReplaceAll(path, "{id}", request.Path["id"])
+		secrets, route := tour.secrets, method+" "+called
+		secrets.mu.Lock()
+		before, answered := secrets.answers[route]
+		secrets.mu.Unlock()
+		secrets.answer(method, called, status, body)
+		t.Cleanup(func() {
+			secrets.mu.Lock()
+			defer secrets.mu.Unlock()
+			if answered {
+				secrets.answers[route] = before
+				return
+			}
+			delete(secrets.answers, route)
+		})
+		return request
+	}
+}
+
 // The markdown of the tour's refusals of what a write puts into a document (tourRefusals): a check
 // block carrying ci_check with no negative control, which breaks a rule of a check CI proves; an
 // ask whose question holds a code block, which breaks an ask's content rule; and HTML, which is no

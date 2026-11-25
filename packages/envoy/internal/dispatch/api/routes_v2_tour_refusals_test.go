@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -135,6 +136,38 @@ var tourRefusals = map[string][]tourRefusal{
 	"POST /api/v2/projects/{key}/artifacts": {
 		{Name: "content that is no Proof document", Change: refusalBody("content", tourMarkdownRefused), Code: apicode.InvalidMarkdown},
 		{Name: "a precondition behind the document it replaces", Change: refusalStaleProjectUpload, Code: apicode.PreconditionFailed},
+	},
+	"GET /api/v2/credential-grants": {
+		{Name: "the broker's refusal of the approver", Change: brokerRefuses(http.MethodGet, "/v1/grants", "APPROVER_REQUIRED", http.StatusBadRequest), Code: apicode.ApproverRequired},
+	},
+	"DELETE /api/v2/credential-grants/{id}": {
+		{Name: "a grant the broker saw move", Change: brokerRefuses(http.MethodPost, "/v1/grants/{id}/revoke-by-approver", "GRANT_MOVING", http.StatusConflict), Code: apicode.GrantMoving},
+		{Name: "a code of the broker's the route does not declare", Change: brokerRefuses(http.MethodPost, "/v1/grants/{id}/revoke-by-approver", "GRANT_SHIFTING", http.StatusConflict), Code: apicode.AgentSecretsRefusalUndeclared},
+	},
+	"GET /api/v2/credential-requests": {
+		{Name: "the broker's refusal of the states", Change: brokerRefuses(http.MethodGet, "/v1/pending", "STATE_INPUT", http.StatusBadRequest), Code: apicode.StateInput},
+	},
+	"PUT /api/v2/credential-requests/{id}/state": {
+		{Name: "a code that is not the login's", Change: brokerRefuses(http.MethodPost, "/v1/credential-requests/{id}/approve", "CODE_MISMATCH", http.StatusForbidden), Code: apicode.CodeMismatch},
+		{Name: "a secret request, decided on the broker's page", Change: brokerAnswers(http.MethodPost, "/v1/credential-requests/{id}/approve", http.StatusForbidden, map[string]string{
+			"code": "DECIDE_ON_BROKER_PAGE", "error": "decide it on the broker's page", "approve_url": "https://secrets.example.com/approve/tour", "answer_id": "tour-broker-answer",
+		}), Code: apicode.DecideOnBrokerPage},
+	},
+	"POST /api/v2/machine-login-lookups": {
+		{Name: "a code no machine login has", Change: brokerRefuses(http.MethodPost, "/v1/machine-logins/lookup", "NO_SUCH_CODE", http.StatusNotFound), Code: apicode.NoSuchCode},
+	},
+	"GET /api/v2/machine-logins": {
+		{Name: "Dispatch's own account, which the broker does not list", Change: brokerRefuses(http.MethodGet, "/v1/launcher-credentials", "ACCOUNT_NOT_LISTED", http.StatusForbidden), Code: apicode.AccountNotListed},
+	},
+	"DELETE /api/v2/machine-logins/{id}": {
+		{Name: "a machine login the caller did not approve", Change: brokerRefuses(http.MethodPost, "/v1/launcher-credentials/{id}/revoke-by-approver", "NOT_APPROVER", http.StatusForbidden), Code: apicode.NotApprover},
+	},
+	"GET /api/v2/me/signins": {
+		{Name: "the broker's refusal of the person", Change: brokerRefuses(http.MethodGet, "/v1/person-signins", "PERSON_REQUIRED", http.StatusBadRequest), Code: apicode.PersonRequired},
+	},
+	"DELETE /api/v2/me/signins/{id}": {
+		{Name: "a sign-in id the broker refuses", Change: brokerRefuses(http.MethodPost, "/v1/person-signins/{id}/revoke", "SIGNIN_ID_INPUT", http.StatusBadRequest), Code: apicode.SigninIDInput},
+		{Name: "Dispatch's own account, past the broker's rate", Change: brokerRefuses(http.MethodPost, "/v1/person-signins/{id}/revoke", "RATE_LIMITED", http.StatusTooManyRequests), Code: apicode.RateLimited},
 	},
 }
 

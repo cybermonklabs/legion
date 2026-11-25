@@ -238,6 +238,39 @@ func TestNonTwoXXResponseWithUnparsableBodyPreservesBodyWithEmptyCode(t *testing
 	}
 }
 
+// A refusal keeps the Retry-After the broker sent with it, as its 429 RATE_LIMITED does, so a
+// route can tell its own caller when to ask again; a refusal sent with none keeps none.
+func TestARefusalKeepsTheBrokersRetryAfter(t *testing.T) {
+	for _, test := range []struct {
+		name, retryAfter string
+	}{
+		{"a refusal sent with Retry-After", "3"},
+		{"a refusal sent with none", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if test.retryAfter != "" {
+					w.Header().Set("Retry-After", test.retryAfter)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"code":"RATE_LIMITED","error":"too many requests"}`))
+			}))
+			defer server.Close()
+
+			_, err := New(server.URL, tokenFile(t, "account-token")).Grants(context.Background(), "sjawhar")
+			var brokerErr *Error
+			if !errors.As(err, &brokerErr) {
+				t.Fatalf("err = %v (%T), want *Error", err, err)
+			}
+			if brokerErr.Status != http.StatusTooManyRequests || brokerErr.Code != "RATE_LIMITED" || brokerErr.RetryAfter != test.retryAfter {
+				t.Fatalf("Error = %d %q, Retry-After %q, want 429 RATE_LIMITED, Retry-After %q",
+					brokerErr.Status, brokerErr.Code, brokerErr.RetryAfter, test.retryAfter)
+			}
+		})
+	}
+}
+
 // A transport failure (here: nothing listening, at a port the test holds) must never surface as
 // *Error — Task 2 treats anything that is not *cipher.Error as 503 AGENT_SECRETS_UNAVAILABLE,
 // and a transport failure wrongly typed as *Error would forward a fabricated status/code to the

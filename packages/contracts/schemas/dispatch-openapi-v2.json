@@ -6805,7 +6805,7 @@
     },
     "/api/v2/credential-grants": {
       "get": {
-        "description": "The live credential grants of the caller's Live grants page, from the secrets broker, newest first: those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke; each {grant_id, granted, record_id, enrollment, names, approver, decided_by, expires_at, created_at}. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. Dispatch names the caller from its own session, so nobody lists another person's. A caller Dispatch calls a restricted member is listed the grants of the sessions that act for them alone; while the broker cannot ask Dispatch what kind of member the caller is, the list holds no other grant either. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code.",
+        "description": "The live credential grants of the caller's Live grants page, from the secrets broker, newest first: those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke; each {grant_id, granted, record_id, enrollment, names, approver, decided_by, expires_at, created_at}. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. Dispatch names the caller from its own session, so nobody lists another person's. A caller Dispatch calls a restricted member is listed the grants of the sessions that act for them alone; while the broker cannot ask Dispatch what kind of member the caller is, the list holds no other grant either. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, code and message.",
         "operationId": "getApiV2CredentialGrants",
         "parameters": [
           {
@@ -6864,7 +6864,44 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -6885,9 +6922,18 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACCOUNT_LACKS_POWER": 502,
+          "ACCOUNT_NOT_LISTED": 502,
+          "ACCOUNT_TOKENS_OFF": 502,
+          "ACCOUNT_TOKEN_EXPIRED": 502,
+          "ACCOUNT_TOKEN_INVALID": 502,
+          "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+          "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
+          "APPROVER_IS_GROUP": 400,
+          "APPROVER_REQUIRED": 400,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -6908,6 +6954,7 @@
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
           "QUERY_KEY_UNKNOWN": 400,
+          "RATE_LIMITED": 503,
           "SIGNIN_UNAVAILABLE": 503,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
@@ -6916,7 +6963,7 @@
     },
     "/api/v2/credential-grants/{id}": {
       "delete": {
-        "description": "Revoke a credential grant as the caller, as the secrets broker decides: its approver, or the person its enrollment acts for, ends it whatever project it touches, and a revoke has no way back. 204. A grant revoked by someone it does not name is 404 CREDENTIAL_GRANT_NOT_FOUND when it belongs to a private project the caller may not see, as is an id the broker holds no grant of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the person its enrollment acts for: every other grant they may see is refused them with that same NOT_APPROVER, saying why. While Dispatch does not answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, 503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its approver ends it as an approver: every revoke through a group or as anyone then, whatever session holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a refused account, a kind the broker does not know, another code, a certificate or a name that does not resolve), is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be ended then by that person, who asks Dispatch nothing; a grant on a session that acts for no person (a service's pod, a person's pod the broker no longer maps, or a machine's own session) is ended through the broker by nobody but its named approver until Dispatch answers. Needs the person and approve scopes; a credential scoped to one project is refused. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code.",
+        "description": "Revoke a credential grant as the caller, as the secrets broker decides: its approver, or the person its enrollment acts for, ends it whatever project it touches, and a revoke has no way back. 204. A grant revoked by someone it does not name is 404 CREDENTIAL_GRANT_NOT_FOUND when it belongs to a private project the caller may not see, as is an id the broker holds no grant of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the person its enrollment acts for: every other grant they may see is refused them with that same NOT_APPROVER, saying why. While Dispatch does not answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, 503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its approver ends it as an approver: every revoke through a group or as anyone then, whatever session holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a refused account, a kind the broker does not know, another code, a certificate or a name that does not resolve), is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be ended then by that person, who asks Dispatch nothing; a grant on a session that acts for no person (a service's pod, a person's pod the broker no longer maps, or a machine's own session) is ended through the broker by nobody but its named approver until Dispatch answers. Needs the person and approve scopes; a credential scoped to one project is refused. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, code and message.",
         "operationId": "deleteApiV2CredentialGrantsById",
         "parameters": [
           {
@@ -6957,7 +7004,112 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request Entity Too Large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -6974,10 +7126,19 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACCOUNT_LACKS_POWER": 502,
+          "ACCOUNT_NOT_LISTED": 502,
+          "ACCOUNT_TOKENS_OFF": 502,
+          "ACCOUNT_TOKEN_EXPIRED": 502,
+          "ACCOUNT_TOKEN_INVALID": 502,
+          "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+          "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVER_IS_GROUP": 400,
+          "APPROVER_REQUIRED": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -6986,24 +7147,32 @@
           "BROKER_UNAVAILABLE": 503,
           "CREDENTIAL_GRANT_NOT_FOUND": 404,
           "FEATURE_OFF": 404,
+          "GRANT_ID_INPUT": 400,
+          "GRANT_MOVING": 409,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_QUERY": 400,
+          "INVALID_REVOKE": 400,
           "INVALID_UTF8": 400,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "MEMBER_KIND_UNCHECKABLE": 503,
+          "NOT_APPROVER": 403,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OAUTH_SCOPE_REQUIRED": 403,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "PROJECT_ACCESS_UNAVAILABLE": 503,
           "PROJECT_SCOPE_DEPLOYMENT": 403,
           "QUERY_KEY_UNKNOWN": 400,
+          "RATE_LIMITED": 503,
           "READ_ONLY_TOKEN": 403,
           "REQUEST_BODY_UNREADABLE": 400,
+          "REQUEST_ENDED": 503,
           "REQUEST_TOO_LARGE": 413,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
@@ -7015,7 +7184,7 @@
     },
     "/api/v2/credential-requests": {
       "get": {
-        "description": "The credential requests the caller may decide, from the secrets broker, newest first: those naming the caller, and a shared secret's and a service's machine login, which anyone signed in decides, each {record_id, kind, identifiers, requested_at, session, approve_url?}, a secret request's approve_url the broker's own page where it is decided. The caller is the approver; no query names another. A caller Dispatch calls a restricted member is no approver of a secret or of a service's machine login, so their list holds their own machine logins alone; while the broker cannot ask Dispatch what kind of member the caller is, it holds none of those other rows either. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code, so a client tells a Dispatch with no broker from one with nothing waiting.",
+        "description": "The credential requests the caller may decide, from the secrets broker, newest first: those naming the caller, and a shared secret's and a service's machine login, which anyone signed in decides, each {record_id, kind, identifiers, requested_at, session, approve_url?}, a secret request's approve_url the broker's own page where it is decided. The caller is the approver; no query names another. A caller Dispatch calls a restricted member is no approver of a secret or of a service's machine login, so their list holds their own machine logins alone; while the broker cannot ask Dispatch what kind of member the caller is, it holds none of those other rows either. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, code and message, so a client tells a Dispatch with no broker from one with nothing waiting.",
         "operationId": "getApiV2CredentialRequests",
         "parameters": [
           {
@@ -7074,7 +7243,44 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -7095,9 +7301,18 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACCOUNT_LACKS_POWER": 502,
+          "ACCOUNT_NOT_LISTED": 502,
+          "ACCOUNT_TOKENS_OFF": 502,
+          "ACCOUNT_TOKEN_EXPIRED": 502,
+          "ACCOUNT_TOKEN_INVALID": 502,
+          "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+          "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
+          "APPROVER_IS_GROUP": 400,
+          "APPROVER_REQUIRED": 400,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -7118,7 +7333,9 @@
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
           "QUERY_KEY_UNKNOWN": 400,
+          "RATE_LIMITED": 503,
           "SIGNIN_UNAVAILABLE": 503,
+          "STATE_INPUT": 400,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         }
@@ -7126,7 +7343,7 @@
     },
     "/api/v2/credential-requests/{id}/state": {
       "put": {
-        "description": "Decide a machine login as the caller {state, code?}, or dismiss an expired credential request {state}. state approved or denied decides a machine login, and code is the login's confirmation code as the person typed it, which the secrets broker checks on both. The broker decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the broker, and refuses a code that is missing or not the login's own. A service's machine login is denied by anyone signed in but a caller Dispatch calls a restricted member. A request the broker already holds in that state, sent by a caller the broker would let decide it, is answered as it stands: an approval of a service's machine login sent by anyone signed in, and a decision of another sent by the person its approver names, relaying nothing. A deny of a service's machine login is relayed, since the broker alone asks what kind of member its caller is, and where the code read the login already denied, the broker's refusal of a decided login (below) is answered 200 that login as it stands. Answers 200 the request as the broker records it once decided, the record POST /api/v2/machine-login-lookups answers. state dismissed takes an expired request, a secret request or a machine login whose deadline passed before anybody decided it, off every list for good, the caller's and, for a shared request, everybody's, and answers 200 the dismissal {record_id, dismissed_by, dismissed_at}: only a person whose list holds it may dismiss it, and a caller Dispatch calls a restricted member dismisses only their own machine logins; a request already dismissed is answered the dismissal the broker holds, and nothing is written. A caller the broker does not let decide or dismiss a request is 403 NOT_APPROVER, saying why; a request that can still be decided is 409 RECORD_PENDING to a dismissal, and one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL to a decision and a dismissal alike; and while the broker cannot ask Dispatch what kind of member the caller is, a deny of a service's machine login, and a dismissal of a secret request or of a service's machine login, is 503 MEMBER_KIND_UNCHECKABLE, writing nothing. Whichever the state, a secret request of a private project the caller may not see is 404 CREDENTIAL_REQUEST_NOT_FOUND, as is an id the broker holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. Deciding needs the person and approve scopes, dismissing the person scope; a credential scoped to one project is refused. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code.",
+        "description": "Decide a machine login as the caller {state, code?}, or dismiss an expired credential request {state}. state approved or denied decides a machine login, and code is the login's confirmation code as the person typed it, which the secrets broker checks on both. The broker decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the broker in approve_url, and refuses a code that is missing or not the login's own. A service's machine login is denied by anyone signed in but a caller Dispatch calls a restricted member. A request the broker already holds in that state, sent by a caller the broker would let decide it, is answered as it stands: an approval of a service's machine login sent by anyone signed in, and a decision of another sent by the person its approver names, relaying nothing. A deny of a service's machine login is relayed, since the broker alone asks what kind of member its caller is, and where the code read the login already denied, the broker's refusal of a decided login (below) is answered 200 that login as it stands. Answers 200 the request as the broker records it once decided, the record POST /api/v2/machine-login-lookups answers. state dismissed takes an expired request, a secret request or a machine login whose deadline passed before anybody decided it, off every list for good, the caller's and, for a shared request, everybody's, and answers 200 the dismissal {record_id, dismissed_by, dismissed_at}: only a person whose list holds it may dismiss it, and a caller Dispatch calls a restricted member dismisses only their own machine logins; a request already dismissed is answered the dismissal the broker holds, and nothing is written. A caller the broker does not let decide or dismiss a request is 403 NOT_APPROVER, saying why; a request that can still be decided is 409 RECORD_PENDING to a dismissal, and one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL to a decision and a dismissal alike; and while the broker cannot ask Dispatch what kind of member the caller is, a deny of a service's machine login, and a dismissal of a secret request or of a service's machine login, is 503 MEMBER_KIND_UNCHECKABLE, writing nothing. Whichever the state, a secret request of a private project the caller may not see is 404 CREDENTIAL_REQUEST_NOT_FOUND, as is an id the broker holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. Deciding needs the person and approve scopes, dismissing the person scope; a credential scoped to one project is refused. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, code and message.",
         "operationId": "putApiV2CredentialRequestsByIdState",
         "parameters": [
           {
@@ -7241,7 +7458,112 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request Entity Too Large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -7285,39 +7607,65 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACCOUNT_LACKS_POWER": 502,
+          "ACCOUNT_NOT_LISTED": 502,
+          "ACCOUNT_TOKENS_OFF": 502,
+          "ACCOUNT_TOKEN_EXPIRED": 502,
+          "ACCOUNT_TOKEN_INVALID": 502,
+          "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+          "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVER_IS_GROUP": 400,
+          "APPROVER_REQUIRED": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "CODE_MISMATCH": 403,
+          "CODE_REQUIRED": 400,
           "CREDENTIAL_REQUEST_NOT_FOUND": 404,
+          "DECIDE_ON_BROKER_PAGE": 403,
           "FEATURE_OFF": 404,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
+          "INVALID_DECISION": 400,
+          "INVALID_DISMISSAL": 400,
           "INVALID_JSON": 400,
+          "INVALID_LOOKUP": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
           "JSON_CONTENT_TYPE": 415,
+          "JUDGE_DECIDES": 403,
+          "KEY_BINDS_READ_TOKEN": 409,
           "KEY_COMMITTED": 409,
+          "KEY_HOLDS_LIVE_CREDENTIAL": 409,
           "KEY_INVALID": 400,
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "MEMBER_KIND_UNCHECKABLE": 503,
+          "NOT_APPROVER": 403,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OAUTH_SCOPE_REQUIRED": 403,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "PROJECT_ACCESS_UNAVAILABLE": 503,
           "PROJECT_SCOPE_DEPLOYMENT": 403,
           "QUERY_KEY_UNKNOWN": 400,
+          "RATE_LIMITED": 503,
           "READ_ONLY_TOKEN": 403,
+          "RECORD_ID_INPUT": 400,
+          "RECORD_PENDING": 409,
+          "RECORD_TERMINAL": 409,
           "REQUEST_BODY_UNREADABLE": 400,
           "REQUEST_TOO_LARGE": 413,
+          "SERVICE_LOGS_IN_WITH_TOKEN": 400,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
           "STATE_INVALID": 400,
@@ -12856,7 +13204,7 @@
     },
     "/api/v2/machine-login-lookups": {
       "post": {
-        "description": "Read a machine login by its typed confirmation code {code}, the only thing that selects one: a direct link can never approve a machine login. Writes nothing. Answers 200 the request as the secrets broker records it: {record_id, kind, state, approver, enrollment, session, identifiers, service, reason, lifetime_seconds, rules_version, expires_at, requested_at, decided}. The broker answers a missing code 400 CODE_REQUIRED and a code no machine login has 404 NO_SUCH_CODE, relayed. Needs the person and approve scopes; a credential scoped to one project is refused. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code.",
+        "description": "Read a machine login by its typed confirmation code {code}, the only thing that selects one: a direct link can never approve a machine login. Writes nothing. Answers 200 the request as the secrets broker records it: {record_id, kind, state, approver, enrollment, session, identifiers, service, reason, lifetime_seconds, rules_version, expires_at, requested_at, decided}. The broker answers a missing code 400 CODE_REQUIRED and a code no machine login has 404 NO_SUCH_CODE, relayed. Needs the person and approve scopes; a credential scoped to one project is refused. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, code and message.",
         "operationId": "postApiV2MachineLoginLookups",
         "parameters": [
           {
@@ -12906,7 +13254,78 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request Entity Too Large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -12923,8 +13342,15 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACCOUNT_LACKS_POWER": 502,
+          "ACCOUNT_NOT_LISTED": 502,
+          "ACCOUNT_TOKENS_OFF": 502,
+          "ACCOUNT_TOKEN_EXPIRED": 502,
+          "ACCOUNT_TOKEN_INVALID": 502,
+          "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+          "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -12933,10 +13359,12 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "CODE_REQUIRED": 400,
           "FEATURE_OFF": 404,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_JSON": 400,
+          "INVALID_LOOKUP": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
           "JSON_CONTENT_TYPE": 415,
@@ -12946,12 +13374,14 @@
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
           "NO_IDENTITY": 401,
+          "NO_SUCH_CODE": 404,
           "NUL_CHARACTER": 400,
           "OAUTH_SCOPE_REQUIRED": 403,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
           "PROJECT_SCOPE_DEPLOYMENT": 403,
           "QUERY_KEY_UNKNOWN": 400,
+          "RATE_LIMITED": 503,
           "READ_ONLY_TOKEN": 403,
           "REQUEST_BODY_UNREADABLE": 400,
           "REQUEST_TOO_LARGE": 413,
@@ -12965,7 +13395,7 @@
     },
     "/api/v2/machine-logins": {
       "get": {
-        "description": "The machine logins the caller may revoke that can still reach a secret, from the secrets broker, newest first: every service's login, whoever approved it, the caller's own machines' and the caller's own pods', unexpired, or expired with a session still running, each {credential_id, host, service, subject, person, approved_by, issued_at, expires_at, expired}. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person: only that person's list holds it, and its person names that person; person is null on every other login. A caller Dispatch calls a restricted member is listed their own machines' and pods' logins alone, and so is any caller while the broker cannot ask Dispatch what kind of member the caller is. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code.",
+        "description": "The machine logins the caller may revoke that can still reach a secret, from the secrets broker, newest first: every service's login, whoever approved it, the caller's own machines' and the caller's own pods', unexpired, or expired with a session still running, each {credential_id, host, service, subject, person, approved_by, issued_at, expires_at, expired}. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person: only that person's list holds it, and its person names that person; person is null on every other login. A caller Dispatch calls a restricted member is listed their own machines' and pods' logins alone, and so is any caller while the broker cannot ask Dispatch what kind of member the caller is. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, code and message.",
         "operationId": "getApiV2MachineLogins",
         "parameters": [
           {
@@ -13024,7 +13454,44 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -13045,9 +13512,18 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACCOUNT_LACKS_POWER": 502,
+          "ACCOUNT_NOT_LISTED": 502,
+          "ACCOUNT_TOKENS_OFF": 502,
+          "ACCOUNT_TOKEN_EXPIRED": 502,
+          "ACCOUNT_TOKEN_INVALID": 502,
+          "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+          "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
+          "APPROVER_IS_GROUP": 400,
+          "APPROVER_REQUIRED": 400,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -13068,6 +13544,7 @@
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
           "QUERY_KEY_UNKNOWN": 400,
+          "RATE_LIMITED": 503,
           "SIGNIN_UNAVAILABLE": 503,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
@@ -13076,7 +13553,7 @@
     },
     "/api/v2/machine-logins/{id}": {
       "delete": {
-        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included: anyone signed in revokes a service's login, only the person who approved a person's machine login revokes that one, and only the person a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, as the secrets broker decides. The revoke does not keep that pod out: it logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A caller Dispatch calls a restricted member revokes their own logins alone: a service's login is answered them as an id no login has, and so it is to any caller while the broker cannot ask Dispatch what kind of member the caller is, who still revokes their own. 204. Needs the person and approve scopes; a credential scoped to one project is refused. 404 MACHINE_LOGIN_NOT_FOUND for an id the broker holds no machine login of, and 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code.",
+        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included: anyone signed in revokes a service's login, only the person who approved a person's machine login revokes that one, and only the person a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, as the secrets broker decides. The revoke does not keep that pod out: it logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A caller Dispatch calls a restricted member revokes their own logins alone: a service's login is answered them as an id no login has, and so it is to any caller while the broker cannot ask Dispatch what kind of member the caller is, who still revokes their own. 204. Needs the person and approve scopes; a credential scoped to one project is refused. 404 MACHINE_LOGIN_NOT_FOUND for an id the broker holds no machine login of, and 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, code and message.",
         "operationId": "deleteApiV2MachineLoginsById",
         "parameters": [
           {
@@ -13117,7 +13594,95 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request Entity Too Large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -13134,20 +13699,31 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACCOUNT_LACKS_POWER": 502,
+          "ACCOUNT_NOT_LISTED": 502,
+          "ACCOUNT_TOKENS_OFF": 502,
+          "ACCOUNT_TOKEN_EXPIRED": 502,
+          "ACCOUNT_TOKEN_INVALID": 502,
+          "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+          "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVER_IS_GROUP": 400,
+          "APPROVER_REQUIRED": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "CREDENTIAL_ID_INPUT": 400,
           "FEATURE_OFF": 404,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_QUERY": 400,
+          "INVALID_REVOKE": 400,
           "INVALID_UTF8": 400,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
@@ -13155,6 +13731,7 @@
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
           "MACHINE_LOGIN_NOT_FOUND": 404,
+          "NOT_APPROVER": 403,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OAUTH_SCOPE_REQUIRED": 403,
@@ -13162,6 +13739,7 @@
           "OIDC_TOKEN_INVALID": 401,
           "PROJECT_SCOPE_DEPLOYMENT": 403,
           "QUERY_KEY_UNKNOWN": 400,
+          "RATE_LIMITED": 503,
           "READ_ONLY_TOKEN": 403,
           "REQUEST_BODY_UNREADABLE": 400,
           "REQUEST_TOO_LARGE": 413,
@@ -14421,7 +14999,7 @@
     },
     "/api/v2/me/signins": {
       "get": {
-        "description": "The caller's own sign-ins on their machines (`agent-secrets login`), from the secrets broker, newest first: one per box key they have not revoked, each {signin_id, machine, thumbprint, created_at, last_used_at}, naming the machine's account, the key's thumbprint, when the person signed in there and when that machine last used it. Nobody lists another person's: Dispatch names the person from its own session. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code.",
+        "description": "The caller's own sign-ins on their machines (`agent-secrets login`), from the secrets broker, newest first: one per box key they have not revoked, each {signin_id, machine, thumbprint, created_at, last_used_at}, naming the machine's account, the key's thumbprint, when the person signed in there and when that machine last used it. Nobody lists another person's: Dispatch names the person from its own session. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, code and message.",
         "operationId": "getApiV2MeSignins",
         "parameters": [
           {
@@ -14480,7 +15058,44 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -14501,8 +15116,15 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACCOUNT_LACKS_POWER": 502,
+          "ACCOUNT_NOT_LISTED": 502,
+          "ACCOUNT_TOKENS_OFF": 502,
+          "ACCOUNT_TOKEN_EXPIRED": 502,
+          "ACCOUNT_TOKEN_INVALID": 502,
+          "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+          "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -14523,7 +15145,9 @@
           "OAUTH_SCOPE_REQUIRED": 403,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "PERSON_REQUIRED": 400,
           "QUERY_KEY_UNKNOWN": 400,
+          "RATE_LIMITED": 503,
           "SIGNIN_UNAVAILABLE": 503,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
@@ -14532,7 +15156,7 @@
     },
     "/api/v2/me/signins/{id}": {
       "delete": {
-        "description": "End one of the caller's own sign-ins: that machine trades no token for them again and every access token already minted under it ends, while their sign-ins on other machines keep working. Answers 200 {tokens_ended}, how many of the caller's live access tokens ended with it, 0 for a sign-in revoked already. Needs the person and approve scopes; a credential scoped to one project is refused. 404 SIGNIN_NOT_FOUND for an id that is no sign-in of the caller's, anyone else's among them, and 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code.",
+        "description": "End one of the caller's own sign-ins: that machine trades no token for them again and every access token already minted under it ends, while their sign-ins on other machines keep working. Answers 200 {tokens_ended}, how many of the caller's live access tokens ended with it, 0 for a sign-in revoked already. Needs the person and approve scopes; a credential scoped to one project is refused. 404 SIGNIN_NOT_FOUND for an id that is no sign-in of the caller's, anyone else's among them, and 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, code and message.",
         "operationId": "deleteApiV2MeSigninsById",
         "parameters": [
           {
@@ -14580,7 +15204,78 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request Entity Too Large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrokerRefusalV2"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -14597,8 +15292,15 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACCOUNT_LACKS_POWER": 502,
+          "ACCOUNT_NOT_LISTED": 502,
+          "ACCOUNT_TOKENS_OFF": 502,
+          "ACCOUNT_TOKEN_EXPIRED": 502,
+          "ACCOUNT_TOKEN_INVALID": 502,
+          "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+          "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -14611,6 +15313,7 @@
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_QUERY": 400,
+          "INVALID_REVOKE": 400,
           "INVALID_UTF8": 400,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
@@ -14622,11 +15325,14 @@
           "OAUTH_SCOPE_REQUIRED": 403,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "PERSON_REQUIRED": 400,
           "PROJECT_SCOPE_DEPLOYMENT": 403,
           "QUERY_KEY_UNKNOWN": 400,
+          "RATE_LIMITED": 503,
           "READ_ONLY_TOKEN": 403,
           "REQUEST_BODY_UNREADABLE": 400,
           "REQUEST_TOO_LARGE": 413,
+          "SIGNIN_ID_INPUT": 400,
           "SIGNIN_NOT_FOUND": 404,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
@@ -24349,6 +25055,28 @@
           "created_at",
           "recipients",
           "replies"
+        ],
+        "type": "object"
+      },
+      "BrokerRefusalV2": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_id": {
+            "type": "string"
+          },
+          "approve_url": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "error"
         ],
         "type": "object"
       },
@@ -39407,11 +40135,18 @@
       "ACCEPT_STALE": 409,
       "ACCEPT_SUPERSEDED": 409,
       "ACCEPT_WRITTEN_BY_AGENT": 409,
+      "ACCOUNT_LACKS_POWER": 502,
+      "ACCOUNT_NOT_LISTED": 502,
+      "ACCOUNT_TOKENS_OFF": 502,
+      "ACCOUNT_TOKEN_EXPIRED": 502,
+      "ACCOUNT_TOKEN_INVALID": 502,
+      "ACCOUNT_TOKEN_TOO_LONG_LIVED": 502,
       "ACTOR_KIND": 400,
       "ACTOR_SESSION_MISMATCH": 403,
       "ADVANCES_INPUT": 400,
       "ADVANCES_REVISION": 409,
       "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
+      "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
       "AGENT_SECRETS_UNAVAILABLE": 503,
       "AGENT_TOKEN_INPUT": 400,
       "AGENT_TOKEN_NOT_FOUND": 404,
@@ -39421,7 +40156,9 @@
       "ANCHOR_ORPHANED": 409,
       "ANSWER_NOT_KEPT": "*",
       "APPROVAL_WAITS_ON_HUMAN": 409,
+      "APPROVER_IS_GROUP": 400,
       "APPROVER_ME_ONLY": 400,
+      "APPROVER_REQUIRED": 400,
       "ARTIFACT_AGENT_OWNED": 400,
       "ARTIFACT_INPUT": 400,
       "ARTIFACT_KIND_MISMATCH": 400,
@@ -39468,12 +40205,16 @@
       "CHECK_CONTENDED": 409,
       "CHECK_PROVED_BY_CI": 409,
       "CLAIM_CONTENDED": 409,
+      "CODE_MISMATCH": 403,
+      "CODE_REQUIRED": 400,
       "COMMENT_ID_INPUT": 400,
       "COMMENT_NOT_FOUND": 404,
       "COMPONENTS_INPUT": 400,
       "CREDENTIAL_GRANT_NOT_FOUND": 404,
+      "CREDENTIAL_ID_INPUT": 400,
       "CREDENTIAL_REQUEST_NOT_FOUND": 404,
       "DATABASE_UNAVAILABLE": 503,
+      "DECIDE_ON_BROKER_PAGE": 403,
       "DECISION_BLOCK_IN_BODY": 400,
       "DECISION_CHANGED": 409,
       "DELETE_CONTENDED": 409,
@@ -39510,6 +40251,8 @@
       "GOING_ASKER_NAMES_NOBODY": 403,
       "GOING_INPUT": 400,
       "GOING_REQUEST_NOT_FOUND": 404,
+      "GRANT_ID_INPUT": 400,
+      "GRANT_MOVING": 409,
       "HANDOFF_FORBIDDEN": 403,
       "HANDOFF_ID_INPUT": 400,
       "HANDOFF_INPUT": 400,
@@ -39534,6 +40277,7 @@
       "INVALID_CLOSED_WINDOW": 400,
       "INVALID_COMMENT": 400,
       "INVALID_DECISION": 400,
+      "INVALID_DISMISSAL": 400,
       "INVALID_ISSUE": 400,
       "INVALID_ISSUE_REF": 400,
       "INVALID_JSON": 400,
@@ -39541,6 +40285,7 @@
       "INVALID_KEYWORDS_ONLY": 400,
       "INVALID_KIND": 400,
       "INVALID_LIMIT": 400,
+      "INVALID_LOOKUP": 400,
       "INVALID_MARKDOWN": 400,
       "INVALID_MESSAGE": 400,
       "INVALID_NUMBER_PROJECT": 400,
@@ -39554,6 +40299,7 @@
       "INVALID_REPOSITORY": 400,
       "INVALID_RESOLUTION": 400,
       "INVALID_REVIEW": 400,
+      "INVALID_REVOKE": 400,
       "INVALID_ROLE_HOLDER": 400,
       "INVALID_ROUTE_STATUS": 400,
       "INVALID_SESSION_ID": 400,
@@ -39571,7 +40317,10 @@
       "ISSUE_CYCLE": 409,
       "ISSUE_NOT_FOUND": 404,
       "JSON_CONTENT_TYPE": 415,
+      "JUDGE_DECIDES": 403,
+      "KEY_BINDS_READ_TOKEN": 409,
       "KEY_COMMITTED": 409,
+      "KEY_HOLDS_LIVE_CREDENTIAL": 409,
       "KEY_INVALID": 400,
       "KEY_IN_FLIGHT": 409,
       "KEY_REUSED": 422,
@@ -39580,6 +40329,7 @@
       "LEGION_SETTING_INPUT": 400,
       "LOGIN_CHANGED": 409,
       "MACHINE_LOGIN_NOT_FOUND": 404,
+      "MEMBER_KIND_UNCHECKABLE": 503,
       "MENTION_INPUT": 400,
       "MESSAGE_ID_INPUT": 400,
       "MESSAGE_INPUT": 400,
@@ -39589,6 +40339,7 @@
       "NEAR_COPY_CHECK_NOT_FOUND": 404,
       "NOT_ANSWERER": 403,
       "NOT_AN_ISSUE_MESSAGE": 409,
+      "NOT_APPROVER": 403,
       "NOT_AUTHOR": 403,
       "NOT_DOCUMENT": 400,
       "NOT_FOUND": 404,
@@ -39597,6 +40348,7 @@
       "NOT_SPEC_DOCUMENT": 409,
       "NO_IDENTITY": 401,
       "NO_ROUTE": 404,
+      "NO_SUCH_CODE": 404,
       "NO_VERIFICATION_DOCUMENT": 409,
       "NO_VERSION": 409,
       "NUL_CHARACTER": 400,
@@ -39612,6 +40364,7 @@
       "PAUSE_ARMED": 409,
       "PAUSE_NOT_ARMED": 404,
       "PAUSE_POINT_INPUT": 400,
+      "PERSON_REQUIRED": 400,
       "PLAN_APPROVED_BY_REVIEW": 409,
       "PLAN_INPUT": 400,
       "PLAN_OTHER_ISSUE": 409,
@@ -39622,6 +40375,7 @@
       "PRIORITY_EXISTS": 409,
       "PRIORITY_INPUT": 400,
       "PRIORITY_NOT_FOUND": 404,
+      "PROJECT_ACCESS_UNAVAILABLE": 503,
       "PROJECT_EXISTS": 409,
       "PROJECT_NOT_FOUND": 404,
       "PROJECT_SCOPE": 403,
@@ -39629,12 +40383,17 @@
       "QUERY_KEY_UNKNOWN": 400,
       "QUEUED_ON_BUS": 404,
       "RANK_INPUT": 400,
+      "RATE_LIMITED": 503,
       "READ_ONLY_TOKEN": 403,
       "REASON_REQUIRED": 400,
+      "RECORD_ID_INPUT": 400,
+      "RECORD_PENDING": 409,
+      "RECORD_TERMINAL": 409,
       "REFERENCES_TIMEOUT": 503,
       "REPLACE_FIELDS": 400,
       "REPLY_FORBIDDEN": 403,
       "REQUEST_BODY_UNREADABLE": 400,
+      "REQUEST_ENDED": 503,
       "REQUEST_TOO_LARGE": 413,
       "RESULT_COMMIT_UNKNOWN": 400,
       "RESULT_CONTRADICTS": 400,
@@ -39650,6 +40409,7 @@
       "ROUTE_INVALID": 400,
       "RUN_ID_INPUT": 400,
       "SEARCH_COVERAGE_TIMEOUT": 503,
+      "SERVICE_LOGS_IN_WITH_TOKEN": 400,
       "SESSION_GROUP_ID_INPUT": 400,
       "SESSION_GROUP_INPUT": 400,
       "SESSION_GROUP_NAME_IS_SESSION_TITLE": 409,
@@ -39660,6 +40420,7 @@
       "SESSION_REQUIRED": 400,
       "SESSION_SCOPE": 403,
       "SHUTTING_DOWN": 503,
+      "SIGNIN_ID_INPUT": 400,
       "SIGNIN_NOT_FOUND": 404,
       "SIGNIN_UNAVAILABLE": 503,
       "SIGN_IN_REQUIRED": 403,
@@ -39668,6 +40429,7 @@
       "SOURCE_ACCESS": 409,
       "SOURCE_INPUT": 400,
       "SOURCE_NOT_FOUND": 404,
+      "STATE_INPUT": 400,
       "STATE_INVALID": 400,
       "STATE_STALE": 409,
       "STATUS_CHANGE_INPUT": 400,

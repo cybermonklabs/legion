@@ -61,13 +61,12 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter, r *http.Request) (*c
 	return s.deps.AgentSecrets, true
 }
 
-// relayBrokerResponse writes the broker's answer verbatim: its raw JSON body on success, its
-// exact status and body for a *cipher.Error (the browser must see the broker's own status
-// and code, e.g. 409 RECORD_TERMINAL — Dispatch never re-wraps it), 500
-// AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that stopped at Dispatch's own ServiceAccount
-// token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a transport failure). The token
-// gets its own code because the broker was never asked: the fix is in Dispatch's deployment, and
-// the log line naming the file is the operator's only pointer to it.
+// relayBrokerResponse writes the broker's answer as /api/v1 relays it: its raw JSON body on
+// success, its exact status and body for a *cipher.Error (the browser must see the broker's own
+// status and code, e.g. 409 RECORD_TERMINAL — /api/v1 never re-wraps it), and a call the broker
+// never answered as writeBrokerUnanswered answers it. /api/v2 writes a broker's success body
+// through it too, and a refusal through relayBrokerRefusalV2 (v2_credentials.go), which writes it
+// under the code the call declares.
 func relayBrokerResponse(w http.ResponseWriter, r *http.Request, body json.RawMessage, err error) {
 	if err != nil {
 		var brokerErr *cipher.Error
@@ -77,17 +76,26 @@ func relayBrokerResponse(w http.ResponseWriter, r *http.Request, body json.RawMe
 			_, _ = w.Write(brokerErr.Body)
 			return
 		}
-		var tokenErr *cipher.AccountTokenError
-		if errors.As(err, &tokenErr) {
-			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "path", tokenErr.Path, "error", tokenErr.Err)
-			writeError(w, r, apicode.AgentSecretsAccountTokenUnreadable, "Dispatch cannot read its own ServiceAccount token for the secrets broker")
-			return
-		}
-		writeError(w, r, apicode.AgentSecretsUnavailable, "the secrets broker is unreachable")
+		writeBrokerUnanswered(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+}
+
+// writeBrokerUnanswered answers, in both versions, a call of the broker that failed before the
+// broker answered it: 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that stopped at
+// Dispatch's own ServiceAccount token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a
+// transport failure). The token gets its own code because the broker was never asked: the fix is
+// in Dispatch's deployment, and the log line naming the file is the operator's only pointer to it.
+func writeBrokerUnanswered(w http.ResponseWriter, r *http.Request, err error) {
+	var tokenErr *cipher.AccountTokenError
+	if errors.As(err, &tokenErr) {
+		slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "path", tokenErr.Path, "error", tokenErr.Err)
+		writeError(w, r, apicode.AgentSecretsAccountTokenUnreadable, "Dispatch cannot read its own ServiceAccount token for the secrets broker")
+		return
+	}
+	writeError(w, r, apicode.AgentSecretsUnavailable, "the secrets broker is unreachable")
 }
 
 // resolveApproverMe reads ?approver=, which the UI only ever sends as the literal string "me" —

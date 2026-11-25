@@ -558,6 +558,92 @@ var (
 	StepNotFound = v2Only("STEP_NOT_FOUND", http.StatusNotFound)
 )
 
+// The codes of the secrets broker's refusals on the routes Dispatch's /api/v2 credential routes
+// call (brokerCall in the api package), which /api/v2 answers through its one error writer with
+// the broker's message (dispatch://INFRA-4071/spec R7). /api/v1 names none of them: it relays the
+// broker's bytes, its code among them, as it always did.
+var (
+	// AgentSecretsRefusalUndeclared is a refusal the broker answered a call with under a code, or
+	// at a status, that the call does not declare: a code a broker newer than this Dispatch added
+	// or renamed, or an answer that names no code, such as a gateway's page in front of the
+	// broker. /api/v2 answers no code its document does not list, so it cannot pass the code on,
+	// nor the status, which a client would read with that status's meaning for an answer Dispatch
+	// did not understand. 502 is what a gateway answers for an upstream answer it cannot vouch for,
+	// which this is, and the message names the broker's status, code and message, so nothing the
+	// broker said is lost.
+	AgentSecretsRefusalUndeclared = v2Only("AGENT_SECRETS_REFUSAL_UNDECLARED", http.StatusBadGateway)
+
+	// The broker's own codes, each under the broker's name and at the broker's status. Its
+	// INTERNAL, REQUEST_TOO_LARGE and INVALID_DECISION are answered as InternalError,
+	// RequestTooLarge and InvalidDecision, which carry that name and status already, and its 404
+	// NOT_FOUND as the not-found code of the object the route's path names.
+	ApproverIsGroup          = v2Only("APPROVER_IS_GROUP", http.StatusBadRequest)
+	ApproverRequired         = v2Only("APPROVER_REQUIRED", http.StatusBadRequest)
+	CodeMismatch             = v2Only("CODE_MISMATCH", http.StatusForbidden)
+	CodeRequired             = v2Only("CODE_REQUIRED", http.StatusBadRequest)
+	CredentialIDInput        = v2Only("CREDENTIAL_ID_INPUT", http.StatusBadRequest)
+	DecideOnBrokerPage       = v2Only("DECIDE_ON_BROKER_PAGE", http.StatusForbidden)
+	GrantIDInput             = v2Only("GRANT_ID_INPUT", http.StatusBadRequest)
+	GrantMoving              = v2Only("GRANT_MOVING", http.StatusConflict)
+	InvalidDismissal         = v2Only("INVALID_DISMISSAL", http.StatusBadRequest)
+	InvalidLookup            = v2Only("INVALID_LOOKUP", http.StatusBadRequest)
+	InvalidRevoke            = v2Only("INVALID_REVOKE", http.StatusBadRequest)
+	JudgeDecides             = v2Only("JUDGE_DECIDES", http.StatusForbidden)
+	KeyBindsReadToken        = v2Only("KEY_BINDS_READ_TOKEN", http.StatusConflict)
+	KeyHoldsLiveCredential   = v2Only("KEY_HOLDS_LIVE_CREDENTIAL", http.StatusConflict)
+	MemberKindUncheckable    = v2Only("MEMBER_KIND_UNCHECKABLE", http.StatusServiceUnavailable)
+	NoSuchCode               = v2Only("NO_SUCH_CODE", http.StatusNotFound)
+	NotApprover              = v2Only("NOT_APPROVER", http.StatusForbidden)
+	PersonRequired           = v2Only("PERSON_REQUIRED", http.StatusBadRequest)
+	ProjectAccessUnavailable = v2Only("PROJECT_ACCESS_UNAVAILABLE", http.StatusServiceUnavailable)
+	RecordIDInput            = v2Only("RECORD_ID_INPUT", http.StatusBadRequest)
+	RecordPending            = v2Only("RECORD_PENDING", http.StatusConflict)
+	RecordTerminal           = v2Only("RECORD_TERMINAL", http.StatusConflict)
+	RequestEnded             = v2Only("REQUEST_ENDED", http.StatusServiceUnavailable)
+	ServiceLogsInWithToken   = v2Only("SERVICE_LOGS_IN_WITH_TOKEN", http.StatusBadRequest)
+	SigninIDInput            = v2Only("SIGNIN_ID_INPUT", http.StatusBadRequest)
+	StateInput               = v2Only("STATE_INPUT", http.StatusBadRequest)
+
+	// The broker's refusals of Dispatch's own ServiceAccount token, which it answers on any of
+	// those routes before the route runs (accountAuth in its route table), each under the
+	// broker's name. The broker refused Dispatch, not the caller, so none is answered at the 401,
+	// 403 or 429 the broker wrote, which would tell the caller its own credential failed or that
+	// it sent too many.
+
+	// AccountLacksPower is the broker's 403 to Dispatch's account, listed in its
+	// BROKER_API_ACCOUNTS without the power the route needs. It is answered 502: the broker
+	// Dispatch relays to refused Dispatch itself, as the deployment configures the two, which
+	// nothing the caller sends changes; a 403 would tell the caller its own credential may not.
+	AccountLacksPower = v2Only("ACCOUNT_LACKS_POWER", http.StatusBadGateway)
+	// AccountNotListed is the broker's 403 to a sound token naming an account its
+	// BROKER_API_ACCOUNTS does not list, Dispatch's own. It is answered 502 for the reason
+	// AccountLacksPower is: the broker refused Dispatch's configuration, not the caller.
+	AccountNotListed = v2Only("ACCOUNT_NOT_LISTED", http.StatusBadGateway)
+	// AccountTokenExpired is the broker's 401 to Dispatch's own ServiceAccount token, expired. It
+	// is answered 502: the token that failed is the one Dispatch presented upstream, and a 401
+	// would send the caller to renew a credential of its own that never failed.
+	AccountTokenExpired = v2Only("ACCOUNT_TOKEN_EXPIRED", http.StatusBadGateway)
+	// AccountTokenInvalid is the broker's 401 to Dispatch's own ServiceAccount token, which does
+	// not verify or names no issuer the broker trusts. It is answered 502 for the reason
+	// AccountTokenExpired is.
+	AccountTokenInvalid = v2Only("ACCOUNT_TOKEN_INVALID", http.StatusBadGateway)
+	// AccountTokenTooLongLived is the broker's 401 to Dispatch's own ServiceAccount token, which
+	// names no issue time or lives longer than the broker's hour from it. It is answered 502 for
+	// the reason AccountTokenExpired is.
+	AccountTokenTooLongLived = v2Only("ACCOUNT_TOKEN_TOO_LONG_LIVED", http.StatusBadGateway)
+	// AccountTokensOff is the broker's 401 when it trusts no token issuer for its API callers, so
+	// no token of Dispatch's authenticates. It is answered 502 for the reason AccountLacksPower
+	// is: the broker's configuration refused Dispatch, and a 401 would blame the caller's
+	// credential.
+	AccountTokensOff = v2Only("ACCOUNT_TOKENS_OFF", http.StatusBadGateway)
+	// RateLimited is the broker's 429 to Dispatch's account, whose requests, those of every
+	// caller of Dispatch together, spent the broker's bucket for them. It is answered 503 with the
+	// broker's Retry-After where the broker sent one: the service Dispatch relies on cannot take
+	// the call for now, and a 429 would tell the caller that it, one of Dispatch's many callers,
+	// sent too many.
+	RateLimited = v2Only("RATE_LIMITED", http.StatusServiceUnavailable)
+)
+
 // The codes only /api/v1 answers.
 var (
 	// APIV1Ended is every /api/v1 path once the deployment's end of /api/v1 has passed (R3.4).

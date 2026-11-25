@@ -4,21 +4,28 @@ package api
 // the credential requests waiting on the caller and the state route their
 // approve and deny become, the machine-login lookup, the grants and the machine logins the caller
 // may revoke, and the caller's own sign-ins, each a relay to the secrets broker as its /api/v1
-// route is (credential_requests.go). Four things change. A broker list, which the broker does
+// route is (credential_requests.go). Five things change. A broker list, which the broker does
 // not page, is sliced by Dispatch into the envelope. A revoke is a DELETE (the route map's J5),
-// answering 204, or 200 {tokens_ended} for a sign-in. An id the broker holds no record of
-// answers the broker's own 404 under one code of its object (R7). And a deny of a service's
-// machine login that the code's lookup read already denied answers the broker's 409
-// RECORD_TERMINAL as the no-op of R8, 200 with the login as the lookup read it
-// (putCredentialRequestStateV2). Every other answer of the broker, a refusal among them, is
-// relayed verbatim, as /api/v1 relays it.
+// answering 204, or 200 {tokens_ended} for a sign-in. A refusal the broker answers is named as
+// every /api/v2 refusal is, under the code the route declares for it, with the broker's message
+// and the members the broker's refusal carries beside it (brokerRefusalV2), where /api/v1 relays
+// the broker's bytes: the broker's own code at the broker's own status, but its refusals of
+// Dispatch's own ServiceAccount token at 502 and 503, since they are no fault of the caller's,
+// and a code the route does not declare as 502 AGENT_SECRETS_REFUSAL_UNDECLARED
+// (relayBrokerRefusalV2, R7). An id the broker holds no record of answers the broker's own 404
+// under one code of its object (R7). And a deny of a service's machine login that the code's
+// lookup read already denied answers the broker's 409 RECORD_TERMINAL as the no-op of R8, 200
+// with the login as the lookup read it (putCredentialRequestStateV2). Every other answer of the
+// broker is relayed verbatim, as /api/v1 relays it.
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/wire"
@@ -37,20 +44,249 @@ var (
 	brokerUnconfiguredRefusal       = apicode.Refusal{Condition: apicode.BrokerUnconfigured, Code: apicode.FeatureOff}
 	brokerUnreachableRefusal        = apicode.Refusal{Condition: apicode.BrokerUnreachable, Code: apicode.AgentSecretsUnavailable}
 	accountTokenUnreadableRefusal   = apicode.Refusal{Condition: apicode.ServiceAccountTokenUnreadable, Code: apicode.AgentSecretsAccountTokenUnreadable}
+	brokerRefusalUndeclaredRefusal  = apicode.Refusal{Condition: apicode.BrokerRefusalUndeclared, Code: apicode.AgentSecretsRefusalUndeclared}
 )
 
-// brokerRefusals are the refusals of every credential route, which relays to the secrets broker
-// (requireAgentSecrets, relayBrokerResponse): a Dispatch with none, a broker that cannot be
-// reached, and a ServiceAccount token Dispatch cannot read, after the route's own. A refusal the
-// broker answers is relayed with its own status and code, so no row declares it.
-func brokerRefusals(own ...apicode.Refusal) []apicode.Refusal {
-	return append(own, brokerUnconfiguredRefusal, brokerUnreachableRefusal, accountTokenUnreadableRefusal)
+// The refusals the secrets broker answers on the routes the credential handlers call, each the
+// broker's code relayed from it, answered under that code at the broker's own status.
+var (
+	brokerApproverIsGroupRefusal          = apicode.Refusal{Condition: apicode.BrokerApproverIsGroup, Code: apicode.ApproverIsGroup}
+	brokerApproverRequiredRefusal         = apicode.Refusal{Condition: apicode.BrokerApproverRequired, Code: apicode.ApproverRequired}
+	brokerCodeMismatchRefusal             = apicode.Refusal{Condition: apicode.BrokerCodeMismatch, Code: apicode.CodeMismatch}
+	brokerCodeRequiredRefusal             = apicode.Refusal{Condition: apicode.BrokerCodeRequired, Code: apicode.CodeRequired}
+	brokerCredentialIDInputRefusal        = apicode.Refusal{Condition: apicode.BrokerCredentialIDInput, Code: apicode.CredentialIDInput}
+	brokerDecideOnBrokerPageRefusal       = apicode.Refusal{Condition: apicode.BrokerDecideOnBrokerPage, Code: apicode.DecideOnBrokerPage}
+	brokerGrantIDInputRefusal             = apicode.Refusal{Condition: apicode.BrokerGrantIDInput, Code: apicode.GrantIDInput}
+	brokerGrantMovingRefusal              = apicode.Refusal{Condition: apicode.BrokerGrantMoving, Code: apicode.GrantMoving}
+	brokerInternalRefusal                 = apicode.Refusal{Condition: apicode.BrokerInternal, Code: apicode.InternalError}
+	brokerInvalidDecisionRefusal          = apicode.Refusal{Condition: apicode.BrokerInvalidDecision, Code: apicode.InvalidDecision}
+	brokerInvalidDismissalRefusal         = apicode.Refusal{Condition: apicode.BrokerInvalidDismissal, Code: apicode.InvalidDismissal}
+	brokerInvalidLookupRefusal            = apicode.Refusal{Condition: apicode.BrokerInvalidLookup, Code: apicode.InvalidLookup}
+	brokerInvalidRevokeRefusal            = apicode.Refusal{Condition: apicode.BrokerInvalidRevoke, Code: apicode.InvalidRevoke}
+	brokerJudgeDecidesRefusal             = apicode.Refusal{Condition: apicode.BrokerJudgeDecides, Code: apicode.JudgeDecides}
+	brokerKeyBindsReadTokenRefusal        = apicode.Refusal{Condition: apicode.BrokerKeyBindsReadToken, Code: apicode.KeyBindsReadToken}
+	brokerKeyHoldsLiveCredentialRefusal   = apicode.Refusal{Condition: apicode.BrokerKeyHoldsLiveCredential, Code: apicode.KeyHoldsLiveCredential}
+	brokerMemberKindUncheckableRefusal    = apicode.Refusal{Condition: apicode.BrokerMemberKindUncheckable, Code: apicode.MemberKindUncheckable}
+	brokerNoSuchCodeRefusal               = apicode.Refusal{Condition: apicode.BrokerNoSuchCode, Code: apicode.NoSuchCode}
+	brokerNotApproverRefusal              = apicode.Refusal{Condition: apicode.BrokerNotApprover, Code: apicode.NotApprover}
+	brokerPersonRequiredRefusal           = apicode.Refusal{Condition: apicode.BrokerPersonRequired, Code: apicode.PersonRequired}
+	brokerProjectAccessUnavailableRefusal = apicode.Refusal{Condition: apicode.BrokerProjectAccessUnavailable, Code: apicode.ProjectAccessUnavailable}
+	brokerRecordIDInputRefusal            = apicode.Refusal{Condition: apicode.BrokerRecordIDInput, Code: apicode.RecordIDInput}
+	brokerRecordPendingRefusal            = apicode.Refusal{Condition: apicode.BrokerRecordPending, Code: apicode.RecordPending}
+	brokerRecordTerminalRefusal           = apicode.Refusal{Condition: apicode.BrokerRecordTerminal, Code: apicode.RecordTerminal}
+	brokerRequestEndedRefusal             = apicode.Refusal{Condition: apicode.BrokerRequestEnded, Code: apicode.RequestEnded}
+	brokerRequestTooLargeRefusal          = apicode.Refusal{Condition: apicode.BrokerRequestTooLarge, Code: apicode.RequestTooLarge}
+	brokerServiceLogsInWithTokenRefusal   = apicode.Refusal{Condition: apicode.BrokerServiceLogsInWithToken, Code: apicode.ServiceLogsInWithToken}
+	brokerSigninIDInputRefusal            = apicode.Refusal{Condition: apicode.BrokerSigninIDInput, Code: apicode.SigninIDInput}
+	brokerStateInputRefusal               = apicode.Refusal{Condition: apicode.BrokerStateInput, Code: apicode.StateInput}
+)
+
+// brokerAccountRefusal is a refusal of Dispatch's own ServiceAccount token: the status the broker
+// answers it at, and the refusal /api/v2 answers it as, under the broker's code at a status of
+// its own (apicode.AccountLacksPower says why).
+type brokerAccountRefusal struct {
+	BrokerStatus int
+	Refusal      apicode.Refusal
+}
+
+// brokerAccountRefusals are the broker's refusals of Dispatch's own ServiceAccount token, which
+// every broker route a credential handler calls takes (accountAuth in the broker's route table),
+// so every call declares them.
+var brokerAccountRefusals = []brokerAccountRefusal{
+	{http.StatusForbidden, apicode.Refusal{Condition: apicode.BrokerAccountLacksPower, Code: apicode.AccountLacksPower}},
+	{http.StatusForbidden, apicode.Refusal{Condition: apicode.BrokerAccountNotListed, Code: apicode.AccountNotListed}},
+	{http.StatusUnauthorized, apicode.Refusal{Condition: apicode.BrokerAccountTokenExpired, Code: apicode.AccountTokenExpired}},
+	{http.StatusUnauthorized, apicode.Refusal{Condition: apicode.BrokerAccountTokenInvalid, Code: apicode.AccountTokenInvalid}},
+	{http.StatusUnauthorized, apicode.Refusal{Condition: apicode.BrokerAccountTokenTooLongLived, Code: apicode.AccountTokenTooLongLived}},
+	{http.StatusUnauthorized, apicode.Refusal{Condition: apicode.BrokerAccountTokensOff, Code: apicode.AccountTokensOff}},
+	{http.StatusTooManyRequests, apicode.Refusal{Condition: apicode.BrokerRateLimited, Code: apicode.RateLimited}},
+}
+
+// brokerCall is one call a credential handler makes of the secrets broker: the broker's routes it
+// calls, "<method> <pattern>" as the broker's route table writes them, and every refusal the
+// broker answers on them, each as the refusal /api/v2 answers it with (relayBrokerRefusalV2).
+// Refusals are the refusals of the routes' handler, under the broker's own code at the broker's
+// own status, and brokerAccountRefusals are every call's. Missing, where the route's path names
+// one of the broker's records, is the refusal of the broker's 404 NOT_FOUND: the not-found code of
+// that object (R7). TestTheBrokerCallsDeclareEveryRefusalTheBrokerAnswers holds each call to the
+// refusals the broker's source answers on its routes.
+type brokerCall struct {
+	Routes   []string
+	Refusals []apicode.Refusal
+	Missing  apicode.Refusal
+}
+
+// brokerNotFoundCode is the code the broker answers, at 404, an id it holds no record of.
+const brokerNotFoundCode = "NOT_FOUND"
+
+// code is the code /api/v2 answers a refusal of call with that the broker answered at status
+// under name, and whether call declares one.
+func (call brokerCall) code(status int, name string) (code apicode.Code, declared bool) {
+	if status == http.StatusNotFound && name == brokerNotFoundCode && !call.Missing.Code.IsZero() {
+		return call.Missing.Code, true
+	}
+	for _, refusal := range call.Refusals {
+		if refusal.Code.Name() == name && refusal.Code.Status() == status {
+			return refusal.Code, true
+		}
+	}
+	for _, account := range brokerAccountRefusals {
+		if account.Refusal.Code.Name() == name && account.BrokerStatus == status {
+			return account.Refusal.Code, true
+		}
+	}
+	return code, false
+}
+
+// without is call with the refusal of code left out, for a route that answers that refusal of the
+// broker otherwise: PUT /api/v2/credential-requests/{id}/state reads the lookup's NO_SUCH_CODE as a
+// code that selects no record (lookupMachineRecord) and relays the decision for the broker to
+// answer, so its row declares the lookup's refusals without it.
+func (call brokerCall) without(code apicode.Code) brokerCall {
+	call.Refusals = slices.DeleteFunc(slices.Clone(call.Refusals), func(refusal apicode.Refusal) bool { return refusal.Code == code })
+	return call
+}
+
+// The calls the credential handlers make of the secrets broker, each named for the cipher.Client
+// method that makes it.
+var (
+	// brokerGrantsCall is Client.Grants.
+	brokerGrantsCall = brokerCall{
+		Routes:   []string{"GET /v1/grants"},
+		Refusals: []apicode.Refusal{brokerApproverIsGroupRefusal, brokerApproverRequiredRefusal, brokerInternalRefusal},
+	}
+	// brokerRevokeGrantCall is Client.RevokeByApprover.
+	brokerRevokeGrantCall = brokerCall{
+		Routes: []string{"POST /v1/grants/{id}/revoke-by-approver"},
+		Refusals: []apicode.Refusal{
+			brokerApproverIsGroupRefusal, brokerApproverRequiredRefusal, brokerGrantIDInputRefusal, brokerGrantMovingRefusal,
+			brokerInternalRefusal, brokerInvalidRevokeRefusal, brokerMemberKindUncheckableRefusal, brokerNotApproverRefusal,
+			brokerProjectAccessUnavailableRefusal, brokerRequestEndedRefusal, brokerRequestTooLargeRefusal,
+		},
+		Missing: credentialGrantMissingRefusal,
+	}
+	// brokerPendingCall is Client.Pending.
+	brokerPendingCall = brokerCall{
+		Routes: []string{"GET /v1/pending"},
+		Refusals: []apicode.Refusal{
+			brokerApproverIsGroupRefusal, brokerApproverRequiredRefusal, brokerInternalRefusal, brokerStateInputRefusal,
+		},
+	}
+	// brokerDecisionCall is Client.Approve and Client.Deny, whose routes answer alike.
+	brokerDecisionCall = brokerCall{
+		Routes: []string{"POST /v1/credential-requests/{record}/approve", "POST /v1/credential-requests/{record}/deny"},
+		Refusals: []apicode.Refusal{
+			brokerApproverIsGroupRefusal, brokerApproverRequiredRefusal, brokerCodeMismatchRefusal, brokerCodeRequiredRefusal,
+			brokerDecideOnBrokerPageRefusal, brokerInternalRefusal, brokerInvalidDecisionRefusal, brokerJudgeDecidesRefusal,
+			brokerKeyBindsReadTokenRefusal, brokerKeyHoldsLiveCredentialRefusal, brokerMemberKindUncheckableRefusal,
+			brokerNotApproverRefusal, brokerProjectAccessUnavailableRefusal, brokerRecordIDInputRefusal,
+			brokerRecordTerminalRefusal, brokerRequestTooLargeRefusal, brokerServiceLogsInWithTokenRefusal,
+		},
+		Missing: credentialRequestMissingRefusal,
+	}
+	// brokerDismissalCall is Client.Dismiss.
+	brokerDismissalCall = brokerCall{
+		Routes: []string{"POST /v1/credential-requests/{record}/dismiss"},
+		Refusals: []apicode.Refusal{
+			brokerApproverIsGroupRefusal, brokerApproverRequiredRefusal, brokerInternalRefusal, brokerInvalidDismissalRefusal,
+			brokerMemberKindUncheckableRefusal, brokerNotApproverRefusal, brokerProjectAccessUnavailableRefusal,
+			brokerRecordIDInputRefusal, brokerRecordPendingRefusal, brokerRecordTerminalRefusal, brokerRequestTooLargeRefusal,
+		},
+		Missing: credentialRequestMissingRefusal,
+	}
+	// brokerLookupCall is Client.MachineLookup.
+	brokerLookupCall = brokerCall{
+		Routes: []string{"POST /v1/machine-logins/lookup"},
+		Refusals: []apicode.Refusal{
+			brokerCodeRequiredRefusal, brokerInternalRefusal, brokerInvalidLookupRefusal, brokerNoSuchCodeRefusal,
+			brokerRequestTooLargeRefusal,
+		},
+	}
+	// brokerMachineLoginsCall is Client.MachineLogins.
+	brokerMachineLoginsCall = brokerCall{
+		Routes:   []string{"GET /v1/launcher-credentials"},
+		Refusals: []apicode.Refusal{brokerApproverIsGroupRefusal, brokerApproverRequiredRefusal, brokerInternalRefusal},
+	}
+	// brokerRevokeMachineLoginCall is Client.RevokeMachineLogin.
+	brokerRevokeMachineLoginCall = brokerCall{
+		Routes: []string{"POST /v1/launcher-credentials/{id}/revoke-by-approver"},
+		Refusals: []apicode.Refusal{
+			brokerApproverIsGroupRefusal, brokerApproverRequiredRefusal, brokerCredentialIDInputRefusal, brokerInternalRefusal,
+			brokerInvalidRevokeRefusal, brokerNotApproverRefusal, brokerRequestTooLargeRefusal,
+		},
+		Missing: machineLoginMissingRefusal,
+	}
+	// brokerSignInsCall is Client.SignIns.
+	brokerSignInsCall = brokerCall{
+		Routes:   []string{"GET /v1/person-signins"},
+		Refusals: []apicode.Refusal{brokerInternalRefusal, brokerPersonRequiredRefusal},
+	}
+	// brokerRevokeSignInCall is Client.RevokeSignIn.
+	brokerRevokeSignInCall = brokerCall{
+		Routes: []string{"POST /v1/person-signins/{id}/revoke"},
+		Refusals: []apicode.Refusal{
+			brokerInternalRefusal, brokerInvalidRevokeRefusal, brokerPersonRequiredRefusal, brokerRequestTooLargeRefusal,
+			brokerSigninIDInputRefusal,
+		},
+		Missing: signinMissingRefusal,
+	}
+)
+
+// brokerRefusals are the refusals of a credential route, which relays to the secrets broker
+// through calls (requireAgentSecrets, relayBrokerRefusalV2), after the route's own: a Dispatch with
+// none, a broker that cannot be reached, a ServiceAccount token Dispatch cannot read, a refusal
+// the broker answers under a code its call does not declare, and every refusal each call declares.
+func brokerRefusals(own []apicode.Refusal, calls ...brokerCall) []apicode.Refusal {
+	refusals := append(own, brokerUnconfiguredRefusal, brokerUnreachableRefusal, accountTokenUnreadableRefusal, brokerRefusalUndeclaredRefusal)
+	for _, call := range calls {
+		refusals = append(refusals, call.Refusals...)
+		for _, account := range brokerAccountRefusals {
+			refusals = append(refusals, account.Refusal)
+		}
+		if !call.Missing.Code.IsZero() {
+			refusals = append(refusals, call.Missing)
+		}
+	}
+	return refusals
+}
+
+// brokerRefusalAnswers are the refusal bodies of a credential route that calls the secrets broker
+// through calls (routeShape.Refusals): brokerRefusalV2 at each status a 4xx refusal of the
+// broker's lands on, which carries the broker's answer_id, and at the 502 of a refusal no call
+// declares, which carries it where the broker's answer did.
+func brokerRefusalAnswers(calls ...brokerCall) []routeAnswer {
+	statuses := []int{apicode.AgentSecretsRefusalUndeclared.Status()}
+	for _, call := range calls {
+		for _, refusal := range call.Refusals {
+			if refusal.Code.Status() < http.StatusInternalServerError {
+				statuses = append(statuses, refusal.Code.Status())
+			}
+		}
+		for _, account := range brokerAccountRefusals {
+			statuses = append(statuses, account.Refusal.Code.Status())
+		}
+		if !call.Missing.Code.IsZero() {
+			statuses = append(statuses, call.Missing.Code.Status())
+		}
+	}
+	slices.Sort(statuses)
+	answers := make([]routeAnswer, 0, len(statuses))
+	for _, status := range slices.Compact(statuses) {
+		answers = append(answers, routeAnswer{Status: status, Body: brokerRefusalV2{}})
+	}
+	return answers
 }
 
 // brokerRelayText is what every credential route says of the broker's answers.
 const brokerRelayText = "404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it " +
 	"cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount " +
-	"token for it, and every other refusal the broker answers relayed with its own status and code"
+	"token for it, and every other refusal the broker answers under its own code, each listed in x-refusal-codes, " +
+	"with its message and, for a 4xx refusal of the broker's, its answer_id: at the broker's status, but its " +
+	"refusals of Dispatch's own ServiceAccount token (ACCOUNT_LACKS_POWER, ACCOUNT_NOT_LISTED, ACCOUNT_TOKENS_OFF, " +
+	"ACCOUNT_TOKEN_EXPIRED, ACCOUNT_TOKEN_INVALID, ACCOUNT_TOKEN_TOO_LONG_LIVED) at 502 and its RATE_LIMITED at 503 " +
+	"with the broker's Retry-After, since the broker refused Dispatch rather than the caller; a refusal under a " +
+	"code or at a status that is not listed is 502 AGENT_SECRETS_REFUSAL_UNDECLARED, naming the broker's status, " +
+	"code and message"
 
 // brokerPageText is what every credential list says of its page: the broker does not page, so
 // Dispatch slices what it answers.
@@ -81,9 +317,9 @@ func (s *server) v2CredentialRows() []routeRow {
 			Handler:  s.listCredentialGrantsV2,
 			Resource: "credential-grants", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
-			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.ApproverGrantResp]{}},
+			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.ApproverGrantResp]{}, Refusals: brokerRefusalAnswers(brokerGrantsCall)},
 			OAuthScopes: person,
-			Refusals:    listRefusals(brokerRefusals()...),
+			Refusals:    listRefusals(brokerRefusals(nil, brokerGrantsCall)...),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/credential-grants/{id}", Auth: authAny, Versions: onlyV2,
@@ -110,11 +346,11 @@ func (s *server) v2CredentialRows() []routeRow {
 				"approve scopes; a credential scoped to one project is refused. " + brokerRelayText + ".",
 			Handler:  s.revokeCredentialGrantV2,
 			Resource: "credential-grants", Kind: kindItem, Key: "{id}",
-			Shape:       routeShape{Status: http.StatusNoContent},
+			Shape:       routeShape{Status: http.StatusNoContent, Refusals: brokerRefusalAnswers(brokerRevokeGrantCall)},
 			OAuthScopes: settles,
 			Scope:       scopeDeployment,
 			IDs:         &idRoute{Reason: "a credential grant id"},
-			Refusals:    brokerRefusals(undeclaredKeyRefusal, credentialGrantMissingRefusal),
+			Refusals:    brokerRefusals([]apicode.Refusal{undeclaredKeyRefusal}, brokerRevokeGrantCall),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/credential-requests", Auth: authAny, Versions: onlyV2,
@@ -130,9 +366,9 @@ func (s *server) v2CredentialRows() []routeRow {
 			Handler:  s.listCredentialRequestsV2,
 			Resource: "credential-requests", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
-			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.PendingEntry]{}},
+			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.PendingEntry]{}, Refusals: brokerRefusalAnswers(brokerPendingCall)},
 			OAuthScopes: person,
-			Refusals:    listRefusals(brokerRefusals()...),
+			Refusals:    listRefusals(brokerRefusals(nil, brokerPendingCall)...),
 		},
 		{
 			Method: http.MethodPut, Pattern: "/credential-requests/{id}/state", Auth: authAny, Versions: onlyV2,
@@ -140,8 +376,9 @@ func (s *server) v2CredentialRows() []routeRow {
 				"request {state}. state approved or denied decides a machine login, and code is the login's " +
 				"confirmation code as the person typed it, which the secrets broker checks on both. The broker " +
 				"decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE " +
-				"naming its page on the broker, and refuses a code that is missing or not the login's own. A service's " +
-				"machine login is denied by anyone signed in but a caller Dispatch calls a restricted member. A request " +
+				"naming its page on the broker in approve_url, and refuses a code that is missing or not the login's " +
+				"own. A service's machine login is denied by anyone signed in but a caller Dispatch calls a restricted " +
+				"member. A request " +
 				"the broker already holds in that state, sent by a caller the broker would let decide it, is answered " +
 				"as it stands: an approval of a service's machine login sent by anyone signed in, and a decision of " +
 				"another sent by the person its approver names, relaying nothing. A deny of a service's machine login " +
@@ -172,7 +409,8 @@ func (s *server) v2CredentialRows() []routeRow {
 			}},
 			Shape: routeShape{
 				Status: http.StatusOK, Response: wire.RecordResponse{},
-				Also: []routeAnswer{{Status: http.StatusOK, Body: wire.DismissResponse{}}},
+				Also:     []routeAnswer{{Status: http.StatusOK, Body: wire.DismissResponse{}}},
+				Refusals: brokerRefusalAnswers(brokerDecisionCall, brokerDismissalCall, brokerLookupCall.without(apicode.NoSuchCode)),
 			},
 			OAuthScopes: person,
 			Authorities: []authorityRule{
@@ -182,7 +420,7 @@ func (s *server) v2CredentialRows() []routeRow {
 			},
 			Scope:    scopeDeployment,
 			IDs:      &idRoute{Reason: "a credential request id"},
-			Refusals: brokerRefusals(undeclaredKeyRefusal, credentialRequestMissingRefusal),
+			Refusals: brokerRefusals([]apicode.Refusal{undeclaredKeyRefusal}, brokerDecisionCall, brokerDismissalCall, brokerLookupCall.without(apicode.NoSuchCode)),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/machine-login-lookups", Auth: authAny, Versions: onlyV2,
@@ -195,10 +433,10 @@ func (s *server) v2CredentialRows() []routeRow {
 			Handler:  s.lookupMachineLoginV2,
 			Resource: "machine-login-lookups", Kind: kindComputation,
 			Body:        requestBody{Kind: bodyJSON, Type: wire.MachineLookupRequest{}},
-			Shape:       routeShape{Status: http.StatusOK, Response: wire.RecordResponse{}},
+			Shape:       routeShape{Status: http.StatusOK, Response: wire.RecordResponse{}, Refusals: brokerRefusalAnswers(brokerLookupCall)},
 			OAuthScopes: settles,
 			Scope:       scopeDeployment,
-			Refusals:    brokerRefusals(undeclaredKeyRefusal),
+			Refusals:    brokerRefusals([]apicode.Refusal{undeclaredKeyRefusal}, brokerLookupCall),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/machine-logins", Auth: authAny, Versions: onlyV2,
@@ -214,9 +452,9 @@ func (s *server) v2CredentialRows() []routeRow {
 			Handler:  s.listMachineLoginsV2,
 			Resource: "machine-logins", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
-			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.LauncherCredentialResp]{}},
+			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.LauncherCredentialResp]{}, Refusals: brokerRefusalAnswers(brokerMachineLoginsCall)},
 			OAuthScopes: person,
-			Refusals:    listRefusals(brokerRefusals()...),
+			Refusals:    listRefusals(brokerRefusals(nil, brokerMachineLoginsCall)...),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/machine-logins/{id}", Auth: authAny, Versions: onlyV2,
@@ -234,11 +472,11 @@ func (s *server) v2CredentialRows() []routeRow {
 				"no machine login of, and " + brokerRelayText + ".",
 			Handler:  s.revokeMachineLoginV2,
 			Resource: "machine-logins", Kind: kindItem, Key: "{id}",
-			Shape:       routeShape{Status: http.StatusNoContent},
+			Shape:       routeShape{Status: http.StatusNoContent, Refusals: brokerRefusalAnswers(brokerRevokeMachineLoginCall)},
 			OAuthScopes: settles,
 			Scope:       scopeDeployment,
 			IDs:         &idRoute{Reason: "a machine login id"},
-			Refusals:    brokerRefusals(undeclaredKeyRefusal, machineLoginMissingRefusal),
+			Refusals:    brokerRefusals([]apicode.Refusal{undeclaredKeyRefusal}, brokerRevokeMachineLoginCall),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/me/signins", Auth: authAny, Versions: onlyV2,
@@ -250,9 +488,9 @@ func (s *server) v2CredentialRows() []routeRow {
 			Handler:  s.listSignInsV2,
 			Resource: "signins", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
-			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.PersonSignInResp]{}},
+			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.PersonSignInResp]{}, Refusals: brokerRefusalAnswers(brokerSignInsCall)},
 			OAuthScopes: person,
-			Refusals:    listRefusals(brokerRefusals()...),
+			Refusals:    listRefusals(brokerRefusals(nil, brokerSignInsCall)...),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/me/signins/{id}", Auth: authAny, Versions: onlyV2,
@@ -264,11 +502,11 @@ func (s *server) v2CredentialRows() []routeRow {
 				brokerRelayText + ".",
 			Handler:  s.revokeSignInV2,
 			Resource: "signins", Kind: kindItem, Key: "{id}",
-			Shape:       routeShape{Status: http.StatusOK, Response: signInRevokedV2{}},
+			Shape:       routeShape{Status: http.StatusOK, Response: signInRevokedV2{}, Refusals: brokerRefusalAnswers(brokerRevokeSignInCall)},
 			OAuthScopes: settles,
 			Scope:       scopeDeployment,
 			IDs:         &idRoute{Reason: "a sign-in id at the secrets broker"},
-			Refusals:    brokerRefusals(undeclaredKeyRefusal, signinMissingRefusal),
+			Refusals:    brokerRefusals([]apicode.Refusal{undeclaredKeyRefusal}, brokerRevokeSignInCall),
 		},
 	}
 }
@@ -300,24 +538,65 @@ type signInRevokedV2 struct {
 	TokensEnded int `json:"tokens_ended"`
 }
 
-// relayBrokerRefusalV2 answers a broker call that failed: the broker's own 404 of the id the path
-// names as missing, that object's code (dispatch://INFRA-4071/spec R7), and every other failure as
-// /api/v1 relays it (relayBrokerResponse). The broker answers every id it holds no record of 404
-// NOT_FOUND, a sign-in of anyone else's among them.
-func relayBrokerRefusalV2(w http.ResponseWriter, r *http.Request, err error, missing apicode.Code, object string) {
+// brokerRefusalV2 is the body /api/v2 answers a refusal of the secrets broker with
+// (relayBrokerRefusalV2): the code /api/v2 answers it under and the broker's message, as errorBody
+// carries them, and each member the broker's refusal carries beside those two, where it carries
+// one (TestTheBrokerCallsDeclareEveryRefusalTheBrokerAnswers holds the broker's to these).
+type brokerRefusalV2 struct {
+	Code  string `json:"code"`
+	Error string `json:"error"`
+	// AnswerID is the broker's id of its answer, which its log line of the refusal names: the
+	// broker adds it to every 4xx refusal it answers (internal/cipher/answer), so a person tracing
+	// a refused call has a thing to quote. A refusal at 5xx carries none.
+	AnswerID string `json:"answer_id,omitempty"`
+	// ApproveURL is the record's page on the broker, where a person signed in to the broker
+	// decides the secret request: DECIDE_ON_BROKER_PAGE carries it, but on a broker that serves no
+	// page.
+	ApproveURL string `json:"approve_url,omitempty"`
+}
+
+// relayBrokerRefusalV2 answers a call of the secrets broker that failed, call the call it made
+// (dispatch://INFRA-4071/spec R7). A refusal the broker answered is answered brokerRefusalV2,
+// under the code call declares for its status and code (brokerCall.code), named as writeError
+// names it (refusalPair), with the broker's message and the members its refusal carries beside
+// it: its 404 NOT_FOUND of the id the path names, a sign-in of anyone else's among them, as that
+// object's code, and every other under the broker's own code. A refusal call does not declare is
+// 502 AGENT_SECRETS_REFUSAL_UNDECLARED, its message naming the broker's status, code and message.
+// A refusal answered at 503 carries the broker's Retry-After where the broker sent one, as its
+// RATE_LIMITED does. A call the broker never answered is answered as /api/v1 answers it
+// (writeBrokerUnanswered); /api/v1 relays a refusal's bytes (relayBrokerResponse).
+func relayBrokerRefusalV2(w http.ResponseWriter, r *http.Request, err error, call brokerCall) {
 	var brokerErr *cipher.Error
-	if errors.As(err, &brokerErr) && brokerErr.Status == http.StatusNotFound && brokerErr.Code == "NOT_FOUND" {
-		writeError(w, r, missing, fmt.Sprintf("the secrets broker holds no %s %s", object, r.PathValue("id")))
+	if !errors.As(err, &brokerErr) {
+		writeBrokerUnanswered(w, r, err)
 		return
 	}
-	relayBrokerResponse(w, r, nil, err)
+	// The broker answers every refusal as a JSON object; a body that is not one leaves every
+	// member empty, and no code (cipher.Error.Code), which no call declares.
+	var refusal brokerRefusalV2
+	_ = json.Unmarshal(brokerErr.Body, &refusal)
+	code, declared := call.code(brokerErr.Status, brokerErr.Code)
+	if !declared {
+		code = apicode.AgentSecretsRefusalUndeclared
+		message := fmt.Sprintf("the secrets broker answered %d %s", brokerErr.Status, cmp.Or(brokerErr.Code, "naming no code"))
+		if refusal.Error != "" {
+			message += ": " + refusal.Error
+		}
+		refusal.Error = message
+	}
+	name, status := refusalPair(r, code)
+	refusal.Code = name
+	if status == http.StatusServiceUnavailable && brokerErr.RetryAfter != "" {
+		w.Header().Set("Retry-After", brokerErr.RetryAfter)
+	}
+	WriteJSON(w, status, refusal)
 }
 
 // writeBrokerPage answers one page of a broker list: the items of the broker's answer, body, that
-// items reads, sliced as query asks (pageOf), or the broker's failure as /api/v1 relays it.
-func writeBrokerPage[Answer, Item any](s *server, w http.ResponseWriter, r *http.Request, body json.RawMessage, err error, items func(Answer) []Item) {
+// items reads, sliced as query asks (pageOf), or the failure of call (relayBrokerRefusalV2).
+func writeBrokerPage[Answer, Item any](s *server, w http.ResponseWriter, r *http.Request, body json.RawMessage, err error, call brokerCall, items func(Answer) []Item) {
 	if err != nil {
-		relayBrokerResponse(w, r, nil, err)
+		relayBrokerRefusalV2(w, r, err, call)
 		return
 	}
 	var answer Answer
@@ -340,15 +619,15 @@ func (s *server) listCredentialGrantsV2(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	body, err := client.Grants(r.Context(), model.CanonicalLogin(actor.ID))
-	writeBrokerPage(s, w, r, body, err, func(answer wire.ApproverGrantsResponse) []wire.ApproverGrantResp { return answer.Grants })
+	writeBrokerPage(s, w, r, body, err, brokerGrantsCall, func(answer wire.ApproverGrantsResponse) []wire.ApproverGrantResp { return answer.Grants })
 }
 
 // revokeCredentialGrantV2 answers DELETE /api/v2/credential-grants/{id}: the revoke POST
 // /api/v1/credential-grants/{id}/revoke relays (Client.RevokeByApprover), the caller the approver.
 // The broker answers a grant of a private project the caller may not see 404 NOT_FOUND, as an id
 // it holds no grant of, so that too is CREDENTIAL_GRANT_NOT_FOUND; 503 PROJECT_ACCESS_UNAVAILABLE,
-// 503 MEMBER_KIND_UNCHECKABLE (#4848), 403 NOT_APPROVER and 409 GRANT_MOVING are relayed as
-// /api/v1 relays them.
+// 503 MEMBER_KIND_UNCHECKABLE (#4848), 403 NOT_APPROVER and 409 GRANT_MOVING are answered under
+// the broker's own codes, as every refusal of brokerRevokeGrantCall is.
 func (s *server) revokeCredentialGrantV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -360,7 +639,7 @@ func (s *server) revokeCredentialGrantV2(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if _, err := client.RevokeByApprover(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID)); err != nil {
-		relayBrokerRefusalV2(w, r, err, apicode.CredentialGrantNotFound, "credential grant")
+		relayBrokerRefusalV2(w, r, err, brokerRevokeGrantCall)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -380,7 +659,7 @@ func (s *server) listCredentialRequestsV2(w http.ResponseWriter, r *http.Request
 		return
 	}
 	body, err := client.Pending(r.Context(), model.CanonicalLogin(actor.ID))
-	writeBrokerPage(s, w, r, body, err, func(answer wire.PendingResponse) []wire.PendingEntry { return answer.Pending })
+	writeBrokerPage(s, w, r, body, err, brokerPendingCall, func(answer wire.PendingResponse) []wire.PendingEntry { return answer.Pending })
 }
 
 // putCredentialRequestStateV2 answers PUT /api/v2/credential-requests/{id}/state: the approve or the
@@ -399,7 +678,7 @@ func (s *server) listCredentialRequestsV2(w http.ResponseWriter, r *http.Request
 // relayed, and where the code read the login already denied, the broker's 409 RECORD_TERMINAL,
 // which it answers only a caller it admitted, is that same no-op, answered with the login as the
 // code read it. A decision that names no code reads no record: the broker refuses it, and its
-// refusal is relayed.
+// refusal is answered as every refusal of brokerDecisionCall is (relayBrokerRefusalV2).
 func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -444,11 +723,12 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 	decided, err := decide(r.Context(), id, cipher.Decision{Approver: login, Code: input.Code})
 	if err != nil {
 		var brokerErr *cipher.Error
-		if standing != nil && errors.As(err, &brokerErr) && brokerErr.Status == http.StatusConflict && brokerErr.Code == "RECORD_TERMINAL" {
+		if standing != nil && errors.As(err, &brokerErr) &&
+			brokerErr.Status == apicode.RecordTerminal.Status() && brokerErr.Code == apicode.RecordTerminal.Name() {
 			relayBrokerResponse(w, r, standing, nil)
 			return
 		}
-		relayBrokerRefusalV2(w, r, err, apicode.CredentialRequestNotFound, "credential request")
+		relayBrokerRefusalV2(w, r, err, brokerDecisionCall)
 		return
 	}
 	if input.Code == nil {
@@ -479,31 +759,32 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 // request of, or of a private project's request the caller may not see, is the route's
 // CREDENTIAL_REQUEST_NOT_FOUND, and every other refusal - 403 NOT_APPROVER, 503
 // PROJECT_ACCESS_UNAVAILABLE, 503 MEMBER_KIND_UNCHECKABLE (#4848), 409 RECORD_PENDING, 409
-// RECORD_TERMINAL - is relayed as /api/v1 relays it.
+// RECORD_TERMINAL - is answered under the broker's own code, as every refusal of
+// brokerDismissalCall is.
 func dismissCredentialRequestV2(w http.ResponseWriter, r *http.Request, client *cipher.Client, login string) {
 	dismissed, err := client.Dismiss(r.Context(), r.PathValue("id"), login)
 	if err != nil {
-		relayBrokerRefusalV2(w, r, err, apicode.CredentialRequestNotFound, "credential request")
+		relayBrokerRefusalV2(w, r, err, brokerDismissalCall)
 		return
 	}
 	relayBrokerResponse(w, r, dismissed, nil)
 }
 
 // brokerLookupError is a machine-login lookup's call of the broker that failed, which
-// relayBrokerResponse answers as /api/v1 relays it; every other failure of lookupMachineRecord is
-// Dispatch's own.
+// relayBrokerRefusalV2 answers; every other failure of lookupMachineRecord is Dispatch's own.
 type brokerLookupError struct{ err error }
 
 func (e *brokerLookupError) Error() string { return e.err.Error() }
 func (e *brokerLookupError) Unwrap() error { return e.err }
 
 // writeBrokerLookupError answers a lookupMachineRecord that failed: the broker's own failure as
-// /api/v1 relays it (relayBrokerResponse), and Dispatch's own - a body it could not encode, an
-// answer it could not read - as a logged 500 (writeHandlerError), which no broker answer is.
+// every failure of brokerLookupCall is answered (relayBrokerRefusalV2), and Dispatch's own - a
+// body it could not encode, an answer it could not read - as a logged 500 (writeHandlerError),
+// which no broker answer is.
 func (s *server) writeBrokerLookupError(w http.ResponseWriter, r *http.Request, err error) {
 	var call *brokerLookupError
 	if errors.As(err, &call) {
-		relayBrokerResponse(w, r, nil, call.err)
+		relayBrokerRefusalV2(w, r, call.err, brokerLookupCall)
 		return
 	}
 	s.writeHandlerError(w, r, err)
@@ -520,7 +801,7 @@ func lookupMachineRecord(ctx context.Context, client *cipher.Client, code string
 	}
 	raw, err := client.MachineLookup(ctx, request)
 	var brokerErr *cipher.Error
-	if errors.As(err, &brokerErr) && brokerErr.Status == http.StatusNotFound && brokerErr.Code == "NO_SUCH_CODE" {
+	if errors.As(err, &brokerErr) && brokerErr.Status == apicode.NoSuchCode.Status() && brokerErr.Code == apicode.NoSuchCode.Name() {
 		return wire.RecordResponse{}, nil, nil
 	}
 	if err != nil {
@@ -579,7 +860,11 @@ func (s *server) lookupMachineLoginV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, err := client.MachineLookup(r.Context(), request)
-	relayBrokerResponse(w, r, body, err)
+	if err != nil {
+		relayBrokerRefusalV2(w, r, err, brokerLookupCall)
+		return
+	}
+	relayBrokerResponse(w, r, body, nil)
 }
 
 // listMachineLoginsV2 answers GET /api/v2/machine-logins: one page of the machine logins GET
@@ -594,7 +879,7 @@ func (s *server) listMachineLoginsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, err := client.MachineLogins(r.Context(), model.CanonicalLogin(actor.ID))
-	writeBrokerPage(s, w, r, body, err, func(answer wire.LauncherCredentialsResponse) []wire.LauncherCredentialResp {
+	writeBrokerPage(s, w, r, body, err, brokerMachineLoginsCall, func(answer wire.LauncherCredentialsResponse) []wire.LauncherCredentialResp {
 		return answer.Credentials
 	})
 }
@@ -612,7 +897,7 @@ func (s *server) revokeMachineLoginV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := client.RevokeMachineLogin(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID)); err != nil {
-		relayBrokerRefusalV2(w, r, err, apicode.MachineLoginNotFound, "machine login")
+		relayBrokerRefusalV2(w, r, err, brokerRevokeMachineLoginCall)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -630,7 +915,7 @@ func (s *server) listSignInsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, err := client.SignIns(r.Context(), model.CanonicalLogin(actor.ID))
-	writeBrokerPage(s, w, r, body, err, func(answer wire.PersonSignInsResponse) []wire.PersonSignInResp { return answer.SignIns })
+	writeBrokerPage(s, w, r, body, err, brokerSignInsCall, func(answer wire.PersonSignInsResponse) []wire.PersonSignInResp { return answer.SignIns })
 }
 
 // revokeSignInV2 answers DELETE /api/v2/me/signins/{id}: the revoke POST /api/v1/signins/{id}/revoke
@@ -647,7 +932,7 @@ func (s *server) revokeSignInV2(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := client.RevokeSignIn(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
 	if err != nil {
-		relayBrokerRefusalV2(w, r, err, apicode.SigninNotFound, "sign-in of yours")
+		relayBrokerRefusalV2(w, r, err, brokerRevokeSignInCall)
 		return
 	}
 	var revoked wire.PersonSignInRevokedResponse

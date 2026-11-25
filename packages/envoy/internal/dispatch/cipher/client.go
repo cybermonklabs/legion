@@ -87,14 +87,18 @@ func New(baseURL, tokenFile string, options ...Option) *Client {
 }
 
 // Error carries the broker's status and its {"code","error"} body so handlers can forward
-// both verbatim to the browser. Only a non-2xx broker response produces one; a call that stopped
-// before reaching the broker is an *AccountTokenError when Dispatch could not read its own token,
-// and a plain wrapped error for a transport failure (connection refused, timeout, context
-// canceled), which the routes answer 503 AGENT_SECRETS_UNAVAILABLE.
+// both verbatim to the browser, and the Retry-After the broker sent with them, which /api/v2
+// passes on beside its own body (relayBrokerRefusalV2). Only a non-2xx broker response produces
+// one; a call that stopped before reaching the broker is an *AccountTokenError when Dispatch could
+// not read its own token, and a plain wrapped error for a transport failure (connection refused,
+// timeout, context canceled), which the routes answer 503 AGENT_SECRETS_UNAVAILABLE.
 type Error struct {
 	Status int
 	Code   string
 	Body   json.RawMessage
+	// RetryAfter is the answer's Retry-After header as the broker wrote it, "" where it wrote
+	// none: its 429 RATE_LIMITED carries one.
+	RetryAfter string
 }
 
 func (e *Error) Error() string {
@@ -138,7 +142,7 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 		return nil, fmt.Errorf("agent-secrets: read %s %s response: %w", method, path, err)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		brokerErr := &Error{Status: response.StatusCode, Body: responseBody}
+		brokerErr := &Error{Status: response.StatusCode, Body: responseBody, RetryAfter: response.Header.Get("Retry-After")}
 		var decoded struct {
 			Code string `json:"code"`
 		}

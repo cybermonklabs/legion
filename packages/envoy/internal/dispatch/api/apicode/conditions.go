@@ -506,6 +506,52 @@ var (
 	// ServiceAccountTokenUnreadable is a credential route's call that stopped at Dispatch's own
 	// ServiceAccount token, which it cannot read.
 	ServiceAccountTokenUnreadable = Condition{"service account token unreadable"}
+	// BrokerRefusalUndeclared is a credential route's call the secrets broker refused under a
+	// code, or at a status, that the call does not declare (brokerCall in the api package).
+	BrokerRefusalUndeclared = Condition{"secrets broker refusal undeclared"}
+)
+
+// The conditions of the refusals the secrets broker answers on the routes Dispatch's credential
+// routes call, one for each code it answers there, each that code relayed from the broker. Its
+// 404 NOT_FOUND is the condition of the object the route's path names (CredentialRequestMissing
+// and the three beside it).
+var (
+	BrokerAccountLacksPower        = Condition{"ACCOUNT_LACKS_POWER relayed from the secrets broker"}
+	BrokerAccountNotListed         = Condition{"ACCOUNT_NOT_LISTED relayed from the secrets broker"}
+	BrokerAccountTokenExpired      = Condition{"ACCOUNT_TOKEN_EXPIRED relayed from the secrets broker"}
+	BrokerAccountTokenInvalid      = Condition{"ACCOUNT_TOKEN_INVALID relayed from the secrets broker"}
+	BrokerAccountTokenTooLongLived = Condition{"ACCOUNT_TOKEN_TOO_LONG_LIVED relayed from the secrets broker"}
+	BrokerAccountTokensOff         = Condition{"ACCOUNT_TOKENS_OFF relayed from the secrets broker"}
+	BrokerApproverIsGroup          = Condition{"APPROVER_IS_GROUP relayed from the secrets broker"}
+	BrokerApproverRequired         = Condition{"APPROVER_REQUIRED relayed from the secrets broker"}
+	BrokerCodeMismatch             = Condition{"CODE_MISMATCH relayed from the secrets broker"}
+	BrokerCodeRequired             = Condition{"CODE_REQUIRED relayed from the secrets broker"}
+	BrokerCredentialIDInput        = Condition{"CREDENTIAL_ID_INPUT relayed from the secrets broker"}
+	BrokerDecideOnBrokerPage       = Condition{"DECIDE_ON_BROKER_PAGE relayed from the secrets broker"}
+	BrokerGrantIDInput             = Condition{"GRANT_ID_INPUT relayed from the secrets broker"}
+	BrokerGrantMoving              = Condition{"GRANT_MOVING relayed from the secrets broker"}
+	BrokerInternal                 = Condition{"INTERNAL relayed from the secrets broker"}
+	BrokerInvalidDecision          = Condition{"INVALID_DECISION relayed from the secrets broker"}
+	BrokerInvalidDismissal         = Condition{"INVALID_DISMISSAL relayed from the secrets broker"}
+	BrokerInvalidLookup            = Condition{"INVALID_LOOKUP relayed from the secrets broker"}
+	BrokerInvalidRevoke            = Condition{"INVALID_REVOKE relayed from the secrets broker"}
+	BrokerJudgeDecides             = Condition{"JUDGE_DECIDES relayed from the secrets broker"}
+	BrokerKeyBindsReadToken        = Condition{"KEY_BINDS_READ_TOKEN relayed from the secrets broker"}
+	BrokerKeyHoldsLiveCredential   = Condition{"KEY_HOLDS_LIVE_CREDENTIAL relayed from the secrets broker"}
+	BrokerMemberKindUncheckable    = Condition{"MEMBER_KIND_UNCHECKABLE relayed from the secrets broker"}
+	BrokerNoSuchCode               = Condition{"NO_SUCH_CODE relayed from the secrets broker"}
+	BrokerNotApprover              = Condition{"NOT_APPROVER relayed from the secrets broker"}
+	BrokerPersonRequired           = Condition{"PERSON_REQUIRED relayed from the secrets broker"}
+	BrokerProjectAccessUnavailable = Condition{"PROJECT_ACCESS_UNAVAILABLE relayed from the secrets broker"}
+	BrokerRateLimited              = Condition{"RATE_LIMITED relayed from the secrets broker"}
+	BrokerRecordIDInput            = Condition{"RECORD_ID_INPUT relayed from the secrets broker"}
+	BrokerRecordPending            = Condition{"RECORD_PENDING relayed from the secrets broker"}
+	BrokerRecordTerminal           = Condition{"RECORD_TERMINAL relayed from the secrets broker"}
+	BrokerRequestEnded             = Condition{"REQUEST_ENDED relayed from the secrets broker"}
+	BrokerRequestTooLarge          = Condition{"REQUEST_TOO_LARGE relayed from the secrets broker"}
+	BrokerServiceLogsInWithToken   = Condition{"SERVICE_LOGS_IN_WITH_TOKEN relayed from the secrets broker"}
+	BrokerSigninIDInput            = Condition{"SIGNIN_ID_INPUT relayed from the secrets broker"}
+	BrokerStateInput               = Condition{"STATE_INPUT relayed from the secrets broker"}
 )
 
 // The conditions of a service Dispatch relies on.
