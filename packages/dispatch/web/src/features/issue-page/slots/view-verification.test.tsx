@@ -31,6 +31,11 @@ afterEach(() => {
   for (const stub of stubs) stub.mockRestore();
 });
 
+// `VERIFICATION_DOCUMENT`, `verifiedIssue`, `typedBlock`, `BLOCKS` and `answerVerificationReads`
+// are cut-down copies of the private fixtures of the same names in `view-address.test.tsx`: a
+// test file imports no other test file, and `stage-fixtures.tsx`, where a shared copy would go,
+// may take no more changed lines in this change. They go once those fixtures move into it.
+
 /** The Verification document of the issue the case draws (`verifiedIssue`), beside its spec and
  *  its decisions document. */
 const VERIFICATION_DOCUMENT = artifact("artifact-verification", VERIFICATION_SLUG);
