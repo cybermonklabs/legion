@@ -3612,7 +3612,45 @@ package api
 // main's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 253: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
+// 256: #5349 -- each claim view of `GET /legion/v1/state` and of `GET
+// /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
+// `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
+// 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
+// which wrote no time, except after a rollback (the migration's header; `api.ClaimView`). The
+// claim keeps both in the store's `claims` table (`20261124073512_claim_cause_times`), so a
+// daemon restart keeps them, and each is set and cleared only together with its cause, so a
+// cause recorded again with the same text carries its new time (the rule
+// `supervise.Claim.LastDeathAt` states). The store writes each time with a digest of the cause it
+// dates, which no key serves, and reads the time back only beside that cause (the claim store's
+// causeTime). The records of 256
+// hold the two keys on every claim view, and no record below 256 does: a caller whose contract
+// (the one it states, else its pod's lowest) is below 256 is served every claim view without
+// them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`), so a plugin from 250 to
+// 255 is served 250's keys. The operator's claim view
+// (`api.OperatorClaim`, which `legion claims list --json` prints) carries the same two keys; the
+// operator routes are not served down, since their reader is the `legion` built with this daemon.
+// No value of an enumerated field moves, and no request a plugin sends changes.
+// (This entry took 243 at first, above each number another open pull request declared. A reading
+// of `const DaemonAPIVersion` at the head of each of the 138 of the 513 open pull requests of this
+// repository that change version.go, made at 2026-11-24T07:23:50Z, found every number from 221
+// to 242 declared and nothing above 242, so 243 was the lowest number above main's 220 that no
+// open pull request declared at that reading. The forward merge of 2026-11-24 that brought in
+// e14345bfc8 brought main's 228 (#4590), below 243, so this entry kept 243, and the forward
+// merge of 2026-11-24 that brought in d27405712c brought main's 232 (#5271), below it too, so it
+// kept 243 again. The forward merge of 2026-11-24 that brought in 7e75126fae brought main's 246
+// (#4960), above 243. A reading of version.go at the head of each of the 473
+// open pull requests of this repository, between 2026-11-24T15:34:44Z and 15:48:04Z, found 55
+// that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
+// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
+// changes, so this entry moved to 256, above every number an open pull request
+// declares or a change had been named for. From this entry the last number of answers.go's
+// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
+// of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
+// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 270: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
 // resume_agent, compact and fresh session of one agent, named by its issue and role) it lacked, the
 // four the operator already has, as controller routes beside `claims/fresh-session` and
 // `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
@@ -3679,7 +3717,7 @@ package api
 // The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the
 // issue's architect alone, as `session-lost` does: the controller is told of neither (#4065),
 // and no shape moves.
-// Contract 253 is served down by 193's rule (#3659): every answer goes through one writer, which
+// Contract 270 is served down by 193's rule (#3659): every answer goes through one writer, which
 // shapes it to the contract its caller reads. The agent actions' answer and the pod update's are
 // two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
 // `issues/pod-update`, each arrived whole with its routes at this contract (agentActionsContract),
@@ -3693,11 +3731,11 @@ package api
 // `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The five routes' request
 // records start at this contract (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No
 // key and no value of any other answer moved, so this contract's records of every other answer are
-// 250's, under its own number. agentActionsContract is now the last number of answers.go's
+// 256's, under its own number. agentActionsContract is now the last number of answers.go's
 // SupportedContracts, after shapedAnswersContract, 199, repositoriesLiveContract,
 // childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract,
-// intakeGiveUpsContract, 232, podHoldContract and priorityContract, and a renumber of this entry
-// moves that constant with it.
+// intakeGiveUpsContract, 232, podHoldContract, priorityContract and causeTimesContract, and a
+// renumber of this entry moves that constant with it.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
@@ -3818,10 +3856,10 @@ package api
 // each of the 482 open pull requests, 2026-11-24T13:41:35Z to 13:44:24Z). The merge of main
 // `4e851eb1`, which still declares 232, keeps 234: no open head but this one declares it (read at
 // the head of each of the 480 open pull requests, 2026-11-24T15:09:20Z to 15:12:03Z). The merge of
-// main `7e75126f`, which declares 246 (#4960, the pod hold's entry), moves this entry
-// from 234 to 248: 240 (#3712, #3993, #4539 and #4771), 241 (#4049, #4392 and #4682), 242 (#4596),
-// 243 (#5349), 244 (#3831), 245 (#5158), 246 (#4194) and 247 (#4580 and #5384) are other open pull
-// requests', and no open head declares 248 (read at the head of each of the 477 open pull requests,
+// main `7e75126f`, which declares 246 (#4960, the pod hold's entry), moves this entry from 234 to
+// 248: 240 (#3712, #3993, #4539 and #4771), 241 (#4049, #4392 and #4682), 242 (#4596), 243 (#5349),
+// 244 (#3831), 245 (#5158), 246 (#4194) and 247 (#4580 and #5384) are other open pull requests',
+// and no open head declares 248 (read at the head of each of the 477 open pull requests,
 // 2026-11-24T15:47:51Z to 15:50:22Z). The merge of main `69fcd649`, which still declares 246, keeps
 // 248 though #3993, #4049 and #4392 declare it too: while cybermonklabs/legion#5399, under which no
 // branch picks this number by hand, is open, a branch keeps the number it holds rather than take a
@@ -3830,6 +3868,13 @@ package api
 // once the base declares a number above the one a branch keeps, since check-daemon-api-contract.sh
 // refuses a number not above the base's, and #5399 is still open. 251 (#5307) and 252 (#4540) are
 // other open pull requests', and no open head declares 253 (read at the head of each of the 488
-// open pull requests, 2026-11-24T17:55:43Z to 18:01:07Z; #5399's head declares no number). Read the
-// base's own number and every open head again at the next merge rather than from this line.)
-const DaemonAPIVersion = 253
+// open pull requests, 2026-11-24T17:55:43Z to 18:01:07Z; #5399's head declares no number). The
+// merge of main `c56ad6a1`, which declares 256 (#5349, the claim views' cause times, the entry
+// right above), moves this entry from 253 to 270: 253 is not above the base's 256, so
+// check-daemon-api-contract.sh would refuse it, and 270 is the number the architect of
+// dispatch://INFRA-3118 gave this change at 2026-11-24T18:27:55Z while #5399 is still open. No open
+// head declares 270 (read at the head of each of the 511 open pull requests, 2026-11-25T00:22:02Z
+// to 00:28:44Z; 265 (#5285), 267 (#5168), 268 (#5384), 271 (#4173), 272 (#4049) and 274 (#3993) are
+// other open pull requests'). Read the base's own number and every open head again at the next
+// merge rather than from this line.)
+const DaemonAPIVersion = 270

@@ -575,19 +575,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					delete(issue, "entryConfirmedAt")
 					delete(issue, "architectStalls")
 				}
-				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
-					worker := worker.(map[string]any)
 					if !tc.moves {
-						delete(worker, backwardMovesField)
+						delete(worker.(map[string]any), backwardMovesField)
 					}
-					views = append(views, worker["claim"])
 				}
-				for _, view := range views {
-					view, ok := view.(map[string]any)
-					if !ok {
-						continue
-					}
+				for _, view := range decodedClaimViews(issue) {
 					if !tc.rounds {
 						delete(view, "updateRound")
 						delete(view, "updateHead")

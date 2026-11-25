@@ -170,13 +170,13 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 253):
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 270):
   // the claim's state after each, and who holds a suspension over the agent.
   "agent-stop.json": LegionAgentActionResponse,
   "agent-retry.json": LegionAgentActionResponse,
   "agent-suspend.json": LegionAgentActionResponse,
   "agent-resume.json": LegionAgentActionResponse,
-  // The controller's request for the replacement of one issue's pod (contract 253): the update
+  // The controller's request for the replacement of one issue's pod (contract 270): the update
   // round over it, its reasons, and whether the request opened it.
   "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
@@ -464,7 +464,7 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
   "intake-replay": LegionIntakeReplayResponse,
-  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 253):
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 270):
   // the claim's `state`, and who holds a suspension over it.
   "agent-action": LegionAgentActionResponse,
 };
@@ -2819,14 +2819,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
   // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
-  // Five bands stand above 199: the repositories block's at 202, contract 220's, which takes
-  // `plan` off each assignment, the intake's give-ups' at 228, so the narrowing leaves
-  // `intakeGiveUps` off, the pod hold's at 246, which leaves `podHold` off every issue
-  // (`withoutPodHold`), and contract 250's, which takes `priority` off each issue and off its
-  // `waitingLine`, so the golden's issues are compared without `plan`, `podHold` and `priority`.
-  // One value strip stands above 199 as well: `caches`, the source of the repository-cache-room
-  // row, arrived at contract 213, so that row is served here without its `source`, every other
-  // field of it and every other row as the state golden holds them.
+  // Six bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // `plan` off each assignment; the intake's give-ups' at 228, so the narrowing leaves
+  // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
+  // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
+  // `waitingLine`; and contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
+  // claim view; so the golden's issues, rows and claim views are compared without them. One value
+  // strip stands above 199 as well: `caches`, the source of the repository-cache-room row, arrived
+  // at contract 213, so that row is served here without its `source`, every other field of it and
+  // every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2850,20 +2851,41 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
+  const withoutCauseTimes = (view: unknown): unknown => {
+    if (!isJsonObject(view)) {
+      return view;
+    }
+    const { lastDeathAt: _deathAt, lastStartFailureAt: _startFailureAt, ...kept } = view;
+    return kept;
+  };
   const issues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
       const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      const narrowed: Record<string, unknown> = { ...kept };
       const line = kept.waitingLine;
       if (isJsonObject(line)) {
         const { priority: _placed, ...placed } = line;
-        kept.waitingLine = placed;
+        narrowed.waitingLine = placed;
       }
       if (kept.assignments !== undefined) {
-        kept.assignments = (kept.assignments as Record<string, unknown>[]).map(
+        narrowed.assignments = (kept.assignments as Record<string, unknown>[]).map(
           ({ plan: _plan, ...row }) => row
         );
       }
-      return [key, kept];
+      if (kept.architect !== undefined) {
+        narrowed.architect = withoutCauseTimes(kept.architect);
+      }
+      if (isJsonObject(kept.workers)) {
+        narrowed.workers = Object.fromEntries(
+          Object.entries(kept.workers).map(([role, worker]) => [
+            role,
+            isJsonObject(worker) && worker.claim !== undefined
+              ? { ...worker, claim: withoutCauseTimes(worker.claim) }
+              : worker,
+          ])
+        );
+      }
+      return [key, narrowed];
     })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
@@ -2899,7 +2921,7 @@ const operatorSchemas: Record<string, true> = {
 /** The one session-facing exception: four of the controller's six agent actions
  * (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
  * because those routes are where the caller reads whether its own resume_agent lifts it. The
- * reason the guard exists does not reach them: they arrived with contract 253, so only a plugin at
+ * reason the guard exists does not reach them: they arrived with contract 270, so only a plugin at
  * that contract or later calls them, and no reader of these bodies predates the key. The schema
  * and the four fixtures it pins are named here, and nothing else; a new session-facing body that
  * names a suspender still fails the walk below. */
@@ -2951,7 +2973,7 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 253, to the controller's four
+// `suspendedBy` is served to the operator's bearer and, from contract 270, to the controller's four
 // agent actions (agentActionSchemas), and nowhere else; this holds that for every schema the
 // module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {

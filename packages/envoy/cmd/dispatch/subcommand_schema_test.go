@@ -19,6 +19,7 @@ import (
 // declares a typed block, claim, that the file does not, so a command holds claim as a typed block
 // only where it read the store.
 func TestTheDocumentSubcommandsInstallTheStoresSchema(t *testing.T) {
+	// Not parallel: it installs pmdoc's process-wide block schema.
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
@@ -51,6 +52,8 @@ func TestTheDocumentSubcommandsInstallTheStoresSchema(t *testing.T) {
 // claim, with a render no build serves, so the install refuses the store's schema: the document
 // subcommand's open shows that refusal, and backfill-files then moves the row's bytes all the same.
 func TestBackfillFilesRunsOnAStoreWhoseSchemaThisBuildCannotInstall(t *testing.T) {
+	// Not parallel: it sets environment variables for the whole process; and it installs pmdoc's
+	// process-wide block schema.
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()

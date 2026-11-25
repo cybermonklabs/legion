@@ -10,7 +10,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 ## Every phase
 
 1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
-   Your architect's decisions for you come in your task and your messages: read no other document for them.
+   Your architect's decisions for you come in your task, and in a reply in the thread of the plan task they concern, which its message links.
    A record beats your memory.
 
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
@@ -42,7 +42,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 
-- Another agent that needs an action (a stop, retry, suspension, resume of the agent, compaction or fresh session) is the controller's: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md`).
+- Another agent that needs an action (a stop, retry, suspension, resume, compaction or fresh session) is the controller's: ask it with a `dispatch comment` on that agent's issue mentioning its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md`).
 
 - **Ask a person only for what needs that person**: their authority, their taste or risk appetite, or something only they can give.
 
