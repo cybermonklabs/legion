@@ -497,7 +497,7 @@ func TestARebuildFromMarkdownTheLatestVersionHoldsInAnotherSpellingWritesNoVersi
 	stored := respellLatestVersion(t, database, changed, respelledLooseList)
 	persist := &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	markdown := looseList
 	_, written, err := rebuildDocument(t, service, same, &markdown)
