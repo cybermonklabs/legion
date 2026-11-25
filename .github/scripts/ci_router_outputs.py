@@ -16,14 +16,17 @@ running exactly when its own filter matched
 (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
 
 It reads the expressions themselves rather than a copy of them, so a change to an output's text
-is what the harness tests. It runs the `changes` job's steps that carry an `id` the way the runner
-would: a step whose `if:` is false is skipped and its outputs read as null; a `run:` step runs in
-bash with its `env:` evaluated and GITHUB_EVENT_NAME, GITHUB_REF, GITHUB_SHA and GITHUB_OUTPUT
-set, and its outputs are what it wrote there. Three steps it models instead of running: the
-`filter` step's outputs are the verdicts given and the list below; the `base` step's `sha` is the
---base given, since that step fetches main's history to find it; and the `generate` step writes
-nothing, as ci-filters-generate.sh writes to its outputs only when it falls open (--step-outputs
-gives what it wrote then). It evaluates the subset of GitHub's expression language those use:
+is what the harness tests. It runs the `changes` job's steps in order the way the runner would:
+a step's `if:`, `env:` and `with:` are evaluated when it starts, over the outputs of the steps
+before it alone, a step whose `if:` is false is skipped and its outputs read as null, a `run:`
+step that carries an `id` runs in bash with its `env:` and GITHUB_EVENT_NAME, GITHUB_REF,
+GITHUB_SHA and GITHUB_OUTPUT set, and its outputs are what it wrote there. Three steps it models
+instead of running: the `filter` step's outputs are the verdicts given and the list below; the
+`base` step's `sha` is the --base given, since that step fetches main's history to find it; and
+the `generate` step writes nothing, as ci-filters-generate.sh writes to its outputs only when it
+falls open (--step-outputs gives what it wrote then). One reader, runs(), decides whether each
+job and step runs, here and under --steps. It evaluates the subset of GitHub's expression
+language those use:
 string, boolean, number and null literals; the contexts `github.event_name`, `github.ref`,
 `github.sha`, `github.event.pull_request.number`, `github.event.pull_request.labels.*.name`,
 `github.event.pull_request.base.sha`, `github.event.merge_group.base_sha`, `inputs.<name>` (a
@@ -55,8 +58,9 @@ the merge base with main the `base` step finds on a dispatch. --step-outputs giv
 the changes job's step <id> as that step wrote them, a GITHUB_OUTPUT file of `<name>=<value>`
 lines, in place of running or modelling it (the generate step's, for one: ci-filters-generate.sh
 writes every_filter=true there when it falls open). --filter-step prints whether the filter step
-runs and the `base` and `ref` it is handed; --generate-step prints the CI_FILTERS_BASE the filter
-generation step is handed; --concurrency prints the workflow's concurrency `group` and
+runs and the `base` and `ref` it is handed when it starts; --generate-step prints the
+CI_FILTERS_BASE the filter generation step is handed when it starts, its whole `env:` evaluated
+there; --concurrency prints the workflow's concurrency `group` and
 `cancel-in-progress`. --steps <job> prints instead, for the workflow that job of <workflow>
 calls, `<step>=<true|false>` for each step whose `if:` reads an input the job fills from the
 changes job, with that job's `with:` evaluated over those outputs and needs.changes.result
@@ -277,23 +281,30 @@ def expression_of(text):
     return text[3:-2] if text.startswith("${{") and text.endswith("}}") else None
 
 
-def condition(step, evaluator):
-    """Whether a step runs: its `if:`, with or without `${{ }}`, and true when it has none."""
-    if "if" not in step:
+def runs(holder, evaluator, where):
+    """Whether a job or a step runs: its `if:` as GitHub reads one, the whole text or the
+    expression one `${{ }}` holds, and true when it has none. The one reader of a condition here,
+    for the changes job's steps and for a called workflow's jobs and steps alike. An `if:` with no
+    text, or one that is not a string or a boolean, is refused, naming where it is."""
+    if "if" not in holder:
         return True
-    text = str(step["if"]).strip()
-    whole = EMBEDDED.fullmatch(text)
-    return truthy(evaluator.evaluate(whole.group(1) if whole else text))
+    value = holder["if"]
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        raise Refused(f"{where} has `if: {value!r}`, which holds no condition this reader can evaluate")
+    text = value.strip()
+    expression = expression_of(text)
+    return truthy(evaluator.evaluate(expression if expression is not None else text))
 
 
-def run_step(step, context, evaluator):
+def run_step(step, env, context):
     """A `run:` step's outputs: the script run by bash -e, as the runner's default shell runs it,
-    with its `env:` evaluated, and the `name=value` lines it wrote to GITHUB_OUTPUT."""
+    with `env`, its `env:` as evaluated when it started, and the `name=value` lines it wrote to
+    GITHUB_OUTPUT."""
     github = context["github"]
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GITHUB_EVENT_NAME": github["event_name"],
-           "GITHUB_REF": github["ref"], "GITHUB_SHA": github["sha"]}
-    for name, value in (step.get("env") or {}).items():
-        env[str(name)] = text_of(interpolate(value, evaluator))
+           "GITHUB_REF": github["ref"], "GITHUB_SHA": github["sha"], **env}
     with tempfile.TemporaryDirectory() as scratch:
         env["GITHUB_OUTPUT"] = os.path.join(scratch, "output")
         open(env["GITHUB_OUTPUT"], "w").close()
@@ -309,16 +320,26 @@ def run_step(step, context, evaluator):
     return outputs
 
 
-def run_steps(job, context, evaluator, filter_outputs, base, given):
-    """Each step of the job that carries an `id`, in order, into context["steps"]: a step given
-    with --step-outputs has those outputs, the filter, base and generate steps are modelled as the
-    docstring above says, and any other `run:` step runs."""
-    for step in job.get("steps") or []:
+def run_steps(job, context, filter_outputs, base, given):
+    """Each step of the job in order, as the runner takes them, its outputs into
+    context["steps"] under its `id`: a step given with --step-outputs has those outputs, the
+    filter, base and generate steps are modelled as the docstring above says, and any other `run:`
+    step runs. GitHub evaluates a step's `if:` and `env:` (and `with:`) when that step starts, over
+    the outputs of the steps before it alone: a step that has not run yet reads as one that wrote
+    nothing. So each step is read in the context as it stood when it started, and that context is
+    returned for each step, in order, as (step, the context it started in, whether it ran), so a
+    reader of a step's `env:` or `with:` reads them there and not after every step has run."""
+    started = []
+    for index, step in enumerate(job.get("steps") or []):
+        at_start = dict(context, steps=dict(context["steps"]))
+        evaluator = Evaluator(at_start)
         step_id = step.get("id")
+        ran = runs(step, evaluator, f"step {step_id or index + 1} of the changes job")
+        started.append((step, at_start, ran))
         if step_id is None:
             continue
         step_id = str(step_id)
-        if not condition(step, evaluator):
+        if not ran:
             outputs = Skipped()
         elif step_id in given:
             outputs = dict(given[step_id])
@@ -329,10 +350,21 @@ def run_steps(job, context, evaluator, filter_outputs, base, given):
         elif step_id == "generate":
             outputs = {}
         elif "run" in step:
-            outputs = run_step(step, context, evaluator)
+            env = {str(name): text_of(interpolate(value, evaluator)) for name, value in (step.get("env") or {}).items()}
+            outputs = run_step(step, env, context)
         else:
             raise Refused(f"step {step_id} uses {step.get('uses')}, whose outputs this reader does not model")
         context["steps"][step_id] = {"outputs": outputs}
+    return started
+
+
+def started_step(started, chosen, what):
+    """The one step of `started` that `chosen` picks, with the context it started in and whether it
+    ran; refused, naming `what`, when the job holds none or more than one."""
+    found = [entry for entry in started if chosen(entry[0])]
+    if len(found) != 1:
+        raise Refused(f"the changes job holds {len(found)} {what}, not one")
+    return found[0]
 
 
 def dispatch_inputs(document, event, given):
@@ -358,8 +390,8 @@ def dispatch_inputs(document, event, given):
 
 def steps_of(workflow, document, job_id, outputs, context, result):
     """For the workflow job <job_id> of ci.yaml calls, each step whose `if:` reads an input the
-    job fills from the changes job, with whether it runs: (step name, True|False). A step whose
-    `if:` has no `${{ }}` is read whole, as GitHub reads one."""
+    job fills from the changes job, with whether it runs: (step name, True|False), each condition
+    read by runs(), as the changes job's steps are."""
     caller = (document.get("jobs") or {}).get(job_id)
     if not isinstance(caller, dict) or not str(caller.get("uses", "")).startswith("./"):
         raise Refused(f"job {job_id} of {workflow} calls no workflow of this repository")
@@ -375,22 +407,20 @@ def steps_of(workflow, document, job_id, outputs, context, result):
             from_changes.add(str(name))
     evaluator = Evaluator(dict(context, inputs=passed))
     out = []
-    for job in (called.get("jobs") or {}).values():
+    for called_id, job in (called.get("jobs") or {}).items():
+        job = job or {}
         # A file two jobs of ci.yaml call holds one job per caller, each `if: inputs.job == '<id>'`
         # (.github/ci-notes/ci.md#two-jobs-that-call-one-file): a job this caller does not run
         # runs none of its steps.
-        job_condition = str((job or {}).get("if", "")).strip()
-        if job_condition:
-            expression = expression_of(job_condition)
-            if not truthy(evaluator.evaluate(expression if expression is not None else job_condition)):
-                continue
-        for step in (job or {}).get("steps") or []:
-            condition = str((step or {}).get("if", ""))
+        if not runs(job, evaluator, f"job {called_id} of {called_path.name}"):
+            continue
+        for index, step in enumerate(job.get("steps") or []):
+            step = step or {}
+            condition = str(step.get("if", ""))
             if not {name.lower() for name in INPUT_REF.findall(condition)} & {name.lower() for name in from_changes}:
                 continue
-            expression = expression_of(condition)
             name = str(step.get("name") or step.get("id") or step.get("run", "")).strip()
-            out.append((name, truthy(evaluator.evaluate(expression if expression is not None else condition))))
+            out.append((name, runs(step, evaluator, f"step {index + 1} of job {called_id} of {called_path.name}")))
     return out
 
 
@@ -472,20 +502,23 @@ def main():
             print(f"group={text_of(interpolate(concurrency.get('group', ''), evaluator))}")
             print(f"cancel-in-progress={text_of(truthy(interpolate(concurrency.get('cancel-in-progress', False), evaluator)))}")
             return 0
-        run_steps(changes, context, evaluator, filter_outputs, args.base, given)
+        started = run_steps(changes, context, filter_outputs, args.base, given)
         if args.filter_step:
-            step = next(s for s in changes.get("steps") or [] if s.get("id") == "filter")
+            step, at_start, ran = started_step(started, lambda s: s.get("id") == "filter", "step of id filter")
             with_ = step.get("with") or {}
-            print(f"runs={text_of(not isinstance(context['steps']['filter']['outputs'], Skipped))}")
+            print(f"runs={text_of(ran)}")
             for key in ("base", "ref"):
-                print(f"{key}={text_of(interpolate(with_.get(key, ''), evaluator))}")
+                print(f"{key}={text_of(interpolate(with_.get(key, ''), Evaluator(at_start)))}")
             return 0
         if args.generate_step:
-            step = next((s for s in changes.get("steps") or [] if "ci-filters-generate.sh" in str(s.get("run", ""))), None)
-            if step is None:
-                raise Refused("the changes job has no step that runs ci-filters-generate.sh")
-            base = interpolate((step.get("env") or {}).get("CI_FILTERS_BASE", ""), evaluator)
-            print(f"filters-base={text_of(base)}")
+            step, at_start, ran = started_step(started, lambda s: "ci-filters-generate.sh" in str(s.get("run", "")),
+                                               "step that runs ci-filters-generate.sh")
+            if not ran:
+                raise Refused("the step that runs ci-filters-generate.sh is skipped, so it is handed no env")
+            # Every value of the step's env, as the runner evaluates it when the step starts.
+            env = {str(name): text_of(interpolate(value, Evaluator(at_start)))
+                   for name, value in (step.get("env") or {}).items()}
+            print(f"filters-base={env.get('CI_FILTERS_BASE', '')}")
             return 0
     except Refused as refusal:
         print(f"ci_router_outputs: {refusal}", file=sys.stderr)

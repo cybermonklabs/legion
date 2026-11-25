@@ -1333,7 +1333,10 @@ which paths-filter would read as its `base` and diff the commit with itself, so 
 keeps every job as before. On every other run it writes every_job empty, which an expression
 reads as false; it never writes `false`, a non-empty string an expression reads as true. Every
 output opens with `steps.scope.outputs.every_job && 'true' ||`, and the filter step runs on `${{
-!steps.scope.outputs.every_job }}`.
+!steps.scope.outputs.every_job }}`. Rule 19 of .github/scripts/check-ci-filters.sh refuses a
+changes job without the step and an output that does not open with that term, so main's older
+`github.event_name == 'workflow_dispatch' && 'true' ||` term, which a merge can carry back, fails
+the check rather than selecting every job on every dispatch of a branch.
 .github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own steps and outputs
 (.github/scripts/ci_router_outputs.py) and holds them to this: a dispatch of main, with every
 filter saying no, selects every job; a dispatch of a branch selects for each filter exactly what
@@ -1352,9 +1355,13 @@ computed is held against the merge base's own filters, and each filter it moves 
 of a branch would be the one run selected by the branch's own engine alone: a read dropped from a
 helper every Bun gate shares would skip those jobs in the very dispatch meant to test the drop.
 The step stays off a dispatch of main, where the script exits 2 for want of a migration-base.
-ci-router-outputs.test.sh holds the base the generation is handed on each event, and two copies
-of ci.yaml fail it: one whose generation step reads no `steps.base.outputs.sha`, and one whose
-base step runs on a dispatch of main.
+The step must come before the generation step: the runner evaluates a step's `env:` when that
+step starts, so a generation step that ran first would read `steps.base.outputs.sha` unwritten and
+be handed no base. ci-router-outputs.test.sh holds the base the generation is handed on each
+event, reading the generation's `env:` where the step starts (.github/scripts/ci_router_outputs.py
+evaluates each step there), and three copies of ci.yaml fail it: one whose generation step reads
+no `steps.base.outputs.sha`, one whose base step runs on a dispatch of main, and one whose base
+step comes after the generation step.
 
 .github/workflows/browser-image.yaml's header still says a workflow_dispatch run of ci.yaml forces
 the browser_image output; on a dispatch of a branch the filter decides it now. That file is an

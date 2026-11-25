@@ -290,21 +290,19 @@
 #      here would say so. The one other reference an output may carry is the every-job term's
 #      `steps.scope.outputs.every_job`, written by the job's scope step, which
 #      ci-router-outputs.test.sh runs and holds to what it selects, and only beside a filter's
-#      verdict: an output that reads it alone is true only on a run that selects every job; and,
-#      once the changes job has that scope step, an output but ref_is_main that does not open with
-#      `${{ steps.scope.outputs.every_job && `, since one written with an older
+#      verdict: an output that reads it alone is true only on a run that selects every job. Also
+#      a changes job with no step of id `scope`, and an output but ref_is_main that does not open
+#      with `${{ steps.scope.outputs.every_job && `, since one written with an older
 #      `github.event_name == 'workflow_dispatch' && 'true'` term selects its job on every dispatch
 #      of a branch. The one name no filter holds that an output may read is the paths
 #      filter's own `changes`, the list of the filters that matched, in the output
 #      matched_filters alone, which must be exactly `${{ steps.scope.outputs.every_job && 'all' ||
 #      steps.generate.outputs.every_filter == 'true' && 'all' || steps.filter.outputs.changes }}`
-#      once the job has the scope step, and `${{ (github.event_name == 'workflow_dispatch' ||
-#      steps.generate.outputs.every_filter == 'true') && 'all' || steps.filter.outputs.changes }}`
-#      in a job without it - a list that is not `all` on a run whose filter step is skipped, or on
-#      one whose filters fell open, whose fallback file holds no filter a step reads out of the
-#      list, skips there every step it gates, and one `all` on every dispatch runs every step on a
-#      dispatch of a branch whose diff reaches few - in a job whose one
-#      step of id `generate` runs the generation (ci-filters-generate.sh writes
+#      - a list that is not `all` on a run whose filter step is skipped, or on one whose filters
+#      fell open, whose fallback file holds no filter a step reads out of the list, skips there
+#      every step it gates, and #5309's `github.event_name == 'workflow_dispatch'` term, `all` on
+#      every dispatch, runs every step on a dispatch of a branch whose diff reaches few - in a job
+#      whose one step of id `generate` runs the generation (ci-filters-generate.sh writes
 #      every_filter=true to that step's outputs when it writes the fallback file), while every
 #      filter's name is letters, digits, `_` and `-` (which JSON writes as they are) and no two
 #      names differ only in case (GitHub's `contains` ignores case). And with or without the

@@ -966,7 +966,7 @@ STEP_OUTPUT_REF = re.compile(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+
 # (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job):
 # the changes job's scope step writes every_job, which is no filter's verdict and the one other
 # step output an output may read. ci-router-outputs.test.sh runs that step and holds what it
-# selects; this rule holds only that the job has the step.
+# selects; this rule holds that the job has the step and that every output reads it.
 SCOPE_STEP_ID = "scope"
 SCOPE_OUTPUT = "every_job"
 # How every output of the changes job but REF_OUTPUT opens; then `'true' ||` its own term, or
@@ -989,19 +989,21 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
     on every run otherwise, which reads as a filter that never matched. A reference to a
     paths-filter step that reads no generated file is passed over here, since rule 21 refuses that
     step. REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it.
-    Nor is the every-job term's SCOPE_STEP_ID.SCOPE_OUTPUT, which a step of the job must still
-    write, and which an output may read only beside a filter's verdict. Once the job has that step,
-    every output but REF_OUTPUT opens with EVERY_JOB_TERM: one that does not, an older
-    `github.event_name == 'workflow_dispatch' && 'true'` term among them, selects its job on every
-    dispatch of a branch, or leaves it off main's, which no other rule of this check sees.
+    Nor is the every-job term's SCOPE_STEP_ID.SCOPE_OUTPUT, which a step of the job must write,
+    and which an output may read only beside a filter's verdict. The job must have that step, one
+    of id SCOPE_STEP_ID that is no paths-filter step, and every output but REF_OUTPUT opens with
+    EVERY_JOB_TERM: an output that does not, an older `github.event_name == 'workflow_dispatch' &&
+    'true'` term among them, selects its job on every dispatch of a branch, or leaves it off
+    main's, and a job without the step has no term to open its outputs with. Both are refused
+    here; no other rule of this check sees them.
 
     LIST_OUTPUT reads `steps.filter.outputs.changes`, the action's own list of the filters that
-    matched, which no filter names: it is held here to exactly LIST_OUTPUT_VALUE instead, or, once
-    the job has the scope step, LIST_OUTPUT_EVERY_JOB_VALUE, since a list that is not `all` on a run
-    whose filter step is skipped, or on one whose filters fell open, skips there every step it
-    gates, and one that is `all` on every dispatch runs every step on a dispatch of a branch whose
-    diff reaches few. The fall-open term reads the generate step's every_filter output, so the job
-    must have that step: one of id GENERATE_STEP_ID that runs GENERATE_RUN.
+    matched, which no filter names: it is held here to exactly LIST_OUTPUT_VALUE instead, since a
+    list that is not `all` on a run whose filter step is skipped, or on one whose filters fell
+    open, skips there every step it gates, and one that is `all` on every dispatch (#5309's
+    `github.event_name == 'workflow_dispatch'` term) runs every step on a dispatch of a branch
+    whose diff reaches few. The fall-open term reads the generate step's every_filter output, so
+    the job must have that step: one of id GENERATE_STEP_ID that runs GENERATE_RUN.
 
     No filter may have a name the action writes another output under: `changes`, its list, and
     `<filter>_count` and `<filter>_files`, each other filter's count and (under list-files) files
@@ -1012,7 +1014,14 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
     filter_steps = {str(s.get("id", "")): s for s in filter_input_steps(job)}
-    has_scope = SCOPE_STEP_ID in ids and SCOPE_STEP_ID not in filter_steps
+    if job and (SCOPE_STEP_ID not in ids or SCOPE_STEP_ID in filter_steps):
+        problems.append(error(WORKFLOW, f"the changes job has no step of id {SCOPE_STEP_ID} that writes "
+                                        f"{SCOPE_OUTPUT}, the every-job term `{EVERY_JOB_TERM}` every output but "
+                                        f"{REF_OUTPUT} opens with: without it a dispatch of main, a tag's or one "
+                                        f"given every-job selects no job by that term, and an output written "
+                                        f"instead with `github.event_name == 'workflow_dispatch'` selects every job "
+                                        f"on every dispatch of a branch, whatever its diff touches; give the job "
+                                        f"the step \"Read whether this run selects every job\""))
     outputs = job.get("outputs") or {}
     for name in sorted(filters):
         if name == LIST_SOURCE:
@@ -1030,14 +1039,13 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
                                                      f"steps.filter.outputs.{name} hands on whichever it wrote last"))
     if LIST_OUTPUT in outputs:
         value = " ".join(str(outputs[LIST_OUTPUT]).split())
-        want = LIST_OUTPUT_EVERY_JOB_VALUE if has_scope else LIST_OUTPUT_VALUE
-        if value != want:
+        if value != LIST_OUTPUT_VALUE:
             problems.append(error(WORKFLOW, f"the changes job's output {LIST_OUTPUT} is {value}, and it must be "
-                                            f"exactly {want}: the paths filter's list of the filters that matched, "
-                                            f"or all on a run whose filter step is skipped (a dispatched run, or, "
-                                            f"once the job has the scope step, one that selects every job) and on a "
-                                            f"run whose filters fell open, whose file holds no filter a step reads "
-                                            f"out of the list, so that every step it gates runs there"))
+                                            f"exactly {LIST_OUTPUT_VALUE}: the paths filter's list of the filters "
+                                            f"that matched, all on a run that selects every job, whose filter step "
+                                            f"is skipped, and all on a run whose filters fell open, whose file holds "
+                                            f"no filter a step reads out of the list, so that every step it gates "
+                                            f"runs there, while a dispatch of a branch hands on its own list"))
         generate = [s for s in steps if str(s.get("id", "")) == GENERATE_STEP_ID]
         if len(generate) != 1 or str(generate[0].get("run", "")).strip() != GENERATE_RUN:
             problems.append(error(WORKFLOW, f"the changes job's output {LIST_OUTPUT} reads "
@@ -1064,7 +1072,7 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
         if output == REF_OUTPUT:
             continue
         text = str(expression).strip()
-        if has_scope and not text.startswith(EVERY_JOB_TERM):
+        if not text.startswith(EVERY_JOB_TERM):
             problems.append(error(WORKFLOW, f"the changes job's output {output} does not open with the every-job "
                                             f"term `{EVERY_JOB_TERM}`, so a dispatch of main or one given every-job "
                                             f"does not select its job by that step, and a term of its own (an older "
@@ -1123,15 +1131,13 @@ LIST_OUTPUT = "matched_filters"
 # every_filter on FAIL-OPEN and FORCED), which holds no filter a step reads out of the list.
 GENERATE_STEP_ID = "generate"
 EVERY_FILTER_OUTPUT = "every_filter"
-LIST_OUTPUT_VALUE = (f"${{{{ (github.event_name == 'workflow_dispatch' || steps.{GENERATE_STEP_ID}.outputs."
-                     f"{EVERY_FILTER_OUTPUT} == 'true') && 'all' || steps.filter.outputs.changes }}}}")
-# The list in a job with the scope step: the every-job term in front, as every other output has
-# it, so a dispatch of main, a tag's or one given every-job hands on `all`, while a dispatch of a
+# The list, opened with the every-job term as every other output is: a dispatch of main, a tag's or
+# one given every-job hands on `all`, as does a run whose filters fell open, while a dispatch of a
 # branch hands on the list its filter step wrote over its diff with its merge base with main, as a
 # merge group's does
 # (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job).
-LIST_OUTPUT_EVERY_JOB_VALUE = (f"{EVERY_JOB_TERM}'all' || steps.{GENERATE_STEP_ID}.outputs.{EVERY_FILTER_OUTPUT} "
-                               f"== 'true' && 'all' || steps.filter.outputs.changes }}}}")
+LIST_OUTPUT_VALUE = (f"{EVERY_JOB_TERM}'all' || steps.{GENERATE_STEP_ID}.outputs.{EVERY_FILTER_OUTPUT} "
+                     f"== 'true' && 'all' || steps.filter.outputs.changes }}}}")
 # The name dorny/paths-filter writes its list under, which it writes only while no filter has it.
 LIST_SOURCE = "changes"
 # A condition that names the list at all, in any spelling (an input's `matched-filters`, an

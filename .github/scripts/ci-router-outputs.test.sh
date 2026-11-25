@@ -18,9 +18,11 @@
 # a dispatch of main selects every job whatever the filters say, a dispatch of a branch selects
 # what a merge group with the same verdicts selects and diffs its own commit with main, the filter
 # generation measures a branch's dispatch against its merge base with main as it measures a merge
-# group against its base, `every-job` selects every job on a branch, and a newer dispatch of a
-# branch cancels that branch's older one while a dispatch of main is never cancelled. Copies of
-# ci.yaml with one of those terms broken show that each case fails without it.
+# group against its base, and is handed that base only because the base step runs before it (the
+# runner evaluates a step's env when the step starts), `every-job` selects every job on a branch,
+# and a newer dispatch of a branch cancels that branch's older one while a dispatch of main is
+# never cancelled. Copies of ci.yaml with one of those terms broken, or the two steps swapped, show
+# that each case fails without it.
 #
 # The filter names the outputs read verdicts of are the changes job's filters, which no file of the
 # repository holds: the job computes them when it runs. The script reads them from the file
@@ -33,7 +35,8 @@
 # diff's filters matched, and every one runs on a run that selects every job (a dispatch of main,
 # a tag or every-job), when the filters fell open and when changes did not succeed. Copies with
 # one read misspelt, unquoted, never `all` or `all` on every dispatch show each case fails on what
-# it guards.
+# it guards. Every copy is made by copy_with, which stops the harness, naming the text, when the
+# text it is to change is not in the file exactly once.
 #
 # Run from anywhere: .github/scripts/ci-router-outputs.test.sh
 # CI runs it in ci.yaml's test job.
@@ -162,38 +165,64 @@ set -e
 check "exits 2" "$(is "$status" 2)"
 check "names the verdict and the file" "$(contains "$err" "--verdict no_such_filter=false names no filter of $filters\$")"
 
-# broken_copy <dir> <output> <text> <replacement>: a copy of this repository's ci.yaml under <dir>
-# with <text> changed to <replacement> on that output's line alone (neither holds a `|`, which the
-# sed below delimits with).
-broken_copy() {
-  mkdir -p "$1/.github/workflows"
-  sed -E "/^ +$2: /s|$3|$4|" "$repo/.github/workflows/ci.yaml" > "$1/.github/workflows/ci.yaml"
-  cmp -s "$repo/.github/workflows/ci.yaml" "$1/.github/workflows/ci.yaml" && echo "broken_copy: $2 has no $3" >&2
-  echo "$1/.github/workflows/ci.yaml"
+# copy_with <dir> <file> <text> <replacement> [<text> <replacement>]...: a copy of this repository's
+# ci.yaml and ci-job-test.yaml under <dir>, the one named <file> with each <text> replaced by its
+# <replacement>, in order; echoes the copy's ci.yaml. It is the one way a case here changes a
+# workflow. A <text> that the file does not hold exactly once, after the pairs before it, a
+# replacement that is its own text, and a <file> that is neither workflow stop the harness, naming
+# the file and the text, since a case run over an unchanged copy would test ci.yaml as it is.
+copy_with() {
+  local dir=$1 file=$2
+  shift 2
+  mkdir -p "$dir/.github/workflows"
+  cp "$repo/.github/workflows/ci.yaml" "$repo/.github/workflows/ci-job-test.yaml" "$dir/.github/workflows/"
+  if [ ! -f "$dir/.github/workflows/$file" ]; then
+    echo "copy_with: $file is neither ci.yaml nor ci-job-test.yaml, so there is nothing to change" >&2
+    return 1
+  fi
+  python3 - "$dir/.github/workflows/$file" "$@" <<'PY'
+import sys
+path, pairs = sys.argv[1], sys.argv[2:]
+if not pairs or len(pairs) % 2:
+    sys.exit(f"copy_with: {path}: give <text> <replacement> pairs, not {len(pairs)} argument(s)")
+body = open(path).read()
+for text, replacement in zip(pairs[::2], pairs[1::2]):
+    if body.count(text) != 1:
+        sys.exit(f"copy_with: {path} holds {text!r} {body.count(text)} times, not once")
+    if replacement == text:
+        sys.exit(f"copy_with: {path}: {text!r} is replaced by itself, which changes nothing")
+    body = body.replace(text, replacement)
+open(path, "w").write(body)
+PY
+  echo "$dir/.github/workflows/ci.yaml"
 }
 
 echo "case: an output whose full-ci literal is broken stays in the set and fails the full-ci case"
-broken=$(broken_copy "$work/no-full-ci" envoy_go_race_api "'full-ci'" "'full-cj'")
+broken=$(copy_with "$work/no-full-ci" ci.yaml \
+  "contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')" \
+  "contains(github.event.pull_request.labels.*.name, 'full-cj') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
 check "full-ci leaves exactly envoy_go_race_api off" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "envoy_go_race_api ")"
 
 echo "case: an output whose lane literal is broken fails its lane row"
-broken=$(broken_copy "$work/no-lane" envoy_smoke "'lane:envoy_smoke'" "'lane:envoy_smokx'")
+broken=$(copy_with "$work/no-lane" ci.yaml "'lane:envoy_smoke'" "'lane:envoy_smokx'")
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
 check "lane:envoy_smoke leaves it off" "$(is "$(off_under "$broken" lane:envoy_smoke | grep -c '^envoy_smoke$')" 1)"
 check "full-ci still turns it on" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "")"
 
 echo "case: an output whose event term is broken stays in the set and fails the merge-group case"
-broken=$(broken_copy "$work/no-event" envoy_go_race "github.event_name != 'pull_request'" "github.event_name == 'workflow_dispatch'")
+broken=$(copy_with "$work/no-event" ci.yaml \
+  "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race'))" \
+  "(github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race'))")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
 check "a merge group leaves exactly envoy_go_race off" \
   "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "envoy_go_race ")"
 
 echo "case: an output that reads the labels through the whole pull request is refused, never missed"
-broken=$(broken_copy "$work/whole-pr" envoy_smoke \
-  "contains\(github\.event\.pull_request\.labels\.\*\.name, 'lane:envoy_smoke'\)" \
+broken=$(copy_with "$work/whole-pr" ci.yaml \
+  "contains(github.event.pull_request.labels.*.name, 'lane:envoy_smoke')" \
   "contains(toJSON(github.event.pull_request), 'lane:envoy_smoke')")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 set +e
@@ -279,7 +308,8 @@ check "a dispatch of a tag skips the step" "$(contains "$(filter_step --event wo
 check "a merge group: neither input, so its own base_sha..head_sha" "$(is "$(filter_step --event merge_group)" "runs=true base= ref= ")"
 check "a pull request: neither input, so the API's file list" "$(is "$(filter_step --event pull_request)" "runs=true base= ref= ")"
 
-# generate_step_of <workflow> <argument>...: the CI_FILTERS_BASE the filter generation is handed.
+# generate_step_of <workflow> <argument>...: the CI_FILTERS_BASE the filter generation is handed,
+# its env as the runner evaluates it when that step starts.
 generate_step_of() {
   local workflow=$1
   shift
@@ -325,60 +355,45 @@ check "  while another branch is another group" \
 check "a branch spelled Main keys on its commit, since the expression ignores case, and is never cancelled" \
   "$(is "$(concurrency_of "$ci" --event workflow_dispatch --ref refs/heads/Main --sha "$old")" "group=ci-$old cancel-in-progress=false ")"
 
-# copy_with <dir> <text> <replacement>: a copy of this repository's ci.yaml under <dir> with the one
-# occurrence of <text> replaced; it fails when <text> is not there exactly once.
-copy_with() {
-  mkdir -p "$1/.github/workflows"
-  python3 - "$ci" "$1/.github/workflows/ci.yaml" "$2" "$3" <<'PY'
-import sys
-source, target, text, replacement = sys.argv[1:]
-body = open(source).read()
-if body.count(text) != 1:
-    sys.exit(f"copy_with: {text!r} occurs {body.count(text)} times in {source}, not once")
-open(target, "w").write(body.replace(text, replacement))
-PY
-  echo "$1/.github/workflows/ci.yaml"
-}
-
 echo "case: a scope step that reads no main fails the dispatch-of-main case"
-broken=$(copy_with "$work/scope-no-main" '[ "$IS_MAIN" = true ] || ' '')
+broken=$(copy_with "$work/scope-no-main" ci.yaml '[ "$IS_MAIN" = true ] || ' '')
 got=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/main --verdicts false)
 check "a dispatch of main then selects nothing" "$(is "$(on_of "$got")" "")"
 
 echo "case: a scope step that reads no branch test fails the tag case"
-broken=$(copy_with "$work/scope-no-branch" ' || [[ $GITHUB_REF != refs/heads/* ]]' '')
+broken=$(copy_with "$work/scope-no-branch" ci.yaml ' || [[ $GITHUB_REF != refs/heads/* ]]' '')
 got=$(outputs_of "$broken" --event workflow_dispatch --ref refs/tags/main --verdicts false)
 check "a dispatch of a tag named main then selects nothing" "$(is "$(on_of "$got")" "")"
 
 echo "case: a scope step that writes every_job=false fails the branch case"
 # 'false' is a non-empty string, which an expression reads as true, so every output would turn on.
-broken=$(copy_with "$work/scope-writes-false" '&& v=true || v=' '&& v=true || v=false')
+broken=$(copy_with "$work/scope-writes-false" ci.yaml '&& v=true || v=' '&& v=true || v=false')
 got=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/feature --verdicts false)
 check "a dispatch of a branch then selects every job" "$(is "$(off_of "$got")" "")"
 got=$(outputs_of "$broken" --event pull_request --verdicts false)
 check "  and so does a pull request with every filter saying no" "$(is "$(on_of "$got" | grep -c typecheck)" 1)"
 
 echo "case: an output that lost its filter fails the all-filters case, which equality alone misses"
-broken=$(copy_with "$work/output-no-filter" "typecheck: \${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.typecheck }}" "typecheck: \${{ steps.scope.outputs.every_job }}")
+broken=$(copy_with "$work/output-no-filter" ci.yaml "typecheck: \${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.typecheck }}" "typecheck: \${{ steps.scope.outputs.every_job }}")
 dispatched=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/feature --verdicts true)
 check "every filter true: the branch then leaves exactly typecheck off" "$(is "$(off_of "$dispatched")" "typecheck ")"
 check "  while a merge group leaves it off too, so the two still agree" \
   "$(is "$(selecting "$dispatched")" "$(selecting "$(outputs_of "$broken" --event merge_group --verdicts true)")")"
 
 echo "case: an output still forced on every dispatch fails the branch case"
-broken=$(copy_with "$work/output-every-dispatch" "typecheck: \${{ steps.scope.outputs.every_job" "typecheck: \${{ github.event_name == 'workflow_dispatch'")
+broken=$(copy_with "$work/output-every-dispatch" ci.yaml "typecheck: \${{ steps.scope.outputs.every_job" "typecheck: \${{ github.event_name == 'workflow_dispatch'")
 got=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/feature --verdicts false)
 check "a dispatch of a branch then selects exactly typecheck" "$(is "$(on_of "$got")" "typecheck ")"
 check "  which a merge group with the same verdicts does not" \
   "$(is "$(on_of "$(outputs_of "$broken" --event merge_group --verdicts false)")" "")"
 
 echo "case: a cancel key without the dispatch arm fails the branch case"
-broken=$(copy_with "$work/no-dispatch-key" "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && github.ref || " "")
+broken=$(copy_with "$work/no-dispatch-key" ci.yaml "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && github.ref || " "")
 check "a dispatch of a branch then keys on its commit" \
   "$(contains "$(concurrency_of "$broken" --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "^group=ci-$old ")"
 
 echo "case: a generation step handed no merge base fails the branch case"
-broken=$(copy_with "$work/no-merge-base" ' || steps.base.outputs.sha' '')
+broken=$(copy_with "$work/no-merge-base" ci.yaml ' || steps.base.outputs.sha' '')
 check "a dispatch of a branch then hands the generation no base" \
   "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=")"
 check "  while a merge group still hands its own" \
@@ -387,10 +402,37 @@ check "  while a merge group still hands its own" \
 echo "case: a base step that runs on every dispatch fails the dispatch-of-main case"
 # edited-migrations-base.sh exits 2 on a dispatch of main that names no migration-base, which would
 # fail the changes job of every bypass check.
-broken=$(copy_with "$work/base-every-dispatch" "github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job" \
+broken=$(copy_with "$work/base-every-dispatch" ci.yaml "github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job" \
   "github.event_name == 'workflow_dispatch'")
 check "a dispatch of main then runs the base step" \
   "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/main --base "$merge_base")" "filters-base=$merge_base")"
+
+echo "case: a generation step that starts before the base step is handed no merge base"
+# The runner evaluates a step's env: when that step starts, over the outputs of the steps before it
+# alone. In this copy the base step comes after the generation step, so on a dispatch of a branch
+# the generation starts while steps.base.outputs.sha is still unwritten, and is handed no base,
+# though the base step runs later. A reader that evaluated the env after every step had run would
+# hand it the merge base here as in ci.yaml's own order; this case fails that reader.
+base_step=$(cat <<'YAML'
+      # why: .github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job
+      - name: Find the merge base with main a dispatch of a branch is measured against
+        id: base
+        if: ${{ github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job }}
+        timeout-minutes: 3
+        run: |
+          sha=$(.github/scripts/edited-migrations-base.sh)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+YAML
+)
+generate_run='        run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"'
+broken=$(copy_with "$work/base-after-generation" ci.yaml "$base_step"$'\n' "" \
+  "$generate_run"$'\n' "$generate_run"$'\n'"$base_step"$'\n')
+check "ci.yaml's order: a dispatch of a branch hands the generation the merge base" \
+  "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=$merge_base")"
+check "the base step after the generation: a dispatch of a branch hands it no base" \
+  "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=")"
+check "  while a merge group, whose base no step writes, still hands its own" \
+  "$(is "$(generate_step_of "$broken" --event merge_group --base "$merge_base")" "filters-base=$merge_base")"
 
 echo "case: an expression this reader does not model is refused, never read as false"
 mkdir -p "$work/.github/workflows"
@@ -420,20 +462,6 @@ steps_of() {
 steps() { steps_of "$repo/.github/workflows/ci.yaml" "$@"; }
 # running <steps text>: the steps that run, one per line.
 running() { sed -n 's/=true$//p' <<<"$1"; }
-# list_copy <dir> <workflow file> <text> <replacement>: a copy of this repository's ci.yaml and
-# ci-job-test.yaml under <dir> with <text> changed to <replacement> once in that one workflow file
-# (ci.yaml or ci-job-test.yaml), failing loudly if <text> is not in it.
-list_copy() {
-  mkdir -p "$1/.github/workflows"
-  cp "$repo/.github/workflows/ci.yaml" "$repo/.github/workflows/ci-job-test.yaml" "$1/.github/workflows/"
-  local file="$1/.github/workflows/$2" text
-  text=$(<"$file")
-  if [[ $text != *"$3"* ]]; then
-    echo "list_copy: $2 has no $3" >&2
-  fi
-  printf '%s\n' "${text/"$3"/"$4"}" > "$file"
-  echo "$1/.github/workflows/ci.yaml"
-}
 
 # The test job's harness steps read their gates out of one output, the paths filter's own list
 # of the filters that matched (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates). The
@@ -520,14 +548,14 @@ check "a dispatch of a tag: all" \
   "$(is "$(value "$(outputs --event workflow_dispatch --ref refs/tags/v1 "${two[@]}")" matched_filters)" all)"
 
 echo "case: a step whose list read drops its quotes runs on a filter whose name holds its own"
-broken=$(list_copy "$work/no-quotes" ci-job-test.yaml "contains(inputs.matched-filters, '\"ci_tools_test\"')" \
+broken=$(copy_with "$work/no-quotes" ci-job-test.yaml "contains(inputs.matched-filters, '\"ci_tools_test\"')" \
   "contains(inputs.matched-filters, 'ci_tools_test')")
 got=$(steps_of "$broken" --event pull_request --verdicts false --verdict test=true --verdict mirror_ci_tools_test=true)
 check "ci_tools_test's step runs on mirror_ci_tools_test alone" \
   "$(is "$(running "$got" | grep -cx 'Test the tool fetch helper' || true)" 1)"
 
 echo "case: a step whose list read names another filter is skipped when its own matched"
-broken=$(list_copy "$work/misnamed" ci-job-test.yaml "'\"release_push_test\"'" "'\"release_push_tset\"'")
+broken=$(copy_with "$work/misnamed" ci-job-test.yaml "'\"release_push_test\"'" "'\"release_push_tset\"'")
 got=$(steps_of "$broken" --event pull_request --verdicts false --verdict test=true --verdict release_push_test=true)
 check "Test release scripts stays skipped" "$(is "$(running "$got")" "")"
 
@@ -545,14 +573,14 @@ got=$(steps --event pull_request --verdicts false --verdict test=true --verdict 
 check "while the test job runs none of its harnesses on guide_layout" "$(is "$(running "$got")" "")"
 
 echo "case: a list that is not all on a run that selects every job skips every step it gates there"
-broken=$(list_copy "$work/no-all" ci.yaml "steps.scope.outputs.every_job && 'all'" "steps.scope.outputs.every_job && '[]'")
+broken=$(copy_with "$work/no-all" ci.yaml "steps.scope.outputs.every_job && 'all'" "steps.scope.outputs.every_job && '[]'")
 got=$(steps_of "$broken" --event workflow_dispatch --ref refs/heads/main --verdicts false)
 check "a dispatch of main then runs none of them" "$(is "$(running "$got")" "")"
 
 echo "case: a list still all on every dispatch fails the branch case"
 # The term before the every-job one: a dispatch of a branch would run every harness its diff
 # does not reach, where the merge group runs only those it reaches.
-broken=$(list_copy "$work/list-every-dispatch" ci.yaml "matched_filters: \${{ steps.scope.outputs.every_job && 'all'" \
+broken=$(copy_with "$work/list-every-dispatch" ci.yaml "matched_filters: \${{ steps.scope.outputs.every_job && 'all'" \
   "matched_filters: \${{ github.event_name == 'workflow_dispatch' && 'all'")
 got=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/feature "${two[@]}")
 check "a dispatch of a branch then hands on all" "$(is "$(value "$got" matched_filters)" all)"
@@ -597,7 +625,7 @@ got=$(fallen "$repo/.github/workflows/ci.yaml" --event workflow_dispatch --ref r
 check "and so does a dispatch of a branch whose filters fell open" "$(is "$(running "$got" | grep -c . || true)" "$gated")"
 
 echo "case: a list that reads no fall-open term skips every step it gates on a fallback file"
-broken=$(list_copy "$work/no-fall-open" ci.yaml " || steps.generate.outputs.every_filter == 'true' && 'all'" "")
+broken=$(copy_with "$work/no-fall-open" ci.yaml " || steps.generate.outputs.every_filter == 'true' && 'all'" "")
 got=$(fallen "$broken" --event merge_group --steps test)
 check "none of them runs" "$(is "$(running "$got")" "")"
 
