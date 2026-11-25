@@ -24,15 +24,24 @@ import { issueSummaryQuery } from "./reference-target";
  * line has no room for it, it goes to the next line whole, and a title longer than the whole line
  * is cut with "…", the full title showing on hover. Being its own box, it takes no underline from
  * the link it sits in, so it reads as one thing to click, not as a key and a title that are two
- * links. The caller keeps the punctuation after it on its line (`MarkdownBody`).
+ * links. The caller keeps the punctuation after it on its line (`MarkdownBody`). A chip the
+ * caller gives a `hover` shows that on hover in place of the title: a chip drawn for the words of
+ * a time link shows the time (`MarkdownBody`).
  */
-export function ItemChip({ issue }: { readonly issue: string }): ReactNode {
+export function ItemChip({
+  hover,
+  issue,
+}: {
+  /** What the chip shows on hover, where that is not the issue's title. */
+  readonly hover?: string;
+  readonly issue: string;
+}): ReactNode {
   const summary = useQuery(issueSummaryQuery(issue)).data;
   return (
     <span
       className={`not-prose inline-flex max-w-full items-center gap-1.5 rounded-md border px-1.5 align-middle text-sm leading-5 font-normal whitespace-nowrap no-underline ${borderDefault} ${surfaceMutedBg}`}
       data-testid="item-chip"
-      title={summary?.title}
+      title={hover ?? summary?.title}
     >
       <span className={`shrink-0 font-semibold ${textPrimaryOnSurface}`}>{issue}</span>
       {summary === undefined ? null : (

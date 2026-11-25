@@ -6,12 +6,18 @@ import { timeTitle } from "./Timestamp";
  * A time the command bar's agent writes in its words: a Markdown link whose words are the time as
  * the page shows it and whose address is the instant, under the `dispatch-time:` scheme -
  * `[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`. The page draws it as a `<time>` of that
- * instant showing the link's words, with the instant whole on hover, as every other time the page
- * draws in words has it (`Timestamp`). An address that names no instant draws the words alone.
+ * instant showing the link's words - the words the agent wrote, never words made from the
+ * instant - with the instant whole on hover, as every other time the page draws in words has it
+ * (`Timestamp`). An address that names no instant draws the words alone.
  */
 
 /** The scheme of a time's address. */
 const DISPATCH_TIME = "dispatch-time:";
+
+/** The attribute a Markdown body's drawing of a time link carries (`markdown-serializer.ts`), by
+ *  which the body finds the time links it drew: one whose words are an issue's key draws as that
+ *  issue's chip in an answer of the command bar (`MarkdownBody`). */
+export const TIME_LINK_ATTRIBUTE = "data-dispatch-time";
 
 /** An instant as RFC 3339 writes it, which is how the agent is told to write one: a date, a time
  *  to the minute or finer, and its zone. */

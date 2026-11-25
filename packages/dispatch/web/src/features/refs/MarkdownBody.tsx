@@ -3,9 +3,11 @@ import { type ReactNode, useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { DisplayTree } from "../../api/types";
+import { TIME_LINK_ATTRIBUTE } from "./dispatch-time";
 import { ItemChip } from "./ItemChip";
 import { type MarkdownEngine, markdownClassName, type SoftBreaks } from "./markdown-engine";
 import type { ReferenceAnchor } from "./RefLink";
+import { buildDispatchReference, buildReferencePath, parseDispatchReference } from "./routes";
 import { drawTaskCheckboxes } from "./task-checkboxes";
 import type { TextSource } from "./text-references";
 import {
@@ -17,8 +19,18 @@ import {
 } from "./useRenderedMarkdown";
 import { useTextReferences } from "./useTextReferences";
 
+/** An issue's chip in a body drawn with chips: the anchor it is drawn into, the issue, and what
+ *  it shows on hover where that is not the issue's title - the time of the time link it is the
+ *  words of (`takeIssueLinks`). */
+interface IssueChip {
+  readonly anchor: HTMLElement;
+  readonly hover: string | undefined;
+  readonly issue: string;
+  readonly key: string;
+}
+
 /** The chips of a body that draws none: one shared value, so such a body keeps one state. */
-const NO_CHIPS: readonly ReferenceAnchor[] = [];
+const NO_CHIPS: readonly IssueChip[] = [];
 
 /** The first textblock's own inline content (marks intact), plus the flattened plain text of
  * every textblock after it, joined with a single space - see `flattenInline`. */
@@ -280,6 +292,42 @@ function holdPunctuation(anchor: HTMLElement): void {
 }
 
 /**
+ * The time links of a body drawn with chips whose words are an issue's key, each made a link to
+ * that issue for its chip: the command bar's agent wrote when DEMO-17 last moved as
+ * `[DEMO-17](dispatch-time:2026-10-10T09:00:00Z)`, and the words name the item, so the item is
+ * drawn (`takeIssueLinks`), not lost to a time. The words become an empty `<a>` to the issue
+ * inside the time, as the link pass leaves an anchor for its portal (`collectReferenceAnchors`).
+ * A time link whose key the link pass already made a link holds no words of its own by now, and
+ * is that link's.
+ */
+function timeLinkAnchors(element: HTMLElement): ReferenceAnchor[] {
+  const anchors: ReferenceAnchor[] = [];
+  for (const link of element.querySelectorAll<HTMLElement>(`[${TIME_LINK_ATTRIBUTE}]`)) {
+    const words = link.textContent?.trim() ?? "";
+    // Words that are an issue's key and nothing else: a reference of nothing more names that
+    // issue, and one of a key with anything after it names something else or nothing.
+    const route = parseDispatchReference(`dispatch://${words}`);
+    if (route?.kind !== "issue") {
+      continue;
+    }
+    const reference = buildDispatchReference(route);
+    const anchor = document.createElement("a");
+    anchor.setAttribute("href", buildReferencePath(route));
+    anchor.setAttribute("data-dispatch-ref", reference);
+    link.replaceChildren(anchor);
+    anchors.push({ anchor, key: `${reference}:time:${anchors.length}`, route, text: words });
+  }
+  return anchors;
+}
+
+/** Orders two anchors as the body holds them. */
+function inBodyOrder(first: ReferenceAnchor, second: ReferenceAnchor): number {
+  return first.anchor.compareDocumentPosition(second.anchor) & Node.DOCUMENT_POSITION_FOLLOWING
+    ? -1
+    : 1;
+}
+
+/**
  * Renders Markdown text through Proof's own parser and schema, so every question, answer,
  * comment, reply, and message formats identically to the document editor. `block` (the
  * default) renders the full parsed document, including lists and headings, inside a `<div>`;
@@ -325,7 +373,9 @@ function holdPunctuation(anchor: HTMLElement): void {
  * issue is its chip once, at the first link to it: a later link to the same issue keeps the words
  * it was written with, as a plain link, so the answer shows the issue's title once however often
  * its words name it. Every other reference keeps its `RefLink`. The punctuation written right
- * after a chip stays against it, on its line (`holdPunctuation`).
+ * after a chip stays against it, on its line (`holdPunctuation`). A time link whose words are an
+ * issue's key is a link to the issue too (`timeLinkAnchors`), and a chip inside a time link shows
+ * the time on hover, in place of the issue's title.
  */
 export function MarkdownBody({
   chips = false,
@@ -377,16 +427,19 @@ export function MarkdownBody({
   const inlineRoot = useRef<HTMLSpanElement>(null);
   const inline = variant === "inline";
   const references = useTextReferences(referenceText, source);
-  // A body drawn with `chips` takes the links to issues from the link pass's anchors and draws
-  // the first one of each issue as its chip itself; a later link to an issue that already has its
-  // chip keeps the words it was written with, and every other anchor goes back to the pass, which
-  // draws its `RefLink`.
-  const [chipAnchors, setChipAnchors] = useState<readonly ReferenceAnchor[]>(NO_CHIPS);
-  const takeIssueLinks = useCallback<DecorateMarkdown>((_element, anchors) => {
+  // A body drawn with `chips` takes the links to issues from the link pass's anchors, and from the
+  // time links whose words are an issue's key (`timeLinkAnchors`), and draws the first one of each
+  // issue as its chip itself, the time on its hover where it sits in a time link; a later link to
+  // an issue that already has its chip keeps the words it was written with, and every other anchor
+  // goes back to the pass, which draws its `RefLink`.
+  const [chipAnchors, setChipAnchors] = useState<readonly IssueChip[]>(NO_CHIPS);
+  const takeIssueLinks = useCallback<DecorateMarkdown>((element, anchors) => {
+    const timed = timeLinkAnchors(element);
+    const links = timed.length === 0 ? anchors : [...anchors, ...timed].sort(inBodyOrder);
     const chipped = new Set<string>();
-    const chips: ReferenceAnchor[] = [];
+    const chips: IssueChip[] = [];
     const others: ReferenceAnchor[] = [];
-    for (const reference of anchors) {
+    for (const reference of links) {
       if (reference.route.kind !== "issue") {
         others.push(reference);
       } else if (chipped.has(reference.route.key)) {
@@ -394,8 +447,15 @@ export function MarkdownBody({
         reference.anchor.textContent = reference.text;
       } else {
         chipped.add(reference.route.key);
-        chips.push(reference);
-        holdPunctuation(reference.anchor);
+        const time = reference.anchor.closest<HTMLElement>(`[${TIME_LINK_ATTRIBUTE}]`);
+        chips.push({
+          anchor: reference.anchor,
+          hover: time?.getAttribute("title") ?? undefined,
+          issue: reference.route.key,
+          key: reference.key,
+        });
+        // A time link that is the chip and nothing else keeps what follows it on its line whole.
+        holdPunctuation(time?.textContent === "" ? time : reference.anchor);
       }
     }
     setChipAnchors(chips.length === 0 ? NO_CHIPS : chips);
@@ -415,8 +475,8 @@ export function MarkdownBody({
       softBreaks,
     }
   );
-  const chipPortals = chipAnchors.map(({ anchor, key, route }) =>
-    route.kind === "issue" ? createPortal(<ItemChip issue={route.key} />, anchor, key) : null
+  const chipPortals = chipAnchors.map(({ anchor, hover, issue, key }) =>
+    createPortal(<ItemChip hover={hover} issue={issue} />, anchor, key)
   );
 
   return inline ? (

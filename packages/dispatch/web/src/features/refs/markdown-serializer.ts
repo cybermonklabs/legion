@@ -2,7 +2,7 @@ import { documentFromJSON } from "@legion/proof-editor/document-json";
 import type { HeadlessProofEditor } from "@legion/proof-editor/headless";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
-import { instantOf, isTimeAddress } from "./dispatch-time";
+import { instantOf, isTimeAddress, TIME_LINK_ATTRIBUTE } from "./dispatch-time";
 import type { MarkdownEngine, RenderSpecWithAttrs } from "./markdown-engine";
 import type { DocumentJSON } from "./markdown-parse.worker";
 import { buildDispatchReference, buildReferencePath, pictureReference } from "./routes";
@@ -71,8 +71,10 @@ function pictureSerializer(schema: Schema): DOMSerializer {
  * (`[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`, `dispatch-time.tsx`): a `<time>` of the
  * instant its address names, showing the link's words, with the instant whole on hover as every
  * other time the page draws in words has it (`Timestamp`). An address that names no instant draws
- * the words alone. Every other link is serialized as `base` serializes it: Proof's link sanitizer
- * would draw a time's address as an empty link back to the page.
+ * the words alone. Either carries `TIME_LINK_ATTRIBUTE`, by which a body drawn with chips finds a
+ * time link whose words are an issue's key (`MarkdownBody`). Every other link is serialized as
+ * `base` serializes it: Proof's link sanitizer would draw a time's address as an empty link back
+ * to the page.
  */
 function timeSerializer(base: DOMSerializer): DOMSerializer {
   const link = base.marks.link;
@@ -88,8 +90,16 @@ function timeSerializer(base: DOMSerializer): DOMSerializer {
       }
       const instant = instantOf(href);
       return instant === undefined
-        ? ["span", 0]
-        : ["time", { datetime: instant, title: timeTitle(new Date(instant)) }, 0];
+        ? ["span", { [TIME_LINK_ATTRIBUTE]: "" }, 0]
+        : [
+            "time",
+            {
+              [TIME_LINK_ATTRIBUTE]: "",
+              datetime: instant,
+              title: timeTitle(new Date(instant)),
+            },
+            0,
+          ];
     },
   });
 }

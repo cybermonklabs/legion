@@ -2305,6 +2305,80 @@ test("a time link draws as a time showing its words with the full date on hover,
   }
 });
 
+// A time link's words are the model's, whatever its instant would read as from here: a time it
+// called "last spring" draws as "last spring", never as words the page makes of its address.
+test("a time link draws the words the model wrote, not words made from its instant", async () => {
+  await warmMarkdownRenderer();
+  const instant = "2026-04-20T09:00:00Z";
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown={`The export broke [last spring](dispatch-time:${instant}).`}
+      referenceText=""
+      softBreaks="line"
+    />
+  );
+  try {
+    await waitFor(() => expect(view.container.querySelector("time")).not.toBeNull());
+    const time = view.container.querySelector("time");
+    expect(time?.textContent).toBe("last spring");
+    expect(time?.getAttribute("datetime")).toBe(instant);
+    expect(time?.getAttribute("title")).toBe(new Date(instant).toLocaleString());
+    expect(view.container.textContent).toBe("The export broke last spring.");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A time link whose words are an issue's key names that issue: a real model wrote when DEMO-17
+// last moved as `[DEMO-17](dispatch-time:…)`, and the bar drew a time, so the reader lost the
+// issue. The bar draws the issue's chip there, as it draws every issue it names, with the time on
+// the chip's hover and the full stop after it on its line - in an answer whose text links no bare
+// key (the conversation's) and in one that links the key an item frame names (the short answer's).
+test("a time link whose words are an issue's key draws that issue's chip, with the time on hover", async () => {
+  await warmMarkdownRenderer();
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "DEMO-17",
+    project: "DEMO",
+    status: "backlog",
+    title: "PDF export: fonts missing on mobile",
+  });
+  const instant = "2026-10-10T09:00:00Z";
+  const chipWords = "DEMO-17BacklogPDF export: fonts missing on mobile";
+  try {
+    for (const referenceText of ["", "DEMO-17"]) {
+      const view = render(
+        <MarkdownBody
+          chips
+          markdown={`Nothing has moved on [DEMO-17](dispatch-time:${instant}).`}
+          referenceText={referenceText}
+          softBreaks="line"
+        />
+      );
+      try {
+        // The body is drawn again once the key's issue is known to exist, which draws its chip
+        // anew, so the chip is the one drawn when its words are whole.
+        const chip = await waitFor(() => {
+          const drawn = view.getByTestId("item-chip");
+          expect(drawn.textContent).toBe(chipWords);
+          return drawn;
+        });
+        expect(chip).toHaveAttribute("title", new Date(instant).toLocaleString());
+        expect(chip.closest("a")).toHaveAttribute("href", "/issues/DEMO-17");
+        expect(chip.closest("time")).toHaveAttribute("datetime", instant);
+        expect(view.getAllByTestId("item-chip")).toHaveLength(1);
+        expect(chip.closest("[data-chip-line]")?.textContent).toBe(`${chipWords}.`);
+        expect(view.container.textContent).toBe(`Nothing has moved on ${chipWords}.`);
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    getIssueSummary.mockRestore();
+  }
+});
+
 // A long question titles its link cut to fit, and the sentence the link ends draws one stop: the
 // link's "…", never "…." with the full stop the answer's own sentence adds after it. The cut is
 // the one every page's link titles take, at 60 characters: the bar changes no other page. Once
