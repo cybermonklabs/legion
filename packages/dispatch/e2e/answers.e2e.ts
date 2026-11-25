@@ -12,7 +12,7 @@ import {
   listMyAnswers,
 } from "./api";
 import { documentEditor } from "./editor";
-import { RENDERED_BODY } from "./reference-surfaces";
+import { answeredReplyPreview } from "./reference-surfaces";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -360,7 +360,7 @@ test("the answers page formats a reply and clamps it to three lines", async ({
     await page.goto("/answers");
     const row = page.locator(`[data-answer-row="${ask.id}"]`).first();
     await expect(row).toContainText("Replied:");
-    const quoted = row.locator(RENDERED_BODY);
+    const quoted = answeredReplyPreview(row);
     await expect(quoted).toContainText("Nightly counts");
     await expect(quoted.locator("strong")).toHaveText("Nightly");
 
@@ -374,10 +374,9 @@ test("the answers page formats a reply and clamps it to three lines", async ({
     await expect(row).not.toContainText("- the nightly job");
 
     // Three lines, and there is more behind the cut.
-    const clamped = quoted.locator("..");
-    await expect(clamped).toHaveCSS("-webkit-line-clamp", "3");
+    await expect(quoted).toHaveCSS("-webkit-line-clamp", "3");
     await expect
-      .poll(() => clamped.evaluate((element) => element.scrollHeight > element.clientHeight))
+      .poll(() => quoted.evaluate((element) => element.scrollHeight > element.clientHeight))
       .toBe(true);
     await page.screenshot({
       fullPage: true,

@@ -62,9 +62,10 @@ import {
  * door's own order, the words of a list with no rows are the same, Enter takes the highlighted
  * row and the pick lands at the caret with the words after it untouched, and the line under the
  * box says what a pick does on that box's write - whether a picked agent or role is told, that a
- * picked person is not, and, where nobody picked is told, what does (`hintWords`). The ask
- * card's accessible help text is compared to the shared contract for both writes.
- * Each box is also held to the people its own row lists (`issueRows`).
+ * picked person is not, and, where nobody picked is told, what does - in words the rows write
+ * out rather than read from the list the box reads them from (`hintWords`). Which people a box
+ * lists is the one thing its own row decides (`issueRows`), and each box is held to its row's
+ * answer.
  *
  * The check that delivery is unchanged is held in the same rows: each box whose write delivers is
  * sent through its own send control, which its driver hands to `expectRow`, and the fake Envoy
@@ -257,7 +258,8 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // `ask-answer` row (`AskCard.tsx`, `writing={dispatchWritingBox("ask-answer",
       // "ask-answer")}`), so that row's claim is the one its party list draws.
       await expectRow(page, field, "ask-answer", "ask-answer");
-      // The same field keeps the shared help line when the reader chooses to ask back.
+      // The `ask-back` row's own words and people, which the same field draws under that
+      // write: the hint both rows share is what tells the reader that asking back delivers.
       await expectHint(page, field, "ask-answer", "ask-back");
       await expectIssueRows(field, dispatchWritingBox("ask-answer", "ask-back").issueRows);
       // And that row's `delivers`, which no state of the field draws, is driven instead: a

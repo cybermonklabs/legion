@@ -24,6 +24,8 @@ surface. Below the `xl` breakpoint, navigation is a drawer and the margin is a b
 opening a thread uses a full-height view with a bottom-pinned composer. Controls use 44 px
 minimum touch targets.
 
+The Answers page (`/answers`) shows replies as three-line previews with formatted text and live reference links, not full reference cards.
+
 An upload replaces whatever document the owner already holds under the name being uploaded, so it names the token of the version it replaces.
 It reads that document's token when the person chooses the file to upload (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, which resolves a slug or a filename) and sends it as the upload's `precondition`, so a write landing between that choice and the upload is refused `409 PRECONDITION_FAILED` instead of writing over the text it left.
 That is the whole window the dashboard guards: a change made before the file was chosen is replaced without a refusal, since the upload names the token the document held at the choice.

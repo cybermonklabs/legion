@@ -23,7 +23,7 @@ import { AskCard } from "../inbox/AskCard";
 import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { PostBody } from "../refs/PostBody";
+import { PostPreview } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
@@ -122,23 +122,22 @@ function AnswerRow({
           )}
         </div>
       ) : null}
-      {/* Clamp the rendered reply, not its source. The shared body renderer keeps the record's
-          links and all of its formatted blocks. */}
+      {/* Draw the reply as a three-line quote with live links, without block reference cards. */}
       {row.kind === "reply" && row.reply !== undefined ? (
         <div className={`mt-2 flex items-baseline gap-1 text-sm ${textPrimaryOnCanvas}`}>
           <span className={`shrink-0 font-medium ${textMutedOnCanvas}`}>
             Replied
             <EditedMark at={row.reply.edited_at} deleted={postDeletion(row.reply)} />:
           </span>{" "}
-          <div className="line-clamp-3 min-w-0 flex-1">
-            <PostBody
-              deleted={postDeletion(row.reply)}
-              markdown={row.reply.body}
-              source={source}
-              surface="answers-reply"
-              tree={row.reply.body_tree}
-            />
-          </div>
+          <PostPreview
+            className="min-w-0 flex-1"
+            deleted={postDeletion(row.reply)}
+            lines={3}
+            markdown={row.reply.body}
+            source={source}
+            surface="answers-reply"
+            tree={row.reply.body_tree}
+          />
         </div>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">

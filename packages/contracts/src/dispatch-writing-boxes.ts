@@ -193,10 +193,13 @@ export const DISPATCH_WRITING_HINT_QUIET = {
   suggestion: `${DOORS} Until someone accepts the suggestion, the replacement shows the characters you write. Nobody you pick is told. A pick in the Reason box tells an agent or a role.`,
 } as const satisfies Partial<Record<DispatchWriting, string>>;
 
-/** The ask card uses one box for two writes. Answer goes to the asker and refuses an agent or
- *  role mention. Ask back posts a comment and delivers it to the picked parties that can receive
- *  it (`DISPATCH_WRITING_HINT_DELIVERED`). */
-export const DISPATCH_WRITING_HINT_ASK = `${DOORS} An answer goes to whoever asked. Remove agent and role mentions to send an answer. Use Ask back to tell a picked agent or role while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
+/** What the ask card's one box says, since the reader chooses there which write it makes: an
+ *  answer reaches whoever asked and tells nobody it names, while a question back is a comment,
+ *  which tells what a delivering box's line says it tells (`DISPATCH_WRITING_HINT_DELIVERED`): a
+ *  picked agent or role while a session holds it, never a role that is not running, which still
+ *  gets a link, and never a person. Both of that box's rows carry it, since the box shows one
+ *  line for the two. */
+export const DISPATCH_WRITING_HINT_ASK = `${DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
 
 /** Why the delivery settings boxes have no picker. */
 const SETTINGS_REASON =

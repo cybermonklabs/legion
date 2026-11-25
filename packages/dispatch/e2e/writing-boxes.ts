@@ -1,6 +1,5 @@
 import {
   DISPATCH_WRITING_BOXES,
-  DISPATCH_WRITING_HINT_ASK,
   type DispatchWriting,
   type DispatchWritingBox,
   type DispatchWritingBoxRow,
@@ -232,9 +231,9 @@ const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
 };
 
 /**
- * The expected help text. The ask box has one message for two writes, so compare its full
- * accessible help text to the shared contract instead of duplicating that message here.
- * The other expectations state what the reader of each box is owed: a box that
+ * The words under a box, written out here rather than read from the list: the box reads its
+ * line from its row of `DISPATCH_WRITING_BOXES`, so a row that read its words from there too
+ * would pass whatever they said. These are what the reader of the box is owed: a box that
  * delivers says a picked agent or role is told, and a picked person is not
  * told and gets no link; a box that does not says a pick links and tells nobody, and says what
  * does tell, in words of its write's own; and the ask card, whose one box makes both writes,
@@ -245,7 +244,7 @@ const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
  */
 function hintWords(box: DispatchWritingBox, write: DispatchWriting): string {
   if (box === "ask-answer") {
-    return DISPATCH_WRITING_HINT_ASK;
+    return `${HINT_DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
   }
   if (dispatchWritingBox(box, write).delivers) {
     return `${HINT_DOORS} A picked agent or role is told while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;

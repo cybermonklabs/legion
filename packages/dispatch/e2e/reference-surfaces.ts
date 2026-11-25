@@ -420,6 +420,11 @@ export function answeredQuestionPreview(page: Page, askId: string): Locator {
   return page.locator(`[data-answer-row="${askId}"]`).locator("[data-markdown-preview]").first();
 }
 
+/** The reply preview follows the question preview in the same Answers row. */
+export function answeredReplyPreview(row: Locator): Locator {
+  return row.locator("[data-markdown-preview]").nth(1);
+}
+
 /** Opens the Inbox narrowed to its Reply rows, below the reading column's width so every row is
  *  the card that draws its own thread rather than a title alone (`e2e/inbox-pane.ts`'s
  *  `READING_PANE_WIDTH`). `/replies` lands on this same address. */

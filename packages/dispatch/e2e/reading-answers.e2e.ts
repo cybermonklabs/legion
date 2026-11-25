@@ -25,7 +25,7 @@ import {
   readingText,
   seedReadingWorld,
 } from "./reading-rows";
-import { answeredQuestionPreview, RENDERED_BODY } from "./reference-surfaces";
+import { answeredQuestionPreview, answeredReplyPreview, RENDERED_BODY } from "./reference-surfaces";
 import { expect, type Locator, type Page, test } from "./test";
 
 /** The reading session as an author: it asks every question here and answers alice's thread,
@@ -130,8 +130,7 @@ test("answers-reply: an Answers row's reply draws every form of a stored referen
   await page.goto("/answers");
   const row = answerRow(page, ask.id);
   await expect(row).toContainText("Replied:");
-  // A reply's row draws one rendered body, the reply, after its "Replied:" label.
-  await expectReadsReferences(row.locator(RENDERED_BODY), world, "link");
+  await expectReadsReferences(answeredReplyPreview(row), world, "link");
 });
 
 // SLOW(>=2s): the reading world, a comment thread and its reply for each group of forms a first
