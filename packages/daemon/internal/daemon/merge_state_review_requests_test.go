@@ -3,14 +3,15 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -118,9 +119,9 @@ func TestABasePushRecordsTheReviewRequestsAndRollupGitHubAnswered(t *testing.T) 
 		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked && rig.ended()
 	})
 	pr := recordedPull(t, pool, "CAPTURE-1")
-	if pr.ReviewsRequested == nil || *pr.ReviewsRequested != 2 || pr.HeadChecks != record.HeadChecksRunning || pr.EvidenceHead != "head-86" {
-		t.Fatalf("the record holds %v review requests and checks %q read at %q for 86, want the 2 and the running rollup GitHub answered, of head-86",
-			pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceHead)
+	if pr.ReviewsRequested == nil || *pr.ReviewsRequested != 2 || pr.HeadChecks != record.HeadChecksRunning || !classify.EvidenceStands(*pr) {
+		t.Fatalf("the record holds %v review requests and checks %q read at %v beside a read at %v for 86, want the 2 and the running rollup GitHub answered, written by that read",
+			pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceReadAt, pr.StateReadAt)
 	}
 }
 
@@ -298,16 +299,7 @@ func TestAMergeabilityGitHubNeverComputesIsToldOnItsSecondRead(t *testing.T) {
 // 6049029052).
 func TestAClimbWhoseFirstReadFailsHandsTheHeadToItsBase(t *testing.T) {
 	t.Parallel()
-	// The pull request's opened event records its base (workflow's pullRequestOpened), so the
-	// record names main before any read of GitHub has answered.
-	onMain := func(t *testing.T, pool *store.Pool) {
-		t.Helper()
-		approvedCapture(t, pool)
-		if _, err := pool.Exec(context.Background(), "update pull_requests set base = 'main' where issue = 'CAPTURE-1'"); err != nil {
-			t.Fatalf("record the base: %v", err)
-		}
-	}
-	rig := newReadRig(t, onMain, func(int32) pullAnswer { return cleanPull })
+	rig := newReadRig(t, approvedOnMain, func(int32) pullAnswer { return cleanPull })
 	rig.refuseREST.Store(true)
 	rig.start(t)
 	testwait.Eventually(t, "the base's read to end the round", func() bool {
@@ -324,26 +316,107 @@ func TestAClimbWhoseFirstReadFailsHandsTheHeadToItsBase(t *testing.T) {
 	}
 }
 
-// pullStandInWith is pullStandIn whose GraphQL endpoint answers with graphQL, given the numbers
-// the query asks for.
-func pullStandInWith(t *testing.T, pull string, graphQL func(asked []int) string) *httptest.Server {
+// approvedOnMain is approvedCapture with the base the pull request's opened event records
+// (workflow's pullRequestOpened), so the record names main before any read of GitHub has answered.
+func approvedOnMain(t *testing.T, pool *store.Pool) {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer outbox-token" {
-			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
-			return
+	approvedCapture(t, pool)
+	if _, err := pool.Exec(context.Background(), "update pull_requests set base = 'main' where issue = 'CAPTURE-1'"); err != nil {
+		t.Fatalf("record the base: %v", err)
+	}
+}
+
+// After a restart the start read is what reads each issue's pull request, and a round that waits
+// quietly has no handoff coming that would read it again. So a start read that fails - here
+// GitHub's 502, which is no rate limit - hands the record's head to its base's reads, whose read
+// answers clean, and the round ends; nothing injects a read.
+func TestAStartReadThatFailsHandsTheHeadToItsBase(t *testing.T) {
+	t.Parallel()
+	rig := newReadRig(t, approvedOnMain, func(read int32) pullAnswer {
+		if read == 1 {
+			return unavailablePull
 		}
-		switch r.URL.Path {
-		case "/repos/acme/widgets/pulls/86":
-			_, _ = w.Write([]byte(pull))
-		case "/repos/acme/widgets/pulls/86/reviews":
-			_, _ = w.Write([]byte(`[]`))
-		case "/graphql":
-			_, _ = fmt.Fprint(w, graphQL(readBatchRequest(t, r)))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-	return server
+		return cleanPull
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go rig.w.readMergeStates(ctx)
+	concludedOnCode(t, rig.pool)
+	rig.w.readIssuesAtStart(ctx)
+	testwait.Eventually(t, "the base's read to end the round after the start read failed", func() bool {
+		got, _ := capturePhase(t, rig.pool)
+		return got == phase.Accepting
+	})
+	if failed := loggedLines(t, rig.logs.String(), "read an issue's pull request as the daemon starts; the reads of its base read it again"); len(failed) != 1 {
+		t.Fatalf("the start read logged %v failures, want the one 502", failed)
+	}
+}
+
+// A base's read whose token the implement App cannot mint stops before GitHub answers, and a
+// failure that repeats would stop every turn. Each pull request's round is asked again all the
+// same (readFailed), so a head whose `mergeable` GitHub answered null on a read the bound has
+// outlived is told though no read answers; nothing injects the fact.
+func TestABaseReadWhoseMintFailsStillTellsAPersistentNull(t *testing.T) {
+	t.Parallel()
+	rig := newReadRig(t, approvedOnMain, func(int32) pullAnswer { return cleanPull })
+	concludedOnCode(t, rig.pool)
+	// The record a null read wrote an hour ago: GitHub has not computed whether head code merges.
+	if _, err := rig.pool.Exec(context.Background(), `update pull_requests set merge_state = 'blocked', mergeability = 'UNKNOWN',
+		null_mergeable_reads = 1, null_mergeable_since = now() - interval '1 hour', state_read_at = now() - interval '1 hour',
+		evidence_read_at = now() - interval '1 hour' where issue = 'CAPTURE-1'`); err != nil {
+		t.Fatalf("record the null read: %v", err)
+	}
+	rig.w.tokens = neverMints{}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go rig.w.readMergeStates(ctx)
+	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[string]string{"CAPTURE-1": "code"}, false)
+	testwait.Eventually(t, "the review-stuck notice of the null mergeable", func() bool {
+		return len(noticeReasons(t, rig.pool, "review-stuck")) > 0
+	})
+	if told := noticeReasons(t, rig.pool, "review-stuck"); len(told) != 1 || !strings.Contains(told[0], "GitHub has answered `mergeable` null for it on 1 read(s) in a row") {
+		t.Fatalf("review-stuck notices %q, want one naming the null read the bound has outlived", told)
+	}
+	if got := rig.reads.Load(); got != 0 {
+		t.Fatalf("GitHub was read %d times, want none: no token could be minted", got)
+	}
+}
+
+// neverMints is a token source whose every mint fails, as an implement App that cannot mint does.
+type neverMints struct{ appauth.Tokens }
+
+func (neverMints) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return appauth.Lease{}, mintTimedOut(role, owner)
+}
+
+// concludedOnCode records head code's own checks concluded, as a settlement before a restart left
+// them, straight into the row: a settlement applied as a fact would ask a read of its own, whose
+// climb would read the head and hide the path a test holds.
+func concludedOnCode(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `update pull_requests set checked_head = 'code',
+		check_runs = '[{"name":"pr-checks-result","id":3,"head":"code","conclusion":"succeeded"}]' where issue = 'CAPTURE-1'`); err != nil {
+		t.Fatalf("record head code's checks concluded: %v", err)
+	}
+}
+
+// The verdict, the checks and the count of a REST read GitHub answered `blocked` and MERGEABLE all
+// come from the one GraphQL answer the read asks next: a push to the base between the two turns
+// the head CONFLICTING and DIRTY, and the record takes that, not the REST answer it replaced.
+func TestABlockedRestReadTakesItsVerdictFromTheGraphQLAnswer(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	captureInTesting(t, pool)
+	rest := `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"blocked","requested_reviewers":[],"requested_teams":[]}`
+	api := pullStandInWith(t, rest, func(asked []int) string {
+		return batchAnswer(t, asked, batchNode(86, "code", "CONFLICTING", "DIRTY"))
+	})
+	w := readRuntime(pool, api.URL, quietLogger())
+	state, _, _, err := w.readMergeState(context.Background(), "CAPTURE-1")
+	if err != nil || state != record.MergeStateDirty {
+		t.Fatalf("the read answered %s, %v; want the GraphQL answer's dirty", state, err)
+	}
+	if pr := recordedPull(t, pool, "CAPTURE-1"); pr.MergeState != record.MergeStateDirty || pr.Mergeability != record.MergeabilityConflicting {
+		t.Fatalf("the record holds %s/%s, want the GraphQL answer's dirty/CONFLICTING", pr.MergeState, pr.Mergeability)
+	}
 }

@@ -1211,7 +1211,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	// so the approval ends the round.
 	concluded := behind("LEGION-215", 49)
 	concluded.Mergeability, concluded.MergeState = record.MergeabilityMergeable, record.MergeStateBlocked
-	concluded.ReviewsRequested, concluded.HeadChecks, concluded.EvidenceHead = new(0), record.HeadChecksConcluded, concluded.HeadSHA
+	concluded.ReviewsRequested, concluded.HeadChecks, concluded.EvidenceReadAt = new(0), record.HeadChecksConcluded, concluded.StateReadAt
 	// The row a daemon wrote before the migration that added the read stamp: GitHub's answer is
 	// recorded and the moment of the read is not, which no row written since can be.
 	premigration := behind("LEGION-214", 48)

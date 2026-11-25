@@ -379,10 +379,9 @@ func (w *workflowRuntime) readMergeState(ctx context.Context, issue string) (rec
 	answeredAt := time.Now().UTC()
 	cancel()
 	if err != nil {
-		// The pull request the record holds, on its own base, so a climb whose first read fails can
-		// hand the head to its base's reads (climbMergeState).
-		pr := followed(*recorded, githubPullRequest{})
-		return record.MergeStateUnread, false, &pr, fmt.Errorf("read pull request %s#%d and its merge state: %w", recorded.Repo, recorded.Number, err)
+		// The pull request the record holds, on the base it records, so a climb whose first read
+		// fails can hand the head to its base's reads (climbMergeState).
+		return record.MergeStateUnread, false, recorded, fmt.Errorf("read pull request %s#%d and its merge state: %w", recorded.Repo, recorded.Number, err)
 	}
 	pr := followed(*recorded, pull)
 	fact, err := w.applyMergeability(ctx, github, *recorded, pull, answeredAt, w.mergeabilityEventID(*recorded, answeredAt))

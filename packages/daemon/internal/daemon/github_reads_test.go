@@ -24,9 +24,19 @@ import (
 
 // pullStandIn is GitHub's REST API for acme/widgets as the per-issue read sees it: pull request 86
 // answered with pull, and no review on it. Its GraphQL endpoint answers the query a REST read of
-// a `blocked`, MERGEABLE head asks for that head's rollup (readHeadChecks) from the same answer, as
-// GitHub answers both about the one pull request (graphQLAnswerOf).
+// a `blocked`, MERGEABLE head asks for that head's whole answer (readWholeAnswer) from the same
+// answer, as GitHub answers both about the one pull request (graphQLAnswerOf).
 func pullStandIn(t *testing.T, pull string) *httptest.Server {
+	t.Helper()
+	return pullStandInWith(t, pull, func(asked []int) string {
+		_, body := graphQLAnswerOf(t, pullAnswer{status: http.StatusOK, body: pull}, asked)
+		return body
+	})
+}
+
+// pullStandInWith is pullStandIn whose GraphQL endpoint answers with graphQL, given the numbers
+// the query asks for.
+func pullStandInWith(t *testing.T, pull string, graphQL func(asked []int) string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer outbox-token" {
@@ -35,13 +45,11 @@ func pullStandIn(t *testing.T, pull string) *httptest.Server {
 		}
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
-			w.Write([]byte(pull))
+			_, _ = w.Write([]byte(pull))
 		case "/repos/acme/widgets/pulls/86/reviews":
-			w.Write([]byte(`[]`))
+			_, _ = w.Write([]byte(`[]`))
 		case "/graphql":
-			status, body := graphQLAnswerOf(t, pullAnswer{status: http.StatusOK, body: pull}, readBatchRequest(t, r))
-			w.WriteHeader(status)
-			_, _ = io.WriteString(w, body)
+			_, _ = io.WriteString(w, graphQL(readBatchRequest(t, r)))
 		default:
 			http.NotFound(w, r)
 		}

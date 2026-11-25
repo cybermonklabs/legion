@@ -32,16 +32,17 @@ func TestAPullRequestRecordedBefore20261124130001HoldsNoCountAndNoRollup(t *test
 		t.Fatalf("migrate: %v", err)
 	}
 	var requested *int
-	var checks, state, evidence string
+	var checks, state string
 	var nulls int
-	var since time.Time
+	var since, evidence time.Time
 	if err := store.Pool().QueryRow(ctx,
-		`select reviews_requested, head_checks, null_mergeable_reads, null_mergeable_since, evidence_head, merge_state
+		`select reviews_requested, head_checks, null_mergeable_reads, null_mergeable_since, evidence_read_at, merge_state
 		 from pull_requests where issue = 'LEGION-208'`).Scan(&requested, &checks, &nulls, &since, &evidence, &state); err != nil {
 		t.Fatalf("read the pull request after 20261124130001: %v", err)
 	}
-	if requested != nil || checks != "" || nulls != 0 || !since.Equal(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)) || evidence != "" || state != "blocked" {
-		t.Fatalf("after 20261124130001 the row holds %v review requests, rollup %q, %d null reads since %v of %q and merge state %q, want nothing read beside the blocked it held",
+	zero := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+	if requested != nil || checks != "" || nulls != 0 || !since.Equal(zero) || !evidence.Equal(zero) || state != "blocked" {
+		t.Fatalf("after 20261124130001 the row holds %v review requests, rollup %q, %d null reads since %v written by a read at %v and merge state %q, want nothing read beside the blocked it held",
 			requested, checks, nulls, since, evidence, state)
 	}
 	for _, statement := range []string{
@@ -54,7 +55,7 @@ func TestAPullRequestRecordedBefore20261124130001HoldsNoCountAndNoRollup(t *test
 		}
 	}
 	if _, err := store.Pool().Exec(ctx, `update pull_requests set reviews_requested = 2, head_checks = 'running',
-		null_mergeable_reads = 1, null_mergeable_since = now(), evidence_head = 'h4' where issue = 'LEGION-208'`); err != nil {
+		null_mergeable_reads = 1, null_mergeable_since = now(), evidence_read_at = now() where issue = 'LEGION-208'`); err != nil {
 		t.Fatalf("a read's count, rollup and null reads were refused: %v", err)
 	}
 }

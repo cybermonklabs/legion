@@ -259,7 +259,7 @@ func TestAnApprovalOnABehindHeadNamesTheStateAndEveryCheckGitHubReported(t *test
 	apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 
-	want := stuckMergeStateReason(behind)
+	want := stuckMergeStateReason(behind, classify.MergeWaitsTold)
 	told := reviewStuckNotices(t, pool)
 	if len(told) != 1 || told[0].Reason != want {
 		t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
@@ -289,7 +289,7 @@ func TestAnApprovalOnABehindHeadNamesTheStateAndEveryCheckGitHubReported(t *test
 		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateDraft})
 	draft := behind
 	draft.MergeState = record.MergeStateDraft
-	if again := reviewStuckNotices(t, pool); len(again) != 2 || again[1].Reason != stuckMergeStateReason(draft) {
+	if again := reviewStuckNotices(t, pool); len(again) != 2 || again[1].Reason != stuckMergeStateReason(draft, classify.MergeWaitsTold) {
 		t.Fatalf("review-stuck notices %+v, want a second naming draft", again)
 	}
 }
@@ -624,11 +624,11 @@ func TestAConfirmingReadStampsWhenItWasMadeAndAFactWithNoReadTimeStampsNothing(t
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedMergeStateRound(t, pool, record.MergeStateBlocked)
-			// The record a read of headOne wrote, its evidence of that head among it, so a read that
+			// The record a read of headOne wrote, its evidence stamped by that read, so a read that
 			// confirms it answers exactly what is recorded.
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
 				Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: headOne, Failing: []string{}, Cancelled: []string{},
-				Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked, StateReadAt: recordedAt, EvidenceHead: headOne,
+				Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked, StateReadAt: recordedAt, EvidenceReadAt: recordedAt,
 				CheckedHead: headOne, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: headOne, Conclusion: record.RunSucceeded}}})
 			before := recordedPR(t, pool, "LEGION-208")
 
@@ -637,11 +637,12 @@ func TestAConfirmingReadStampsWhenItWasMadeAndAFactWithNoReadTimeStampsNothing(t
 					Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked, ReadAt: tc.read})
 
 			got := recordedPR(t, pool, "LEGION-208")
-			if !got.StateReadAt.Equal(tc.want) {
-				t.Fatalf("after the read the record was last read at %v, want %v", got.StateReadAt, tc.want)
+			if !got.StateReadAt.Equal(tc.want) || !got.EvidenceReadAt.Equal(tc.want) {
+				t.Fatalf("after the read the record was last read at %v with evidence of %v, want both %v", got.StateReadAt, got.EvidenceReadAt, tc.want)
 			}
+			// The evidence is the read's, so its stamp moves with the read time and nothing else does.
 			moved, kept := got, before
-			moved.StateReadAt, kept.StateReadAt = time.Time{}, time.Time{}
+			moved.StateReadAt, kept.StateReadAt, moved.EvidenceReadAt, kept.EvidenceReadAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}
 			if !reflect.DeepEqual(moved, kept) {
 				t.Fatalf("the read left the pull request %+v, want %+v: the read time is the only thing a confirming read moves", moved, kept)
 			}

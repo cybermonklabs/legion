@@ -133,8 +133,10 @@ func (w *workflowRuntime) issuePullRequest(ctx context.Context, key string) (*re
 	// (intake.PullRequestReview), so no clock of this read is weighed against a review's.
 	w.log.Warn("workflow: GitHub holds an open pull request for an issue the daemon records none for; applying the opened its webhook would",
 		"repo", repo, "pullRequest", pull.Number, "issue", key, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt)
-	fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
-		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: pr != nil && pr.Number == pull.Number}
+	// The base the list answer names goes with it, so a record found this way has the base its
+	// reads of the merge state follow on (followOnBase) even when the detail read after it fails.
+	fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA,
+		Body: pull.Body, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: pr != nil && pr.Number == pull.Number}
 	eventID := fmt.Sprintf("opened-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, repo, pull.Number, time.Now().UnixNano())
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
 		return nil, fmt.Errorf("apply the open pull request %s#%d read from GitHub: %w", repo, pull.Number, err)
@@ -222,10 +224,12 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 // (readIssuePullRequest): every issue with an open pull request recorded, and every issue whose
 // implementer completed with none open or merged recorded, which is the pull request this read
 // looks up by the branch. It is what covers a daemon that was down while GitHub made the
-// deliveries nothing redelivers. A read that fails is logged and the boot goes on, since the
-// issue's next handoff reads the same pull request; GitHub's rate limit ends the start read there,
-// because every read after it on the same installation meets the same limit, and the panes share
-// it.
+// deliveries nothing redelivers. GitHub's rate limit ends the start read there, because every
+// read after it on the same installation meets the same limit, and the panes share it. Any other
+// read that fails is logged and the boot goes on; the record's open pull request is handed to the
+// reads of its base (followOnBase), and a run of null `mergeable` reads it holds asks the round
+// again (readFailed): a round that waits quietly on the head has no handoff coming that would
+// read it.
 //
 // A read that finds GitHub still computing the merge of an open pull request's head - merge state
 // `unknown`, or `mergeable` null - queues a ladder of reads for the issue (queueMergeState), which
@@ -261,8 +265,26 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 				"issue", issue, "error", err)
 			return
 		}
-		w.log.Warn("read an issue's pull request as the daemon starts; the issue's next handoff reads it", "issue", issue, "error", err)
+		w.log.Warn("read an issue's pull request as the daemon starts; the reads of its base read it again", "issue", issue, "error", err)
+		w.startReadFailed(ctx, issue)
 	}
+}
+
+// startReadFailed hands the open pull request the record holds for issue to the reads of its base
+// after the start read of it failed (followOnBase), and asks its round again for a run of null
+// `mergeable` reads the record holds (readFailed), so the head is read, and a persistent null is
+// told, though no handoff is coming. An issue whose record cannot be read, or holds no open pull
+// request, has nothing to hand.
+func (w *workflowRuntime) startReadFailed(ctx context.Context, issue string) {
+	_, pr, err := issueRecord(ctx, w.pool, w.records, issue)
+	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
+		if err != nil && ctx.Err() == nil {
+			w.log.Warn("read the record of an issue whose start read failed; its next handoff reads it", "issue", issue, "error", err)
+		}
+		return
+	}
+	w.followOnBase(issue, *pr)
+	w.readFailed(ctx, *pr)
 }
 
 // issuesInWorkflow is every issue of the project the per-issue read has something to read for, by

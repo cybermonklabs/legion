@@ -12,16 +12,20 @@ body: |-
   instructions name the `Required status check "<name>" is expected` refusal and its two remedies.
   A required status nobody reported (EXPECTED) is not counted as running, since nothing is under
   way to report it. A `blocked` head with a review request open waits, and the architect and the
-  reviewer are told once, with the count; one whose `mergeable` GitHub answers null waits quietly on
-  the first such read and is told from the second read in a row, or thirty minutes after the first,
-  whichever comes first; one a check of which runs, or whose count or rollup no read has given,
-  waits quietly while the daemon reads it again. The count and the rollup come from one GraphQL
-  answer (a base's batch, or the query a REST read of a `blocked`, MERGEABLE head asks), and the
-  record keeps the head they were read at and reads them as unread at any other (migration
-  20261124130001, which adds five columns of `pull_requests`, all unread on every existing row). A
-  review request opened or withdrawn asks for a read, so does a CI settlement that concludes the
-  head's last check under a recorded `blocked`, and a climb whose first read fails hands the head
-  to its base's reads when no base holds it yet.
+  reviewer are told once, with the count; a `blocked` or `unknown` head whose `mergeable` GitHub
+  answers null waits quietly on the first such read and is told from the second null read in a
+  row, whatever state GitHub gave beside each, or thirty minutes after the first, whichever comes
+  first; one a check of which runs, or whose count or rollup no read has given, waits quietly while
+  the daemon reads it again. A head is told of once for each thing that holds it, so a head told of
+  for a null `mergeable` is told again when a review request holds it next. The verdict, the count
+  and the rollup come from one GraphQL answer (a base's batch, or the query a REST read of a
+  `blocked`, MERGEABLE head asks), and the record keeps the read time of the read that wrote the
+  count and the rollup and reads them as unread beside any other read (migration 20261124130001,
+  which adds five columns of `pull_requests`, all unread on every existing row). A review request
+  opened or withdrawn asks for a read, so does a CI settlement that concludes the head's last check
+  under a recorded `blocked`; a climb or a start read that fails hands the head to its base's
+  reads, and a read that fails, a mint of the implement token among them, asks the round again so
+  the thirty-minute bound holds.
 time: 2026-11-24T14:01:52.986536229Z
 custom:
     Issue: INFRA-4192

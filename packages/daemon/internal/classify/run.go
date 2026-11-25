@@ -104,7 +104,7 @@ func replayRun(pr record.PullRequest) record.PullRequest {
 	// anchored with.
 	if pr.MergeState != record.MergeStateUnread && at.HeadSHA == pr.HeadSHA {
 		at.Mergeability, at.MergeState, at.StateReadAt = pr.Mergeability, pr.MergeState, pr.StateReadAt
-		at.ReviewsRequested, at.HeadChecks, at.EvidenceHead = pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceHead
+		at.ReviewsRequested, at.HeadChecks, at.EvidenceReadAt = pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceReadAt
 		at.NullMergeableReads, at.NullMergeableSince = pr.NullMergeableReads, pr.NullMergeableSince
 	}
 	waiting := len(run.Steps)
@@ -249,7 +249,7 @@ func judgementOf(pr record.PullRequest) record.Judgement {
 		CheckedHead: pr.CheckedHead, Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled), CheckRuns: clone(pr.CheckRuns),
 		Generation: pr.Generation, Snapshot: pr.Snapshot, Statuses: clone(pr.Statuses), Moves: clone(pr.Moves),
 		Mergeability: pr.Mergeability, MergeState: pr.MergeState, ReviewsRequested: pr.ReviewsRequested, HeadChecks: pr.HeadChecks,
-		NullMergeableReads: pr.NullMergeableReads, NullMergeableSince: pr.NullMergeableSince, EvidenceHead: pr.EvidenceHead,
+		NullMergeableReads: pr.NullMergeableReads, NullMergeableSince: pr.NullMergeableSince, EvidenceReadAt: pr.EvidenceReadAt,
 		StateReadAt: pr.StateReadAt}
 }
 
@@ -269,7 +269,7 @@ func withJudgement(pr record.PullRequest, j record.Judgement) record.PullRequest
 	pr.Moves = clone(j.Moves)
 	if pr.MergeState == record.MergeStateUnread {
 		pr.Mergeability, pr.MergeState, pr.StateReadAt = j.Mergeability, j.MergeState, j.StateReadAt
-		pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceHead = j.ReviewsRequested, j.HeadChecks, j.EvidenceHead
+		pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceReadAt = j.ReviewsRequested, j.HeadChecks, j.EvidenceReadAt
 		pr.NullMergeableReads, pr.NullMergeableSince = j.NullMergeableReads, j.NullMergeableSince
 	}
 	return pr

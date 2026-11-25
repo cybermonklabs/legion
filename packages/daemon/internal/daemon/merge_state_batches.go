@@ -505,6 +505,15 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 		part := queries[0]
 		outcome := w.readChunk(ctx, key, repo, base, part)
 		if outcome.unminted || outcome.after > 0 {
+			// The read stopped before GitHub answered any of these - a token the implement App
+			// could not mint, or a rate limit - which a failure that repeats would do on every
+			// turn: each pull request's round is asked again, so a run of null `mergeable` reads
+			// is told at the time bound though no read answers (readFailed).
+			for _, rest := range queries {
+				for _, r := range rest {
+					w.readFailed(ctx, r.pr)
+				}
+			}
 			w.readStopped(key, queries, outcome.after)
 			return
 		}

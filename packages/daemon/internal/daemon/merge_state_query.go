@@ -58,11 +58,12 @@ func (w *workflowRuntime) chunkSize() int {
 // requests it holds open, and the head commit's `statusCheckRollup`, its check runs and its commit
 // statuses counted by state, which say whether one of them still runs. The counts are asked with
 // `contexts(first: 0)`, so the answer carries no context itself and needs no page: GitHub counts
-// every context of the commit. The REST read asks the same query of the one pull request it read
-// when that read answers `blocked` and MERGEABLE (readHeadChecks), and takes the count of review
-// requests from this answer too, so the count and the rollup are one response's.
+// every context of the commit; the rollup's own state is not asked, since GitHub answers it
+// FAILURE while other contexts still run. The REST read asks the same query of the one pull request
+// it read when that read answers `blocked` and MERGEABLE (readWholeAnswer), and takes the verdict
+// and the count of review requests from this answer too, so all three are one response's.
 const pullRequestFields = "number state headRefOid headRefName baseRefName mergeable mergeStateStatus " +
-	"reviewRequests { totalCount } commits(last: 1) { nodes { commit { oid statusCheckRollup { state " +
+	"reviewRequests { totalCount } commits(last: 1) { nodes { commit { oid statusCheckRollup { " +
 	"contexts(first: 0) { checkRunCountsByState { state count } statusContextCountsByState { state count } } } } } }"
 
 // chunkQuery is the GraphQL query of numbers, pull requests of the repository $owner/$name: each
@@ -103,7 +104,6 @@ type graphQLPull struct {
 			Commit struct {
 				OID               string `json:"oid"`
 				StatusCheckRollup *struct {
-					State    string `json:"state"`
 					Contexts *struct {
 						CheckRuns []stateCount `json:"checkRunCountsByState"`
 						Statuses  []stateCount `json:"statusContextCountsByState"`

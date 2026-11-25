@@ -304,14 +304,17 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 		}
 	})
 
-	// A row an earlier release wrote holds `blocked` and MERGEABLE beside no count of review
-	// requests and no rollup (migration 20261124130001), and a row a rollback left holds the count
-	// and rollup of the head before beside this head's state. The approval ends the round on
-	// neither: the round waits quietly for the read the approval asks, which writes both of this
-	// head.
+	// Evidence the round must not decide on: a row an earlier release wrote holds `blocked` and
+	// MERGEABLE beside no count of review requests and no rollup (migration 20261124130001); a row a
+	// rollback left holds the count and rollup of an older read beside the read time an earlier
+	// release wrote when it read the same head again (record.PullRequest.EvidenceReadAt). The
+	// approval ends the round on neither: the round waits quietly for the read the approval asks,
+	// which writes both from one read.
 	for _, tc := range []struct{ name, set string }{
-		{"a row recorded blocked before the count and the rollup were read", "reviews_requested = null, head_checks = '', evidence_head = ''"},
-		{"a row whose count and rollup are the head before's", "reviews_requested = 0, head_checks = 'concluded', evidence_head = '" + headEarlier + "'"},
+		{"a row recorded blocked before the count and the rollup were read",
+			"reviews_requested = null, head_checks = '', evidence_read_at = '0001-01-01 00:00:00+00', state_read_at = '2026-09-22 00:00:00+00'"},
+		{"a row an earlier release read again at the same head",
+			"reviews_requested = 0, head_checks = 'concluded', state_read_at = '2026-09-22 00:00:00+00', evidence_read_at = '2026-09-21 23:59:00+00'"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -324,11 +327,75 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 			if result := applyFacts(t, pool, engine)("approve", approve); result.Refusal != nil {
 				t.Fatalf("the approval was refused: %+v", result.Refusal)
 			}
-			waits(t, pool, "no read of this head has counted the review requests or read the rollup")
+			waits(t, pool, "no read of this release has counted the review requests or read the rollup")
 			github.serve()
-			standsUntold(t, pool, phase.Accepting, "the read of this head wrote a count of none and a rollup with nothing running")
+			standsUntold(t, pool, phase.Accepting, "the read wrote a count of none and a rollup with nothing running")
 		})
 	}
+
+	// GitHub answers `mergeable` null beside `blocked` on one read and beside `unknown` on the next
+	// while it computes. Every null read counts, whatever the state beside it, so the second read
+	// tells: a count that the `unknown` read set back would let the alternation walk past both of
+	// the round's conditions and never tell. The finding is the null `mergeable`, whatever state
+	// is beside it, so the reads that go on alternating tell nothing more.
+	t.Run("null reads alternating blocked and unknown", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateBlocked)
+		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
+		github.apply("approve", approve)
+		waits(t, pool, "one null read, beside blocked")
+		github.state = record.MergeStateUnknown
+		github.read()
+		told := reviewStuckNotices(t, pool)
+		if len(told) != 1 || !strings.Contains(told[0].Reason, "GitHub has answered `mergeable` null for it on 2 read(s) in a row") {
+			t.Fatalf("review-stuck notices %+v, want one naming two null reads in a row after a blocked and an unknown read", told)
+		}
+		github.state = record.MergeStateBlocked
+		github.read()
+		github.state = record.MergeStateUnknown
+		github.read()
+		if again := reviewStuckNotices(t, pool); len(again) != 1 {
+			t.Fatalf("after more alternating null reads the notices are %+v, want the one", again)
+		}
+	})
+
+	// A head GitHub answers only `unknown` with `mergeable` null is bounded as `blocked` is: told on
+	// the second null read in a row. Found while fixing the alternation hole: `unknown` was waited
+	// on quietly before the count was read at all.
+	t.Run("null reads beside unknown alone", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateUnknown)
+		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
+		github.apply("approve", approve)
+		waits(t, pool, "one null read, beside unknown")
+		github.read()
+		told := reviewStuckNotices(t, pool)
+		if len(told) != 1 || !strings.Contains(told[0].Reason, "GitHub reports that head unknown") ||
+			!strings.Contains(told[0].Reason, "on 2 read(s) in a row") {
+			t.Fatalf("review-stuck notices %+v, want one naming unknown and two null reads in a row", told)
+		}
+	})
+
+	// What holds a `blocked` head is part of the notice's key: told once for a null `mergeable`, the
+	// same head is told again when the next read finds it MERGEABLE with a review request open, and
+	// that second hold stays told once.
+	t.Run("a blocked head told for a null mergeable and then for a review request", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateBlocked)
+		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
+		github.apply("approve", approve)
+		github.read()
+		if told := reviewStuckNotices(t, pool); len(told) != 1 {
+			t.Fatalf("review-stuck notices %+v, want the one of the null mergeable", told)
+		}
+		github.mergeable, github.checks, github.requested = record.MergeabilityMergeable, record.HeadChecksConcluded, 1
+		github.read()
+		told := reviewStuckNotices(t, pool)
+		if len(told) != 2 || !strings.Contains(told[1].Reason, "GitHub holds 1 review request(s) open") {
+			t.Fatalf("review-stuck notices %+v, want a second naming the open review request", told)
+		}
+		github.read()
+		if again := reviewStuckNotices(t, pool); len(again) != 2 {
+			t.Fatalf("after another read of the same hold the notices are %+v, want the two", again)
+		}
+	})
 
 	// GitHub sends `review_request_removed` when a requested review is withdrawn, and no other
 	// event says so. The fact asks a read, which counts the requests again, and the read that finds

@@ -146,7 +146,7 @@ func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []rec
 	// left, and a stamp kept over a move would say this head had been read when it never was.
 	if headSHA != pr.HeadSHA {
 		pr.Mergeability, pr.MergeState, pr.StateReadAt = "", record.MergeStateUnread, time.Time{}
-		pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceHead = nil, record.HeadChecksUnread, ""
+		pr.ReviewsRequested, pr.HeadChecks, pr.EvidenceReadAt = nil, record.HeadChecksUnread, time.Time{}
 		pr.NullMergeableReads, pr.NullMergeableSince = 0, time.Time{}
 	}
 	if !read.waits {
@@ -1275,12 +1275,17 @@ func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *re
 	if issue.Phase != phase.Reviewing || pr == nil || reviewer.Decision == nil {
 		return false
 	}
+	// The moment passed is the record's own read time, not a clock: only whether the round ends is
+	// read here, and the moment decides nothing but which of the two waits a null `mergeable` comes
+	// to (MergeOutcomeOf), so the stored read time answers this as the clock would.
 	return pr.State == record.PullRequestOpen && reviewer.Decision.State == "approved" &&
 		ApprovalStands(*pr, reviewer.Decision.Head) && MergeOutcomeOf(*pr, pr.StateReadAt) != MergeEndsRound && !ConflictRound(*pr)
 }
 
 // MergeOutcome is what the merge state the record holds for a pull request's head comes to for
-// the review round of an approval that stands on that head (MergeOutcomeOf).
+// the review round of an approval that stands on that head (MergeOutcomeOf). The three told
+// outcomes are one wait each, told apart by what holds the head (Hold), so a head told of for
+// one hold is told again when another holds it.
 type MergeOutcome int
 
 const (
@@ -1292,12 +1297,54 @@ const (
 	MergeWaitsQuietly
 	// MergeWaitsTold: the round waits on GitHub's next answer about the head, and the architect
 	// and the reviewer are told once for the head and state (workflow's stuckMergeState): the
-	// head's own checks are over and what holds the head is something only a push, a person or
-	// GitHub's own computation will clear.
+	// head's own checks are over and GitHub answers a state it will not merge from - `behind`,
+	// `draft`, a `dirty` no second read confirmed - that only a push or a person will clear.
 	MergeWaitsTold
+	// MergeWaitsToldNullMergeable: told as MergeWaitsTold, of a `blocked` or `unknown` head whose
+	// `mergeable` GitHub has answered null on a second read in a row, or for NullMergeableTellAfter
+	// since the first: its own computation has not finished.
+	MergeWaitsToldNullMergeable
+	// MergeWaitsToldReviewRequested: told as MergeWaitsTold, of a `blocked`, MERGEABLE head on which
+	// GitHub holds a review request open: only the person, team or code owner asked can give it.
+	MergeWaitsToldReviewRequested
 )
 
-// NullMergeableTellAfter is how long a `blocked` head may stand with GitHub answering `mergeable`
+// Told says whether the outcome is one of the waits the architect and the reviewer are told of.
+func (o MergeOutcome) Told() bool {
+	return o == MergeWaitsTold || o == MergeWaitsToldNullMergeable || o == MergeWaitsToldReviewRequested
+}
+
+// Hold names what holds the head of a told outcome beside its merge state, for the mark that
+// keeps the notice once for each head, state and hold (record.ReviewDecision.ToldStuckHold):
+// "mergeable-null", "review-requested", or empty for every other outcome.
+func (o MergeOutcome) Hold() string {
+	switch o {
+	case MergeWaitsToldNullMergeable:
+		return "mergeable-null"
+	case MergeWaitsToldReviewRequested:
+		return "review-requested"
+	}
+	return ""
+}
+
+// EvidenceStands says whether the evidence the record keeps beside its merge state - the count of
+// review requests, the rollup and the null reads - was written by the read that recorded that
+// state (record.PullRequest.EvidenceReadAt): a release before migration 20261124130001 writes its
+// own read time beside a new head or a new read of the same head and leaves the evidence where it
+// stood, and a head move clears the read time. Evidence that does not stand is read as unread.
+func EvidenceStands(pr record.PullRequest) bool {
+	return pr.EvidenceReadAt.Equal(pr.StateReadAt)
+}
+
+// NullMergeableStanding says whether the record holds a run of reads of its head that answered
+// `mergeable` null, written by the read that recorded the merge state (EvidenceStands): the run a
+// next null read counts on from (workflow's mergeability), and the record a failed read asks the
+// round again for, so the time bound fires when every read fails (daemon's readFailed).
+func NullMergeableStanding(pr record.PullRequest) bool {
+	return EvidenceStands(pr) && pr.NullMergeableReads > 0
+}
+
+// NullMergeableTellAfter is how long a head may stand with GitHub answering `mergeable`
 // null before the architect and the reviewer are told, whatever the count of reads that answered
 // so: thirty minutes from the first such read. GitHub computes mergeability in a background job
 // that answers within a minute or two of a push; the base's follow reads read such a head again
@@ -1309,27 +1356,29 @@ const NullMergeableTellAfter = 30 * time.Minute
 // MergeOutcomeOf is the one rule of what the merge state the record holds for pr's head comes to
 // for an approved round, at the moment at of the fact that asks: RoundWaitsOnMergeState, which
 // the engine and the state build read, and workflow's reviewRound, which tells the waiting round
-// from the stuck one, both read it. at decides nothing but the null-mergeable bound below.
+// from the stuck one and names what holds the head from the outcome, both read it. at decides
+// nothing but the null-mergeable bound below.
 //
 //   - A state GitHub would merge from (record.MergeState.Mergeable) ends the round.
-//   - No state read, `unknown`, a first conflicting read waiting for its second
-//     (FirstConflictReadWaits), and a head with no concluded check run of its own
-//     (ChecksConcludedOnHead) wait quietly.
-//   - `blocked` is decided on the evidence a read of the head the record stands at wrote
-//     (record.PullRequest.EvidenceHead): the count of review requests, the rollup and the null
-//     reads of another head read as unread. It waits quietly while the rollup says a check or a
-//     status of the head is still running (record.HeadChecksRunning), and while no read has
-//     given the rollup or the count (record.HeadChecksUnread, a nil ReviewsRequested). While
-//     GitHub has not computed whether the head merges (`mergeable` null, which it answers while
-//     a background job computes it, routinely on the first read after a push), it waits quietly
-//     on the first such read and is told from the second read in a row that answers the same, or
-//     once the first is NullMergeableTellAfter old at at, whichever comes first. The readers read
-//     each of these answers again (MergeAnswerIncomplete): a climb of reads, then the base's
-//     follow reads, up to ten minutes apart, for as long as the head stands. It waits and is told
-//     while GitHub holds a review request open. Otherwise - MERGEABLE, no check of the head
-//     running, every check run of the head concluded, no review asked for - it ends the round.
+//   - No state read, a first conflicting read waiting for its second (FirstConflictReadWaits),
+//     and a head with no concluded check run of its own (ChecksConcludedOnHead) wait quietly.
+//   - `blocked` and `unknown` are decided on the evidence the read that recorded the state wrote
+//     (EvidenceStands): the count of review requests, the rollup and the null reads of an older
+//     read read as unread. Either waits quietly while the rollup says a check or a status of the
+//     head is still running (record.HeadChecksRunning). While GitHub has not computed whether
+//     the head merges (`mergeable` null, which it answers while a background job computes it,
+//     routinely on the first read after a push, beside `blocked` or `unknown` alike), either
+//     waits quietly on the first such read and is told from the second read in a row that
+//     answers null, or once the first is NullMergeableTellAfter old at at, whichever comes first
+//     (MergeWaitsToldNullMergeable). Otherwise `unknown` waits quietly, and `blocked` waits
+//     quietly while no read has given the rollup or the count (record.HeadChecksUnread, a nil
+//     ReviewsRequested), waits and is told while GitHub holds a review request open
+//     (MergeWaitsToldReviewRequested), and else - MERGEABLE, nothing of the head running, every
+//     check run of the head concluded, no review asked for - ends the round. The readers read
+//     each answer that waits quietly again (MergeAnswerIncomplete): a climb of reads, then the
+//     base's follow reads, up to ten minutes apart, for as long as the head stands.
 //   - Every other state GitHub would not merge from - `behind`, `draft`, a `dirty` no second read
-//     confirmed - waits and is told.
+//     confirmed - waits and is told (MergeWaitsTold).
 //
 // `blocked` ends the round because it is GitHub's answer to the reader, not its verdict on the
 // merge: a rule about the reader holds a head `blocked` for one token and `clean` for another at
@@ -1350,28 +1399,26 @@ func MergeOutcomeOf(pr record.PullRequest, at time.Time) MergeOutcome {
 	switch {
 	case pr.MergeState.Mergeable():
 		return MergeEndsRound
-	case pr.MergeState == record.MergeStateUnread, pr.MergeState == record.MergeStateUnknown,
-		FirstConflictReadWaits(pr), !ChecksConcludedOnHead(pr):
+	case pr.MergeState == record.MergeStateUnread, FirstConflictReadWaits(pr), !ChecksConcludedOnHead(pr):
 		return MergeWaitsQuietly
-	case pr.MergeState != record.MergeStateBlocked:
+	case pr.MergeState != record.MergeStateBlocked && pr.MergeState != record.MergeStateUnknown:
 		return MergeWaitsTold
 	}
 	reviews, checks, nulls, since := pr.ReviewsRequested, pr.HeadChecks, pr.NullMergeableReads, pr.NullMergeableSince
-	if pr.EvidenceHead != pr.HeadSHA {
+	if !EvidenceStands(pr) {
 		reviews, checks, nulls, since = nil, record.HeadChecksUnread, 0, time.Time{}
 	}
 	switch {
 	case checks == record.HeadChecksRunning:
 		return MergeWaitsQuietly
-	case pr.Mergeability != record.MergeabilityMergeable:
-		if nulls >= 2 || nulls >= 1 && !since.IsZero() && at.Sub(since) >= NullMergeableTellAfter {
-			return MergeWaitsTold
-		}
-		return MergeWaitsQuietly
-	case checks == record.HeadChecksUnread, reviews == nil:
+	case pr.Mergeability == record.MergeabilityUnknown &&
+		(nulls >= 2 || nulls >= 1 && !since.IsZero() && at.Sub(since) >= NullMergeableTellAfter):
+		return MergeWaitsToldNullMergeable
+	case pr.MergeState == record.MergeStateUnknown, pr.Mergeability != record.MergeabilityMergeable,
+		checks == record.HeadChecksUnread, reviews == nil:
 		return MergeWaitsQuietly
 	case *reviews > 0:
-		return MergeWaitsTold
+		return MergeWaitsToldReviewRequested
 	}
 	return MergeEndsRound
 }
