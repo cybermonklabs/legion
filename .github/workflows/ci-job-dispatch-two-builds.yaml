@@ -33,6 +33,16 @@ on:
           that filter matched.
         type: string
         required: true
+  # A run by hand, for one reading of the two-build suite against the build #6863 pins
+  # (theorem-labs/agent-infra#4454, dispatch://INFRA-4426). Not for merge.
+  workflow_dispatch:
+    inputs:
+      ci-ok-changes:
+        type: string
+        required: true
+      dispatch_two_builds_go:
+        type: string
+        required: true
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -172,7 +182,7 @@ jobs:
       - name: Resolve the previous build's commit
         id: previous
         run: |
-          commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --commit 6dcef87714b028d5406a1dcf4b0fb70cd5479958 --resolve)
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
       # Restored only: .github/workflows/ci-caches.yaml's dispatch-builds job builds this release on
       # a push to main and saves it in main's scope, which every pull request and merge group reads.
