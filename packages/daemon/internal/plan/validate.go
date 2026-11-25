@@ -133,7 +133,7 @@ func Validate(ctx context.Context, p Plan, d Deployment) ([]Refusal, error) {
 // error once it has one.
 func partRefusals(tasks []Task, onCycle map[waitEdge]bool, ended func() error) ([]Refusal, error) {
 	w := newWaits(tasks)
-	refused, err := w.needReasons(onCycle, ended)
+	refused, err := w.needReasons(onCycle, func() error { return nil })
 	if err != nil {
 		return nil, err
 	}
