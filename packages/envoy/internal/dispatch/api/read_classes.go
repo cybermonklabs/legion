@@ -128,10 +128,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/issues/{key}/events":                                    {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/references":                                {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/collaborators":                             {Writes: readWritesNothing},
-	"GET /api/v1/lenses":                                                 {Writes: readWritesNothing},
 	"GET /api/v1/references/questions":                                   {Writes: readWritesNothing},
 	"GET /api/v1/reference-targets":                                      {Writes: readWritesNothing},
 	"GET /api/v1/block-links":                                            {Writes: readWritesNothing},
+	"GET /api/v1/lenses":                                                 {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/subscribers":                               {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/artifacts":                                 {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/messages":                                  {Writes: readWritesNothing},
@@ -195,10 +195,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/credentials/capabilities":                               {Writes: readWritesNothing},
 	// The test hooks' GET rows, which read this process's memory.
 	"GET /api/v1/artifacts/_test/rooms":                          {Writes: readWritesNothing},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes":            {Writes: readWritesNothing},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Writes: readWritesNothing},
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Writes: readWritesNothing},
 	"GET /api/v1/messages/_test/queued":                          {Writes: readWritesNothing},
-	"GET /api/v1/artifacts/{id}/_test/ask-attributes":            {Writes: readWritesNothing, WriteNote: "Reads the document's live tree, loading it from its stored history where this process holds no room of it (docs.Service.loadTree), which queues no compaction; it writes nothing."},
 }
 
 // readClassRefusals names every way readClasses fails to class the table, sorted, each line

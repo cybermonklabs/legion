@@ -1173,17 +1173,15 @@ func (s *server) answerHeldKey(
 // answered or not, and a first still running is 409 KEY_IN_FLIGHT. A key its first request gave up
 // meanwhile - released after a 5xx, its holder dead with nothing committed, on a route that resumes
 // its holder dead before its point's mark, its window past - would run the request, which this one
-// cannot, its body gone: it is told to ask again (writeKeyFreed), and that ask runs it. A body that
-// stops arriving is answered 409 KEY_IN_FLIGHT, which is what the key said. route is the route's
-// keyedRoute, so the key is judged and answered as claimRequestKey judges and answers it.
+// cannot, its body gone: it is told to ask again (writeKeyFreed), and that ask runs it. route is the
+// route's keyedRoute, so the key is judged and answered as claimRequestKey judges and answers it.
 //
 // A client that asked to be told to continue before it sends its body (Expect: 100-continue) is
 // answered 409 KEY_IN_FLIGHT at once, with nothing read: it has sent nothing, so the answer is as
-// fresh as the key, and a read would ask it for its whole body only to judge it.
-//
-// Neither that answer nor the one to a body that stops arriving reads the key again to judge the
-// repeat; each names the recovery point the key holds when it is answered
-// (writeUnjudgedKeyInFlight).
+// fresh as the key, and a read would ask it for its whole body only to judge it. A body that stops
+// arriving is answered 409 KEY_IN_FLIGHT too, which is what the key said. Neither of those two
+// answers reads the key again to judge the repeat; each names the recovery point the key holds
+// when it is answered (writeUnjudgedKeyInFlight).
 func (s *server) answerDrainedRepeat(
 	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, route keyedRoute,
 ) {
@@ -1210,9 +1208,10 @@ func (s *server) answerDrainedRepeat(
 // (spec R4) and never the text of a post deleted since; one that names another run, or none, is
 // 422 KEY_REUSED, since the run is part of the digest (writeRequestFields); and a first still
 // running is 409 KEY_IN_FLIGHT, whose retry is judged again. A key that no longer holds an answer
-// - released after a 5xx since withinGoingRun looked, its holder dead with nothing committed, its
-// window past - and a body that stops arriving are answered the run's refusal, as withinGoingRun
-// answers a refused run whose key holds nothing, and the key is not claimed.
+// - released after a 5xx since withinGoingRun looked, its holder dead with nothing committed, on a
+// route that resumes its holder dead before its point's mark, its window past - and a body that
+// stops arriving are answered the run's refusal, as withinGoingRun answers a refused run whose key
+// holds nothing, and the key is not claimed.
 func (s *server) answerRefusedRun(
 	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, route keyedRoute,
 ) {
@@ -1225,14 +1224,16 @@ func (s *server) answerRefusedRun(
 // handler nor claims the key. Its body is read off the connection and discarded, never spooled,
 // and written on the way into the digest any keyed request is judged by; then the key is read
 // again and the request judged by that digest as claimRequestKey judges a repeat (answerHeldKey),
-// with its route's reread (keyedRereads). Where the key holds nothing that answers it, unanswered
-// answers instead, with freed the point a key its own first request gave up names, nil for any
-// other.
+// by route, its keyedRoute, whose reread is its row of keyedRereads. Where the key holds nothing
+// that answers it, unanswered answers instead, with freed the recovery point of a key its own first
+// request gave up (keyAbandoned), which an ask again resumes from, and nil for a key past its
+// window, whose point is a request's long gone, and for a key that holds no row.
 //
 // The body is read for at most drainTime (readFor): one that stops arriving is answered by
 // unanswered with stopped set, and the connection closes after it. A body past the route's limit
-// is answered the route's 413 (routeBody), as a first request's body past it is. Either keeps the
-// read's deadline for net/http's own reads after the answer; only a body read to its end lifts it.
+// is answered the route's 413 (routeBody), as a first request's body past it is, in the route's
+// shape (refuseKeyed). Either keeps the read's deadline for net/http's own reads after the answer;
+// only a body read to its end lifts it.
 func (s *server) answerFromKeyAlone(
 	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, route keyedRoute,
 	unanswered func(w http.ResponseWriter, stopped bool, freed json.RawMessage),

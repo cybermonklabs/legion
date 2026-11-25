@@ -8475,6 +8475,23 @@ describe("executeDispatchTool", () => {
       expect(result.text).toBe([markdown, "Document token: sha256:spec"].join("\n\n"));
     });
 
+    // An opener's `#id` runs to the first character the shortcut cannot hold, as askOpeners reads
+    // it, so an id that holds a no-break space is named whole.
+    test("and an answer on an opener whose id holds a no-break space names the whole id", async () => {
+      const result = await readDocument({
+        markdown:
+          ':::ask{#q\u00a0drive urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-18T12:05:00Z" selected="[]" answer="Plain HTTP."}\nWhich transport?\n:::',
+        token: "sha256:spec",
+        version: 4,
+      });
+      expect(result.text.split("\n\n").at(-1)).toBe(
+        [
+          "Document token: sha256:spec",
+          'Answered q\u00a0drive by bob at 2026-11-18T12:05:00Z: "Plain HTTP."',
+        ].join("\n")
+      );
+    });
+
     test("and a version read names none", async () => {
       const result = await readDocument(
         { markdown: served, token: "sha256:spec", version: 4 },
@@ -10047,6 +10064,28 @@ describe("executeDispatchTool", () => {
       );
       expect(refusal.split("\n")[1].match(/dispatch:\/\//g)).toHaveLength(1);
       expect(refusal).not.toContain("has not opened yet");
+      expect(posts).toEqual([]);
+    });
+
+    // The block's id is read off its opening line as askOpeners reads it: a no-break space in a
+    // `#id` is part of the id, so the copy's source is found.
+    test("a copied block whose id holds a no-break space names its source", async () => {
+      const block = "b\u00a01";
+      const { outcome, posts } = await requestOver(
+        [block],
+        [
+          `:::ask{#${block} urgency="med" multiple="false" state="open" copied_from="ask-source" copied_from_document="dispatch://DSP-42/artifact/plan"}\nQuestion of ${block}?\n:::`,
+        ],
+        []
+      );
+
+      const refusal = await outcome.then(
+        () => "",
+        (error: Error) => error.message
+      );
+      expect(refusal.split("\n")[1]).toBe(
+        `- block ${block}, a copy of ask dispatch://DSP-42/ask/ask-source, which is open on DSP-42 plan: answer it there`
+      );
       expect(posts).toEqual([]);
     });
 

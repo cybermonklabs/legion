@@ -250,9 +250,7 @@ func heldOpen(t *testing.T, database *store.Store, table string, write func() er
 	planInteractionWrite(t, database, table, "after", "hold")
 	done := make(chan error, 1)
 	go func() { done <- write() }()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
-		t.Fatalf("the write never reached its %s row: no backend waits on the lock that holds it open", table)
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	read()
 	planInteractionWrite(t, database, table, "after", "")
 	if err := holder.Rollback(ctx); err != nil {

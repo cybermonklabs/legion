@@ -170,7 +170,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 					refuse("socket %d: response=%#v err=%v", round, response, err)
 					continue
 				}
-				connection.SetReadDeadline(time.Now().Add(time.Second))
+				connection.SetReadDeadline(socketDeadline(t))
 				if _, _, err := connection.ReadMessage(); err != nil {
 					refuse("socket %d: first frame %v", round, err)
 				}
@@ -1139,8 +1139,8 @@ func parkedCommitTrial() (int, bool) {
 // exists to catch, and the case must report it and end rather than hold its package's cleanup:
 // storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result
 // (storetest.go:90), and the pool's Close waits for every connection in use, so a transaction
-// left open there costs the whole run its deadline - the -timeout .github/workflows/ci.yaml gives
-// envoy-go-race-docs and envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs
+// left open there costs the whole run its deadline - the -timeout envoy-go-race-docs gives it -
+// and prints no --- FAIL line at all. This runs
 // the case in a child process of this test binary with one trial's commit parked for good and
 // requires the child to print the case's own --- FAIL line inside a deadline of its own.
 func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
@@ -1161,7 +1161,7 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
 	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
 	// and it is minutes below the deadline of any run that holds this package (the -timeout
-	// .github/workflows/ci.yaml gives envoy-go-docs-finalizers and envoy-go-race-docs), so a child
+	// envoy-go-race-docs gives it), so a child
 	// that truly wedges ends in this row's own failure rather than in the parent run's panic.
 	const childDeadline = 180 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so

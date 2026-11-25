@@ -650,10 +650,11 @@ var indexPasses = map[string]string{
 	// node taken gone takes its whole part_of subtree gone in the same write, each node from its own
 	// row, which the write reads through the current part_of tuples (graphstore.WriteState).
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row, the rows of every node under a node it takes gone, and the issue it stands under",
-	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
-	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
-	// is named (changed_by_run). It reads no row of either side to decide what the other says.
-	"api/issue_patch.go#writeIssue": "the PATCH's own body, the issue's row it locked and the issue's own event",
+	// An issue's own field write made for a run: the issue's node, restated from the write's own
+	// fields and the issue's row it locked, and caused by the issue's own event, so the run's change
+	// of the issue is named (changed_by_run). It reads no row of either side to decide what the
+	// other says.
+	"api/issue_patch.go#writeIssue": "the write's own fields (the PATCH's body, or a status change step's), the issue's row it locked and the issue's own event",
 	// An issue's relations its create and its PATCH state (dispatch://INFRA-1253 R9, R10): the
 	// claims and tuples the request names, read against the issue's own row, the issue_links rows
 	// it holds and the tuples its node states only to state what moved, and the node of the item

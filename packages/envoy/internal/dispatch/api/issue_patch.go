@@ -947,19 +947,19 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// An issue's own field write made for a run (store.WithRun, which withinGoingRun puts on a
 	// request naming its run) names the issue as changed by that run when it changed a field of
 	// it (spec requirement r-interaction), as changedFields, which compares every field
-	// this route writes, says; a write that sent only values the issue already held appends its
-	// event with nothing changed and names no change. Under a run it writes the issue's node as the
-	// create and the backfill write it (graphstore.IssueNode), made by the issue's creator at its
-	// created_at, the two columns of the issue's row the backfill reads them from
+	// this write core writes, says; a write that sent only values the issue already held appends
+	// its event with nothing changed and names no change. Under a run it writes the issue's node as
+	// the create and the backfill write it (graphstore.IssueNode), made by the issue's creator at
+	// its created_at, the two columns of the issue's row the backfill reads them from
 	// (graphcensus/projects_backfill.go's objectKinds), and names it changed now by its writer
 	// (graphstore.PlanChangedForRun, which plans nothing for no run). A write that states a
 	// relation of the issue (queueIssueRelations) writes the same node unmarked, for no run, since
-	// graph_edges answers a relation out of a node the store holds. The node write is queued here,
-	// after every row and document write the patch queued above and after the node of the item
-	// filed_from names where the store held none (stateFiledFromNode), and what it states right
-	// after the issue's own event (graphstore.QueueCaused over graphstore.LatestEvent), as the
-	// create's is. A write made for no run that states no relation writes no node and sends no
-	// statement more than it did.
+	// graph_edges answers a relation out of a node the store holds; the comment a call leaves
+	// (queueIssueComment) states its own node. The node write is queued here, after every row and
+	// document write the patch queued above and after the node of the item filed_from names where
+	// the store held none (stateFiledFromNode), and what it states right after the issue's own
+	// event (graphstore.QueueCaused over graphstore.LatestEvent), as the create's is. A write made
+	// for no run that states no relation writes no node and sends no statement more than it did.
 	if err := stateFiledFromNode(ctx, tx, filedFrom); err != nil {
 		return issueWriteResult{}, err
 	}

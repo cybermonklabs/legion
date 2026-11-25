@@ -493,13 +493,15 @@ func TestVersionWriteRefreshesAnchorsByMark(t *testing.T) {
 	innerID := insertAnchoredCommentWithID(t, service, artifactID, "00000000-0000-4000-8000-000000000004", "brown")
 
 	editLiveTree(t, service, artifactID, replaceRun("brown", "browner"))
-	waitFor(t, time.Second, "anchor refresh to browner", func() bool {
-		anchor := loadAskAnchor(t, service, askID)
-		return anchor.Quote == "browner" && !anchor.Orphaned && loadCommentAnchor(t, service, innerID).Quote == "browner"
+	// Both refreshes are the work of the settlement the edit armed, which queues behind the
+	// room's appends and the document's locks: how long it takes is the machine's, so each wait
+	// ends on the refreshed anchor, with the test binary's deadline as its only bound
+	// (docs/testing.md, "A document test that waits for a room's appends").
+	testwait.Until(t, `the settlement to refresh the ask and comment anchors over "browner"`, func() (string, bool) {
+		ask, inner := loadAskAnchor(t, service, askID), loadCommentAnchor(t, service, innerID)
+		return fmt.Sprintf("ask %#v, inner comment %#v", ask, inner),
+			ask.Quote == "browner" && !ask.Orphaned && inner.Quote == "browner" && !inner.Orphaned
 	})
-	if anchor := loadAskAnchor(t, service, askID); anchor.Quote != "browner" || anchor.Orphaned {
-		t.Fatalf("refreshed anchor = %#v, want browner and not orphaned", anchor)
-	}
 	// The run both comments share was rewritten: each comment's refresh reads its own whole text.
 	for id, want := range map[string]string{outerID: "quick browner", innerID: "browner"} {
 		if anchor := loadCommentAnchor(t, service, id); anchor.Quote != want || anchor.Orphaned {
@@ -508,13 +510,10 @@ func TestVersionWriteRefreshesAnchorsByMark(t *testing.T) {
 	}
 
 	editLiveTree(t, service, artifactID, deleteRun("browner"))
-	waitFor(t, time.Second, "anchor orphaning after browner deletion", func() bool {
+	testwait.Until(t, "the settlement to orphan the ask's anchor at version 1 once its quote was deleted", func() (string, bool) {
 		anchor := loadAskAnchor(t, service, askID)
-		return anchor.Orphaned && anchor.Version == 1
+		return fmt.Sprintf("%#v", anchor), anchor.Orphaned && anchor.Version == 1
 	})
-	if anchor := loadAskAnchor(t, service, askID); !anchor.Orphaned || anchor.Version != 1 {
-		t.Fatalf("orphaned anchor = %#v, want version-1 orphan", anchor)
-	}
 }
 
 // markSweepTTL is the TTL the sweep ages a mark by in every test that holds the clock below.
@@ -851,9 +850,12 @@ func TestMarkOnlyUpdateSweepsUnrecordedMarksWithoutCanonicalizingLegacyTable(t *
 	}
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	browserMark(t, service, artifactID, "proofComment", "dangling", "one|two")
-	waitFor(t, time.Second, "unrecorded mark removed", func() bool {
+	// The sweep runs in the settlement the mark's own append armed, and again in the one that
+	// settlement re-armed for the mark's TTL, each of which queues behind the room's appends:
+	// the wait ends on the swept mark, bounded by the test binary's deadline alone.
+	testwait.Until(t, "the settlement after the mark's TTL to sweep the unrecorded mark", func() (string, bool) {
 		_, _, found := pmdoc.FindMark(liveTree(t, service, artifactID), "proofComment", "dangling")
-		return !found
+		return fmt.Sprintf("the live document holds the mark: %t", found), !found
 	})
 	assertTableCellPipeVersionAndEventCounts(t, service.store, artifactID, 1, 0)
 }
@@ -978,7 +980,9 @@ func TestProjectMarkRearmsPendingSettlement(t *testing.T) {
 		t.Fatalf("commit projection transaction: %v", err)
 	}
 	ledger.publish()
-	waitFor(t, time.Second, "settled projection version for after", func() bool {
+	// The version comes from the settlement the mark's publish re-armed, which queues behind the
+	// room's appends: the wait ends on that version, bounded by the test binary's deadline alone.
+	testwait.Until(t, `the re-armed settlement to version the document as "after\n"`, func() (string, bool) {
 		var markdown string
 		var named bool
 		if err := service.store.Pool.QueryRow(context.Background(), `
@@ -988,7 +992,7 @@ func TestProjectMarkRearmsPendingSettlement(t *testing.T) {
 		`, artifactID).Scan(&markdown, &named); err != nil {
 			t.Fatalf("read settled projection version: %v", err)
 		}
-		return markdown == "after\n" && !named
+		return fmt.Sprintf("latest version %q, named %t", markdown, named), markdown == "after\n" && !named
 	})
 }
 
@@ -1041,9 +1045,12 @@ func TestReplaceTextReanchorsOpenRows(t *testing.T) {
 		t.Fatalf("replace text: %v", err)
 	}
 	// The anchored ask and comment above schedule their own settlements, so version 2 can be the
-	// pre-replace snapshot; wait for the replacement's settled state, not a version number.
-	waitFor(t, time.Second, "the deleted quote's comment to orphan", func() bool {
-		return loadCommentAnchor(t, service, commentID).Orphaned
+	// pre-replace snapshot; wait for the replacement's settled state, not a version number. The
+	// settlement that writes it queues behind the room's appends, so the wait ends on the
+	// orphaned anchor, bounded by the test binary's deadline alone.
+	testwait.Until(t, "the replacement's settlement to orphan the deleted quote's comment", func() (string, bool) {
+		anchor := loadCommentAnchor(t, service, commentID)
+		return fmt.Sprintf("%#v", anchor), anchor.Orphaned
 	})
 	if anchor := loadAskAnchor(t, service, askID); anchor.Orphaned || anchor.Quote != "brown" {
 		t.Fatalf("ask anchor after replace = %#v, want first brown mark", anchor)
@@ -1272,19 +1279,15 @@ func loadAnchor(t *testing.T, service *Service, table, id string) storedAnchor {
 }
 
 // waitForPersistedUpdates waits for every update the live document has queued to reach
-// doc_updates, then checks that at least want rows landed. The service counts its own queue
-// (durableAppends, decremented after each append commits), so this waits on that signal rather
-// than polling the row count against a stopwatch: the drain takes as long as the machine needs -
-// it runs at roughly a hundred appends a second, so five hundred marks is seconds of work on an
-// idle box and longer on a loaded one - while a drain that never finishes still fails, on the
-// context deadline rather than on how busy the box was.
+// doc_updates, then checks that at least want rows landed. It waits on the room's idle signal
+// (awaitRoomAppends), which each append wakes, and sets no span of its own: the drain takes as
+// long as the machine needs - it runs at roughly a hundred appends a second, so five hundred
+// marks is seconds of work on an idle box and longer on a loaded one - while appends that have
+// stopped, or a run whose own deadline is at hand, still fail by name (docs/testing.md, "A
+// document test that waits for a room's appends").
 func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, want int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
-		t.Fatalf("waiting for queued document updates to persist: %v", err)
-	}
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
 	var count int
 	if err := service.store.Pool.QueryRow(context.Background(),
 		`select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&count); err != nil {

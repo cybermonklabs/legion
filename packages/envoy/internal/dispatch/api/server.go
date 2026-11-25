@@ -903,8 +903,8 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // zero value for a row that has none.
 func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc {
 	handler := route.Handler
-	keyedRow := keyedMethod(route.Method)
-	if keyedRow {
+	keyedWrite := keyedMethod(route.Method)
+	if keyedWrite {
 		handler = s.keyedWrites(route.Method, route.Pattern, handler, keyed)
 	}
 	if route.Method+" "+route.Pattern == issueUploadRoute {
@@ -920,7 +920,7 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// handler runs a write for a run this check did not admit. Inside the keyed layer the
 		// replay would come first by itself, but a refused run would then claim its key, and
 		// the same intent sent again without the header would be answered the key reused.
-		handler = s.withinGoingRun(handler, keyedRow)
+		handler = s.withinGoingRun(handler, keyedWrite)
 		// Outside the keyed layer and the upload's spool, so a write to another project's
 		// object, into another session's own rows, or by a machine's credential that names no
 		// person claims no idempotency key and costs no body (withinProjectScope,

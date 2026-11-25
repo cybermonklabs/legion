@@ -1313,12 +1313,13 @@ func commentRowID(ctx context.Context, tx pgx.Tx) (string, error) {
 	return id, err
 }
 
-// queueCommentRow queues on ledger the comment's node and then the insert of comment's row, which
-// names that node, and writes the row's created_at into comment. It answers what the comment is in
-// the node and tuple store (commentStored), whose facts wait for the comment's event
-// (queueCommentCreated). Its caller holds the owner lock that every comment insert takes first:
-// the comment route's (lockCommentOwner), or that of the issue write that leaves the comment
-// (writeIssue, lockIssueOwners).
+// queueCommentRow queues on ledger the comment's node, at visibility, and then the insert of
+// comment's row, which names that node, and writes the row's created_at into comment. It answers
+// what the comment is in the node and tuple store (commentStored), whose facts wait for the
+// comment's event (queueCommentCreated). Its caller holds the owner lock that every comment insert
+// takes first: the comment route's (lockCommentOwner), or that of the issue write that leaves the
+// comment (writeIssue, lockIssueOwners). visibility is what graphstore.VisibilityFor answered the
+// comment route's request, and graphstore.VisibilityProject for a comment an issue write leaves.
 //
 // The row's suggestion column holds comment's suggestion with suggestionKind, the kind its mark
 // recorded (storedSuggestion), which the delete reads (loadStoredSuggestion). Every caller states
@@ -1447,9 +1448,9 @@ func (s *server) queueCommentCreated(
 	// node and their session node in one statement in ascending (kind, id): a follow before it
 	// would take the session first and leave the person to that statement, which is the pair in
 	// the other order, and two such writes racing over a session and an owner the store holds
-	// neither of would deadlock (R17). The follow is planned here, in the read phase, under the
-	// owner lock the comment's write holds over the ask's thread (asks.PlanFollowAuthor), and
-	// queued in that step.
+	// neither of would deadlock. The follow is planned here, in the read phase, under the owner
+	// lock the comment's write holds over the ask's thread (asks.PlanFollowAuthor), and queued in
+	// that step.
 	var follow asks.PlannedFollow
 	if comment.AskID != nil {
 		if follow, err = asks.PlanFollowAuthor(ctx, tx, *comment.AskID, comment.Author, comment.CreatedAt); err != nil {
