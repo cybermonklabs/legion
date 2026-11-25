@@ -307,7 +307,11 @@ test("the anchor of a range is the row marked last without the shift key", async
 
   const alice = await asUser(browser, "alice");
   try {
-    const page = await inboxPage(alice);
+    const page = await alice.newPage();
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(`${error.name}: ${error.message}`));
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH });
+    await page.goto("/");
     await expect(rows(page)).toHaveCount(14);
     const drawn = await drawnIds(inboxList(page));
     /** Row `n` of the list, counted from 1. */
@@ -378,6 +382,17 @@ test("the anchor of a range is the row marked last without the shift key", async
 
     // A filter that hides the anchor: a shift-click then marks its own row alone, which is the
     // next anchor, and the page shows no error.
+    const alerts = page.getByRole("alert");
+    const plantedAlert = await page.evaluateHandle(() => {
+      const element = document.createElement("div");
+      element.setAttribute("role", "alert");
+      element.textContent = "Range selection alert probe";
+      document.body.append(element);
+      return element;
+    });
+    await expect(alerts, "the page's alert locator finds a planted alert").toHaveCount(1);
+    await plantedAlert.evaluate((element) => element.remove());
+    await plantedAlert.dispose();
     await mark(page, at(3)).click();
     await openFilterPanel(page);
     await page.getByRole("button", { name: "Filter by priority" }).click();
@@ -398,7 +413,7 @@ test("the anchor of a range is the row marked last without the shift key", async
     await mark(page, filtered[3] ?? "").click({ modifiers: ["Shift"] });
     await expectCount(page, 3);
     expect(await markedIds(page)).toEqual(filtered.slice(1, 4));
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(alerts, "no alert after changing the range with the anchor hidden").toHaveCount(0);
     await page.getByRole("button", { name: "Clear filters" }).click();
     await expect(rows(page)).toHaveCount(drawn.length);
     await clear();
@@ -450,6 +465,7 @@ test("the anchor of a range is the row marked last without the shift key", async
     await expectCount(page, run.length);
     expect(await markedIds(page)).toEqual(run);
     await expect(row(page, held)).toBeVisible();
+    expect(pageErrors, "uncaught page errors during range selection").toEqual([]);
   } finally {
     await alice.close();
   }
@@ -671,6 +687,16 @@ test("a shift-click selects no text and keeps the focus on its checkbox", async 
     // shift-click selects from that caret to the checkbox.
     await mark(page, drawn[0] ?? "").click();
     await words.click();
+    const caretInWords = await words.evaluate((element) => {
+      const selection = window.getSelection();
+      const anchor = selection?.anchorNode;
+      return (
+        selection?.isCollapsed && anchor?.nodeType === Node.TEXT_NODE && element.contains(anchor)
+      );
+    });
+    expect(caretInWords, "the plain click leaves a collapsed caret in the third row's quote").toBe(
+      true
+    );
     await mark(page, drawn[10] ?? "").click({ modifiers: ["Shift"] });
     await expectCount(page, 11);
     expect(await selectedText(), "the page's selected text").toBe("");
@@ -768,6 +794,73 @@ test("a range Dismiss hands the focus to a row that stays", async ({ browser }) 
       `the focus stays on the held row's checkbox; it is on ${await describeFocus(page)}`
     ).toBe(true);
     expect(await scrollPositions(page)).toEqual(still);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("a range action whose rows stood above the view hands the focus to the first row after them in sight", async ({
+  browser,
+}) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  const count = 32;
+  await seedDismissedThreads({ count, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice, "/?show=dismissed");
+    const box = inboxList(page);
+    await expect(rows(page).first()).toHaveAttribute("aria-setsize", String(count));
+    const drawn = await drawnIds(box);
+    expect(drawn.length, "the Dismissed window draws at least ten rows").toBeGreaterThanOrEqual(10);
+    // The reading pane shows the first row. The range leaves it out: where a press takes the
+    // selected row away, the Inbox selects the next row and scrolls it into view, which is the
+    // selection's own rule, not the bar's return.
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[0] ?? "");
+    const range = drawn.slice(1, 5);
+    await mark(page, range[0] ?? "").click();
+    await mark(page, range[3] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 4);
+    expect(await markedIds(page)).toEqual(range);
+
+    // Leave the tenth row just inside the top edge. The selected row, the range and the row
+    // after it stay drawn above the edge, so only the forward search can reach a row in sight.
+    await row(page, drawn[9] ?? "").evaluate((node) => {
+      const list = node.closest<HTMLElement>('[data-testid="inbox-list"]');
+      if (list === null) throw new Error("the tenth row is not in the Inbox list");
+      list.scrollTop += node.getBoundingClientRect().top - list.getBoundingClientRect().top - 2;
+    });
+    await frameAndTask(page);
+    const above = await box.evaluate((list) => {
+      const top = list.getBoundingClientRect().top;
+      return [...list.querySelectorAll<HTMLElement>("[data-inbox-row]")]
+        .filter((node) => node.getBoundingClientRect().bottom <= top)
+        .map((node) => node.dataset.inboxRow);
+    });
+    expect(
+      above.slice(0, 6),
+      "the selected row, the four marks and the row after them stand wholly above sight"
+    ).toEqual(drawn.slice(0, 6));
+    const before = await scrollPositions(page);
+    await bar(page).getByRole("button", { name: "Move to Inbox selected threads" }).click();
+    for (const id of range) await expect(row(page, id)).toHaveCount(0);
+    await frameAndTask(page);
+
+    const first = await box.evaluate((list) => {
+      const sight = list.getBoundingClientRect();
+      return [...list.querySelectorAll<HTMLElement>("[data-inbox-row]")].find((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.top >= sight.top && rect.bottom <= sight.bottom;
+      })?.dataset.inboxRow;
+    });
+    expect(first, "there is a surviving row in sight").toBeDefined();
+    expect(
+      await holdsFocus(mark(page, first ?? "")),
+      `the focus is on the first row's checkbox in sight (${first}); it is on ${await describeFocus(page)}`
+    ).toBe(true);
+    expect(await scrollPositions(page)).toEqual(before);
   } finally {
     await alice.close();
   }

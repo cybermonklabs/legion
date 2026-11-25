@@ -341,6 +341,14 @@ test("the n key opens a message to one or more agents from the Inbox", async ({ 
     // Each session replies to its own copy, and with no reload the Inbox lists three Agent rows,
     // one for each, each holding that session's reply.
     const copies = await deliveredCopies(created.id);
+    const documentMarker = `compose-${created.id}`;
+    await page.evaluate((marker) => {
+      Object.assign(window, { __noReload: marker });
+    }, documentMarker);
+    // A click on a row writes `?item=` into the address, a same-document navigation; only a
+    // reload loads a new document, so the loads are what the no-reload read counts.
+    const documentLoads: string[] = [];
+    page.on("load", (loaded) => documentLoads.push(loaded.url()));
     const replies = new Map<string, string>();
     for (const copy of copies ?? []) {
       const reply = `${copy.session_id} has it in hand.`;
@@ -367,6 +375,11 @@ test("the n key opens a message to one or more agents from the Inbox", async ({ 
       await expect(agentRowOf).toHaveAttribute("data-inbox-selected", "true");
       await expect(inboxPane(page)).toContainText(reply);
     }
+    expect(
+      await page.evaluate(() => Reflect.get(window, "__noReload")),
+      "the Inbox document survives all three replies"
+    ).toBe(documentMarker);
+    expect(documentLoads, "documents loaded during the three replies").toEqual([]);
 
     // `n` in a text field is the letter.
     const box = page.getByRole("searchbox", { name: "Search asks" });
@@ -394,9 +407,11 @@ test("the n key opens a message to one or more agents from the Inbox", async ({ 
     const actions = page
       .getByRole("dialog", { name: "Search" })
       .getByRole("group", { name: "Actions" });
-    await expect(
-      actions.getByRole("option", { name: "Write a message to one or more agents" })
-    ).toHaveCount(1);
+    const composeAction = actions.getByRole("option", {
+      name: "Write a message to one or more agents",
+    });
+    await expect(composeAction).toHaveCount(1);
+    await expect(composeAction.locator("kbd"), "the palette's compose shortcut").toHaveText(["n"]);
     await page.keyboard.press("Escape");
 
     // New message, the control bar's last control, adds no height at either window size.

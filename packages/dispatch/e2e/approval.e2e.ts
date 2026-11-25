@@ -1931,11 +1931,15 @@ test("a change recorded while the Inbox is open", async ({ browser }) => {
     await expect(inboxRow(page, dismissed)).toHaveCount(0);
     await selectRow(page, ask.id);
 
-    /** Both marks and the selected ask's gate line, each read as the page refreshes it. */
+    /** Both marks, the pane's gate line and the ask's selection after each refresh. */
     const reads = async (state: string) => {
       await expect(markOf(page, ask.id), `the ask row at ${state}`).toHaveText(state);
       await expect(markOf(page, row), `the thread row at ${state}`).toHaveText(state);
       await expect(paneLine(page, ""), `the pane's line at ${state}`).toHaveText(state);
+      await expect(inboxRow(page, ask.id), `the ask stays selected at ${state}`).toHaveAttribute(
+        "data-inbox-selected",
+        "true"
+      );
     };
     await reads("Not requested");
 
@@ -1963,8 +1967,6 @@ test("a change recorded while the Inbox is open", async ({ browser }) => {
     await reads("Awaiting approval");
     await resolveAsk(second.ask.id, { kind: "retracted", reason: "Asked too early." }, session);
     await reads("Changes requested");
-    // The ask row stayed selected through every change.
-    await expect(inboxRow(page, ask.id)).toHaveAttribute("data-inbox-selected", "true");
 
     // The approval again, with the Dismissed view open on the dismissed thread of the issue.
     await page.goto("/?show=dismissed");

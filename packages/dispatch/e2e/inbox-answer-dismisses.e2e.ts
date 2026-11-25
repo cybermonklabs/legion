@@ -17,6 +17,7 @@ import {
   sessionActor,
   THREAD_SESSION,
 } from "./inbox-threads";
+import { sql } from "./psql";
 import { type BrowserContext, expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -118,7 +119,7 @@ function inboxReadAfter(page: Page, after: Promise<unknown>): Promise<void> {
  * An ask that waits on the reader, whose thread they wrote in before and bob replied in after
  * them, so they hold a row of that thread. Its issue is assigned to them.
  */
-async function seedAskWaitingOnTheReader(issueKey: string, question: string): Promise<string> {
+async function seedAskWithReaderThread(issueKey: string, question: string): Promise<string> {
   const ask = await createAsk(
     issueKey,
     { options: [{ label: "Ship" }, { label: "Hold" }], question },
@@ -137,7 +138,7 @@ test("an answer or a reply takes the thread out of the Inbox until somebody else
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Canary rollout" });
-  const ask = await seedAskWaitingOnTheReader(issue.key, "Ship the canary today?");
+  const ask = await seedAskWithReaderThread(issue.key, "Ship the canary today?");
   const comment = await seedCommentThread(issue.key, "Who holds the pager?", "I do, until six.");
   const agent = await seedAgentThread({ body: "Is the mirror warm?", replies: ["Warming it."] });
 
@@ -145,8 +146,13 @@ test("an answer or a reply takes the thread out of the Inbox until somebody else
   try {
     const page = await inboxPage(alice);
     const dismisses = watchDismisses(page);
-    // Before: the ask the reader is waited on, the comment thread and the Agent row. The ask's
-    // own thread is no row while the ask waits on them: the Inbox lists the ask instead.
+    // The reader holds a row of the ask's thread, with bob's reply after their own. The Inbox
+    // draws no Reply row for it while the ask waits on them: it lists the ask instead.
+    const ownThreadRows = await sql(
+      `select count(*) from user_threads where login = 'alice' and thread_id = '${ask}' and kind = 'ask' and replied_at is not null and dismissed_at is null`
+    );
+    expect(Number(ownThreadRows), "alice's own row of the ask's thread before she answers").toBe(1);
+    // Before: the ask the reader is waited on, the comment thread and the Agent row.
     for (const id of [ask, replyRowId(comment), agentRowId(agent)]) {
       await expect(row(page, id)).toBeVisible();
     }
@@ -277,6 +283,13 @@ async function expectTheColumnStop(
     "data-testid",
     "inbox-pane-scroller"
   );
+  const followsHead = await scroller.evaluate((stop) => {
+    const head = stop.closest('[data-testid="inbox-pane"]')?.querySelector(":scope > header");
+    return (
+      head != null && (head.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    );
+  });
+  expect(followsHead, "the focused pane scroller follows the pane head").toBe(true);
   await expect(selectedRow(page)).toHaveCount(1);
   const next = (await selectedRow(page).getAttribute("data-inbox-row")) ?? "";
   expect(next, "the row the Inbox selected next").not.toBe(left);
@@ -295,8 +308,8 @@ test("the focus after an own Send goes to the column's own stop", async ({ brows
   const issue = await createIssue({ project: "CORE", title: "Canary rollout" });
   const firstQuestion = "Ship the canary today?";
   const secondQuestion = "Widen the canary tomorrow?";
-  const first = await seedAskWaitingOnTheReader(issue.key, firstQuestion);
-  const second = await seedAskWaitingOnTheReader(issue.key, secondQuestion);
+  const first = await seedAskWithReaderThread(issue.key, firstQuestion);
+  const second = await seedAskWithReaderThread(issue.key, secondQuestion);
   // The comment thread whose reply box sends, and one more a live update takes away while that
   // Send is held.
   const pager = "Who holds the pager?";
