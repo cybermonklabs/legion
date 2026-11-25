@@ -149,6 +149,15 @@ answers_prices='    anthropic/claude-opus-5-5: { input: 5, output: 25, cache_wri
 # branch daemon's answers block names but A23's absence leg's.
 web_search_model=anthropic/claude-sonnet-5-5
 web_search_fee=0.01
+# The answer bound the loop answers the GPT-6.1 merger under, in A10's GPT-6.1 clause and A23's
+# GPT-6.1 search leg, each on a daemon booted for that leg (gpt_bound_leg), and every wait for one
+# of those answers: the bound and a minute for the post after it. Every other row's daemon keeps
+# its own bounds, answers-<store>.yaml the product's default answer_seconds of 180. In two proof
+# runs one GPT-6.1 call took 191 s (A23, postgres) and 208 s (A10, postgres), and the loop ended each
+# answer with its own answer_seconds fault, as A12 requires, failing rows that prove the GPT-6.1
+# agent's resume and search, not the bound.
+gpt_answer_seconds=300
+gpt_answer_wait=$((gpt_answer_seconds + 60))
 repo=sjawhar/legion-smoke
 questions_file=$root/scripts/e2e/answer-loop/questions.json
 
@@ -187,6 +196,9 @@ gpt_model_id=
 gpt_level=
 gpt_refusal='the model route was not asked'
 gpt_overlay=$work/gpt-merger-overlay.yml
+# What the daemon gpt_bound_leg booted for the current GPT-6.1 leg reads back of its answer bound,
+# in the words that leg's PASS names it with.
+gpt_bound_said=
 # LEGION_E2E_ANSWER_LOOP_ONLY (criteria, e.g. "boot A1 A6") and LEGION_E2E_ANSWER_LOOP_STORES
 # (default "files postgres") narrow a run while a check is being fixed: the bring-up and the stopped
 # agents are made as always, and only the named checks run. A run that proves the criteria sets
@@ -257,8 +269,10 @@ declare -A control=()
 # What the last read said (each row's read sets it, `<row>_read`); what a control's reads said is
 # control[<store>:<row>.said] (read_failed).
 read_said=
-# The one wait of the controls of a pass: the longest a row's own read waits for its answer (A12's,
-# A17's, A18's and A20's 300 s), after every control's message is sent and before any is read.
+# The one wait of the controls of a pass, after every control's message is sent and before any is
+# read: the longest a row's own read waits for its answer (A12's, A17's, A18's and A20's 300 s) but
+# for the GPT-6.1 merger's legs, whose gpt_answer_wait covers the rig's own bound on that model's
+# answers (gpt_answer_seconds), which a daemon with answers removed has no block to hold.
 control_wait=300
 
 begin() { check=$1; printf '== %s\n' "$check"; }
@@ -1135,6 +1149,33 @@ claims_cmd() {
 }
 claim_json() { claims_cmd list --json | jq -ce --arg token "$1" '.claims[] | select(.token == $token)'; }
 claim_is() { claim_json "$1" | jq -e "$2" >/dev/null; }
+# gpt_bound_leg LEG COMMAND... runs COMMAND, a leg in which the loop answers the GPT-6.1 merger
+# (A10's GPT-6.1 clause, A23's GPT-6.1 search leg), on a daemon whose answers.bounds sets
+# answer_seconds to gpt_answer_seconds and nothing else, every other setting answers-<store>.yaml's,
+# as A12 and A23's fourth search boot a file of their own: the daemon is stopped, gpt-<store>.yaml
+# written and the daemon started on it, and once COMMAND returns it is stopped and started on
+# answers-<store>.yaml again, each start_daemon setting daemon_config and boot_offset afresh. So each
+# read COMMAND makes of this boot's log (boot_log) reads the boot that answered the leg, and the
+# next row reads the daemon it always had. Neither the boot's lines nor `legion config check` name
+# the bounds, so the note for LEG reads the bound back from the daemon's own state
+# (settings.answers.bounds.answer_seconds of `legion state --json`), and gpt_bound_said keeps it for
+# the leg's PASS. COMMAND runs as it would in this call's place, under errexit unless the call is a
+# condition, and its status is the one returned.
+gpt_bound_leg() {
+  local leg=$1 file=$work/gpt-$store.yaml bounds="{ answer_seconds: $gpt_answer_seconds }" got status
+  shift
+  stop_daemon
+  write_legion_config "$file" yes "$bounds"
+  start_daemon "$work/branch/legion" "$file" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
+  got=$(legion_cmd state --json 2>/dev/null | jq -r '.settings.answers.bounds.answer_seconds // "none"') || got=unread
+  gpt_bound_said="the rig booted the daemon with answers.bounds.answer_seconds $gpt_answer_seconds for the GPT-6.1 merger's answers, where the product's default is 180, and the daemon's state read it back as ${got:-none}"
+  note "$leg: the daemon answers the GPT-6.1 merger under a ${gpt_answer_seconds}-second answer bound, where the product's default is 180 s: booted on $file (answers.bounds $bounds), its own state reads settings.answers.bounds.answer_seconds ${got:-none}"
+  "$@"
+  status=$?
+  stop_daemon
+  start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
+  return "$status"
+}
 
 # ---- Envoy -----------------------------------------------------------------------------------------
 envoy() { curl -sS --max-time 30 -H "@$work/envoy-auth-header" -H 'content-type: application/json' "$@"; }
@@ -2864,10 +2905,11 @@ check_a9() {
 # carried it; the two cache questions had one in 0 of 34 each. So the first of the list all but
 # always ends the asking, and the other two stay for a model that reasons less on one kind of
 # question: the first and the third make it reason before the answer's first gh call, the second
-# between its two. A fourth would cost another answer's wait (up to 240 s) and another question
-# the resume must hold, against a miss none of the three showed. It is judged from the recording
-# proxy's records of each answer's own calls (answer_calls: the daemon's label, the question's
-# marker and not the next question's) and from the daemon's `answers: answered` lines:
+# between its two. A fourth would cost another answer's wait (up to gpt_answer_wait, 360 s) and
+# another question the resume must hold, against a miss none of the three showed. It is judged
+# from the recording proxy's records of each answer's own calls (answer_calls: the daemon's label,
+# the question's marker and not the next question's) and from the daemon's `answers: answered`
+# lines:
 #   the conversation: its turns that did not fail hold a tool call (omp_openai_summary);
 #   the model: every call of every answer is a POST /v1/responses for the conversation's model,
 #   and each answered line names it (calls_on_model);
@@ -2895,15 +2937,12 @@ check_a9() {
 # returned reasoning followed by another, which leave (c) nothing to carry, each fail the clause
 # and say what went unexercised, since a request carries every item of none. The asking is
 # a10_gpt's and the judging a10_gpt_read's, which A10's control runs over a question of its own.
+# check_a10 runs it on the daemon gpt_bound_leg boots for it, which answers the merger under
+# gpt_answer_seconds, and each answer is waited for gpt_answer_wait.
 a10_gpt() {
   local session=${agent[$store:gpt.session]:-} token=${agent[$store:gpt.token]:-}
   local id s e n m calls
   local -a ids=(gpt-repository-module gpt-repository-go) pairs=() carries=()
-  if [ -n "${agent[$store:gpt.why]:-}" ] || [ -z "$session" ]; then
-    record_result A10 FAIL "GPT-6.1: ${agent[$store:gpt.why]:-the merger registered no session}"
-    return 0
-  fi
-  agent[$store:a10.gpt]=1
   # The conversation each cache answer's first request replays, kept as it was just before its
   # question: the first beside save_conversations' gpt.jsonl, the second ten seconds after the
   # first answer is posted.
@@ -2927,7 +2966,7 @@ a10_gpt() {
     e=${s#* }
     pairs+=("$id=$e")
     note "GPT-6.1: A10-gpt-$n ($id): listener $s"
-    soft_wait 240 "the GPT-6.1 merger's answer to $id (A10-gpt-$n)" inbox_reply "$e" || true
+    soft_wait "$gpt_answer_wait" "the GPT-6.1 merger's answer to $id (A10-gpt-$n)" inbox_reply "$e" || true
     calls=$(answer_calls "daemon-$store" "A10-gpt-$n)" "A10-gpt-$((n + 1)))")
     carries+=("$(reasoning_carried "$calls")")
   done
@@ -2937,7 +2976,7 @@ a10_gpt() {
   soft_wait 300 "the resumed GPT-6.1 merger's first model call" more_than "$m" proxy_count agents-gpt || true
   soft_wait 600 "the resumed merger's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   if a10_gpt_read A10-gpt "$m" "${pairs[@]}"; then
-    record_result A10 PASS "$read_pass_said"
+    record_result A10 PASS "$read_pass_said; $gpt_bound_said"
   else
     record_result A10 FAIL "$read_said"
   fi
@@ -3078,19 +3117,24 @@ a10_compaction_read() {
   [ "${compactions:-0}" -gt 0 ] 2>/dev/null && [ "$held" = yes ] && [ "$after" = 1 ]
 }
 
-# check_a10: A10's GPT-6.1 clause (a10_gpt, where the model route serves the model), its Claude
-# Code leg (the pre-change reviewer, answered twice within the cache lifetime: the first request
-# carries the effort the transcript last ran at and every thinking signature it holds, byte for
-# byte; an answer of a pair one Anthropic organization served reads the conversation from cache;
-# resumed after, its first request holds both exchanges) and its compaction leg (the architect's
-# session compacted by the daemon's own compaction, is answered from the compacted conversation,
-# and resumes after holding the exchange). The byte-for-byte clause needs thinking to replay, which
-# is why the pre-change reviewer runs at a raised effort (produce_pre_change); a transcript with no
-# thinking signature fails the leg and says why, since any request carries every signature of a
-# transcript that holds none.
+# check_a10: A10's GPT-6.1 clause (a10_gpt, on the daemon gpt_bound_leg boots for it, where the
+# model route serves the model), its Claude Code leg (the pre-change reviewer, answered twice
+# within the cache lifetime: the first request carries the effort the transcript last ran at and
+# every thinking signature it holds, byte for byte; an answer of a pair one Anthropic organization
+# served reads the conversation from cache; resumed after, its first request holds both exchanges)
+# and its compaction leg (the architect's session compacted by the daemon's own compaction, is
+# answered from the compacted conversation, and resumes after holding the exchange). The
+# byte-for-byte clause needs thinking to replay, which is why the pre-change reviewer runs at a
+# raised effort (produce_pre_change); a transcript with no thinking signature fails the leg and
+# says why, since any request carries every signature of a transcript that holds none.
 check_a10() {
   if criterion A10 "a GPT-6.1 conversation with reasoning and a tool call is answered by that model at its effort, its reasoning replayed and carried byte for byte, its second answer read from cache, and it resumes in Oh My Pi" openai; then
-    a10_gpt
+    if [ -n "${agent[$store:gpt.why]:-}" ] || [ -z "${agent[$store:gpt.session]:-}" ]; then
+      record_result A10 FAIL "GPT-6.1: ${agent[$store:gpt.why]:-the merger registered no session}"
+    else
+      agent[$store:a10.gpt]=1
+      gpt_bound_leg "A10's GPT-6.1 clause" a10_gpt
+    fi
   fi
   criterion A10 "a Claude Code worker and a compacted Oh My Pi conversation are answered from their conversations and resume after" || return 0
   local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line transcript sigs thinking unexercised='' m ok_claude=0 ok_compact=0 t3 s3 e3 compaction said1 said2 claude_said
@@ -4251,7 +4295,8 @@ check_a22() {
 # web_search` line of that answer is the refusal. Then the daemon boots once with no
 # answers.web_search, and its boot line and `legion config check` list no web_search and say why; the
 # boot line and the check of the daemon as it was list it. The same search leg runs for the GPT-6.1
-# merger where the route serves GPT-6.1, a row of its own as A10's GPT-6.1 clause is.
+# merger where the route serves GPT-6.1, a row of its own as A10's GPT-6.1 clause is, and as that
+# clause does, on the daemon gpt_bound_leg boots for it, its answer waited for gpt_answer_wait.
 # a23_search_read EVENT M LABEL NAME is the read of a search leg of A23: the reply to EVENT, NAME's
 # answer, made at least one search; each search line that ran has its call at the proxy, answered
 # 200 with the server tool offered, and recomputes from it; every address the reply cites is among
@@ -4302,15 +4347,16 @@ a23_fourth_read() {
 # a23_tools_leg TOOLS CHECK OFF_TOOLS OFF_CHECK is A23's: the web_search tool, absent from the daemon
 # whose answers set no web_search.
 a23_tools_leg() { tools_leg web_search 'no answers.web_search block' 'answers.web_search' "$@"; }
-# a23_search_leg NAME ID MARKER LABEL asks NAME the web search question ID under MARKER, waits for
-# the answer, resumes NAME on its own route LABEL with a one-word task, waits for its first model
-# call, reads the leg (a23_search_read) and suspends NAME again. It returns the read's verdict.
+# a23_search_leg NAME ID MARKER LABEL WAIT asks NAME the web search question ID under MARKER, waits
+# up to WAIT seconds for the answer, resumes NAME on its own route LABEL with a one-word task, waits
+# for its first model call, reads the leg (a23_search_read) and suspends NAME again. It returns the
+# read's verdict.
 a23_search_leg() {
   local name=$1 sent event m ok=1
   sent=$(envoy_ask_text session "${agent[$store:$name.session]}" "$(question_text "$2") $(question_suffix "$2" "$run_tag" "$3")")
   event=${sent#* }
   note "$name: $2 ($3): listener $sent"
-  soft_wait 300 "$name's answer to $2" inbox_reply "$event" || true
+  soft_wait "$5" "$name's answer to $2" inbox_reply "$event" || true
   m=$(proxy_count "$4")
   resume_agent "$name" || true
   deliver_task "${agent[$store:$name.token]}" "Reply with one word: ready." || true
@@ -4327,8 +4373,8 @@ check_a23() {
       record_result A23 FAIL "GPT-6.1: ${agent[$store:gpt.why]:-the merger registered no session}"
     else
       agent[$store:a23.gpt]=1
-      if a23_search_leg gpt a23-web-search-gpt A23-gpt agents-gpt; then
-        record_result A23 PASS "GPT-6.1: the merger searched with its web_search tool, every address its answer cites is among its searches' results and none is named by a gh or dispatch call, each search's cost line is its tokens and its fee and the answer's cost line carries them, and resumed in Oh My Pi it holds the search's call and result: $read_said"
+      if gpt_bound_leg "A23's GPT-6.1 search leg" a23_search_leg gpt a23-web-search-gpt A23-gpt agents-gpt "$gpt_answer_wait"; then
+        record_result A23 PASS "GPT-6.1: the merger searched with its web_search tool, every address its answer cites is among its searches' results and none is named by a gh or dispatch call, each search's cost line is its tokens and its fee and the answer's cost line carries them, and resumed in Oh My Pi it holds the search's call and result; $gpt_bound_said: $read_said"
       else
         record_result A23 FAIL "GPT-6.1: $read_said"
       fi
@@ -4337,7 +4383,7 @@ check_a23() {
   criterion A23 "a stopped agent answers with its web_search tool, every address it cites among its searches' results and none reached with gh or dispatch, the fee in its cost line, a fourth search refused, and resumes holding the search; a daemon whose answers set no web_search offers no web_search tool" || return 0
   tools=$(boot_tools_line)
   check=$(config_check_tools "$daemon_config")
-  a23_search_leg architect a23-web-search A23 agents && ok_search=1
+  a23_search_leg architect a23-web-search A23 agents 300 && ok_search=1
   said+="the search: $read_said; "
   # A fourth search in one answer: one model step of the proof's own calls web_search four times.
   stop_daemon
@@ -5023,7 +5069,7 @@ run_controls() {
   for row in $rows; do
     if declare -F "control_send_${row,,}" >/dev/null; then "control_send_${row,,}" || true; fi
   done
-  note "every control's message is sent; one wait of ${control_wait}s, the longest a row's own read waits, before any is read"
+  note "every control's message is sent; one wait of ${control_wait}s, the longest a row's own read waits but for the GPT-6.1 merger's ${gpt_answer_wait}s under the rig's own ${gpt_answer_seconds}-second bound, which no daemon with answers removed holds, before any is read"
   sleep "$control_wait"
   for row in $rows; do
     if declare -F "control_read_${row,,}" >/dev/null && [ -z "${control[$store:$row.unsent]}" ]; then "control_read_${row,,}" || true; fi

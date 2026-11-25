@@ -1741,7 +1741,7 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
     Measured through the model gateway on 2026-11-19 with the daemon's own loop
     (a throwaway harness over `answer.Answer` on that run's merger conversation, its `gh` calls answered with the bytes `go.mod` holds),
     each of the three, asked after the two cache questions, had a step that returned reasoning with a later step after it in 34 of 34 answers, each carried, and the two cache questions had one in 0 of 34 each;
-    so the first of the list all but always ends the asking, the other two stay for a model that reasons less on one kind of question (before the first call, or between two), and a fourth would add an answer's wait of up to 240 s, and a question the resume must hold, against a miss none of the three showed.
+    so the first of the list all but always ends the asking, the other two stay for a model that reasons less on one kind of question (before the first call, or between two), and a fourth would add an answer's wait of up to 360 s, and a question the resume must hold, against a miss none of the three showed.
 
   - An answer's own calls are the daemon's records whose body holds that question's marker (`A10-gpt-1)`, `A10-gpt-2)`, and so on) and not the next one's (`answer_calls`).
     The clause holds when the merger's conversation holds a tool call in a turn that did not fail (`omp_openai_summary`);
@@ -1757,6 +1757,11 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
     A transcript with no tool call, one with no reasoning item carrying encrypted content, and answers within the bound none of which had a step that returned reasoning followed by another each fail the clause, which then says what went unexercised;
     a later request that carries an earlier step's reasoning other than byte for byte, or not at all, fails it too.
     The conversation the second answer replays is kept as `sessions/<store>/gpt-before-A10-gpt-2.jsonl`.
+
+  - The loop answers the merger in this clause under a 300-second answer bound, `answers.bounds.answer_seconds: 300`, while the product's default, which every other row's daemon keeps, is 180 seconds.
+    In two proof runs one GPT-6.1 call took 191 s (A23's GPT-6.1 search leg) and another 208 s (this clause), both under postgres, and the loop ended each answer with its own `answer_seconds` fault, as A12 requires, failing rows that prove the GPT-6.1 agent's resume and search, not the bound.
+    As A12 boots a file of its own, the run stops the daemon before the first question and boots it on `gpt-<store>.yaml`, which is `answers-<store>.yaml` with that bound alone added, and boots it on `answers-<store>.yaml` again once the merger is suspended (`gpt_bound_leg`), so every read of the clause reads the boot that answered it.
+    Each answer is waited for 360 s, the bound and a minute for the post, and the transcript notes the bound as the daemon's own state reads it back (`settings.answers.bounds.answer_seconds` of `legion state --json`), which the clause's PASS names too.
 
 - A12: the daemon restarted with each bound in turn (`model_calls: 1`, `answer_seconds: 1`, `output_tokens: 16`, a stand-in reply out of form, `daily_usd: 0.01`):
   each ends with `answers: question passed to the controller` naming the fault and the daemon's own reply.
@@ -1789,6 +1794,9 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   Then a fourth search in one answer is refused: the daemon boots with `model_calls: 2` and the proxy's stand-in step calls `web_search` four times, and one `answers: web_search` line of that answer is the refusal of the fourth (`search_refused`).
   Then the daemon boots once with no `answers.web_search`, and its boot line and `legion config check` list no `web_search` and say `no answers.web_search block`, where the daemon as it was lists it.
   The same search leg runs for the GPT-6.1 merger (`a23-web-search-gpt`, a TechCrunch article on Walmart and Meta, resumed on `agents-gpt`), a row of its own that waits, as A10's GPT-6.1 clause does, where the model route does not serve GPT-6.1.
+  That leg's daemon is booted for it with a 300-second answer bound, as the clause's is (`gpt_bound_leg`), and boots on `answers-<store>.yaml` again after it, so the architect's leg, the fourth search and the absence leg keep the bounds they had, under the product's default `answer_seconds` of 180 seconds.
+  In one proof run that leg's GPT-6.1 call took 191 s under postgres, and the loop ended the answer with its own `answer_seconds` fault, as A12 requires, failing a row that proves the GPT-6.1 agent's search, not the bound.
+  Its wait for the answer is 360 s, the bound and a minute for the post, where the architect's is 300 s, and its PASS names the bound as the daemon's own state reads it back.
 
 - A14: every `answers: answered` line of the run
   — every boot of it, since A12 restarts the daemon five times before this check and its own boot has answered nothing
@@ -1907,7 +1915,8 @@ They run in A13's phase, against the branch's daemon on `plain-<store>.yaml`, wi
 A control row reads PASS only when its row's own read failed, so each control does every step that read depends on, and a daemon that still answered would make the read hold:
 a read that fails whatever the daemon does proves nothing.
 For each row the control sends a message of its own to that row's stopped agent, of the kind the row sends (an Envoy question, a reply on an ask, a role mention, a reply in a thread, a Dispatch message), under its own suffix, `(question <id> of run <tag>, control of A<n>)`.
-Every control's message is sent first; then one wait of 300 s, the longest a row's own read waits, and no wait per row; then each row's own read runs, the very function the row calls, over what follows the control's message alone: its event, its comment, its marker.
+Every control's message is sent first; then one wait of 300 s, the longest a row's own read waits but for the GPT-6.1 merger's legs, and no wait per row; then each row's own read runs, the very function the row calls, over what follows the control's message alone: its event, its comment, its marker.
+The GPT-6.1 merger's legs wait 360 s for an answer under the rig's own 300-second bound, which a daemon with `answers` removed has no block to hold.
 Rows whose read is of a conversation (A9, A10, A15, A23) read only what follows the control's own question, since the conversation still holds the answers the loop gave with `answers` on.
 A control row reads PASS only when no part of the row's read held, and its detail quotes what each part said.
 A control whose message was not taken reads FAIL, since a read of nothing shows nothing.
